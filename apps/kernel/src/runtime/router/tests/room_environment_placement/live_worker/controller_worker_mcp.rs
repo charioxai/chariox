@@ -9,6 +9,35 @@ mod capability_request_grant;
 mod capability_response_ordering;
 mod meta_forwarding_lock;
 
+fn install_room_pointer_screen_tool(
+    worker_root: &std::path::Path,
+) -> (ScopedEnvironment, std::path::PathBuf) {
+    let screen_tool = worker_root.join("room-pointer-screen.sh");
+    let screen_log = worker_root.join("room-pointer-screen.log");
+    std::fs::write(
+        &screen_tool,
+        "#!/bin/sh\nset -eu\n[ \"$1\" = move ]\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_TEST_ROOM_POINTER_LOG\"\n",
+    )
+    .expect("Room Computer screen helper");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&screen_tool, std::fs::Permissions::from_mode(0o700))
+            .expect("Room Computer screen helper permissions");
+    }
+    let environment = ScopedEnvironment::set([
+        (
+            "CHARIOX_SLICE_SCREEN_TOOL",
+            screen_tool.as_os_str().to_os_string(),
+        ),
+        (
+            "CHARIOX_TEST_ROOM_POINTER_LOG",
+            screen_log.as_os_str().to_os_string(),
+        ),
+    ]);
+    (environment, screen_log)
+}
+
 #[test]
 fn home_room_agent_uses_remote_environment_worker_browser_and_web_view() {
     run_test(check_home_room_agent_uses_remote_environment_worker_browser_and_web_view);
@@ -16,6 +45,8 @@ fn home_room_agent_uses_remote_environment_worker_browser_and_web_view() {
 
 async fn check_home_room_agent_uses_remote_environment_worker_browser_and_web_view() {
     let mut fixture = LiveWorker::start_configured(false, true).await;
+    let (_screen_environment, screen_log) =
+        install_room_pointer_screen_tool(&fixture._worker_state.root);
     let check = std::panic::AssertUnwindSafe(async {
         let (room, attachment_id, viewer_public_key) =
             prepare_cross_worker_room_display(&fixture).await;
@@ -166,6 +197,10 @@ async fn check_home_room_agent_uses_remote_environment_worker_browser_and_web_vi
             .as_str()
             .expect("home-admitted Computer action ID")
             .to_string();
+        assert_eq!(
+            std::fs::read_to_string(&screen_log).expect("worker A Computer command log"),
+            "move 8 8\n"
+        );
 
         let environment = fixture
             .home
@@ -355,6 +390,8 @@ fn room_browser_on_environment_worker_serves_remote_agent_and_web_view() {
 
 async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_view() {
     let mut fixture = LiveWorker::start_configured(false, true).await;
+    let (_screen_environment, screen_log) =
+        install_room_pointer_screen_tool(&fixture._worker_state.root);
     let (agent_worker_state, agent_worker) = start_agent_worker(&mut fixture).await;
     let check = std::panic::AssertUnwindSafe(async {
         wait_for_agent_worker(&fixture).await;
@@ -655,6 +692,10 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
             .filter(|id| !id.is_empty())
             .expect("home-admitted Room Computer action ID")
             .to_string();
+        assert_eq!(
+            std::fs::read_to_string(&screen_log).expect("worker A Computer command log"),
+            "move 60 35\n"
+        );
         let after_computer = fixture
             .home
             .runtime_state
