@@ -16,6 +16,8 @@ struct SessionViews {
     /// Target → (binding, registration number).
     tabs: HashMap<String, (AppViewBinding, u64)>,
     registrations: u64,
+    /// App Tabs the controller last reported open, bound or not.
+    open_tabs: usize,
     pumping: bool,
 }
 
@@ -70,12 +72,20 @@ impl AppViews {
         }
     }
 
-    /// The pump keeps running while the session has views; the last pass
-    /// removes the session atomically so a concurrent open restarts it.
+    pub(crate) fn set_open_tabs(&self, session: &str, open: usize) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.open_tabs = open;
+        }
+    }
+
+    /// The pump keeps running while the session has views, or App Tabs the
+    /// controller still shows (their calls are answered, as unbound); the last
+    /// pass removes the session atomically so a concurrent open restarts it.
     pub(crate) fn keep_pumping(&self, session: &str) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(session) {
-            Some(views) if !views.tabs.is_empty() => true,
+            Some(views) if !views.tabs.is_empty() || views.open_tabs > 0 => true,
             _ => {
                 sessions.remove(session);
                 false
@@ -87,6 +97,7 @@ impl AppViews {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
             views.tabs.clear();
+            views.open_tabs = 0;
         }
     }
 }
@@ -122,6 +133,14 @@ mod tests {
         assert_eq!(views.binding("s", "t3"), None);
         // A Tab closed in the browser stops the pump on the next poll.
         views.retain_open("s", &[], views.registrations("s"));
+        assert!(!views.keep_pumping("s"));
+        // An unbound App Tab the controller still shows keeps the pump, so
+        // its calls are answered instead of hanging.
+        views.register("s", "t7", binding("a"));
+        views.remove("s", "t7");
+        views.set_open_tabs("s", 1);
+        assert!(views.keep_pumping("s"));
+        views.set_open_tabs("s", 0);
         assert!(!views.keep_pumping("s"));
     }
 }

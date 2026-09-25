@@ -25,6 +25,8 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+const COMMAND_ATTEMPTS: u32 = 5;
+const COMMAND_RETRY: Duration = Duration::from_millis(100);
 /// Consecutive failed polls before the session's views are dropped (for
 /// example after the Room environment went away).
 const MAX_POLL_FAILURES: u32 = 20;
@@ -112,24 +114,42 @@ impl KernelRuntimeState {
         })
     }
 
+    /// The slice runs one controller operation at a time, so a view command
+    /// can meet the call poll or another Room command. That rejection means
+    /// the command never ran, so only it is retried (an Open is not
+    /// idempotent); any other failure is final.
     async fn app_view_command<T: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,
     ) -> Option<T> {
-        match self
-            .room_browser_controller_command(session_id, Command::AppView { request })
-            .await
-        {
-            Ok(Response::AppView {
-                result: Some(value),
-            }) => serde_json::from_value(value).ok(),
-            Ok(_) => None,
-            Err(error) => {
-                tracing::debug!(%error, "App view controller command failed");
-                None
+        for attempt in 0..COMMAND_ATTEMPTS {
+            match self
+                .room_browser_controller_command(
+                    session_id,
+                    Command::AppView {
+                        request: request.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(Response::AppView {
+                    result: Some(value),
+                }) => return serde_json::from_value(value).ok(),
+                Ok(_) => return None,
+                Err(error)
+                    if attempt + 1 < COMMAND_ATTEMPTS
+                        && error.to_string().contains("already has an active") =>
+                {
+                    tokio::time::sleep(COMMAND_RETRY).await;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "App view controller command failed");
+                    return None;
+                }
             }
         }
+        None
     }
 
     async fn pump_app_view_calls(self, session_id: String) {
@@ -151,6 +171,7 @@ impl KernelRuntimeState {
             failures = 0;
             if let Some(open) = &batch.open_targets {
                 views.retain_open(&session_id, open, polled_up_to);
+                views.set_open_tabs(&session_id, open.len());
             }
             for call in batch.calls {
                 let state = self.clone();
@@ -205,15 +226,17 @@ impl KernelRuntimeState {
             .app_lease_on_demand(&binding.owner, &binding.installation)
             .await
             .map_err(|_| unavailable())?;
+        let tool = view_tool(lease.catalog().app_catalog(), tool)
+            .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))?;
         let slot = lease
             .reserve_call(Duration::from_secs(30))
             .map_err(|error| view_error("APP_BUSY", &error.to_string()))?;
-        slot.validate_input(tool, &input)
+        slot.validate_input(&tool, &input)
             .map_err(|error| view_error("INVALID_INPUT", &error.to_string()))?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let store = self.owned.durable_state_store.clone();
         let caller = view_caller(binding, session_id);
-        let tool_name = tool.to_owned();
+        let tool_name = tool;
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             store.enqueue_app_tool(slot, &tool_name, input, caller, budget())
@@ -233,7 +256,18 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|_| unavailable())?
-        .map_err(|error| view_error("APP_ERROR", &error.to_string()))
+        .map_err(app_error)
+    }
+}
+
+/// The App's own error (e.g. CONFLICT from a stale edit) reaches its view;
+/// kernel-side failures keep a generic code.
+fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAppViewError {
+    match error {
+        crate::durable_state::app_tools::AppToolsError::Catalog(
+            chariox_app_runtime::app_catalog::CatalogError::Worker(remote),
+        ) => view_error(&remote.code, &remote.message),
+        error => view_error("APP_ERROR", &error.to_string()),
     }
 }
 
@@ -269,6 +303,18 @@ fn view_error(code: &str, message: &str) -> BrowserAppViewError {
     }
 }
 
+/// A view calls the App's own tools by their local names; the catalog keys
+/// them by the installation-namespaced runtime MCP name.
+fn view_tool(
+    catalog: &chariox_app_runtime::app_catalog::AppCatalog,
+    local: &str,
+) -> Option<String> {
+    catalog
+        .tools()
+        .find(|tool| tool.local_name == local)
+        .map(|tool| tool.name.clone())
+}
+
 fn budget() -> AppOperationBudget {
     AppOperationBudget::from_supervisor(|| false)
 }
@@ -291,6 +337,26 @@ mod tests {
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));
         assert_eq!(caller.room_id, "session-1");
         assert!(caller.task_id.is_none() && caller.turn_id.is_none());
+    }
+
+    #[test]
+    fn view_calls_name_the_apps_own_tools_by_local_name() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-view-tool-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir(&root).unwrap();
+        let store =
+            crate::durable_state::DurableKernelStateStore::open_owned(root.join("kernel.sqlite"))
+                .unwrap();
+        let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+        let catalog = catalog.app_catalog();
+        let namespaced = view_tool(catalog, "echo").unwrap();
+        assert_ne!(namespaced, "echo");
+        assert!(catalog.tool(&namespaced).is_some());
+        assert_eq!(view_tool(catalog, "missing"), None);
+        // A namespaced name is not a local name.
+        assert_eq!(view_tool(catalog, &namespaced), None);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
