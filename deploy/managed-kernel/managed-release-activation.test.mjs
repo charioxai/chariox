@@ -1,11 +1,15 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { spawnSync } from "node:child_process"
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 
 const installSource = await readFile(new URL("./install-image.sh", import.meta.url), "utf8")
 const upgradeSource = await readFile(new URL("./upgrade-image.sh", import.meta.url), "utf8")
 const prepareSource = await readFile(new URL("./prepare-hetzner-image.sh", import.meta.url), "utf8")
 const path1Service = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
+const upgradeStateScript = new URL("./managed-kernel-upgrade-state.mjs", import.meta.url)
 
 function indexOf(source, text, label, from = 0) {
   const index = source.indexOf(text, from)
@@ -32,6 +36,70 @@ test("install names releases from the validated manifest digest", () => {
   assert.ok(installSource.includes('verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"'))
   assert.ok(installSource.includes('"$@" path1 "$trusted_builder_public_key"'))
   assert.ok(upgradeSource.includes('"$@" path1 "$trusted_builder_public_key"'))
+})
+
+test("install and upgrade enforce immutable permissions after release signature verification", () => {
+  for (const source of [installSource, upgradeSource]) {
+    const start = indexOf(source, "verify_selected_release() {", "selected release verifier")
+    const end = indexOf(source, "\n}", "selected release verifier end", start)
+    const verifier = source.slice(start, end)
+    const signatureLines = verifier.split("\n").filter((line) => line.includes('node "$script_root/verify-image-release.mjs"'))
+    assert.ok(signatureLines.length > 0, "release signature verification must be present")
+    assert.ok(signatureLines.every((line) => line.trimEnd().endsWith("|| return 1")),
+      "signature failure must remain fatal when the wrapper is called conditionally")
+    const signature = verifier.lastIndexOf('node "$script_root/verify-image-release.mjs"')
+    const immutableTree = indexOf(
+      verifier,
+      'node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0',
+      "immutable release-tree verification",
+    )
+    assert.ok(signature < immutableTree, "permissions are checked after verifying the signed release")
+  }
+})
+
+test("selected release verifier cannot mask a signature failure with a successful tree check", () => {
+  for (const source of [installSource, upgradeSource]) {
+    const start = indexOf(source, "verify_selected_release() {", "selected release verifier")
+    const end = indexOf(source, "\n}", "selected release verifier end", start)
+    const verifier = source.slice(start, end + 2)
+    const command = [
+      "set -e",
+      "managed_provider_topology=shared_host",
+      "service_name=chariox-managed-bootstrap.service",
+      "script_root=/stub",
+      "trusted_builder_public_key=unused",
+      "node() { case \"$1\" in */verify-image-release.mjs) return 1 ;; */managed-kernel-upgrade-state.mjs) return 0 ;; *) return 2 ;; esac; }",
+      verifier,
+      "if verify_selected_release /tmp/release sha256:bad /tmp/key; then exit 22; fi",
+      "exit 0",
+    ].join("\n")
+    const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" })
+    assert.equal(result.status, 0, result.stderr)
+  }
+})
+
+test("release-tree verification rejects group-writable signed content", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-release-tree-"))
+  try {
+    const context = join(root, "usr", "lib", "chariox", "slice-build-context")
+    await mkdir(context, { recursive: true })
+    const file = join(context, "tamperable-source")
+    await writeFile(file, "signed but writable", { mode: 0o666 })
+    await chmod(file, 0o666)
+
+    const result = spawnSync(process.execPath, [
+      upgradeStateScript.pathname,
+      "verify-immutable-release-tree",
+      root,
+      String(process.getuid()),
+    ], {
+      encoding: "utf8",
+    })
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /managed release tree grants group or other write access/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("Path-1 install and upgrade keep the independent builder key available to runtime", () => {

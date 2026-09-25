@@ -120,12 +120,13 @@ select_supervisor_service() {
 
 verify_selected_release() {
   if [ "$managed_provider_topology" = path1 ]; then
-    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key"
+    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key" || return 1
   elif [ "$service_name" = chariox-disposable-worker-bootstrap.service ]; then
-    node "$script_root/verify-image-release.mjs" "$@"
+    node "$script_root/verify-image-release.mjs" "$@" || return 1
   else
-    node "$script_root/verify-image-release.mjs" "$@" "$managed_provider_topology"
+    node "$script_root/verify-image-release.mjs" "$@" "$managed_provider_topology" || return 1
   fi
+  node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0
 }
 
 require_regular_file() {

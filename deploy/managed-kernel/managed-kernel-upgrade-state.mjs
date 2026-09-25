@@ -165,6 +165,24 @@ async function syncTree(path) {
   }
 }
 
+async function verifyImmutableReleaseTree(path, expectedUid) {
+  const metadata = await lstat(path).catch((error) =>
+    fail(`managed release tree entry cannot be inspected: ${error.message}`),
+  )
+  if (metadata.isSymbolicLink() || (!metadata.isDirectory() && !metadata.isFile())) {
+    fail("managed release tree contains an unsupported entry")
+  }
+  if ((metadata.mode & 0o022) !== 0) {
+    fail("managed release tree grants group or other write access")
+  }
+  if (metadata.uid !== expectedUid) fail("managed release tree entry is not owned by the expected uid")
+  if (metadata.isDirectory()) {
+    for (const entry of await readdir(path)) {
+      await verifyImmutableReleaseTree(`${path}/${entry}`, expectedUid)
+    }
+  }
+}
+
 async function writeExclusive(path, bytes, mode, owner) {
   const handle = await open(path, "wx", mode)
   try {
@@ -416,6 +434,13 @@ async function run(args) {
   }
   if (operation === "sync-tree" && values.length === 1) {
     await syncTree(resolve(values[0]))
+    return
+  }
+  if (operation === "verify-immutable-release-tree" && values.length === 2) {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(values[1])) fail("managed release tree owner is invalid")
+    const expectedUid = Number(values[1])
+    if (!Number.isSafeInteger(expectedUid)) fail("managed release tree owner is invalid")
+    await verifyImmutableReleaseTree(resolve(values[0]), expectedUid)
     return
   }
   if (operation === "sync-directory" && values.length === 1) {
