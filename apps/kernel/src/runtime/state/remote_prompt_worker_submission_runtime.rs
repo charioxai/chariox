@@ -1091,6 +1091,32 @@ mod tests {
         )
     }
 
+    async fn receive_fake_worker_request(
+        receiver: &mut tokio::sync::mpsc::Receiver<RelayEnvelope>,
+        worker_private_key: &str,
+    ) -> (String, crate::transport::relay_peer::RelayPeerRequest) {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("fake relay should receive the peer request")
+            .expect("fake relay request channel should remain open");
+        let RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            encrypted_request,
+            ..
+        } = envelope
+        else {
+            panic!("expected a daemon peer request");
+        };
+        let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+            worker_private_key,
+            &encrypted_request,
+        )
+        .expect("fake worker should decrypt the peer request");
+        let request = serde_json::from_slice(&decrypted.plaintext)
+            .expect("fake worker request should decode");
+        (request_id, request)
+    }
+
     #[tokio::test]
     async fn cancelling_accepted_remote_prompt_never_sends_submit_request() {
         let mut config = crate::config::DaemonConfig::for_tests();
@@ -1236,6 +1262,189 @@ mod tests {
                 panic!("dispatch neither rejected cancellation nor produced a test relay request");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn held_prompt_response_does_not_block_remote_manifest_sync() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.to_string());
+        config.relay_token = Some("manifest-lane-test-token".to_string());
+        let home_public_key = config.relay_public_key.clone();
+        let worker_config = crate::config::DaemonConfig::for_tests();
+
+        let mut app = DaemonApp::bootstrap(config).expect("home app should bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "manifest-lane-workspace",
+                "manifest-lane-worktree",
+            ))
+            .expect("home session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "manifest-lane-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("home attachment should be created");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.to_string(),
+                    worker_machine_id: "worker-machine-manifest-lane".to_string(),
+                    execution_lease_id: "lease-manifest-lane".to_string(),
+                    leased_agent_id: CANCELLATION_GUARD_LEASED_AGENT_ID.to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent should bind to the fake worker");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment_id = attachment.id().to_string();
+        let mut submission = runtime
+            .owned
+            .submit_remote_prepared_prompt(&KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "pending:manifest-lane",
+                    &attachment_id,
+                    &agent_id,
+                    "hold the worker response while manifest sync runs",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .expect("remote prompt should be admitted")
+            .expect("remote prompt should produce a dispatch");
+        let mut dispatch = submission
+            .remote_dispatch
+            .take()
+            .expect("accepted remote prompt should carry a dispatch");
+        let submitted_prompt = dispatch.prompt.clone();
+
+        let relay_state = Arc::clone(&runtime.owned.relay_state);
+        let (outgoing_tx, mut peer_requests, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(8);
+        {
+            let mut relay = relay_state.write().await;
+            relay.test_set_connected_sender(outgoing_tx, CANCELLATION_GUARD_RELAY_URL);
+            relay.remember_peer_public_key(
+                CANCELLATION_GUARD_WORKER_ID,
+                worker_config.relay_public_key.clone(),
+            );
+        }
+
+        let submit_runtime = runtime.clone();
+        let submit_prompt = dispatch.prompt.clone();
+        let mut submit_task = tokio::spawn(async move {
+            submit_remote_prompt_to_worker_with_binding_refresh(
+                &submit_runtime,
+                &mut dispatch,
+                submit_prompt,
+                Vec::new(),
+            )
+            .await
+        });
+
+        let (submit_request_id, request) = receive_fake_worker_request(
+            &mut peer_requests,
+            &worker_config.relay_private_key,
+        )
+        .await;
+        assert!(
+            matches!(
+                request,
+                crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt { .. }
+            ),
+            "first fake relay request should submit the held prompt: {request:?}"
+        );
+
+        let sync_runtime = runtime.clone();
+        let sync_agent = runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .expect("home agent should remain available");
+        let sync_task = tokio::spawn(async move {
+            sync_runtime
+                .sync_remote_extension_manifest_for_agent(&sync_agent, None, None)
+                .await
+        });
+
+        let (manifest_request_id, request) = receive_fake_worker_request(
+            &mut peer_requests,
+            &worker_config.relay_private_key,
+        )
+        .await;
+        let crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id,
+            ..
+        } = request
+        else {
+            panic!("manifest sync should proceed while prompt response is held: {request:?}");
+        };
+        assert_eq!(leased_agent_id, CANCELLATION_GUARD_LEASED_AGENT_ID);
+
+        let manifest_response = crate::transport::relay_peer::RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated {
+            leased_agent_id: leased_agent_id.clone(),
+        };
+        let encrypted_manifest_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            &worker_config.relay_private_key,
+            &home_public_key,
+            &serde_json::to_vec(&manifest_response).expect("manifest response should encode"),
+        )
+        .expect("fake worker should encrypt the manifest response");
+        crate::transport::relay_client::resolve_pending_peer_response_for_test(
+            &relay_state,
+            manifest_request_id,
+            CANCELLATION_GUARD_WORKER_ID.to_string(),
+            encrypted_manifest_response,
+        )
+        .await;
+        sync_task
+            .await
+            .expect("manifest sync task should not panic")
+            .expect("manifest sync should succeed before prompt response is released");
+        assert!(
+            !submit_task.is_finished(),
+            "the fake worker must still be holding the prompt response"
+        );
+
+        let submit_response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+            provider_run_id: "provider-run-manifest-lane".to_string(),
+            outcome: crate::session::PromptSubmissionOutcome::Started {
+                prompt: submitted_prompt,
+            },
+        };
+        let encrypted_submit_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            &worker_config.relay_private_key,
+            &home_public_key,
+            &serde_json::to_vec(&submit_response).expect("submit response should encode"),
+        )
+        .expect("fake worker should encrypt the submit response");
+        crate::transport::relay_client::resolve_pending_peer_response_for_test(
+            &relay_state,
+            submit_request_id,
+            CANCELLATION_GUARD_WORKER_ID.to_string(),
+            encrypted_submit_response,
+        )
+        .await;
+        assert_eq!(
+            submit_task
+                .await
+                .expect("prompt submission task should not panic")
+                .expect("prompt submission should succeed"),
+            "provider-run-manifest-lane"
+        );
     }
 
     const WORKFLOW_CREDENTIAL_CANARY: &str = "workflow-submit-token-canary";
