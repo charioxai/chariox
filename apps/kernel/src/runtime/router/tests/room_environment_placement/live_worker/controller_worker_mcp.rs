@@ -384,6 +384,354 @@ async fn check_home_room_agent_uses_remote_environment_worker_browser_and_web_vi
 }
 
 #[test]
+fn room_browser_on_environment_worker_serves_same_worker_agent_and_web_view() {
+    run_test(check_room_browser_on_environment_worker_serves_same_worker_agent_and_web_view);
+}
+
+async fn check_room_browser_on_environment_worker_serves_same_worker_agent_and_web_view() {
+    let mut fixture = LiveWorker::start_configured(false, true).await;
+    let (_pointer_environment, pointer_log) =
+        install_room_pointer_screen_tool(&fixture._worker_state.root);
+    let check = std::panic::AssertUnwindSafe(async {
+        let (room, attachment_id, viewer_public_key) =
+            prepare_cross_worker_room_display(&fixture).await;
+        let started = dispatch_json(
+            &fixture.home,
+            json!({"StartRoomEnvironment": {
+                "session_id": &room,
+                "viewport": {
+                    "css_width":1280, "css_height":800, "device_scale_factor":1,
+                    "desktop_pixel_width":1280, "desktop_pixel_height":800
+                }
+            }}),
+        )
+        .await
+        .expect("start the headed Room Environment on worker A");
+        let started_environment = &started["RoomEnvironmentUpdated"]["environment"];
+        assert_eq!(started_environment["session_id"], room);
+        assert_eq!(started_environment["lifecycle"], "ready");
+        let environment_id = started_environment["environment_id"]
+            .as_str()
+            .expect("Room Environment identity")
+            .to_string();
+        let initial_tab_id = started_environment["focused_tab_id"]
+            .as_str()
+            .expect("initial stable Room Tab")
+            .to_string();
+
+        let leased = launch_leased_room_provider(
+            &fixture,
+            &fixture.worker,
+            "launch the Room provider on the Environment worker",
+        )
+        .await;
+        assert!(
+            leased.remote_extension_manifest.room_browser_available,
+            "the home builder must grant this worker agent the Room Browser tools"
+        );
+        let remote_execution = fixture
+            .home
+            .app
+            .lock()
+            .await
+            .agents()
+            .get_agent(&leased.home_agent_id)
+            .expect("home Room agent")
+            .remote_execution()
+            .expect("Room agent is leased to worker A")
+            .clone();
+        let environment_worker_kernel_id = fixture._worker_state.config.daemon_id.clone();
+        let environment_slice = fixture
+            .home
+            .runtime_state
+            .resolve_slice("desktop")
+            .expect("resolve the headed Environment on worker A");
+        assert_eq!(
+            remote_execution.worker_kernel_id,
+            environment_worker_kernel_id,
+            "the Room agent and headed Environment must use worker A"
+        );
+        assert_eq!(
+            environment_slice.worker_kernel_id.as_deref(),
+            Some(environment_worker_kernel_id.as_str())
+        );
+        assert_eq!(
+            remote_execution.worker_machine_id,
+            environment_slice.worker_machine_id.as_deref().unwrap_or_default(),
+            "the Room agent and headed Environment must share worker A's machine"
+        );
+
+        let token = fixture
+            .worker
+            .runtime_state
+            .runtime_mcp_auth_token_for_provider_run(&leased.worker_provider_run_id)
+            .expect("worker A provider runtime tool token");
+        let advertised = fixture
+            .worker
+            .runtime_state
+            .runtime_tool_specs_for_auth_token(&token)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        for tool in ["slice_open_url", "slice_browser_status", "slice_mouse"] {
+            assert!(advertised.contains(tool), "leased Room agent is missing {tool}");
+        }
+
+        let url = "https://same-worker.room-agent.test/";
+        let opened = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "slice_open_url",
+                json!({"url": url}),
+            )
+            .await
+            .expect("worker A Browser call must pass through home Room admission");
+        assert!(opened.ok, "{:?}", opened.payload);
+        assert_eq!(opened.payload["session_id"], room);
+        assert_eq!(opened.payload["agent_id"], leased.home_agent_id);
+        assert_eq!(
+            opened.payload["actor_id"],
+            crate::session::agent_environment_actor_id(&leased.home_agent_id)
+        );
+        assert_eq!(opened.payload["browser"]["url"], url);
+        let browser_action_id = opened.payload["action_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .expect("home-admitted Browser action ID")
+            .to_string();
+
+        let computer = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "slice_mouse",
+                json!({"action":"move","x":8,"y":8}),
+            )
+            .await
+            .expect("worker A Computer call must pass through home Room admission");
+        assert!(computer.ok, "{:?}", computer.payload);
+        assert_eq!(computer.payload["source"], "computer_controller");
+        assert_eq!(computer.payload["session_id"], room);
+        assert_eq!(computer.payload["agent_id"], leased.home_agent_id);
+        assert_eq!(
+            computer.payload["actor_id"],
+            crate::session::agent_environment_actor_id(&leased.home_agent_id)
+        );
+        assert_eq!(computer.payload["environment_id"], environment_id);
+        assert_eq!(computer.payload["action_kind"], "pointer_move");
+        let computer_action_id = computer.payload["action_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .expect("home-admitted Computer action ID")
+            .to_string();
+        assert_eq!(
+            std::fs::read_to_string(&pointer_log).expect("worker A pointer helper log"),
+            "move 8 8\n"
+        );
+
+        let status = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_browser_status", json!({}))
+            .await
+            .expect("worker A agent must read back its shared Browser state through home admission");
+        assert!(status.ok, "{:?}", status.payload);
+        assert_eq!(status.payload["environment_id"], environment_id);
+        assert_eq!(status.payload["tab_id"], initial_tab_id);
+        assert_eq!(status.payload["url"], url);
+
+        let environment = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .expect("home Room owns the single shared action ledger");
+        assert_eq!(environment.environment_id, environment_id);
+        assert_eq!(environment.focused_tab_id.as_deref(), Some(initial_tab_id.as_str()));
+        let tab = environment
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == initial_tab_id)
+            .expect("same stable Room Tab after Browser and Computer actions");
+        assert_eq!(tab.url, url);
+        for (action_id, expected_kind) in [
+            (&browser_action_id, "navigate"),
+            (&computer_action_id, "pointer_move"),
+        ] {
+            let action = environment
+                .actions
+                .iter()
+                .find(|action| &action.action_id == action_id)
+                .expect("home Room ledger records the worker A action");
+            assert_eq!(
+                action.actor_id,
+                crate::session::agent_environment_actor_id(&leased.home_agent_id)
+            );
+            assert_eq!(action.kind, expected_kind);
+            assert_eq!(
+                action.state,
+                crate::session::EnvironmentActionState::Completed
+            );
+        }
+        let action_count_before_denials = environment.actions.len();
+
+        let browser_context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
+            home_kernel_id: fixture.home_state.config.daemon_id.clone(),
+            home_session_id: room.clone(),
+            home_agent_id: leased.home_agent_id.clone(),
+            leased_agent_id: remote_execution.leased_agent_id.clone(),
+            worker_provider_run_id: leased.worker_provider_run_id.clone(),
+            worker_kernel_id: Some(remote_execution.worker_kernel_id.clone()),
+            worker_machine_id: Some(remote_execution.worker_machine_id.clone()),
+        };
+        let wrong_room = send_peer_request_via_temporary_connection(
+            &fixture._worker_state.config,
+            ClientTarget {
+                daemon_id: Some(fixture.home_state.config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::ForwardRoomBrowserRuntimeTool {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    home_session_id: fixture.rooms[1].clone(),
+                    ..browser_context.clone()
+                },
+                call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
+                    tool_name: "slice_open_url".to_string(),
+                    arguments: json!({"url":"https://wrong-room.must-not-open/"}),
+                },
+            },
+        )
+        .await
+        .expect_err("worker A must not use another Room's Browser");
+        assert!(
+            wrong_room
+                .to_string()
+                .contains("agent does not belong to invocation session"),
+            "wrong-Room request must be denied at home admission: {wrong_room}"
+        );
+        let forged_lease = send_peer_request_via_temporary_connection(
+            &fixture._worker_state.config,
+            ClientTarget {
+                daemon_id: Some(fixture.home_state.config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::ForwardRoomBrowserRuntimeTool {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    leased_agent_id: "forged-lease-for-worker-a-agent".to_string(),
+                    ..browser_context
+                },
+                call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
+                    tool_name: "slice_open_url".to_string(),
+                    arguments: json!({"url":"https://forged-lease.must-not-open/"}),
+                },
+            },
+        )
+        .await
+        .expect_err("a forged lease must not authorize worker A's Room agent");
+        assert!(
+            forged_lease
+                .to_string()
+                .contains("leased agent does not match home agent binding"),
+            "forged lease must be denied at home admission: {forged_lease}"
+        );
+        let after_denials = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .expect("Room state after denied substitutions");
+        assert_eq!(after_denials.environment_id, environment_id);
+        assert_eq!(
+            after_denials.focused_tab_id.as_deref(),
+            Some(initial_tab_id.as_str())
+        );
+        assert_eq!(
+            after_denials.actions.len(),
+            action_count_before_denials,
+            "denied requests must not mutate the home Room ledger"
+        );
+        assert_eq!(
+            after_denials
+                .tabs
+                .iter()
+                .find(|tab| tab.tab_id == initial_tab_id)
+                .expect("same Room Tab after denied requests")
+                .url,
+            url
+        );
+
+        let binding = dispatch_json(
+            &fixture.home,
+            json!({"GetRoomEnvironmentSlice":{"session_id": &room}}),
+        )
+        .await
+        .expect("read the Room's authoritative worker A binding");
+        let binding = &binding["RoomEnvironmentSlice"]["binding"];
+        assert_eq!(binding["session_id"], room);
+        assert_eq!(binding["slice_id"], "slice-1");
+        assert_eq!(binding["worker_kernel_ref"], "desktop-worker");
+        let display = dispatch_json(
+            &fixture.home,
+            json!({"GetSliceDisplayEndpoint": {
+                "slice_ref":"desktop",
+                "session_id": &room,
+                "attachment_id": attachment_id,
+                "viewer_public_key": viewer_public_key
+            }}),
+        )
+        .await
+        .expect("Room Web View must resolve through its worker A binding");
+        let endpoint = &display["SliceDisplayEndpoint"]["endpoint"];
+        assert_eq!(endpoint["slice_id"], binding["slice_id"]);
+        assert_eq!(endpoint["kind"], "selkies");
+        assert_eq!(endpoint["stream_protocol"], "chariox-display-v1");
+        assert_eq!(
+            endpoint["peer_public_key"],
+            fixture._worker_state.config.relay_public_key
+        );
+        let stream_id = endpoint["stream_id"].as_str().expect("Web View stream ID");
+        assert_eq!(
+            endpoint["url"],
+            format!("ws://{}/display/{stream_id}/stream", fixture.address)
+        );
+
+        fixture
+            .worker
+            .app
+            .lock()
+            .await
+            .teardown_provider_processes(Some("managed-dev-stub"), true)
+            .expect("stop the worker A provider before removing its worktree");
+        dispatch_json(
+            &fixture.home,
+            json!({"DestroyAgent":{"session_id": &room, "agent_id": &leased.home_agent_id}}),
+        )
+        .await
+        .expect("destroy the same-worker Room agent after its provider stops");
+    })
+    .catch_unwind()
+    .await;
+    let controller_cleanup = fixture
+        .worker
+        .runtime_state
+        .shutdown_browser_controller_process()
+        .await;
+    let provider_cleanup = fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true);
+    fixture.stop().await;
+    controller_cleanup.expect("stop the worker A Browser Controller");
+    provider_cleanup.expect("stop the same-worker Room agent provider");
+    if let Err(panic) = check {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[test]
 fn room_browser_on_environment_worker_serves_remote_agent_and_web_view() {
     run_test(check_room_browser_on_environment_worker_serves_remote_agent_and_web_view);
 }
