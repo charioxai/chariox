@@ -45,7 +45,18 @@ async fn forwarded_meta_request_lock_scenario() {
         .await
         .expect("home receives the forwarded meta request")
         .expect("home request barrier remains installed");
-    let worker_app_unlocked = worker.app.try_lock().is_ok();
+    // Other worker activity can briefly acquire the app lock. The forwarding
+    // path must leave a window to acquire it while home is deliberately paused.
+    let worker_app_unlocked = timeout(Duration::from_secs(1), async {
+        loop {
+            if worker.app.try_lock().is_ok() {
+                break true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
     release_tx
         .send(())
         .expect("release the home request barrier");
