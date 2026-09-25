@@ -129,7 +129,15 @@ supervised startup before importing the installation entry point.
 ## Platform policy and resource scope
 
 The macOS profile denies by default; it permits private files, exact ancestor
-metadata, self signals/process metadata and named CPU/OS sysctls. Read/executable
+metadata, self signals/process metadata and named CPU/OS sysctls. Embedded Node
+startup additionally needs three read-only grants, each confirmed by bisecting
+the profile around the enrolled runtime (without any of them Node exits 122,
+initialization failed): a data read of `/` itself (libuv loop init; this
+exposes only the names of top-level entries on the sealed system volume), reads
+under `/System/Library/OpenSSL` (OpenSSL's default configuration), and the
+`hw.pagesize` sysctl as a name prefix, because the page-size lookup by MIB does
+not match its exact name. The native probe asserts the `/` read, the OpenSSL
+policy and the page-size sysctl, and that a sibling system file stays denied. Read/executable
 mapping support is restricted to the verified runtime, `/usr/lib`, the system
 dyld directory and OS Cryptex paths. `file-map-executable` has an explicit deny
 before the trusted library exceptions: relying on `(deny default)` while

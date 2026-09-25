@@ -18,6 +18,7 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <dlfcn.h>
+#include <sys/sysctl.h>
 extern int sandbox_check(pid_t, const char*, int, ...);
 #endif
 #if defined(__linux__)
@@ -85,6 +86,22 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   fd = open("/etc/passwd", O_RDONLY);
   check("unrelated_host_read_denied", fd < 0);
   if (fd >= 0) close(fd);
+#if defined(__APPLE__)
+  // Node startup grants (libuv opens "/", OpenSSL reads its default config)
+  // stay exact: a sibling system file and the page-size sysctl are checked.
+  fd = open("/", O_RDONLY);
+  check("root_directory_read_allowed", fd >= 0);
+  if (fd >= 0) close(fd);
+  fd = open("/System/Library/CoreServices/SystemVersion.plist", O_RDONLY);
+  check("system_sibling_read_denied", fd < 0);
+  if (fd >= 0) close(fd);
+  check("openssl_config_policy_allowed",
+      sandbox_check(getpid(), "file-read-data", 1, "/System/Library/OpenSSL/openssl.cnf") == 0);
+  int page_size = 0;
+  size_t page_size_length = sizeof(page_size);
+  check("page_size_sysctl_allowed",
+      sysctlbyname("hw.pagesize", &page_size, &page_size_length, NULL, 0) == 0 && page_size > 0);
+#endif
   snprintf(path, sizeof(path), "%s/fixture.bin", getenv("CHARIOX_APP_PACKAGE"));
 #if defined(__APPLE__)
   // SANDBOX_FILTER_PATH=1. Query the compiled rule as well as exercising mmap:
