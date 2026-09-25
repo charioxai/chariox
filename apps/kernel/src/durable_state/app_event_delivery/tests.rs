@@ -423,3 +423,15 @@ fn unknown_commit_stops_writer_and_rejects_already_queued_and_future_ordinary_wr
         1
     );
 }
+
+#[test]
+fn an_app_with_undelivered_events_is_not_idle_until_they_are_queued() {
+    let fixture = Fixture::new();
+    let (store, mut sessions, _session, receipt) = setup(&fixture);
+    let installation = fixture.catalog.installation_id().to_owned();
+    assert!(store.has_deliverable_app_events("local", &installation));
+    assert!(!store.has_deliverable_app_events("other", &installation));
+    let prepared = prepare(&store, &mut sessions, &fixture, &receipt);
+    store.commit_app_event_queue(prepared, budget()).unwrap();
+    assert!(!store.has_deliverable_app_events("local", &installation));
+}

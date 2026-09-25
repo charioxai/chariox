@@ -245,10 +245,11 @@ impl AppLifecycleService {
             .map_err(Into::into)
     }
     /// Stop an idle worker while keeping its restart intent. Its verified
-    /// catalog stays dormant so tools remain discoverable; the next tool call,
-    /// wake or event starts it on demand. Nothing durable changes.
-    /// `still_idle` is re-evaluated under the operation guard, so use that
-    /// arrived after candidate selection keeps the worker running.
+    /// catalog stays dormant so tools remain discoverable; the next tool call
+    /// or wake starts it on demand. Nothing durable changes. `still_idle` is
+    /// re-evaluated under the operation guard, so use that arrived after
+    /// candidate selection keeps the worker running; callers also treat an App
+    /// with undelivered events as busy, because delivery needs a live lease.
     pub(crate) fn idle_stop_blocking(
         &self,
         owner: &str,

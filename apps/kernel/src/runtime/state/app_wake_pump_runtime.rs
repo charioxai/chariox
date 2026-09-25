@@ -120,14 +120,17 @@ impl KernelRuntimeState {
             let catalog = lease.catalog().clone();
             drop(lease);
             let current = control.clone();
+            let store = self.owned.durable_state_store.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 let installation = catalog.installation_id().to_owned();
                 lifecycle.idle_stop_blocking(&owner, catalog, || {
+                    // Undelivered events need the live lease: not idle yet.
                     current
                         .active_app_lease(&owner, &installation)
                         .is_some_and(|lease| {
                             lease.idle_ms(crate::session::unix_epoch_ms()) >= IDLE_AFTER_MS
                         })
+                        && !store.has_deliverable_app_events(&owner, &installation)
                 })
             })
             .await;

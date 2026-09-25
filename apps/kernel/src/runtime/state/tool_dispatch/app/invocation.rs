@@ -181,6 +181,7 @@ impl KernelRuntimeState {
         let lease = leases.swap_remove(index);
         drop(leases);
         let lifecycle = control.lifecycle().clone();
+        let store = self.owned.durable_state_store.clone();
         let victim_owner = lease.owner().to_owned();
         let catalog = lease.catalog().clone();
         drop(lease);
@@ -192,6 +193,7 @@ impl KernelRuntimeState {
                     .is_some_and(|lease| {
                         lease.idle_ms(crate::session::unix_epoch_ms()) >= EVICTABLE_IDLE_MS
                     })
+                    && !store.has_deliverable_app_events(&victim_owner, &installation)
             })
         })
         .await;

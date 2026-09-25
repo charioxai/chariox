@@ -19,6 +19,19 @@ pub(super) struct ActiveWorkers(
     Arc<Mutex<BTreeMap<Key, Arc<EventCatalog>>>>,
 );
 
+impl ActiveWorkers {
+    fn is_dormant(&self, owner: &str, installation: &str) -> bool {
+        self.1
+            .lock()
+            .is_ok_and(|dormant| dormant.contains_key(&(owner.to_owned(), installation.to_owned())))
+    }
+    fn forget_dormant(&self, owner: &str, installation: &str) {
+        if let Ok(mut dormant) = self.1.lock() {
+            dormant.remove(&(owner.to_owned(), installation.to_owned()));
+        }
+    }
+}
+
 /// Retained by lifecycle threads without retaining AppControl/the lifecycle
 /// service itself. This avoids a service->thread->service shutdown cycle.
 #[derive(Clone)]
@@ -60,10 +73,7 @@ impl AppWorkerPublisher {
         Ok(())
     }
     pub(crate) fn is_dormant(&self, owner: &str, installation: &str) -> bool {
-        self.workers
-            .1
-            .lock()
-            .is_ok_and(|dormant| dormant.contains_key(&(owner.to_owned(), installation.to_owned())))
+        self.workers.is_dormant(owner, installation)
     }
     /// Recorded before an idle stop so tools stay discoverable while stopped.
     /// False when the bounded set is full; the caller then keeps the worker.
@@ -79,9 +89,7 @@ impl AppWorkerPublisher {
         true
     }
     pub(crate) fn forget_dormant(&self, owner: &str, installation: &str) {
-        if let Ok(mut dormant) = self.workers.1.lock() {
-            dormant.remove(&(owner.to_owned(), installation.to_owned()));
-        }
+        self.workers.forget_dormant(owner, installation);
     }
 }
 
@@ -116,16 +124,11 @@ impl AppControlService {
     /// A refused or failed on-demand start withdraws the dormant catalog, so
     /// agents stop seeing tools that cannot start.
     pub(crate) fn forget_app_dormant(&self, owner: &str, installation: &str) {
-        if let Ok(mut dormant) = self.workers.1.lock() {
-            dormant.remove(&(owner.to_owned(), installation.to_owned()));
-        }
+        self.workers.forget_dormant(owner, installation);
     }
 
     pub(crate) fn is_app_dormant(&self, owner: &str, installation: &str) -> bool {
-        self.workers
-            .1
-            .lock()
-            .is_ok_and(|dormant| dormant.contains_key(&(owner.to_owned(), installation.to_owned())))
+        self.workers.is_dormant(owner, installation)
     }
 
     pub(crate) fn dormant_app_keys(&self) -> Vec<(String, String)> {
