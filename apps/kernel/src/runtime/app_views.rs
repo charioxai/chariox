@@ -16,6 +16,8 @@ pub(crate) struct AppViewBinding {
 
 #[derive(Default)]
 struct SessionViews {
+    /// The App most recently opened in this session: (owner, installation).
+    foreground: Option<(String, String)>,
     /// Target → (binding, registration number).
     tabs: HashMap<String, (AppViewBinding, u64)>,
     registrations: u64,
@@ -38,6 +40,17 @@ impl AppViews {
             .tabs
             .insert(target.to_owned(), (binding, views.registrations));
         !std::mem::replace(&mut views.pumping, true)
+    }
+
+    pub(crate) fn set_foreground(&self, session: &str, owner: &str, installation: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.entry(session.to_owned()).or_default().foreground =
+            Some((owner.to_owned(), installation.to_owned()));
+    }
+
+    pub(crate) fn foreground(&self, session: &str) -> Option<(String, String)> {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(session)?.foreground.clone()
     }
 
     pub(crate) fn binding(&self, session: &str, target: &str) -> Option<AppViewBinding> {
@@ -97,6 +110,13 @@ impl AppViews {
             views.tabs.retain(|_, (binding, _)| {
                 binding.owner != owner || binding.installation != installation
             });
+            if views
+                .foreground
+                .as_ref()
+                .is_some_and(|(o, i)| o == owner && i == installation)
+            {
+                views.foreground = None;
+            }
         }
     }
 

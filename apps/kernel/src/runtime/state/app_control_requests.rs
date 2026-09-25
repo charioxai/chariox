@@ -240,9 +240,8 @@ impl KernelRuntimeState {
             ) => AppRequestErrorCode::Conflict,
             error => crate::runtime::app_control::registry_error(error),
         })?;
-        self.app_control()
-            .views()
-            .forget_installation(&view_owner, &view_installation);
+        self.unbind_uninstalled_app(&view_owner, &view_installation)
+            .await;
         match outcome {
             crate::durable_state::apps::AppRegistryOutcome::Installation(installation) => {
                 Ok(LocalDaemonResponse::AppInstallation {

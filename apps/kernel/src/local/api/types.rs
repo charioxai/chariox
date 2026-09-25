@@ -112,4 +112,6 @@ pub use workspace::*;
 /// Version 347 adds owner-scoped `UninstallApp` at an expected generation.
 /// Version 348 adds `GetAppLogs` for the App's own `log.write` entries.
 /// Version 349 adds `BeginAppUpdate`, a local release replacement.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 349;
+/// Version 350 binds a foreground App to the focus agent: `AppViewOpened`
+/// gains `bound_agent_id`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 350;
