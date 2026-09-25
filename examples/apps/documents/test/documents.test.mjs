@@ -1,7 +1,7 @@
 // Exercises the Documents backend against an in-memory stand-in for the
 // kernel's App state (compare-and-set) and a temporary private data root.
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -20,8 +20,11 @@ async function fakeKernel() {
     paths: { package: '/package', data, temporary: '/tmp' },
     tools: { register: (name, handler) => tools.set(name, handler) },
     files: {
+      // Like the kernel's private-data replace: parents must already exist.
       async atomicReplace(path, contents) {
-        await mkdir(dirname(join(data, path)), { recursive: true });
+        await access(dirname(join(data, path))).catch(() => {
+          throw new AppError('APP_FILE_UNAVAILABLE', 'Private file operation did not complete');
+        });
         await writeFile(join(data, path), contents);
         return { bytesWritten: Buffer.byteLength(contents) };
       },
@@ -102,14 +105,22 @@ test('a save that loses a concurrent race never overwrites the winner', async ()
   await kernel.cleanup();
 });
 
-test('import and export go through kernel file grants', async () => {
+test('a rename is a revision too, so a stale editor cannot revert it', async () => {
   const kernel = await fakeKernel();
-  const imported = await kernel.call('import_document', { title: 'From disk' });
-  assert.equal(imported.kind, 'html');
-  assert.match((await kernel.call('read_document', { id: imported.id })).content, /Imported/);
-  assert.deepEqual(await readdir(join(kernel.data, 'imports')), [], 'the staged import is removed');
-  await kernel.call('export_document', { id: imported.id });
-  assert.match(kernel.exports[0], new RegExp(`^documents/${imported.id}/1-[0-9a-f]{8}\\.html$`));
+  const doc = await kernel.call('create_document', { title: 'Draft', content: 'text' });
+  const renamed = await kernel.call('update_document', { id: doc.id, expected_revision: 1, title: 'Final' });
+  assert.equal(renamed.revision, 2);
+  await assert.rejects(kernel.call('update_document', { id: doc.id, expected_revision: 1, title: 'Draft', content: 'text' }), { code: 'CONFLICT' });
+  const current = await kernel.call('read_document', { id: doc.id });
+  assert.deepEqual([current.title, current.content], ['Final', 'text']);
+  await kernel.cleanup();
+});
+
+test('reading content pruned by a concurrent save is a conflict, not a crash', async () => {
+  const kernel = await fakeKernel();
+  const doc = await kernel.call('create_document', { title: 'Racy', content: 'v1' });
+  await rm(join(kernel.data, 'documents', doc.id), { recursive: true });
+  await assert.rejects(kernel.call('read_document', { id: doc.id }), (error) => error instanceof AppError && error.code === 'CONFLICT');
   await kernel.cleanup();
 });
 

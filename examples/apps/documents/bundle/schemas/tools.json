@@ -146,42 +146,6 @@
         ],
         "additionalProperties": false
       }
-    },
-    {
-      "name": "import_document",
-      "description": "Ask the person to choose a Markdown or HTML file and import it.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "folder": {
-            "type": "string",
-            "maxLength": 200
-          }
-        },
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "export_document",
-      "description": "Export a document's current content to a location the person chooses.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "maxLength": 64
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "additionalProperties": false
-      }
     }
   ]
 }

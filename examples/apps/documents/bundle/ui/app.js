@@ -10,6 +10,7 @@ let dirty = false
 // destructive steps ask for a second click instead.
 let pendingOpen = null
 let pendingDelete = false
+let deleteTimer = null
 
 function say(message, error = false) {
   $("status").textContent = message
@@ -68,6 +69,8 @@ async function open(id) {
   }
   pendingOpen = null
   const doc = await call("read_document", { id })
+  // A poll-triggered reload must not replace text typed while it was loading.
+  if (dirty && current?.id === id) return
   current = { id: doc.id, revision: doc.revision, kind: doc.kind, content: doc.content }
   dirty = false
   $("empty").hidden = true
@@ -142,24 +145,16 @@ $("delete").addEventListener("click", async () => {
   if (!pendingDelete) {
     pendingDelete = true
     $("delete").textContent = "Confirm delete"
-    setTimeout(() => { pendingDelete = false; $("delete").textContent = "Delete" }, 4000)
+    clearTimeout(deleteTimer)
+    deleteTimer = setTimeout(() => { pendingDelete = false; $("delete").textContent = "Delete" }, 4000)
     return
   }
   pendingDelete = false
+  clearTimeout(deleteTimer)
   $("delete").textContent = "Delete"
   await call("delete_document", { id: current.id })
   close()
   await refreshList()
-})
-$("import").addEventListener("click", async () => {
-  const doc = await call("import_document", {})
-  await refreshList()
-  await open(doc.id)
-})
-$("export").addEventListener("click", async () => {
-  if (!current) return
-  await call("export_document", { id: current.id })
-  say("Export requested; choose where to save it.")
 })
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "s") { event.preventDefault(); save() }

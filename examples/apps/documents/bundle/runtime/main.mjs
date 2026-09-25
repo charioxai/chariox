@@ -1,9 +1,10 @@
 // Documents reference App. Markdown and HTML documents live as private files
 // in the App's data root; a small index in kernel-managed state names them.
 // Every edit states the revision it was made from, so concurrent human and
-// agent edits never silently overwrite each other.
+// agent edits never silently overwrite each other. Import/export arrives with
+// the kernel's user-selected file grants (host.pickFile, files.import/export).
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const INDEX = 'index';
@@ -56,13 +57,21 @@ export default function register(chariox) {
   async function read(doc, revision = doc.revision) {
     const file = fileOf(doc, revision);
     if (!file) throw fail('NOT_FOUND', `No revision ${revision}`);
-    return readFile(join(chariox.paths.data, contentPath(doc, file)), 'utf8');
+    try {
+      return await readFile(join(chariox.paths.data, contentPath(doc, file)), 'utf8');
+    } catch (error) {
+      // A concurrent save or delete pruned it after this index was read.
+      if (error?.code === 'ENOENT') throw fail('CONFLICT', 'Document changed; reload and try again');
+      throw error;
+    }
   }
 
   // Writes a new revision's content and records it (bounded history).
   async function write(doc, content) {
     if (Buffer.byteLength(content) > MAX_CONTENT) throw fail('LIMIT_EXCEEDED', 'Document is larger than 512 KiB');
     const file = `${doc.revision}-${randomUUID().slice(0, 8)}.${KINDS[doc.kind]}`;
+    // Atomic replace does not create parents; the data root is the App's own.
+    await mkdir(join(chariox.paths.data, 'documents', doc.id), { recursive: true });
     await chariox.files.atomicReplace(contentPath(doc, file), content);
     doc.versions = [...doc.versions, { revision: doc.revision, file }].slice(-KEEP_VERSIONS);
   }
@@ -95,14 +104,17 @@ export default function register(chariox) {
     return { ...summary(doc), content: await read(doc, revision ?? doc.revision) };
   });
 
-  chariox.tools.register('create_document', ({ title, kind = 'markdown', folder = '', content = '' }) =>
-    change(async docs => {
+  chariox.tools.register('create_document', ({ title, kind = 'markdown', folder = '', content = '' }) => {
+    // One id for every retry, so a lost compare-and-set leaves no stray folder.
+    const id = randomUUID().slice(0, 8);
+    return change(async docs => {
       if (docs.length >= MAX_DOCUMENTS) throw fail('LIMIT_EXCEEDED', `At most ${MAX_DOCUMENTS} documents`);
-      const doc = { id: randomUUID().slice(0, 8), title, folder, kind, revision: 1, versions: [], updated_at_ms: Date.now() };
+      const doc = { id, title, folder, kind, revision: 1, versions: [], updated_at_ms: Date.now() };
       await write(doc, content);
       docs.push(doc);
       return summary(doc);
-    }));
+    });
+  });
 
   // `expected_revision` is the revision the editor started from. A mismatch
   // is a conflict the caller resolves by re-reading, never a silent merge.
@@ -112,12 +124,14 @@ export default function register(chariox) {
       if (doc.revision !== expected) {
         throw fail('CONFLICT', `Document changed (now revision ${doc.revision}); reload before saving`);
       }
+      // Every change, including a rename or move, is a new revision, so a
+      // stale editor can never silently revert another person's or agent's edit.
       if (title !== undefined) doc.title = title;
       if (folder !== undefined) doc.folder = folder;
-      if (content !== undefined) {
-        doc.revision += 1;
-        await write(doc, content);
-      }
+      const previous = fileOf(doc);
+      doc.revision += 1;
+      if (content !== undefined) await write(doc, content);
+      else doc.versions = [...doc.versions, { revision: doc.revision, file: previous }].slice(-KEEP_VERSIONS);
       doc.updated_at_ms = Date.now();
       return { ...summary(doc), kept: doc.versions.map(version => version.file) };
     });
@@ -150,31 +164,5 @@ export default function register(chariox) {
     });
     await prune(id, null);
     return deleted;
-  });
-
-  // Import and export cross the App boundary only through kernel file grants:
-  // the person picks the file (import) or the destination (export).
-  chariox.tools.register('import_document', async ({ title, folder = '' }) => {
-    const { grantIds: [grantId] = [] } = await chariox.host.pickFile({ multiple: false, accept: ['.md', '.markdown', '.html', '.htm', '.txt'] });
-    if (!grantId) throw fail('CANCELLED', 'No file was chosen');
-    const staging = `imports/${randomUUID()}`;
-    await chariox.files.import(grantId, staging);
-    const content = await readFile(join(chariox.paths.data, staging), 'utf8');
-    const kind = /<html|<body|<\/(p|div|h[1-6])>/i.test(content) ? 'html' : 'markdown';
-    await rm(join(chariox.paths.data, staging), { force: true });
-    return change(async docs => {
-      if (docs.length >= MAX_DOCUMENTS) throw fail('LIMIT_EXCEEDED', `At most ${MAX_DOCUMENTS} documents`);
-      const doc = { id: randomUUID().slice(0, 8), title: title ?? 'Imported document', folder, kind,
-        revision: 1, versions: [], updated_at_ms: Date.now() };
-      await write(doc, content);
-      docs.push(doc);
-      return summary(doc);
-    });
-  });
-
-  chariox.tools.register('export_document', async ({ id }) => {
-    const { docs } = await load();
-    const doc = find(docs, id);
-    return chariox.files.export(contentPath(doc, fileOf(doc)));
   });
 }
