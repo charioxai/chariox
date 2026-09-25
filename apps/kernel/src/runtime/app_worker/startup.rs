@@ -119,7 +119,16 @@ impl StartingAppWorker {
                 _ = owner.peer.closed() => Err(AppWorkerError::Unavailable),
                 _ = tokio::time::sleep(timeout) => Err(AppWorkerError::Deadline),
             }
-        })?;
+        });
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                // Reap the worker so its exit and bounded output explain why
+                // it never registered; the bytes are untrusted diagnostics.
+                log_startup_exit(error, owner.finish_blocking());
+                return Err(error);
+            }
+        };
         Ok(RegisteredAppWorker {
             owner,
             registration: report.registration,
@@ -282,4 +291,28 @@ fn remote(code: &str) -> RemoteError {
         message: "App worker is not available".into(),
         retryable: Some(false),
     }
+}
+
+fn log_startup_exit(
+    error: AppWorkerError,
+    exit: Result<chariox_app_runtime::worker_process::WorkerExit, chariox_app_runtime::worker_process::WorkerError>,
+) {
+    let fields = match exit {
+        Ok(exit) => serde_json::json!({
+            "error": error.to_string(),
+            "exit_code": exit.code,
+            "signal": exit.signal,
+            "failure": exit.failure.map(|failure| failure.to_string()),
+            "stderr_tail": diagnostic_text(&exit.stderr_tail),
+            "stdout_tail": diagnostic_text(&exit.stdout_tail),
+        }),
+        Err(reap) => serde_json::json!({ "error": error.to_string(), "reap": reap.to_string() }),
+    };
+    crate::logging::warn_with_fields("app.worker", "App worker did not register", fields);
+}
+
+/// Last 2 KiB of worker output with control characters escaped.
+fn diagnostic_text(bytes: &[u8]) -> String {
+    let tail = &bytes[bytes.len().saturating_sub(2048)..];
+    String::from_utf8_lossy(tail).escape_default().to_string()
 }
