@@ -2027,6 +2027,579 @@ mod tests {
         .await;
     }
 
+    struct FakeRelayPeerRequest {
+        socket: WebSocketStream<TcpStream>,
+        request_id: String,
+        target_id: String,
+        request: RelayPeerRequest,
+    }
+
+    async fn receive_fake_relay_envelope(
+        socket: &mut WebSocketStream<TcpStream>,
+    ) -> RelayEnvelope {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
+            .await
+            .expect("fake relay frame should arrive before timeout")
+            .expect("fake relay socket should remain open")
+            .expect("fake relay frame should decode");
+        serde_json::from_str(
+            message
+                .to_text()
+                .expect("fake relay envelope should be text"),
+        )
+        .expect("fake relay envelope should deserialize")
+    }
+
+    async fn send_fake_relay_envelope(
+        socket: &mut WebSocketStream<TcpStream>,
+        envelope: RelayEnvelope,
+    ) {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&envelope)
+                    .expect("fake relay envelope should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("fake relay envelope should send");
+    }
+
+    async fn receive_fake_worker_peer_request(
+        listener: &TcpListener,
+        worker_id: &str,
+        worker_machine_id: &str,
+        worker_public_key: &str,
+        worker_private_key: &str,
+    ) -> FakeRelayPeerRequest {
+        let (stream, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            listener.accept(),
+        )
+        .await
+        .expect("fake relay should accept metadata connection")
+        .expect("fake relay metadata listener should accept");
+        let mut discovery = accept_async(stream)
+            .await
+            .expect("fake relay should upgrade metadata connection");
+        let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
+            receive_fake_relay_envelope(&mut discovery).await
+        else {
+            panic!("expected public kernel metadata request");
+        };
+        let presence = serde_json::from_value(serde_json::json!({
+            "kernel_id": worker_id,
+            "machine_id": worker_machine_id,
+            "public_key": worker_public_key,
+        }))
+        .expect("fake worker presence should deserialize");
+        send_fake_relay_envelope(
+            &mut discovery,
+            RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: None,
+                kernels: None,
+                kernel: Some(presence),
+                error: None,
+            },
+        )
+        .await;
+        drop(discovery);
+
+        let (stream, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            listener.accept(),
+        )
+        .await
+        .expect("fake relay should accept temporary peer connection")
+        .expect("fake relay peer listener should accept");
+        let mut socket = accept_async(stream)
+            .await
+            .expect("fake relay should upgrade peer connection");
+        assert!(matches!(
+            receive_fake_relay_envelope(&mut socket).await,
+            RelayEnvelope::DaemonRegister { .. }
+        ));
+        let RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            target,
+            encrypted_request,
+        } = receive_fake_relay_envelope(&mut socket).await
+        else {
+            panic!("expected a public kernel peer request");
+        };
+        let target_id = target
+            .daemon_id
+            .or(target.daemon_alias)
+            .expect("kernel peer request should identify its target");
+        let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+            worker_private_key,
+            &encrypted_request,
+        )
+        .expect("fake worker should decrypt the public kernel request");
+        let request = serde_json::from_slice(&decrypted.plaintext)
+            .expect("fake worker request should deserialize");
+        FakeRelayPeerRequest {
+            socket,
+            request_id,
+            target_id,
+            request,
+        }
+    }
+
+    async fn send_fake_worker_peer_response(
+        request: FakeRelayPeerRequest,
+        worker_id: &str,
+        worker_private_key: &str,
+        home_public_key: &str,
+        response: RelayPeerResponse,
+    ) {
+        let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            worker_private_key,
+            home_public_key,
+            &serde_json::to_vec(&response).expect("fake worker response should serialize"),
+        )
+        .expect("fake worker should encrypt its public kernel response");
+        let mut socket = request.socket;
+        send_fake_relay_envelope(
+            &mut socket,
+            RelayEnvelope::DaemonPeerResponse {
+                request_id: request.request_id,
+                from_daemon_id: worker_id.to_string(),
+                encrypted_response: Some(encrypted_response),
+                error: None,
+            },
+        )
+        .await;
+    }
+
+    struct ReceiptReconciliationFixture {
+        app: Arc<Mutex<DaemonApp>>,
+        runtime: KernelRuntimeState,
+        session_id: String,
+        agent_id: String,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+        successor_prompt: crate::session::PromptQueueItem,
+        successor_prompt_id: String,
+        home_public_key: String,
+        worker_id: String,
+        worker_machine_id: String,
+        worker_public_key: String,
+        worker_private_key: String,
+        leased_agent_id: String,
+    }
+
+    async fn make_receipt_reconciliation_fixture(
+        relay_url: &str,
+        suffix: &str,
+    ) -> ReceiptReconciliationFixture {
+        let mut home_config = crate::config::DaemonConfig::for_tests();
+        home_config.relay_url = Some(relay_url.to_string());
+        home_config.relay_token = Some(format!("receipt-home-token-{suffix}"));
+        home_config.relay_request_timeout_ms = 3_000;
+        let home_public_key = home_config.relay_public_key.clone();
+        let worker_config = crate::config::DaemonConfig::for_tests();
+        let worker_public_key = worker_config.relay_public_key.clone();
+        let worker_private_key = worker_config.relay_private_key.clone();
+        let worker_id = format!("worker-receipt-{suffix}");
+        let worker_machine_id = format!("machine-receipt-{suffix}");
+        let leased_agent_id = format!("leased-agent-receipt-{suffix}");
+
+        let mut app = DaemonApp::bootstrap(home_config).expect("home app should bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                format!("workspace-receipt-{suffix}"),
+                format!("worktree-receipt-{suffix}"),
+            ))
+            .expect("home session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                format!("receipt-client-{suffix}"),
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("home attachment should be created");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: worker_id.clone(),
+                    worker_machine_id: worker_machine_id.clone(),
+                    execution_lease_id: format!("lease-receipt-{suffix}"),
+                    leased_agent_id: leased_agent_id.clone(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent should bind to fake worker");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment_id = attachment.id().to_string();
+        let prompt_id = format!("uncertain-prompt-{suffix}");
+        let started = app
+            .prompt_owner_submit_prepared_prompt(
+                &session_id,
+                crate::session::PromptQueueItem::new(
+                    &prompt_id,
+                    &attachment_id,
+                    &agent_id,
+                    "exact prompt whose worker admission is uncertain",
+                    crate::session::PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("uncertain home prompt should start");
+        let crate::session::PromptSubmissionOutcome::Started {
+            prompt: active_prompt,
+        } = started
+        else {
+            panic!("uncertain home prompt should be active");
+        };
+        assert_eq!(active_prompt.id(), prompt_id);
+        app.mark_active_prompt_delivery(
+            &session_id,
+            &agent_id,
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            None,
+            None,
+        )
+        .expect("home prompt should persist its uncertain Dispatching phase");
+
+        let queued = app
+            .prompt_owner_submit_prepared_prompt(
+                &session_id,
+                crate::session::PromptQueueItem::new(
+                    format!("successor-input-{suffix}"),
+                    &attachment_id,
+                    &agent_id,
+                    "one successor must remain ordered behind the uncertain prompt",
+                    crate::session::PromptStatus::Queued,
+                ),
+                true,
+            )
+            .expect("successor should queue");
+        let crate::session::PromptSubmissionOutcome::Queued {
+            prompt: successor_prompt,
+        } = queued
+        else {
+            panic!("successor should remain queued behind Dispatching prompt");
+        };
+        let successor_prompt_id = successor_prompt.id().to_string();
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let agent_instance = runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .expect("home agent should remain available");
+        let dispatch = runtime
+            .remote_prompt_recovery_dispatch(&agent_instance)
+            .expect("recovery dispatch should reconstruct")
+            .expect("uncertain prompt should remain active");
+
+        ReceiptReconciliationFixture {
+            app,
+            runtime,
+            session_id,
+            agent_id,
+            dispatch,
+            successor_prompt,
+            successor_prompt_id,
+            home_public_key,
+            worker_id,
+            worker_machine_id,
+            worker_public_key,
+            worker_private_key,
+            leased_agent_id,
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_worker_receipt_drains_projection_and_durably_promotes_one_successor() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "completed").await;
+        // Completion admits the queued successor and normally starts its network
+        // dispatch. Hold the per-agent claim so this test ends at the durable,
+        // observable admission boundary without issuing a second prompt request.
+        let _dispatch_claim = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&fixture.runtime.owned.remote_prompt_recoveries),
+            &fixture.session_id,
+            &fixture.agent_id,
+        )
+        .expect("test should hold the successor dispatch claim");
+
+        let app = Arc::clone(&fixture.app);
+        let listener_worker_id = fixture.worker_id.clone();
+        let listener_worker_machine_id = fixture.worker_machine_id.clone();
+        let listener_worker_public_key = fixture.worker_public_key.clone();
+        let listener_worker_private_key = fixture.worker_private_key.clone();
+        let listener_home_public_key = fixture.home_public_key.clone();
+        let listener_leased_agent_id = fixture.leased_agent_id.clone();
+        let listener_prompt_id = fixture.dispatch.prompt_id.clone();
+        let listener_session_id = fixture.session_id.clone();
+        let listener_agent_id = fixture.agent_id.clone();
+        let server = tokio::spawn(async move {
+            let receipt_request = receive_fake_worker_peer_request(
+                &listener,
+                &listener_worker_id,
+                &listener_worker_machine_id,
+                &listener_worker_public_key,
+                &listener_worker_private_key,
+            )
+            .await;
+            assert_eq!(receipt_request.target_id, listener_worker_id);
+            assert!(app.try_lock().is_ok(), "receipt query must not hold DaemonApp");
+            assert!(matches!(
+                &receipt_request.request,
+                RelayPeerRequest::GetLeasedPromptReceipt {
+                    leased_agent_id,
+                    home_prompt_id,
+                } if leased_agent_id == &listener_leased_agent_id
+                    && home_prompt_id == &listener_prompt_id
+            ));
+            send_fake_worker_peer_response(
+                receipt_request,
+                &listener_worker_id,
+                &listener_worker_private_key,
+                &listener_home_public_key,
+                RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: listener_prompt_id.clone(),
+                        worker_provider_run_id: "worker-run-completed-receipt".to_string(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
+                    }),
+                },
+            )
+            .await;
+
+            let projection_request = receive_fake_worker_peer_request(
+                &listener,
+                &listener_worker_id,
+                &listener_worker_machine_id,
+                &listener_worker_public_key,
+                &listener_worker_private_key,
+            )
+            .await;
+            assert_eq!(projection_request.target_id, listener_worker_id);
+            assert!(app.try_lock().is_ok(), "projection drain must not hold DaemonApp");
+            assert!(matches!(
+                &projection_request.request,
+                RelayPeerRequest::DrainLeasedRuntimeProjection {
+                    leased_agent_id,
+                    provider_run_id,
+                    pump_output: true,
+                } if leased_agent_id == &listener_leased_agent_id
+                    && provider_run_id.as_str() == "worker-run-completed-receipt"
+            ));
+            send_fake_worker_peer_response(
+                projection_request,
+                &listener_worker_id,
+                &listener_worker_private_key,
+                &listener_home_public_key,
+                RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                        home_session_id: listener_session_id,
+                        home_agent_id: listener_agent_id,
+                        provider_run_id: "worker-run-completed-receipt".to_string(),
+                        provider_run: None,
+                        prompts: Vec::new(),
+                        output_chunks: Vec::new(),
+                        notices: Vec::new(),
+                        completions: vec![
+                            crate::transport::relay_peer::RelayProjectedCompletion {
+                                message_id: "completed-receipt-assistant-message".to_string(),
+                                completed_at_ms: 1,
+                                home_prompt_id: Some(listener_prompt_id),
+                                provider_termination: None,
+                            },
+                        ],
+                    }),
+                },
+            )
+            .await;
+        });
+
+        assert!(fixture
+            .runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+                None,
+            )
+            .await
+            .expect("completed worker receipt should reconcile"));
+        server.await.expect("fake relay should serve receipt and projection");
+
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("home session should remain available");
+        let (active, queued) = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &fixture.agent_id);
+        let active = active.expect("exactly one queued successor should be admitted");
+        assert_eq!(active.id(), fixture.successor_prompt_id);
+        assert_eq!(active.prompt(), fixture.successor_prompt.prompt());
+        assert!(queued.is_empty(), "the successor should be promoted once");
+
+        let events = fixture
+            .runtime
+            .owned
+            .operational_history_store
+            .load_session_events_for_agent_sequence_range(
+                &fixture.session_id,
+                &fixture.agent_id,
+                0,
+                i64::MAX as u64,
+            )
+            .expect("durable home history should load");
+        let settlements = events
+            .iter()
+            .filter(|event| {
+                event.prompt_id.as_deref() == Some(fixture.dispatch.prompt_id.as_str())
+                    && event
+                        .metadata
+                        .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
+            })
+            .count();
+        assert_eq!(settlements, 1, "home settlement should be durable exactly once");
+    }
+
+    #[tokio::test]
+    async fn conflicting_worker_receipt_keeps_same_prompt_held_without_replay() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "conflict").await;
+        let app = Arc::clone(&fixture.app);
+        let listener_worker_id = fixture.worker_id.clone();
+        let listener_worker_machine_id = fixture.worker_machine_id.clone();
+        let listener_worker_public_key = fixture.worker_public_key.clone();
+        let listener_worker_private_key = fixture.worker_private_key.clone();
+        let listener_home_public_key = fixture.home_public_key.clone();
+        let listener_leased_agent_id = fixture.leased_agent_id.clone();
+        let listener_prompt_id = fixture.dispatch.prompt_id.clone();
+        let server = tokio::spawn(async move {
+            let receipt_request = receive_fake_worker_peer_request(
+                &listener,
+                &listener_worker_id,
+                &listener_worker_machine_id,
+                &listener_worker_public_key,
+                &listener_worker_private_key,
+            )
+            .await;
+            assert_eq!(receipt_request.target_id, listener_worker_id);
+            assert!(app.try_lock().is_ok(), "receipt query must not hold DaemonApp");
+            assert!(matches!(
+                &receipt_request.request,
+                RelayPeerRequest::GetLeasedPromptReceipt {
+                    leased_agent_id,
+                    home_prompt_id,
+                } if leased_agent_id == &listener_leased_agent_id
+                    && home_prompt_id == &listener_prompt_id
+            ));
+            send_fake_worker_peer_response(
+                receipt_request,
+                &listener_worker_id,
+                &listener_worker_private_key,
+                &listener_home_public_key,
+                RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: "different-home-prompt".to_string(),
+                        worker_provider_run_id: "worker-run-conflicting-receipt".to_string(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                    }),
+                },
+            )
+            .await;
+
+            // A replay would issue a second public kernel relay request. It must
+            // not be sent when the read-only receipt conflicts with the prompt.
+            tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
+                .await
+                .is_ok()
+        });
+
+        assert!(fixture
+            .runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+                None,
+            )
+            .await
+            .expect("conflicting receipt should leave recovery handled"));
+        assert!(
+            !server.await.expect("fake relay should finish conflict check"),
+            "conflicting receipt must not trigger a replay request"
+        );
+
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("home session should remain available");
+        let (active, queued) = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &fixture.agent_id);
+        let active = active.expect("uncertain prompt should remain active");
+        assert_eq!(active.id(), fixture.dispatch.prompt_id);
+        assert_eq!(active.prompt(), "exact prompt whose worker admission is uncertain");
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert!(active.durable_delivery_reconciliation_pending());
+        assert_eq!(queued.len(), 1, "successor must remain queued");
+        assert_eq!(queued[0].id(), fixture.successor_prompt_id);
+        assert_eq!(queued[0].prompt(), fixture.successor_prompt.prompt());
+        assert!(fixture
+            .runtime
+            .owned
+            .agent_store
+            .get_agent(&fixture.agent_id)
+            .expect("home agent should remain available")
+            .remote_execution()
+            .expect("home agent should remain remote")
+            .active_worker_provider_run_id
+            .is_none());
+        let events = fixture
+            .runtime
+            .owned
+            .operational_history_store
+            .load_session_events_for_agent_sequence_range(
+                &fixture.session_id,
+                &fixture.agent_id,
+                0,
+                i64::MAX as u64,
+            )
+            .expect("durable home history should load");
+        assert!(!events.iter().any(|event| {
+            event.prompt_id.as_deref() == Some(fixture.dispatch.prompt_id.as_str())
+                && event
+                    .metadata
+                    .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
+        }));
+    }
+
     #[test]
     fn exact_worker_receipt_selects_active_association_completed_drain_or_hold() {
         let active = crate::transport::relay_peer::LeasedPromptReceipt {
