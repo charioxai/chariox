@@ -440,7 +440,12 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
             .into_iter()
             .map(|spec| spec.name)
             .collect::<std::collections::BTreeSet<_>>();
-        for tool in ["slice_browser_status", "slice_open_url", "slice_screenshot"] {
+        for tool in [
+            "slice_browser_status",
+            "slice_open_url",
+            "slice_screenshot",
+            "slice_mouse",
+        ] {
             assert!(
                 advertised.contains(tool),
                 "leased Room agent is missing {tool}"
@@ -624,6 +629,64 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
             "denied Room/worker contexts cannot navigate worker A's browser"
         );
 
+        // The controller fixture accepts this hover point and does not press
+        // the pointer, so the Computer action cannot navigate the test page.
+        let computer = agent_worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "slice_mouse",
+                json!({"action":"move","x":60,"y":35}),
+            )
+            .await
+            .expect("worker B's public Computer tool reaches worker A through home admission");
+        assert!(computer.ok, "{:?}", computer.payload);
+        assert_eq!(computer.payload["source"], "computer_controller");
+        assert_eq!(computer.payload["session_id"], room);
+        assert_eq!(computer.payload["agent_id"], home_agent_id);
+        assert_eq!(
+            computer.payload["actor_id"],
+            crate::session::agent_environment_actor_id(&home_agent_id)
+        );
+        assert_eq!(computer.payload["environment_id"], environment_id);
+        assert_eq!(computer.payload["action_kind"], "pointer_move");
+        let computer_action_id = computer.payload["action_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .expect("home-admitted Room Computer action ID")
+            .to_string();
+        let after_computer = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .expect("home Room ledger after worker B's Computer action");
+        assert_eq!(after_computer.environment_id, environment_id);
+        assert_eq!(
+            after_computer.focused_tab_id.as_deref(),
+            Some(initial_tab_id.as_str()),
+            "Computer input must retain the same stable Room Tab"
+        );
+        let tab_after_computer = after_computer
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == initial_tab_id)
+            .expect("worker A's original Room Tab after worker B's Computer action");
+        assert_eq!(tab_after_computer.url, url);
+        let computer_action = after_computer
+            .actions
+            .iter()
+            .find(|action| action.action_id == computer_action_id)
+            .expect("home Room history records worker B's Computer action");
+        assert_eq!(
+            computer_action.actor_id,
+            crate::session::agent_environment_actor_id(&home_agent_id)
+        );
+        assert_eq!(computer_action.kind, "pointer_move");
+        assert_eq!(
+            computer_action.state,
+            crate::session::EnvironmentActionState::Completed
+        );
+
         let status = agent_worker
             .runtime_state
             .dispatch_authenticated_runtime_tool_call(&token, "slice_browser_status", json!({}))
@@ -670,11 +733,13 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
             }
         };
         assert!(status.ok, "{:?}", status.payload);
+        assert_eq!(status.payload["environment_id"], environment_id);
         assert_eq!(
             status.payload["tab_id"], focused_tab_id,
             "{:?}",
             status.payload
         );
+        assert_eq!(status.payload["url"], url);
         let environment_binding = dispatch_json(
             &fixture.home,
             json!({"GetRoomEnvironmentSlice":{"session_id":&room}}),
