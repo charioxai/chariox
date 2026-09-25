@@ -65,12 +65,19 @@ fn build(
             http,
         )
         .map_err(|_| AppWorkerError::Identity)?,
+        logs: super::app_log_broker::AppLogBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.installation_id().to_owned(),
+            admission.clone(),
+        ),
         files: AppFilesBroker::new(store, owner, catalog, admission, data),
     })
 }
 #[derive(Clone)]
 struct BackendBroker {
     state: AppStorageBroker,
+    logs: super::app_log_broker::AppLogBroker,
     files: AppFilesBroker,
     http: AppHttpBroker,
 }
@@ -102,6 +109,7 @@ impl Broker for BackendBroker {
                 }
                 name if name.starts_with("http.") => delegate.http.dispatch(request).await,
                 "files.atomic_replace" => delegate.files.dispatch(request).await,
+                "log.write" => delegate.logs.dispatch(request).await,
                 _ => Err(RemoteError {
                     code: "METHOD_UNAVAILABLE".into(),
                     message: "App capability is unavailable".into(),

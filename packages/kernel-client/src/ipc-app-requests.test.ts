@@ -6,7 +6,7 @@ import { beginAppInstallRequest, getAppInstallOperationRequest, cancelAppInstall
 import { beginAppPublisherEnrollmentRequest, getAppPublisherEnrollmentRequest, cancelAppPublisherEnrollmentRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 347)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 348)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })

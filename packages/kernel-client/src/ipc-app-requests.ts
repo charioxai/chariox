@@ -58,6 +58,11 @@ export function cancelAppInstallOperationRequest(requestId: string) {
   return { CancelAppInstallOperation: { request_id: requestId } }
 }
 
+export function getAppLogsRequest(installationId: string, afterSequence?: string, limit?: number) {
+  return { GetAppLogs: { installation_id: installationId,
+    ...(afterSequence ? { after_sequence: afterSequence } : {}), ...(limit ? { limit } : {}) } }
+}
+
 export function uninstallAppRequest(installationId: string, expectedGeneration: string) {
   return { UninstallApp: { installation_id: installationId, expected_generation: expectedGeneration } }
 }

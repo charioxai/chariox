@@ -25,6 +25,7 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ConfigureAppAutomation(request) => &request.installation_id,
             LocalDaemonRequest::DisableAppAutomation(request) => &request.installation_id,
             LocalDaemonRequest::UninstallApp(request) => &request.installation_id,
+            LocalDaemonRequest::GetAppLogs(request) => &request.installation_id,
             _ => return None,
         };
         let owner = match crate::runtime::app_control::owner(command) {
@@ -147,6 +148,38 @@ impl KernelRuntimeState {
                 return Ok(LocalDaemonResponse::AppAutomation {
                     installation_id: installation,
                     automation: summary(&disabled),
+                });
+            }
+            LocalDaemonRequest::GetAppLogs(request) => {
+                let after = match request.after_sequence.as_deref() {
+                    Some(value) => value
+                        .parse::<u64>()
+                        .map_err(|_| AppRequestErrorCode::InvalidRequest)?,
+                    None => 0,
+                };
+                let limit = usize::from(request.limit.unwrap_or(100));
+                let store = self.owned.durable_state_store.clone();
+                let (log_owner, log_installation) = (owner.clone(), installation.clone());
+                let permit = self.app_control().try_admit()?;
+                let entries = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    store.app_logs(&log_owner, &log_installation, after, limit)
+                })
+                .await
+                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
+                return Ok(LocalDaemonResponse::AppLogs {
+                    installation_id: installation,
+                    entries: entries
+                        .into_iter()
+                        .map(|entry| crate::local::AppLogEntrySummary {
+                            sequence: entry.sequence.to_string(),
+                            at_ms: entry.at_ms,
+                            level: entry.level,
+                            message: entry.message,
+                            fields: entry.fields,
+                        })
+                        .collect(),
                 });
             }
             LocalDaemonRequest::UninstallApp(request) => {

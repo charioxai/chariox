@@ -40,6 +40,16 @@
         ]
       },
       {
+        "id": "app-logs",
+        "label": "logs",
+        "description": "Show an App's own log entries",
+        "value": "/app logs ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
         "id": "app-worker",
         "label": "worker",
         "description": "Show whether an App is running, dormant or stopped",

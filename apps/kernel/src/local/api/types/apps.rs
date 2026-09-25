@@ -268,6 +268,28 @@ pub struct DisableAppAutomationRequest {
     pub expected_revision: u64,
 }
 
+/// Protocol 348: the App's own `log.write` entries, oldest first, after an
+/// optional sequence (for paging and following).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetAppLogsRequest {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sequence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppLogEntrySummary {
+    pub sequence: String,
+    pub at_ms: u64,
+    pub level: String,
+    pub message: String,
+    pub fields: serde_json::Value,
+}
+
 /// Protocol 347: stops the worker and deactivates the installation at the
 /// caller's expected generation. App data and user workflows are retained.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

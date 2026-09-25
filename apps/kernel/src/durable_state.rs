@@ -33,6 +33,7 @@ pub(crate) mod app_publishers;
 pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
+pub(crate) mod app_logs;
 pub(crate) mod app_wakes;
 pub(crate) mod app_worker_lifecycle;
 pub(crate) mod app_view_assets;
@@ -154,6 +155,7 @@ enum DurableWriterRequest {
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
     AppWake(Box<app_wakes::AppWakeRequest>),
+    AppLog(Box<app_logs::AppLogRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
@@ -340,6 +342,10 @@ impl DurableKernelStateStore {
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
         app_worker_lifecycle::initialize(&connection)?;
+        app_logs::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
+            operation: "durable_state.app_logs",
+            message: "App log schema could not be initialized".into(),
+        })?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         app_installation_operations::initialize(&connection)?;
         workflow_dispatch_intents::initialize(&connection).map_err(|error| {
@@ -1419,6 +1425,10 @@ fn run_durable_writer(
                 app_wakes::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppLog(request) => {
+                app_logs::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppBinding(request) => {
                 app_bindings::execute(&mut connection, *request);
                 continue;
@@ -1517,6 +1527,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::VerifiedApp(_)
                     | DurableWriterRequest::AppState(_)
                     | DurableWriterRequest::AppWake(_)
+                    | DurableWriterRequest::AppLog(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
                     | DurableWriterRequest::AppActivation(_)

@@ -10,6 +10,8 @@ pub(crate) mod app_event_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_files_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_log_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_http;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_install_control;

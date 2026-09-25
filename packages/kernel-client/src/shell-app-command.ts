@@ -1,7 +1,7 @@
 import {
   configureAppAutomationRequest, controlAppWorkerRequest, disableAppAutomationRequest, getAppInstallationJournalRequest,
   getAppInstallationRequest, getAppWorkerRequest, listAppAutomationsRequest, listAppInstallationsRequest,
-  openAppViewRequest, uninstallAppRequest,
+  getAppLogsRequest, openAppViewRequest, uninstallAppRequest,
 } from "./ipc-app-requests.js"
 import type { AppAutomationSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import type { ShellCommandResult } from "./shell-core.js"
@@ -9,6 +9,7 @@ import type { ShellCommandResult } from "./shell-core.js"
 type Client = { send(request: Record<string, unknown>): Promise<Record<string, unknown>> }
 const usage = [
   "usage: app list [--after <installation-id>] [--limit <1..100>] | status <installation-id> | journal <installation-id>",
+  "       app logs <installation-id> [--after <sequence>]",
   "       app worker <installation-id> | start <installation-id> | stop <installation-id> | restart <installation-id>",
   "       app open <installation-id> [--session <session-id>] | uninstall <installation-id> [--generation <n>]",
   "       app automation list <installation-id>",
@@ -36,6 +37,8 @@ export async function executeAppCommand(
     request = listAppInstallationsRequest(options)
   } else if ((action === "status" || action === "journal") && rest.length === 1 && rest[0]) {
     request = action === "status" ? getAppInstallationRequest(rest[0]) : getAppInstallationJournalRequest(rest[0])
+  } else if (action === "logs" && rest[0] && (rest.length === 1 || (rest.length === 3 && rest[1] === "--after" && /^\d{1,19}$/.test(rest[2] ?? "")))) {
+    request = getAppLogsRequest(rest[0], rest[2])
   } else if (action === "worker" && rest.length === 1 && rest[0]) {
     request = getAppWorkerRequest(rest[0])
   } else if ((action === "start" || action === "stop" || action === "restart") && rest.length === 1 && rest[0]) {
@@ -63,6 +66,13 @@ export async function executeAppCommand(
 
   const response = await client.send(request)
   if (response.AppRequestFailed) return appFailure(response, action)
+  if (response.AppLogs) {
+    const data = expect<{ installation_id: string; entries: AppLogEntry[] }>(response, "AppLogs")
+    const lines = data.entries.map(formatLogEntry)
+    const last = data.entries.at(-1)
+    if (last) lines.push(`More: app logs ${data.installation_id} --after ${last.sequence}`)
+    return { ok: true, message: lines.join("\n") || "No App log entries.", data }
+  }
   if (action === "uninstall") {
     const data = expect<{ installation: AppInstallationSummary }>(response, "AppInstallation")
     return { ok: true, message: `Uninstalled ${data.installation.installation_id}. Its data is kept.`, data }
@@ -166,4 +176,13 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
     limit_exceeded: "An App limit was reached.",
   }
   return { ok: false, message: messages[failure.code ?? ""] ?? "App request failed.", data: failure }
+}
+
+type AppLogEntry = { sequence: string; at_ms: number; level: string; message: string; fields: Record<string, unknown> }
+
+// App-authored text: control characters are shown escaped, never interpreted.
+function formatLogEntry(entry: AppLogEntry): string {
+  const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)
+  const fields = Object.keys(entry.fields ?? {}).length ? ` ${safe(JSON.stringify(entry.fields))}` : ""
+  return `${new Date(entry.at_ms).toISOString()} ${entry.level.toUpperCase().padEnd(5)} ${safe(entry.message)}${fields}`
 }
