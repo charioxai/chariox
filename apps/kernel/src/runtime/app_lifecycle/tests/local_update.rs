@@ -16,7 +16,7 @@ fn stage_update(
     request: &str,
     version: &str,
 ) -> InstallOperation {
-    let (bytes, publisher) = fixture_release_package(version, 0);
+    let (bytes, publisher) = fixture_release_package(version, 0, false);
     let verified = verify(
         &bytes,
         &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),

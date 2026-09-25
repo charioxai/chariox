@@ -186,6 +186,24 @@ impl DurableKernelStateStore {
         sql(rows.collect())
     }
 }
+/// The capabilities digest of the installation's active release.
+fn active_capabilities(
+    tx: &rusqlite::Transaction<'_>,
+    installation: &str,
+) -> Result<Option<String>> {
+    let active: Option<String> = sql(tx.query_row(
+        "SELECT active_json FROM app_installations WHERE installation_id=?1",
+        [installation],
+        |r| r.get(0),
+    ))?;
+    active
+        .map(|json| {
+            serde_json::from_str::<chariox_app_runtime::installation::ActiveGeneration>(&json)
+                .map(|active| active.release.capabilities_digest)
+                .map_err(|_| InstallOperationError::Storage)
+        })
+        .transpose()
+}
 /// An update targets the owner's active installation at its current
 /// generation, with no other unfinished install or update operation.
 fn require_updatable(
@@ -362,6 +380,34 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             }
             if update.decision != CapabilityDecision::Pending {
                 return Err(InstallOperationError::Conflict);
+            }
+            // Consent covers capabilities: a local update of the same App,
+            // publisher and exactly the approved capabilities needs no new
+            // decision. Any capability change asks the owner again.
+            if current.token.base_generation > 0
+                && active_capabilities(&tx, &current.token.installation_id)?.as_deref()
+                    == Some(update.release.capabilities_digest.as_str())
+            {
+                binding
+                    .decide_in(
+                        &tx,
+                        &owner,
+                        &trust,
+                        CapabilityDecision::Approved {
+                            approval: CapabilityApproval {
+                                // The authority names the policy; the request id
+                                // (<= 128 bytes) identifies this decision.
+                                decision_id: request_id.clone(),
+                                authority_ref: "kernel_unchanged_capabilities".into(),
+                            },
+                        },
+                        now()? as u64,
+                    )
+                    .map_err(|_| InstallOperationError::Stale)?;
+                limit(&budget)?;
+                tx.commit()
+                    .map_err(|_| InstallOperationError::CommitUnknown)?;
+                return Ok(Reply::Review(InstallReviewDisposition::Approved));
             }
             let review = current.review.ok_or(InstallOperationError::Storage)?;
             if review.get("capabilitiesDigest").and_then(|v| v.as_str())

@@ -1,4 +1,5 @@
 import process from "node:process"
+import { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
 import { AppPublisherEnrollment } from "./app-publisher-file.js"
 import { randomBytes } from "node:crypto"
@@ -813,6 +814,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     (progress) => flashFooter(formatInstallProgress(progress), "info"),
   )
   const appPublisherEnrollment = new AppPublisherEnrollment((request) => client.send(request), appendNotice)
+  const appDevLoop = new AppDevLoop({
+    send: (request) => client.send(request), installer: appFileInstaller, notice: appendNotice,
+    currentSession: () => isAttached() ? sessionState().id : undefined,
+  })
   let recordDaemonActivity: (activityType: string) => void = () => {}
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
@@ -820,7 +825,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
-    drainAppInstall: async () => { await Promise.all([appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
+    drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
     sleep, formatError, supportsKernelEventStream, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
     providerRunState, createdSessionState, waitingRoomState, preferencesState,
@@ -867,7 +872,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
-    client, options, appLogger, formatError, appFileInstaller, appPublisherEnrollment,
+    client, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
     isAttached, anyTurnWork, sessionState, attachmentState, providerRunState,

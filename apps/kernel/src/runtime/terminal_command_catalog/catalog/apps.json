@@ -122,6 +122,20 @@
         ]
       },
       {
+        "id": "app-dev",
+        "label": "dev",
+        "description": "/app dev <directory>: pack an App source directory, install or update it, and repeat on every change; its data is kept. /app dev stop stops watching",
+        "value": "/app dev ",
+        "execution_target": "terminal_local",
+        "examples": [
+          "/app dev ./my-app",
+          "/app dev stop"
+        ],
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
         "id": "app-automation",
         "label": "automation",
         "description": "Route an App event to a workflow",
