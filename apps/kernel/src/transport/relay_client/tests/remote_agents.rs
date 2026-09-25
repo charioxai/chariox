@@ -1289,23 +1289,26 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             let mut app = app_home
                 .try_lock()
                 .expect("home app lock should remain available during held worker reply");
-            let queued_head = app
+            let queue_head = app
                 .prompt_owner_peek_next_queued_prompt(&session_id, &remote_agent_id)
-                .expect("home queue head should load")
-                .expect("the queued prompt should remain in the home queue");
-            assert_eq!(queued_head.id(), queued_prompt_id);
+                .expect("home queue head should load");
             assert!(
-                queued_head.remote_steer_reserved(),
-                "the exact queue head must stay reserved until the relay response commits"
+                queue_head.is_none(),
+                "ordinary queue peeks must hide the reserved head while its relay reply is pending"
             );
-            let queued_head_id = queued_head.id().to_string();
+            assert_eq!(
+                app.prompt_owner_queued_prompt_count_for_agent(&session_id, &remote_agent_id)
+                    .expect("home queued prompt count should load"),
+                1,
+                "the reserved prompt must remain queued until the relay response commits"
+            );
             app.prompt_owner_complete_active_prompt_only(&session_id, &remote_agent_id)
                 .expect("the active turn should be able to complete while steer reply waits");
             let completion_path_activation = app
                 .prompt_owner_activate_next_queued_prompt_with_prompt_id(
                     &session_id,
                     &remote_agent_id,
-                    Some(&queued_head_id),
+                    Some(&queued_prompt_id),
                     "prompt-should-remain-queued".to_string(),
                 )
                 .expect("remote completion activation should inspect the reserved queue head");

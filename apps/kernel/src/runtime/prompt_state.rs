@@ -746,6 +746,88 @@ impl PromptStateOwner {
             .cloned()
     }
 
+    pub(crate) fn reserve_queued_prompt_remote_steer(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_active_prompt_id: &str,
+        expected_prompt: &PromptQueueItem,
+    ) -> Result<u64, DaemonError> {
+        self.reserve_queued_prompt_remote_steer_with_hook(
+            session,
+            agent_id,
+            expected_active_prompt_id,
+            expected_prompt,
+            || {},
+        )
+    }
+
+    fn reserve_queued_prompt_remote_steer_with_hook<F>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_active_prompt_id: &str,
+        expected_prompt: &PromptQueueItem,
+        before_reserve: F,
+    ) -> Result<u64, DaemonError>
+    where
+        F: FnOnce(),
+    {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        let active_prompt = state.active_prompt.as_ref().ok_or_else(|| {
+            DaemonError::NoActivePrompt {
+                session_id: session.id().to_string(),
+            }
+        })?;
+        if active_prompt.id() != expected_active_prompt_id
+            || active_prompt.status() != PromptStatus::Running
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: "active prompt changed before queued steer reservation".to_string(),
+            });
+        }
+        let queued_prompt = state
+            .queued_prompts
+            .iter_mut()
+            .find(|prompt| prompt.id() == expected_prompt.id())
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: format!(
+                    "queued prompt `{}` disappeared before steer reservation",
+                    expected_prompt.id()
+                ),
+            })?;
+        if &*queued_prompt != expected_prompt
+            || queued_prompt.target_agent_id() != agent_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: format!(
+                    "queued prompt `{}` changed before steer reservation",
+                    expected_prompt.id()
+                ),
+            });
+        }
+
+        // The reservation and every ordinary activation share this owner lock.
+        // A completion cannot observe an unreserved clone and pop it in between.
+        before_reserve();
+        queued_prompt
+            .reserve_remote_steer()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: format!(
+                    "queued prompt `{}` already has an in-flight remote steer",
+                    expected_prompt.id()
+                ),
+            })
+    }
+
     #[cfg(test)]
     pub(crate) fn activate_next_queued_prompt(
         &self,
@@ -1612,7 +1694,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_queued_prompt_is_hidden_from_peek_and_all_activation_paths() {
+    fn remote_steer_reservation_and_completion_share_the_queue_owner_lock() {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-remote-steer-reservation",
@@ -1652,29 +1734,62 @@ mod tests {
         let queued = owner
             .peek_next_queued_prompt(&session, "agent-1")
             .expect("queued prompt should exist before reservation");
-        let reservation = queued
-            .reserve_remote_steer()
-            .expect("remote steer should reserve the exact queued prompt");
-        owner
-            .complete_active_prompt_only(&session, "agent-1")
-            .expect("active prompt should complete while the remote reply is pending");
+        let reservation_entered =
+            std::sync::Arc::new(std::sync::Barrier::new(2));
+        let reservation_continue =
+            std::sync::Arc::new(std::sync::Barrier::new(2));
+        let reservation = std::thread::scope(|scope| {
+            let reservation_entered_for_thread = std::sync::Arc::clone(&reservation_entered);
+            let reservation_continue_for_thread = std::sync::Arc::clone(&reservation_continue);
+            let reservation_thread = scope.spawn(|| {
+                owner.reserve_queued_prompt_remote_steer_with_hook(
+                    &session,
+                    "agent-1",
+                    "prompt-active",
+                    &queued,
+                    || {
+                        reservation_entered_for_thread.wait();
+                        reservation_continue_for_thread.wait();
+                    },
+                )
+            });
 
-        assert!(owner
-            .peek_next_queued_prompt(&session, "agent-1")
-            .is_none());
-        assert!(owner
-            .activate_next_queued_prompt(&session, "agent-1", Some(queued.id()))
-            .expect("the test activation path should defer a reserved prompt")
-            .is_none());
-        assert!(owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(queued.id()),
-                "prompt-real-2".to_string(),
-            )
-            .expect("the remote completion activation path should defer a reserved prompt")
-            .is_none());
+            reservation_entered.wait();
+            assert!(matches!(
+                owner.state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+
+            let activation_start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let activation_start_for_thread = std::sync::Arc::clone(&activation_start);
+            let completion_thread = scope.spawn(|| {
+                activation_start_for_thread.wait();
+                owner
+                    .complete_active_prompt_only(&session, "agent-1")
+                    .expect("active prompt should complete after reservation commits");
+                owner.activate_next_queued_prompt_with_prompt_id(
+                    &session,
+                    "agent-1",
+                    Some(queued.id()),
+                    "prompt-real-2".to_string(),
+                )
+            });
+            activation_start.wait();
+            reservation_continue.wait();
+
+            let reservation = reservation_thread
+                .join()
+                .expect("reservation thread should not panic")
+                .expect("exact queue item should reserve under the owner lock");
+            let activation = completion_thread
+                .join()
+                .expect("completion thread should not panic")
+                .expect("completion should defer reserved prompt activation");
+            assert!(activation.is_none());
+            reservation
+        });
+
+        assert!(owner.peek_next_queued_prompt(&session, "agent-1").is_none());
         assert!(owner
             .active_prompt_for_agent_snapshot(&session, "agent-1")
             .is_none());

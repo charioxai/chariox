@@ -863,13 +863,12 @@ impl KernelRuntimeOwnedState {
                 message: "queued prompt, active turn, or remote binding changed before reservation".to_string(),
             });
         }
-        context
-            .queued_prompt
-            .reserve_remote_steer()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "steer remote queued prompt",
-                message: format!("queued prompt `{prompt_id}` already has an in-flight remote steer"),
-            })
+        self.prompt_state_owner.reserve_queued_prompt_remote_steer(
+            &context.session,
+            agent_id,
+            context.active_prompt.id(),
+            &context.queued_prompt,
+        )
     }
 
     fn commit_queued_prompt_steer(
