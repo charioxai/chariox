@@ -7,9 +7,13 @@ critical operation.
 
 `AppHttpPolicy` derives exact origins/methods and protected-service origins from
 the same verified package as the retained `AppCatalog`. App-chosen connection or
-operation IDs never create authority. Anonymous transport rejects those IDs and
-every request to an origin containing a declared critical effect. Connection and
-single-use critical receipt integration remain required Phase 1 work.
+operation IDs never create authority. Without an operation, every request to an
+origin containing a declared critical effect is rejected. With `operationId`,
+the request must match one declared effect route exactly (origin, method, path;
+no query, percent-encoding or method-override header), and the kernel consumes
+that action's approved, unexpired validation for this installation and
+generation before any byte is sent; otherwise it fails `VALIDATION_REQUIRED`.
+Connection authority remains unsupported.
 
 `HttpTransport` connects directly to a checked numeric address, verifies the
 actual socket peer before sending TLS or HTTP bytes, and uses the original URL

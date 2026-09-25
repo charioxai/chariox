@@ -98,21 +98,34 @@ impl HttpStreams {
         deadline: Instant,
         cancellation: BrokerCancellation,
         permit: OwnedSemaphorePermit,
+        consume_approval: &dyn Fn(&str, &str) -> Result<()>,
     ) -> Result<(HttpJob, oneshot::Receiver<Result<HttpReply>>)> {
         budget.check().map_err(|_| HttpError::Cancelled)?;
         let is_headers = matches!(&command, Command::Headers(_));
         let operation = match command {
             Command::Open(open) => {
-                let pending = self.prepare(
-                    policy.anonymous_target(
+                let target = match open.operation.as_deref() {
+                    // A protected effect: the exact declared route, and the
+                    // approval is consumed (single use) before any I/O.
+                    Some(operation) => {
+                        let (target, action) = policy.protected_target(
+                            &open.url,
+                            &open.method,
+                            &open.headers,
+                            open.connection.as_deref(),
+                        )?;
+                        consume_approval(&action, operation)?;
+                        target
+                    }
+                    None => policy.anonymous_target(
                         &open.url,
                         &open.method,
                         &open.headers,
                         open.connection.as_deref(),
-                        open.operation.as_deref(),
+                        None,
                     )?,
-                    open.has_body,
-                )?;
+                };
+                let pending = self.prepare(target, open.has_body)?;
                 let gate = PortGate::acquire(pending.entry.opening.clone())?;
                 Operation::Open(pending, gate)
             }

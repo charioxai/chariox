@@ -1,6 +1,7 @@
 //! HTTP namespace on the existing worker peer. Current authority is checked
 //! by the durable writer before every socket start or stream operation enqueue.
 use super::{decode, policy::AppHttpPolicy, streams::HttpStreams, HttpError, HttpLimits};
+use crate::durable_state::app_validations::ValidationCommand;
 use crate::{
     durable_state::DurableKernelStateStore, runtime::app_operation_budget::AppOperationBudget,
 };
@@ -25,6 +26,7 @@ pub(crate) struct HttpContext {
 pub(crate) struct AppHttpBroker {
     publications: Arc<Mutex<Publications>>,
     store: DurableKernelStateStore,
+    owner: String,
     policy: Arc<AppHttpPolicy>,
     streams: HttpStreams,
     admission: Arc<Semaphore>,
@@ -44,13 +46,20 @@ impl AppHttpBroker {
         context: HttpContext,
     ) -> super::Result<Self> {
         let policy = Arc::new(AppHttpPolicy::compile(package, catalog.clone())?);
-        let streams = HttpStreams::new(owner, catalog, data, context.limits, context.runtime)?;
+        let streams = HttpStreams::new(
+            owner.clone(),
+            catalog,
+            data,
+            context.limits,
+            context.runtime,
+        )?;
         Ok(Self {
             publications: Arc::new(Mutex::new(Publications {
                 closed: false,
                 pending: BTreeMap::new(),
             })),
             store,
+            owner,
             policy,
             streams,
             admission,
@@ -116,6 +125,21 @@ impl AppHttpBroker {
             .map_err(|_| remote(HttpError::Busy))?;
         let broker = self.clone();
         let prepared = tokio::task::spawn_blocking(move || {
+            let catalog = broker.policy.catalog().clone();
+            let consume = |action: &str, operation: &str| {
+                broker
+                    .store
+                    .app_validation(ValidationCommand::Consume {
+                        owner: broker.owner.clone(),
+                        installation: catalog.installation_id().to_owned(),
+                        generation: catalog.generation(),
+                        action: action.to_owned(),
+                        operation_id: operation.to_owned(),
+                        now_ms: crate::session::unix_epoch_ms(),
+                    })
+                    .map(|_| ())
+                    .map_err(|_| HttpError::ValidationRequired)
+            };
             let (job, receiver) = broker.streams.job(
                 &broker.policy,
                 command,
@@ -123,6 +147,7 @@ impl AppHttpBroker {
                 request.deadline,
                 request.cancellation,
                 permit,
+                &consume,
             )?;
             broker.store.enqueue_app_http(job);
             Ok::<_, HttpError>(receiver)
@@ -177,6 +202,10 @@ fn remote(failure: HttpError) -> RemoteError {
         HttpError::ProtectedEffect => (
             "APP_HTTP_EFFECT_UNSUPPORTED",
             "Protected HTTP effects require kernel effect authorization",
+        ),
+        HttpError::ValidationRequired => (
+            "VALIDATION_REQUIRED",
+            "This protected action needs an unused human approval for exactly this operation",
         ),
         HttpError::Provenance => ("APP_STALE", "App installation authority changed"),
         HttpError::Limit => ("APP_HTTP_LIMIT", "HTTP resource limit reached"),

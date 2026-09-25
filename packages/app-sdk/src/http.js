@@ -51,7 +51,7 @@ function normalize(request, buffered) {
 }
 
 /** Streaming transport, not Fetch: redirects, decompression, credentials and
- * protected effects are not implemented here. Body operations never retry. */
+ * connections are not implemented here. Body operations never retry. */
 export function createHttp(call) {
   const writers = new Set();
   const readers = new Set();
