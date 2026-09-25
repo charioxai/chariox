@@ -11,6 +11,7 @@ let dirty = false
 let pendingOpen = null
 let pendingDelete = false
 let saving = false
+let saveAgain = false
 let deleteTimer = null
 
 function say(message, error = false) {
@@ -115,24 +116,36 @@ function renderPreview() {
 }
 
 // Typing continues while a save is in flight; only the fields that were sent
-// count as saved, so later keystrokes stay in the editor and stay dirty.
+// count as saved, so later keystrokes stay in the editor and stay dirty, and a
+// save requested meanwhile runs once afterwards.
 const fields = () => ({ content: $("content").value, title: $("title").value, folder: $("folder").value })
 async function save() {
-  if (!current || !dirty || saving) return
+  if (!current || !dirty) return
+  if (saving) { saveAgain = true; return }
   saving = true
+  const id = current.id
   const sent = fields()
   try {
     const saved = await call("update_document", {
-      id: current.id, expected_revision: current.revision,
+      id, expected_revision: current.revision,
       content: sent.content, title: sent.title.trim() || "Untitled", folder: sent.folder.trim(),
     })
     if (current?.id !== saved.id) return
     Object.assign(current, { revision: saved.revision, content: sent.content })
     showRevision(saved)
-    if (JSON.stringify(fields()) === JSON.stringify(sent)) dirty = false
+    if (JSON.stringify(fields()) === JSON.stringify(sent)) {
+      dirty = false
+      $("title").value = saved.title
+      $("folder").value = saved.folder
+    }
     say(`Saved revision ${saved.revision}.`)
     await refreshList()
-  } catch {} finally { saving = false }
+  } catch {} finally {
+    saving = false
+    const again = saveAgain && current?.id === id
+    saveAgain = false
+    if (again) await save()
+  }
 }
 
 $("new-doc").addEventListener("click", async () => {
@@ -173,7 +186,10 @@ $("versions").addEventListener("change", async (event) => {
     const restored = await call("restore_version", { id: current.id, revision, expected_revision: current.revision })
     await open(restored.id)
     say(`Restored revision ${revision} as revision ${restored.revision}.`)
-  } catch {} finally { for (const field of locked) field.readOnly = false }
+  } catch {} finally {
+    for (const field of locked) field.readOnly = false
+    event.target.value = ""
+  }
 })
 function resetDelete() {
   pendingDelete = false
