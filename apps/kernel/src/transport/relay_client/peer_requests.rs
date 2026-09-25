@@ -101,11 +101,14 @@ pub(super) async fn handle_daemon_peer_request(
             },
         );
     }
-    let lease_worker_caller = if router.kernel_runtime_role()
-        == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-        && !managed_context_request(&request)
+    let is_lease_worker =
+        router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    let lease_worker_caller = if !managed_context_request(&request)
+        && (is_lease_worker
+            || matches!(&request, RelayPeerRequest::CreateExecutionLease { .. })
+            || lease_resource(&request).is_some())
     {
-        if !lease_worker_peer_request_allowed(&request) {
+        if is_lease_worker && !lease_worker_peer_request_allowed(&request) {
             return RelayRequestOutcome {
                 encrypted_response: None,
                 error: Some(relay_error(
@@ -115,12 +118,16 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         }
-        let caller = match authenticated_lease_worker_caller(
-            router,
-            from_daemon_id,
-            caller_identity.as_ref(),
-            &encrypted_request,
-        ) {
+        let caller = match if is_lease_worker {
+            authenticated_lease_worker_caller(
+                router,
+                from_daemon_id,
+                caller_identity.as_ref(),
+                &encrypted_request,
+            )
+        } else {
+            ordinary_lease_caller(from_daemon_id, caller_identity.as_ref(), &encrypted_request)
+        } {
             Ok(caller) => caller,
             Err(error) => {
                 return RelayRequestOutcome {
@@ -135,7 +142,13 @@ pub(super) async fn handle_daemon_peer_request(
             ..
         } = &request
         {
-            if caller.home_kernel_id != *home_kernel_id || caller.owner_user_id != *owner_user_id {
+            if caller.home_kernel_id != *home_kernel_id
+                || (caller_identity
+                    .as_ref()
+                    .and_then(|identity| identity.user_id.as_deref())
+                    .is_some()
+                    && caller.owner_user_id != *owner_user_id)
+            {
                 return RelayRequestOutcome {
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -871,6 +884,47 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id,
+            home_prompt_id,
+        } => match router
+            .relay_query_leased_prompt_receipt(&leased_agent_id, &home_prompt_id)
+            .await
+        {
+            Ok(receipt) => RelayPeerResponse::LeasedPromptReceiptQueried { receipt },
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        },
+        RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            worker_provider_run_id,
+            execution_lease_id,
+        } => match router
+            .relay_reconcile_leased_prompt_steer_receipt(
+                &leased_agent_id,
+                &steer_id,
+                &target_home_prompt_id,
+                &worker_provider_run_id,
+                &execution_lease_id,
+            )
+            .await
+        {
+            Ok(receipt) => RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(receipt),
+            },
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        },
         RelayPeerRequest::SteerLeasedPrompt {
             leased_agent_id,
             steer_id,
@@ -1032,8 +1086,18 @@ pub(super) async fn handle_daemon_peer_request(
                 };
             }
         },
-        RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
-            let cancellation = router.relay_cancel_leased_prompt(&leased_agent_id).await;
+        RelayPeerRequest::CancelLeasedPrompt {
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        } => {
+            let cancellation = router
+                .relay_cancel_leased_prompt(
+                    &leased_agent_id,
+                    &home_prompt_id,
+                    &worker_provider_run_id,
+                )
+                .await;
             match cancellation {
                 Ok(cancellation) => RelayPeerResponse::LeasedPromptCancelled { cancellation },
                 Err(error) => {
@@ -1823,6 +1887,52 @@ fn authenticated_lease_worker_caller(
     })
 }
 
+fn ordinary_lease_caller(
+    from_daemon_id: &str,
+    identity: Option<&RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<crate::app::LeaseCallerBinding, RelayError> {
+    if identity.is_some_and(|identity| {
+        !matches!(
+            identity.subject_kind,
+            chariox_relay::auth::RelaySubjectKind::Kernel
+                | chariox_relay::auth::RelaySubjectKind::Machine
+        )
+    }) {
+        return Err(relay_error(
+            "unauthorized",
+            "execution lease caller must identify a kernel or machine",
+            false,
+        ));
+    }
+    let home_kernel_id = canonical_peer_daemon_id(from_daemon_id).ok_or_else(|| {
+        relay_error(
+            "unauthorized",
+            "execution lease caller has an invalid peer daemon identity",
+            false,
+        )
+    })?;
+    let key_thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(
+        &encrypted_request.sender_public_key,
+    );
+    // Legacy shared-token relays have no scoped caller identity. The encrypted
+    // sender key and registered daemon ID still bind every lease operation to
+    // the same home; scoped identities additionally bind their account/realm.
+    Ok(crate::app::LeaseCallerBinding {
+        home_kernel_id: home_kernel_id.to_string(),
+        authenticated_machine_id: identity
+            .map(|identity| identity.subject.clone())
+            .unwrap_or_else(|| home_kernel_id.to_string()),
+        owner_user_id: identity
+            .and_then(|identity| identity.user_id.clone())
+            .unwrap_or_default(),
+        realm_id: identity
+            .map(|identity| identity.realm_id.clone())
+            .unwrap_or_default(),
+        public_key_thumbprint: key_thumbprint,
+    })
+}
+
 enum LeaseResource<'a> {
     ExecutionLease(&'a str),
     LeasedAgent(&'a str),
@@ -1903,6 +2013,12 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id, ..
         }
+        | RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::SteerLeasedPrompt {
             leased_agent_id, ..
         }
@@ -1913,7 +2029,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::ObserveLeasedGitAfter {
             leased_agent_id, ..
         }
-        | RelayPeerRequest::CancelLeasedPrompt { leased_agent_id }
+        | RelayPeerRequest::CancelLeasedPrompt {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
             leased_agent_id, ..
         }
@@ -1998,6 +2116,20 @@ mod tests {
         ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
         ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
     };
+
+    #[test]
+    fn ordinary_lease_caller_rejects_service_identity() {
+        let mut identity = scoped_machine_identity("service-1", None);
+        identity.subject_kind = RelaySubjectKind::Service;
+        let payload = EncryptedRelayPayload {
+            sender_public_key: "sender-key".to_string(),
+            nonce: String::new(),
+            ciphertext: String::new(),
+        };
+        let error = ordinary_lease_caller("home-kernel", Some(&identity), &payload)
+            .expect_err("a service identity cannot own an execution lease");
+        assert_eq!(error.code, "unauthorized");
+    }
 
     #[test]
     fn lease_worker_peer_allowlist_is_closed_and_peer_suffix_is_canonical() {
@@ -2115,6 +2247,283 @@ mod tests {
             encrypted_request,
         )
         .await
+    }
+
+    fn decode_lease_worker_response(
+        source_private_key: &str,
+        outcome: RelayRequestOutcome,
+    ) -> RelayPeerResponse {
+        assert!(outcome.error.is_none(), "worker request should succeed");
+        let encrypted_response = outcome
+            .encrypted_response
+            .expect("worker should return an encrypted response");
+        let decrypted =
+            relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
+                .expect("response should decrypt");
+        serde_json::from_slice(&decrypted.plaintext).expect("response should decode")
+    }
+
+    #[test]
+    fn lease_worker_receipt_query_and_reconciliation_preserve_exact_identity() {
+        std::thread::Builder::new()
+            .name("lease-worker-prompt-receipt".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("receipt query test runtime")
+                    .block_on(
+                        lease_worker_receipt_query_returns_only_exact_active_prompt_without_mutation_inner(),
+                    );
+            })
+            .expect("receipt query test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    async fn lease_worker_receipt_query_returns_only_exact_active_prompt_without_mutation_inner() {
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("home public key");
+        let source_thumbprint = public_key_thumbprint(&source_public_key);
+        let mut config = lease_worker_config();
+        config.accept_remote_leases = true;
+        let mut worker_app = DaemonApp::bootstrap(config).expect("worker should boot");
+        let target_public_key = worker_app.config().relay_public_key.clone();
+        let caller = crate::app::LeaseCallerBinding {
+            home_kernel_id: "source-kernel-1".to_string(),
+            authenticated_machine_id: "machine-home-1".to_string(),
+            owner_user_id: "user-1".to_string(),
+            realm_id: "realm-1".to_string(),
+            public_key_thumbprint: source_thumbprint.clone(),
+        };
+        let lease = RemoteLeaseRuntime::new(&mut worker_app)
+            .create_bound_execution_lease(
+                "source-kernel-1",
+                "home-session-receipt-handler",
+                "home-agent-receipt-handler",
+                false,
+                "user-1",
+                caller,
+            )
+            .expect("bound execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut worker_app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let home_prompt_id = "home-prompt-handler-exact";
+        let git_context = crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            home_prompt_id: home_prompt_id.to_string(),
+            home_turn_id: "home-turn-handler-exact".to_string(),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: None,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "receipt query handler test".to_string(),
+        };
+        let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut worker_app)
+            .submit_leased_prompt_with_workflow_context(
+                &leased_agent.id,
+                "receipt query handler prompt\n",
+                Vec::new(),
+                None,
+                Some(git_context),
+                Vec::new(),
+                None,
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("worker should accept the prompt");
+        assert!(matches!(
+            outcome,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+
+        let worker_app = Arc::new(Mutex::new(worker_app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&worker_app),
+            1,
+        ));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let identity = scoped_machine_identity("machine-home-1", Some(source_thumbprint));
+        let query = |home_prompt_id: &str| RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id: leased_agent.id.clone(),
+            home_prompt_id: home_prompt_id.to_string(),
+        };
+
+        let exact = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            query(home_prompt_id),
+        )
+        .await;
+        assert_eq!(
+            decode_lease_worker_response(&source_private_key, exact),
+            RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    home_prompt_id: home_prompt_id.to_string(),
+                    worker_provider_run_id: provider_run_id.clone(),
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                    target_home_prompt_id: None,
+                    execution_lease_id: None,
+                }),
+            }
+        );
+
+        let unrelated = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            query("other-home-prompt"),
+        )
+        .await;
+        assert_eq!(
+            decode_lease_worker_response(&source_private_key, unrelated),
+            RelayPeerResponse::LeasedPromptReceiptQueried { receipt: None }
+        );
+
+        let repeated = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            query(home_prompt_id),
+        )
+        .await;
+        assert_eq!(
+            decode_lease_worker_response(&source_private_key, repeated),
+            RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    home_prompt_id: home_prompt_id.to_string(),
+                    worker_provider_run_id: provider_run_id.clone(),
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                    target_home_prompt_id: None,
+                    execution_lease_id: None,
+                }),
+            }
+        );
+
+        let tombstone_steer_id = "queued-steer-tombstone-handler";
+        let reconcile_request = RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id: leased_agent.id.clone(),
+            steer_id: tombstone_steer_id.to_string(),
+            target_home_prompt_id: home_prompt_id.to_string(),
+            worker_provider_run_id: provider_run_id.clone(),
+            execution_lease_id: lease.id.clone(),
+        };
+        let reconciled = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            reconcile_request,
+        )
+        .await;
+        assert_eq!(
+            decode_lease_worker_response(&source_private_key, reconciled),
+            RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    home_prompt_id: tombstone_steer_id.to_string(),
+                    worker_provider_run_id: provider_run_id.clone(),
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+                    target_home_prompt_id: Some(home_prompt_id.to_string()),
+                    execution_lease_id: Some(lease.id.clone()),
+                }),
+            }
+        );
+
+        let input_count_before_late_request =
+            worker_app.lock().await.terminal().input_records().len();
+        let late_steer = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::SteerLeasedPrompt {
+                leased_agent_id: leased_agent.id.clone(),
+                steer_id: tombstone_steer_id.to_string(),
+                target_home_prompt_id: home_prompt_id.to_string(),
+                prompt: "late original steer must not reach provider input\n".to_string(),
+                hidden_system_context: String::new(),
+                attachments: Vec::new(),
+                required_skills: None,
+            },
+        )
+        .await;
+        let late_steer_error = late_steer
+            .error
+            .expect("a late original request must be rejected by its exact tombstone");
+        assert_eq!(late_steer_error.code, "transport_error");
+        assert!(late_steer_error.message.contains("already rejected"));
+        assert_eq!(
+            worker_app.lock().await.terminal().input_records().len(),
+            input_count_before_late_request,
+            "rejected late request must not reach provider input"
+        );
+
+        let tombstone_retry = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+                leased_agent_id: leased_agent.id,
+                steer_id: tombstone_steer_id.to_string(),
+                target_home_prompt_id: home_prompt_id.to_string(),
+                worker_provider_run_id: provider_run_id.clone(),
+                execution_lease_id: lease.id.clone(),
+            },
+        )
+        .await;
+        assert_eq!(
+            decode_lease_worker_response(&source_private_key, tombstone_retry),
+            RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    home_prompt_id: tombstone_steer_id.to_string(),
+                    worker_provider_run_id: provider_run_id,
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+                    target_home_prompt_id: Some(home_prompt_id.to_string()),
+                    execution_lease_id: Some(lease.id),
+                }),
+            }
+        );
     }
 
     #[test]

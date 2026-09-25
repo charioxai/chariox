@@ -308,15 +308,30 @@ impl KernelRuntimeState {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
+        let operation = move |app: &mut DaemonApp| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
             runtime.update_leased_agent_remote_extension_manifest(
                 &leased_agent_id,
                 remote_extension_manifest,
             )
-        })
-        .await
+        };
+        #[cfg(test)]
+        if let Some(observer) = self.take_capability_push_lock_observer_for_test() {
+            use std::future::Future;
+            let mut observer = Some(observer);
+            let mut lock = Box::pin(self.app.lock());
+            let mut app = std::future::poll_fn(|cx| {
+                let result = lock.as_mut().poll(cx);
+                if let Some(observer) = observer.take() {
+                    let _ = observer.send(result.is_ready());
+                }
+                result
+            })
+            .await;
+            return operation(&mut app);
+        }
+        self.with_app_side_effect(operation).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -403,6 +418,66 @@ impl KernelRuntimeState {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
             runtime.resize_leased_provider_terminal(&leased_agent_id, &provider_run_id, cols, rows)
+        })
+        .await
+    }
+
+    pub(crate) async fn query_relay_leased_prompt_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+        let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
+        let leased_agent_id = leased_agent_id.to_string();
+        let home_prompt_id = home_prompt_id.to_string();
+        let provider_run_id = self
+            .with_app_side_effect(|app| {
+                RemoteLeaseRuntime::new(app)
+                    .leased_prompt_receipt_provider_run_id(&leased_agent_id, &home_prompt_id)
+            })
+            .await?;
+        let _provider_lane = match provider_run_id.as_deref() {
+            Some(provider_run_id) => {
+                Some(self.provider_runtime_lanes.acquire(provider_run_id).await)
+            }
+            None => None,
+        };
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.leased_prompt_receipt(&leased_agent_id, &home_prompt_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn reconcile_relay_leased_prompt_steer_receipt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        execution_lease_id: &str,
+    ) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
+        let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
+        let _provider_lane = self
+            .provider_runtime_lanes
+            .acquire(worker_provider_run_id)
+            .await;
+        let leased_agent_id = leased_agent_id.to_string();
+        let steer_id = steer_id.to_string();
+        let target_home_prompt_id = target_home_prompt_id.to_string();
+        let worker_provider_run_id = worker_provider_run_id.to_string();
+        let execution_lease_id = execution_lease_id.to_string();
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.reconcile_leased_prompt_steer_receipt(
+                &leased_agent_id,
+                &steer_id,
+                &target_home_prompt_id,
+                &worker_provider_run_id,
+                &execution_lease_id,
+            )
         })
         .await
     }
@@ -526,11 +601,13 @@ impl KernelRuntimeState {
                     session_id: format!("leased-agent:{leased_agent_id}"),
                 })?;
             let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-            let (prepared_provider_run_id, dispatch) = self
+            self.with_app_side_effect(|app| {
+                RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&leased_agent_id)
+            })
+            .await?;
+            let prepared_result = self
                 .with_app_side_effect(|app| {
-                    let mut runtime = RemoteLeaseRuntime::new(app);
-                    runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-                    runtime.prepare_leased_prompt_steer(
+                    RemoteLeaseRuntime::new(app).prepare_leased_prompt_steer(
                         &leased_agent_id,
                         &steer_id,
                         &target_home_prompt_id,
@@ -540,32 +617,98 @@ impl KernelRuntimeState {
                         required_skills.clone(),
                     )
                 })
-                .await?;
+                .await;
+            let (prepared_provider_run_id, dispatch) = match prepared_result {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let _ = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app).mark_leased_prompt_steer_rejected(
+                                &leased_agent_id,
+                                &steer_id,
+                                &target_home_prompt_id,
+                                &provider_run_id,
+                            )
+                        })
+                        .await;
+                    return Err(error);
+                }
+            };
             if prepared_provider_run_id != provider_run_id {
                 continue;
             }
             let Some(dispatch) = dispatch else {
                 return Ok((provider_run_id, true));
             };
-            let reserved = self
+            let reserve_result = self
                 .with_app_side_effect(|app| {
                     RemoteLeaseRuntime::new(app).reserve_leased_prompt_steer(
                         &leased_agent_id,
                         &steer_id,
                         &target_home_prompt_id,
+                        &prepared_provider_run_id,
                     )
                 })
-                .await?;
+                .await;
+            let reserved = match reserve_result {
+                Ok(reserved) => reserved,
+                Err(error) => {
+                    let _ = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app)
+                                .mark_leased_prompt_steer_definitely_not_accepted(
+                                    &leased_agent_id,
+                                    &steer_id,
+                                    &target_home_prompt_id,
+                                    &prepared_provider_run_id,
+                                )
+                        })
+                        .await;
+                    return Err(error);
+                }
+            };
             if !reserved {
                 return Ok((provider_run_id, true));
             }
-            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                self.with_app_side_effect(|app| {
-                    RemoteLeaseRuntime::new(app)
-                        .rollback_leased_prompt_steer(&leased_agent_id, &steer_id);
-                })
-                .await;
-                return Err(error);
+            match self
+                .enqueue_prompt_dispatch_with_acceptance(&dispatch)
+                .await
+            {
+                Ok(true) => {
+                    self.with_app_side_effect(|app| {
+                        RemoteLeaseRuntime::new(app).mark_leased_prompt_steer_accepted(
+                            &leased_agent_id,
+                            &steer_id,
+                            &target_home_prompt_id,
+                            &prepared_provider_run_id,
+                        )
+                    })
+                    .await?;
+                }
+                Ok(false) => {
+                    let rejected = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app)
+                                .mark_leased_prompt_steer_definitely_not_accepted(
+                                    &leased_agent_id,
+                                    &steer_id,
+                                    &target_home_prompt_id,
+                                    &prepared_provider_run_id,
+                                )
+                        })
+                        .await?;
+                    if !rejected {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "steer leased prompt",
+                            message: "worker did not enqueue the steer and could not persist an exact rejection receipt"
+                                .to_string(),
+                        });
+                    }
+                    return Err(DaemonError::NoActivePrompt {
+                        session_id: format!("leased-agent:{leased_agent_id}"),
+                    });
+                }
+                Err(error) => return Err(error),
             }
             return Ok((provider_run_id, false));
         }
@@ -791,19 +934,27 @@ impl KernelRuntimeState {
     pub(crate) async fn cancel_relay_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        let authorized_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&authorized_id)
-        })
-        .await?;
-        self.cancel_remote_home_extension_invocations_for_leased_agent(leased_agent_id)
-            .await;
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).cancel_leased_prompt(&leased_agent_id)
-        })
-        .await
+        let app_leased_agent_id = leased_agent_id.clone();
+        let home_prompt_id = home_prompt_id.to_string();
+        let worker_provider_run_id = worker_provider_run_id.to_string();
+        let cancellation = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&app_leased_agent_id)?;
+                runtime.cancel_leased_prompt(
+                    &app_leased_agent_id,
+                    &home_prompt_id,
+                    &worker_provider_run_id,
+                )
+            })
+            .await?;
+        self.cancel_remote_home_extension_invocations_for_leased_agent(&leased_agent_id)
+            .await;
+        Ok(cancellation)
     }
 
     pub(crate) async fn relay_leased_agent_provider_run_id(
@@ -909,6 +1060,9 @@ impl KernelRuntimeState {
             .await?;
         if !outcome.accepted {
             return Ok(());
+        }
+        for intent in outcome.remote_dispatches {
+            self.spawn_remote_prompt_dispatch(intent.dispatch);
         }
         if let Some(failure) = outcome.provider_failure {
             self.finish_remote_provider_failure(
@@ -1104,8 +1258,8 @@ mod relay_native_provider_launch_tests {
     fn native_lease_fixture() -> NativeLeaseFixture {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        let mut app = crate::app::DaemonApp::bootstrap(config)
-            .expect("worker app should bootstrap");
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("worker app should bootstrap");
         let (leased_agent_id, matching_request) = {
             let mut runtime = RemoteLeaseRuntime::new(&mut app);
             let lease = runtime

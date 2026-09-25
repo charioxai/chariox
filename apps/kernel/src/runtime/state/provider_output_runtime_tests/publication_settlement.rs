@@ -6,14 +6,12 @@ async fn assert_completed_publication_output_settlement(
     client_interface: crate::provider::ProviderClientInterface,
     waits_for_provider_completion: bool,
 ) {
+    let worktree = crate::test_support::TestWorktree::new("publication-settlement");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-publication-claim",
-            "worktree-publication-claim",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(

@@ -840,6 +840,9 @@ impl KernelRuntimeState {
         slice_ref: &str,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         let slice = self.owned.slice_store.delete(slice_ref)?;
+        if let Some(session_id) = slice.environment_session_id.as_deref() {
+            self.enqueue_room_browser_manifest_sync_for_session(session_id);
+        }
         self.append_slice_durable_event("slice.deleted", &slice)?;
         Ok(slice)
     }

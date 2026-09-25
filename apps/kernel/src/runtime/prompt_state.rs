@@ -71,6 +71,57 @@ struct PromptStateOwnerState {
 }
 
 impl PromptStateOwner {
+    /// Commit delivery settlement while admission/cancellation cannot replace
+    /// this prompt. The callback must not reenter this owner.
+    pub(crate) fn settle_active_remote_dispatch_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        delivered_run_id: Option<&str>,
+        commit: impl FnOnce(
+            &PromptQueueItem,
+            Option<PromptQueueItem>,
+            VecDeque<PromptQueueItem>,
+        ) -> Result<bool, DaemonError>,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        let Some(current) = state.active_prompt.as_ref().filter(|prompt| {
+            prompt.id() == prompt_id
+                && matches!(
+                    prompt.durable_delivery_phase(),
+                    Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+                        | Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                )
+        }) else {
+            return Ok(None);
+        };
+        let mut settled = current.clone();
+        let next = if let Some(run_id) = delivered_run_id {
+            settled.set_durable_delivery(
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(run_id.to_string()),
+                None,
+            );
+            if settled.status() == PromptStatus::Dispatching {
+                settled.set_status(PromptStatus::Running);
+            }
+            Some(settled.clone())
+        } else {
+            settled.set_status(PromptStatus::Cancelled);
+            None
+        };
+        if !commit(current, next.clone(), state.queued_prompts.clone())? {
+            return Ok(None);
+        }
+        state.active_prompt = next;
+        Ok(Some(settled))
+    }
+
     pub(crate) fn try_claim_active_prompt_delivery_settlement(
         &self,
         session: &RuntimeSession,
@@ -521,6 +572,23 @@ impl PromptStateOwner {
                 ),
             });
         }
+        if phase == crate::session::DurablePromptDeliveryPhase::Dispatching
+            && active.status() == PromptStatus::Cancelling
+        {
+            if active.durable_delivery_phase()
+                != Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "mark prompt delivery",
+                    message: format!(
+                        "cancelling prompt `{prompt_id}` cannot start remote dispatch"
+                    ),
+                });
+            }
+            // The delivery phase already crossed the durable pre-send boundary. Preserve its
+            // receipt identity so cancellation can reconcile the in-flight worker request.
+            return Ok(active.clone());
+        }
         active.set_durable_delivery(phase, provider_run_id, provider_session_id);
         if phase == crate::session::DurablePromptDeliveryPhase::Delivered
             && active.status() == PromptStatus::Dispatching
@@ -691,7 +759,90 @@ impl PromptStateOwner {
             .ensure_agent_state(session, agent_id)
             .queued_prompts
             .front()
+            .filter(|prompt| !prompt.remote_steer_reserved())
             .cloned()
+    }
+
+    pub(crate) fn reserve_queued_prompt_remote_steer(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_active_prompt_id: &str,
+        expected_prompt: &PromptQueueItem,
+    ) -> Result<u64, DaemonError> {
+        self.reserve_queued_prompt_remote_steer_with_hook(
+            session,
+            agent_id,
+            expected_active_prompt_id,
+            expected_prompt,
+            || {},
+        )
+    }
+
+    fn reserve_queued_prompt_remote_steer_with_hook<F>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_active_prompt_id: &str,
+        expected_prompt: &PromptQueueItem,
+        before_reserve: F,
+    ) -> Result<u64, DaemonError>
+    where
+        F: FnOnce(),
+    {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        let active_prompt = state.active_prompt.as_ref().ok_or_else(|| {
+            DaemonError::NoActivePrompt {
+                session_id: session.id().to_string(),
+            }
+        })?;
+        if active_prompt.id() != expected_active_prompt_id
+            || active_prompt.status() != PromptStatus::Running
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: "active prompt changed before queued steer reservation".to_string(),
+            });
+        }
+        let queued_prompt = state
+            .queued_prompts
+            .iter_mut()
+            .find(|prompt| prompt.id() == expected_prompt.id())
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: format!(
+                    "queued prompt `{}` disappeared before steer reservation",
+                    expected_prompt.id()
+                ),
+            })?;
+        if &*queued_prompt != expected_prompt
+            || queued_prompt.target_agent_id() != agent_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: format!(
+                    "queued prompt `{}` changed before steer reservation",
+                    expected_prompt.id()
+                ),
+            });
+        }
+
+        // The reservation and every ordinary activation share this owner lock.
+        // A completion cannot observe an unreserved clone and pop it in between.
+        before_reserve();
+        queued_prompt
+            .reserve_remote_steer()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: format!(
+                    "queued prompt `{}` already has an in-flight remote steer",
+                    expected_prompt.id()
+                ),
+            })
     }
 
     #[cfg(test)]
@@ -718,6 +869,9 @@ impl PromptStateOwner {
         let Some(front) = state.queued_prompts.front() else {
             return Ok(None);
         };
+        if front.remote_steer_reserved() {
+            return Ok(None);
+        }
         if let Some(expected_prompt_id) = expected_prompt_id {
             if front.id() != expected_prompt_id {
                 return Err(DaemonError::LocalTransport {
@@ -779,6 +933,9 @@ impl PromptStateOwner {
         let Some(front) = state.queued_prompts.front() else {
             return Ok(None);
         };
+        if front.remote_steer_reserved() {
+            return Ok(None);
+        }
         if let Some(expected_prompt_id) = expected_prompt_id {
             if front.id() != expected_prompt_id {
                 return Err(DaemonError::LocalTransport {
@@ -1412,6 +1569,127 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_accepted_prompt_cannot_transition_to_dispatching() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-cancel-before-dispatch",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let PromptSubmissionOutcome::Started { prompt } = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-cancel-before-dispatch",
+                    "attachment-1",
+                    "agent-1",
+                    "cancel before remote dispatch",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("prompt should be admitted")
+        else {
+            panic!("prompt should start");
+        };
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+        owner
+            .begin_cancelling_active_prompt(&session, "agent-1")
+            .expect("accepted prompt should enter cancellation");
+
+        let error = owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect_err("cancellation must win before the dispatching boundary");
+
+        assert!(error.to_string().contains("cannot start remote dispatch"));
+        let active = owner
+            .active_prompt_for_agent(&session, "agent-1")
+            .expect("same prompt should remain active for cancellation");
+        assert_eq!(active.id(), prompt.id());
+        assert_eq!(active.status(), PromptStatus::Cancelling);
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+    }
+
+    #[test]
+    fn cancelling_dispatching_prompt_keeps_receipt_identity() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-cancel-during-dispatch",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let PromptSubmissionOutcome::Started { prompt } = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-cancel-during-dispatch",
+                    "attachment-1",
+                    "agent-1",
+                    "cancel while remote dispatch is in flight",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("prompt should be admitted")
+        else {
+            panic!("prompt should start");
+        };
+        owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some("worker-run-1".to_string()),
+                None,
+            )
+            .expect("dispatching phase should persist");
+        owner
+            .begin_cancelling_active_prompt(&session, "agent-1")
+            .expect("dispatching prompt should enter cancellation");
+
+        let active = owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect("already-dispatching prompt must remain eligible for receipt reconciliation");
+
+        assert_eq!(active.status(), PromptStatus::Cancelling);
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert_eq!(
+            active.durable_delivery_provider_run_id(),
+            Some("worker-run-1")
+        );
+    }
+
+    #[test]
     fn activate_next_queued_prompt_rejects_when_active_prompt_exists() {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
@@ -1551,6 +1829,136 @@ mod tests {
             .expect("dispatching prompt should become running");
         assert_eq!(running.id(), "prompt-real-2");
         assert_eq!(running.status(), PromptStatus::Running);
+    }
+
+    #[test]
+    fn remote_steer_reservation_and_completion_share_the_queue_owner_lock() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-remote-steer-reservation",
+            None,
+            "workspace-remote-steer-reservation",
+            "worktree-remote-steer-reservation",
+            "machine-1",
+            "daemon-1",
+        );
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-active",
+                    "attachment-1",
+                    "agent-1",
+                    "active",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("first prompt should start");
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-queued",
+                    "attachment-1",
+                    "agent-1",
+                    "queued",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("second prompt should queue");
+
+        let queued = owner
+            .peek_next_queued_prompt(&session, "agent-1")
+            .expect("queued prompt should exist before reservation");
+        let reservation_entered =
+            std::sync::Arc::new(std::sync::Barrier::new(2));
+        let reservation_continue =
+            std::sync::Arc::new(std::sync::Barrier::new(2));
+        let reservation = std::thread::scope(|scope| {
+            let reservation_entered_for_thread = std::sync::Arc::clone(&reservation_entered);
+            let reservation_continue_for_thread = std::sync::Arc::clone(&reservation_continue);
+            let reservation_owner = &owner;
+            let reservation_session = &session;
+            let reservation_queued = &queued;
+            let reservation_thread = scope.spawn(move || {
+                reservation_owner.reserve_queued_prompt_remote_steer_with_hook(
+                    reservation_session,
+                    "agent-1",
+                    "prompt-active",
+                    reservation_queued,
+                    || {
+                        reservation_entered_for_thread.wait();
+                        reservation_continue_for_thread.wait();
+                    },
+                )
+            });
+
+            reservation_entered.wait();
+            assert!(matches!(
+                owner.state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+
+            let activation_start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let activation_start_for_thread = std::sync::Arc::clone(&activation_start);
+            let completion_owner = &owner;
+            let completion_session = &session;
+            let completion_queued = &queued;
+            let completion_thread = scope.spawn(move || {
+                activation_start_for_thread.wait();
+                completion_owner
+                    .complete_active_prompt_only(completion_session, "agent-1")
+                    .expect("active prompt should complete after reservation commits");
+                completion_owner.activate_next_queued_prompt_with_prompt_id(
+                    completion_session,
+                    "agent-1",
+                    Some(completion_queued.id()),
+                    "prompt-real-2".to_string(),
+                )
+            });
+            activation_start.wait();
+            reservation_continue.wait();
+
+            let reservation = reservation_thread
+                .join()
+                .expect("reservation thread should not panic")
+                .expect("exact queue item should reserve under the owner lock");
+            let activation = completion_thread
+                .join()
+                .expect("completion thread should not panic")
+                .expect("completion should defer reserved prompt activation");
+            assert!(activation.is_none());
+            reservation
+        });
+
+        assert!(owner.peek_next_queued_prompt(&session, "agent-1").is_none());
+        assert!(owner
+            .active_prompt_for_agent_snapshot(&session, "agent-1")
+            .is_none());
+
+        assert!(queued.release_remote_steer(reservation));
+        assert_eq!(
+            owner
+                .peek_next_queued_prompt(&session, "agent-1")
+                .as_ref()
+                .map(PromptQueueItem::id),
+            Some(queued.id())
+        );
+        assert_eq!(
+            owner
+                .activate_next_queued_prompt_with_prompt_id(
+                    &session,
+                    "agent-1",
+                    Some(queued.id()),
+                    "prompt-real-2".to_string(),
+                )
+                .expect("released prompt should be activatable")
+                .expect("queued prompt should remain in place")
+                .id(),
+            "prompt-real-2"
+        );
     }
 
     #[test]

@@ -450,6 +450,38 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_query_leased_prompt_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+        relay_peer_runtime::query_relay_leased_prompt_receipt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_reconcile_leased_prompt_steer_receipt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        execution_lease_id: &str,
+    ) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
+        relay_peer_runtime::reconcile_relay_leased_prompt_steer_receipt(
+            &self.runtime_state,
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            worker_provider_run_id,
+            execution_lease_id,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_steer_leased_prompt(
         &self,
@@ -656,8 +688,16 @@ impl CommandRouter {
     pub(crate) async fn relay_cancel_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        relay_peer_runtime::cancel_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
+        relay_peer_runtime::cancel_relay_leased_prompt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        )
+        .await
     }
 
     pub(crate) async fn relay_leased_agent_provider_run_id(

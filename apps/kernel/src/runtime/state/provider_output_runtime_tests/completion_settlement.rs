@@ -180,6 +180,7 @@ async fn assert_workflow_completion_failure_is_retryable(
             },
         );
         run.mark_running();
+        spawn_inert_pty_for_run(&mut app, run.id());
         app.providers_mut().insert_run_for_test(run.clone());
         app.sessions
             .set_active_provider_run(session.id(), Some(run.id().to_string()))
@@ -267,6 +268,10 @@ async fn assert_workflow_completion_failure_is_retryable(
     crate::transport::flow_control::note_prompt_started(&mut app, run.id());
 
     let app = Arc::new(Mutex::new(app));
+    let _pty_cleanup = codex.then(|| InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().to_string(),
+    });
     let runtime = owned_runtime_state(&app).await;
     if verify_original_finish {
         runtime

@@ -1661,6 +1661,40 @@ Workflow trigger and deployment direction:
   turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
   at peer binding before provider dispatch rather than failing on a missing
   tool field mid-turn. The local daemon shape and client minimums do not change.
+- protocol 344 and relay peer protocol 58 add `room_browser_available` to the
+  home-authored remote extension manifest. The field defaults to false and is
+  omitted when false. It advertises the Room's shared browser independently of
+  the leased agent's execution placement. It does not grant authority: home
+  validates current Room membership, worker/run binding, and Environment
+  binding on every forwarded browser call. Client minimums remain unchanged.
+  Successful Environment binding and deletion enqueue manifest refreshes for
+  agents already leased in the Room, without waiting for another prompt.
+  Refreshes share the leased-agent operation lane with grant updates and
+  retries, and recompute the manifest after acquiring that lane. The binding
+  operation does not wait for relay I/O. Until delivery succeeds, tools may
+  remain hidden after binding or advertised after deletion; forwarded calls
+  still validate the current binding at home. Stop and input release do not
+  remove the Environment binding. Live validation must cover updates to an
+  already-running agent, not only an Environment bound before agent launch.
+- relay peer protocol 60 adds durable queued-steer receipts and the
+  `ReconcileLeasedPromptSteerReceipt` operation. It carries the exact queued
+  home prompt, target active home prompt, worker provider run, and execution
+  lease. The existing `GetLeasedPromptReceipt` remains read-only. A receipt names the exact queued
+  home prompt, target active home prompt, worker provider run, and execution
+  lease, and reports `steer_dispatching`, `steer_accepted`, or
+  `steer_rejected`. The worker persists `dispatching` before provider enqueue,
+  changes it to accepted only after local dispatch accepts the input, and
+  records rejection only when non-admission is known. After a lost steer reply,
+  the home keeps the exact queue item durably held and queries only the current
+  matching worker binding. It removes that item after an exact accepted receipt
+  or releases it after an exact rejected receipt. Under the worker run lane,
+  reconciliation records a durable rejected tombstone when no receipt exists;
+  a delayed original steer then encounters that tombstone and cannot enqueue.
+  Dispatching, stale, or conflicting receipts never replay or promote the uncertain item. The
+  focused fake-relay regression covers lost-reply acceptance, restart hold,
+  receipt reconciliation, and at-most-once worker input. The local daemon
+  request and response shapes are unchanged, so client minimum versions do not
+  change; home and worker kernels must both support relay peer protocol 60.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

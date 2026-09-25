@@ -187,6 +187,14 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
         || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
 }
 
+pub(crate) fn provider_run_requires_authoritative_turn_completion(
+    run: &RuntimeProviderRun,
+) -> bool {
+    ProviderRegistry::new()
+        .resolve(run.adapter_key())
+        .is_some_and(|adapter| adapter.requires_authoritative_turn_completion())
+}
+
 pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "opencode"
 }

@@ -35,6 +35,9 @@ pub trait AgentEndpointAdapter: Send + Sync {
     fn key(&self) -> &'static str;
     fn connect(&self, request: &LaunchProviderRequest)
         -> Result<ProviderLaunchResult, DaemonError>;
+    fn requires_authoritative_turn_completion(&self) -> bool {
+        false
+    }
     fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
         false
     }
@@ -219,6 +222,10 @@ impl AgentEndpointAdapter for CodexAdapter {
         Self::KEY
     }
 
+    fn requires_authoritative_turn_completion(&self) -> bool {
+        true
+    }
+
     fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
         workspace_write_fence_supported()
     }
@@ -257,6 +264,26 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{LaunchProviderRequest, ProviderRegistry};
+
+    #[test]
+    fn authoritative_completion_is_an_adapter_capability() {
+        let registry = ProviderRegistry::new();
+        for (key, required) in [
+            ("codex", true),
+            ("claude", false),
+            ("opencode", false),
+            ("dev-stub", false),
+        ] {
+            assert_eq!(
+                registry
+                    .resolve(key)
+                    .expect("provider adapter should be registered")
+                    .requires_authoritative_turn_completion(),
+                required,
+                "unexpected authoritative-completion policy for {key}",
+            );
+        }
+    }
 
     #[test]
     fn advertised_provider_ids_include_native_and_backend_provider_modes() {

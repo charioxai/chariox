@@ -454,6 +454,14 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
+        self.clear_prompt_activity_at(provider_run_id, None)
+    }
+
+    pub(super) fn clear_prompt_activity_at(
+        &self,
+        provider_run_id: &str,
+        observed_at_ms: Option<u64>,
+    ) -> bool {
         let activity_mutation = self.begin_managed_activity_mutation();
         self.provider_output_deadlines.clear(provider_run_id);
         let prompt_activity = self.prompt_activity.write().remove(provider_run_id);
@@ -473,7 +481,7 @@ impl KernelRuntimeOwnedState {
         // the reporter's barrier across that window, so publish a second change only after the
         // turn has been cleared by the completed settlement path.
         if active_turn.is_some() {
-            activity_mutation.record();
+            activity_mutation.record_at(observed_at_ms);
             self.runtime_projection_changes.record_change();
         }
         released_claim

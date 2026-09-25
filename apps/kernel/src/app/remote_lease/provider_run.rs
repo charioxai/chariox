@@ -154,13 +154,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 && context_capability_matches
                 && actions_capability_matches
             {
-                if !remote_extension_manifest.is_empty() {
-                    let updated = self.app.providers.update_run_remote_extension_manifest(
-                        run.id(),
-                        remote_extension_manifest.clone(),
-                    )?;
-                    self.app.update_provider_run_projection(updated);
-                }
+                let updated = self.app.providers.update_run_remote_extension_manifest(
+                    run.id(),
+                    remote_extension_manifest.clone(),
+                )?;
+                self.app.update_provider_run_projection(updated);
                 return Ok(LeasedProviderRunMatch::Ready(run.id().to_string()));
             }
             let active = self

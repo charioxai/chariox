@@ -9,6 +9,13 @@ fail() {
   exit 1
 }
 
+assert_path1_unit_has_no_dropins() {
+  drop_in_paths=$(systemctl show --property=DropInPaths --value "$1") \
+    || fail "could not inspect effective systemd drop-ins for $1"
+  [ -z "$drop_in_paths" ] \
+    || fail "Path-1 managed bootstrap service has systemd drop-ins: $drop_in_paths"
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   fail "run as root on the disposable Hetzner image builder"
 fi
@@ -130,6 +137,7 @@ docker buildx version >/dev/null || fail "Docker Buildx is unavailable"
 "$script_root/install-image.sh" \
   "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
 if [ "$managed_provider_topology" = path1 ]; then
+  assert_path1_unit_has_no_dropins "$managed_bootstrap_service"
   runtime_builder_key=/etc/chariox/trusted-builder-public-key
   [ -f "$runtime_builder_key" ] && [ ! -L "$runtime_builder_key" ] \
     || fail "Path-1 image is missing its independent runtime builder key"

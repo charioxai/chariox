@@ -56,6 +56,7 @@ mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
 mod room_browser_controller;
+mod room_browser_manifest_sync;
 mod room_computer_observation;
 mod room_display;
 mod room_environment_placement;
@@ -164,6 +165,8 @@ struct KernelRuntimeOwnedState {
     remote_prompt_projection_drains:
         Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
     remote_prompt_recoveries: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
+    remote_steer_receipt_reconciliations:
+        Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
@@ -304,11 +307,11 @@ mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
+mod remote_native_provider_launch;
 mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
-mod remote_native_provider_launch;
 mod remote_provider_failure_runtime;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
@@ -539,14 +542,11 @@ impl KernelRuntimeState {
             );
         let config = config_projection.snapshot();
         let managed_activity_kernel_id = (has_managed_kernel_registration
-            || (config.kernel_runtime_role
-                == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-                && std::env::var_os(
-                    crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV,
-                )
-                .filter(|value| !value.is_empty())
-                .map(std::path::PathBuf::from)
-                .is_some_and(|path| path.exists())))
+            || (config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+                && std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
+                    .filter(|value| !value.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .is_some_and(|path| path.exists())))
         .then(|| config.daemon_id.clone());
         let managed_activity_transitions =
             managed_activity_persistence::ManagedActivityTransitionState::new(
@@ -647,6 +647,9 @@ impl KernelRuntimeState {
                 relay_state,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+                remote_steer_receipt_reconciliations: Arc::new(std::sync::Mutex::new(
+                    BTreeSet::new(),
+                )),
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
@@ -661,10 +664,16 @@ impl KernelRuntimeState {
         &self,
         operation: impl FnOnce(&mut DaemonApp) -> R,
     ) -> R {
-        let mut app =
-            crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
-                .await;
-        operation(&mut app)
+        let (result, dispatches) = {
+            let mut app =
+                crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
+                    .await;
+            let result = operation(&mut app);
+            let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
+            (result, dispatches)
+        };
+        self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
+        result
     }
 
     pub(crate) async fn with_app_side_effect_blocking<R, F>(
@@ -676,15 +685,19 @@ impl KernelRuntimeState {
         R: Send + 'static,
     {
         let app = Arc::clone(&self.app);
-        tokio::task::spawn_blocking(move || {
+        let (result, dispatches) = tokio::task::spawn_blocking(move || {
             let mut app = app.blocking_lock();
-            operation(&mut app)
+            let result = operation(&mut app);
+            let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
+            (result, dispatches)
         })
         .await
         .map_err(|error| DaemonError::LocalTransport {
             operation: "run blocking kernel app side effect",
             message: error.to_string(),
-        })?
+        })?;
+        self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
+        result
     }
 
     pub(crate) fn provider_account_profile_registry(
@@ -711,8 +724,28 @@ impl KernelRuntimeState {
         &self,
         operation: impl FnOnce(&mut DaemonApp) -> R,
     ) -> Option<R> {
-        let mut app = self.app.try_lock().ok()?;
-        Some(operation(&mut app))
+        let can_spawn_dispatches = tokio::runtime::Handle::try_current().is_ok();
+        let (result, dispatches) = {
+            let mut app = self.app.try_lock().ok()?;
+            let result = operation(&mut app);
+            let dispatches = if can_spawn_dispatches {
+                app.take_deferred_workflow_remote_prompt_dispatches()
+            } else {
+                Vec::new()
+            };
+            (result, dispatches)
+        };
+        self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
+        Some(result)
+    }
+
+    fn spawn_deferred_workflow_remote_prompt_dispatches(
+        &self,
+        dispatches: Vec<crate::app::KernelRemotePromptDispatch>,
+    ) {
+        for dispatch in dispatches {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
     }
 
     async fn append_agent_durable_event(

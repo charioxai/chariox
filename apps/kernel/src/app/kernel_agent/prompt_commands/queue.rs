@@ -179,6 +179,31 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         expected_prompt_id: &str,
     ) -> Result<PromptQueueItem, DaemonError> {
+        let active = self.prepare_promoted_queued_prompt_start(
+            session_id,
+            agent_id,
+            expected_prompt_id,
+        )?;
+        let source_attachment_id = self
+            .app
+            .promoted_prompt_source_attachment_id(session_id, active.source_attachment_id())?;
+        self.app.echo_promoted_queued_prompt_to_attachments(
+            session_id,
+            provider_run_id,
+            active.id(),
+            &source_attachment_id,
+            active.prompt(),
+            active.attachments(),
+        );
+        Ok(active)
+    }
+
+    pub(super) fn prepare_promoted_queued_prompt_start(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+    ) -> Result<PromptQueueItem, DaemonError> {
         let active = self
             .app
             .prompt_owner_mark_active_prompt_running(session_id, agent_id)?;
@@ -208,14 +233,6 @@ impl<'a> KernelAgentService<'a> {
             active.workflow_run_id(),
             active.workflow_node_run_id(),
         )?;
-        self.app.echo_promoted_queued_prompt_to_attachments(
-            session_id,
-            provider_run_id,
-            active.id(),
-            &source_attachment_id,
-            active.prompt(),
-            active.attachments(),
-        );
         self.app
             .agents
             .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
@@ -260,16 +277,15 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        if let Some(expected_next) = expected_next {
-            return Ok(select_next_queued_prompt_candidate(
-                Some(expected_next),
+        let candidate = if let Some(expected_next) = expected_next {
+            select_next_queued_prompt_candidate(Some(expected_next), None)
+        } else {
+            select_next_queued_prompt_candidate(
                 None,
-            ));
-        }
-        Ok(select_next_queued_prompt_candidate(
-            None,
-            self.peek_next_queued_prompt(session_id, agent_id)?,
-        ))
+                self.peek_next_queued_prompt(session_id, agent_id)?,
+            )
+        };
+        Ok(candidate.filter(|prompt| !prompt.remote_steer_reserved()))
     }
 
     pub(super) fn activate_next_queued_prompt_for_mirror(

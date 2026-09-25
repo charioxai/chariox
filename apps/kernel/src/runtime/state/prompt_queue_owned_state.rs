@@ -5,11 +5,29 @@
 
 use super::*;
 
+#[derive(Clone)]
 pub(super) struct RemoteQueuedPromptSteerPreparation {
     pub(super) agent: crate::agent::AgentInstance,
     pub(super) remote_execution: crate::agent::RemoteAgentBinding,
     pub(super) target_active_prompt_id: String,
+    pub(super) provider_run_id: String,
     pub(super) prompt: crate::session::PromptQueueItem,
+}
+
+pub(super) enum RemoteQueuedPromptSteerReceiptSettlement {
+    Pending,
+    Accepted,
+    Rejected,
+    AlreadySettled,
+}
+
+pub(super) struct RemoteQueuedPromptSteerReceiptQuery {
+    pub(super) target_home_prompt_id: String,
+    pub(super) worker_provider_run_id: String,
+    pub(super) worker_kernel_id: String,
+    pub(super) worker_machine_id: String,
+    pub(super) execution_lease_id: String,
+    pub(super) leased_agent_id: String,
 }
 
 struct QueuedPromptSteerContext {
@@ -21,6 +39,63 @@ struct QueuedPromptSteerContext {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn remote_queued_prompt_steer_receipt_query(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        queued_prompt_id: &str,
+    ) -> Result<Option<RemoteQueuedPromptSteerReceiptQuery>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let (_, queued_prompts) = self.prompt_state_owner.state_parts(&session, agent_id);
+        let Some(prompt) = queued_prompts
+            .iter()
+            .find(|prompt| prompt.id() == queued_prompt_id)
+        else {
+            return Ok(None);
+        };
+        let Some((
+            target_home_prompt_id,
+            worker_provider_run_id,
+            worker_kernel_id,
+            worker_machine_id,
+            execution_lease_id,
+            leased_agent_id,
+        )) = prompt.remote_steer_outcome_uncertainty()
+        else {
+            return Ok(None);
+        };
+        let Some(worker_provider_run_id) = worker_provider_run_id.filter(|run| !run.is_empty())
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "query queued steer receipt",
+                message: format!(
+                    "queued prompt `{queued_prompt_id}` has no exact worker provider-run identity"
+                ),
+            });
+        };
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if !agent.remote_execution().is_some_and(|binding| {
+            binding.worker_kernel_id == worker_kernel_id
+                && binding.worker_machine_id == worker_machine_id
+                && binding.execution_lease_id == execution_lease_id
+                && binding.leased_agent_id == leased_agent_id
+        }) {
+            return Err(DaemonError::LocalTransport {
+                operation: "query queued steer receipt",
+                message: "current remote worker binding no longer matches the durable queued steer"
+                    .to_string(),
+            });
+        }
+        Ok(Some(RemoteQueuedPromptSteerReceiptQuery {
+            target_home_prompt_id,
+            worker_provider_run_id,
+            worker_kernel_id,
+            worker_machine_id,
+            execution_lease_id,
+            leased_agent_id,
+        }))
+    }
+
     pub(super) fn provider_account_allows_queued_prompt_advance(
         &self,
         session_id: &str,
@@ -105,6 +180,14 @@ impl KernelRuntimeOwnedState {
             return Err(DaemonError::LocalTransport {
                 operation,
                 message: format!("workflow queued prompts cannot be {action} manually"),
+            });
+        }
+        if prompt.remote_steer_reserved() {
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: format!(
+                    "queued prompt `{prompt_id}` already has an in-flight remote steer"
+                ),
             });
         }
         Ok(())
@@ -510,7 +593,7 @@ impl KernelRuntimeOwnedState {
         if self
             .prompt_state_owner
             .peek_next_queued_prompt(&session, agent_id)
-            .is_none()
+            .is_none_or(|prompt| prompt.remote_steer_reserved())
         {
             return Ok(None);
         }
@@ -542,6 +625,14 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        let idle_check_session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&idle_check_session, agent_id)
+            .is_some()
+        {
+            return Ok(None);
+        }
         let (session, next_prompt) = loop {
             let session = self.session_store.get_session(session_id)?;
             let Some(next_prompt) = self
@@ -550,6 +641,9 @@ impl KernelRuntimeOwnedState {
             else {
                 return Ok(None);
             };
+            if next_prompt.remote_steer_reserved() {
+                return Ok(None);
+            }
             let workflow_is_runnable =
                 next_prompt.workflow_run_id().is_none_or(|workflow_run_id| {
                     session
@@ -589,13 +683,6 @@ impl KernelRuntimeOwnedState {
             &agent,
             "advance queued prompt",
         ) {
-            return Ok(None);
-        }
-        if self
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some_and(|prompt| prompt.is_external())
-        {
             return Ok(None);
         }
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -645,6 +732,17 @@ impl KernelRuntimeOwnedState {
                         next_prompt.workflow_run_id().unwrap_or_default(),
                         next_prompt.workflow_node_run_id().unwrap_or_default(),
                     );
+                }
+                // Another queue-advancement path may have promoted a prompt
+                // after our initial idle check. That path now owns the active
+                // turn; leave any later queued work for its completion instead
+                // of treating this provider run as a launch failure.
+                if self
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+                    .is_some()
+                {
+                    return Ok(None);
                 }
                 return Err(error);
             }
@@ -701,6 +799,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         attachment_id: &str,
         prompt_id: &str,
+        expected_reservation: Option<u64>,
     ) -> Result<QueuedPromptSteerContext, DaemonError> {
         let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent = self.agent_store.get_agent(agent_id)?;
@@ -711,6 +810,39 @@ impl KernelRuntimeOwnedState {
             });
         }
         let session = self.session_store.get_session(session_id)?;
+        let (_, queued_prompts) = self.prompt_state_owner.state_parts(&session, agent_id);
+        if let Some(prompt) = queued_prompts
+            .iter()
+            .find(|prompt| prompt.id() == prompt_id)
+        {
+            if let Some((
+                target_home_prompt_id,
+                worker_provider_run_id,
+                worker_kernel_id,
+                _,
+                _,
+                _,
+            )) = prompt.remote_steer_outcome_uncertainty()
+            {
+                let held_by_expected_reservation =
+                    expected_reservation.is_some_and(|reservation| {
+                        prompt.remote_steer_reservation_matches(reservation)
+                    });
+                if !held_by_expected_reservation {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "steer queued prompt",
+                        message: format!(
+                            "queued prompt `{prompt_id}` has an uncertain remote steer outcome for home prompt `{}` on worker `{}` run `{}`; it remains blocked until an exact worker receipt is reconciled",
+                            target_home_prompt_id,
+                            worker_kernel_id,
+                            worker_provider_run_id
+                                .as_deref()
+                                .unwrap_or("unknown"),
+                        ),
+                    });
+                }
+            }
+        }
         let Some(active_prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
@@ -801,9 +933,15 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         attachment_id: &str,
         prompt_id: &str,
+        expected_reservation: Option<u64>,
     ) -> Result<Option<RemoteQueuedPromptSteerPreparation>, DaemonError> {
-        let context =
-            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id)?;
+        let context = self.queued_prompt_steer_context(
+            session_id,
+            agent_id,
+            attachment_id,
+            prompt_id,
+            expected_reservation,
+        )?;
         let Some(remote_execution) = context.agent.remote_execution().cloned() else {
             return Ok(None);
         };
@@ -811,8 +949,149 @@ impl KernelRuntimeOwnedState {
             agent: context.agent,
             remote_execution,
             target_active_prompt_id: context.active_prompt.id().to_string(),
+            provider_run_id: context.provider_run_id,
             prompt: context.queued_prompt,
         }))
+    }
+
+    pub(super) fn reserve_remote_queued_prompt_steer(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+        prepared: &RemoteQueuedPromptSteerPreparation,
+    ) -> Result<u64, DaemonError> {
+        let context =
+            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id, None)?;
+        if context.active_prompt.id() != prepared.target_active_prompt_id
+            || context.provider_run_id != prepared.provider_run_id
+            || context.agent.remote_execution() != Some(&prepared.remote_execution)
+            || context.queued_prompt != prepared.prompt
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: "queued prompt, active turn, or remote binding changed before reservation"
+                    .to_string(),
+            });
+        }
+        self.prompt_state_owner.reserve_queued_prompt_remote_steer(
+            &context.session,
+            agent_id,
+            context.active_prompt.id(),
+            &context.queued_prompt,
+        )
+    }
+
+    pub(super) fn mark_remote_queued_prompt_steer_uncertain(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt: &crate::session::PromptQueueItem,
+        reservation: u64,
+        target_home_prompt_id: String,
+        worker_provider_run_id: Option<String>,
+        worker_kernel_id: String,
+        worker_machine_id: String,
+        execution_lease_id: String,
+        leased_agent_id: String,
+    ) -> Result<(), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let (active_prompt, mut queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        let Some(current_prompt) = queued_prompts
+            .iter_mut()
+            .find(|prompt| prompt.id() == expected_prompt.id())
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "persist uncertain remote queued prompt steer",
+                message: format!(
+                    "queued prompt `{}` disappeared before its uncertain steer could be persisted",
+                    expected_prompt.id()
+                ),
+            });
+        };
+        if current_prompt != expected_prompt
+            || !current_prompt.remote_steer_reservation_matches(reservation)
+            || !current_prompt.mark_remote_steer_outcome_uncertain(
+                reservation,
+                target_home_prompt_id,
+                worker_provider_run_id,
+                worker_kernel_id,
+                worker_machine_id,
+                execution_lease_id,
+                leased_agent_id,
+            )
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "persist uncertain remote queued prompt steer",
+                message: format!(
+                    "queued prompt `{}` no longer matches the in-flight steer reservation",
+                    expected_prompt.id()
+                ),
+            });
+        }
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)
+    }
+
+    pub(super) fn clear_remote_queued_prompt_steer_uncertainty(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt: &crate::session::PromptQueueItem,
+        reservation: u64,
+    ) -> Result<(), DaemonError> {
+        let prompt_id = expected_prompt.id();
+        let session = self.session_store.get_session(session_id)?;
+        let (active_prompt, mut queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        let Some(current_prompt) = queued_prompts
+            .iter_mut()
+            .find(|prompt| prompt.id() == prompt_id)
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "clear rejected remote queued prompt steer",
+                message: format!(
+                    "queued prompt `{prompt_id}` disappeared before rejection was persisted"
+                ),
+            });
+        };
+        if current_prompt != expected_prompt {
+            return Err(DaemonError::LocalTransport {
+                operation: "clear rejected remote queued prompt steer",
+                message: format!(
+                    "queued prompt `{prompt_id}` changed before rejection was persisted"
+                ),
+            });
+        }
+        let restore_prompt = current_prompt.clone();
+        let Some(uncertainty) = current_prompt.clear_remote_steer_outcome_uncertainty(reservation)
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "clear rejected remote queued prompt steer",
+                message: format!(
+                    "queued prompt `{prompt_id}` no longer matches the uncertain steer reservation"
+                ),
+            });
+        };
+        let persisted = self.mirror_prompt_owner_agent_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        );
+        if persisted.is_err() {
+            let _ = restore_prompt.mark_remote_steer_outcome_uncertain(
+                reservation,
+                uncertainty.0,
+                uncertainty.1,
+                uncertainty.2,
+                uncertainty.3,
+                uncertainty.4,
+                uncertainty.5,
+            );
+        }
+        persisted
     }
 
     fn commit_queued_prompt_steer(
@@ -906,7 +1185,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
     ) -> Result<Option<crate::app::KernelQueuedPromptSteer>, DaemonError> {
         let context =
-            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id)?;
+            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id, None)?;
         if context.agent.remote_execution().is_some() {
             return Ok(None);
         }
@@ -926,34 +1205,288 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         attachment_id: &str,
-        prompt_id: &str,
-        target_active_prompt_id: &str,
+        prepared: &RemoteQueuedPromptSteerPreparation,
+        expected_binding: &crate::agent::RemoteAgentBinding,
+        reservation: u64,
+        provider_run_id: &str,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
-        let context =
-            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id)?;
-        if context.agent.remote_execution().is_none() {
+        if !prepared
+            .prompt
+            .remote_steer_reservation_matches(reservation)
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "steer remote queued prompt",
-                message: format!("agent `{agent_id}` is no longer remote"),
+                message: "remote queued prompt steer no longer owns its reservation".to_string(),
             });
         }
-        if context.active_prompt.id() != target_active_prompt_id {
+        let session = self.session_store.get_session(session_id)?;
+        let current_agent = self.agent_store.get_agent(agent_id)?;
+        if !remote_steer_binding_identity_matches(
+            current_agent.remote_execution(),
+            Some(expected_binding),
+        ) {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: "remote binding changed while the queued steer was in flight".to_string(),
+            });
+        }
+        let (_, queued_prompts) = self.prompt_state_owner.state_parts(&session, agent_id);
+        let Some(current_prompt) = queued_prompts.iter().find(|prompt| {
+            prompt.id() == prepared.prompt.id()
+                && prompt.remote_steer_reservation_matches(reservation)
+        }) else {
             return Err(DaemonError::LocalTransport {
                 operation: "steer remote queued prompt",
                 message: format!(
-                    "active prompt changed from `{target_active_prompt_id}` to `{}` before the remote steer committed",
-                    context.active_prompt.id()
+                    "queued prompt `{}` no longer owns its reservation",
+                    prepared.prompt.id()
+                ),
+            });
+        };
+        if current_prompt != &prepared.prompt {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: format!(
+                    "queued prompt `{}` changed while its remote steer was in flight",
+                    prepared.prompt.id()
                 ),
             });
         }
-        self.commit_queued_prompt_steer(
+        let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
+            prepared.prompt.source_attachment_id(),
+        )?;
+        self.append_steering_prompt_history(
+            session_id,
+            provider_run_id,
+            &prepared.target_active_prompt_id,
+            &source_attachment_id,
             agent_id,
+            prepared.prompt.id(),
+            prepared.prompt.prompt(),
+            prepared.prompt.attachments(),
+        )?;
+        let prompt = self
+            .prompt_state_owner
+            .remove_queued_prompt(&session, agent_id, prepared.prompt.id())
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: format!(
+                    "queued prompt `{}` disappeared before commit",
+                    prepared.prompt.id()
+                ),
+            })?;
+        let _ = prompt.release_remote_steer(reservation);
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+            &prepared.remote_execution.leased_agent_id,
+            provider_run_id,
+        );
+        self.echo_steering_prompt_to_other_attachments(
+            session_id,
+            &projected_provider_run_id,
+            agent_id,
+            prompt.id(),
+            &source_attachment_id,
             attachment_id,
-            prompt_id,
-            context,
-            false,
-        )
+            prompt.prompt(),
+            prompt.attachments(),
+            prompt.prompt_origin(),
+        );
+        self.record_notice(
+            session_id,
+            Some(&projected_provider_run_id),
+            self.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Attachment `{attachment_id}` steered queued prompt `{}` to agent `{agent_id}`.",
+                prompt.id()
+            ),
+        );
+        let session = self.session_snapshot(session_id)?;
+        Ok(crate::app::KernelQueuedPromptSteer {
+            dispatch: None,
+            prompt,
+            session,
+        })
+    }
+
+    pub(super) fn reconcile_remote_queued_prompt_steer_receipt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        queued_prompt_id: &str,
+        receipt: &crate::transport::relay_peer::LeasedPromptReceipt,
+    ) -> Result<RemoteQueuedPromptSteerReceiptSettlement, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        let Some(queued_prompt) = queued_prompts
+            .iter()
+            .find(|prompt| prompt.id() == queued_prompt_id)
+            .cloned()
+        else {
+            return Ok(RemoteQueuedPromptSteerReceiptSettlement::AlreadySettled);
+        };
+        if receipt.home_prompt_id != queued_prompt_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message: "worker receipt names a different queued prompt".to_string(),
+            });
+        }
+        let Some(target_home_prompt_id) = receipt.target_home_prompt_id.as_deref() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message: "worker receipt omitted the target home prompt identity".to_string(),
+            });
+        };
+        let Some(execution_lease_id) = receipt.execution_lease_id.as_deref() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message: "worker receipt omitted the execution lease identity".to_string(),
+            });
+        };
+        let Some((
+            expected_target_home_prompt_id,
+            expected_worker_run_id,
+            worker_kernel_id,
+            worker_machine_id,
+            expected_execution_lease_id,
+            leased_agent_id,
+        )) = queued_prompt.remote_steer_outcome_uncertainty()
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message: "queued prompt has no durable uncertain-steer identity".to_string(),
+            });
+        };
+        if expected_worker_run_id.as_deref() != Some(receipt.worker_provider_run_id.as_str())
+            || expected_target_home_prompt_id != target_home_prompt_id
+            || expected_execution_lease_id != execution_lease_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message:
+                    "worker receipt conflicts with the durable queued-steer target, run, or lease"
+                        .to_string(),
+            });
+        }
+        let current_agent = self.agent_store.get_agent(agent_id)?;
+        let binding = current_agent
+            .remote_execution()
+            .filter(|binding| {
+                binding.worker_kernel_id == worker_kernel_id
+                    && binding.worker_machine_id == worker_machine_id
+                    && binding.execution_lease_id == expected_execution_lease_id
+                    && binding.leased_agent_id == leased_agent_id
+            })
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message: "current worker binding no longer matches the durable steer receipt"
+                    .to_string(),
+            })?;
+        if active_prompt
+            .as_ref()
+            .is_some_and(|active| active.id() != target_home_prompt_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message: "a different home prompt is active; the uncertain steer remains held"
+                    .to_string(),
+            });
+        }
+        if receipt.phase == crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
+        {
+            return Ok(RemoteQueuedPromptSteerReceiptSettlement::Pending);
+        }
+        match receipt.phase {
+            crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted => {
+                let source_attachment_id = self.promoted_prompt_source_attachment_id(
+                    session_id,
+                    queued_prompt.source_attachment_id(),
+                )?;
+                let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+                    &binding.leased_agent_id,
+                    &receipt.worker_provider_run_id,
+                );
+                // The stable prompt merge key makes this idempotent if a crash
+                // happens after history append but before the queue commit.
+                self.append_steering_prompt_history(
+                    session_id,
+                    &receipt.worker_provider_run_id,
+                    target_home_prompt_id,
+                    &source_attachment_id,
+                    agent_id,
+                    queued_prompt_id,
+                    queued_prompt.prompt(),
+                    queued_prompt.attachments(),
+                )?;
+                self.prompt_state_owner
+                    .remove_queued_prompt(&session, agent_id, queued_prompt_id)
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "reconcile remote queued prompt steer",
+                        message: format!(
+                            "queued prompt `{queued_prompt_id}` disappeared before receipt settlement"
+                        ),
+                    })?;
+                let (active_prompt, queued_prompts) =
+                    self.prompt_state_owner.state_parts(&session, agent_id);
+                self.mirror_prompt_owner_agent_state(
+                    session_id,
+                    agent_id,
+                    active_prompt,
+                    queued_prompts,
+                )?;
+                self.record_notice(
+                    session_id,
+                    Some(&projected_provider_run_id),
+                    self.other_attachment_ids(session_id, &source_attachment_id),
+                    format!(
+                        "Recovered accepted queued steer `{queued_prompt_id}` from its exact worker receipt."
+                    ),
+                );
+                Ok(RemoteQueuedPromptSteerReceiptSettlement::Accepted)
+            }
+            crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected => {
+                let (active_prompt, mut queued_prompts) =
+                    self.prompt_state_owner.state_parts(&session, agent_id);
+                let Some(current_prompt) = queued_prompts
+                    .iter_mut()
+                    .find(|prompt| prompt.id() == queued_prompt_id)
+                else {
+                    return Ok(RemoteQueuedPromptSteerReceiptSettlement::AlreadySettled);
+                };
+                if current_prompt != &queued_prompt
+                    || !current_prompt.clear_remote_steer_outcome_uncertainty_for_receipt(
+                        target_home_prompt_id,
+                        &receipt.worker_provider_run_id,
+                        &worker_kernel_id,
+                        &worker_machine_id,
+                        execution_lease_id,
+                        &leased_agent_id,
+                    )
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "reconcile remote queued prompt steer",
+                        message: "exact rejection receipt could not release the durable queue hold"
+                            .to_string(),
+                    });
+                }
+                self.mirror_prompt_owner_agent_state(
+                    session_id,
+                    agent_id,
+                    active_prompt,
+                    queued_prompts,
+                )?;
+                Ok(RemoteQueuedPromptSteerReceiptSettlement::Rejected)
+            }
+            _ => Err(DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message: "worker returned a prompt receipt without a queued-steer outcome"
+                    .to_string(),
+            }),
+        }
     }
 
     pub(super) fn cancel_queued_prompt(
@@ -1057,4 +1590,20 @@ impl KernelRuntimeOwnedState {
         let session = self.session_snapshot(session_id)?;
         Ok(crate::app::KernelQueuedPromptUpdate { prompt, session })
     }
+}
+
+fn remote_steer_binding_identity_matches(
+    current: Option<&crate::agent::RemoteAgentBinding>,
+    expected: Option<&crate::agent::RemoteAgentBinding>,
+) -> bool {
+    let (Some(current), Some(expected)) = (current, expected) else {
+        return false;
+    };
+    current.worker_kernel_id == expected.worker_kernel_id
+        && current.worker_machine_id == expected.worker_machine_id
+        && current.execution_lease_id == expected.execution_lease_id
+        && current.leased_agent_id == expected.leased_agent_id
+        && current.relay_url == expected.relay_url
+        && current.relay_token == expected.relay_token
+        && current.relay_peer_protocol_version == expected.relay_peer_protocol_version
 }
