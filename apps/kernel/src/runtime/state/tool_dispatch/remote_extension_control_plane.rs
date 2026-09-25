@@ -219,9 +219,9 @@ impl KernelRuntimeState {
             // worker's turn before translating it to the leased home turn.
             forwarded_arguments["origin_prompt_id"] = serde_json::json!(home_prompt_id);
         }
-        let response = self
+        let (result, skill_package) = self
             .with_app_side_effect(|app| {
-                app.block_on_relay_future(
+                let response = app.block_on_relay_future(
                     crate::transport::relay_client::send_peer_request_via_temporary_connection(
                         app.config(),
                         ClientTarget {
@@ -234,29 +234,34 @@ impl KernelRuntimeState {
                             arguments: forwarded_arguments.clone(),
                         },
                     ),
-                )
+                )?;
+                let RelayPeerResponse::CapabilityRuntimeToolHandled {
+                    result,
+                    skill_package,
+                    remote_extension_manifest,
+                } = response
+                else {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "forward leased capability runtime tool",
+                        message: format!("unexpected forwarded capability response: {response:?}"),
+                    });
+                };
+                // Keep response application in the same worker critical section
+                // as the request. A newer pushed manifest must not be applied
+                // between receiving this snapshot and storing it.
+                #[cfg(test)]
+                self.pause_capability_response_before_apply();
+                let updated = self
+                    .owned
+                    .provider_store
+                    .update_run_remote_extension_manifest(
+                        provider_run.id(),
+                        remote_extension_manifest,
+                    )?;
+                self.owned.provider_run_projection.update(updated);
+                Ok((result, skill_package))
             })
             .await?;
-        let (result, skill_package, remote_extension_manifest) = match response {
-            RelayPeerResponse::CapabilityRuntimeToolHandled {
-                result,
-                skill_package,
-                remote_extension_manifest,
-            } => (result, skill_package, remote_extension_manifest),
-            other => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "forward leased capability runtime tool",
-                    message: format!("unexpected forwarded capability response: {other:?}"),
-                });
-            }
-        };
-        #[cfg(test)]
-        self.pause_capability_response_before_apply();
-        let updated = self
-            .owned
-            .provider_store
-            .update_run_remote_extension_manifest(provider_run.id(), remote_extension_manifest)?;
-        self.owned.provider_run_projection.update(updated);
         let result = self.apply_remote_skill_package_response(
             &workspace_context.root,
             &remote_context.home_kernel_id,
