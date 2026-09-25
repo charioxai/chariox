@@ -241,9 +241,7 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
     let attachment_id = attachment.id().to_string();
-    let response_prompt = prompt
-        .clone()
-        .with_id("worker-local-cancel-lock-prompt");
+    let response_prompt = prompt.clone().with_id("worker-local-cancel-lock-prompt");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let (request_seen_tx, request_seen_rx) = tokio::sync::oneshot::channel();
@@ -375,7 +373,7 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
 }
 
 #[tokio::test]
-async fn accepted_and_dispatching_cancellation_wait_for_exact_receipt_without_replay() {
+async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(RELAY_URL.to_string());
     config.relay_token = Some("cancel-ack-test-token".to_string());
@@ -470,26 +468,19 @@ async fn accepted_and_dispatching_cancellation_wait_for_exact_receipt_without_re
         relay.remember_peer_public_key(WORKER_ID, worker_config.relay_public_key.clone());
     }
 
-    let accepted_cancellation = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        runtime.cancel_remote_agent_prompt_if_remote(&session_id, &agent_id, &attachment_id),
-    )
-    .await
-    .expect("Accepted cancellation should persist without waiting for worker submission")
-    .expect("Accepted cancellation intent should be recorded")
-    .expect("remote prompt should remain held");
-    assert_eq!(
-        accepted_cancellation.cancellation.prompt.id(),
-        prompt_id.as_str()
-    );
-    assert_eq!(
-        accepted_cancellation.cancellation.prompt.status(),
-        crate::session::PromptStatus::Cancelling
-    );
-    assert_eq!(
-        accepted_cancellation.cancellation.prompt.durable_delivery_phase(),
-        Some(crate::session::DurablePromptDeliveryPhase::Accepted)
-    );
+    // Accepted cancellation is covered by the dispatch-task no-Submit regression. This
+    // lower-level relay fixture begins after the production Accepted -> Dispatching gate.
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            &session_id,
+            &agent_id,
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            None,
+            None,
+        )
+        .expect("home prompt should persist Dispatching before worker submission");
 
     let submit_runtime = runtime.clone();
     let submit_dispatch = dispatch.clone();
@@ -653,7 +644,10 @@ async fn accepted_and_dispatching_cancellation_wait_for_exact_receipt_without_re
         )
         .expect("the exact home prompt should remain held");
     assert_eq!(held_prompt.id(), prompt_id.as_str());
-    assert_eq!(held_prompt.status(), crate::session::PromptStatus::Cancelling);
+    assert_eq!(
+        held_prompt.status(),
+        crate::session::PromptStatus::Cancelling
+    );
     assert_eq!(
         held_prompt.durable_delivery_phase(),
         Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
