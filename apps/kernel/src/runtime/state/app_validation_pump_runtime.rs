@@ -6,7 +6,8 @@ use super::KernelRuntimeState;
 use crate::durable_state::app_validations::{ValidationCommand, ValidationOperation};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 
-const PAGE: usize = 16;
+/// Installations considered per pass; each shows its oldest pending operation.
+const PAGE: usize = 64;
 
 impl KernelRuntimeState {
     pub(crate) fn schedule_app_validation_pump(&self) {
@@ -42,7 +43,7 @@ impl KernelRuntimeState {
         for operation in pending {
             if !self
                 .app_control()
-                .begin_validation_prompt(&operation.operation_id)
+                .begin_validation_prompt(&operation.operation_id, &operation.owner)
             {
                 continue;
             }
@@ -94,14 +95,19 @@ impl KernelRuntimeState {
         }
     }
 
-    /// The owner's most recently used session hosts the approval, so it
-    /// appears on the terminals the person is using.
+    /// The owner's most recently used private session hosts the approval, so
+    /// it appears on the terminals the person is using and the exact
+    /// parameters are never shown to collaborators.
     fn validation_session(&self, owner: &str) -> Option<String> {
         self.owned
             .session_store
             .list_sessions()
             .into_iter()
-            .filter(|session| session.has_member(owner))
+            .filter(|session| {
+                session.has_member(owner)
+                    && session.members().len() == 1
+                    && session.invites().is_empty()
+            })
             .max_by_key(|session| {
                 session
                     .last_prompt_sent_at_ms()

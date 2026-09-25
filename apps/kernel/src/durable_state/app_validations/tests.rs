@@ -181,8 +181,60 @@ fn open_operations_are_bounded_per_installation() {
         })),
         Err("LIMIT_EXCEEDED")
     );
-    assert_eq!(
-        f.1.pending_app_validations(100).unwrap().len(),
-        MAX_OPEN as usize
-    );
+    // The pump sees one operation per installation, so another App's newer
+    // request is never hidden behind this backlog.
+    let (parameters, digest) = canonical(&serde_json::json!({}));
+    f.1.app_validation(ValidationCommand::Create(ValidationOperation {
+        operation_id: "other-app".into(),
+        owner: "bob".into(),
+        installation: "notes".into(),
+        generation: 1,
+        action: "publish".into(),
+        parameters,
+        digest,
+        state: ValidationState::Pending,
+        expires_ms: 1_000_000,
+    }))
+    .unwrap();
+    let pending: Vec<_> =
+        f.1.pending_app_validations(100)
+            .unwrap()
+            .into_iter()
+            .map(|operation| operation.operation_id)
+            .collect();
+    assert_eq!(pending, ["op-0", "other-app"]);
+}
+
+#[test]
+fn finished_operations_are_removed_after_retention() {
+    let f = Fixture::new();
+    f.create("denied", 1, 1_000_000);
+    f.create("open", 2, u64::MAX / 4);
+    f.1.app_validation(ValidationCommand::Decide {
+        operation_id: "denied".into(),
+        approved: false,
+        now_ms: 1,
+    })
+    .unwrap();
+    f.1.app_validation(ValidationCommand::Expire { now_ms: 2 })
+        .unwrap();
+    assert!(f
+        .1
+        .app_validation_status("alice", "pay", "denied")
+        .unwrap()
+        .is_some());
+    f.1.app_validation(ValidationCommand::Expire {
+        now_ms: 2 + FINISHED_RETENTION_MS,
+    })
+    .unwrap();
+    assert!(f
+        .1
+        .app_validation_status("alice", "pay", "denied")
+        .unwrap()
+        .is_none());
+    assert!(f
+        .1
+        .app_validation_status("alice", "pay", "open")
+        .unwrap()
+        .is_some());
 }

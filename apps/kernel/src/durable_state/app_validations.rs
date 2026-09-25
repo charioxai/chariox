@@ -12,6 +12,8 @@ pub(crate) const PENDING_MS: u64 = 10 * 60 * 1000;
 pub(crate) const APPROVAL_USE_MS: u64 = 10 * 60 * 1000;
 /// Unfinished operations per installation.
 const MAX_OPEN: i64 = 16;
+/// Denied, expired and consumed operations are kept this long, then removed.
+const FINISHED_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ValidationState {
@@ -185,7 +187,8 @@ impl DurableKernelStateStore {
             .filter(|operation| operation.owner == owner && operation.installation == installation))
     }
 
-    /// Pending operations for the approval pump, oldest first.
+    /// The oldest pending operation of each installation, oldest first: one
+    /// App's backlog can never hide another App's (or owner's) request.
     pub(crate) fn pending_app_validations(
         &self,
         limit: usize,
@@ -195,8 +198,11 @@ impl DurableKernelStateStore {
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         let mut statement = connection
             .prepare(&format!(
-                "SELECT {COLUMNS} FROM app_validations WHERE state='pending'
-                 ORDER BY updated_ms LIMIT ?1"
+                "SELECT {COLUMNS} FROM (
+                   SELECT *, row_number() OVER (
+                     PARTITION BY owner_id, installation_id ORDER BY updated_ms, operation_id) AS rank
+                   FROM app_validations WHERE state='pending')
+                 WHERE rank=1 ORDER BY updated_ms LIMIT ?1"
             ))
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         let rows = statement
@@ -280,6 +286,13 @@ fn apply(
                     "UPDATE app_validations SET state='expired', updated_ms=?1
                      WHERE state IN ('pending','approved') AND expires_ms<=?1",
                     params![now_ms as i64],
+                )
+                .map_err(storage)?;
+            transaction
+                .execute(
+                    "DELETE FROM app_validations
+                     WHERE state IN ('denied','expired','consumed') AND updated_ms<=?1",
+                    params![now_ms.saturating_sub(FINISHED_RETENTION_MS) as i64],
                 )
                 .map_err(storage)?;
             None
