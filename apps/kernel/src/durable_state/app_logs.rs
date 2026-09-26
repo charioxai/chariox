@@ -1,6 +1,8 @@
 //! Bounded per-installation App log (SDK `log.write`), read by `app logs`.
 //! Entries are App-authored text: stored and returned as data, never
-//! interpreted, and never written to the kernel's own log.
+//! interpreted, and never written to the kernel's own log. The kernel adds
+//! its own notices about the App here too, marked by the `kernel` field an
+//! App cannot write.
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use rusqlite::{params, Connection};
 use std::sync::mpsc;
@@ -10,6 +12,8 @@ const KEEP: i64 = 1000;
 const MAX_MESSAGE_BYTES: usize = 4096;
 const MAX_FIELDS_BYTES: usize = 8192;
 pub(crate) const MAX_READ: usize = 200;
+/// Marks an entry the kernel wrote; refused in App-written fields.
+const KERNEL_FIELD: &str = "kernel";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AppLogEntry {
@@ -56,7 +60,7 @@ pub(crate) fn validate(
     if !matches!(level, "debug" | "info" | "warn" | "error") {
         return Err("INVALID_ARGUMENT");
     }
-    if !fields.is_object() {
+    if !fields.is_object() || fields.get(KERNEL_FIELD).is_some() {
         return Err("INVALID_ARGUMENT");
     }
     if message.len() > MAX_MESSAGE_BYTES {
@@ -139,28 +143,65 @@ impl DurableKernelStateStore {
 pub(super) fn execute(connection: &mut Connection, request: AppLogRequest) {
     let result = (|| -> rusqlite::Result<()> {
         let transaction = connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO app_logs(owner_id, installation_id, at_ms, level, message, fields_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                request.owner,
-                request.installation,
-                crate::session::unix_epoch_ms() as i64,
-                request.level,
-                request.message,
-                request.fields
-            ],
-        )?;
-        transaction.execute(
-            "DELETE FROM app_logs WHERE owner_id=?1 AND installation_id=?2 AND sequence <= (
-               SELECT sequence FROM app_logs WHERE owner_id=?1 AND installation_id=?2
-               ORDER BY sequence DESC LIMIT 1 OFFSET ?3)",
-            params![request.owner, request.installation, KEEP],
+        insert(
+            &transaction,
+            &request.owner,
+            &request.installation,
+            crate::session::unix_epoch_ms(),
+            &request.level,
+            &request.message,
+            &request.fields,
         )?;
         transaction.commit()
     })()
     .map_err(|_| "STORAGE_UNAVAILABLE");
     let _ = request.response.send(result);
+}
+
+/// A kernel notice about the installation, in the caller's transaction.
+pub(super) fn append_kernel_notice_in(
+    transaction: &Connection,
+    owner: &str,
+    installation: &str,
+    at_ms: u64,
+    message: &str,
+    mut fields: serde_json::Map<String, serde_json::Value>,
+) -> rusqlite::Result<()> {
+    fields.insert(KERNEL_FIELD.into(), true.into());
+    let fields = serde_json::Value::Object(fields).to_string();
+    insert(
+        transaction,
+        owner,
+        installation,
+        at_ms,
+        "warn",
+        message,
+        &fields,
+    )
+}
+
+/// Appends one entry and drops the installation's oldest beyond `KEEP`.
+fn insert(
+    transaction: &Connection,
+    owner: &str,
+    installation: &str,
+    at_ms: u64,
+    level: &str,
+    message: &str,
+    fields: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "INSERT INTO app_logs(owner_id, installation_id, at_ms, level, message, fields_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![owner, installation, at_ms as i64, level, message, fields],
+    )?;
+    transaction.execute(
+        "DELETE FROM app_logs WHERE owner_id=?1 AND installation_id=?2 AND sequence <= (
+           SELECT sequence FROM app_logs WHERE owner_id=?1 AND installation_id=?2
+           ORDER BY sequence DESC LIMIT 1 OFFSET ?3)",
+        params![owner, installation, KEEP],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -180,6 +221,17 @@ mod tests {
         );
         assert_eq!(
             store.append_app_log("alice", "todo", "info", "x", &serde_json::json!([1])),
+            Err("INVALID_ARGUMENT")
+        );
+        // Only the kernel marks its own notices.
+        assert_eq!(
+            store.append_app_log(
+                "alice",
+                "todo",
+                "warn",
+                "x",
+                &serde_json::json!({"kernel": true})
+            ),
             Err("INVALID_ARGUMENT")
         );
         assert_eq!(
