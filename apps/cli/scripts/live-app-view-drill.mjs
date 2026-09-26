@@ -7,7 +7,7 @@
 // Protocol 351: the page reserves a private conversation panel and the Room
 // snapshot marks the App Tab with it, in desktop pixels, for the focus agent.
 // Protocol 357: the App Tab's accessibility outline lists every node after its
-// parent.
+// parent. Opening the App again shows the same, single App Tab.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
 // installed, running App:
@@ -73,6 +73,13 @@ try {
     listed.add(node.element_ref)
   }
   evidence.steps.push({ step: "outline", tab_id: tabId, nodes: outline.nodes.length, truncated: outline.truncated })
+
+  const again = (await client.send({
+    OpenAppView: { session_id: options.session, installation_id: options.installation },
+  })).AppViewOpened
+  assert.equal(again?.target_id, view.target_id, "opening the App again showed another Tab")
+  assert.equal(await roomApps((apps) => apps.length), 1, "the Room holds more than one Tab of this App")
+  evidence.steps.push({ step: "reopen", target_id: again.target_id })
   await roomApps((apps) => apps.every((app) => !app.panel))
   evidence.steps.push({ step: "panel", marked })
 
