@@ -66,7 +66,8 @@ test("opening an installation again shows its one App Tab with the current asset
     entry: "v2.html", assets: [asset("v2.html", "<p>v2</p>")] });
   assert.deepEqual(again, result);
   assert.deepEqual(connection.sent.map((m) => m.method), ["Target.activateTarget", "Browser.getWindowForTarget",
-    "Browser.getWindowBounds", "Page.reload"]);
+    "Browser.getWindowBounds", "Page.navigate"]);
+  assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
   assert.deepEqual((await tabs.takeCalls()).open_targets, ["t1"]);
   await connection.emit({ method: "Fetch.requestPaused", sessionId: "s1",
     params: { requestId: "r", request: { url: "https://todo-1.app.chariox.internal/", method: "GET" } } });

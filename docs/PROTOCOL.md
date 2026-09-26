@@ -1767,7 +1767,7 @@ Workflow trigger and deployment direction:
   Tab in the session's Room browser, so people and agents share one DOM and
   profile. There is one such Tab per Room and installation: opening it again
   (from another terminal, or after a kernel restart) returns the same
-  `target_id`, shows that Tab and reloads it with the current assets. The kernel re-verifies the active release and serves only its signed
+  `target_id`, shows that Tab and loads it again with the current assets. The kernel re-verifies the active release and serves only its signed
   `ui/` files on a per-owner, per-installation `https://<label>.app.chariox.internal`
   origin through browser request interception. All other requests from the Tab
   are blocked, a strict CSP applies, and popups are closed. The room-controller

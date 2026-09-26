@@ -116,7 +116,9 @@ export class AppTabs {
       Object.assign(open, { entry, assets: app.assets });
       await connection.send("Target.activateTarget", { targetId: open.targetId });
       await this.fullscreen(connection, open.targetId).catch(() => false);
-      await connection.send("Page.reload", { ignoreCache: true }, sessionId);
+      // Navigate (not reload): it returns once the document commits, so the
+      // Room projects the Tab's URL rather than the empty one of a reload.
+      await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
       return { target_id: open.targetId, origin };
     }
     // Each App view gets its own fullscreen window: its page then covers the
