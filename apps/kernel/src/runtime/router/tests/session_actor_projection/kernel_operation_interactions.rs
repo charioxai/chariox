@@ -208,6 +208,52 @@ async fn duplicate_subject_and_foreign_timeout_cannot_replace_or_remove_a_decisi
 }
 
 #[tokio::test]
+async fn a_decision_nobody_waits_for_is_superseded_by_the_same_subject() {
+    let (router, session) = setup();
+    let abandoned = router
+        .runtime_state
+        .create_kernel_operation_interaction(
+            &session,
+            DEFAULT_LOCAL_USER_ID,
+            decision("abandoned", "operation"),
+        )
+        .await
+        .unwrap();
+    // The component that asked was replaced: its receiver is gone.
+    drop(abandoned);
+    let replacement = router
+        .runtime_state
+        .create_kernel_operation_interaction(
+            &session,
+            DEFAULT_LOCAL_USER_ID,
+            decision("replacement", "operation"),
+        )
+        .await
+        .unwrap();
+    let active = router
+        .runtime_state
+        .session_snapshot(&session)
+        .await
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .map(|interaction| interaction.id().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(active, ["replacement"]);
+    // A decision someone still waits for keeps blocking its subject.
+    assert!(router
+        .runtime_state
+        .create_kernel_operation_interaction(
+            &session,
+            DEFAULT_LOCAL_USER_ID,
+            decision("third", "operation"),
+        )
+        .await
+        .is_err());
+    drop(replacement);
+}
+
+#[tokio::test]
 async fn kernel_registration_rejects_custom_or_automatic_approval() {
     let (router, session) = setup();
     for field in ["default_on_timeout", "custom_choice"] {
