@@ -265,9 +265,14 @@ fn an_update_that_changes_a_routed_event_schema_breaks_its_automation_visibly() 
     let directory = Database::new();
     let mut db = directory.open();
     let (mut package, trust, catalog) = setup(&mut db);
+    // One event is accepted but not yet delivered when the update lands.
+    let current = automation(&mut db, &catalog);
+    accept(&mut db, &current, "accepted-before-update");
     // The same schema in a new generation leaves the automation alone.
     let tx = db.transaction().unwrap();
-    assert_eq!(AppOutbox::break_changed_in(&tx, &catalog, "owner").unwrap(), 0);
+    assert!(AppOutbox::break_changed_in(&tx, &catalog, "owner")
+        .unwrap()
+        .is_empty());
     tx.commit().unwrap();
 
     package.manifest.version = "1.1.0".into();
@@ -281,12 +286,17 @@ fn an_update_that_changes_a_routed_event_schema_breaks_its_automation_visibly() 
     );
     let (_, updated) = package.activate(&mut db, &trust, Some(catalog.generation()));
     let tx = db.transaction().unwrap();
-    assert_eq!(AppOutbox::break_changed_in(&tx, &updated, "owner").unwrap(), 1);
+    assert_eq!(
+        AppOutbox::break_changed_in(&tx, &updated, "owner").unwrap(),
+        [("automation".to_string(), 1)]
+    );
     let broken = AppOutbox::configuration_in(&tx, &updated, "owner", "automation").unwrap();
     assert_eq!(broken.status, AutomationStatus::Broken);
     assert_eq!(broken.revision, 2);
     // Already broken: nothing more to do; re-adding it restores it.
-    assert_eq!(AppOutbox::break_changed_in(&tx, &updated, "owner").unwrap(), 0);
+    assert!(AppOutbox::break_changed_in(&tx, &updated, "owner")
+        .unwrap()
+        .is_empty());
     let restored = AppOutbox::configure_in(
         &tx,
         &updated,
