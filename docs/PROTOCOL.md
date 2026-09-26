@@ -1900,8 +1900,9 @@ Workflow trigger and deployment direction:
   (`element_ref`, `parent_ref`, `role`, `name`, and when set `value`,
   `description`, `disabled`, `focused`), bounded to 2000. It holds what a
   reader announces: ignored nodes, inline text boxes, unnamed layout wrappers
-  and text that only repeats its parent's name are left out, and their
-  children hang from the nearest kept ancestor. Terminals present it so App
+  and text its parent's name already says (an aria-labelled button's text)
+  are left out, and their children hang from the nearest kept ancestor.
+  Nodes are depth first, so each follows its parent. Terminals present it so App
   views and other pages can be read with a screen reader or keyboard; it
   grants no input.
 - serving either a live source trigger or a deployed package MUST validate

@@ -11,9 +11,9 @@ use crate::runtime::browser_controller_snapshot::RoomBrowserAccessibilityNode;
 const MAX_NODES: usize = 2000;
 
 /// Leaves out what a reader would not announce: ignored nodes, the text boxes
-/// inside a text run, unnamed layout wrappers, and text that only repeats its
-/// parent's name (a button's label). The children of a left-out node hang from
-/// its nearest kept ancestor.
+/// inside a text run, unnamed layout wrappers, and text its parent's name
+/// already says (a button's label). The children of a left-out node hang from
+/// its nearest kept ancestor. Nodes come out in document order (depth first).
 pub(crate) fn outline(
     nodes: &[RoomBrowserAccessibilityNode],
 ) -> (Vec<RoomEnvironmentAccessibilityNode>, bool) {
@@ -32,7 +32,7 @@ pub(crate) fn outline(
             || (matches!(node.role.as_str(), "generic" | "none" | "presentation")
                 && node.name.is_empty())
             || (node.role == "StaticText"
-                && parent(node).is_some_and(|parent| parent.name == node.name)))
+                && parent(node).is_some_and(|parent| parent.name.contains(node.name.as_str()))))
     };
     let kept_ancestor = |node: &RoomBrowserAccessibilityNode| {
         let mut current = parent(node);
@@ -45,22 +45,40 @@ pub(crate) fn outline(
         }
         None
     };
-    let visible: Vec<_> = nodes.iter().filter(|node| kept(node)).collect();
-    let truncated = visible.len() > MAX_NODES;
-    let outline = visible
-        .into_iter()
-        .take(MAX_NODES)
-        .map(|node| RoomEnvironmentAccessibilityNode {
+    let mut children: HashMap<Option<String>, Vec<&RoomBrowserAccessibilityNode>> = HashMap::new();
+    for node in nodes.iter().filter(|node| kept(node)) {
+        children.entry(kept_ancestor(node)).or_default().push(node);
+    }
+    let mut outline = Vec::new();
+    let mut truncated = false;
+    let mut pending: Vec<(Option<String>, &RoomBrowserAccessibilityNode)> = children
+        .get(&None)
+        .map(|roots| roots.iter().rev().map(|node| (None, *node)).collect())
+        .unwrap_or_default();
+    while let Some((parent_ref, node)) = pending.pop() {
+        if outline.len() == MAX_NODES {
+            truncated = true;
+            break;
+        }
+        if let Some(below) = children.get(&Some(node.element_ref.clone())) {
+            pending.extend(
+                below
+                    .iter()
+                    .rev()
+                    .map(|child| (Some(node.element_ref.clone()), *child)),
+            );
+        }
+        outline.push(RoomEnvironmentAccessibilityNode {
             element_ref: node.element_ref.clone(),
-            parent_ref: kept_ancestor(node),
+            parent_ref,
             role: node.role.clone(),
             name: node.name.clone(),
             value: node.value.clone(),
             description: node.description.clone(),
             disabled: node.disabled,
             focused: node.focused,
-        })
-        .collect();
+        });
+    }
     (outline, truncated)
 }
 
@@ -101,6 +119,11 @@ mod tests {
             node("e6", Some("e5"), "StaticText", "Add"),
             node("e7", Some("e6"), "InlineTextBox", "Add"),
             node("e8", Some("e3"), "StaticText", "2 open"),
+            node("e9", Some("e5"), "generic", ""),
+            node("e10", Some("e3"), "button", "Delete Buy milk"),
+            node("e11", Some("e10"), "StaticText", "Delete"),
+            // Snapshots list nodes level by level; the outline is depth first.
+            node("e12", Some("e4"), "StaticText", "milk"),
         ]);
         assert!(!truncated);
         let shape: Vec<_> = outline
@@ -112,8 +135,10 @@ mod tests {
             [
                 ("e1", None),
                 ("e4", Some("e1")),
+                ("e12", Some("e4")),
                 ("e5", Some("e1")),
-                ("e8", Some("e1"))
+                ("e8", Some("e1")),
+                ("e10", Some("e1")),
             ]
         );
     }
