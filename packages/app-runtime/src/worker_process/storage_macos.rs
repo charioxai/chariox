@@ -238,6 +238,16 @@ impl StorageRoot {
         // Recovery always detaches any prior mapping first. Reusing a remembered
         // /dev identifier or an existing mount without rediscovery is forbidden.
         storage.release_blocking()?;
+        // File-image snapshot: a staged update keeps the data it started from;
+        // rolling back restores it, and a committed start drops it.
+        let previous = storage.journal.generation;
+        if generation > previous && generation != committed {
+            storage.snapshot_data(previous)?;
+        } else if generation < previous && generation == committed {
+            storage.restore_data(generation)?;
+        } else if generation == committed {
+            storage.discard_snapshots()?;
+        }
         storage.journal.generation = generation;
         storage.journal.pending_recovery = true;
         storage.journal.save(&storage.root)?;

@@ -330,3 +330,89 @@ pub(super) fn create_arguments(
         path.to_str().ok_or(Error::Identity)?,
     ]))
 }
+
+/// The data image as it was before a staged update first mounted, kept until
+/// that update commits or is rolled back.
+fn snapshot_name(generation: u64) -> String {
+    format!("data-snapshot-{generation}.dmg")
+}
+
+fn is_snapshot(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.strip_prefix("data-snapshot-")
+            .and_then(|rest| rest.strip_suffix(".dmg"))
+            .is_some_and(|generation| generation.parse::<u64>().is_ok())
+    })
+}
+
+impl MountedStorage {
+    /// Before a staged generation mounts: a copy-on-write clone of the exact,
+    /// detached data image of `generation` (the one it may roll back to).
+    pub(super) fn snapshot_data(&mut self, generation: u64) -> Result<()> {
+        self.discard_snapshots()?;
+        let Some(file) = self.open_image(0)? else {
+            return Ok(());
+        };
+        let name = crate::private_fs::cstring(OsStr::new(&snapshot_name(generation)))?;
+        if unsafe {
+            libc::fclonefileat(file.as_raw_fd(), self.root.0.as_raw_fd(), name.as_ptr(), 0)
+        } != 0
+        {
+            return Err(Error::Io);
+        }
+        self.root.sync()?;
+        Ok(())
+    }
+
+    /// Rolling back to the committed `generation` after its successor failed:
+    /// that generation's snapshot replaces the data image, so files written by
+    /// the uncommitted successor are discarded along with its state.
+    pub(super) fn restore_data(&mut self, generation: u64) -> Result<()> {
+        let name = snapshot_name(generation);
+        let snapshot = match self.root.read_file(OsStr::new(&name), false) {
+            Ok(file) => file,
+            Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return self.discard_snapshots();
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let identity = FileIdentity::of(&snapshot)?;
+        let from = crate::private_fs::cstring(OsStr::new(&name))?;
+        let to = crate::private_fs::cstring(OsStr::new(&self.journal.images[0].image))?;
+        let root = self.root.0.as_raw_fd();
+        if unsafe { libc::renameat(root, from.as_ptr(), root, to.as_ptr()) } != 0 {
+            return Err(Error::Io);
+        }
+        self.root.sync()?;
+        self.journal.images[0].identity = Some(identity);
+        self.journal.save(&self.root)?;
+        self.discard_snapshots()
+    }
+
+    /// No rollback is possible any more (the generation committed).
+    pub(super) fn discard_snapshots(&self) -> Result<()> {
+        for name in self.root.entries(16)? {
+            if is_snapshot(&name) {
+                self.root.remove_file(&name)?;
+            }
+        }
+        self.root.sync()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    #[test]
+    fn only_numbered_data_snapshots_are_recognized() {
+        assert!(super::is_snapshot(super::OsStr::new("data-snapshot-5.dmg")));
+        for name in [
+            "data-5.dmg",
+            "data-snapshot-.dmg",
+            "data-snapshot-x.dmg",
+            "storage.json",
+        ] {
+            assert!(!super::is_snapshot(super::OsStr::new(name)), "{name}");
+        }
+    }
+}
