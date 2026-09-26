@@ -16,6 +16,8 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     let before_environment = &before_environment["RoomEnvironmentState"]["environment"];
     let before_action_count = before_environment["actions"].as_array().unwrap().len();
     let before_ownership = before_environment["input_ownership"].clone();
+    let controller_state_path = fixture._worker_state.root.join("chromium-state.json");
+    let clicks_before_recovery = controller_click_count(&controller_state_path);
     let old_field = before.payload["browser"]["buttons"][0]["field_id"]
         .as_str()
         .unwrap()
@@ -94,6 +96,11 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
             .unwrap()["outcome"]["code"],
         "process_lost"
     );
+    assert_eq!(
+        controller_click_count(&controller_state_path),
+        clicks_before_recovery,
+        "a stale-reference failure must not dispatch physical input"
+    );
 
     let recovered = fixture
         .home
@@ -130,6 +137,36 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     .await
     .unwrap();
     let recovered_environment = &recovered_environment["RoomEnvironmentState"]["environment"];
+    let failed_action_count = after_failed_mutation["actions"].as_array().unwrap().len();
+    let recovered_actions = recovered_environment["actions"].as_array().unwrap();
+    assert_eq!(
+        recovered_actions.len(),
+        failed_action_count + 1,
+        "the post-restart status read records one browser observation"
+    );
+    let recovery_observation = recovered_actions.last().unwrap();
+    assert_eq!(recovery_observation["kind"], "browser_status");
+    assert_eq!(recovery_observation["state"], "completed");
+    assert_eq!(
+        recovery_observation["actor_id"],
+        crate::session::agent_environment_actor_id(
+            before.payload["agent_id"].as_str().unwrap()
+        ),
+        "the recovery observation remains attributed to the requesting agent"
+    );
+    assert_eq!(
+        recovery_observation["runtime_generation"],
+        before.payload["runtime_generation"]
+    );
+    assert_eq!(
+        recovery_observation["targets"][0],
+        json!({"kind":"browser_tab","id":before.payload["tab_id"]})
+    );
+    assert_eq!(
+        controller_click_count(&controller_state_path),
+        clicks_before_recovery,
+        "recovering through a browser status observation must not replay a click"
+    );
     for component in ["browser_controller", "browser"] {
         assert!(
             recovered_environment["health"]
@@ -178,16 +215,34 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     let after_completed = &after_completed["RoomEnvironmentState"]["environment"];
     assert_eq!(
         after_completed["actions"].as_array().unwrap().len(),
-        before_action_count + 2,
-        "one fresh mutation must create exactly one additional action"
+        recovered_actions.len() + 1,
+        "one fresh mutation must append one action after the recovery observation"
+    );
+    let completed_action = after_completed["actions"].as_array().unwrap().last().unwrap();
+    assert_eq!(completed_action["action_id"], completed.payload["action_id"]);
+    assert_eq!(completed_action["kind"], "click");
+    assert_eq!(
+        completed_action["state"],
+        "completed"
     );
     assert_eq!(
-        after_completed["actions"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()["state"],
-        "completed"
+        completed_action["actor_id"],
+        crate::session::agent_environment_actor_id(
+            before.payload["agent_id"].as_str().unwrap()
+        )
+    );
+    assert_eq!(
+        completed_action["runtime_generation"],
+        recovered.payload["runtime_generation"]
+    );
+    assert_eq!(
+        completed_action["targets"][0],
+        json!({"kind":"browser_tab","id":recovered.payload["tab_id"]})
+    );
+    assert_eq!(
+        controller_click_count(&controller_state_path),
+        clicks_before_recovery + 1,
+        "the fresh post-recovery click is physically dispatched exactly once"
     );
     let dialog_crash_pid =
         std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
@@ -267,8 +322,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         .as_str()
         .expect("recovered browser button reference")
         .to_string();
-    let state_path = fixture._worker_state.root.join("chromium-state.json");
-    let clicks_before_queue_fault = controller_click_count(&state_path);
+    let clicks_before_queue_fault = controller_click_count(&controller_state_path);
     let actions_before_queue_fault = dispatch_json(
         &fixture.home,
         json!({"GetRoomEnvironmentState":{"session_id":fixture.rooms[0]}}),
@@ -345,7 +399,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         );
     }
     assert_eq!(
-        controller_click_count(&state_path),
+        controller_click_count(&controller_state_path),
         clicks_before_queue_fault,
         "controller recovery must not repeat a running or queued mutation"
     );
@@ -370,7 +424,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         .await
         .expect("one newly discovered post-recovery mutation should execute");
     assert_eq!(
-        controller_click_count(&state_path),
+        controller_click_count(&controller_state_path),
         clicks_before_queue_fault + 1,
         "only the explicit post-recovery mutation may change the page"
     );
