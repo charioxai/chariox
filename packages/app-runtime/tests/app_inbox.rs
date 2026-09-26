@@ -97,11 +97,13 @@ fn routes_are_owned_and_unique() {
         vec![route("r1")]
     );
     assert!(matches!(
-        app_inbox::remove_route_in(&db, "someone", "r1"),
+        app_inbox::remove_route_in(&db, "someone", "installed", "r1"),
         Err(InboxError::NotFound)
     ));
-    app_inbox::remove_route_in(&db, "owner", "r1").unwrap();
-    assert!(app_inbox::route(&db, "r1").unwrap().is_none());
+    app_inbox::remove_route_in(&db, "owner", "installed", "r1").unwrap();
+    assert!(app_inbox::route(&db, "owner", "installed", "r1")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -129,21 +131,19 @@ fn accepting_dedupes_by_source_occurrence() {
         app_inbox::accept_in(&db, &inactive, "occ-2", &json!({}), 3, 200),
         Err(InboxError::NotFound)
     ));
-    assert!(app_inbox::has_pending(&db, "owner", "installed").unwrap());
     let due = app_inbox::due(&db, 100, 10).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].occurrence_id, "occ-1");
     assert_eq!(due[0].payload, json!({"text":"a"}));
     app_inbox::delivered_in(&db, first, 3).unwrap();
     assert_eq!(
-        app_inbox::counts(&db, "r1").unwrap(),
+        app_inbox::counts(&db, &route).unwrap(),
         app_inbox::InboxCounts {
             delivered: 1,
             ..Default::default()
         }
     );
     assert_eq!(app_inbox::state(&db, first).unwrap(), InboxState::Delivered);
-    assert!(!app_inbox::has_pending(&db, "owner", "installed").unwrap());
     assert!(app_inbox::due(&db, 100, 10).unwrap().is_empty());
     // A settled occurrence stays deduplicated; a replay does not redeliver.
     assert_eq!(
@@ -202,5 +202,41 @@ fn postponing_spends_no_attempt_and_old_occurrences_expire() {
     assert_eq!(
         app_inbox::state(&db, sequence).unwrap(),
         InboxState::Expired
+    );
+}
+
+#[test]
+fn routes_are_scoped_per_owner_and_installation_and_removal_forgets_occurrences() {
+    let db = db();
+    app_inbox::create_route_in(&db, &route("mail"), 1).unwrap();
+    let other = InboxRoute {
+        owner_id: "someone".into(),
+        ..route("mail")
+    };
+    // Another owner's route of the same name neither conflicts nor sees it.
+    app_inbox::create_route_in(&db, &other, 1).unwrap();
+    app_inbox::accept_in(&db, &route("mail"), "occ-1", &json!({"text":"a"}), 1, 0).unwrap();
+    assert!(matches!(
+        app_inbox::accept_in(&db, &other, "occ-1", &json!({"text":"b"}), 1, 0).unwrap(),
+        Accepted::New(_)
+    ));
+    assert_eq!(app_inbox::counts(&db, &other).unwrap().pending, 1);
+    app_inbox::remove_route_in(&db, "owner", "installed", "mail").unwrap();
+    app_inbox::create_route_in(&db, &route("mail"), 2).unwrap();
+    assert_eq!(
+        app_inbox::counts(&db, &route("mail")).unwrap(),
+        app_inbox::InboxCounts::default()
+    );
+    assert!(matches!(
+        app_inbox::accept_in(&db, &route("mail"), "occ-1", &json!({"text":"c"}), 1, 3).unwrap(),
+        Accepted::New(_)
+    ));
+    let due = app_inbox::due(&db, 10, 10).unwrap();
+    assert_eq!(due.len(), 2);
+    assert!(due.iter().all(|item| item.accepted_generation == 1));
+    app_inbox::undeliverable_in(&db, due[0].sequence).unwrap();
+    assert_eq!(
+        app_inbox::state(&db, due[0].sequence).unwrap(),
+        InboxState::Failed
     );
 }
