@@ -108,7 +108,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         target_agent_id: &str,
-        claim: &mut super::remote_prompt_dispatch_runtime::RemotePromptAgentClaim,
+        claim: &mut super::remote_prompt_claim_runtime::RemotePromptAgentClaim,
     ) -> Result<bool, DaemonError> {
         let agent = self.owned.agent_store.get_agent(target_agent_id)?;
         if agent.session_id() != session_id || agent.remote_execution().is_none() {
@@ -178,7 +178,7 @@ impl KernelRuntimeState {
         attachment_id: &str,
         active_prompt: &crate::session::PromptQueueItem,
         cancellation_intent: crate::app::KernelPromptCancellation,
-        cancellation_claim: &mut super::remote_prompt_dispatch_runtime::RemotePromptAgentClaim,
+        cancellation_claim: &mut super::remote_prompt_claim_runtime::RemotePromptAgentClaim,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         let remote_execution = self
             .owned
