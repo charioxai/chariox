@@ -16,6 +16,12 @@ pub const MAX_PENDING: usize = 1024;
 pub const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_ATTEMPTS: u32 = 8;
 pub const PENDING_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+/// A settled occurrence is kept this long after it was accepted, so a source
+/// replaying it within the window is answered as a duplicate; later it is
+/// pruned, and the inbox does not grow with a route's lifetime volume.
+pub const DEDUPE_WINDOW_MS: u64 = 2 * PENDING_LIFETIME_MS;
+/// Settled rows pruned per accepted occurrence (amortized, on the writer).
+const PRUNE_BATCH: usize = 64;
 const MAX_BACKOFF_MS: u64 = 60_000;
 
 #[derive(Debug, thiserror::Error)]
@@ -152,7 +158,8 @@ pub fn initialize(connection: &Connection) -> Result<()> {
             next_attempt_at_ms INTEGER NOT NULL,
             UNIQUE(owner_id,installation_id,route_id,occurrence_id)
          );
-         CREATE INDEX IF NOT EXISTS app_inbox_due ON app_inbox(state,next_attempt_at_ms,sequence);",
+         CREATE INDEX IF NOT EXISTS app_inbox_due ON app_inbox(state,next_attempt_at_ms,sequence);
+         CREATE INDEX IF NOT EXISTS app_inbox_installation_state ON app_inbox(owner_id,installation_id,state,accepted_at_ms);",
     )?;
     Ok(())
 }
@@ -298,6 +305,18 @@ pub fn accept_in(
     if payload_json.len() > MAX_PAYLOAD_BYTES {
         return Err(InboxError::Limit);
     }
+    // Settled occurrences past the dedupe window go, a bounded batch at a time.
+    tx.execute(
+        "DELETE FROM app_inbox WHERE sequence IN (
+           SELECT sequence FROM app_inbox WHERE owner_id=?1 AND installation_id=?2
+           AND state IN ('delivered','failed','expired') AND accepted_at_ms<=?3 LIMIT ?4)",
+        params![
+            route.owner_id,
+            route.installation_id,
+            now_ms.saturating_sub(DEDUPE_WINDOW_MS) as i64,
+            PRUNE_BATCH as i64
+        ],
+    )?;
     let canonical = serde_json_canonicalizer::to_vec(payload).map_err(|_| InboxError::Invalid)?;
     let content_digest = format!("sha256:{:x}", Sha256::digest(&canonical));
     let existing: Option<(i64, String)> = tx
