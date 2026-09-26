@@ -13,6 +13,10 @@ pub(crate) struct BrowserControllerStructuredSnapshot {
     pub(crate) document_id: String,
     pub(crate) snapshot_revision: u64,
     pub(crate) accessibility_nodes: Vec<BrowserControllerAccessibilityNode>,
+    /// The controller cut the accessibility tree at its node bound (protocol
+    /// 357; absent when it did not, as from older controllers).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) accessibility_truncated: bool,
     #[serde(default)]
     pub(crate) dom_documents: Vec<BrowserControllerDomDocument>,
     #[serde(default)]
@@ -94,6 +98,7 @@ pub(crate) struct RoomBrowserStructuredSnapshot {
     pub(crate) document_revision: u64,
     pub(crate) snapshot_revision: u64,
     pub(crate) accessibility_nodes: Vec<RoomBrowserAccessibilityNode>,
+    pub(crate) accessibility_truncated: bool,
     pub(crate) dom_documents: Vec<RoomBrowserDomDocument>,
     pub(crate) shadow_roots: Vec<RoomBrowserShadowRoot>,
     pub(crate) dom_nodes: Vec<RoomBrowserDomNode>,
@@ -247,6 +252,7 @@ impl BrowserControllerStructuredSnapshot {
             document_revision,
             snapshot_revision: self.snapshot_revision,
             accessibility_nodes,
+            accessibility_truncated: self.accessibility_truncated,
             dom_documents,
             shadow_roots,
             dom_nodes,
@@ -621,6 +627,7 @@ mod tests {
             document_id: "loader-a".to_string(),
             snapshot_revision: 1,
             accessibility_nodes: Vec::new(),
+            accessibility_truncated: false,
             dom_documents: vec![BrowserControllerDomDocument {
                 document_index: 0,
                 url: "https://top.test".to_string(),

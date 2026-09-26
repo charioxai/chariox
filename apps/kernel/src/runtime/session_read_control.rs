@@ -373,7 +373,7 @@ pub(crate) async fn execute_get_room_environment_tab_accessibility_request(
             tab_id: snapshot.tab_id,
             document_revision: snapshot.document_revision,
             nodes,
-            truncated,
+            truncated: truncated || snapshot.accessibility_truncated,
         },
     })
 }

@@ -1910,10 +1910,11 @@ Workflow trigger and deployment direction:
   `description`, `disabled`, `focused`, and `states`: what a reader announces
   about the control, among `checked`, `not checked`, `mixed`, `pressed`,
   `not pressed`, `expanded`, `collapsed`, `selected`, `required`, `invalid`),
-  bounded to 2000 (`truncated` is also set when the controller's snapshot
-  reached its own 5000-node bound, which cuts the deepest nodes first). The
-  Room browser controller's snapshot nodes gain the same `states` (absent
-  from older controllers). It holds what a reader announces: ignored nodes,
+  bounded to 2000 (`truncated` is also set when the controller cut its
+  snapshot at its own 5000-node bound, which cuts the deepest nodes first).
+  The Room browser controller's snapshot nodes gain the same `states`, and
+  the snapshot gains `accessibility_truncated` for that cut (both absent from
+  older controllers, whose full 5000-node snapshot counts as cut). It holds what a reader announces: ignored nodes,
   inline text boxes, unnamed layout wrappers and text its parent's name
   already says (an aria-labelled button's text) are left out, and their
   children hang from the nearest kept ancestor. Nodes are in document order

@@ -53,7 +53,8 @@ export async function captureBrowserSnapshot({
     target_id: targetId,
     document_id: documentId,
     snapshot_revision: snapshotRevision,
-    accessibility_nodes: accessibility,
+    accessibility_nodes: accessibility.nodes,
+    accessibility_truncated: accessibility.truncated,
     ...compactedDom,
   };
 }
@@ -105,26 +106,34 @@ function snapshotFrames(frameTree, maxFrames) {
   return frames;
 }
 
+// Reports whether it cut the tree at the node bound, since dropped and
+// duplicate nodes can leave fewer nodes than the bound after a cut.
 async function captureFrameAccessibility(connection, sessionId, frames, options) {
   const nodes = [];
   const seen = new Set();
+  let truncated = false;
   for (const frame of frames) {
-    if (nodes.length >= options.maxNodes) break;
+    if (nodes.length >= options.maxNodes) {
+      truncated = true;
+      break;
+    }
     const tree = await connection.send(
       "Accessibility.getFullAXTree",
       frame.id ? { frameId: frame.id } : {},
       sessionId,
     );
+    const remaining = options.maxNodes - nodes.length;
+    if (Array.isArray(tree?.nodes) && tree.nodes.length > remaining) truncated = true;
     // AX node IDs belong to each frame's tree. Resolve their relationships
     // before joining frames through the shared backend DOM references.
-    for (const node of compactAccessibilityNodes(tree?.nodes, { ...options, maxNodes: options.maxNodes - nodes.length })) {
+    for (const node of compactAccessibilityNodes(tree?.nodes, { ...options, maxNodes: remaining })) {
       if (!seen.has(node.node_ref)) {
         seen.add(node.node_ref);
         nodes.push(node);
       }
     }
   }
-  return nodes;
+  return { nodes, truncated };
 }
 
 function compactAccessibilityNodes(rawNodes, options) {
