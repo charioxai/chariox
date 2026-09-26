@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { constants as fsConstants } from "node:fs"
+import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -9,6 +10,9 @@ const installSource = await readFile(new URL("./install-image.sh", import.meta.u
 const upgradeSource = await readFile(new URL("./upgrade-image.sh", import.meta.url), "utf8")
 const prepareSource = await readFile(new URL("./prepare-hetzner-image.sh", import.meta.url), "utf8")
 const path1Service = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
+const disposableWorkerService = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
+const providerResolverSources = await Promise.all(["codex", "claude", "opencode"].map((provider) =>
+  readFile(new URL(`../../apps/kernel/src/provider/${provider}.rs`, import.meta.url), "utf8")))
 const upgradeStateScript = new URL("./managed-kernel-upgrade-state.mjs", import.meta.url)
 
 function indexOf(source, text, label, from = 0) {
@@ -16,6 +20,93 @@ function indexOf(source, text, label, from = 0) {
   assert.notEqual(index, -1, `${label} must be present`)
   return index
 }
+
+function sourceFunction(source, name, nextName) {
+  const start = indexOf(source, `fn ${name}(`, `${name} function`)
+  const end = indexOf(source, `\nfn ${nextName}(`, `${nextName} function`, start)
+  return source.slice(start, end)
+}
+
+test("Path-1 role units share the user-first provider executable path", async (context) => {
+  const units = [path1Service, disposableWorkerService]
+  const paths = units.map((unit) => {
+    const assignments = unit.split(/\r?\n/).filter((line) => line.startsWith("Environment=PATH="))
+    assert.equal(assignments.length, 1, "each Path-1 unit must set PATH once")
+    return assignments[0].slice("Environment=PATH=".length).split(":")
+  })
+  assert.deepEqual(paths[0], paths[1])
+  assert.deepEqual(paths[0], ["/home/chariox/.local/bin", "/usr/local/bin", "/usr/bin", "/bin"])
+
+  const [codex, claude, opencode] = providerResolverSources
+  assert.match(sourceFunction(codex, "resolve_candidate", "is_executable_file"),
+    /env::split_paths\(&path_var\)[\s\S]*?\.find\(\|path\| is_executable_file\(path\)\)/)
+  assert.match(sourceFunction(claude, "resolve_candidate", "is_executable_file"),
+    /for directory in env::split_paths\(&path_var\)/)
+  assert.match(sourceFunction(opencode, "resolve_candidate", "is_executable_file"),
+    /env::split_paths\(&path_var\)[\s\S]*?\.find\(\|path\| is_executable_file\(path\)\)/)
+
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-path1-provider-path-"))
+  context.after(() => rm(scratch, { recursive: true, force: true }))
+  const fixtureDirectories = paths[0].map((_, index) => join(scratch, String(index)))
+  await Promise.all(fixtureDirectories.map((directory) => mkdir(directory)))
+  for (const provider of ["codex", "claude", "opencode"]) {
+    const userExecutable = join(fixtureDirectories[0], provider)
+    const imageExecutable = join(fixtureDirectories[1], provider)
+    await Promise.all([
+      writeFile(userExecutable, "user install", { mode: 0o755 }),
+      writeFile(imageExecutable, "image install", { mode: 0o755 }),
+    ])
+    let selected
+    for (const directory of fixtureDirectories) {
+      const candidate = join(directory, provider)
+      try {
+        await access(candidate, fsConstants.X_OK)
+        selected = candidate
+        break
+      } catch {}
+    }
+    assert.equal(selected, userExecutable, `${provider} must resolve the per-user install first`)
+    await access(imageExecutable, fsConstants.X_OK)
+  }
+})
+
+test("Path-1 role units do not inherit shared-host provider sandbox controls", () => {
+  const forbidden = [
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
+    "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+    "CHARIOX_SLICE_ROOT",
+    "bwrap",
+    "NoNewPrivileges=",
+    "PrivateTmp=",
+    "PrivateUsers=",
+    "PrivateDevices=",
+    "PrivateNetwork=",
+    "ProtectSystem=",
+    "ProtectHome=",
+    "ProtectKernel",
+    "ProtectControlGroups=",
+    "RestrictNamespaces=",
+    "RestrictAddressFamilies=",
+    "RestrictSUIDSGID=",
+    "ReadWritePaths=",
+    "ReadOnlyPaths=",
+    "InaccessiblePaths=",
+    "BindPaths=",
+    "BindReadOnlyPaths=",
+    "RootDirectory=",
+    "RootImage=",
+    "SystemCallFilter=",
+    "CapabilityBoundingSet=",
+    "SupplementaryGroups=chariox-slice",
+  ]
+  for (const unit of [path1Service, disposableWorkerService]) {
+    assert.ok(unit.includes("Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"))
+    for (const control of forbidden) assert.ok(!unit.includes(control), `Path-1 unit must omit ${control}`)
+  }
+})
 
 test("install refuses to replace an invalid digest-named release", () => {
   const publishedBranch = installSource.slice(
