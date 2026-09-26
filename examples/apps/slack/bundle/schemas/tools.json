@@ -1,0 +1,36 @@
+{
+  "tools": [
+    {
+      "name": "list_notifications",
+      "description": "List the latest Slack notifications this App received, newest first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "mentioned",
+              "channel_message",
+              "reaction_added"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "clear_notifications",
+      "description": "Forget the stored Slack notifications.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
+}
