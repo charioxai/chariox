@@ -52,16 +52,24 @@ command/state files abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/S
 
 2. The provider PATH fix is published in root commit
    `aa4fa10831bbc3902fde005b0cf8f930c6224b7e`, integrated byte-identically from
-   `0832289de8feaf3ba30068c378d66cec965b6900`. Both Path-1 role units use
-   `/home/chariox/.local/bin:/usr/local/bin:/usr/bin:/bin`
-   (`chariox-path1-managed-bootstrap.service:25`,
-   `chariox-disposable-worker-bootstrap.service:30`). Codex, Claude and
-   OpenCode resolve commands in PATH order (`provider/codex.rs:164-176`,
-   `provider/claude.rs:508-524`, `provider/opencode.rs:163-176`); image setup
-   places pinned binaries under `/usr/local/bin`
-   (`prepare-hetzner-image.sh:197-199`). Root ran 17/17 focused source-contract
-   tests successfully. Actual effective units and resolved binaries on the
-   fresh worker, exact-head review and deployed parity remain unproven.
+   `0832289de8feaf3ba30068c378d66cec965b6900`. The two Path-1 role units set a
+   system-only bootstrap PATH (`chariox-path1-managed-bootstrap.service:25`,
+   `chariox-disposable-worker-bootstrap.service:30`); they do not prepend
+   `/home/chariox/.local/bin`. After release verification, the supervisor and
+   worker probe the process home's login profile in an `env_clear` subprocess
+   and retain only validated absolute PATH components
+   (`managed_bootstrap/provider_path.rs`). A failed probe falls back to the
+   system bootstrap PATH for the home kernel and the absolute
+   `<process_home>/.local/bin` followed by the system bootstrap PATH for the
+   worker. Empty, relative and control-containing profile entries are
+   discarded. Codex, Claude and OpenCode resolve commands in PATH order
+   (`provider/codex.rs:164-176`, `provider/claude.rs:508-524`,
+   `provider/opencode.rs:163-176`); image setup places pinned binaries under
+   `/usr/local/bin` (`prepare-hetzner-image.sh:197-199`). Root's 17/17 focused
+   Node source-contract checks do not execute Rust resolver behavior. The
+   Rust resolver tests cover timeout cleanup of a background stdout writer
+   and oversized output; actual effective units and resolved binaries on the
+   fresh worker and deployed parity remain unproven.
 
 3. The public Project setup regression found the generated repeatable
    definition is persisted after validation. Agent75 is correcting the local
@@ -69,6 +77,20 @@ command/state files abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/S
    preserving home authority, attempt/cancellation fencing and the validation
    gate for Ready. The fix and its lifecycle tests are not yet integrated or
    executed by root. This remains an MP-08 implementation requirement.
+
+4. Path-1 kernel slice access uses a broker lease, separate from the ordinary
+   provider launch boundary. The supervisor derives `CHARIOX_SLICE_ROOT` from
+   its configured broker socket, removes inherited broker controls, and hands
+   the kernel a private FD; without a lease it marks broker access required.
+   Kernel initialization consumes the FD, scrubs broker environment values,
+   and marks the stream close-on-exec before provider launches. This restores
+   kernel slice operations without selecting provider Bubblewrap or an
+   allowlist. The focused home-supervisor and worker launch regressions now
+   assert the derived root, required-marker fallback, framed broker round trip,
+   FD close-on-exec and non-inheritance by a provider child. They have not
+   been executed in this source-only pass; live slice access, effective
+   protected-control paths and fresh-worker behavior remain open MP-01/03/08/11
+   evidence.
 
 ### Source branch inventory
 

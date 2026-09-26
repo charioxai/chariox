@@ -25,7 +25,7 @@ use super::state::{
     validate_cloud_url, validate_managed_state_path,
 };
 #[cfg(test)]
-use super::PATH1_SHARED_HOST_SELECTOR_ENVS;
+use super::{PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS};
 use super::{
     jittered, managed_provider_topology, normalized_api_url, persisted_profile,
     valid_managed_relay_url, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV,
@@ -1141,7 +1141,7 @@ mod tests {
         env::set_var("CHARIOX_DAEMON_SOCKET", "/run/chariox/daemon.sock");
         env::set_var(
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
-            "/run/chariox/broker.sock",
+            "/var/lib/chariox-slice-share/.broker-private/control/control.sock",
         );
         env::set_var("CHARIOX_SLICE_DOCKER_BROKER_FD", "99");
         env::set_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "1");
@@ -1207,7 +1207,6 @@ mod tests {
             "broker_socket",
             "slice_service",
             "slice_publication",
-            "slice_root",
             "relay_token",
             "daemon_id",
             "machine_id",
@@ -1218,11 +1217,13 @@ mod tests {
                 "worker provider must not inherit {name}: {observed}"
             );
         }
-        assert!(observed.contains("broker_required=<unset>\n"));
+        assert!(observed.contains("broker_fd=<unset>\n"));
+        assert!(observed.contains("broker_required=1\n"));
+        assert!(observed.contains("slice_root=/var/lib/chariox-slice-share/slices\n"));
 
-        // Even if the bootstrap parent has a shared-host broker lease, the
-        // disposable kernel starts on the ordinary Path-1 boundary.
-        let (broker_backend, broker_peer) = UnixStream::pair().expect("broker lease pair");
+        // The ordinary worker kernel receives the slice broker lease, then
+        // consumes and closes it on exec before launching provider children.
+        let (broker_backend, mut broker_peer) = UnixStream::pair().expect("broker lease pair");
         super::super::supervisor::install_test_broker_lease(broker_backend)
             .expect("install broker lease for kernel handoff");
         env::set_var(
@@ -1241,25 +1242,55 @@ mod tests {
             ),
         )
         .expect("timeout login profile should be written");
+        let broker_record = config.chariox_home.join("worker-broker-kernel-record.txt");
+        super::supervisor::write_path1_broker_kernel_probe(&config.kernel_binary, &broker_record);
         let mut child = spawn_kernel(&config, &release, &receipt, ManagedProviderTopology::Path1)
-            .expect("disposable worker kernel should ignore the shared-host broker lease");
+            .expect("disposable worker kernel should receive the slice broker lease");
+        let request = super::supervisor::round_trip_path1_test_broker(&mut broker_peer)
+            .expect("worker kernel should use its broker FD");
+        assert_eq!(
+            u32::from_be_bytes(request[..4].try_into().expect("broker frame header")) as usize,
+            b"path1-kernel-probe".len()
+        );
+        assert_eq!(&request[4..], b"path1-kernel-probe");
         let status = child.wait().expect("broker probe kernel should exit");
         assert!(status.success(), "broker probe kernel failed: {status}");
-        let broker_observed = fs::read_to_string(&marker).expect("broker probe environment");
+        let broker_observed = fs::read_to_string(&broker_record).expect("broker kernel boundary");
         assert!(broker_observed.contains(&format!(
             "home={}\n",
             config.process_home.display()
         )));
+        assert!(broker_observed.contains(&format!(
+            "chariox_home={}\n",
+            config.chariox_home.display()
+        )));
+        assert!(broker_observed.contains("repository_root=/srv/worker workspaces\n"));
+        assert!(broker_observed.contains("topology=path1\n"));
         assert!(config.process_home.is_absolute());
         assert!(broker_observed.contains(&format!(
             "path={}:{}\n",
             config.process_home.join(".local/bin").display(),
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         )));
+        assert!(broker_observed.contains("slice_root=/var/lib/chariox-slice-share/slices\n"));
+        assert!(broker_observed.contains("capability_root=<unset>\n"));
+        assert!(broker_observed.contains("provider_isolation=<unset>\n"));
+        assert!(broker_observed.contains("provider_isolation_active=<unset>\n"));
+        assert!(broker_observed.contains("provider_bwrap=<unset>\n"));
+        assert!(broker_observed.contains("service=<unset>\n"));
+        assert!(broker_observed.contains("publication=<unset>\n"));
         assert!(broker_observed.contains("broker_socket=<unset>\n"));
-        assert!(broker_observed.contains("broker_fd=<unset>\n"));
+        let fd = broker_observed
+            .lines()
+            .find_map(|line| line.strip_prefix("broker_fd_initial="))
+            .and_then(|value| value.parse::<i32>().ok())
+            .expect("worker kernel should receive a numeric broker FD");
+        assert!(fd >= 0);
+        assert!(broker_observed.contains("broker_fd=<consumed>\n"));
         assert!(broker_observed.contains("broker_required=<unset>\n"));
-        assert!(broker_observed.contains("slice_root=<unset>\n"));
+        assert!(broker_observed.contains("fd_cloexec=true\n"));
+        assert!(broker_observed.contains("broker_round_trip=true\n"));
+        assert!(broker_observed.contains("provider_fd_inherited=false\n"));
         super::super::supervisor::clear_test_broker_lease();
         drop(broker_peer);
 
@@ -1360,7 +1391,10 @@ mod tests {
                printf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\"\n\
                printf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\"\n",
         );
-        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS
+            .iter()
+            .chain(PATH1_KERNEL_SLICE_BROKER_ENVS)
+        {
             script.push_str(&format!(
                 "  printf '{name}=%s\\n' \"${{{name}-<unset>}}\"\n"
             ));
@@ -1391,6 +1425,10 @@ mod tests {
             "repository_root=/srv/worker-workspaces\n".to_string(),
             "topology=path1\n".to_string(),
             format!("provider_home={}\n", provider_home.display()),
+            "CHARIOX_SLICE_ROOT=/var/lib/chariox-slice-share/slices\n".to_string(),
+            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET=<unset>\n".to_string(),
+            "CHARIOX_SLICE_DOCKER_BROKER_FD=<unset>\n".to_string(),
+            "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED=1\n".to_string(),
             format!(
                 "vault={}\n",
                 chariox_home.join("vault/vault.json").display()
@@ -1510,6 +1548,13 @@ mod tests {
             .env("PATH", &path_value)
             .env("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home)
             .env("CHARIOX_MANAGED_VAULT_PATH", "/stale/managed-vault.json")
+            .env(
+                "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+                "/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+            )
+            .env("CHARIOX_SLICE_ROOT", "/stale/slice-root")
+            .env("CHARIOX_SLICE_DOCKER_BROKER_FD", "99")
+            .env("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "stale-required")
             .process_group(0);
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
             command.env(name, "contaminated-shared-host-selector");

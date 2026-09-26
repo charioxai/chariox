@@ -23,7 +23,8 @@ use super::state::BootstrapReceiptStatus;
 use super::state::{BootstrapConfig, BootstrapReceipt};
 use super::{
     jittered, managed_provider_topology, ManagedProviderTopology, PendingConfirmation,
-    MANAGED_PROVIDER_TOPOLOGY_ENV, PATH1_SHARED_HOST_SELECTOR_ENVS,
+    MANAGED_PROVIDER_TOPOLOGY_ENV, PATH1_KERNEL_SLICE_BROKER_ENVS,
+    PATH1_SHARED_HOST_SELECTOR_ENVS,
 };
 
 const MIN_RESTART_DELAY: Duration = Duration::from_secs(1);
@@ -312,6 +313,10 @@ fn broker_share_root_from_socket() -> Option<std::path::PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
+fn path1_managed_slice_root_from_broker_socket() -> Option<std::path::PathBuf> {
+    broker_share_root_from_socket().map(|share_root| share_root.join("slices"))
+}
+
 fn managed_slice_boundaries_for_kernel(
 ) -> Result<(Option<std::path::PathBuf>, Option<std::path::PathBuf>), DaemonError> {
     let mut service_root =
@@ -449,10 +454,18 @@ pub(super) fn spawn_with_broker_lease(
     topology: ManagedProviderTopology,
 ) -> std::io::Result<(Child, Option<i32>)> {
     if topology == ManagedProviderTopology::Path1 {
+        // Path-1 removes provider-sandbox selectors and every inherited slice
+        // transport value. The kernel's slice broker is a separate capability:
+        // restore only the derived scope here, then hand off a private FD below.
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
             command.env_remove(name);
         }
-        return command.spawn().map(|child| (child, None));
+        for name in PATH1_KERNEL_SLICE_BROKER_ENVS {
+            command.env_remove(name);
+        }
+        if let Some(slice_root) = path1_managed_slice_root_from_broker_socket() {
+            command.env("CHARIOX_SLICE_ROOT", slice_root);
+        }
     }
 
     #[cfg(unix)]
@@ -616,6 +629,43 @@ fn read_broker_frame(reader: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(frame))
 }
 
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn write_path1_broker_kernel_probe(
+    kernel_binary: &std::path::Path,
+    result: &std::path::Path,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn shell_quote(path: &std::path::Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+    }
+
+    let harness = std::env::current_exe().expect("test harness executable should be available");
+    let script = format!(
+        "#!/bin/sh\nexport CHARIOX_TEST_PATH1_BROKER_RESULT={}\nexec {} path1_broker_kernel_child_probe --nocapture --test-threads=1\n",
+        shell_quote(result),
+        shell_quote(&harness),
+    );
+    std::fs::write(kernel_binary, script).expect("broker kernel probe wrapper should be written");
+    std::fs::set_permissions(kernel_binary, std::fs::Permissions::from_mode(0o755))
+        .expect("broker kernel probe wrapper should be executable");
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn round_trip_path1_test_broker(peer: &mut UnixStream) -> io::Result<Vec<u8>> {
+    peer.set_read_timeout(Some(Duration::from_secs(2)))?;
+    peer.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let mut reader = BufReader::new(peer.try_clone()?);
+    let request = read_broker_frame(&mut reader)?.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::UnexpectedEof, "kernel closed before broker request")
+    })?;
+    let mut response = (b"path1-kernel-ack".len() as u32).to_be_bytes().to_vec();
+    response.extend_from_slice(b"path1-kernel-ack");
+    peer.write_all(&response)?;
+    peer.flush()?;
+    Ok(request)
+}
+
 #[cfg(all(test, unix))]
 mod broker_proxy_tests {
     use super::*;
@@ -661,6 +711,7 @@ mod broker_proxy_tests {
     #[test]
     fn managed_and_path1_kernel_children_keep_their_launch_boundaries_separate() {
         let _env = crate::env_lock::lock();
+        clear_test_broker_lease();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-supervisor-boundary-contract-{}-{}",
             std::process::id(),
@@ -830,8 +881,9 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         assert!(fd.contains("required=<unset>\n"));
         *lease.lock().expect("broker lease") = None;
 
-        // A Path-1 launch uses the ordinary kernel boundary even when the
-        // bootstrap parent has shared-host broker configuration.
+        // With no active broker lease, a Path-1 kernel still starts on the
+        // ordinary boundary and receives only a required-broker marker plus
+        // the slice scope derived from the configured broker endpoint.
         std::fs::write(home.join(".profile"), "export PATH='relative:/usr/bin:'\n")
             .expect("Path-1 login profile should be written");
         std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
@@ -853,7 +905,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         std::env::set_var("CHARIOX_SLICE_ROOT", &publication_root);
         std::env::set_var(
             BROKER_SOCKET_ENV,
-            service_root.join(".private-control/control/control.sock"),
+            service_root.join(".broker-private/control/control.sock"),
         );
         std::env::set_var(BROKER_FD_ENV, "99");
         std::env::set_var(BROKER_REQUIRED_ENV, "1");
@@ -879,52 +931,79 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         assert!(path1.contains("publication=<unset>\n"));
         assert!(path1.contains("socket=<unset>\n"));
         assert!(path1.contains("fd=<unset>\n"));
-        assert!(path1.contains("required=<unset>\n"));
-        assert!(path1.contains("slice_root=<unset>\n"));
+        assert!(path1.contains("required=1\n"));
+        assert!(path1.contains(&format!("slice_root={}\n", service_root.join("slices").display())));
 
-        // A shared-host broker lease is never handed to a Path-1 kernel.
-        let (path1_backend, path1_broker_peer) = UnixStream::pair().expect("Path-1 broker pair");
-        let path1_reader = path1_backend
-            .try_clone()
-            .expect("Path-1 broker reader clone");
-        *lease.lock().expect("broker lease") = Some(BrokerLease {
-            reader: BufReader::new(path1_reader),
-            writer: path1_backend,
-        });
-        std::env::set_var(
-            BROKER_SOCKET_ENV,
-            "/var/lib/chariox-slice-share/.broker-private/control/control.sock",
-        );
-        std::env::remove_var(BROKER_FD_ENV);
-        std::env::remove_var(BROKER_REQUIRED_ENV);
-        std::fs::write(
-            home.join(".profile"),
-            concat!(
-                "/bin/sh -c 'i=0; while [ \"$i\" -lt 1000 ]; do ",
-                "printf x || :; printf x >> \"$HOME/writer-heartbeat\"; ",
-                "/bin/sleep 0.02; i=$((i + 1)); done' &\n",
-                "export PATH='/profile/never'\n",
-            ),
-        )
-        .expect("timeout login profile should be written");
-        let (mut child, path1_fd) =
-            spawn_kernel_with_handoff(&config, &release, ManagedProviderTopology::Path1)
-                .expect("Path-1 kernel should spawn without a broker lease");
-        child.wait().expect("Path-1 broker kernel should exit");
-        assert!(path1_fd.is_none());
-        let path1_broker =
-            std::fs::read_to_string(&path1_record).expect("Path-1 broker env record should exist");
-        assert!(path1_broker.contains(
-            "path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-        ));
-        assert!(path1_broker.contains("service=<unset>\n"));
-        assert!(path1_broker.contains("publication=<unset>\n"));
-        assert!(path1_broker.contains("socket=<unset>\n"));
-        assert!(path1_broker.contains("fd=<unset>\n"));
-        assert!(path1_broker.contains("required=<unset>\n"));
-        assert!(path1_broker.contains("slice_root=<unset>\n"));
-        *lease.lock().expect("broker lease") = None;
-        drop(path1_broker_peer);
+        #[cfg(target_os = "linux")]
+        {
+            // Path-1 uses the same reviewed kernel-only broker lease; the kernel
+            // consumes it before an ordinary provider child is spawned.
+            let (path1_backend, mut path1_broker_peer) =
+                UnixStream::pair().expect("Path-1 broker pair");
+            let path1_reader = path1_backend
+                .try_clone()
+                .expect("Path-1 broker reader clone");
+            *lease.lock().expect("broker lease") = Some(BrokerLease {
+                reader: BufReader::new(path1_reader),
+                writer: path1_backend,
+            });
+            std::env::set_var(
+                BROKER_SOCKET_ENV,
+                "/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+            );
+            std::env::remove_var(BROKER_FD_ENV);
+            std::env::remove_var(BROKER_REQUIRED_ENV);
+            std::fs::write(
+                home.join(".profile"),
+                concat!(
+                    "/bin/sh -c 'i=0; while [ \"$i\" -lt 1000 ]; do ",
+                    "printf x || :; printf x >> \"$HOME/writer-heartbeat\"; ",
+                    "/bin/sleep 0.02; i=$((i + 1)); done' &\n",
+                    "export PATH='/profile/never'\n",
+                ),
+            )
+            .expect("timeout login profile should be written");
+            write_path1_broker_kernel_probe(&config.kernel_binary, &path1_record);
+            let (mut child, path1_fd) =
+                spawn_kernel_with_handoff(&config, &release, ManagedProviderTopology::Path1)
+                    .expect("Path-1 kernel should start with its broker lease");
+            let path1_fd = path1_fd.expect("Path-1 kernel should receive a broker FD");
+            assert_eq!(
+                round_trip_path1_test_broker(&mut path1_broker_peer)
+                    .expect("Path-1 kernel should use its broker FD"),
+                frame(b"path1-kernel-probe")
+            );
+            let status = child.wait().expect("Path-1 broker kernel should exit");
+            assert!(status.success(), "Path-1 broker kernel failed: {status}");
+            let path1_broker = std::fs::read_to_string(&path1_record)
+                .expect("Path-1 broker env record should exist");
+            assert!(path1_broker.contains(&format!("home={}\n", home.display())));
+            assert!(path1_broker.contains(&format!(
+                "chariox_home={}\n",
+                home.join(".chariox").display()
+            )));
+            assert!(path1_broker.contains("repository_root=/srv/managed workspaces\n"));
+            assert!(path1_broker.contains("topology=path1\n"));
+            assert!(path1_broker.contains(
+                "path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+            ));
+            assert!(path1_broker.contains("slice_root=/var/lib/chariox-slice-share/slices\n"));
+            assert!(path1_broker.contains("capability_root=<unset>\n"));
+            assert!(path1_broker.contains("provider_isolation=<unset>\n"));
+            assert!(path1_broker.contains("provider_isolation_active=<unset>\n"));
+            assert!(path1_broker.contains("provider_bwrap=<unset>\n"));
+            assert!(path1_broker.contains("service=<unset>\n"));
+            assert!(path1_broker.contains("publication=<unset>\n"));
+            assert!(path1_broker.contains("broker_socket=<unset>\n"));
+            assert!(path1_broker.contains(&format!("broker_fd_initial={path1_fd}\n")));
+            assert!(path1_broker.contains("broker_fd=<consumed>\n"));
+            assert!(path1_broker.contains("broker_required=<unset>\n"));
+            assert!(path1_broker.contains("fd_cloexec=true\n"));
+            assert!(path1_broker.contains("broker_round_trip=true\n"));
+            assert!(path1_broker.contains("provider_fd_inherited=false\n"));
+            *lease.lock().expect("broker lease") = None;
+            drop(path1_broker_peer);
+        }
 
         restore_env(
             crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,
@@ -1008,7 +1087,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
                printf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\"\n\
                printf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\"\n",
         );
-        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS
+            .iter()
+            .chain(PATH1_KERNEL_SLICE_BROKER_ENVS)
+        {
             script.push_str(&format!(
                 "  printf '{name}=%s\\n' \"${{{name}-<unset>}}\"\n"
             ));
@@ -1040,6 +1122,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "repository_root=/home/chariox\n".to_string(),
             "topology=path1\n".to_string(),
             format!("provider_home={}\n", provider_home.display()),
+            "CHARIOX_SLICE_ROOT=/var/lib/chariox-slice-share/slices\n".to_string(),
+            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET=<unset>\n".to_string(),
+            "CHARIOX_SLICE_DOCKER_BROKER_FD=<unset>\n".to_string(),
+            "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED=1\n".to_string(),
             format!(
                 "vault={}\n",
                 chariox_home.join("vault/vault.json").display()
@@ -1100,6 +1186,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         use std::os::unix::fs::PermissionsExt;
 
         let _env = crate::env_lock::lock();
+        clear_test_broker_lease();
         let root = std::env::temp_dir().join(format!(
             "chariox-path1-confirmation-boundary-{}-{}",
             std::process::id(),
@@ -1187,6 +1274,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         )
         .expect("test login profile should set the provider PATH");
         let mut environment_names = PATH1_SHARED_HOST_SELECTOR_ENVS.to_vec();
+        environment_names.extend(PATH1_KERNEL_SLICE_BROKER_ENVS.iter().copied());
         environment_names.extend([
             "HOME",
             "PATH",
@@ -1199,6 +1287,13 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
             std::env::set_var(name, "contaminated-shared-host-selector");
         }
+        std::env::set_var(
+            BROKER_SOCKET_ENV,
+            "/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+        );
+        std::env::set_var("CHARIOX_SLICE_ROOT", root.join("stale-slice-root"));
+        std::env::set_var(BROKER_FD_ENV, "99");
+        std::env::set_var(BROKER_REQUIRED_ENV, "stale-required");
         std::env::set_var("HOME", root.join("stale-home"));
         std::env::set_var("PATH", &path_value);
         std::env::set_var("CHARIOX_TEST_PATH1_CONFIRM_CAPTURE", &capture);
@@ -1262,6 +1357,110 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
         frame.extend_from_slice(payload);
         frame
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn path1_broker_kernel_child_probe() {
+        let Some(result_path) = std::env::var_os("CHARIOX_TEST_PATH1_BROKER_RESULT") else {
+            return;
+        };
+        use std::os::fd::{FromRawFd, RawFd};
+
+        let inherited_fd = std::env::var(BROKER_FD_ENV)
+            .expect("kernel probe must receive a broker FD")
+            .parse::<RawFd>()
+            .expect("broker FD should be numeric");
+        if let Some(local_auth_path) =
+            std::env::var_os(crate::runtime_transport::KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV)
+        {
+            std::fs::remove_file(local_auth_path).expect("kernel probe should consume local auth");
+        }
+
+        crate::slice::initialize_managed_docker_broker();
+        assert!(crate::slice::managed_docker_broker_configured());
+        for name in [BROKER_SOCKET_ENV, BROKER_FD_ENV, BROKER_REQUIRED_ENV] {
+            assert!(
+                std::env::var_os(name).is_none(),
+                "kernel broker initializer must scrub {name}"
+            );
+        }
+        let flags = unsafe { libc::fcntl(inherited_fd, libc::F_GETFD) };
+        assert!(flags >= 0, "kernel broker FD should remain open");
+        assert_ne!(
+            flags & libc::FD_CLOEXEC,
+            0,
+            "kernel broker FD must be close-on-exec"
+        );
+        let socket_target = std::fs::read_link(format!("/proc/self/fd/{inherited_fd}"))
+            .expect("kernel broker FD should resolve through procfs")
+            .to_string_lossy()
+            .into_owned();
+        assert!(socket_target.starts_with("socket:["));
+
+        let duplicate = unsafe { libc::fcntl(inherited_fd, libc::F_DUPFD_CLOEXEC, 0) };
+        assert!(duplicate >= 0, "kernel should be able to duplicate the broker FD");
+        let mut broker = unsafe { UnixStream::from_raw_fd(duplicate) };
+        broker
+            .write_all(&frame(b"path1-kernel-probe"))
+            .expect("kernel should write through its broker FD");
+        broker.flush().expect("kernel broker request should flush");
+        assert_eq!(
+            read_broker_frame(&mut broker).expect("kernel should read broker response"),
+            Some(frame(b"path1-kernel-ack"))
+        );
+        drop(broker);
+
+        let provider_probe = concat!(
+            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-}" || exit 24; "#,
+            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_FD-}" || exit 25; "#,
+            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_REQUIRED-}" || exit 26; "#,
+            r#"test -z "${CHARIOX_SLICE_ROOT-}" || exit 27; "#,
+            r#"for entry in /proc/$$/fd/*; do
+                target=$(/usr/bin/readlink "$entry" 2>/dev/null || :)
+                [ "$target" = "$1" ] && exit 23
+            done"#,
+        );
+        let provider_child = crate::provider::managed_isolated_utility_command(
+            "/bin/sh",
+            vec![
+                "-c".to_string(),
+                provider_probe.to_string(),
+                "provider-fd-probe".to_string(),
+                socket_target,
+            ],
+            std::collections::BTreeMap::new(),
+            None,
+            "Path-1 broker FD inheritance probe",
+        )
+        .expect("production provider launch seam should prepare an ordinary child")
+        .status()
+        .expect("ordinary provider child should start");
+        assert!(
+            provider_child.success(),
+            "provider child inherited the kernel broker socket"
+        );
+
+        let value = |name: &str| {
+            std::env::var(name).unwrap_or_else(|_| "<unset>".to_string())
+        };
+        let observed = format!(
+            "home={}\nchariox_home={}\nrepository_root={}\ntopology={}\npath={}\nslice_root={}\ncapability_root={}\nprovider_isolation={}\nprovider_isolation_active={}\nprovider_bwrap={}\nservice={}\npublication={}\nbroker_socket=<unset>\nbroker_fd_initial={}\nbroker_fd=<consumed>\nbroker_required=<unset>\nfd_cloexec=true\nbroker_round_trip=true\nprovider_fd_inherited=false\n",
+            value("HOME"),
+            value("CHARIOX_HOME"),
+            value(super::MANAGED_REPOSITORY_ROOT_ENV),
+            value(super::MANAGED_PROVIDER_TOPOLOGY_ENV),
+            value("PATH"),
+            value("CHARIOX_SLICE_ROOT"),
+            value("CHARIOX_CAPABILITY_ISOLATION_ROOT"),
+            value("CHARIOX_MANAGED_PROVIDER_ISOLATION"),
+            value("CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE"),
+            value("CHARIOX_MANAGED_PROVIDER_BWRAP"),
+            value("CHARIOX_MANAGED_SLICE_SERVICE_ROOT"),
+            value("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT"),
+            inherited_fd,
+        );
+        std::fs::write(result_path, observed).expect("kernel probe boundary should be recorded");
     }
 
     #[test]

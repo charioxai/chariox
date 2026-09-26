@@ -48,6 +48,10 @@ pub(crate) const PATH1_SHARED_HOST_SELECTOR_ENVS: &[&str] = &[
     "CHARIOX_MANAGED_PROVIDER_BWRAP",
     "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
     "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+];
+/// Parent values are always discarded. The supervisor restores only the
+/// derived slice root and its broker-owned kernel lease after this scrub.
+pub(crate) const PATH1_KERNEL_SLICE_BROKER_ENVS: &[&str] = &[
     "CHARIOX_SLICE_ROOT",
     "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
     "CHARIOX_SLICE_DOCKER_BROKER_FD",
