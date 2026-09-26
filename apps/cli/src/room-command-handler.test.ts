@@ -36,6 +36,45 @@ test("/room status reads and renders the attached Room environment", async () =>
   ].join("\n")])
 })
 
+test("/room read prints the focused Tab as an indented outline", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const command = parseSlashCommand("/room read")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      if (typeof request === "object" && request && "GetRoomEnvironmentState" in request) {
+        return { RoomEnvironmentState: { environment: roomEnvironment() } } as TResponse
+      }
+      return { RoomEnvironmentTabAccessibility: { accessibility: {
+        session_id: "session-1",
+        tab_id: "tab-1",
+        document_revision: 7,
+        truncated: false,
+        nodes: [
+          { element_ref: "e1", role: "RootWebArea", name: "Docs" },
+          { element_ref: "e2", parent_ref: "e1", role: "textbox", name: "Title", value: "Plan", focused: true },
+          { element_ref: "e3", parent_ref: "e1", role: "button", name: "Save", disabled: true },
+        ],
+      } } } as TResponse
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command!)
+
+  assert.deepEqual(requests[1], { GetRoomEnvironmentTabAccessibility: { session_id: "session-1", tab_id: "tab-1" } })
+  assert.deepEqual(notices, [[
+    "Page outline of Docs (tab tab-1, revision 7):",
+    'RootWebArea "Docs"',
+    '  textbox "Title" = "Plan" [focused]',
+    '  button "Save" [disabled]',
+  ].join("\n")])
+})
+
 test("/room actions renders bounded browser and computer history with a continuation cursor", async () => {
   const requests: unknown[] = []
   const notices: string[] = []
@@ -694,7 +733,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|read [TAB_ID]|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 

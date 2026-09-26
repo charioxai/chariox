@@ -358,9 +358,6 @@ pub(crate) async fn execute_get_room_environment_resource_inventory_request(
         .map(|inventory| LocalDaemonResponse::RoomEnvironmentResourceInventory { inventory })
 }
 
-/// Bound on the outline a terminal receives for one Tab.
-const MAX_ACCESSIBILITY_NODES: usize = 2000;
-
 pub(crate) async fn execute_get_room_environment_tab_accessibility_request(
     runtime_state: &KernelRuntimeState,
     request: crate::local::GetRoomEnvironmentTabAccessibilityRequest,
@@ -368,44 +365,8 @@ pub(crate) async fn execute_get_room_environment_tab_accessibility_request(
     let snapshot = runtime_state
         .capture_browser_environment_snapshot(&request.session_id, &request.tab_id)
         .await?;
-    // Ignored nodes are dropped; their visible children hang from the nearest
-    // visible ancestor so the outline stays a tree.
-    let parents: std::collections::HashMap<String, (Option<String>, bool)> = snapshot
-        .accessibility_nodes
-        .iter()
-        .map(|node| {
-            (
-                node.element_ref.clone(),
-                (node.parent_ref.clone(), node.ignored),
-            )
-        })
-        .collect();
-    let visible_parent = |mut parent: Option<String>| {
-        while let Some((next, true)) = parent.as_ref().and_then(|p| parents.get(p)) {
-            parent = next.clone();
-        }
-        parent
-    };
-    let visible: Vec<_> = snapshot
-        .accessibility_nodes
-        .iter()
-        .filter(|node| !node.ignored)
-        .collect();
-    let truncated = visible.len() > MAX_ACCESSIBILITY_NODES;
-    let nodes = visible
-        .into_iter()
-        .take(MAX_ACCESSIBILITY_NODES)
-        .map(|node| crate::local::RoomEnvironmentAccessibilityNode {
-            element_ref: node.element_ref.clone(),
-            parent_ref: visible_parent(node.parent_ref.clone()),
-            role: node.role.clone(),
-            name: node.name.clone(),
-            value: node.value.clone(),
-            description: node.description.clone(),
-            disabled: node.disabled,
-            focused: node.focused,
-        })
-        .collect();
+    let (nodes, truncated) =
+        crate::runtime::room_tab_outline::outline(&snapshot.accessibility_nodes);
     Ok(LocalDaemonResponse::RoomEnvironmentTabAccessibility {
         accessibility: crate::local::RoomEnvironmentTabAccessibility {
             session_id: snapshot.session_id,
