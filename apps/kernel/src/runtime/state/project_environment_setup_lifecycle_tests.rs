@@ -8,7 +8,7 @@
 #[cfg(unix)]
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::io::{Read, Write};
 #[cfg(unix)]
@@ -997,6 +997,26 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
 
+    if matches!(scenario, DefinitionScenario::Generated) {
+        assert_eq!(
+            initial_status.phase,
+            ProjectEnvironmentSetupPhase::Validating,
+            "generated-definition persistence is checked while target validation is held"
+        );
+        let persisted_before_validation = runtime
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .expect("project should remain available before validation completes")
+            .environment_definition()
+            .cloned()
+            .expect("utility-generated definition should persist before target validation");
+        assert_eq!(
+            persisted_before_validation, definition,
+            "the project should retain the utility-generated repeatable definition before validation"
+        );
+    }
+
     let ready = if matches!(
         scenario,
         DefinitionScenario::SuppliedStaleInputs
@@ -1115,10 +1135,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
                 workspace.join("setup-started").exists(),
                 "a reusable definition must be applied by the worker before validation"
             );
-            assert_eq!(
-                provider_fixture.diagnostics(),
-                "<no requests observed>",
-                "a passing reusable definition must not invoke the utility agent"
+            assert!(
+                utility_prompt_requests(&provider_fixture.trace_entries()).is_empty(),
+                "a passing reusable definition must not issue a utility prompt: {}",
+                provider_fixture.diagnostics()
             );
         }
         DefinitionScenario::SuppliedSetupFailure
@@ -1126,10 +1146,12 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         | DefinitionScenario::SuppliedStaleInputs
         | DefinitionScenario::SuppliedMissingInputs
         | DefinitionScenario::SuppliedLegacyUnattested => {
-            assert_ne!(
-                provider_fixture.diagnostics(),
-                "<no requests observed>",
-                "missing or failed setup must invoke the existing utility agent"
+            let utility_prompts = utility_prompt_requests(&provider_fixture.trace_entries());
+            assert_eq!(
+                utility_prompts.len(),
+                1,
+                "missing or failed setup must issue exactly one actual utility prompt; requests={utility_prompts:?}; full trace: {}",
+                provider_fixture.diagnostics()
             );
         }
     }
@@ -1187,7 +1209,7 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             );
         }
 
-        let utility_trace = provider_fixture.diagnostics();
+        let utility_trace = utility_prompt_requests(&provider_fixture.trace_entries());
         let materialized_inputs: Vec<(&str, &[u8])> = if input_scenario {
             vec![
                 (recipe_path, recipe_contents),
@@ -1243,23 +1265,25 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             );
         }
         assert_eq!(
-            provider_fixture.diagnostics(),
+            utility_prompt_requests(&provider_fixture.trace_entries()),
             utility_trace,
-            "the follow-up worker must reuse the repaired definition without utility"
+            "the fresh worker must reuse the repaired definition without an extra utility prompt; full trace: {}",
+            provider_fixture.diagnostics()
         );
     }
     assert_eq!(
         persisted.origin,
         match scenario {
-            DefinitionScenario::Supplied
+            DefinitionScenario::Supplied | DefinitionScenario::SuppliedInputReuse => {
+                ProjectEnvironmentDefinitionOrigin::UserAuthored
+            }
+            DefinitionScenario::Generated
             | DefinitionScenario::SuppliedSetupFailure
-            | DefinitionScenario::SuppliedInputReuse
             | DefinitionScenario::SuppliedStaleInputs
             | DefinitionScenario::SuppliedMissingInputs
             | DefinitionScenario::SuppliedLegacyUnattested => {
-                ProjectEnvironmentDefinitionOrigin::UserAuthored
+                ProjectEnvironmentDefinitionOrigin::UtilityGenerated
             }
-            DefinitionScenario::Generated => ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
         }
     );
     drop(provider_fixture);
@@ -1859,6 +1883,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
          command -v sh; test -f {repair_recipe_path}; test -f {repair_lockfile_path}"
     )];
     let mut repaired_definition = repairable_definition.clone();
+    repaired_definition.origin = ProjectEnvironmentDefinitionOrigin::UtilityGenerated;
     repaired_definition.inputs = vec![
         ProjectEnvironmentInput {
             kind: ProjectEnvironmentInputKind::Recipe,
@@ -2161,7 +2186,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     assert_eq!(repair_started_status.platform, target_platform);
 
     let utility_prompt_deadline = Instant::now() + Duration::from_secs(3);
-    while !provider_fixture.diagnostics().contains("prompt_async") {
+    while utility_prompt_requests(&provider_fixture.trace_entries()).is_empty() {
         if Instant::now() >= utility_prompt_deadline {
             let status = runtime
                 .execute_project_environment_setup_request(
@@ -2205,6 +2230,16 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
 
     // Hold commands in the relay-connected target worker. Ready must come
     // from the worker after both command barriers are released.
+    let acknowledgment_state_worker = {
+        let app = app_worker.lock().await;
+        app.relay_client_state()
+    };
+    let (ack_observer_tx, mut ack_observer_rx) =
+        tokio::sync::mpsc::unbounded_channel::<TestPeerRequestObservation>();
+    acknowledgment_state_worker
+        .write()
+        .await
+        .test_set_authenticated_peer_request_observer(ack_observer_tx);
     release_utility.store(true, Ordering::Release);
     let setup_started = workspace.join("remote-setup-started");
     let setup_release = workspace.join("remote-setup-release");
@@ -2214,6 +2249,88 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         setup_release: setup_release.clone(),
         validation_release: validation_release.clone(),
     };
+    let (ack_attempt, ack_digest, ack_release) =
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match ack_observer_rx.recv().await {
+                    Some(
+                        TestPeerRequestObservation::AcknowledgeProjectEnvironmentSetupDefinition {
+                            operation_id,
+                            attempt,
+                            definition_digest,
+                            release,
+                        },
+                    ) if operation_id == repair_operation_id => {
+                        break (attempt, definition_digest, release);
+                    }
+                    Some(TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                        release,
+                        ..
+                    })
+                    | Some(TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                        release,
+                        ..
+                    }) => {
+                        let _ = release.send(());
+                    }
+                    Some(_) => {}
+                    None => {
+                        panic!("worker request observer closed before definition acknowledgment")
+                    }
+                }
+            }
+        })
+        .await
+        .expect(
+            "home should persist and acknowledge the generated definition before worker validation",
+        );
+    assert_eq!(ack_attempt, 1);
+    assert_eq!(ack_digest, repaired_definition.digest());
+    let persisted_before_ack = runtime
+        .owned
+        .session_store
+        .get_project(&project_id)
+        .expect("selected project should remain available before acknowledgment")
+        .environment_definition()
+        .cloned()
+        .expect("home must persist the generated definition before acknowledging it");
+    assert_eq!(persisted_before_ack, repaired_definition);
+    let (_, staged_worker_status) = worker_runtime
+        .owned
+        .project_environment_setups
+        .get_entry(repair_operation_id, "user-1")
+        .expect("worker should retain the staged definition while awaiting acknowledgment");
+    assert_eq!(
+        staged_worker_status.phase,
+        ProjectEnvironmentSetupPhase::Preparing
+    );
+    assert!(!setup_started.exists());
+    assert!(!validation_started.exists());
+    let rejected_wrong_ack = worker_runtime
+        .acknowledge_leased_project_environment_setup_definition(
+            setup_target.clone(),
+            &leased_agent_id,
+            repair_operation_id,
+            1,
+            &project_id,
+            &session_id,
+            &agent_id,
+            "sha256:wrong-definition",
+        )
+        .await;
+    assert!(
+        rejected_wrong_ack.is_err(),
+        "worker must reject a home acknowledgment for the wrong definition digest"
+    );
+    assert!(!setup_started.exists());
+    assert!(!validation_started.exists());
+    ack_release
+        .send(())
+        .expect("authenticated definition acknowledgment gate should remain open");
+    acknowledgment_state_worker
+        .write()
+        .await
+        .test_clear_authenticated_peer_request_observer();
     let held_setup = wait_for_connected_worker_setup_phase(
         &runtime,
         repair_operation_id,
@@ -2337,8 +2454,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .expect("Ready should persist the repaired selected definition");
     assert_eq!(persisted_repair, repaired_definition);
     assert!(
-        provider_fixture.diagnostics().contains("prompt_async"),
-        "the existing worker utility must have repaired the target: {}",
+        utility_prompt_requests(&provider_fixture.trace_entries()).len() == 1,
+        "the existing worker utility must have issued exactly one prompt POST: {}",
         provider_fixture.diagnostics()
     );
 
@@ -2375,6 +2492,28 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         ProjectEnvironmentSetupPhase::Requested,
         "the worker must be queried before it is advanced to Ready"
     );
+    let _ = shutdown_worker_tx.send(true);
+    connector_worker
+        .await
+        .expect("interrupted worker connector should stop");
+    let mut worker_disconnected = false;
+    for _ in 0..200 {
+        if registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_none()
+        {
+            worker_disconnected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        worker_disconnected,
+        "worker transport should be interrupted"
+    );
+
     assert!(
         worker_runtime.owned.project_environment_setups.update(
             "setup-transport-recovery",
@@ -2398,28 +2537,6 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             }
         ),
         "worker setup should advance to its authoritative Ready status"
-    );
-
-    let _ = shutdown_worker_tx.send(true);
-    connector_worker
-        .await
-        .expect("interrupted worker connector should stop");
-    let mut worker_disconnected = false;
-    for _ in 0..200 {
-        if registry
-            .read()
-            .await
-            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
-            .is_none()
-        {
-            worker_disconnected = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(
-        worker_disconnected,
-        "worker transport should be interrupted"
     );
 
     let interrupted = runtime
@@ -2508,8 +2625,16 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     );
 
     let dispatch_never_arrived_operation_id = "setup-dispatch-never-arrived";
+    let dispatch_validation_marker = workspace.join("dispatch-validation-started");
+    let mut dispatch_definition = definition.clone();
+    dispatch_definition.setup_steps[0].command =
+        "touch dispatch-setup-started; command -v sh".to_string();
+    dispatch_definition.validation_commands =
+        vec!["touch dispatch-validation-started; command -v sh".to_string()];
+    assert!(!dispatch_validation_marker.exists());
     let dispatch_never_arrived = StartProjectEnvironmentSetupRequest {
         operation_id: dispatch_never_arrived_operation_id.to_string(),
+        definition: Some(dispatch_definition.clone()),
         ..start_request.clone()
     };
     let started_while_worker_was_disconnected = runtime
@@ -2519,10 +2644,16 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         )
         .await
         .expect("home should retain a setup whose dispatch was interrupted");
+    let disconnected_start_status = response_status(started_while_worker_was_disconnected);
     assert_eq!(
-        response_status(started_while_worker_was_disconnected).phase,
+        disconnected_start_status.operation_id,
+        dispatch_never_arrived_operation_id
+    );
+    assert_eq!(
+        disconnected_start_status.phase,
         ProjectEnvironmentSetupPhase::Requested
     );
+    assert_eq!(disconnected_start_status.attempt, 1);
     let cancel_during_missing_status_operation_id = "setup-cancel-during-missing-status";
     let started_cancel_during_missing_status = runtime
         .execute_project_environment_setup_request(
@@ -2534,10 +2665,16 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         )
         .await
         .expect("home should retain the setup that will be cancelled during recovery");
+    let cancel_during_missing_status = response_status(started_cancel_during_missing_status);
     assert_eq!(
-        response_status(started_cancel_during_missing_status).phase,
+        cancel_during_missing_status.operation_id,
+        cancel_during_missing_status_operation_id
+    );
+    assert_eq!(
+        cancel_during_missing_status.phase,
         ProjectEnvironmentSetupPhase::Requested
     );
+    assert_eq!(cancel_during_missing_status.attempt, 1);
 
     let state_worker = {
         let app = app_worker.lock().await;
@@ -2579,10 +2716,39 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         "worker should re-register before recovery is queried"
     );
 
-    // The worker relay fixture emits an authenticated, operation-scoped
-    // receipt before dispatching each setup request and holds its response
-    // behind the receipt's release channel. This makes the public Get/Cancel
-    // ordering explicit without observing the home setup store.
+    // The worker relay fixture emits authenticated, operation-scoped receipts
+    // before dispatching each setup request. Hold missing-status requests until
+    // the worker receives Cancel, so any earlier replay is allowed while no
+    // replay can be hidden after cancellation intent.
+    let mut pre_intent_start_observed = false;
+    let mut get_releases = Vec::new();
+    let cancellation_barrier_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let first_get_release = tokio::time::timeout_at(cancellation_barrier_deadline, async {
+        loop {
+            match worker_request_rx.recv().await {
+                Some(TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                    operation_id,
+                    release,
+                }) if operation_id == cancel_during_missing_status_operation_id => {
+                    break release;
+                }
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                    if operation_id == cancel_during_missing_status_operation_id =>
+                {
+                    pre_intent_start_observed = true;
+                }
+                Some(_) => continue,
+                None => panic!("worker request observer closed before public Get was received"),
+            }
+        }
+    })
+    .await
+    .expect("autonomous recovery should issue an authenticated status request");
+    get_releases.push(first_get_release);
+
+    // The recovery loop is now held at its first status request. Starting the
+    // public Get after that barrier makes the next authenticated status request
+    // unambiguously belong to this caller, without timing-based assumptions.
     let get_runtime = runtime.clone();
     let delayed_status = tokio::spawn(async move {
         get_runtime
@@ -2596,7 +2762,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             )
             .await
     });
-    let get_release = tokio::time::timeout(Duration::from_secs(2), async {
+    let public_get_release = tokio::time::timeout_at(cancellation_barrier_deadline, async {
         loop {
             match worker_request_rx.recv().await {
                 Some(TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
@@ -2605,10 +2771,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 }) if operation_id == cancel_during_missing_status_operation_id => {
                     break release;
                 }
-                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }) => {
-                    panic!(
-                        "unexpected worker setup start before cancellation intent: {operation_id}"
-                    )
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                    if operation_id == cancel_during_missing_status_operation_id =>
+                {
+                    pre_intent_start_observed = true;
                 }
                 Some(_) => continue,
                 None => panic!("worker request observer closed before public Get was received"),
@@ -2617,6 +2783,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     })
     .await
     .expect("authenticated worker should receive the public Get request");
+    get_releases.push(public_get_release);
 
     let cancel_runtime = runtime.clone();
     let cancel_session_id = session_id.clone();
@@ -2634,82 +2801,232 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             .await
     });
 
-    let cancel_release = tokio::time::timeout(Duration::from_secs(2), async {
+    let mut cancel_releases = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match worker_request_rx.recv().await {
                 Some(TestPeerRequestObservation::CancelProjectEnvironmentSetup {
                     operation_id,
                     release,
                 }) if operation_id == cancel_during_missing_status_operation_id => {
-                    break release;
+                    cancel_releases.push(release);
+                    break;
                 }
-                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }) => {
-                    panic!(
-                    "worker setup was redispatched before cancellation response: {operation_id}"
-                )
+                Some(TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                    operation_id,
+                    release,
+                }) if operation_id == cancel_during_missing_status_operation_id => {
+                    get_releases.push(release);
+                }
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                    if operation_id == cancel_during_missing_status_operation_id =>
+                {
+                    pre_intent_start_observed = true;
                 }
                 Some(_) => continue,
                 None => {
-                    panic!("worker request observer closed before public Cancel was received")
+                    panic!("worker request observer closed before authenticated Cancel")
                 }
             }
         }
     })
     .await
-    .expect("authenticated worker should receive the public Cancel request");
+    .expect("authenticated worker should receive Cancel after intent is recorded");
     assert!(
         !cancellation.is_finished(),
-        "public Cancel should remain at the worker boundary until the delayed status is released"
+        "public Cancel should remain at the worker boundary until held status requests are released"
     );
 
-    // Cancel receipt proves the public home request has recorded intent. Let
-    // the worker report the missing operation first, then release Cancel so
-    // no response-order assumption can hide a redispatched Start.
-    get_release
-        .send(())
-        .expect("public Get worker response gate should remain open");
+    for release in get_releases.drain(..) {
+        release
+            .send(())
+            .expect("held worker status request should remain open");
+    }
+    // Home Cancel holds the operation gate while awaiting the worker response.
+    // Release the observed worker boundary before joining the delayed Get,
+    // whose missing-operation path must acquire that same gate.
+    for release in cancel_releases.drain(..) {
+        release
+            .send(())
+            .expect("authenticated worker Cancel gate should remain open");
+    }
 
-    let delayed_status = delayed_status
-        .await
-        .expect("delayed public status task should join")
-        .expect_err("cancelled missing operation must not return a fabricated worker status");
-    assert!(
-        delayed_status.to_string().contains("project_environment_setup_not_found"),
-        "the public status request should expose the authenticated worker absence: {delayed_status:?}"
-    );
-
-    let mut redispatched_start = None;
-    while let Ok(observation) = worker_request_rx.try_recv() {
-        if let TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id } =
-            observation
-        {
-            redispatched_start = Some(operation_id);
-            break;
+    let mut delayed_status = delayed_status;
+    let delayed_status_result = async {
+        loop {
+            tokio::select! {
+                result = &mut delayed_status => break result,
+                observation = worker_request_rx.recv() => match observation {
+                    Some(TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                        operation_id,
+                        release,
+                    }) if operation_id == cancel_during_missing_status_operation_id => {
+                        release
+                            .send(())
+                            .expect("post-intent status request should remain open");
+                    }
+                    Some(TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                        operation_id,
+                        release,
+                    }) if operation_id == cancel_during_missing_status_operation_id => {
+                        release
+                            .send(())
+                            .expect("authenticated worker Cancel gate should remain open");
+                    }
+                    Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                        if operation_id == cancel_during_missing_status_operation_id => {
+                        panic!("worker received Start after authenticated cancellation intent")
+                    }
+                    Some(_) => {}
+                    None => panic!("worker request observer closed before delayed status settled"),
+                }
+            }
         }
     }
-    assert_eq!(
-        redispatched_start, None,
-        "public Get must not redispatch Start after public Cancel intent"
-    );
+    .await
+    .expect("delayed public status task should join");
+    let worker_operation_present = match delayed_status_result {
+        Ok(response) => {
+            let status = response_status(response);
+            assert_eq!(
+                status.operation_id,
+                cancel_during_missing_status_operation_id
+            );
+            assert_eq!(status.attempt, 1);
+            assert!(
+                pre_intent_start_observed,
+                "worker status cannot exist without a pre-intent Start dispatch"
+            );
+            true
+        }
+        Err(error) => {
+            assert!(
+                error
+                    .to_string()
+                    .contains("project_environment_setup_not_found"),
+                "the public status request should expose authenticated worker absence: {error:?}"
+            );
+            false
+        }
+    };
 
-    cancel_release
-        .send(())
-        .expect("public Cancel worker response gate should remain open");
-    let cancelled = cancellation
-        .await
-        .expect("cancellation task should join")
-        .expect("missing worker operation should let public cancellation settle safely");
+    // The authenticated Cancel receipt is the intent barrier. Every Start
+    // observed after it is a forbidden replay; older in-flight starts remain
+    // valid and are checked against the exact operation and attempt above.
+    while let Ok(observation) = worker_request_rx.try_recv() {
+        match observation {
+            TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }
+                if operation_id == cancel_during_missing_status_operation_id =>
+            {
+                panic!("worker received Start after authenticated cancellation intent")
+            }
+            TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                operation_id,
+                release,
+            } if operation_id == cancel_during_missing_status_operation_id => {
+                release
+                    .send(())
+                    .expect("post-intent status request should remain open");
+            }
+            TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                operation_id,
+                release,
+            } if operation_id == cancel_during_missing_status_operation_id => {
+                cancel_releases.push(release);
+            }
+            _ => {}
+        }
+    }
+    for release in cancel_releases.drain(..) {
+        release
+            .send(())
+            .expect("authenticated worker Cancel gate should remain open");
+    }
+
+    let mut cancellation = cancellation;
+    let cancelled = async {
+        loop {
+            tokio::select! {
+                result = &mut cancellation => break result,
+                observation = worker_request_rx.recv() => match observation {
+                    Some(TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                        operation_id,
+                        release,
+                    }) if operation_id == cancel_during_missing_status_operation_id => {
+                        release
+                            .send(())
+                            .expect("post-intent status request should remain open");
+                    }
+                    Some(TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                        operation_id,
+                        release,
+                    }) if operation_id == cancel_during_missing_status_operation_id => {
+                        release
+                            .send(())
+                            .expect("authenticated worker Cancel gate should remain open");
+                    }
+                    Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                        if operation_id == cancel_during_missing_status_operation_id => {
+                        panic!("worker received Start after authenticated cancellation intent")
+                    }
+                    Some(_) => {}
+                    None => panic!("worker request observer closed before public Cancel settled"),
+                }
+            }
+        }
+    }
+    .await
+    .expect("cancellation task should join")
+    .expect("worker cancellation should settle safely");
+    while let Ok(observation) = worker_request_rx.try_recv() {
+        match observation {
+            TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }
+                if operation_id == cancel_during_missing_status_operation_id =>
+            {
+                panic!("worker received Start after authenticated cancellation intent")
+            }
+            TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                operation_id,
+                release,
+            } if operation_id == cancel_during_missing_status_operation_id => {
+                release
+                    .send(())
+                    .expect("post-intent status request should remain open");
+            }
+            TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                operation_id,
+                release,
+            } if operation_id == cancel_during_missing_status_operation_id => {
+                release
+                    .send(())
+                    .expect("authenticated worker Cancel gate should remain open");
+            }
+            _ => {}
+        }
+    }
     let cancelled_status = response_status(cancelled);
+    assert_eq!(
+        cancelled_status.operation_id,
+        cancel_during_missing_status_operation_id
+    );
+    assert_eq!(cancelled_status.attempt, 1);
     assert_eq!(
         cancelled_status.phase,
         ProjectEnvironmentSetupPhase::Cancelled,
-        "cancellation intent must win over missing-status redispatch"
     );
-    assert_eq!(
-        cancelled_status.message.as_deref(),
-        Some("setup cancellation completed because the worker had no matching operation"),
-        "an authenticated missing-worker response must settle the public cancellation"
-    );
+    if worker_operation_present {
+        assert_ne!(
+            cancelled_status.message.as_deref(),
+            Some("setup cancellation completed because the worker had no matching operation"),
+            "home must not settle a cancellation as missing after authentic worker status"
+        );
+    } else {
+        assert_eq!(
+            cancelled_status.message.as_deref(),
+            Some("setup cancellation completed because the worker had no matching operation"),
+            "an authenticated missing-worker response must settle the public cancellation"
+        );
+    }
     assert!(
         cancelled_status.retryable,
         "a cancellation settled without a worker must remain retryable"
@@ -2718,6 +3035,31 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .write()
         .await
         .test_clear_authenticated_peer_request_observer();
+
+    let autonomous_recovery_deadline = Instant::now() + Duration::from_secs(10);
+    let autonomously_recovered = loop {
+        let (_, status, cancel_requested) = runtime
+            .owned
+            .project_environment_setups
+            .get_entry_with_cancellation(dispatch_never_arrived_operation_id, "user-1")
+            .expect("uncertain Start should remain in the home setup store");
+        if status.phase != ProjectEnvironmentSetupPhase::Requested {
+            break (status, cancel_requested);
+        }
+        assert!(
+            Instant::now() < autonomous_recovery_deadline,
+            "kernel-owned recovery did not resume without a client status request"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(!autonomously_recovered.1);
+    assert_eq!(autonomously_recovered.0.attempt, 1);
+    assert!(matches!(
+        autonomously_recovered.0.phase,
+        ProjectEnvironmentSetupPhase::Preparing
+            | ProjectEnvironmentSetupPhase::Validating
+            | ProjectEnvironmentSetupPhase::Ready
+    ));
 
     let recovered_missing_operation = get_setup_status(
         &runtime,
@@ -2775,8 +3117,9 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 status.phase,
                 ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
             ),
-            "worker status must not fabricate terminal recovery state: {status:?}; provider trace: {}",
-            provider_fixture.diagnostics()
+            "worker status must not fabricate terminal recovery state: {status:?}; validation command started={}; provider trace: {}",
+            dispatch_validation_marker.exists(),
+            provider_fixture.diagnostics(),
         );
         assert!(
             Instant::now() < worker_progress_deadline,
@@ -2793,6 +3136,160 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         recovered_worker_status.attempt, 1,
         "the authenticated worker status must retain the original operation attempt"
     );
+    let recovered_validation = recovered_worker_status
+        .validation
+        .as_ref()
+        .expect("Ready must carry measured validation for the replayed operation");
+    assert!(
+        recovered_validation.passed(),
+        "Ready requires passing target-worker validation: {recovered_validation:?}"
+    );
+    assert_eq!(
+        recovered_validation.worker_id,
+        config_worker.host_machine_id
+    );
+    assert_eq!(recovered_validation.platform, target_platform);
+    assert_eq!(recovered_validation.commands.len(), 1);
+    assert_eq!(
+        recovered_validation.commands[0].command_digest,
+        super::command_digest(&dispatch_definition.validation_commands[0])
+    );
+    assert_eq!(recovered_validation.commands[0].exit_code, 0);
+    assert!(
+        dispatch_validation_marker.exists(),
+        "the worker must execute the replayed operation's validation command"
+    );
+
+    let provider_trace = provider_fixture.trace_entries();
+    let prompt_requests = utility_prompt_requests(&provider_trace);
+    let prompted_sessions = prompt_requests
+        .iter()
+        .filter_map(|request| {
+            request
+                .strip_prefix("POST /session/")
+                .and_then(|path| path.strip_suffix("/prompt_async"))
+        })
+        .collect::<BTreeSet<_>>();
+    let completed_sessions = provider_trace
+        .iter()
+        .filter_map(|entry| entry.strip_prefix("GET /event:event:"))
+        .collect::<BTreeSet<_>>();
+    let messaged_sessions = provider_trace
+        .iter()
+        .filter_map(|entry| entry.strip_prefix("GET /session/"))
+        .filter_map(|path| path.split('?').next())
+        .filter_map(|path| path.strip_suffix("/message"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        completed_sessions,
+        prompted_sessions,
+        "each utility prompt session must receive its own completion event: {}",
+        provider_fixture.diagnostics()
+    );
+    assert!(
+        prompted_sessions.is_subset(&messaged_sessions),
+        "each utility prompt response must be read from its matching session: {}",
+        provider_fixture.diagnostics()
+    );
+
+    // The other operation's authenticated redispatch above gives the home a
+    // chance to reconcile this original operation's already-completed worker
+    // record. Public Start replay is idempotent at the operation boundary: it
+    // must return that authoritative Ready result without another Start.
+    let original_before_replay = response_status(
+        get_setup_status(
+            &runtime,
+            "setup-transport-recovery",
+            "user-1",
+            "authoritative original status before public Start replay",
+        )
+        .await,
+    );
+    assert_eq!(
+        original_before_replay.operation_id,
+        start_request.operation_id
+    );
+    assert_eq!(original_before_replay.project_id, project_id);
+    assert_eq!(original_before_replay.session_id, session_id);
+    assert_eq!(original_before_replay.agent_id, agent_id);
+    assert_eq!(original_before_replay.worker_id, config_worker.host_machine_id);
+    assert_eq!(original_before_replay.platform, target_platform);
+    assert_eq!(original_before_replay.phase, ProjectEnvironmentSetupPhase::Ready);
+    assert_eq!(original_before_replay.attempt, 1);
+    let original_validation_before_replay = original_before_replay
+        .validation
+        .as_ref()
+        .expect("worker-authoritative Ready must retain measured validation");
+    assert_eq!(
+        original_validation_before_replay,
+        &ProjectEnvironmentValidation {
+            worker_id: config_worker.host_machine_id.clone(),
+            platform: target_platform.clone(),
+            commands: vec![ProjectEnvironmentCommandResult {
+                command_digest: super::command_digest(&validation_command),
+                exit_code: 0,
+                stdout_bytes: 1,
+                stderr_bytes: 0,
+            }],
+        }
+    );
+    let (_, worker_status_before_replay) = worker_runtime
+        .owned
+        .project_environment_setups
+        .get_entry("setup-transport-recovery", "user-1")
+        .expect("the worker should retain the original Ready operation");
+    assert_eq!(
+        worker_status_before_replay, original_before_replay,
+        "the home Ready projection must match the worker's retained operation"
+    );
+    let provider_prompt_posts_before_replay =
+        utility_prompt_requests(&provider_fixture.trace_entries());
+
+    let replay_observer_state_worker = {
+        let app = app_worker.lock().await;
+        app.relay_client_state()
+    };
+    let (replay_observer_tx, mut replay_observer_rx) =
+        tokio::sync::mpsc::unbounded_channel::<TestPeerRequestObservation>();
+    replay_observer_state_worker
+        .write()
+        .await
+        .test_set_authenticated_peer_request_observer(replay_observer_tx);
+    let replay_operation_id = original_before_replay.operation_id.clone();
+    let replay_start_dispatches = Arc::new(AtomicUsize::new(0));
+    let replay_start_dispatches_for_observer = Arc::clone(&replay_start_dispatches);
+    let (stop_replay_observer_tx, mut stop_replay_observer_rx) = oneshot::channel();
+    let replay_observer = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut stop_replay_observer_rx => break,
+                observation = replay_observer_rx.recv() => match observation {
+                    Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                        if operation_id == replay_operation_id => {
+                            replay_start_dispatches_for_observer.fetch_add(1, Ordering::SeqCst);
+                        }
+                    Some(
+                        TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                            release, ..
+                        }
+                        | TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                            release, ..
+                        }
+                        | TestPeerRequestObservation::RetryProjectEnvironmentSetup {
+                            release, ..
+                        }
+                        | TestPeerRequestObservation::AcknowledgeProjectEnvironmentSetupDefinition {
+                            release, ..
+                        },
+                    ) => {
+                        let _ = release.send(());
+                    }
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        }
+    });
 
     let replayed = runtime
         .execute_project_environment_setup_request(
@@ -2803,11 +3300,9 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .expect("replayed public start should remain idempotent");
     let replayed_status = response_status(replayed);
     assert_eq!(
-        replayed_status.phase,
-        ProjectEnvironmentSetupPhase::Requested,
-        "replayed public start must not settle an uncertain operation or dispatch a duplicate attempt"
+        replayed_status, original_before_replay,
+        "public Start replay must return the same operation, attempt, and measured worker result"
     );
-    assert_eq!(replayed_status.attempt, 1);
     let ready = get_setup_status(
         &runtime,
         "setup-transport-recovery",
@@ -2816,23 +3311,40 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     )
     .await;
     let ready = response_status(ready);
-    assert_eq!(ready.phase, ProjectEnvironmentSetupPhase::Ready);
-    assert_eq!(ready.attempt, 1);
+    assert_eq!(ready.session_id, original_before_replay.session_id);
     assert_eq!(
-        ready
-            .validation
-            .as_ref()
-            .expect("Ready status should retain measured validation")
-            .worker_id,
-        config_worker.host_machine_id
+        ready, original_before_replay,
+        "status after replay must retain the same operation and measured worker result"
     );
     let (_, worker_status) = worker_runtime
         .owned
         .project_environment_setups
         .get_entry("setup-transport-recovery", "user-1")
         .expect("worker setup should remain available");
-    assert_eq!(worker_status.phase, ProjectEnvironmentSetupPhase::Ready);
-    assert_eq!(worker_status.attempt, 1);
+    assert_eq!(worker_status.session_id, original_before_replay.session_id);
+    assert_eq!(
+        worker_status, worker_status_before_replay,
+        "replaying the public Start must not change the worker operation"
+    );
+    assert_eq!(
+        utility_prompt_requests(&provider_fixture.trace_entries()),
+        provider_prompt_posts_before_replay,
+        "same-operation Start replay must not dispatch another provider validation prompt"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let _ = stop_replay_observer_tx.send(());
+    replay_observer
+        .await
+        .expect("replay request observer should stop");
+    replay_observer_state_worker
+        .write()
+        .await
+        .test_clear_authenticated_peer_request_observer();
+    assert_eq!(
+        replay_start_dispatches.load(Ordering::SeqCst),
+        0,
+        "same-operation public Start replay must not dispatch another worker Start"
+    );
 
     // This is deliberately separate from the process-restart case below. A
     // connector interruption leaves the worker process and its attempt-one
@@ -2844,8 +3356,17 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // phases race the two-second observation deadline.
     let reconnect_operation_id = "setup-retry-before-worker-reconnect";
     let reconnect_release = workspace.join("reconnect-release");
-    let reconnect_command =
-        "while [ ! -f reconnect-release ]; do sleep 0.01; done; command -v sh".to_string();
+    let reconnect_command_started = workspace.join("reconnect-command-started");
+    let reconnect_command = concat!(
+        "touch reconnect-command-started; ",
+        "while [ ! -f reconnect-release ]; do sleep 0.01; done; ",
+        "command -v sh"
+    )
+    .to_string();
+    assert!(
+        !reconnect_command_started.exists(),
+        "reconnect command entry marker must be fresh"
+    );
     let mut reconnect_definition = definition.clone();
     reconnect_definition.setup_steps[0].command = reconnect_command.clone();
     reconnect_definition.validation_commands = vec![reconnect_command];
@@ -2897,6 +3418,13 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    while !reconnect_command_started.exists() {
+        assert!(
+            Instant::now() < reconnect_active_deadline,
+            "worker did not enter the gated reconnect command before Cancel"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let reconnect_cancelled = runtime
         .execute_project_environment_setup_request(
             LocalDaemonRequest::CancelProjectEnvironmentSetup(
@@ -2912,7 +3440,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let reconnect_cancelled_status = response_status(reconnect_cancelled);
     assert_eq!(
         reconnect_cancelled_status.phase,
-        ProjectEnvironmentSetupPhase::Cancelled
+        ProjectEnvironmentSetupPhase::Cancelled,
+        "worker cancellation response: {reconnect_cancelled_status:#?}"
     );
     assert_eq!(reconnect_cancelled_status.attempt, 1);
     assert!(reconnect_cancelled_status.retryable);
@@ -3427,6 +3956,31 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         "restored worker should be absent before the retained-worker fixture registers"
     );
 
+    // The worker-restart recovery above may refresh the home agent's leased
+    // agent ID. Bind the external protocol fixture to the current caller state
+    // rather than the lease ID captured before that recovery.
+    let current_home_agent = runtime
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .expect("home agent should remain available after worker recovery");
+    let current_remote_execution = current_home_agent
+        .remote_execution()
+        .expect("home agent should remain bound to its worker");
+    assert_eq!(current_home_agent.session_id(), session_id.as_str());
+    assert_eq!(
+        current_remote_execution.worker_machine_id.as_str(),
+        worker_registration.machine_id.as_str(),
+        "current home worker binding should match the relay registration"
+    );
+    let external_worker_binding = ExternalWorkerFixtureBinding {
+        leased_agent_id: current_remote_execution.leased_agent_id.clone(),
+        home_session_id: current_home_agent.session_id().to_string(),
+        home_agent_id: current_home_agent.id().to_string(),
+        worker_id: current_remote_execution.worker_machine_id.clone(),
+        platform: target_platform.clone(),
+    };
+
     // Start a separate operation through an authenticated external worker
     // fixture. Its first Get is worker-authoritative Cancelled, allowing the
     // public Retry to advance the home's attempt to 2 without touching either
@@ -3439,6 +3993,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             config_worker.relay_private_key.clone(),
             config_home.relay_public_key.clone(),
             ExternalWorkerFixtureMode::Stateful,
+            external_worker_binding.clone(),
         );
     for _ in 0..200 {
         if registry
@@ -3573,6 +4128,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         config_worker.relay_private_key.clone(),
         config_home.relay_public_key.clone(),
         ExternalWorkerFixtureMode::Empty,
+        external_worker_binding.clone(),
     );
     for _ in 0..200 {
         if registry
@@ -3641,18 +4197,16 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
 
     // Exercise the distinct stale-attempt path through the authenticated
     // public Start/Cancel/Retry/Get seam. The retained worker keeps its
-    // attempt-one Cancelled record while the home accepts Retry attempt two;
-    // the first recovery Retry response is withheld so a concurrent Get must
-    // observe the shared same-attempt reservation rather than dispatching a
-    // duplicate. The old accepted Retry response is released only after the
-    // recovery response, proving late settlement cannot rewind the home.
+    // attempt-one Cancelled record while the home accepts Retry attempt two.
+    // The home retry watcher observes that stale record and sends one recovery
+    // Retry; its response is withheld while a concurrent Get verifies the
+    // shared same-attempt reservation.
     let (
         withheld_worker_shutdown,
         withheld_retry_release_tx,
         withheld_start_seen,
         withheld_retry_seen,
-        withheld_recovery_retry_seen,
-        withheld_second_get_seen,
+        withheld_concurrent_get_seen,
         withheld_retry_release_applied,
         withheld_retry_count,
         withheld_worker_task,
@@ -3661,6 +4215,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         worker_registration,
         config_worker.relay_private_key.clone(),
         config_home.relay_public_key.clone(),
+        external_worker_binding,
     );
     for _ in 0..200 {
         if registry
@@ -3736,12 +4291,14 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         stale_attempt_retry_status.phase,
         ProjectEnvironmentSetupPhase::Requested
     );
+    // Public Retry advances the home attempt and starts its watcher. The
+    // watcher sends the single worker Retry after observing attempt-one state.
     tokio::time::timeout(Duration::from_secs(2), withheld_retry_seen)
         .await
-        .expect("worker should observe the accepted Retry before its response is withheld")
+        .expect("home stale-status recovery should reach the worker Retry request")
         .expect("withheld Retry barrier should remain available");
 
-    let first_stale_get = tokio::spawn({
+    let concurrent_stale_get = tokio::spawn({
         let runtime = runtime.clone();
         async move {
             runtime
@@ -3756,40 +4313,21 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 .await
         }
     });
-    tokio::time::timeout(Duration::from_secs(2), withheld_recovery_retry_seen)
+    tokio::time::timeout(Duration::from_secs(2), withheld_concurrent_get_seen)
         .await
-        .expect("stale-attempt recovery should reach the worker Retry request")
-        .expect("recovery Retry barrier should remain available");
-
-    let second_stale_get = tokio::spawn({
-        let runtime = runtime.clone();
-        async move {
-            runtime
-                .execute_project_environment_setup_request(
-                    LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
-                        GetProjectEnvironmentSetupStatusRequest {
-                            operation_id: stale_attempt_operation_id.to_string(),
-                        },
-                    ),
-                    "user-1",
-                )
-                .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(2), withheld_second_get_seen)
-        .await
-        .expect("concurrent stale-attempt polling should reach the worker")
+        .expect("concurrent stale-attempt Get should reach the worker while Retry is withheld")
         .expect("concurrent Get barrier should remain available");
-    let second_stale_get_error = tokio::time::timeout(Duration::from_secs(2), second_stale_get)
-        .await
-        .expect("concurrent stale-attempt Get should remain bounded")
-        .expect("concurrent stale-attempt Get should not panic")
-        .expect_err("the concurrent Get must be fenced while recovery Retry is in flight");
+    let concurrent_stale_get_error =
+        tokio::time::timeout(Duration::from_secs(2), concurrent_stale_get)
+            .await
+            .expect("concurrent stale-attempt Get should remain bounded")
+            .expect("concurrent stale-attempt Get should not panic")
+            .expect_err("the concurrent Get must be fenced while recovery Retry is in flight");
     assert!(
-        second_stale_get_error
+        concurrent_stale_get_error
             .to_string()
             .contains("same-attempt replay is already in flight"),
-        "concurrent stale-attempt polling should expose the shared reservation: {second_stale_get_error}"
+        "concurrent stale-attempt polling should expose the shared reservation: {concurrent_stale_get_error}"
     );
 
     let _ = withheld_retry_release_tx.send(());
@@ -3797,29 +4335,54 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .await
         .expect("withheld Retry responses should be released after concurrent polling")
         .expect("withheld Retry release barrier should remain available");
-    let first_stale_get_status = response_status(
-        tokio::time::timeout(Duration::from_secs(2), first_stale_get)
-            .await
-            .expect("stale-attempt recovery Get should remain bounded")
-            .expect("stale-attempt recovery Get should not panic")
-            .expect("stale-attempt recovery Get should reconcile the current attempt"),
-    );
+    let recovery_deadline = Instant::now() + Duration::from_secs(2);
+    let recovered_status = loop {
+        let result = tokio::time::timeout(
+            recovery_deadline.saturating_duration_since(Instant::now()),
+            runtime.execute_project_environment_setup_request(
+                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                    GetProjectEnvironmentSetupStatusRequest {
+                        operation_id: stale_attempt_operation_id.to_string(),
+                    },
+                ),
+                "user-1",
+            ),
+        )
+        .await
+        .expect("post-recovery stale-attempt Get should remain bounded");
+        match result {
+            Ok(response) => break response_status(response),
+            Err(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("same-attempt replay is already in flight")
+                        || message.contains("same-attempt replay result is unresolved"),
+                    "post-recovery Get returned an unexpected error: {error}"
+                );
+                assert!(
+                    Instant::now() < recovery_deadline,
+                    "the released worker Retry was not reconciled: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    };
     assert_eq!(
-        first_stale_get_status.operation_id,
+        recovered_status.operation_id,
         stale_attempt_operation_id
     );
     assert_eq!(
-        first_stale_get_status.attempt, 2,
+        recovered_status.attempt, 2,
         "stale worker attempt-one status must never be returned after home Retry"
     );
     assert_eq!(
-        first_stale_get_status.phase,
+        recovered_status.phase,
         ProjectEnvironmentSetupPhase::Requested
     );
     assert_eq!(
         withheld_retry_count.load(Ordering::Acquire),
-        2,
-        "one accepted Retry and one shared stale-attempt recovery Retry are allowed; concurrent Get must not add another"
+        1,
+        "one stale-attempt recovery Retry is allowed; concurrent Get must not add another"
     );
 
     let _ = withheld_worker_shutdown.send(());
@@ -3830,6 +4393,677 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     connector_home.await.expect("home connector should stop");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("relay server should stop");
+}
+
+#[cfg(unix)]
+#[test]
+fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel() {
+    std::thread::Builder::new()
+        .name("project-environment-stale-binding-cancel".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("stale-binding test runtime should build")
+                .block_on(stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner());
+        })
+        .expect("stale-binding test thread should spawn")
+        .join()
+        .expect("stale-binding test thread should not panic");
+}
+
+#[cfg(unix)]
+async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() {
+    let _environment_lock = crate::env_lock::lock();
+    let setup_definition = || {
+        let mut definition = stale_binding_fixture_definition(actual_worker_platform());
+        definition
+            .validation_commands
+            .push("command -v sh".to_string());
+        definition
+    };
+    let root = std::env::temp_dir().join(format!(
+        "chariox-project-setup-stale-binding-cancel-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let worker_home = root.join("worker-home");
+    let workspace = root.join("worker-worktree");
+    let receipt = root.join("receipt.json");
+    std::fs::create_dir_all(&worker_home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let setup_release = workspace.join("stale-binding-setup-release");
+
+    struct Cleanup {
+        root: PathBuf,
+        home: Option<std::ffi::OsString>,
+        receipt: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for (key, value) in [
+                ("CHARIOX_HOME", &self.home),
+                ("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &self.receipt),
+            ] {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    let _cleanup = Cleanup {
+        root: root.clone(),
+        home: std::env::var_os("CHARIOX_HOME"),
+        receipt: std::env::var_os("CHARIOX_DISPOSABLE_WORKER_RECEIPT"),
+    };
+    let _command_gate_cleanup = WorkerCommandGateCleanup {
+        setup_release: setup_release.clone(),
+        validation_release: workspace.join("stale-binding-validation-release"),
+    };
+    std::env::set_var("CHARIOX_HOME", &worker_home);
+
+    let listener_seed = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("fixture-only".to_string()),
+    });
+    let listener = listener_seed
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("relay listener should have addr");
+    let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
+
+    let mut config_home = DaemonConfig::for_tests();
+    config_home.daemon_id = "home-kernel-stale-binding-cancel".to_string();
+    config_home.host_machine_id = "home-machine-stale-binding-cancel".to_string();
+    config_home.relay_url = Some(relay_url.clone());
+    config_home.relay_token = Some("setup-transport-recovery-home-token".to_string());
+    config_home.relay_heartbeat_ms = 50;
+    config_home.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
+
+    let mut config_worker = DaemonConfig::for_tests();
+    config_worker.daemon_id = "worker-kernel-stale-binding-cancel".to_string();
+    config_worker.host_machine_id = "worker-machine-stale-binding-cancel".to_string();
+    config_worker.relay_url = Some(relay_url.clone());
+    config_worker.relay_token = Some("setup-transport-recovery-worker-token".to_string());
+    config_worker.relay_heartbeat_ms = 50;
+    config_worker.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
+    config_worker.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config_worker.accept_remote_leases = true;
+    config_worker.remote_lease_capacity = Some(1);
+    config_worker.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+        kernel_id: config_home.daemon_id.clone(),
+        realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
+        user_id: "user-1".to_string(),
+        relay_public_key: config_home.relay_public_key.clone(),
+    });
+    config_worker.cloud_relay = Some(
+        serde_json::from_value(serde_json::json!({
+            "api_url": "https://cloud.example.test",
+            "email": "owner@example.test",
+            "account_id": "account-stale-binding-cancel",
+            "user_id": "user-1",
+            "account_slug": "account-stale-binding-cancel",
+            "realm_id": SETUP_TRANSPORT_RECOVERY_REALM,
+            "relay_url": "wss://relay.example.test",
+            "issuer_id": "issuer-stale-binding-cancel",
+            "machine_id": config_worker.host_machine_id,
+            "machine_credential": format!("mcred_{}", "c".repeat(40))
+        }))
+        .unwrap(),
+    );
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
+    std::fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "allocationId": "allocation-stale-binding-cancel",
+            "machineId": config_worker.host_machine_id,
+            "kernelId": config_worker.daemon_id,
+            "relayPublicKey": config_worker.relay_public_key,
+            "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+            "homeCaller": {
+                "accountId": "account-stale-binding-cancel",
+                "userId": "user-1",
+                "realmId": SETUP_TRANSPORT_RECOVERY_REALM,
+                "machineId": config_home.host_machine_id,
+                "kernelId": config_home.daemon_id,
+                "relayPublicKey": config_home.relay_public_key
+            },
+            "confirmedAt": "2026-09-14T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let listener_addr = addr;
+    let relay = Arc::new(RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: listener_addr.ip().to_string(),
+            port: listener_addr.port(),
+            shared_token: None,
+        },
+        setup_transport_recovery_relay_auth(&config_home, &config_worker),
+    ));
+    let registry = relay.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let relay = Arc::clone(&relay);
+        tokio::spawn(async move {
+            relay
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let app_home = Arc::new(tokio::sync::Mutex::new(
+        crate::DaemonApp::bootstrap(config_home.clone()).unwrap(),
+    ));
+    let (session_id, agent_id, project_id) = {
+        let mut app = app_home.lock().await;
+        let (session, agent) = app
+            .create_session(
+                CreateSessionRequest::new(
+                    workspace.display().to_string(),
+                    workspace.display().to_string(),
+                )
+                .with_owner_user_id("user-1")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+            )
+            .expect("home session should be created");
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            session.project_id().to_string(),
+        )
+    };
+
+    let (lease_id, leased_agent_id, backing_session_id, backing_agent_id) = {
+        let mut app = crate::DaemonApp::bootstrap(config_worker.clone()).unwrap();
+        let provider_profiles = app.provider_account_profile_registry();
+        let provider_account_owner =
+            crate::account_profile::provider_account_authority_owner_user_id(
+                &config_worker,
+                "user-1",
+            );
+        let profiles = provider_profiles
+            .migrate_effective_defaults(&provider_account_owner, &workspace)
+            .unwrap();
+        for profile in profiles {
+            crate::test_support::authenticate_provider_account(
+                &provider_profiles,
+                &provider_account_owner,
+                &profile.provider,
+                &profile.profile_id,
+            )
+            .unwrap();
+        }
+        let caller = crate::app::LeaseCallerBinding {
+            home_kernel_id: config_home.daemon_id.clone(),
+            authenticated_machine_id: config_home.host_machine_id.clone(),
+            owner_user_id: "user-1".to_string(),
+            realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
+            public_key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                &config_home.relay_public_key,
+            ),
+        };
+        let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_bound_execution_lease(
+                &config_home.daemon_id,
+                &session_id,
+                &agent_id,
+                false,
+                "user-1",
+                caller,
+            )
+            .expect("worker execution lease should be created");
+        let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent_from_base_directory(
+                &workspace,
+                &lease.id,
+                "opencode",
+                "default",
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(workspace.display().to_string()),
+                None,
+            )
+            .expect("worker leased agent should be created");
+        let backing = (
+            leased_agent.backing_session_id,
+            leased_agent.backing_agent_id,
+        );
+        let worker_router = CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let worker_runtime = worker_router.runtime_state();
+        let worker_execution = SetupExecution {
+            owner_user_id: "user-1".to_string(),
+            operation_id: "setup-stale-binding-cancel".to_string(),
+            project_id: project_id.clone(),
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+            execution_session_id: backing.0.clone(),
+            execution_agent_id: backing.1.clone(),
+            workspace_id: workspace.display().to_string(),
+            target_worker_id: config_worker.host_machine_id.clone(),
+            target_platform: actual_worker_platform(),
+            definition: Some(setup_definition()),
+            validation_commands: Vec::new(),
+            persist_project_definition: false,
+            remote_leased_agent_id: Some(leased_agent.id.clone()),
+        };
+        worker_runtime
+            .owned
+            .project_environment_setups
+            .begin(worker_execution)
+            .expect("worker attempt one should be seeded");
+        worker_runtime
+            .owned
+            .project_environment_setups
+            .request_cancel("setup-stale-binding-cancel", &session_id, "user-1", false)
+            .expect("worker attempt one should be cancelled before restart");
+        drop(worker_runtime);
+        drop(worker_router);
+        (lease.id, leased_agent.id, backing.0, backing.1)
+    };
+
+    {
+        let app = app_home.lock().await;
+        app.agents()
+            .bind_remote_execution(
+                &agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: config_worker.daemon_id.clone(),
+                    worker_machine_id: config_worker.host_machine_id.clone(),
+                    execution_lease_id: lease_id,
+                    leased_agent_id: leased_agent_id.clone(),
+                    active_worker_provider_run_id: None,
+                    relay_url: Some(relay_url.clone()),
+                    relay_token: config_home.relay_token.clone(),
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent should bind to the worker");
+    }
+    let home_router = CommandRouter::with_interactive_capacity_from_app(Arc::clone(&app_home), 1);
+    let runtime = home_router.runtime_state();
+    let home_execution = SetupExecution {
+        owner_user_id: "user-1".to_string(),
+        operation_id: "setup-stale-binding-cancel".to_string(),
+        project_id,
+        session_id: session_id.clone(),
+        agent_id: agent_id.clone(),
+        execution_session_id: backing_session_id,
+        execution_agent_id: backing_agent_id,
+        workspace_id: workspace.display().to_string(),
+        target_worker_id: config_worker.host_machine_id.clone(),
+        target_platform: actual_worker_platform(),
+        definition: Some(setup_definition()),
+        validation_commands: Vec::new(),
+        persist_project_definition: false,
+        remote_leased_agent_id: Some(leased_agent_id),
+    };
+    runtime
+        .owned
+        .project_environment_setups
+        .begin(home_execution)
+        .expect("home attempt one should be seeded");
+    runtime
+        .owned
+        .project_environment_setups
+        .request_cancel("setup-stale-binding-cancel", &session_id, "user-1", false)
+        .expect("home attempt one should be cancelled before Retry");
+
+    let state_home = app_home.lock().await.relay_client_state();
+    let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+    let connector_home = tokio::spawn(crate::transport::relay_client::run_daemon_relay_connector(
+        Arc::clone(&app_home),
+        state_home,
+        shutdown_home_rx,
+    ));
+    let _ = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
+                operation_id: "setup-stale-binding-cancel".to_string(),
+                session_id: session_id.clone(),
+            }),
+            "user-1",
+        )
+        .await
+        .expect("home should advance cancelled attempt one to attempt two offline");
+    let (_, home_attempt_two, _) = runtime
+        .owned
+        .project_environment_setups
+        .get_entry_with_cancellation("setup-stale-binding-cancel", "user-1")
+        .expect("home setup should remain available");
+    assert_eq!(home_attempt_two.attempt, 2);
+
+    let app_worker = Arc::new(tokio::sync::Mutex::new(
+        crate::DaemonApp::bootstrap(config_worker.clone()).unwrap(),
+    ));
+    let worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&app_worker),
+        1,
+    ));
+    let worker_runtime = worker_router.runtime_state();
+    let state_worker = app_worker.lock().await.relay_client_state();
+    let (worker_request_tx, mut worker_request_rx) =
+        tokio::sync::mpsc::unbounded_channel::<TestPeerRequestObservation>();
+    state_worker
+        .write()
+        .await
+        .test_set_authenticated_peer_request_observer(worker_request_tx);
+    let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+    let connector_worker = tokio::spawn(
+        crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+            Arc::clone(&worker_router),
+            Arc::clone(&state_worker),
+            shutdown_worker_rx,
+            relay_url,
+            "setup-transport-recovery-worker-token".to_string(),
+        ),
+    );
+    for _ in 0..200 {
+        if registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some(),
+        "restarted worker should register before stale-binding recovery"
+    );
+
+    let get_runtime = runtime.clone();
+    let recovery_get = tokio::spawn(async move {
+        get_runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                    GetProjectEnvironmentSetupStatusRequest {
+                        operation_id: "setup-stale-binding-cancel".to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await
+    });
+    let (retry_lease_id, retry_release) = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            match worker_request_rx.recv().await {
+                Some(TestPeerRequestObservation::RetryProjectEnvironmentSetup {
+                    operation_id,
+                    leased_agent_id,
+                    release,
+                }) if operation_id == "setup-stale-binding-cancel" => {
+                    break (leased_agent_id, release);
+                }
+                Some(
+                    TestPeerRequestObservation::AcknowledgeProjectEnvironmentSetupDefinition {
+                        release,
+                        ..
+                    },
+                )
+                | Some(TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                    release,
+                    ..
+                })
+                | Some(TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                    release, ..
+                }) => {
+                    let _ = release.send(());
+                }
+                Some(TestPeerRequestObservation::RetryProjectEnvironmentSetup {
+                    release, ..
+                }) => {
+                    let _ = release.send(());
+                }
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { .. }) => {}
+                None => panic!("worker observer closed before recovery Retry"),
+            }
+        }
+    })
+    .await
+    .expect("stale-binding recovery should dispatch its authenticated Retry");
+    let current_binding_id = runtime
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .expect("home agent should remain available")
+        .remote_execution()
+        .expect("home agent should remain remote-bound")
+        .leased_agent_id
+        .clone();
+
+    let cancel_runtime = runtime.clone();
+    let cancel_session_id = session_id.clone();
+    let (cancel_polled_tx, cancel_polled_rx) = oneshot::channel();
+    let cancellation = tokio::spawn(async move {
+        let _ = cancel_polled_tx.send(());
+        cancel_runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                    CancelProjectEnvironmentSetupRequest {
+                        operation_id: "setup-stale-binding-cancel".to_string(),
+                        session_id: cancel_session_id,
+                    },
+                ),
+                "user-1",
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), cancel_polled_rx)
+        .await
+        .expect("Cancel task should reach the public request")
+        .expect("Cancel polling barrier should remain available");
+    // The spawned task polls through the public request until it either
+    // records cancellation or blocks acquiring the recovery ordering gate.
+    tokio::task::yield_now().await;
+    let (_, _, cancel_linearized_before_retry_release) = runtime
+        .owned
+        .project_environment_setups
+        .get_entry_with_cancellation("setup-stale-binding-cancel", "user-1")
+        .expect("home setup should remain available during the race");
+    while let Ok(observation) = worker_request_rx.try_recv() {
+        match observation {
+            TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                operation_id,
+                release,
+            } => {
+                if operation_id == "setup-stale-binding-cancel" {
+                    let _ = release.send(());
+                }
+            }
+            TestPeerRequestObservation::AcknowledgeProjectEnvironmentSetupDefinition {
+                release,
+                ..
+            }
+            | TestPeerRequestObservation::GetProjectEnvironmentSetupStatus { release, .. }
+            | TestPeerRequestObservation::RetryProjectEnvironmentSetup { release, .. } => {
+                let _ = release.send(());
+            }
+            TestPeerRequestObservation::StartProjectEnvironmentSetup { .. } => {}
+        }
+    }
+
+    let retry_released = Arc::new(AtomicBool::new(false));
+    let retry_released_by_observer = Arc::clone(&retry_released);
+    let (cancel_after_retry_tx, cancel_after_retry_rx) = oneshot::channel();
+    let observer_drain = tokio::spawn(async move {
+        let mut cancel_after_retry_tx = Some(cancel_after_retry_tx);
+        while let Some(observation) = worker_request_rx.recv().await {
+            match observation {
+                TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                    operation_id,
+                    release,
+                } => {
+                    if operation_id == "setup-stale-binding-cancel"
+                        && retry_released_by_observer.load(Ordering::Acquire)
+                    {
+                        if let Some(sender) = cancel_after_retry_tx.take() {
+                            let _ = sender.send(operation_id);
+                        }
+                    }
+                    let _ = release.send(());
+                }
+                TestPeerRequestObservation::AcknowledgeProjectEnvironmentSetupDefinition {
+                    release,
+                    ..
+                }
+                | TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                    release, ..
+                }
+                | TestPeerRequestObservation::RetryProjectEnvironmentSetup { release, .. } => {
+                    let _ = release.send(());
+                }
+                TestPeerRequestObservation::StartProjectEnvironmentSetup { .. } => {}
+            }
+        }
+    });
+    retry_released.store(true, Ordering::Release);
+    let _ = retry_release.send(());
+
+    let (recovery_get_result, cancellation_result) =
+        tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(recovery_get, cancellation)
+        })
+        .await
+        .expect("Get and Cancel should settle after the authenticated Retry barrier opens");
+    let recovery_get_result = recovery_get_result.expect("public Get task should not panic");
+    let cancellation_result = cancellation_result.expect("public Cancel task should not panic");
+
+    let recovery_get_status = match &recovery_get_result {
+        Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus { status }) => status,
+        other => panic!(
+            "public Get should reconcile authenticated attempt two before the final poll: get={other:?}, cancel={cancellation_result:?}"
+        ),
+    };
+    assert_eq!(recovery_get_status.operation_id, "setup-stale-binding-cancel");
+    assert_eq!(recovery_get_status.attempt, 2);
+    let cancellation_status = match &cancellation_result {
+        Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status }) => status,
+        other => panic!(
+            "public Cancel should return the worker's authenticated terminal status before the final poll: get={recovery_get_result:?}, cancel={other:?}"
+        ),
+    };
+    assert_eq!(cancellation_status.operation_id, "setup-stale-binding-cancel");
+    assert_eq!(cancellation_status.attempt, 2);
+    assert_eq!(
+        cancellation_status.phase,
+        ProjectEnvironmentSetupPhase::Cancelled,
+        "Cancel must return the worker's actual Cancelled observation: get={recovery_get_result:?}, cancel={cancellation_result:?}"
+    );
+
+    let settle_deadline = Instant::now() + Duration::from_secs(3);
+    let (home_final, worker_final) = loop {
+        let (_, home_status, _) = runtime
+            .owned
+            .project_environment_setups
+            .get_entry_with_cancellation("setup-stale-binding-cancel", "user-1")
+            .expect("home setup should remain available until settled");
+        let (_, worker_status, _) = worker_runtime
+            .owned
+            .project_environment_setups
+            .get_entry_with_cancellation("setup-stale-binding-cancel", "user-1")
+            .expect("restarted worker should retain the exact setup operation");
+        if home_status.phase == ProjectEnvironmentSetupPhase::Cancelled
+            && worker_status.attempt == 2
+            && worker_status.phase == ProjectEnvironmentSetupPhase::Cancelled
+        {
+            break (home_status, worker_status);
+        }
+        assert!(
+            Instant::now() < settle_deadline,
+            "concurrent recovery did not settle exact attempt two: home={home_status:?}, worker={worker_status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    state_worker
+        .write()
+        .await
+        .test_clear_authenticated_peer_request_observer();
+    observer_drain
+        .await
+        .expect("worker observer drain should finish after it is cleared");
+    let cancel_after_retry = tokio::time::timeout(Duration::from_secs(1), cancel_after_retry_rx)
+        .await
+        .ok()
+        .and_then(Result::ok);
+
+    let _ = shutdown_worker_tx.send(true);
+    connector_worker
+        .await
+        .expect("worker connector should stop");
+    let _ = shutdown_home_tx.send(true);
+    connector_home.await.expect("home connector should stop");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("relay server should stop");
+
+    assert_eq!(retry_lease_id, current_binding_id);
+    assert_eq!(home_final.operation_id, "setup-stale-binding-cancel");
+    assert_eq!(home_final.attempt, 2);
+    assert_eq!(home_final.phase, ProjectEnvironmentSetupPhase::Cancelled);
+    assert_eq!(worker_final.operation_id, "setup-stale-binding-cancel");
+    assert_eq!(worker_final.attempt, 2);
+    assert!(cancel_after_retry.as_deref() == Some("setup-stale-binding-cancel"));
+    assert!(!cancel_linearized_before_retry_release,
+        "Cancel must not linearize while the stale-binding Retry is in flight; get={recovery_get_result:?}, cancel={cancellation_result:?}, worker={worker_final:?}");
+    assert!(
+        cancellation_result.is_ok(),
+        "Cancel should settle the rebound worker's exact attempt: {cancellation_result:?}"
+    );
+}
+
+#[cfg(unix)]
+fn stale_binding_fixture_definition(target_platform: String) -> ProjectEnvironmentDefinition {
+    ProjectEnvironmentDefinition {
+        schema_version: 1,
+        origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+        source: ProjectEnvironmentDefinitionSource::Commands,
+        target_platform,
+        source_path: None,
+        inputs: Vec::new(),
+        path_entries: Vec::new(),
+        setup_steps: vec![ProjectEnvironmentSetupStep {
+            kind: ProjectEnvironmentSetupStepKind::Command,
+            command: concat!(
+                "touch stale-binding-setup-started; ",
+                "while [ ! -f stale-binding-setup-release ]; do sleep 0.01; done; ",
+                "command -v sh"
+            )
+            .to_string(),
+        }],
+        validation_commands: Vec::new(),
+    }
 }
 
 #[cfg(unix)]
@@ -3933,11 +5167,100 @@ struct ExternalWorkerSetupState {
 }
 
 #[cfg(unix)]
+#[derive(Clone)]
+struct ExternalWorkerFixtureBinding {
+    leased_agent_id: String,
+    home_session_id: String,
+    home_agent_id: String,
+    worker_id: String,
+    platform: String,
+}
+
+#[cfg(unix)]
+fn external_worker_fixture_binding_matches(
+    leased_agent_id: &str,
+    home_session_id: &str,
+    home_agent_id: &str,
+    registered_worker_id: &str,
+    actual_platform: &str,
+    binding: &ExternalWorkerFixtureBinding,
+) -> bool {
+    leased_agent_id == binding.leased_agent_id.as_str()
+        && home_session_id == binding.home_session_id.as_str()
+        && home_agent_id == binding.home_agent_id.as_str()
+        && registered_worker_id == binding.worker_id.as_str()
+        && actual_platform == binding.platform.as_str()
+        && (!cfg!(target_os = "linux") || actual_platform.starts_with("linux-"))
+}
+
+#[cfg(unix)]
+#[test]
+fn external_worker_fixture_binding_matches_only_the_current_caller_tuple() {
+    let binding = ExternalWorkerFixtureBinding {
+        leased_agent_id: "lease-current".to_string(),
+        home_session_id: "home-session-current".to_string(),
+        home_agent_id: "home-agent-current".to_string(),
+        worker_id: "worker-machine-current".to_string(),
+        platform: actual_worker_platform(),
+    };
+    let registered_worker_id = binding.worker_id.as_str();
+    let actual_platform = binding.platform.as_str();
+
+    assert!(external_worker_fixture_binding_matches(
+        &binding.leased_agent_id,
+        &binding.home_session_id,
+        &binding.home_agent_id,
+        registered_worker_id,
+        actual_platform,
+        &binding,
+    ));
+    assert!(!external_worker_fixture_binding_matches(
+        "stale-lease",
+        &binding.home_session_id,
+        &binding.home_agent_id,
+        registered_worker_id,
+        actual_platform,
+        &binding,
+    ));
+    assert!(!external_worker_fixture_binding_matches(
+        &binding.leased_agent_id,
+        "other-home-session",
+        &binding.home_agent_id,
+        registered_worker_id,
+        actual_platform,
+        &binding,
+    ));
+    assert!(!external_worker_fixture_binding_matches(
+        &binding.leased_agent_id,
+        &binding.home_session_id,
+        "other-home-agent",
+        registered_worker_id,
+        actual_platform,
+        &binding,
+    ));
+    assert!(!external_worker_fixture_binding_matches(
+        &binding.leased_agent_id,
+        &binding.home_session_id,
+        &binding.home_agent_id,
+        "other-worker-machine",
+        actual_platform,
+        &binding,
+    ));
+    assert!(!external_worker_fixture_binding_matches(
+        &binding.leased_agent_id,
+        &binding.home_session_id,
+        &binding.home_agent_id,
+        registered_worker_id,
+        "other-platform",
+        &binding,
+    ));
+}
+
+#[cfg(unix)]
 struct ExternalWorkerRetryControl {
     release_retry_rx: oneshot::Receiver<()>,
     release_retry_applied_tx: Option<oneshot::Sender<()>>,
-    recovery_retry_seen_tx: Option<oneshot::Sender<()>>,
-    second_get_seen_tx: Option<oneshot::Sender<()>>,
+    concurrent_get_seen_tx: Option<oneshot::Sender<()>>,
     retry_count: Arc<AtomicUsize>,
 }
 
@@ -3948,6 +5271,7 @@ fn spawn_external_worker_fixture(
     worker_private_key: String,
     home_public_key: String,
     mode: ExternalWorkerFixtureMode,
+    binding: ExternalWorkerFixtureBinding,
 ) -> (
     oneshot::Sender<()>,
     oneshot::Receiver<()>,
@@ -3967,6 +5291,7 @@ fn spawn_external_worker_fixture(
         start_seen_tx,
         retry_seen_tx,
         None,
+        binding,
     ));
     (shutdown_tx, start_seen_rx, retry_seen_rx, task)
 }
@@ -3977,10 +5302,10 @@ fn spawn_external_worker_fixture_with_withheld_retry(
     registration: DaemonRegistration,
     worker_private_key: String,
     home_public_key: String,
+    binding: ExternalWorkerFixtureBinding,
 ) -> (
     oneshot::Sender<()>,
     oneshot::Sender<()>,
-    oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
@@ -3993,14 +5318,12 @@ fn spawn_external_worker_fixture_with_withheld_retry(
     let (release_retry_applied_tx, release_retry_applied_rx) = oneshot::channel();
     let (start_seen_tx, start_seen_rx) = oneshot::channel();
     let (retry_seen_tx, retry_seen_rx) = oneshot::channel();
-    let (recovery_retry_seen_tx, recovery_retry_seen_rx) = oneshot::channel();
-    let (second_get_seen_tx, second_get_seen_rx) = oneshot::channel();
+    let (concurrent_get_seen_tx, concurrent_get_seen_rx) = oneshot::channel();
     let retry_count = Arc::new(AtomicUsize::new(0));
     let retry_control = ExternalWorkerRetryControl {
         release_retry_rx,
         release_retry_applied_tx: Some(release_retry_applied_tx),
-        recovery_retry_seen_tx: Some(recovery_retry_seen_tx),
-        second_get_seen_tx: Some(second_get_seen_tx),
+        concurrent_get_seen_tx: Some(concurrent_get_seen_tx),
         retry_count: Arc::clone(&retry_count),
     };
     let task = tokio::spawn(run_external_worker_fixture(
@@ -4013,14 +5336,14 @@ fn spawn_external_worker_fixture_with_withheld_retry(
         start_seen_tx,
         retry_seen_tx,
         Some(retry_control),
+        binding,
     ));
     (
         shutdown_tx,
         release_retry_tx,
         start_seen_rx,
         retry_seen_rx,
-        recovery_retry_seen_rx,
-        second_get_seen_rx,
+        concurrent_get_seen_rx,
         release_retry_applied_rx,
         retry_count,
         task,
@@ -4038,12 +5361,15 @@ async fn run_external_worker_fixture(
     start_seen_tx: oneshot::Sender<()>,
     retry_seen_tx: oneshot::Sender<()>,
     retry_control: Option<ExternalWorkerRetryControl>,
+    binding: ExternalWorkerFixtureBinding,
 ) {
     let (mut socket, _) =
         match tokio::time::timeout(Duration::from_secs(3), connect_async(&relay_url)).await {
             Ok(Ok(connection)) => connection,
             _ => return,
         };
+    let fixture_worker_id = registration.machine_id.clone();
+    let fixture_platform = actual_worker_platform();
     let register = RelayEnvelope::DaemonRegister { registration };
     let register_payload = match serde_json::to_string(&register) {
         Ok(payload) => payload,
@@ -4157,6 +5483,43 @@ async fn run_external_worker_fixture(
         // fresh worker's default attempt 1.
         let request_attempt = external_worker_request_attempt(&request);
         let (encrypted_response, error) = match request {
+            RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+                leased_agent_id,
+                home_session_id,
+                home_agent_id,
+            } => {
+                let binding_matches = external_worker_fixture_binding_matches(
+                    &leased_agent_id,
+                    &home_session_id,
+                    &home_agent_id,
+                    &fixture_worker_id,
+                    &fixture_platform,
+                    &binding,
+                );
+                if binding_matches {
+                    let response = RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
+                        worker_id: fixture_worker_id.clone(),
+                        platform: fixture_platform.clone(),
+                    };
+                    (
+                        Some(encrypt_external_worker_response(
+                            &worker_private_key,
+                            &home_public_key,
+                            response,
+                        )),
+                        None,
+                    )
+                } else {
+                    (
+                        None,
+                        Some(RelayError {
+                            code: PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE.to_string(),
+                            message: "external worker fixture rejected setup target resolution for an unexpected lease/home/worker/platform binding".to_string(),
+                            retryable: false,
+                        }),
+                    )
+                }
+            }
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
                 operation_id,
                 project_id,
@@ -4212,12 +5575,13 @@ async fn run_external_worker_fixture(
                     Some(setup_state) => {
                         if mode == ExternalWorkerFixtureMode::WithheldRetry
                             && setup_state.attempt == 1
-                            && held_retry_responses.len() >= 2
+                            && !held_retry_responses.is_empty()
                         {
                             if let Some(control) = retry_control.as_mut() {
-                                if let Some(second_get_seen_tx) = control.second_get_seen_tx.take()
+                                if let Some(concurrent_get_seen_tx) =
+                                    control.concurrent_get_seen_tx.take()
                                 {
-                                    let _ = second_get_seen_tx.send(());
+                                    let _ = concurrent_get_seen_tx.send(());
                                 }
                             }
                         }
@@ -4265,7 +5629,7 @@ async fn run_external_worker_fixture(
                         .retry_count
                         .fetch_add(1, Ordering::AcqRel)
                         + 1;
-                    if retry_number > 2 {
+                    if retry_number > 1 {
                         (
                             None,
                             Some(RelayError {
@@ -4276,19 +5640,8 @@ async fn run_external_worker_fixture(
                             }),
                         )
                     } else {
-                        if retry_number == 2 {
-                            if let Some(control) = retry_control.as_mut() {
-                                if let Some(recovery_retry_seen_tx) =
-                                    control.recovery_retry_seen_tx.take()
-                                {
-                                    let _ = recovery_retry_seen_tx.send(());
-                                }
-                            }
-                        }
-                        if retry_number == 1 {
-                            if let Some(retry_seen_tx) = retry_seen_tx.take() {
-                                let _ = retry_seen_tx.send(());
-                            }
+                        if let Some(retry_seen_tx) = retry_seen_tx.take() {
+                            let _ = retry_seen_tx.send(());
                         }
                         let mut response_state = setup_state.clone();
                         response_state.attempt = 2;
@@ -4517,8 +5870,8 @@ struct UtilityProviderFixture {
 #[derive(Default)]
 struct UtilityProviderState {
     next_session: u64,
-    session_id: Option<String>,
-    prompt_id: Option<String>,
+    sessions: BTreeMap<String, Option<String>>,
+    delivered_prompt_events: BTreeSet<(String, String)>,
     trace: Vec<String>,
 }
 
@@ -4633,6 +5986,42 @@ impl UtilityProviderFixture {
             .trace
             .clone()
     }
+}
+
+#[cfg(unix)]
+fn utility_prompt_requests(trace: &[String]) -> Vec<String> {
+    trace
+        .iter()
+        .filter(|entry| {
+            entry.strip_prefix("POST ").is_some_and(|path| {
+                path.starts_with("/session/") && path.ends_with("/prompt_async")
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn utility_prompt_trace_filter_counts_only_actual_prompt_posts() {
+    let ordinary_provider_chatter = vec![
+        "GET /global/health".to_string(),
+        "GET /config".to_string(),
+        "POST /session".to_string(),
+        "GET /event".to_string(),
+        "POST /mcp/chariox/connect".to_string(),
+    ];
+    assert!(utility_prompt_requests(&ordinary_provider_chatter).is_empty());
+
+    let with_utility_prompt = [
+        ordinary_provider_chatter,
+        vec!["POST /session/utility-session-7/prompt_async".to_string()],
+    ]
+    .concat();
+    assert_eq!(
+        utility_prompt_requests(&with_utility_prompt),
+        vec!["POST /session/utility-session-7/prompt_async".to_string()]
+    );
 }
 
 #[cfg(unix)]
@@ -5140,8 +6529,7 @@ fn serve_provider_request(
                 .expect("provider fixture state should not poison");
             state.next_session += 1;
             let session_id = format!("utility-session-{}", state.next_session);
-            state.session_id = Some(session_id.clone());
-            state.prompt_id = None;
+            state.sessions.insert(session_id.clone(), None);
             write_json_response(&mut stream, 200, &serde_json::json!({"id": session_id}));
         }
         ("GET", "/event") => {
@@ -5158,42 +6546,69 @@ fn serve_provider_request(
                 .lock()
                 .expect("provider fixture state should not poison")
                 .record("GET /event:headers");
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let (session_id, prompt_id) = loop {
-                let state = state
-                    .lock()
-                    .expect("provider fixture state should not poison");
-                if let (Some(session_id), Some(prompt_id)) =
-                    (state.session_id.clone(), state.prompt_id.clone())
-                {
-                    break (session_id, prompt_id);
+            let first_event_deadline = Instant::now() + Duration::from_secs(3);
+            let mut sent_event = false;
+            while !stop.load(Ordering::SeqCst) {
+                let next_event = {
+                    let mut state = state
+                        .lock()
+                        .expect("provider fixture state should not poison");
+                    let next = state.sessions.iter().find_map(|(session_id, prompt_id)| {
+                        let prompt_id = prompt_id.as_ref()?;
+                        let key = (session_id.clone(), prompt_id.clone());
+                        (!state.delivered_prompt_events.contains(&key))
+                            .then_some((session_id.clone(), prompt_id.clone()))
+                    });
+                    if let Some((session_id, prompt_id)) = next.as_ref() {
+                        state
+                            .delivered_prompt_events
+                            .insert((session_id.clone(), prompt_id.clone()));
+                    }
+                    next
+                };
+                if let Some((session_id, _prompt_id)) = next_event {
+                    let event = serde_json::json!({
+                        "type": "session.status",
+                        "properties": {
+                            "sessionID": session_id,
+                            "status": {"type": "idle"}
+                        }
+                    });
+                    let body = format!("data: {event}\n\n");
+                    if stream
+                        .write_all(body.as_bytes())
+                        .and_then(|_| stream.flush())
+                        .is_err()
+                    {
+                        return;
+                    }
+                    state
+                        .lock()
+                        .expect("provider fixture state should not poison")
+                        .record(format!("GET /event:event:{session_id}"));
+                    sent_event = true;
+                    continue;
                 }
-                drop(state);
-                if Instant::now() >= deadline || stop.load(Ordering::SeqCst) {
+                if !sent_event && Instant::now() >= first_event_deadline {
                     return;
                 }
-                thread::sleep(Duration::from_millis(2));
-            };
-            let event = serde_json::json!({
-                "type": "session.status",
-                "properties": {
-                    "sessionID": session_id,
-                "status": {"type": "idle"}
-                }
-            });
-            let body = format!("data: {event}\n\n");
-            let _ = stream.write_all(body.as_bytes());
-            let _ = stream.flush();
-            state
-                .lock()
-                .expect("provider fixture state should not poison")
-                .record("GET /event:event");
-            let _ = prompt_id;
-            while !stop.load(Ordering::SeqCst) {
                 thread::sleep(Duration::from_millis(10));
             }
         }
-        ("POST", path) if path.ends_with("/prompt_async") => {
+        ("POST", path)
+            if path
+                .split('?')
+                .next()
+                .unwrap_or(path)
+                .ends_with("/prompt_async") =>
+        {
+            let session_id = path
+                .split('?')
+                .next()
+                .unwrap_or(path)
+                .strip_prefix("/session/")
+                .and_then(|path| path.strip_suffix("/prompt_async"))
+                .map(str::to_string);
             let prompt_id = serde_json::from_slice::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|value| {
@@ -5202,10 +6617,16 @@ fn serve_provider_request(
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string)
                 });
-            state
-                .lock()
-                .expect("provider fixture state should not poison")
-                .prompt_id = prompt_id;
+            if let (Some(session_id), Some(prompt_id)) = (session_id, prompt_id) {
+                if let Some(session_prompt) = state
+                    .lock()
+                    .expect("provider fixture state should not poison")
+                    .sessions
+                    .get_mut(&session_id)
+                {
+                    *session_prompt = Some(prompt_id);
+                }
+            }
             if let Some(release_prompt) = release_prompt {
                 let deadline = Instant::now() + Duration::from_secs(3);
                 while !release_prompt.load(Ordering::Acquire)
@@ -5238,22 +6659,27 @@ fn serve_provider_request(
         ("GET", "/session/status") => {
             write_json_response(&mut stream, 200, &serde_json::json!({}));
         }
-        ("GET", path) if path.ends_with("/message") => {
-            let state = state
-                .lock()
-                .expect("provider fixture state should not poison");
-            let Some(session_id) = state.session_id.clone() else {
+        ("GET", path) if path.split('?').next().unwrap_or(path).ends_with("/message") => {
+            let message_path = path.split('?').next().unwrap_or(path);
+            let Some(session_id) = message_path
+                .strip_prefix("/session/")
+                .and_then(|path| path.strip_suffix("/message"))
+            else {
                 write_json_response(&mut stream, 200, &serde_json::json!([]));
                 return;
             };
-            let Some(prompt_id) = state.prompt_id.clone() else {
+            let state = state
+                .lock()
+                .expect("provider fixture state should not poison");
+            let Some(Some(prompt_id)) = state.sessions.get(session_id) else {
                 write_json_response(&mut stream, 200, &serde_json::json!([]));
                 return;
             };
             let utility_output = serde_json::json!({"definition": definition});
+            let assistant_message_id = format!("utility-assistant-{session_id}");
             let response = serde_json::json!([{
                 "info": {
-                    "id": "utility-assistant-1",
+                    "id": assistant_message_id.clone(),
                     "sessionID": session_id,
                     "role": "assistant",
                     "parentID": prompt_id,
@@ -5263,7 +6689,7 @@ fn serve_provider_request(
                 "parts": [{
                     "id": "utility-part-1",
                     "sessionID": session_id,
-                    "messageID": "utility-assistant-1",
+                    "messageID": assistant_message_id,
                     "type": "text",
                     "text": utility_output.to_string()
                 }]

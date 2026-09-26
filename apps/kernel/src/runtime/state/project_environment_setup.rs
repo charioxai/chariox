@@ -15,7 +15,8 @@ use crate::error::DaemonError;
 use crate::local::{
     AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, CancelProjectEnvironmentSetupRequest,
     GetProjectEnvironmentSetupStatusRequest, LocalDaemonRequest, LocalDaemonResponse,
-    ProjectEnvironmentCommandResult, ProjectEnvironmentDefinition, ProjectEnvironmentSetupPhase,
+    ProjectEnvironmentCommandResult, ProjectEnvironmentDefinition,
+    ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentSetupPhase,
     ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupUtilityInput,
     ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest, RunAgentUtilityRequest,
     StartProjectEnvironmentSetupRequest,
@@ -25,13 +26,10 @@ use crate::runtime::agent_utility_executor::{
     assert_agent_utility_can_run, run_agent_utility_on_provider_run_for_project_environment_repair,
 };
 use crate::runtime::project_environment_setup_utility::project_environment_setup_utility_missing_input_message;
-use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
 };
-
-use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport;
 
 struct WorkerExecutionContext {
     worker_id: String,
@@ -87,6 +85,8 @@ fn validate_local_worker_target(
     Ok(())
 }
 
+#[path = "project_environment_setup_ack.rs"]
+mod project_environment_setup_ack;
 #[path = "project_environment_setup_dispatch.rs"]
 mod project_environment_setup_dispatch;
 #[path = "project_environment_setup_policy.rs"]
@@ -136,9 +136,8 @@ impl KernelRuntimeState {
         match request {
             LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
                 let prepared = self.prepare_setup_execution(request, caller_user_id)?;
-                let execution = self
-                    .resolve_setup_execution_target_platform(prepared)
-                    .await?;
+                let execution =
+                    project_environment_setup_ack::resolve_setup_execution(self, prepared).await?;
                 let (status, should_spawn) = self
                     .owned
                     .project_environment_setups
@@ -243,7 +242,9 @@ impl KernelRuntimeState {
                                             &execution,
                                             setup,
                                             Some(observation_generation),
-                                        ) {
+                                        )
+                                        .await
+                                    {
                                         Ok(status) => {
                                             recovery_reservation.disarm();
                                             status
@@ -252,7 +253,7 @@ impl KernelRuntimeState {
                                     }
                                 }
                                 Err(error)
-                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                    if project_environment_setup_ack::remote_setup_error_should_retry_transport(&error) =>
                                 {
                                     return Err(error);
                                 }
@@ -267,12 +268,14 @@ impl KernelRuntimeState {
                                 }
                             }
                         }
-                        Ok(setup) => self
-                            .reconcile_remote_project_environment_setup_with_observation(
+                        Ok(setup) => {
+                            self.reconcile_remote_project_environment_setup_with_observation(
                                 &execution,
                                 setup,
                                 Some(observation_generation),
-                            )?,
+                            )
+                            .await?
+                        }
                         Err(error)
                             if is_stale_remote_setup_binding_error(&error)
                                 && !cancel_requested
@@ -394,8 +397,8 @@ impl KernelRuntimeState {
                                 RemoteSetupRecoveryDecision::Dispatch => {}
                             }
                             // This lock-protected fence linearizes recovery
-                            // dispatch against Cancel/Retry. It is not a
-                            // second unsynchronized snapshot of cancellation.
+                            // dispatch against Cancel/Retry. Keep the gate
+                            // through reconciliation and its persistence ack.
                             if !self
                                 .owned
                                 .project_environment_setups
@@ -447,12 +450,14 @@ impl KernelRuntimeState {
                             .await
                             {
                                 Ok(setup) => {
-                                    match self
-                                        .reconcile_remote_project_environment_setup_with_observation(
-                                            &execution,
-                                            setup,
-                                            Some(observation_generation),
-                                        ) {
+                                    match project_environment_setup_ack::reconcile_remote_under_gate(
+                                        self,
+                                        &execution,
+                                        setup,
+                                        Some(observation_generation),
+                                    )
+                                    .await
+                                    {
                                         Ok(status) => {
                                             recovery_reservation.disarm();
                                             status
@@ -463,7 +468,7 @@ impl KernelRuntimeState {
                                     }
                                 }
                                 Err(error)
-                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                    if project_environment_setup_ack::remote_setup_error_should_retry_transport(&error) =>
                                 {
                                     return Err(error);
                                 }
@@ -495,7 +500,9 @@ impl KernelRuntimeState {
                                 }
                             }
                         }
-                        Err(error) if remote_prompt_error_should_retry_transport(&error) => {
+                        Err(error)
+                            if project_environment_setup_ack::remote_setup_error_should_retry_transport(&error) =>
+                        {
                             // A relay disconnect is transport uncertainty, not
                             // a worker-authoritative terminal result. Return
                             // the structured diagnostic while preserving the
@@ -538,7 +545,8 @@ impl KernelRuntimeState {
                     .project_environment_setups
                     .get_entry(&request.operation_id, caller_user_id)?;
                 if execution.remote_leased_agent_id.is_some() {
-                    self.owned
+                    let cancel_status = self
+                        .owned
                         .project_environment_setups
                         .request_cancel_ordered(
                             &request.operation_id,
@@ -547,22 +555,12 @@ impl KernelRuntimeState {
                             true,
                         )
                         .await?;
-                    let status = match cancel_remote_setup(self, &execution).await {
-                        Ok(setup) => {
-                            self.reconcile_remote_project_environment_setup(&execution, setup)?
-                        }
-                        Err(error) if is_missing_remote_setup_operation(&error) => {
-                            self.owned
-                                .project_environment_setups
-                                .settle_cancel_without_worker(
-                                    &request.operation_id,
-                                    &request.session_id,
-                                    caller_user_id,
-                                )
-                                .await?
-                        }
-                        Err(error) => return Err(error),
-                    };
+                    let status = project_environment_setup_ack::cancel_remote_and_reconcile(
+                        self,
+                        &execution,
+                        cancel_status.attempt,
+                    )
+                    .await?;
                     return Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status });
                 }
                 self.owned.project_environment_setups.request_cancel(
@@ -579,11 +577,26 @@ impl KernelRuntimeState {
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status })
             }
             LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => {
-                let (execution, attempt, status) = self.owned.project_environment_setups.retry(
-                    &request.operation_id,
-                    &request.session_id,
-                    caller_user_id,
-                )?;
+                let (existing_execution, _) = self
+                    .owned
+                    .project_environment_setups
+                    .get_entry(&request.operation_id, caller_user_id)?;
+                let (execution, attempt, status) =
+                    if existing_execution.remote_leased_agent_id.is_some() {
+                        project_environment_setup_ack::retry_remote_setup_ordered(
+                            self,
+                            &request.operation_id,
+                            &request.session_id,
+                            caller_user_id,
+                        )
+                        .await?
+                    } else {
+                        self.owned.project_environment_setups.retry(
+                            &request.operation_id,
+                            &request.session_id,
+                            caller_user_id,
+                        )?
+                    };
                 if execution.remote_leased_agent_id.is_some() {
                     self.spawn_remote_project_environment_setup_retry(execution, attempt);
                 } else {
@@ -658,6 +671,27 @@ impl KernelRuntimeState {
                 &stale_binding_id,
                 observation_generation,
             );
+            let ordering_gate = store.ordering_gate(&execution.operation_id);
+            // Serialize binding refresh, Retry, and its acknowledgment with Cancel.
+            let _ordering_guard = ordering_gate.lock().await;
+            match state.recovery_dispatch_status_if_lost(
+                &execution.operation_id,
+                attempt,
+                &stale_binding_id,
+                observation_generation,
+                &execution.owner_user_id,
+            ) {
+                Ok(Some(status)) => {
+                    recovery_reservation.clear_if_matches();
+                    let _ = result_tx.send(Ok(status));
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = result_tx.send(Err(error));
+                    return;
+                }
+            }
             let result = match refresh_remote_setup_binding(
                 &state,
                 &execution,
@@ -682,26 +716,28 @@ impl KernelRuntimeState {
                             }
                             Ok(None) => {
                                 match retry_remote_setup_with_deadline(
+                                    &state,
+                                    &rebound_execution,
+                                    observation_deadline,
+                                )
+                                .await
+                                {
+                                    Ok(setup) => match project_environment_setup_ack::reconcile_remote_under_gate(
                                         &state,
                                         &rebound_execution,
-                                        observation_deadline,
+                                        setup,
+                                        Some(observation_generation),
                                     )
                                     .await
                                     {
-                                        Ok(setup) => match state
-                                            .reconcile_remote_project_environment_setup_with_observation(
-                                                &rebound_execution,
-                                                setup,
-                                                Some(observation_generation),
-                                            ) {
-                                            Ok(status) => {
-                                                recovery_reservation.disarm();
-                                                Ok(status)
-                                            }
-                                            Err(error) => Err(error),
-                                        },
+                                        Ok(status) => {
+                                            recovery_reservation.disarm();
+                                            Ok(status)
+                                        }
                                         Err(error) => Err(error),
-                                    }
+                                    },
+                                    Err(error) => Err(error),
+                                }
                             }
                             Err(error) => Err(error),
                         }
@@ -877,7 +913,7 @@ impl KernelRuntimeState {
     }
 
     fn spawn_remote_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
-        self.spawn_remote_project_environment_setup_request(execution, attempt, false);
+        project_environment_setup_ack::spawn_remote_setup(self, execution, attempt, false);
     }
 
     fn spawn_remote_project_environment_setup_retry(
@@ -885,127 +921,39 @@ impl KernelRuntimeState {
         execution: SetupExecution,
         attempt: u32,
     ) {
-        self.spawn_remote_project_environment_setup_request(execution, attempt, true);
+        project_environment_setup_ack::spawn_remote_setup(self, execution, attempt, true);
     }
 
-    fn spawn_remote_project_environment_setup_request(
-        &self,
-        execution: SetupExecution,
-        attempt: u32,
-        retry: bool,
-    ) {
-        let runtime_state = self.clone();
-        tokio::spawn(async move {
-            let result = if retry {
-                retry_remote_setup(&runtime_state, &execution).await
-            } else {
-                start_remote_setup(&runtime_state, &execution, attempt).await
-            };
-            match result {
-                Ok(setup) => {
-                    if let Err(error) =
-                        runtime_state.reconcile_remote_project_environment_setup(&execution, setup)
-                    {
-                        runtime_state.owned.project_environment_setups.mark_failed(
-                            &execution.operation_id,
-                            attempt,
-                            "worker_status_invalid",
-                            "the remote worker returned an invalid setup status",
-                        );
-                        crate::logging::warn_with_fields(
-                            "project.environment_setup",
-                            "remote setup status was rejected",
-                            serde_json::json!({
-                                "operation_id": execution.operation_id,
-                                "error": error.to_string(),
-                            }),
-                        );
-                    }
-                }
-                Err(error) => {
-                    if remote_prompt_error_should_retry_transport(&error) {
-                        // The worker may still be executing after this
-                        // transport observation. Leave the active operation
-                        // untouched so a later status query can reconcile
-                        // the worker-authoritative result.
-                    } else if let DaemonError::RelayTransport {
-                        code,
-                        retryable: false,
-                        ..
-                    } = &error
-                    {
-                        runtime_state
-                            .owned
-                            .project_environment_setups
-                            .mark_failed_non_retryable(
-                                &execution.operation_id,
-                                attempt,
-                                code,
-                                "the remote worker rejected project environment setup",
-                            );
-                    } else {
-                        runtime_state.owned.project_environment_setups.mark_failed(
-                            &execution.operation_id,
-                            attempt,
-                            "worker_dispatch_failed",
-                            "the remote worker could not be reached for environment setup",
-                        );
-                    }
-                    crate::logging::warn_with_fields(
-                        "project.environment_setup",
-                        "remote setup dispatch failed",
-                        serde_json::json!({
-                            "operation_id": execution.operation_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
-        });
-    }
-
-    fn reconcile_remote_project_environment_setup(
-        &self,
-        execution: &SetupExecution,
-        setup: RelayProjectEnvironmentSetupStatus,
-    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
-        self.reconcile_remote_project_environment_setup_with_observation(execution, setup, None)
-    }
-
-    fn reconcile_remote_project_environment_setup_with_observation(
+    async fn reconcile_remote_project_environment_setup_with_observation(
         &self,
         execution: &SetupExecution,
         setup: RelayProjectEnvironmentSetupStatus,
         observation_generation: Option<u64>,
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
-        let (_, current_status) = self
-            .owned
-            .project_environment_setups
-            .get_entry(&execution.operation_id, &execution.owner_user_id)?;
-        validate_remote_setup_status(
+        project_environment_setup_ack::reconcile_remote(
+            self,
             execution,
-            current_status.attempt,
-            &setup.status,
-            setup.definition.as_ref(),
-        )?;
-        validate_remote_setup_transition(current_status.phase, setup.status.phase)?;
-        if setup.status.phase == ProjectEnvironmentSetupPhase::Ready {
-            let definition = setup.definition.clone().ok_or_else(|| {
-                setup_error("worker cannot report setup ready without a definition")
-            })?;
-            self.update_project_environment_definition(
-                &execution.project_id,
-                definition,
-                &execution.owner_user_id,
-            )?;
-        }
-        self.owned.project_environment_setups.reconcile_remote(
-            &execution.operation_id,
-            execution,
-            setup.status,
-            setup.definition,
+            setup,
             observation_generation,
         )
+        .await
+    }
+
+    fn persist_project_environment_definition_if_changed(
+        &self,
+        project_id: &str,
+        definition: &ProjectEnvironmentDefinition,
+        owner_user_id: &str,
+    ) -> Result<(), DaemonError> {
+        let project = self.owned.session_store.get_project(project_id)?;
+        if project.owner_user_id() != owner_user_id {
+            return Err(setup_error("caller does not own the selected project"));
+        }
+        if project.environment_definition() == Some(definition) {
+            return Ok(());
+        }
+        self.update_project_environment_definition(project_id, definition.clone(), owner_user_id)?;
+        Ok(())
     }
 
     fn settle_remote_setup_recovery_rejection(
@@ -1152,38 +1100,6 @@ impl KernelRuntimeState {
         })
     }
 
-    async fn resolve_setup_execution_target_platform(
-        &self,
-        mut prepared: PreparedProjectEnvironmentSetup,
-    ) -> Result<SetupExecution, DaemonError> {
-        let platform = if prepared.execution.remote_leased_agent_id.is_some() {
-            resolve_remote_setup_target_platform(self, &prepared.execution).await?
-        } else {
-            actual_worker_platform()
-        };
-        if platform.trim().is_empty() {
-            return Err(setup_error(
-                "selected setup worker returned an empty platform",
-            ));
-        }
-        if prepared
-            .requested_target_platform
-            .as_deref()
-            .is_some_and(|requested| requested != platform)
-        {
-            return Err(setup_error(
-                "requested platform does not match the selected setup worker",
-            ));
-        }
-        prepared.execution.target_platform = platform;
-        prepared.execution.definition = validate_setup_definition(
-            prepared.execution.definition,
-            &prepared.execution.target_platform,
-            &prepared.execution.validation_commands,
-        )?;
-        Ok(prepared.execution)
-    }
-
     fn spawn_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
         let Some(guard) = self
             .owned
@@ -1312,15 +1228,29 @@ impl KernelRuntimeState {
                         );
                         return;
                     }
-                    if execution.persist_project_definition
-                        && self
-                            .update_project_environment_definition(
-                                &execution.project_id,
-                                definition,
-                                &execution.owner_user_id,
-                            )
-                            .is_err()
-                    {
+                    let mut definition_persist_error = None;
+                    if !store.update(&execution.operation_id, attempt, |entry| {
+                        if execution.persist_project_definition {
+                            definition_persist_error = self
+                                .persist_project_environment_definition_if_changed(
+                                    &execution.project_id,
+                                    &definition,
+                                    &execution.owner_user_id,
+                                )
+                                .err();
+                        }
+                        if definition_persist_error.is_none() {
+                            entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+                            entry.status.progress_percent = 100;
+                            entry.status.retryable = false;
+                            entry.status.message = Some(
+                                "project environment is ready on the validated worker".to_string(),
+                            );
+                        }
+                    }) {
+                        return;
+                    }
+                    if definition_persist_error.is_some() {
                         store.mark_failed(
                             &execution.operation_id,
                             attempt,
@@ -1329,14 +1259,6 @@ impl KernelRuntimeState {
                         );
                         return;
                     }
-                    let _ = store.update(&execution.operation_id, attempt, |entry| {
-                        entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
-                        entry.status.progress_percent = 100;
-                        entry.status.retryable = false;
-                        entry.status.message = Some(
-                            "project environment is ready on the validated worker".to_string(),
-                        );
-                    });
                     return;
                 }
                 ReusedDefinitionSetupOutcome::ContinueToRepair => {
@@ -1525,15 +1447,85 @@ impl KernelRuntimeState {
                 return;
             }
         };
+        // Persist while the attempt lock is held so Cancel and Retry cannot
+        // overtake the generated recipe before target validation starts.
+        let mut definition_persist_error = None;
+        let needs_home_ack =
+            project_environment_setup_ack::requires_home_persistence_ack(&execution, &definition);
         if !store.update(&execution.operation_id, attempt, |entry| {
+            let persist_generated_definition = entry.execution.persist_project_definition
+                && definition.origin == ProjectEnvironmentDefinitionOrigin::UtilityGenerated
+                && entry.execution.definition.as_ref() != Some(&definition);
             entry.execution.definition = Some(definition.clone());
             entry.status.definition_digest = Some(definition.digest());
-            entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
-            entry.status.progress_percent = entry.status.progress_percent.max(55);
-            entry.status.message =
-                Some("target definition recorded; running kernel validation".to_string());
+            if persist_generated_definition {
+                definition_persist_error = self
+                    .persist_project_environment_definition_if_changed(
+                        &execution.project_id,
+                        &definition,
+                        &execution.owner_user_id,
+                    )
+                    .err();
+            }
+            if definition_persist_error.is_none() && !needs_home_ack {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
+                entry.status.progress_percent = entry.status.progress_percent.max(55);
+                entry.status.message =
+                    Some("target definition recorded; running kernel validation".to_string());
+            } else if definition_persist_error.is_none() {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
+                entry.status.progress_percent = entry.status.progress_percent.max(50);
+                entry.status.message = Some(
+                    "waiting for home kernel to persist the utility-generated definition"
+                        .to_string(),
+                );
+            }
         }) {
             return;
+        }
+        if definition_persist_error.is_some() {
+            store.mark_failed(
+                &execution.operation_id,
+                attempt,
+                "definition_persist_failed",
+                "kernel could not persist the target environment definition",
+            );
+            return;
+        }
+        if needs_home_ack {
+            let lease_id = execution
+                .remote_leased_agent_id
+                .as_deref()
+                .expect("leased generated definitions require a lease identity");
+            if store
+                .wait_for_home_definition_persistence_ack(
+                    &execution.operation_id,
+                    attempt,
+                    lease_id,
+                    &execution.project_id,
+                    &definition.digest(),
+                )
+                .await
+                .is_err()
+            {
+                if !store.is_cancelled(&execution.operation_id, attempt) {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "home_definition_ack_unavailable",
+                        "worker did not receive a matching home persistence acknowledgment",
+                    );
+                }
+                return;
+            }
+            if !store.update(&execution.operation_id, attempt, |entry| {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
+                entry.status.progress_percent = entry.status.progress_percent.max(55);
+                entry.status.message =
+                    Some("home persisted the definition; running kernel validation".to_string());
+            }) {
+                return;
+            }
         }
         match self.definition_inputs_match_on_worker(&execution, &definition, &provider_run) {
             Ok(true) => {}
@@ -1647,15 +1639,31 @@ impl KernelRuntimeState {
                 return;
             }
         };
-        if execution.persist_project_definition
-            && self
-                .update_project_environment_definition(
-                    &execution.project_id,
-                    definition.clone(),
-                    &execution.owner_user_id,
-                )
-                .is_err()
-        {
+        let mut definition_persist_error = None;
+        if !store.update(&execution.operation_id, attempt, |entry| {
+            if execution.persist_project_definition {
+                definition_persist_error = self
+                    .persist_project_environment_definition_if_changed(
+                        &execution.project_id,
+                        &definition,
+                        &execution.owner_user_id,
+                    )
+                    .err();
+            }
+            if definition_persist_error.is_none() {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+                entry.status.progress_percent = entry.status.progress_percent.max(100);
+                entry.status.retryable = false;
+                entry.status.message =
+                    Some("project environment is ready on the validated worker".to_string());
+            }
+        }) {
+            let _ = self
+                .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
+                .await;
+            return;
+        }
+        if definition_persist_error.is_some() {
             let _ = self
                 .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
                 .await;
@@ -1667,13 +1675,6 @@ impl KernelRuntimeState {
             );
             return;
         }
-        let _ = store.update(&execution.operation_id, attempt, |entry| {
-            entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
-            entry.status.progress_percent = entry.status.progress_percent.max(100);
-            entry.status.retryable = false;
-            entry.status.message =
-                Some("project environment is ready on the validated worker".to_string());
-        });
     }
 
     async fn run_reused_definition_setup(
@@ -1694,6 +1695,40 @@ impl KernelRuntimeState {
                     code: "worker_setup_unavailable",
                     message: "kernel could not execute the stored setup definition",
                 }
+            }
+        }
+
+        if project_environment_setup_ack::requires_home_persistence_ack(execution, definition) {
+            let lease_id = execution
+                .remote_leased_agent_id
+                .as_deref()
+                .expect("leased generated definitions require a lease identity");
+            if self
+                .owned
+                .project_environment_setups
+                .wait_for_home_definition_persistence_ack(
+                    &execution.operation_id,
+                    attempt,
+                    lease_id,
+                    &execution.project_id,
+                    &definition.digest(),
+                )
+                .await
+                .is_err()
+            {
+                return if self
+                    .owned
+                    .project_environment_setups
+                    .is_cancelled(&execution.operation_id, attempt)
+                {
+                    ReusedDefinitionSetupOutcome::Cancelled
+                } else {
+                    ReusedDefinitionSetupOutcome::Failed {
+                        code: "home_definition_ack_unavailable",
+                        message:
+                            "worker did not receive a matching home persistence acknowledgment",
+                    }
+                };
             }
         }
 

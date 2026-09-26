@@ -1173,6 +1173,43 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+            leased_agent_id,
+            operation_id,
+            attempt,
+            project_id,
+            home_session_id,
+            home_agent_id,
+            definition_digest,
+        } => {
+            let acknowledgment = router
+                .relay_acknowledge_leased_project_environment_setup_definition(
+                    &leased_agent_id,
+                    operation_id,
+                    attempt,
+                    project_id,
+                    home_session_id,
+                    home_agent_id,
+                    definition_digest,
+                )
+                .await;
+            match acknowledgment {
+                Ok(acknowledgment) => {
+                    RelayPeerResponse::LeasedProjectEnvironmentSetupDefinitionAcknowledged {
+                        operation_id: acknowledgment.operation_id,
+                        attempt: acknowledgment.attempt,
+                        project_id: acknowledgment.project_id,
+                        definition_digest: acknowledgment.definition_digest,
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
             leased_agent_id,
             operation_id,
@@ -2064,6 +2101,10 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         }
         | RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
             leased_agent_id, ..
+        }
+        | RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+            leased_agent_id,
+            ..
         }
         | RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
             leased_agent_id, ..

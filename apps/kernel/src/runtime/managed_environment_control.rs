@@ -84,6 +84,7 @@ pub(crate) async fn execute_managed_environment_control_request(
             .await?;
             Ok(LocalDaemonResponse::ManagedEnvironment {
                 environment: response.environment.into(),
+                operations: response.operations.into_iter().map(Into::into).collect(),
             })
         }
         LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(request) => {
@@ -711,6 +712,108 @@ mod tests {
     }
 
     #[test]
+    fn managed_environment_details_project_activity_and_exact_operation_history() {
+        let mut environment = environment_json();
+        environment["runningAgentCount"] = serde_json::json!(0);
+        environment["lastActivityReportedAt"] =
+            serde_json::json!("2026-09-26T05:00:02.000Z");
+        environment["lastActivityChangedAt"] =
+            serde_json::json!("2026-09-26T04:59:00.000Z");
+        environment["autoStopWarningAt"] = serde_json::Value::Null;
+        environment["autoStopDeadlineAt"] = serde_json::json!("2026-09-26T05:14:00.000Z");
+        let mut operation = operation_json();
+        operation["kind"] = serde_json::json!("stop");
+        operation["status"] = serde_json::json!("succeeded");
+        operation["desiredRevision"] = serde_json::json!(7);
+        operation["completedAt"] = serde_json::json!("2026-09-26T05:14:03.000Z");
+        let details: cloud_contract::EnvironmentDetailsResponse = serde_json::from_value(
+            serde_json::json!({ "environment": environment, "operations": [operation] }),
+        )
+        .expect("owner-authorized Cloud details response");
+
+        let summary: crate::local::ManagedEnvironmentSummary = details.environment.into();
+        assert_eq!(summary.running_agent_count, Some(0));
+        assert_eq!(
+            summary.last_activity_reported_at.as_deref(),
+            Some("2026-09-26T05:00:02.000Z")
+        );
+        assert_eq!(
+            summary.last_activity_changed_at.as_deref(),
+            Some("2026-09-26T04:59:00.000Z")
+        );
+        assert_eq!(summary.auto_stop_warning_at, None);
+        assert_eq!(
+            summary.auto_stop_deadline_at.as_deref(),
+            Some("2026-09-26T05:14:00.000Z")
+        );
+        let operations: Vec<crate::local::ManagedEnvironmentOperationSummary> =
+            details.operations.into_iter().map(Into::into).collect();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].operation_id, "operation-1");
+        assert_eq!(operations[0].kind, crate::local::ManagedEnvironmentOperationKind::Stop);
+        assert_eq!(operations[0].status, crate::local::ManagedEnvironmentOperationStatus::Succeeded);
+        assert_eq!(operations[0].desired_revision, 7);
+        assert_eq!(
+            operations[0].completed_at.as_deref(),
+            Some("2026-09-26T05:14:03.000Z")
+        );
+    }
+
+    #[test]
+    fn managed_environment_details_legacy_null_and_invalid_activity_are_distinguished() {
+        let mut legacy_environment = environment_json();
+        for field in [
+            "runningAgentCount",
+            "lastActivityReportedAt",
+            "lastActivityChangedAt",
+            "autoStopWarningAt",
+            "autoStopDeadlineAt",
+        ] {
+            legacy_environment
+                .as_object_mut()
+                .expect("environment object")
+                .remove(field);
+        }
+        let legacy: cloud_contract::EnvironmentDetailsResponse = serde_json::from_value(
+            serde_json::json!({ "environment": legacy_environment }),
+        )
+        .expect("legacy Cloud details response");
+        let summary: crate::local::ManagedEnvironmentSummary = legacy.environment.into();
+        assert_eq!(summary.running_agent_count, None);
+        assert_eq!(summary.last_activity_changed_at, None);
+        assert!(legacy.operations.is_empty());
+
+        let mut nullable = environment_json();
+        for field in [
+            "runningAgentCount",
+            "lastActivityReportedAt",
+            "lastActivityChangedAt",
+            "autoStopWarningAt",
+            "autoStopDeadlineAt",
+        ] {
+            nullable[field] = serde_json::Value::Null;
+        }
+        let decoded: cloud_contract::EnvironmentSummary =
+            serde_json::from_value(nullable).expect("explicit null is unknown");
+        let summary: crate::local::ManagedEnvironmentSummary = decoded.into();
+        assert_eq!(summary.running_agent_count, None);
+        assert_eq!(summary.last_activity_reported_at, None);
+        assert_eq!(summary.last_activity_changed_at, None);
+        assert_eq!(summary.auto_stop_warning_at, None);
+        assert_eq!(summary.auto_stop_deadline_at, None);
+
+        let mut invalid_count = environment_json();
+        invalid_count["runningAgentCount"] = serde_json::json!(2);
+        assert!(serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_count).is_err());
+        let mut invalid_timestamp = environment_json();
+        invalid_timestamp["lastActivityChangedAt"] =
+            serde_json::json!("2026-09-26T04:59:00Z");
+        assert!(
+            serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_timestamp).is_err()
+        );
+    }
+
+    #[test]
     fn git_credential_enrollment_ticket_matches_the_local_selection_and_source() {
         let thumbprint = "a".repeat(64);
         let ticket = crate::managed_context::outbound_service::ManagedContextTransferTicket {
@@ -1192,10 +1295,20 @@ mod tests {
         )
         .await
         .expect("get request");
-        assert!(matches!(
-            get,
-            LocalDaemonResponse::ManagedEnvironment { .. }
-        ));
+        let LocalDaemonResponse::ManagedEnvironment {
+            environment,
+            operations,
+        } = get
+        else {
+            panic!("unexpected managed environment response");
+        };
+        assert_eq!(environment.running_agent_count, Some(0));
+        assert_eq!(
+            environment.last_activity_changed_at.as_deref(),
+            Some("2026-08-21T00:00:00.000Z")
+        );
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].operation_id, "operation-1");
 
         let preflight = execute_managed_environment_control_request(
             config.clone(),
@@ -1582,7 +1695,7 @@ mod tests {
         if request.starts_with("GET /managed-environments/") {
             return serde_json::json!({
                 "environment": environment_json(),
-                "operations": [],
+                "operations": [operation_json()],
                 "futureDetailsField": true
             });
         }
@@ -1625,6 +1738,11 @@ mod tests {
             },
             "contextManifestDigest": "sha256:manifest",
             "autoStopPolicy": { "minimumRuntimeSeconds": 0, "idleDelaySeconds": 900 },
+            "runningAgentCount": 0,
+            "lastActivityReportedAt": "2026-08-21T00:00:00.000Z",
+            "lastActivityChangedAt": "2026-08-21T00:00:00.000Z",
+            "autoStopWarningAt": null,
+            "autoStopDeadlineAt": "2026-08-21T00:15:00.000Z",
             "lastErrorCode": null,
             "lastErrorMessage": null,
             "createdAt": "2026-08-21T00:00:00.000Z",

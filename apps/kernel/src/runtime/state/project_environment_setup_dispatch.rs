@@ -298,7 +298,7 @@ fn remote_leased_agent_id(execution: &SetupExecution) -> Result<String, DaemonEr
         .ok_or_else(|| setup_error("remote setup is missing its leased agent binding"))
 }
 
-async fn remote_relay_context(
+pub(super) async fn remote_relay_context(
     state: &KernelRuntimeState,
     execution: &SetupExecution,
 ) -> Result<(crate::config::DaemonConfig, ClientTarget), DaemonError> {

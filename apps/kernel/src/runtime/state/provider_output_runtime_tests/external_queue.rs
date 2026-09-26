@@ -415,7 +415,10 @@ async fn active_chariox_prompt_keeps_running_provider_from_advancing_queued_prom
         .prompt_owner_mark_active_prompt_running(session.id(), agent.id())
         .expect("active Chariox prompt should be running");
     assert_eq!(active_prompt.id(), started_active_prompt.id());
-    assert_eq!(active_prompt.status(), crate::session::PromptStatus::Running);
+    assert_eq!(
+        active_prompt.status(),
+        crate::session::PromptStatus::Running
+    );
     assert_eq!(
         active_prompt.prompt_origin(),
         crate::session::PromptOrigin::Chariox
@@ -517,7 +520,10 @@ async fn active_chariox_prompt_keeps_running_provider_from_advancing_queued_prom
         .active_prompt_for_agent(agent.id())
         .expect("queued prompt should become active after dispatch");
     assert_eq!(promoted.id(), dispatch.prompt_id);
-    assert_eq!(promoted.prompt_origin(), crate::session::PromptOrigin::Chariox);
+    assert_eq!(
+        promoted.prompt_origin(),
+        crate::session::PromptOrigin::Chariox
+    );
 }
 
 #[tokio::test]

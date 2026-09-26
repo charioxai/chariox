@@ -719,8 +719,8 @@ mod tests {
 
     #[test]
     fn completion_generated_remote_prompt_uses_the_post_lock_handoff_once() {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
-            .expect("daemon should bootstrap");
+        let mut app =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap");
         let dispatch = KernelRemotePromptDispatch {
             session_id: "session-1".to_string(),
             agent_id: "agent-1".to_string(),
@@ -748,6 +748,8 @@ mod tests {
         let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
         assert_eq!(deferred.len(), 1, "completion should enqueue one send");
         assert_eq!(deferred[0].prompt, "completion event");
-        assert!(app.take_deferred_workflow_remote_prompt_dispatches().is_empty());
+        assert!(app
+            .take_deferred_workflow_remote_prompt_dispatches()
+            .is_empty());
     }
 }

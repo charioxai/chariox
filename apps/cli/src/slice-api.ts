@@ -106,8 +106,12 @@ export async function startSliceProviderLogin(
   return expectVariant<{ slice: SliceRecord; login: { provider: string; login_kind: string; auth_url?: string | null; verification_url?: string | null; user_code?: string | null; status: string; message: string } }>(response, "SliceProviderLoginStarted")
 }
 
-export async function getSliceDisplayEndpoint(client: LocalIpcClient, sliceRef: string): Promise<SliceDisplayEndpoint> {
-  const response = await client.send<Record<string, unknown>>(getSliceDisplayEndpointRequest(sliceRef))
+export async function getSliceDisplayEndpoint(
+  client: LocalIpcClient,
+  sliceRef: string,
+  room?: { sessionId: string; attachmentId: string; viewerPublicKey: string },
+): Promise<SliceDisplayEndpoint> {
+  const response = await client.send<Record<string, unknown>>(getSliceDisplayEndpointRequest(sliceRef, room))
   return expectVariant<{ endpoint: SliceDisplayEndpoint }>(response, "SliceDisplayEndpoint").endpoint
 }
 

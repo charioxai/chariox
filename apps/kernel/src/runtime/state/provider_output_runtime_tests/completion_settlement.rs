@@ -2145,6 +2145,287 @@ async fn failed_workflow_dispatch_retries_a_node_blocked_on_its_released_claim()
 }
 
 #[tokio::test]
+async fn failed_workflow_turn_retries_queued_work_after_provider_replacement_in_fifo_order() {
+    let worktree =
+        crate::test_support::TestWorktree::new("output-settlement-workflow-failure-fifo");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "worker", worktree.path());
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-workflow-failure-fifo",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let failed_provider_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(&worker),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(failed_provider_run.clone());
+
+    let (failed_workflow_run, failed_node) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-failed", &worker);
+    let failed_prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), &worker)
+        .expect("failed workflow prompt state should load")
+        .expect("failed workflow prompt should be active");
+    assert_eq!(
+        failed_prompt.workflow_run_id(),
+        Some(failed_workflow_run.id())
+    );
+
+    let crate::session::PromptSubmissionOutcome::Queued {
+        prompt: first_queued_user_prompt,
+    } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(&worker),
+            "first queued user turn\n",
+            Vec::new(),
+        )
+        .expect("first user prompt should queue behind the workflow turn")
+    else {
+        panic!("first user prompt should queue behind the active workflow turn");
+    };
+    let (queued_workflow_run, queued_node) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-next", &worker);
+    let before_failure = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    let queued_workflow_invocation_prompt = queued_workflow_run
+        .invocation_prompt()
+        .expect("queued workflow run should retain its endpoint prompt")
+        .to_string();
+    assert_eq!(queued_workflow_invocation_prompt, "run");
+    let rendered_workflow_turn_prompt = before_failure
+        .workflow_run(queued_workflow_run.id())
+        .expect("queued workflow run should exist")
+        .node_runs()
+        .iter()
+        .find(|node| node.id() == queued_node)
+        .and_then(|node| node.turn_envelope())
+        .and_then(|envelope| envelope.rendered_prompt())
+        .expect("blocked workflow node should retain its queued prompt text")
+        .to_string();
+    assert!(rendered_workflow_turn_prompt.contains(&format!(
+        "<endpoint-prompt>\n{queued_workflow_invocation_prompt}\n</endpoint-prompt>"
+    )));
+    assert!(matches!(
+        before_failure
+            .workflow_run(queued_workflow_run.id())
+            .expect("queued workflow run should exist")
+            .node_runs()
+            .iter()
+            .find(|node| node.id() == queued_node)
+            .map(|node| node.status()),
+        Some(crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim),
+    ));
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .fail_owned_provider_prompt(
+            session.id(),
+            failed_provider_run.id(),
+            "provider produced no output before timeout",
+            false,
+        )
+        .await
+        .expect("failed workflow turn should settle and retry eligible work");
+
+    let replacement_provider_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(session.id(), &worker)
+        .expect("replacement provider run should be available");
+    assert_ne!(replacement_provider_run.id(), failed_provider_run.id());
+    assert_eq!(
+        replacement_provider_run.state(),
+        crate::provider::ProviderRunState::Running
+    );
+    let failed_claim_id = runtime.owned.workflow_dispatch_claim_id(
+        session.id(),
+        failed_workflow_run.id(),
+        &failed_node,
+    );
+    let queued_claim_id = runtime.owned.workflow_dispatch_claim_id(
+        session.id(),
+        queued_workflow_run.id(),
+        &queued_node,
+    );
+    assert!(
+        !runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&failed_claim_id),
+        "the failed workflow must release its workspace claim"
+    );
+    assert!(
+        !runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&queued_claim_id),
+        "a queued workflow prompt must not retain a workspace claim"
+    );
+
+    let recovered_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let recovered_user_prompt = recovered_session
+        .active_prompt_for_agent(&worker)
+        .expect("first queued user prompt should be active");
+    // Promotion replaces the temporary pending ID with the canonical active prompt ID.
+    assert_eq!(
+        recovered_user_prompt.prompt(),
+        first_queued_user_prompt.prompt()
+    );
+    assert_eq!(
+        recovered_user_prompt.target_agent_id(),
+        first_queued_user_prompt.target_agent_id()
+    );
+    assert_eq!(
+        recovered_user_prompt.source_attachment_id(),
+        first_queued_user_prompt.source_attachment_id()
+    );
+    assert_eq!(recovered_user_prompt.workflow_run_id(), None);
+    assert_eq!(recovered_user_prompt.workflow_node_run_id(), None);
+    let (_, worker_queue) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&recovered_session, &worker);
+    assert_eq!(worker_queue.len(), 1);
+    assert_eq!(
+        worker_queue[0].workflow_run_id(),
+        Some(queued_workflow_run.id())
+    );
+    assert_eq!(
+        worker_queue[0].workflow_node_run_id(),
+        Some(queued_node.as_str())
+    );
+    assert_eq!(
+        worker_queue[0].prompt(),
+        queued_workflow_invocation_prompt,
+        "the provider queue retains the visible endpoint prompt, not the full node envelope"
+    );
+    let queued_workflow_hidden_context = worker_queue[0].hidden_system_context().to_string();
+    assert!(queued_workflow_hidden_context.contains("<workflow-runtime-instructions>"));
+    assert_eq!(
+        worker_queue
+            .iter()
+            .filter(|prompt| prompt.workflow_run_id() == Some(queued_workflow_run.id()))
+            .count(),
+        1,
+        "the recovered workflow prompt must be queued exactly once"
+    );
+
+    let settlement = runtime
+        .settle_owned_provider_prompt(
+            session.id(),
+            replacement_provider_run.id(),
+            true,
+            false,
+            true,
+        )
+        .await
+        .expect("the older user turn should settle through provider runtime");
+    assert!(settlement.had_active_prompt);
+
+    let mut final_session = None;
+    for _ in 0..50 {
+        let session_snapshot = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should exist");
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session_snapshot, &worker);
+        let node_running = session_snapshot
+            .workflow_run(queued_workflow_run.id())
+            .and_then(|run| run.node_runs().iter().find(|node| node.id() == queued_node))
+            .is_some_and(|node| node.status() == crate::session::WorkflowNodeRunStatus::Running);
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session_snapshot, &worker);
+        let workflow_prompt_delivered = active.as_ref().is_some_and(|prompt| {
+            prompt.workflow_run_id() == Some(queued_workflow_run.id())
+                && prompt.workflow_node_run_id() == Some(queued_node.as_str())
+                && !prompt.delivery_pending()
+        });
+        if workflow_prompt_delivered && node_running && queued.is_empty() {
+            final_session = Some(session_snapshot);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let final_session = final_session
+        .expect("provider settlement should dispatch the queued workflow exactly once");
+    let final_active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&final_session, &worker)
+        .expect("recovered workflow prompt should be active");
+    assert!(
+        !final_active.delivery_pending(),
+        "the recovered workflow prompt should be acknowledged by its provider"
+    );
+    assert_eq!(
+        final_active.workflow_run_id(),
+        Some(queued_workflow_run.id())
+    );
+    assert_eq!(
+        final_active.workflow_node_run_id(),
+        Some(queued_node.as_str())
+    );
+    assert_eq!(final_active.prompt(), queued_workflow_invocation_prompt);
+    assert_eq!(
+        final_active.hidden_system_context(),
+        queued_workflow_hidden_context
+    );
+    let (_, final_queue) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&final_session, &worker);
+    assert!(final_queue.is_empty());
+    let recovered_node = final_session
+        .workflow_run(queued_workflow_run.id())
+        .expect("recovered workflow run should preserve its identity")
+        .node_runs()
+        .iter()
+        .find(|node| node.id() == queued_node)
+        .expect("recovered workflow node should preserve its identity");
+    assert_eq!(
+        recovered_node.status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+    assert_eq!(
+        recovered_node
+            .turn_envelope()
+            .expect("recovered workflow turn should be dispatched")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Dispatched
+    );
+}
+
+#[tokio::test]
 async fn blocked_claim_retry_queued_behind_work_advances_in_fifo_order() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-blocked-fifo");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())

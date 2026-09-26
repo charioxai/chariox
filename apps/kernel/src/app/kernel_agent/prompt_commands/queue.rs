@@ -179,11 +179,8 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         expected_prompt_id: &str,
     ) -> Result<PromptQueueItem, DaemonError> {
-        let active = self.prepare_promoted_queued_prompt_start(
-            session_id,
-            agent_id,
-            expected_prompt_id,
-        )?;
+        let active =
+            self.prepare_promoted_queued_prompt_start(session_id, agent_id, expected_prompt_id)?;
         let source_attachment_id = self
             .app
             .promoted_prompt_source_attachment_id(session_id, active.source_attachment_id())?;

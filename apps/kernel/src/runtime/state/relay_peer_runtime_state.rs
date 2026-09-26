@@ -1039,6 +1039,47 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn relay_acknowledge_leased_project_environment_setup_definition(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        definition_digest: String,
+    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupDefinitionAck, DaemonError>
+    {
+        let authorization_id = leased_agent_id.to_string();
+        let target_leased_agent_id = authorization_id.clone();
+        let worker_leased_agent_id = target_leased_agent_id.clone();
+        let target_home_session_id = home_session_id.clone();
+        let target_home_agent_id = home_agent_id.clone();
+        let target = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&authorization_id)?;
+                runtime.project_environment_setup_target(
+                    &worker_leased_agent_id,
+                    &target_home_session_id,
+                    &target_home_agent_id,
+                    None,
+                )
+            })
+            .await?;
+        self.acknowledge_leased_project_environment_setup_definition(
+            target,
+            &target_leased_agent_id,
+            &operation_id,
+            attempt,
+            &project_id,
+            &home_session_id,
+            &home_agent_id,
+            &definition_digest,
+        )
+        .await
+    }
+
     pub(crate) async fn cancel_relay_leased_project_environment_setup(
         &self,
         leased_agent_id: &str,

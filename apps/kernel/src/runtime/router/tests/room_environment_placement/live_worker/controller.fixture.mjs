@@ -13,6 +13,7 @@ const { BrowserCdpClient } = await import(pathToFileURL(join(directory, "browser
 writeFileSync(pidFile, String(process.pid));
 appendFileSync(`${pidFile}s`, `${process.pid}\n`);
 const stateFile = join(dirname(pidFile), "chromium-state.json");
+const actionRequestEvidencePath = join(dirname(pidFile), "controller-action-requests.ndjson");
 let state = existsSync(stateFile)
   ? JSON.parse(readFileSync(stateFile, "utf8"))
   : { open: true, saved: false, clickCount: 0, pressed: false, note: "", submitted: null, focused: "worker-save" };
@@ -25,6 +26,8 @@ state.historyIndex ??= state.history.length - 1;
 state.documentSequence ??= 1;
 const persist = () => writeFileSync(stateFile, JSON.stringify(state));
 const subscribers = new Set();
+let actionRequestSequence = 0;
+let activeActionRequestRef = null;
 const emit = (message) => {
   for (const subscriber of subscribers) subscriber(message);
 };
@@ -167,6 +170,12 @@ const chromium = {
         // test releases it. No Chariox state or controller behavior is mocked.
         if ((params.objectId === "worker-save" && existsSync(join(dirname(pidFile), "hold-click"))) ||
             (params.objectId === "worker-note" && existsSync(join(dirname(pidFile), "hold-fill")))) {
+          appendFileSync(actionRequestEvidencePath, `${JSON.stringify({
+            event: "fixture_actionability_wait",
+            request_ref: activeActionRequestRef,
+            object_id: params.objectId,
+            state: "disabled",
+          })}\n`);
           return { result: { value: { state: "disabled" } } };
         }
         if (params.functionDeclaration.includes("requestSubmit")) {
@@ -310,6 +319,36 @@ const browser = new BrowserCdpClient({
     downloadDirectory: join(dirname(pidFile), "downloads"),
     uploadRoots: [dirname(pidFile)],
 });
+const performBrowserAction = browser.performAction.bind(browser);
+browser.performAction = async (request, options = {}) => {
+  const requestRef = `${process.pid}-${++actionRequestSequence}`;
+  const evidence = {
+    request_ref: requestRef,
+    method: "browser.action",
+    target_id: request?.target_id,
+    document_id: request?.document_id,
+    node_ref: request?.node_ref,
+    action_kind: request?.action?.kind,
+  };
+  const record = (event, errorCode) => appendFileSync(actionRequestEvidencePath, `${JSON.stringify({
+    ...evidence,
+    event,
+    ...(errorCode ? { error_code: errorCode } : {}),
+  })}\n`);
+  const previousRequestRef = activeActionRequestRef;
+  activeActionRequestRef = requestRef;
+  record("controller_request_entered");
+  try {
+    const result = await performBrowserAction(request, options);
+    record("controller_request_completed");
+    return result;
+  } catch (error) {
+    record("controller_request_failed", error?.code ?? "unknown");
+    throw error;
+  } finally {
+    activeActionRequestRef = previousRequestRef;
+  }
+};
 // This fixture supplies the worker observation that a real slice controller
 // obtains from its own namespace. It is deliberately test-only: production
 // BrowserControllerStdioServer uses browser-controller-resources.mjs to scan

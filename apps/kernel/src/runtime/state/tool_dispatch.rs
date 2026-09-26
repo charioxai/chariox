@@ -423,7 +423,8 @@ impl KernelRuntimeState {
                     .await;
             }
             if is_slice_runtime_tool(canonical_tool_name) {
-                let provider_run = provider_run.expect("non-workflow tool should have provider run");
+                let provider_run =
+                    provider_run.expect("non-workflow tool should have provider run");
                 if let Some(result) = self
                     .try_dispatch_remote_room_browser_runtime_tool_call(
                         provider_run,
@@ -441,11 +442,7 @@ impl KernelRuntimeState {
                     is_room_browser_controller_runtime_tool(canonical_tool_name),
                 )?;
                 return self
-                    .dispatch_slice_runtime_tool_call(
-                        provider_run,
-                        canonical_tool_name,
-                        arguments,
-                    )
+                    .dispatch_slice_runtime_tool_call(provider_run, canonical_tool_name, arguments)
                     .await;
             }
             self.dispatch_authenticated_workflow_runtime_tool_call(
@@ -466,10 +463,10 @@ impl KernelRuntimeState {
             .filter(|spec| {
                 self.slice_kernel_id().is_some()
                     || matches!(runs, [run]
-                if room_browser_tools_available(
-                    self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some(),
-                    run.remote_extension_manifest().room_browser_available,
-                ))
+                    if room_browser_tools_available(
+                        self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some(),
+                        run.remote_extension_manifest().room_browser_available,
+                    ))
             })
             .collect()
     }
@@ -757,9 +754,7 @@ mod tests {
         let error = super::ensure_leased_room_browser_context(true, true)
             .expect_err("missing home context must reject the local fallback");
 
-        assert!(error
-            .to_string()
-            .contains("refusing local slice fallback"));
+        assert!(error.to_string().contains("refusing local slice fallback"));
         assert!(super::ensure_leased_room_browser_context(false, true).is_ok());
         assert!(super::ensure_leased_room_browser_context(true, false).is_ok());
     }

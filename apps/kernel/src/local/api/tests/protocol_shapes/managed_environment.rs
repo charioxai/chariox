@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn managed_reimage_receipt_read_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let request =
         LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
             environment_id: "environment-1".to_string(),
@@ -23,7 +23,7 @@ fn managed_reimage_receipt_read_shape_is_versioned() {
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -272,6 +272,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         },
         LocalDaemonResponse::ManagedEnvironment {
             environment: source_environment.clone(),
+            operations: vec![operation.clone()],
         },
         LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared {
             ticket: transfer_ticket,
@@ -407,6 +408,69 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         Some(&serde_json::json!("/srv/chariox/repos"))
     );
     assert_eq!(
+        snapshot.pointer(
+            "/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityChangedAt"
+        ),
+        Some(&serde_json::json!("2026-08-21T00:00:00.000Z"))
+    );
+    assert_eq!(
+        snapshot.pointer("/11/ManagedEnvironment/operations/0/operationId"),
+        Some(&serde_json::json!("operation-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/11/ManagedEnvironment/operations/0/desiredRevision"),
+        Some(&serde_json::json!(1))
+    );
+    assert!(snapshot
+        .pointer("/11/ManagedEnvironment/environment/operations")
+        .is_none());
+    let shutdown_projection = serde_json::json!({
+        "activity": {
+            "runningAgentCount": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/runningAgentCount"
+            ),
+            "lastActivityReportedAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityReportedAt"
+            ),
+            "lastActivityChangedAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityChangedAt"
+            ),
+            "autoStopWarningAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/autoStopWarningAt"
+            ),
+            "autoStopDeadlineAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/autoStopDeadlineAt"
+            ),
+        },
+        "operation": {
+            "operationId": snapshot.pointer("/11/ManagedEnvironment/operations/0/operationId"),
+            "environmentId": snapshot.pointer("/11/ManagedEnvironment/operations/0/environmentId"),
+            "kind": snapshot.pointer("/11/ManagedEnvironment/operations/0/kind"),
+            "status": snapshot.pointer("/11/ManagedEnvironment/operations/0/status"),
+            "desiredRevision": snapshot.pointer("/11/ManagedEnvironment/operations/0/desiredRevision"),
+            "completedAt": snapshot.pointer("/11/ManagedEnvironment/operations/0/completedAt"),
+        },
+    });
+    let shutdown_serialized = serde_json::to_string(&shutdown_projection)
+        .expect("managed shutdown observation wire projection");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(shutdown_serialized.as_bytes())),
+        "2888395f73d8e8e3c194da971e09e5ae407f3a6fec2124acf2d3ec76aad6435f"
+    );
+    let legacy_response = serde_json::json!({
+        "ManagedEnvironment": {
+            "environment": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0"
+            ).unwrap()
+        }
+    });
+    let LocalDaemonResponse::ManagedEnvironment { operations, .. } =
+        serde_json::from_value(legacy_response).expect("legacy managed environment response")
+    else {
+        panic!("legacy managed environment response variant");
+    };
+    assert!(operations.is_empty(), "missing history remains unavailable");
+    assert_eq!(
         snapshot.pointer("/12/ManagedEnvironmentContextTransferPrepared/ticket/target/kernelId"),
         Some(&serde_json::json!("managed-kernel-1"))
     );
@@ -418,6 +482,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
     );
     let mut previous_shape = snapshot.clone();
     remove_managed_repository_root_fields(&mut previous_shape);
+    remove_shutdown_observation_fields(&mut previous_shape);
     let previous_serialized = serde_json::to_string(&previous_shape)
         .expect("managed environment shape without the protocol 342 addition");
     assert_eq!(
@@ -496,7 +561,7 @@ fn local_daemon_reimage_request_rejects_repository_root_override() {
 
 #[test]
 fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let preflight = ManagedEnvironmentReimagePreflight {
         environment_id: "environment-1".to_string(),
         retained: ManagedEnvironmentReimagePreflightRetained {
@@ -558,7 +623,7 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
 
 #[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {
@@ -620,6 +685,11 @@ fn managed_environment_summary(
         },
         context_manifest_digest: None,
         auto_stop_policy: policy,
+        running_agent_count: Some(0),
+        last_activity_reported_at: Some("2026-08-21T00:00:00.000Z".to_string()),
+        last_activity_changed_at: Some("2026-08-21T00:00:00.000Z".to_string()),
+        auto_stop_warning_at: None,
+        auto_stop_deadline_at: Some("2026-08-21T00:15:00.000Z".to_string()),
         last_error_code: None,
         last_error_message: None,
         created_at: "2026-08-21T00:00:00.000Z".to_string(),
@@ -638,6 +708,37 @@ fn remove_managed_repository_root_fields(value: &mut serde_json::Value) {
             fields.remove("managedRepositoryRoot");
             for item in fields.values_mut() {
                 remove_managed_repository_root_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn remove_shutdown_observation_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                remove_shutdown_observation_fields(item);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for key in [
+                "runningAgentCount",
+                "lastActivityReportedAt",
+                "lastActivityChangedAt",
+                "autoStopWarningAt",
+                "autoStopDeadlineAt",
+            ] {
+                fields.remove(key);
+            }
+            if let Some(managed) = fields
+                .get_mut("ManagedEnvironment")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                managed.remove("operations");
+            }
+            for item in fields.values_mut() {
+                remove_shutdown_observation_fields(item);
             }
         }
         _ => {}

@@ -347,12 +347,12 @@ impl EnvironmentActionLedger {
             });
         }
         let cancellation_reason = self.cancellation_reasons.remove(action_id);
-        let action = self
-            .actions
-            .get_mut(action_id)
-            .ok_or_else(|| EnvironmentError::UnknownAction {
-                action_id: action_id.to_string(),
-            })?;
+        let action =
+            self.actions
+                .get_mut(action_id)
+                .ok_or_else(|| EnvironmentError::UnknownAction {
+                    action_id: action_id.to_string(),
+                })?;
         action.state = state;
         let finished_at_ms = next_action_timestamp(action);
         action.finished_at_ms = Some(finished_at_ms);

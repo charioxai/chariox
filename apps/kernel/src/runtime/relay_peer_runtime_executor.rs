@@ -430,6 +430,29 @@ pub(crate) async fn get_relay_leased_project_environment_setup_status(
         .await
 }
 
+pub(crate) async fn acknowledge_relay_leased_project_environment_setup_definition(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    operation_id: String,
+    attempt: u32,
+    project_id: String,
+    home_session_id: String,
+    home_agent_id: String,
+    definition_digest: String,
+) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupDefinitionAck, DaemonError> {
+    runtime_state
+        .relay_acknowledge_leased_project_environment_setup_definition(
+            leased_agent_id,
+            operation_id,
+            attempt,
+            project_id,
+            home_session_id,
+            home_agent_id,
+            definition_digest,
+        )
+        .await
+}
+
 pub(crate) async fn cancel_relay_leased_project_environment_setup(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,

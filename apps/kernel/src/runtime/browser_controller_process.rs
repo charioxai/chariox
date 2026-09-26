@@ -289,11 +289,13 @@ impl BrowserControllerProcessStdioBackend {
             "browser controller did not expose stderr".to_string()
         })?;
         let (responses_tx, responses) = mpsc::channel();
-        let snapshot_responses = pending_responses::PendingResponses::default();
-        let reader_snapshots = snapshot_responses.clone();
+        let pending_responses = pending_responses::PendingResponses::default();
+        let reader_pending_responses = pending_responses.clone();
         if let Err(error) = std::thread::Builder::new()
             .name("chariox-browser-controller-reader".to_string())
-            .spawn(move || read_controller_responses(stdout, responses_tx, reader_snapshots))
+            .spawn(move || {
+                read_controller_responses(stdout, responses_tx, reader_pending_responses)
+            })
         {
             kill_child(&mut child);
             return Err(format!(
@@ -313,7 +315,7 @@ impl BrowserControllerProcessStdioBackend {
             child: Arc::new(Mutex::new(child)),
             stdin: Arc::new(Mutex::new(stdin)),
             responses,
-            snapshot_responses,
+            pending_responses,
         });
         Ok(())
     }
@@ -542,7 +544,9 @@ impl BrowserControllerProcessStdioBackend {
             .process
             .as_mut()
             .ok_or_else(|| "browser controller is not running".to_string())?;
-        let pending = process.snapshot_responses.register(request_id)?;
+        let pending = process
+            .pending_responses
+            .register(request_id, "browser controller exited during snapshot")?;
         let mut stdin = process
             .stdin
             .lock()
@@ -1007,7 +1011,7 @@ struct BrowserControllerChild {
     child: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<ChildStdin>>,
     responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
-    snapshot_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
+    pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
 }
 
 #[derive(Deserialize)]
@@ -1104,7 +1108,7 @@ struct BrowserControllerRpcError {
 fn read_controller_responses(
     stdout: ChildStdout,
     responses: mpsc::Sender<Result<BrowserControllerRpcResponse, String>>,
-    snapshots: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
+    pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
 ) {
     for line in BufReader::new(stdout).lines() {
         let response = line
@@ -1116,7 +1120,7 @@ fn read_controller_responses(
         let response = match response {
             Ok(response) => {
                 if let Some(id) = response.id {
-                    match snapshots.route(id, response) {
+                    match pending_responses.route(id, response) {
                         Some(response) => Ok(response),
                         None => continue,
                     }
@@ -1125,7 +1129,7 @@ fn read_controller_responses(
                 }
             }
             Err(error) => {
-                snapshots.fail_all(&error);
+                pending_responses.fail_all(&error);
                 Err(error)
             }
         };
@@ -1133,7 +1137,7 @@ fn read_controller_responses(
             break;
         }
     }
-    snapshots.fail_all("browser controller exited during snapshot");
+    pending_responses.fail_all_on_exit();
 }
 
 fn terminate_child(child: &mut Child, timeout: Duration) {
@@ -1479,18 +1483,18 @@ impl BrowserControllerProcessStore {
                 .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
-            // A health RPC is a controller barrier. While snapshots are in
-            // flight, inspect process liveness without queuing that barrier.
+            // A health RPC is a controller barrier. While controller responses
+            // are in flight, inspect process liveness without queuing it.
             // Recovery still requires reconciliation before fresh references.
-            let reads_pending = supervisor
+            let responses_pending = supervisor
                 .backend
                 .process
                 .as_ref()
-                .map(|process| process.snapshot_responses.is_empty().map(|empty| !empty))
+                .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
                 .transpose()?
                 .unwrap_or(false);
             let exited = supervisor.backend.take_exited_process()?.is_some();
-            if !reads_pending || exited {
+            if !responses_pending || exited {
                 supervisor.ensure_started_without_transparent_restart()?;
             } else if supervisor.recovery_pending
                 || supervisor.snapshot.state != BrowserControllerProcessState::Ready

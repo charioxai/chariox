@@ -4,14 +4,14 @@ import test from "node:test"
 import { LocalIpcError } from "./local-ipc-error.js"
 import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
 
-test("KernelPendingRequestRegistry resolves taken requests and clears relay keys", async () => {
+test("KernelPendingRequestRegistry resolves taken requests and keeps the response decryptor", async () => {
   const registry = new KernelPendingRequestRegistry(1_000)
   const request = registry.register<string>("request-1", "control")
-  const relayKey = Buffer.from("relay-key")
+  const decryptResponse = () => "decoded"
 
-  request.setRelayPrivateKey(relayKey)
+  request.setRelayDecryptResponse(decryptResponse)
   const pending = registry.take("request-1")
-  assert.equal(pending?.relayPrivateKey, relayKey)
+  assert.equal(pending?.relayDecryptResponse, decryptResponse)
   pending?.resolve("ok")
 
   assert.equal(await request.promise, "ok")

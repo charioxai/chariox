@@ -88,7 +88,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 60 requires exact home-prompt and worker-run identities for leased cancellation
 /// and carries durable exact-identity receipts for queued prompt steers.
 /// Version 62 also persists worker admission receipts for original leased prompts.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 62;
+/// Version 63 requires the leased setup worker to receive a home persistence
+/// acknowledgment before validating a utility-generated Project definition.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 63;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -104,13 +106,22 @@ pub struct RelayAgentExecutionProfile {
 }
 
 /// Status returned by the worker for a project-environment setup operation.
-/// The definition is returned separately from the public status so the home
-/// kernel can persist it only after the worker reports measured validation.
+/// A utility-generated definition is staged while the worker remains in
+/// Preparing; the home persists it and acknowledges its digest before worker
+/// validation may begin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayProjectEnvironmentSetupStatus {
     pub status: crate::local::ProjectEnvironmentSetupStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition: Option<crate::session::ProjectEnvironmentDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectEnvironmentSetupDefinitionAck {
+    pub operation_id: String,
+    pub attempt: u32,
+    pub project_id: String,
+    pub definition_digest: String,
 }
 
 impl From<&crate::agent::AgentInstance> for RelayAgentExecutionProfile {
@@ -771,6 +782,15 @@ pub enum RelayPeerRequest {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         validation_commands: Vec<String>,
     },
+    AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+        leased_agent_id: String,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        definition_digest: String,
+    },
     GetLeasedProjectEnvironmentSetupStatus {
         leased_agent_id: String,
         operation_id: String,
@@ -1040,6 +1060,12 @@ pub enum RelayPeerResponse {
     LeasedProjectEnvironmentSetupStarted {
         setup: RelayProjectEnvironmentSetupStatus,
     },
+    LeasedProjectEnvironmentSetupDefinitionAcknowledged {
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        definition_digest: String,
+    },
     LeasedProjectEnvironmentSetupStatus {
         setup: RelayProjectEnvironmentSetupStatus,
     },
@@ -1169,8 +1195,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_62() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
+    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_63() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 63);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1206,8 +1232,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_62() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_63() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 63);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1229,7 +1255,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 63);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1294,8 +1320,8 @@ mod tests {
     }
 
     #[test]
-    fn leased_project_setup_target_resolution_is_versioned_at_protocol_62() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
+    fn leased_project_setup_target_resolution_is_versioned_at_protocol_63() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 63);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1338,8 +1364,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_62() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_63() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 63);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1387,6 +1413,15 @@ mod tests {
                 definition: Some(definition.clone()),
                 validation_commands: Vec::new(),
             },
+            RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                attempt: 2,
+                project_id: "project-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+                definition_digest: "sha256:definition".to_string(),
+            },
             RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
                 leased_agent_id: "leased-agent-1".to_string(),
                 operation_id: "setup-1".to_string(),
@@ -1411,6 +1446,28 @@ mod tests {
             start_wire.pointer("/attempt"),
             Some(&serde_json::json!(2)),
             "recovery Start must carry the home-authoritative attempt",
+        );
+        let acknowledgment_wire =
+            serde_json::to_value(&requests[2]).expect("definition acknowledgment should encode");
+        assert_eq!(
+            acknowledgment_wire,
+            serde_json::json!({
+                "kind": "acknowledge_leased_project_environment_setup_definition",
+                "leased_agent_id": "leased-agent-1",
+                "operation_id": "setup-1",
+                "attempt": 2,
+                "project_id": "project-1",
+                "home_session_id": "home-session-1",
+                "home_agent_id": "home-agent-1",
+                "definition_digest": "sha256:definition",
+            })
+        );
+        let request_snapshot = serde_json::to_string(&acknowledgment_wire)
+            .expect("definition acknowledgment snapshot should encode");
+        let request_hash = Sha256::digest(request_snapshot.as_bytes());
+        assert_eq!(
+            format!("{request_hash:x}"),
+            "d1787e56279249e317c632dfeb8b3a9ca31043b12c5b0e30faf15bdc5409c2f5",
         );
         for request in requests {
             let encoded = serde_json::to_value(&request).expect("setup request should encode");
@@ -1441,6 +1498,22 @@ mod tests {
             },
             definition: Some(definition),
         };
+        let acknowledgment =
+            RelayPeerResponse::LeasedProjectEnvironmentSetupDefinitionAcknowledged {
+                operation_id: "setup-1".to_string(),
+                attempt: 2,
+                project_id: "project-1".to_string(),
+                definition_digest: "sha256:definition".to_string(),
+            };
+        let acknowledgment_wire = serde_json::to_value(&acknowledgment)
+            .expect("definition acknowledgment response should encode");
+        let response_snapshot = serde_json::to_string(&acknowledgment_wire)
+            .expect("definition acknowledgment response snapshot should encode");
+        let response_hash = Sha256::digest(response_snapshot.as_bytes());
+        assert_eq!(
+            format!("{response_hash:x}"),
+            "0a26c7a2b75e0decf598a3efc789ddd150e156436fb3d4684b14bcc6105ecdf8",
+        );
         for response in [
             RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
                 worker_id: "worker-machine-1".to_string(),
@@ -1449,6 +1522,7 @@ mod tests {
             RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
                 setup: setup.clone(),
             },
+            acknowledgment,
             RelayPeerResponse::LeasedProjectEnvironmentSetupStatus {
                 setup: setup.clone(),
             },
@@ -1465,8 +1539,8 @@ mod tests {
     }
 
     #[test]
-    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_62() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
+    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_63() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 63);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),

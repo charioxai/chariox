@@ -156,6 +156,7 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
             config_worker.relay_private_key.clone(),
         )
     };
+    let (home_setup_scope_tx, home_setup_scope_rx) = oneshot::channel();
     let (
         shutdown_worker_tx,
         release_status_tx,
@@ -168,6 +169,7 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
         worker_registration,
         worker_private_key,
         config_home.relay_public_key.clone(),
+        home_setup_scope_rx,
     );
     wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
 
@@ -221,6 +223,13 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
             )
             .expect("home agent should bind to the fixture worker");
     }
+    home_setup_scope_tx
+        .send((
+            "leased-agent-status-latency".to_string(),
+            session_id.clone(),
+            agent_id.clone(),
+        ))
+        .expect("fixture worker should receive its exact home setup binding");
 
     let (mut client_socket, _) = connect_async(&relay_url)
         .await
@@ -515,6 +524,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
             config_worker.relay_private_key.clone(),
         )
     };
+    let (home_setup_scope_tx, home_setup_scope_rx) = oneshot::channel();
     let (
         shutdown_worker_tx,
         release_replay_tx,
@@ -537,6 +547,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
         worker_private_key,
         config_home.relay_public_key.clone(),
         lose_replay_response,
+        home_setup_scope_rx,
     );
     wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
 
@@ -594,6 +605,13 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
             )
             .expect("home agent should bind to the fixture worker");
     }
+    home_setup_scope_tx
+        .send((
+            "leased-agent-status-concurrent".to_string(),
+            session_id.clone(),
+            agent_id.clone(),
+        ))
+        .expect("fixture worker should receive its exact home setup binding");
 
     let (mut first_client, _) = connect_async(&relay_url)
         .await
@@ -1181,6 +1199,7 @@ fn spawn_missing_then_withheld_replay_worker(
     worker_private_key: String,
     home_public_key: String,
     lose_replay_response: bool,
+    home_setup_scope_rx: oneshot::Receiver<(String, String, String)>,
 ) -> (
     oneshot::Sender<()>,
     oneshot::Sender<()>,
@@ -1232,6 +1251,7 @@ fn spawn_missing_then_withheld_replay_worker(
         post_loss_get_seen_tx,
         post_loss_start_seen_tx,
         Arc::clone(&start_count),
+        home_setup_scope_rx,
     ));
     (
         shutdown_tx,
@@ -1272,7 +1292,10 @@ async fn run_missing_then_withheld_replay_worker(
     post_loss_get_seen_tx: oneshot::Sender<()>,
     post_loss_start_seen_tx: oneshot::Sender<u32>,
     start_count: Arc<AtomicUsize>,
+    home_setup_scope_rx: oneshot::Receiver<(String, String, String)>,
 ) {
+    let worker_machine_id = registration.machine_id.clone();
+    let worker_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let (mut socket, _) =
         match tokio::time::timeout(Duration::from_secs(3), connect_async(&relay_url)).await {
             Ok(Ok(connection)) => connection,
@@ -1289,6 +1312,10 @@ async fn run_missing_then_withheld_replay_worker(
     {
         return;
     }
+    let expected_home_setup_scope = match home_setup_scope_rx.await {
+        Ok(scope) => scope,
+        Err(_) => return,
+    };
 
     let mut initial_start_seen_tx = Some(initial_start_seen_tx);
     let mut missing_get_seen_tx = Some(missing_get_seen_tx);
@@ -1305,6 +1332,8 @@ async fn run_missing_then_withheld_replay_worker(
     let mut loss_trigger_consumed = false;
     let mut setup_lost = false;
     let mut held_setup: Option<RelayProjectEnvironmentSetupStatus> = None;
+    let mut accepted_leased_agent_id: Option<String> = None;
+    let mut acknowledgment_setup: Option<RelayProjectEnvironmentSetupStatus> = None;
     let mut held_replay: Option<(String, RelayProjectEnvironmentSetupStatus)> = None;
     loop {
         tokio::select! {
@@ -1402,7 +1431,22 @@ async fn run_missing_then_withheld_replay_worker(
                     Err(_) => return,
                 };
                 let (encrypted_response, error) = match request {
+                    RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+                        leased_agent_id,
+                        home_session_id,
+                        home_agent_id,
+                    } => fixture_setup_target_resolution(
+                        &worker_private_key,
+                        &home_public_key,
+                        &expected_home_setup_scope,
+                        &leased_agent_id,
+                        &home_session_id,
+                        &home_agent_id,
+                        &worker_machine_id,
+                        &worker_platform,
+                    ),
                     RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+                        leased_agent_id,
                         operation_id,
                         attempt,
                         project_id,
@@ -1413,6 +1457,9 @@ async fn run_missing_then_withheld_replay_worker(
                         definition,
                         ..
                     } => {
+                        if accepted_leased_agent_id.is_none() {
+                            accepted_leased_agent_id = Some(leased_agent_id);
+                        }
                         let start_number = start_count.fetch_add(1, Ordering::AcqRel) + 1;
                         let setup = RelayProjectEnvironmentSetupStatus {
                             status: ProjectEnvironmentSetupStatus {
@@ -1438,6 +1485,7 @@ async fn run_missing_then_withheld_replay_worker(
                             },
                             definition,
                         };
+                        acknowledgment_setup = Some(setup.clone());
                         if start_number == 1 {
                             if let Some(initial_start_seen_tx) = initial_start_seen_tx.take() {
                                 let _ = initial_start_seen_tx.send(());
@@ -1512,6 +1560,27 @@ async fn run_missing_then_withheld_replay_worker(
                             None,
                         )
                     }
+                    RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+                        leased_agent_id,
+                        operation_id,
+                        attempt,
+                        project_id,
+                        home_session_id,
+                        home_agent_id,
+                        definition_digest,
+                    } => fixture_setup_definition_acknowledgment(
+                        &worker_private_key,
+                        &home_public_key,
+                        accepted_leased_agent_id.as_deref(),
+                        acknowledgment_setup.as_ref(),
+                        &leased_agent_id,
+                        &operation_id,
+                        attempt,
+                        &project_id,
+                        &home_session_id,
+                        &home_agent_id,
+                        &definition_digest,
+                    ),
                     RelayPeerRequest::RetryLeasedProjectEnvironmentSetup { .. } => {
                         let mut setup = held_setup
                             .clone()
@@ -1628,6 +1697,7 @@ fn spawn_withheld_status_worker(
     registration: DaemonRegistration,
     worker_private_key: String,
     home_public_key: String,
+    home_setup_scope_rx: oneshot::Receiver<(String, String, String)>,
 ) -> (
     oneshot::Sender<()>,
     oneshot::Sender<()>,
@@ -1651,6 +1721,7 @@ fn spawn_withheld_status_worker(
         start_seen_tx,
         status_seen_tx,
         Arc::clone(&start_count),
+        home_setup_scope_rx,
     ));
     (
         shutdown_tx,
@@ -1672,7 +1743,10 @@ async fn run_withheld_status_worker(
     start_seen_tx: oneshot::Sender<()>,
     status_seen_tx: oneshot::Sender<()>,
     start_count: Arc<AtomicUsize>,
+    home_setup_scope_rx: oneshot::Receiver<(String, String, String)>,
 ) {
+    let worker_machine_id = registration.machine_id.clone();
+    let worker_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let (mut socket, _) =
         match tokio::time::timeout(Duration::from_secs(3), connect_async(&relay_url)).await {
             Ok(Ok(connection)) => connection,
@@ -1689,10 +1763,16 @@ async fn run_withheld_status_worker(
     {
         return;
     }
+    let expected_home_setup_scope = match home_setup_scope_rx.await {
+        Ok(scope) => scope,
+        Err(_) => return,
+    };
 
     let mut start_seen_tx = Some(start_seen_tx);
     let mut status_seen_tx = Some(status_seen_tx);
     let mut held_setup: Option<RelayProjectEnvironmentSetupStatus> = None;
+    let mut accepted_leased_agent_id: Option<String> = None;
+    let mut acknowledgment_setup: Option<RelayProjectEnvironmentSetupStatus> = None;
     let mut status_released = false;
     loop {
         let message = tokio::select! {
@@ -1739,7 +1819,22 @@ async fn run_withheld_status_worker(
             Err(_) => return,
         };
         let (encrypted_response, error) = match request {
+            RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+                leased_agent_id,
+                home_session_id,
+                home_agent_id,
+            } => fixture_setup_target_resolution(
+                &worker_private_key,
+                &home_public_key,
+                &expected_home_setup_scope,
+                &leased_agent_id,
+                &home_session_id,
+                &home_agent_id,
+                &worker_machine_id,
+                &worker_platform,
+            ),
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+                leased_agent_id,
                 operation_id,
                 attempt,
                 project_id,
@@ -1750,6 +1845,9 @@ async fn run_withheld_status_worker(
                 definition,
                 ..
             } => {
+                if accepted_leased_agent_id.is_none() {
+                    accepted_leased_agent_id = Some(leased_agent_id);
+                }
                 start_count.fetch_add(1, Ordering::AcqRel);
                 if let Some(start_seen_tx) = start_seen_tx.take() {
                     let _ = start_seen_tx.send(());
@@ -1778,6 +1876,7 @@ async fn run_withheld_status_worker(
                     },
                     definition,
                 };
+                acknowledgment_setup = Some(setup.clone());
                 held_setup = Some(setup.clone());
                 (
                     Some(encrypt_worker_response(
@@ -1788,6 +1887,27 @@ async fn run_withheld_status_worker(
                     None,
                 )
             }
+            RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+                leased_agent_id,
+                operation_id,
+                attempt,
+                project_id,
+                home_session_id,
+                home_agent_id,
+                definition_digest,
+            } => fixture_setup_definition_acknowledgment(
+                &worker_private_key,
+                &home_public_key,
+                accepted_leased_agent_id.as_deref(),
+                acknowledgment_setup.as_ref(),
+                &leased_agent_id,
+                &operation_id,
+                attempt,
+                &project_id,
+                &home_session_id,
+                &home_agent_id,
+                &definition_digest,
+            ),
             RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { .. } => {
                 if let Some(status_seen_tx) = status_seen_tx.take() {
                     let _ = status_seen_tx.send(());
@@ -1847,6 +1967,110 @@ async fn run_withheld_status_worker(
             return;
         }
     }
+}
+
+fn fixture_setup_target_resolution(
+    worker_private_key: &str,
+    home_public_key: &str,
+    expected_home_scope: &(String, String, String),
+    leased_agent_id: &str,
+    home_session_id: &str,
+    home_agent_id: &str,
+    worker_machine_id: &str,
+    worker_platform: &str,
+) -> (
+    Option<chariox_relay::protocol::EncryptedRelayPayload>,
+    Option<RelayError>,
+) {
+    if expected_home_scope.0.as_str() != leased_agent_id
+        || expected_home_scope.1.as_str() != home_session_id
+        || expected_home_scope.2.as_str() != home_agent_id
+        || worker_machine_id.is_empty()
+        || worker_platform.is_empty()
+    {
+        return (
+            None,
+            Some(RelayError {
+                code: PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE.to_string(),
+                message: "fixture worker rejected a mismatched setup target binding".to_string(),
+                retryable: false,
+            }),
+        );
+    }
+    (
+        Some(encrypt_worker_response(
+            worker_private_key,
+            home_public_key,
+            RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
+                worker_id: worker_machine_id.to_string(),
+                platform: worker_platform.to_string(),
+            },
+        )),
+        None,
+    )
+}
+
+fn fixture_setup_definition_acknowledgment(
+    worker_private_key: &str,
+    home_public_key: &str,
+    accepted_leased_agent_id: Option<&str>,
+    setup: Option<&RelayProjectEnvironmentSetupStatus>,
+    leased_agent_id: &str,
+    operation_id: &str,
+    attempt: u32,
+    project_id: &str,
+    home_session_id: &str,
+    home_agent_id: &str,
+    definition_digest: &str,
+) -> (
+    Option<chariox_relay::protocol::EncryptedRelayPayload>,
+    Option<RelayError>,
+) {
+    let matches_setup = accepted_leased_agent_id == Some(leased_agent_id)
+        && setup.is_some_and(|setup| {
+            let status = &setup.status;
+            status.operation_id == operation_id
+                && status.attempt == attempt
+                && status.project_id == project_id
+                && status.session_id == home_session_id
+                && status.agent_id == home_agent_id
+                && !matches!(
+                    status.phase,
+                    ProjectEnvironmentSetupPhase::Ready
+                        | ProjectEnvironmentSetupPhase::Failed
+                        | ProjectEnvironmentSetupPhase::Cancelled
+                )
+                && status.definition_digest.as_deref() == Some(definition_digest)
+                && setup.definition.as_ref().is_some_and(|definition| {
+                    definition.origin == ProjectEnvironmentDefinitionOrigin::UtilityGenerated
+                        && definition.digest() == definition_digest
+                })
+        });
+    if !matches_setup {
+        return (
+            None,
+            Some(RelayError {
+                code: PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE.to_string(),
+                message: "fixture worker rejected a mismatched setup definition acknowledgment"
+                    .to_string(),
+                retryable: false,
+            }),
+        );
+    }
+    let response = RelayPeerResponse::LeasedProjectEnvironmentSetupDefinitionAcknowledged {
+        operation_id: operation_id.to_string(),
+        attempt,
+        project_id: project_id.to_string(),
+        definition_digest: definition_digest.to_string(),
+    };
+    (
+        Some(encrypt_worker_response(
+            worker_private_key,
+            home_public_key,
+            response,
+        )),
+        None,
+    )
 }
 
 fn encrypt_worker_response(

@@ -11,9 +11,10 @@ const BUILD_TARGET = "x86_64-unknown-linux-gnu"
 const BUILDER_STAGE = "rust-builder"
 const BUILDER_DOCKERFILE = "apps/kernel/slice-linux-docker/docker/Dockerfile"
 const REQUIRED_OPTIONS = ["source-repository", "source-commit", "builder-signing-key", "output"]
+const BUILDER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 
 function usage() {
-  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --output <new-directory>"
+  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --output <new-directory> [--builder <name>]"
 }
 
 function parseOptions(argv) {
@@ -23,10 +24,13 @@ function parseOptions(argv) {
     const value = argv[index + 1]
     if (!option?.startsWith("--") || !value || value.startsWith("--")) throw new Error(usage())
     const name = option.slice(2)
-    if (!REQUIRED_OPTIONS.includes(name) || options.has(name)) throw new Error(usage())
-    options.set(name, name === "source-commit" ? value : resolve(value))
+    if (![...REQUIRED_OPTIONS, "builder"].includes(name) || options.has(name)) throw new Error(usage())
+    if (name === "builder" && !BUILDER_NAME_PATTERN.test(value)) {
+      throw new Error("builder name must be 1 to 63 ASCII letters, digits, dots, underscores, or hyphens")
+    }
+    options.set(name, name === "source-commit" || name === "builder" ? value : resolve(value))
   }
-  if (options.size !== REQUIRED_OPTIONS.length) throw new Error(usage())
+  if (!REQUIRED_OPTIONS.every((name) => options.has(name))) throw new Error(usage())
   return Object.fromEntries(options)
 }
 
@@ -124,7 +128,8 @@ async function build(options) {
     const dockerBuild = spawnSync(
       "docker",
       [
-        "build", "--pull", "--platform", "linux/amd64", "--target", BUILDER_STAGE,
+        "build", ...(options.builder ? ["--builder", options.builder, "--load"] : []),
+        "--pull", "--platform", "linux/amd64", "--target", BUILDER_STAGE,
         "--file", join(source, BUILDER_DOCKERFILE),
         "--tag", builderTag,
         source,

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { constants as fsConstants } from "node:fs"
-import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -27,15 +26,15 @@ function sourceFunction(source, name, nextName) {
   return source.slice(start, end)
 }
 
-test("Path-1 role units share the user-first provider executable path", async (context) => {
-  const units = [path1Service, disposableWorkerService]
-  const paths = units.map((unit) => {
-    const assignments = unit.split(/\r?\n/).filter((line) => line.startsWith("Environment=PATH="))
-    assert.equal(assignments.length, 1, "each Path-1 unit must set PATH once")
-    return assignments[0].slice("Environment=PATH=".length).split(":")
-  })
-  assert.deepEqual(paths[0], paths[1])
-  assert.deepEqual(paths[0], ["/home/chariox/.local/bin", "/usr/local/bin", "/usr/bin", "/bin"])
+test("Path-1 service starts use the current login PATH for tool lookup across restarts", async (context) => {
+  const units = [
+    [path1Service, "exec /usr/local/bin/chariox-managed-bootstrap"],
+    [disposableWorkerService, "exec /usr/local/bin/chariox-managed-bootstrap --disposable-worker"],
+  ]
+  for (const [unit, command] of units) {
+    assert.doesNotMatch(unit, /^Environment=PATH=/m, "Path-1 must not pin a fixed executable search path")
+    assert.ok(unit.includes(`ExecStart=/bin/bash --login -c '${command}'`))
+  }
 
   const [codex, claude, opencode] = providerResolverSources
   assert.match(sourceFunction(codex, "resolve_candidate", "is_executable_file"),
@@ -47,27 +46,56 @@ test("Path-1 role units share the user-first provider executable path", async (c
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-path1-provider-path-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
-  const fixtureDirectories = paths[0].map((_, index) => join(scratch, String(index)))
-  await Promise.all(fixtureDirectories.map((directory) => mkdir(directory)))
-  for (const provider of ["codex", "claude", "opencode"]) {
-    const userExecutable = join(fixtureDirectories[0], provider)
-    const imageExecutable = join(fixtureDirectories[1], provider)
-    await Promise.all([
-      writeFile(userExecutable, "user install", { mode: 0o755 }),
-      writeFile(imageExecutable, "image install", { mode: 0o755 }),
-    ])
-    let selected
-    for (const directory of fixtureDirectories) {
-      const candidate = join(directory, provider)
-      try {
-        await access(candidate, fsConstants.X_OK)
-        selected = candidate
-        break
-      } catch {}
-    }
-    assert.equal(selected, userExecutable, `${provider} must resolve the per-user install first`)
-    await access(imageExecutable, fsConstants.X_OK)
-  }
+  const home = join(scratch, "home")
+  const profileBinA = join(home, "toolchain-a", "bin")
+  const profileBinB = join(home, "toolchain-b", "bin")
+  const userBin = join(home, ".local", "bin")
+  const profileProviderBin = join(home, "profile-provider-bin")
+  await Promise.all([home, profileBinA, profileBinB, userBin, profileProviderBin].map((directory) =>
+    mkdir(directory, { recursive: true })))
+
+  const executable = "#!/bin/sh\nexit 0\n"
+  await Promise.all([
+    writeFile(join(profileBinA, "path1-profile-tool"), executable, { mode: 0o755 }),
+    writeFile(join(profileBinB, "path1-profile-tool"), executable, { mode: 0o755 }),
+    writeFile(join(userBin, "codex"), executable, { mode: 0o755 }),
+    writeFile(join(userBin, "claude"), executable, { mode: 0o755 }),
+    writeFile(join(profileProviderBin, "opencode"), executable, { mode: 0o755 }),
+  ])
+
+  const servicePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  const launchFromCurrentProfile = () => spawnSync("/bin/bash", [
+    "--login",
+    "-c",
+    "set -eu; command -v path1-profile-tool; command -v codex; command -v claude; command -v opencode",
+  ], {
+    encoding: "utf8",
+    env: { HOME: home, PATH: servicePath },
+  })
+  const writeProfile = (profileBin) => writeFile(join(home, ".profile"),
+    `PATH="$HOME/${profileBin.slice(home.length + 1)}:$HOME/.local/bin:$HOME/profile-provider-bin:$PATH"\nexport PATH\n`)
+
+  // Each invocation is the actual service-launch shell shape. A new launch
+  // rereads the user's profile, just as a systemd restart does.
+  await writeProfile(profileBinA)
+  const first = launchFromCurrentProfile()
+  assert.equal(first.status, 0, first.stderr)
+  assert.deepEqual(first.stdout.trim().split(/\r?\n/), [
+    join(profileBinA, "path1-profile-tool"),
+    join(userBin, "codex"),
+    join(userBin, "claude"),
+    join(profileProviderBin, "opencode"),
+  ])
+
+  await writeProfile(profileBinB)
+  const restarted = launchFromCurrentProfile()
+  assert.equal(restarted.status, 0, restarted.stderr)
+  assert.deepEqual(restarted.stdout.trim().split(/\r?\n/), [
+    join(profileBinB, "path1-profile-tool"),
+    join(userBin, "codex"),
+    join(userBin, "claude"),
+    join(profileProviderBin, "opencode"),
+  ])
 })
 
 test("Path-1 role units do not inherit shared-host provider sandbox controls", () => {

@@ -6,6 +6,7 @@ use crate::local::{
 };
 
 mod browser_import;
+mod cloud_relay;
 mod core;
 mod credential_enrollment;
 mod event_publication;

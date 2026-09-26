@@ -260,7 +260,8 @@ impl ManagedActivityMutation<'_> {
     }
 
     pub(super) fn record_at(self, observed_at_ms: Option<u64>) {
-        self.state.record_managed_activity_transition_at_unlocked(observed_at_ms);
+        self.state
+            .record_managed_activity_transition_at_unlocked(observed_at_ms);
     }
 }
 
@@ -508,11 +509,7 @@ mod tests {
             idle_acquired_rx.recv_timeout(std::time::Duration::from_millis(50)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
-        assert!(runtime
-            .owned
-            .active_turns
-            .get("provider-run-1")
-            .is_some());
+        assert!(runtime.owned.active_turns.get("provider-run-1").is_some());
 
         release_busy_tx
             .send(())

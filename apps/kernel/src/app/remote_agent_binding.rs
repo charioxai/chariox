@@ -56,13 +56,14 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             !endpoint.private && plan.config.relay_url_uses_cloud_profile(&endpoint.url)
         });
     if hosted_shared_slice {
-        let profile = discovery_config
-            .cloud_relay
-            .clone()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "discover hosted slice worker",
-                message: "hosted shared slice requires a Cloud relay profile".to_string(),
-            })?;
+        let profile =
+            discovery_config
+                .cloud_relay
+                .clone()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "discover hosted slice worker",
+                    message: "hosted shared slice requires a Cloud relay profile".to_string(),
+                })?;
         let owner_kernel_ref = plan.config.daemon_id.clone();
         let worker_kernel_ref = old_worker_ref.clone();
         let token = crate::runtime::cloud_api_client::issue_cloud_slice_discovery_token(
@@ -74,10 +75,9 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         discovery_config.relay_token = Some(token.token);
     }
 
-    let machine_ref = crate::config::DaemonConfig::resolve_registered_machine_ref(
-        &old_binding.worker_machine_id,
-    )
-    .unwrap_or_else(|| old_binding.worker_machine_id.clone());
+    let machine_ref =
+        crate::config::DaemonConfig::resolve_registered_machine_ref(&old_binding.worker_machine_id)
+            .unwrap_or_else(|| old_binding.worker_machine_id.clone());
     let can_use_connected_inventory = discovery_config.relay_url == plan.config.relay_url
         && (discovery_config.relay_token == plan.config.relay_token || hosted_shared_slice);
     let worker_kernel = async {
@@ -92,7 +92,8 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         }
         let kernels =
             relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine_ref).await?;
-        let message = no_remote_kernel_available_message(&kernels, &machine_ref, plan.agent.provider());
+        let message =
+            no_remote_kernel_available_message(&kernels, &machine_ref, plan.agent.provider());
         select_remote_kernel(kernels, &machine_ref, plan.agent.provider()).ok_or_else(|| {
             DaemonError::NoRemoteKernelAvailable {
                 machine_ref: machine_ref.clone(),
@@ -116,12 +117,8 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         &plan.config,
         &worker_kernel.kernel_id,
     );
-    remember_remote_worker_public_key_off_lock(
-        &relay_config,
-        &worker_kernel,
-        &plan.relay_state,
-    )
-    .await?;
+    remember_remote_worker_public_key_off_lock(&relay_config, &worker_kernel, &plan.relay_state)
+        .await?;
     let target = ClientTarget {
         daemon_id: Some(worker_kernel.kernel_id.clone()),
         daemon_alias: None,
@@ -177,18 +174,17 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
     if crate::provider::canonical_provider_family(plan.agent.provider())
         .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
     {
-        let materialization_target_kind =
-            if remote_binding_refresh_slice_for_worker(
-                &plan.slice_store,
-                &plan.projected_kernels,
-                &worker_kernel.kernel_id,
-            )
-            .is_some()
-            {
-                crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
-            } else {
-                crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
-            };
+        let materialization_target_kind = if remote_binding_refresh_slice_for_worker(
+            &plan.slice_store,
+            &plan.projected_kernels,
+            &worker_kernel.kernel_id,
+        )
+        .is_some()
+        {
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+        } else {
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
+        };
         let materialization_target_ref = worker_kernel.kernel_id.clone();
         let account_owner_user_id =
             crate::account_profile::provider_account_authority_owner_user_id(
@@ -222,39 +218,36 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         ) {
             materialized_account = Some(installed);
         } else {
-            let mut account_materialization = match plan
-                .provider_account_profiles
-                .export_materialization(
+            let mut account_materialization =
+                match plan.provider_account_profiles.export_materialization(
                     &account_owner_user_id,
                     plan.agent.provider(),
                     plan.agent.provider_account_profile(),
-                )
-            {
-                Ok(materialization) => materialization,
-                Err(error) => {
-                    let _ = update_remote_binding_materialization_status(
-                        &plan.provider_account_profiles,
-                        &account_owner_user_id,
-                        &plan.agent,
-                        materialization_target_kind,
-                        &materialization_target_ref,
-                        crate::account_profile::ProviderAccountMaterializationState::Error,
-                        Some("account materialization export failed"),
-                    );
-                    cleanup_remote_binding_setup_off_lock(
-                        &relay_config,
-                        &plan.relay_state,
-                        &target,
-                        &lease_id,
-                        None,
-                        use_connected_relay,
-                    )
-                    .await;
-                    return Err(error);
-                }
-            };
-            account_materialization.profile.owner_user_id =
-                plan.agent.owner_user_id().to_string();
+                ) {
+                    Ok(materialization) => materialization,
+                    Err(error) => {
+                        let _ = update_remote_binding_materialization_status(
+                            &plan.provider_account_profiles,
+                            &account_owner_user_id,
+                            &plan.agent,
+                            materialization_target_kind,
+                            &materialization_target_ref,
+                            crate::account_profile::ProviderAccountMaterializationState::Error,
+                            Some("account materialization export failed"),
+                        );
+                        cleanup_remote_binding_setup_off_lock(
+                            &relay_config,
+                            &plan.relay_state,
+                            &target,
+                            &lease_id,
+                            None,
+                            use_connected_relay,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                };
+            account_materialization.profile.owner_user_id = plan.agent.owner_user_id().to_string();
             let expected_account = account_materialization.profile.clone();
             match send_remote_binding_request_off_lock(
                 &relay_config,
@@ -1859,19 +1852,20 @@ fn update_remote_binding_materialization_status(
     state: crate::account_profile::ProviderAccountMaterializationState,
     last_error: Option<&str>,
 ) -> Result<(), DaemonError> {
-    registry.update_materialization_status(
-        owner_user_id,
-        agent.provider(),
-        agent.provider_account_profile(),
-        crate::account_profile::ProviderAccountMaterializationStatus {
-            target_kind,
-            target_ref: target_ref.to_string(),
-            state,
-            observed_at_ms: crate::session::unix_epoch_ms(),
-            last_error: last_error.map(str::to_string),
-        },
-    )
-    .map(|_| ())
+    registry
+        .update_materialization_status(
+            owner_user_id,
+            agent.provider(),
+            agent.provider_account_profile(),
+            crate::account_profile::ProviderAccountMaterializationStatus {
+                target_kind,
+                target_ref: target_ref.to_string(),
+                state,
+                observed_at_ms: crate::session::unix_epoch_ms(),
+                last_error: last_error.map(str::to_string),
+            },
+        )
+        .map(|_| ())
 }
 
 async fn ensure_remote_skill_packages_off_lock(
@@ -1891,14 +1885,12 @@ async fn ensure_remote_skill_packages_off_lock(
     let packages = skill_grants
         .iter()
         .map(|grant| {
-            registry
-                .package(grant)
-                .and_then(|package| {
-                    package.ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "ensure remote agent skill packages",
-                        message: format!("skill `{grant}` is not installed"),
-                    })
+            registry.package(grant).and_then(|package| {
+                package.ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "ensure remote agent skill packages",
+                    message: format!("skill `{grant}` is not installed"),
                 })
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     if packages.is_empty() {

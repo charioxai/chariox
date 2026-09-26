@@ -1,11 +1,17 @@
-//! Bounded response correlation for snapshot RPCs that outlive the ownership lock.
+//! Bounded response correlation for RPCs that outlive the ownership lock.
 
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-const MAX_PENDING_READS: usize = 64;
-type Waiters<T> = BTreeMap<u64, mpsc::Sender<Result<T, String>>>;
+const MAX_PENDING_RESPONSES: usize = 64;
+
+struct Waiter<T> {
+    sender: mpsc::Sender<Result<T, String>>,
+    exit_error: String,
+}
+
+type Waiters<T> = BTreeMap<u64, Waiter<T>>;
 
 pub(super) struct PendingResponses<T>(Arc<Mutex<Waiters<T>>>);
 
@@ -22,19 +28,29 @@ impl<T> Default for PendingResponses<T> {
 }
 
 impl<T> PendingResponses<T> {
-    pub(super) fn register(&self, id: u64) -> Result<PendingResponse<T>, String> {
+    pub(super) fn register(
+        &self,
+        id: u64,
+        exit_error: impl Into<String>,
+    ) -> Result<PendingResponse<T>, String> {
         let mut waiters = self
             .0
             .lock()
             .map_err(|_| "controller read registry poisoned")?;
-        if waiters.len() >= MAX_PENDING_READS {
-            return Err("browser controller has too many pending snapshot reads".into());
+        if waiters.len() >= MAX_PENDING_RESPONSES {
+            return Err("browser controller has too many pending responses".into());
         }
         if waiters.contains_key(&id) {
-            return Err("browser controller snapshot request ID already pending".into());
+            return Err("browser controller request ID already pending".into());
         }
         let (sender, receiver) = mpsc::channel();
-        waiters.insert(id, sender);
+        waiters.insert(
+            id,
+            Waiter {
+                sender,
+                exit_error: exit_error.into(),
+            },
+        );
         Ok(PendingResponse {
             id,
             receiver,
@@ -58,7 +74,7 @@ impl<T> PendingResponses<T> {
             .remove(&id);
         match sender {
             Some(sender) => {
-                let _ = sender.send(Ok(response));
+                let _ = sender.sender.send(Ok(response));
                 None
             }
             None => Some(response),
@@ -68,8 +84,16 @@ impl<T> PendingResponses<T> {
     pub(super) fn fail_all(&self, error: &str) {
         let waiters =
             std::mem::take(&mut *self.0.lock().unwrap_or_else(|error| error.into_inner()));
-        for sender in waiters.into_values() {
-            let _ = sender.send(Err(error.to_string()));
+        for waiter in waiters.into_values() {
+            let _ = waiter.sender.send(Err(error.to_string()));
+        }
+    }
+
+    pub(super) fn fail_all_on_exit(&self) {
+        let waiters =
+            std::mem::take(&mut *self.0.lock().unwrap_or_else(|error| error.into_inner()));
+        for waiter in waiters.into_values() {
+            let _ = waiter.sender.send(Err(waiter.exit_error));
         }
     }
 }
@@ -111,8 +135,12 @@ mod tests {
     #[test]
     fn reads_receive_their_own_out_of_order_replies() {
         let registry = PendingResponses::default();
-        let first = registry.register(1).unwrap();
-        let second = registry.register(2).unwrap();
+        let first = registry
+            .register(1, "controller exited during first")
+            .unwrap();
+        let second = registry
+            .register(2, "controller exited during second")
+            .unwrap();
         assert!(!registry.is_empty().unwrap());
         assert_eq!(registry.route(2, "second"), None);
         assert_eq!(registry.route(1, "first"), None);
@@ -125,8 +153,12 @@ mod tests {
     #[test]
     fn independent_waiters_do_not_hold_the_dispatch_registry_lock() {
         let registry = PendingResponses::default();
-        let first = registry.register(1).unwrap();
-        let second = registry.register(2).unwrap();
+        let first = registry
+            .register(1, "controller exited during first")
+            .unwrap();
+        let second = registry
+            .register(2, "controller exited during second")
+            .unwrap();
         let first = std::thread::spawn(move || first.wait(Duration::from_secs(1)));
         let second = std::thread::spawn(move || second.wait(Duration::from_secs(1)));
         assert_eq!(registry.route(2, "second"), None);
@@ -136,27 +168,39 @@ mod tests {
     }
 
     #[test]
-    fn dropped_and_timed_out_reads_release_the_bound() {
+    fn dropped_and_timed_out_responses_release_the_bound() {
         let registry = PendingResponses::<()>::default();
         let mut pending = Vec::new();
-        for id in 0..MAX_PENDING_READS as u64 {
-            pending.push(registry.register(id).unwrap());
+        for id in 0..MAX_PENDING_RESPONSES as u64 {
+            pending.push(
+                registry
+                    .register(id, "controller exited during request")
+                    .unwrap(),
+            );
         }
-        assert!(registry.register(100).is_err());
+        assert!(registry
+            .register(100, "controller exited during request")
+            .is_err());
         assert!(pending[0].wait(Duration::ZERO).is_err());
         pending.remove(0);
-        let replacement = registry.register(100).unwrap();
+        let replacement = registry
+            .register(100, "controller exited during request")
+            .unwrap();
         drop(replacement);
         drop(pending);
         assert!(registry.is_empty().unwrap());
     }
 
     #[test]
-    fn exit_or_invalid_json_fails_every_read_without_stealing_mutation_replies() {
+    fn generic_controller_failure_fails_all_waiters_without_stealing_replies() {
         let registry = PendingResponses::<()>::default();
-        let first = registry.register(1).unwrap();
-        let second = registry.register(2).unwrap();
-        assert!(registry.register(1).is_err());
+        let first = registry
+            .register(1, "controller exited during first")
+            .unwrap();
+        let second = registry
+            .register(2, "controller exited during second")
+            .unwrap();
+        assert!(registry.register(1, "duplicate").is_err());
         registry.fail_all("controller exited");
         assert_eq!(first.wait(Duration::ZERO).unwrap_err(), "controller exited");
         assert_eq!(
@@ -164,6 +208,43 @@ mod tests {
             "controller exited"
         );
         assert_eq!(registry.route(3, ()), Some(()));
+        assert!(registry.is_empty().unwrap());
+    }
+
+    #[test]
+    fn process_exit_preserves_each_pending_operation_phase() {
+        let registry = PendingResponses::<()>::default();
+        let snapshot = registry
+            .register(1, "browser controller exited during snapshot")
+            .unwrap();
+        let action = registry
+            .register(2, "browser controller exited during `browser.action`")
+            .unwrap();
+        let mutation = registry
+            .register(3, "controller exited during `browser.upload`")
+            .unwrap();
+        let cancellation = registry
+            .register(4, "controller exited during cancellation")
+            .unwrap();
+
+        registry.fail_all_on_exit();
+
+        assert_eq!(
+            snapshot.wait(Duration::ZERO).unwrap_err(),
+            "browser controller exited during snapshot"
+        );
+        assert_eq!(
+            action.wait(Duration::ZERO).unwrap_err(),
+            "browser controller exited during `browser.action`"
+        );
+        assert_eq!(
+            mutation.wait(Duration::ZERO).unwrap_err(),
+            "controller exited during `browser.upload`"
+        );
+        assert_eq!(
+            cancellation.wait(Duration::ZERO).unwrap_err(),
+            "controller exited during cancellation"
+        );
         assert!(registry.is_empty().unwrap());
     }
 }

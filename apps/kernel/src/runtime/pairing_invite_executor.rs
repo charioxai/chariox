@@ -12,6 +12,7 @@ use crate::runtime::cloud_api_client::{
     issue_cloud_runtime_token, post_cloud_json, CloudPairingTokenResponse,
     CloudRuntimeTokenRequestOptions,
 };
+use crate::runtime::cloud_relay_connection_executor::require_cloud_relay_token_key_binding;
 use crate::runtime::cloud_relay_profile_store::clear_cloud_profile_if_stale;
 use crate::runtime::invite_tokens::{
     decode_pairing_invite_token, encode_pairing_invite_token, encode_terminal_pairing_link,
@@ -50,7 +51,8 @@ pub(crate) async fn execute_pairing_request(
                 .await
         }
         LocalDaemonRequest::JoinTerminalPairingLink(request) => {
-            execute_join_terminal_pairing_link_request(config_projection, request).await
+            execute_join_terminal_pairing_link_request(runtime_state, config_projection, request)
+                .await
         }
         LocalDaemonRequest::ListTerminals(_) => execute_list_terminals_request(),
         LocalDaemonRequest::ListPairedClients(_) => execute_list_paired_clients_request(),
@@ -320,6 +322,7 @@ pub(crate) async fn execute_join_pairing_invite_request(
 }
 
 pub(crate) async fn execute_join_terminal_pairing_link_request(
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: JoinTerminalPairingLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -346,10 +349,71 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
         .terminal_id
         .or(token.terminal_id.clone())
         .unwrap_or_else(|| format!("{}-{}", terminal_type.as_str(), random_hex_id()));
-    let public_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
+    let joined_thumbprint = request
+        .public_key_thumbprint
+        .clone()
+        .unwrap_or_else(|| public_key_thumbprint(&config.relay_public_key));
+    let relay_token = if request.public_key_thumbprint.is_some() {
+        if joined_thumbprint.len() != 64
+            || !joined_thumbprint
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "join terminal pairing link",
+                message: "CLI public key thumbprint must be a lowercase SHA-256 hex value"
+                    .to_string(),
+            });
+        }
+        let profile = config
+            .cloud_relay
+            .clone()
+            .filter(|profile| {
+                profile.relay_url == token.relay_url
+                    && (profile.cloud_session_token.is_some()
+                        || profile.machine_credential.is_some())
+            })
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "join terminal pairing link",
+                message: "key-bound terminal pairing requires active Cloud relay credentials for the target relay".to_string(),
+            })?;
+        let mut allowed_targets = vec![token.target_daemon_id.clone()];
+        if let Some(alias) = token.target_daemon_alias.clone() {
+            if !allowed_targets.iter().any(|target| target == &alias) {
+                allowed_targets.push(alias);
+            }
+        }
+        let issued = match issue_cloud_runtime_token(
+            &profile,
+            &terminal_id,
+            "client",
+            CloudRuntimeTokenRequestOptions {
+                allowed_targets: Some(allowed_targets),
+                client_id: Some(terminal_id.clone()),
+                machine_id: profile
+                    .machine_credential
+                    .as_ref()
+                    .and(profile.machine_id.clone()),
+                public_key_thumbprint: Some(joined_thumbprint.clone()),
+                ..CloudRuntimeTokenRequestOptions::default()
+            },
+        )
+        .await
+        {
+            Ok(issued) => issued,
+            Err(error) => {
+                clear_cloud_profile_if_stale(runtime_state, &error).await?;
+                return Err(error);
+            }
+        };
+        require_cloud_relay_token_key_binding(&issued.token, &joined_thumbprint)?;
+        Some(issued.token)
+    } else {
+        None
+    };
     let client = crate::config::DaemonConfig::record_paired_terminal(
         terminal_id.clone(),
-        public_key_thumbprint.clone(),
+        joined_thumbprint.clone(),
         request.alias.clone(),
         now_ms,
         terminal_type.as_str(),
@@ -363,9 +427,10 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
             relay_url: token.relay_url,
             target_daemon_id: token.target_daemon_id,
             alias: request.alias,
-            public_key_thumbprint,
+            public_key_thumbprint: joined_thumbprint,
             paired_at_ms: now_ms,
         },
+        relay_token,
     })
 }
 

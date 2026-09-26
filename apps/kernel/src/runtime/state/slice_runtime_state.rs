@@ -1172,13 +1172,11 @@ fn validate_slice_agent_relaunch_response(
     let Some(expected_provider_session_id) = manifest.provider_session_id.as_deref() else {
         return Ok(());
     };
-    let actual_provider_session_id = provider_run
-        .provider_session_id()
-        .or_else(|| {
-            provider_run
-                .resume_state()
-                .provider_session_id(&manifest.adapter_key)
-        });
+    let actual_provider_session_id = provider_run.provider_session_id().or_else(|| {
+        provider_run
+            .resume_state()
+            .provider_session_id(&manifest.adapter_key)
+    });
     if actual_provider_session_id != Some(expected_provider_session_id) {
         return Err(DaemonError::LocalTransport {
             operation: "slice.agent.relaunch",
@@ -1464,13 +1462,11 @@ mod tests {
             crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run }
         };
 
-        assert!(
-            validate_slice_agent_relaunch_response(
-                &manifest,
-                Some(response(Some("session-before-save")))
-            )
-            .is_ok()
-        );
+        assert!(validate_slice_agent_relaunch_response(
+            &manifest,
+            Some(response(Some("session-before-save")))
+        )
+        .is_ok());
         for result in [response(None), response(Some("different-session"))] {
             let error = validate_slice_agent_relaunch_response(&manifest, Some(result))
                 .expect_err("blank or changed provider session must not count as resumed");
@@ -1481,7 +1477,9 @@ mod tests {
         }
         let error = validate_slice_agent_relaunch_response(&manifest, None)
             .expect_err("missing provider launch response must not count as a relaunch");
-        assert!(error.to_string().contains("provider launch returned no run"));
+        assert!(error
+            .to_string()
+            .contains("provider launch returned no run"));
     }
 
     #[tokio::test]

@@ -46,12 +46,13 @@ fn advance_next_remote_prompt_if_idle(
         return Ok(None);
     };
     let agent = app.agents().get_agent(agent_id)?;
-    let remote = agent.remote_execution().cloned().ok_or_else(|| {
-        DaemonError::LocalTransport {
+    let remote = agent
+        .remote_execution()
+        .cloned()
+        .ok_or_else(|| DaemonError::LocalTransport {
             operation: "advance remote queued prompt",
             message: format!("agent `{agent_id}` lost its remote binding"),
-        }
-    })?;
+        })?;
     app.advance_next_queued_prompt_remote_with_workflow_dispatch(
         session_id,
         agent_id,
@@ -1351,7 +1352,10 @@ mod tests {
         let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon should bootstrap");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
             .expect("session and agent should be created");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
@@ -1437,9 +1441,7 @@ mod tests {
         } = app
             .prompt_owner_submit_workflow_prompt(
                 session.id(),
-                &crate::scheduler::runtime::workflow_prompt_source_attachment_id(
-                    workflow_run.id(),
-                ),
+                &crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
                 agent.id(),
                 workflow_run.id(),
                 &workflow_node_run_id,
@@ -1464,7 +1466,11 @@ mod tests {
         assert_eq!(promoted.status(), crate::session::PromptStatus::Running);
 
         let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
-        assert_eq!(deferred.len(), 1, "the promoted workflow should dispatch exactly once");
+        assert_eq!(
+            deferred.len(),
+            1,
+            "the promoted workflow should dispatch exactly once"
+        );
         assert_eq!(deferred[0].prompt_id, promoted.id());
         assert_eq!(deferred[0].worker_kernel_id, "worker-kernel");
         assert_eq!(deferred[0].leased_agent_id, "leased-agent");
@@ -1477,11 +1483,14 @@ mod tests {
         assert_eq!(context.workflow_run_id, workflow_run.id());
         assert_eq!(context.workflow_node_run_id, workflow_node_run_id);
 
-        assert!(advance_next_remote_prompt_if_idle(&mut app, session.id(), agent.id())
-            .expect("repeat idle check should succeed")
-            .is_none());
         assert!(
-            app.take_deferred_workflow_remote_prompt_dispatches().is_empty(),
+            advance_next_remote_prompt_if_idle(&mut app, session.id(), agent.id())
+                .expect("repeat idle check should succeed")
+                .is_none()
+        );
+        assert!(
+            app.take_deferred_workflow_remote_prompt_dispatches()
+                .is_empty(),
             "an active workflow prompt must not be dispatched twice"
         );
     }

@@ -63,8 +63,12 @@ impl BrowserControllerProcessStdioBackend {
             .process
             .as_ref()
             .ok_or_else(|| "browser controller is not running".to_string())?;
-        let response = process.snapshot_responses.register(request_id)?;
-        let cancellation_response = process.snapshot_responses.register(cancel_id)?;
+        let response = process
+            .pending_responses
+            .register(request_id, format!("controller exited during `{method}`"))?;
+        let cancellation_response = process
+            .pending_responses
+            .register(cancel_id, "controller exited during cancellation")?;
         let mut stdin = process
             .stdin
             .lock()
@@ -210,15 +214,15 @@ impl BrowserControllerProcessOwnership<BrowserControllerProcessStdioBackend> {
     ) -> Result<PendingBrowserMutation, String> {
         self.require_lease(session_id)?;
         let supervisor = &mut self.supervisor;
-        let pending_response = supervisor
+        let responses_pending = supervisor
             .backend
             .process
             .as_ref()
-            .map(|process| process.snapshot_responses.is_empty().map(|empty| !empty))
+            .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
             .transpose()?
             .unwrap_or(false);
         let exited = supervisor.backend.take_exited_process()?.is_some();
-        if !pending_response || exited {
+        if !responses_pending || exited {
             supervisor.ensure_started_without_transparent_restart()?;
         } else if supervisor.recovery_pending
             || supervisor.snapshot.state != BrowserControllerProcessState::Ready

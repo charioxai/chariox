@@ -300,6 +300,16 @@ export async function runHostedRemoteCliPairingAssertions({
       "home kernel should list the paired CLI terminal",
       { pairing, terminals },
     )
+    const pairedClients = unwrap(
+      await homeClient.send(requests.listPairedClientsRequest()),
+      "PairedClientsListed",
+    ).clients ?? []
+    const pairedCli = pairedClients.find((client) => client.client_id === pairing.terminal_id)
+    assert(
+      pairedCli && /^[0-9a-f]{64}$/.test(pairedCli.public_key_thumbprint),
+      "home kernel should record the receiving CLI public key thumbprint",
+      { terminalId: pairing.terminal_id, pairedCli },
+    )
 
     await waitForSession(homeClient, requests, localSnapshot.session.id)
     await waitForSession(verificationClient, requests, localSnapshot.session.id)

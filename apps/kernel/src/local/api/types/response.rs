@@ -152,7 +152,11 @@ pub enum LocalDaemonResponse {
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
-    ManagedEnvironment { environment: ManagedEnvironmentSummary, },
+    ManagedEnvironment {
+        environment: ManagedEnvironmentSummary,
+        #[serde(default)]
+        operations: Vec<ManagedEnvironmentOperationSummary>,
+    },
     ManagedEnvironmentReimagePreflight { preflight: ManagedEnvironmentReimagePreflight, },
     ManagedEnvironmentReimageReceipt { receipt: ManagedEnvironmentReimageReceipt, },
     ManagedEnvironmentContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
@@ -230,7 +234,12 @@ pub enum LocalDaemonResponse {
     PairingInviteCreated { invite: PairingInviteRecord, },
     PairingInviteJoined { pairing: PairingJoinRecord, },
     TerminalPairingLinkCreated { pairing: TerminalPairingLinkRecord, },
-    TerminalPairingLinkJoined { terminal: TerminalRecord, pairing: PairingJoinRecord, },
+    TerminalPairingLinkJoined {
+        terminal: TerminalRecord,
+        pairing: PairingJoinRecord,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_token: Option<String>,
+    },
     TerminalsListed { terminals: Vec<TerminalRecord>, },
     PairedClientsListed { clients: Vec<PairedClientRecord>, },
     PairedClientRecorded { client: PairedClientRecord, },

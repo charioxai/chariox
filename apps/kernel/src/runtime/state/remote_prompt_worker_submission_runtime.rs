@@ -1343,11 +1343,8 @@ mod tests {
             .await
         });
 
-        let (submit_request_id, request) = receive_fake_worker_request(
-            &mut peer_requests,
-            &worker_config.relay_private_key,
-        )
-        .await;
+        let (submit_request_id, request) =
+            receive_fake_worker_request(&mut peer_requests, &worker_config.relay_private_key).await;
         assert!(
             matches!(
                 &request,
@@ -1368,11 +1365,8 @@ mod tests {
                 .await
         });
 
-        let (manifest_request_id, request) = receive_fake_worker_request(
-            &mut peer_requests,
-            &worker_config.relay_private_key,
-        )
-        .await;
+        let (manifest_request_id, request) =
+            receive_fake_worker_request(&mut peer_requests, &worker_config.relay_private_key).await;
         assert_ne!(manifest_request_id, submit_request_id);
         let crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id,
@@ -1408,12 +1402,13 @@ mod tests {
             "the fake worker must still be holding the prompt response"
         );
 
-        let submit_response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
-            provider_run_id: "provider-run-manifest-lane".to_string(),
-            outcome: crate::session::PromptSubmissionOutcome::Started {
-                prompt: submitted_prompt,
-            },
-        };
+        let submit_response =
+            crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+                provider_run_id: "provider-run-manifest-lane".to_string(),
+                outcome: crate::session::PromptSubmissionOutcome::Started {
+                    prompt: submitted_prompt,
+                },
+            };
         let encrypted_submit_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
             &worker_config.relay_private_key,
             &home_public_key,

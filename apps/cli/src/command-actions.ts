@@ -324,9 +324,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
     await handleRoomSlashCommand({
       isAttached: deps.isAttached,
+      attachmentId: () => deps.attachmentState()?.id ?? null,
       sessionId: () => deps.sessionState().id,
       focusedAgentId: deps.focusedAgentId,
       send: deps.sendRoomEnvironmentRequest,
+      isRelayConnection: deps.isRelayConnection,
+      ...(deps.createViewerPublicKey ? { createViewerPublicKey: deps.createViewerPublicKey } : {}),
       ...(deps.reconnectRoomEventStream
         ? { reconnectEventStream: deps.reconnectRoomEventStream }
         : {}),

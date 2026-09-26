@@ -2682,12 +2682,12 @@ mod explicit_completion_tests {
                 &workflow_node_run_id,
             )
             .expect("workflow node should start before queueing its turn");
-        let PromptSubmissionOutcome::Queued { prompt: queued_workflow } = app
+        let PromptSubmissionOutcome::Queued {
+            prompt: queued_workflow,
+        } = app
             .prompt_owner_submit_workflow_prompt(
                 &leased_agent.backing_session_id,
-                &crate::scheduler::runtime::workflow_prompt_source_attachment_id(
-                    workflow_run.id(),
-                ),
+                &crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
                 &leased_agent.backing_agent_id,
                 workflow_run.id(),
                 &workflow_node_run_id,
@@ -2759,7 +2759,11 @@ mod explicit_completion_tests {
         );
 
         let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
-        assert_eq!(deferred.len(), 1, "workflow turn should enqueue exactly one send");
+        assert_eq!(
+            deferred.len(),
+            1,
+            "workflow turn should enqueue exactly one send"
+        );
         assert_eq!(deferred[0].prompt_id, active.id());
         assert_eq!(
             deferred[0]

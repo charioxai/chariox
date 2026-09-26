@@ -35,7 +35,12 @@ import {
 } from "./kernel-subscriptions.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
-import { createRelayKeypair, decryptRelayPayload } from "./relay-crypto.js"
+import {
+  createRelayKeypair,
+  decryptRelayPayload,
+  type RelayClientIdentity,
+} from "./relay-crypto.js"
+import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
 import {
   buildRelayConnectFrame,
   buildRelaySubscribeFrame,
@@ -64,6 +69,7 @@ const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES = 8 * 1024
 
 export type { KernelEvent } from "./kernel-events.js"
 export { LocalIpcError } from "./local-ipc-error.js"
+export { RelayClientIdentity } from "./relay-crypto.js"
 
 type BoundKernelLocalAuthCredential = {
   endpoint: string
@@ -211,6 +217,7 @@ type LocalIpcClientOptions = {
   reconnectRandom?: (() => number) | undefined
   controlRequestRetryDeadlineMs?: number | undefined
   controlResponseStallMs?: number | undefined
+  relayIdentity?: RelayClientIdentity | undefined
 }
 
 export class LocalIpcClient {
@@ -219,6 +226,7 @@ export class LocalIpcClient {
   private readonly localAuthToken: string | null
   private readonly relayAuthToken: string | null
   private readonly relayTarget: RelayTarget | null
+  private readonly relayIdentity: RelayClientIdentity | null
   private controlWebsocket: WebSocket | null = null
   private eventWebsocket: WebSocket | null = null
   private connectingControlWebsocket: WebSocket | null = null
@@ -267,6 +275,10 @@ export class LocalIpcClient {
       10,
     )
     this.relayAuthToken = options.relayAuthToken?.trim() || null
+    this.relayIdentity = options.relayIdentity ?? null
+    if (this.relayIdentity && !this.relayAuthToken) {
+      throw new Error("a CLI relay identity can only be used with relay transport")
+    }
     const explicitLocalAuthToken = options.localAuthToken?.trim()
     if (options.localAuthToken !== undefined && !explicitLocalAuthToken) {
       throw new Error("kernel local auth token must not be empty")
@@ -303,6 +315,14 @@ export class LocalIpcClient {
 
   supportsKernelEvents() {
     return isWebSocketEndpoint(this.socketPath)
+  }
+
+  isRelayTransport() {
+    return this.isRelayMode()
+  }
+
+  getRelayClientIdentity(): RelayClientIdentity | null {
+    return this.relayIdentity
   }
 
   private isRelayMode() {
@@ -403,10 +423,15 @@ export class LocalIpcClient {
       return
     }
     if (this.isRelayMode()) {
-      if (!subscription?.relaySubscriptionId || !subscription.relayPrivateKey) {
+      if (!subscription?.relaySubscriptionId || !subscription.relayPublicKey) {
         return
       }
-      await this.sendRelayUnsubscribe(subscription.relaySubscriptionId, subscription.relayPrivateKey)
+      if (!subscription.relayDecryptEvent) return
+      await this.sendRelayUnsubscribe(
+        subscription.relaySubscriptionId,
+        subscription.relayPublicKey,
+        subscription.relayDecryptEvent,
+      )
     } else {
       await this.sendWebSocket<Record<string, unknown>>({
         __kernel_transport: {
@@ -518,10 +543,16 @@ export class LocalIpcClient {
 
       try {
         const relayRequest = this.isRelayMode()
-          ? normalizeRelayRequest(requestId, request, this.relayTarget, this.getRelayDaemonPublicKey(lane))
+          ? normalizeRelayRequest(
+            requestId,
+            request,
+            this.relayTarget,
+            this.getRelayDaemonPublicKey(lane),
+            this.relayIdentity,
+          )
           : null
         if (relayRequest) {
-          pending.setRelayPrivateKey(relayRequest.privateKey)
+          pending.setRelayDecryptResponse(relayRequest.decryptResponse)
         }
         const payload = relayRequest
           ? relayRequest.frame
@@ -590,11 +621,17 @@ export class LocalIpcClient {
       throw new LocalIpcError("write relay subscribe", "relay subscription state is missing")
     }
     const subscriptionId = subscription.relaySubscriptionId
-    const keypair = createRelayKeypair()
-    subscription.relayPrivateKey = keypair.privateKey
+    const keypair = this.relayIdentity ? null : createRelayKeypair()
+    const clientPublicKey = this.relayIdentity?.publicKeyBase64
+      ?? keypair!.publicKeyBase64
+    const decryptEvent = this.relayIdentity
+      ? (payload: EncryptedRelayPayload) => this.relayIdentity!.decrypt(payload)
+      : (payload: EncryptedRelayPayload) => decryptRelayPayload(keypair!.privateKey, payload)
+    subscription.relayPublicKey = clientPublicKey
+    subscription.relayDecryptEvent = decryptEvent
 
     const pending = this.pendingRequests.register<void>(requestId, lane)
-    pending.setRelayPrivateKey(keypair.privateKey)
+    pending.setRelayDecryptResponse(decryptEvent)
 
     try {
       const frame = buildRelaySubscribeFrame({
@@ -603,7 +640,7 @@ export class LocalIpcClient {
         target: this.relayTarget,
         sessionId,
         attachmentId,
-        clientPublicKey: keypair.publicKeyBase64,
+        clientPublicKey,
         resumeFromEventId,
         subscriptionScope,
       })
@@ -615,16 +652,20 @@ export class LocalIpcClient {
     await pending.promise
   }
 
-  private async sendRelayUnsubscribe(subscriptionId: string, privateKey: Buffer): Promise<void> {
+  private async sendRelayUnsubscribe(
+    subscriptionId: string,
+    clientPublicKey: string,
+    decryptResponse: (payload: EncryptedRelayPayload) => string,
+  ): Promise<void> {
     const lane: KernelSocketLane = "event"
     const socket = await this.ensureWebSocket(lane)
     const requestId = randomUUID()
 
     const pending = this.pendingRequests.register<void>(requestId, lane)
-    pending.setRelayPrivateKey(privateKey)
+    pending.setRelayDecryptResponse(decryptResponse)
 
     try {
-      const frame = buildRelayUnsubscribeFrame(requestId, subscriptionId, privateKey)
+      const frame = buildRelayUnsubscribeFrame(requestId, subscriptionId, clientPublicKey)
       socket.send(JSON.stringify(frame))
     } catch (error) {
       pending.reject(new LocalIpcError("write relay unsubscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
@@ -837,11 +878,11 @@ export class LocalIpcClient {
 
     if ("kind" in frame && frame.kind === "client_event") {
       const subscription = this.activeKernelSubscription
-      if (!subscription?.relayPrivateKey || subscription.relaySubscriptionId !== frame.subscription_id) {
+      if (!subscription?.relayDecryptEvent || subscription.relaySubscriptionId !== frame.subscription_id) {
         return
       }
       try {
-        const decrypted = decryptRelayPayload(subscription.relayPrivateKey, frame.encrypted_event)
+        const decrypted = subscription.relayDecryptEvent(frame.encrypted_event)
         const event = kernelEventFromValue(JSON.parse(decrypted))
         this.lastReceivedEventId = frame.event_id
         this.markKernelEventReceived()
@@ -863,7 +904,7 @@ export class LocalIpcClient {
       return
     }
     if ("kind" in frame) {
-      if (!pending.relayPrivateKey) {
+      if (!pending.relayDecryptResponse) {
         pending.reject(new LocalIpcError("handle kernel response", "missing relay request key"))
         return
       }
@@ -872,7 +913,7 @@ export class LocalIpcClient {
         return
       }
       try {
-        const decrypted = decryptRelayPayload(pending.relayPrivateKey, frame.encrypted_response)
+        const decrypted = pending.relayDecryptResponse(frame.encrypted_response)
         pending.resolve(JSON.parse(decrypted) as unknown)
       } catch (error) {
         pending.reject(new LocalIpcError("handle kernel response", error instanceof Error ? error.message : String(error)))

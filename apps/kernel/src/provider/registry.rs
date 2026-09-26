@@ -262,8 +262,106 @@ impl AgentEndpointAdapter for CodexAdapter {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
 
     use super::{LaunchProviderRequest, ProviderRegistry};
+
+    const PATH1_ADAPTER_FIXTURE_PROVIDER_ENV: &str =
+        "CHARIOX_REGISTRY_PATH1_ADAPTER_FIXTURE_PROVIDER";
+    const PATH1_ADAPTER_FIXTURE_ROOT_ENV: &str = "CHARIOX_REGISTRY_PATH1_ADAPTER_FIXTURE_ROOT";
+    const PATH1_SUPERVISOR_CONTROL_ENV_NAMES: &[&str] = &[
+        "CHARIOX_MANAGED_REPOSITORY_ROOT",
+        "CHARIOX_KERNEL_HOST",
+        "CHARIOX_KERNEL_PORT",
+        "CHARIOX_ACCEPT_REMOTE_LEASES",
+        "CHARIOX_KERNEL_RUNTIME_ROLE",
+        "CHARIOX_REMOTE_LEASE_CAPACITY",
+        "CHARIOX_LEASE_WORKER_HOME_CALLER",
+        "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
+        "CHARIOX_MANAGED_RELEASE_MANIFEST",
+        "CHARIOX_MANAGED_KERNEL_BINARY",
+    ];
+
+    struct Path1AdapterFixtureRoot(PathBuf);
+
+    impl Drop for Path1AdapterFixtureRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_fake_adapter_executable(path: &std::path::Path) {
+        fs::write(path, "#!/bin/sh\nexit 0\n").expect("fixture executable should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .expect("fixture executable should be executable");
+        }
+    }
+
+    fn assert_path1_adapter_scrubs_supervisor_controls(provider: &str, root: &std::path::Path) {
+        assert!(matches!(provider, "codex" | "claude"));
+        let executable = root.join("bin").join(provider);
+        let working_directory = root.join("workspace");
+        let provider_environment = std::collections::BTreeMap::from([(
+            "CHARIOX_PROVIDER_ENV_TEST".to_string(),
+            "preserved-provider-value".to_string(),
+        )])
+        .into_iter()
+        .chain(
+            PATH1_SUPERVISOR_CONTROL_ENV_NAMES
+                .iter()
+                .map(|name| ((*name).to_string(), "provider-supplied-control".to_string())),
+        )
+        .collect();
+        let request = LaunchProviderRequest::new(
+            format!("session-path1-{provider}-environment"),
+            provider,
+            provider,
+            "fixture-account",
+            "fixture-model",
+        )
+        .with_working_directory(working_directory.clone())
+        .with_provider_account_env(provider_environment);
+        let launch = ProviderRegistry::new()
+            .resolve(provider)
+            .expect("provider adapter should be registered")
+            .connect(&request)
+            .expect("ordinary Path-1 adapter launch should resolve");
+        let expected_program = executable.to_string_lossy().into_owned();
+
+        assert_eq!(
+            launch.pty_program.as_deref(),
+            Some(expected_program.as_str()),
+            "ordinary Path-1 must keep the selected provider executable as the child program"
+        );
+        assert_eq!(launch.working_directory.as_ref(), Some(&working_directory));
+        assert_eq!(
+            launch
+                .pty_env
+                .get("CHARIOX_PROVIDER_ENV_TEST")
+                .map(String::as_str),
+            Some("preserved-provider-value"),
+            "ordinary Path-1 must preserve explicit provider account environment"
+        );
+        for &name in PATH1_SUPERVISOR_CONTROL_ENV_NAMES {
+            assert!(
+                launch.pty_env_remove.iter().any(|removed| removed == name),
+                "ordinary {provider} adapter must remove inherited control {name}"
+            );
+            assert!(
+                !launch.pty_env.contains_key(name),
+                "ordinary {provider} adapter must discard explicit control {name}"
+            );
+        }
+        for name in ["HOME", "PATH", "CHARIOX_PROVIDER_ENV_TEST"] {
+            assert!(
+                !launch.pty_env_remove.iter().any(|removed| removed == name),
+                "ordinary {provider} adapter must preserve environment {name}"
+            );
+        }
+    }
 
     #[test]
     fn authoritative_completion_is_an_adapter_capability() {
@@ -482,6 +580,83 @@ mod tests {
                 .map(String::as_str),
             Some("preserved-provider-value")
         );
+    }
+
+    #[test]
+    fn ordinary_codex_and_claude_adapters_scrub_path1_supervisor_controls_only() {
+        if let Some(provider) = std::env::var_os(PATH1_ADAPTER_FIXTURE_PROVIDER_ENV) {
+            let provider = provider
+                .into_string()
+                .expect("fixture provider name should be valid UTF-8");
+            let root = PathBuf::from(
+                std::env::var_os(PATH1_ADAPTER_FIXTURE_ROOT_ENV)
+                    .expect("fixture root should be configured"),
+            );
+            assert_path1_adapter_scrubs_supervisor_controls(&provider, &root);
+            return;
+        }
+
+        let fixture_name = format!(
+            "chariox-registry-path1-adapters-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after the Unix epoch")
+                .as_nanos()
+        );
+        let root = Path1AdapterFixtureRoot(std::env::temp_dir().join(fixture_name));
+        let bin = root.0.join("bin");
+        let path = root.0.join("path");
+        let workspace = root.0.join("workspace");
+        let home = root.0.join("home");
+        let temp = root.0.join("tmp");
+        fs::create_dir_all(&bin).expect("fixture bin directory should exist");
+        fs::create_dir_all(&path).expect("fixture PATH directory should exist");
+        fs::create_dir_all(&workspace).expect("fixture workspace should exist");
+        fs::create_dir_all(&home).expect("fixture home should exist");
+        fs::create_dir_all(&temp).expect("fixture temp directory should exist");
+        for provider in ["codex", "claude"] {
+            write_fake_adapter_executable(&bin.join(provider));
+        }
+
+        let test_binary = std::env::current_exe().expect("test binary path should resolve");
+        let outputs = ["codex", "claude"].map(|provider| {
+            let mut command = Command::new(&test_binary);
+            command
+                .arg("ordinary_codex_and_claude_adapters_scrub_path1_supervisor_controls_only")
+                .arg("--nocapture")
+                .arg("--test-threads=1")
+                .env_clear()
+                .env(PATH1_ADAPTER_FIXTURE_PROVIDER_ENV, provider)
+                .env(PATH1_ADAPTER_FIXTURE_ROOT_ENV, &root.0)
+                .env("HOME", &home)
+                .env("TMPDIR", &temp)
+                .env("PATH", &path);
+            if provider == "codex" {
+                command.env("CHARIOX_CODEX_BIN", bin.join("codex"));
+            } else {
+                command.env("CHARIOX_CLAUDE_BIN", bin.join("claude"));
+            }
+            for &name in PATH1_SUPERVISOR_CONTROL_ENV_NAMES {
+                command.env(name, "supervisor-only-value");
+            }
+            (provider, command.output())
+        });
+
+        for (provider, output) in outputs {
+            let output = output.expect("isolated provider adapter test should start");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("running 1 test"),
+                "ordinary {provider} adapter fixture should run its isolated test; stdout:\n{stdout}"
+            );
+            assert!(
+                output.status.success(),
+                "ordinary {provider} adapter regression failed\nstdout:\n{}\nstderr:\n{}",
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]

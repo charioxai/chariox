@@ -488,8 +488,8 @@ mod tests {
 
     #[test]
     fn compatibility_remote_submit_defers_one_dispatch_for_post_lock_delivery() {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
-            .expect("daemon should bootstrap");
+        let mut app =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should create");
@@ -530,7 +530,11 @@ mod tests {
         assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
 
         let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
-        assert_eq!(deferred.len(), 1, "one prepared dispatch should be handed off");
+        assert_eq!(
+            deferred.len(),
+            1,
+            "one prepared dispatch should be handed off"
+        );
         assert_eq!(deferred[0].worker_kernel_id, "worker-kernel-1");
         assert_eq!(deferred[0].leased_agent_id, "leased-agent-1");
         assert_eq!(deferred[0].prompt, "remote prompt");

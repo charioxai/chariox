@@ -21,7 +21,9 @@ impl WorkflowCodeRebuildActivityFixture {
             .ensure_managed_activity_tracking(&format!("kernel-{label}"))
             .expect("managed activity tracking should activate before fixture mutations");
         let session = match harness
-            .dispatch(LocalDaemonRequest::CreateSession(workspace.session_request()))
+            .dispatch(LocalDaemonRequest::CreateSession(
+                workspace.session_request(),
+            ))
             .expect("activity fixture session should create")
         {
             LocalDaemonResponse::SessionCreated { session, .. } => session,

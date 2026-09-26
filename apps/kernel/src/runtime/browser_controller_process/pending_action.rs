@@ -35,7 +35,7 @@ impl StdioOwnership {
             .backend
             .process
             .as_ref()
-            .map(|process| process.snapshot_responses.is_empty().map(|empty| !empty))
+            .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
             .transpose()?
             .unwrap_or(false);
         let exited = supervisor.backend.take_exited_process()?.is_some();
@@ -58,8 +58,13 @@ impl StdioOwnership {
             .process
             .as_ref()
             .ok_or("browser controller is not running")?;
-        let response = process.snapshot_responses.register(request_id)?;
-        let cancellation_response = process.snapshot_responses.register(cancel_id)?;
+        let response = process.pending_responses.register(
+            request_id,
+            "browser controller exited during `browser.action`",
+        )?;
+        let cancellation_response = process
+            .pending_responses
+            .register(cancel_id, "controller exited during cancellation")?;
         let mut stdin = process
             .stdin
             .lock()

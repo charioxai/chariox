@@ -60,9 +60,7 @@ pub(super) fn dispatch_workflow_prompt(
             workspace_live_sync_mode: Some(workspace_live_sync_mode),
             prompt_origin: prompt.prompt_origin(),
             external_provider: prompt.external_provider().map(str::to_string),
-            external_provider_session_id: prompt
-                .external_provider_session_id()
-                .map(str::to_string),
+            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
             external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
             workflow_context: Some(workflow_context),
         }));

@@ -5,10 +5,6 @@
 import { realpath, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import {
-  getManagedEnvironmentReimageReceiptRequest,
-  managedEnvironmentReimageReceiptMinimumProtocolVersion,
-} from "../../../packages/kernel-client/dist/ipc-managed-environment-requests.js"
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/
 const COMMIT = /^[a-f0-9]{40}$/
@@ -38,17 +34,20 @@ export async function resolveCaptureOutput(output, repo = resolve(import.meta.di
   return canonicalOutput
 }
 
-export async function capturePath1CloudReimage({ client, binding, now = () => new Date(), timeoutMs = 15_000 }) {
+export async function capturePath1CloudReimage({ client, requestContract, binding, now = () => new Date(), timeoutMs = 15_000 }) {
   requireValue(binding && validId(binding.environmentId) && validId(binding.operationId)
     && Number.isSafeInteger(binding.generation) && binding.generation > 1
     && DIGEST.test(binding.releaseDigest) && COMMIT.test(binding.sourceCommit)
     && COMMIT.test(binding.sourceTree), "invalid reviewed reimage binding")
+  requireValue(requestContract && typeof requestContract.getManagedEnvironmentReimageReceiptRequest === "function"
+    && Number.isSafeInteger(requestContract.minimumProtocolVersion) && requestContract.minimumProtocolVersion > 0,
+  "kernel receipt request contract is unavailable")
   requireValue(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 30_000, "invalid capture timeout")
   let timer
   let response
   try {
     response = await Promise.race([
-      client.send(getManagedEnvironmentReimageReceiptRequest(binding.environmentId)),
+      client.send(requestContract.getManagedEnvironmentReimageReceiptRequest(binding.environmentId)),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Cloud receipt capture timed out")), timeoutMs) }),
     ])
   } finally {
@@ -101,7 +100,7 @@ export async function capturePath1CloudReimage({ client, binding, now = () => ne
   // Do not retain free-form evidence, failure text, provider output or credentials.
   return {
     schema: "chariox.path1-cloud-reimage-capture/v1", capturedAt,
-    minimumProtocolVersion: managedEnvironmentReimageReceiptMinimumProtocolVersion,
+    minimumProtocolVersion: requestContract.minimumProtocolVersion,
     environmentId: binding.environmentId, operationId: binding.operationId,
     receiptId: receipt.receiptId, receiptDigest: receipt.receiptDigest,
     generation: receipt.generation, previousGeneration: receipt.previousGeneration,
@@ -130,13 +129,20 @@ async function main() {
   const endpoint = flags.get("--kernel")
   requireValue(/^ws:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[1-9][0-9]*\/?$/.test(endpoint), "capture requires the reviewed local home kernel loopback endpoint")
   const output = await resolveCaptureOutput(flags.get("--output"))
-  const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
+  const [ipc, requests] = await Promise.all([
+    import("../../../packages/kernel-client/dist/ipc.js"),
+    import("../../../packages/kernel-client/dist/ipc-managed-environment-requests.js"),
+  ])
+  const { LocalIpcClient } = ipc
   const client = new LocalIpcClient(endpoint, { controlRequestRetryDeadlineMs: 15_000 })
   try {
     const capture = await capturePath1CloudReimage({ client, binding: {
       environmentId: flags.get("--environment"), operationId: flags.get("--operation"),
       generation: Number(flags.get("--generation")), releaseDigest: flags.get("--release"),
       sourceCommit: flags.get("--commit"), sourceTree: flags.get("--tree"),
+    }, requestContract: {
+      getManagedEnvironmentReimageReceiptRequest: requests.getManagedEnvironmentReimageReceiptRequest,
+      minimumProtocolVersion: requests.managedEnvironmentReimageReceiptMinimumProtocolVersion,
     } })
     await writeFile(output, `${JSON.stringify(capture, null, 2)}\n`, { flag: "wx", mode: 0o600 })
     process.stdout.write("Captured finalized Cloud reimage bindings. Full MP-10 evidence remains required.\n")
@@ -146,5 +152,13 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(() => { process.stderr.write("Path-1 Cloud capture failed; no acceptance verdict.\n"); process.exitCode = 1 })
+  main().catch((error) => {
+    const generatedClientDist = new URL("../../../packages/kernel-client/dist/", import.meta.url).href
+    const missingBuild = error?.code === "ERR_MODULE_NOT_FOUND"
+      && typeof error.url === "string" && error.url.startsWith(generatedClientDist)
+    process.stderr.write(missingBuild
+      ? "Path-1 Cloud capture requires built kernel-client artifacts; run pnpm --workspace-root run build:kernel-client.\n"
+      : "Path-1 Cloud capture failed; no acceptance verdict.\n")
+    process.exitCode = 1
+  })
 }

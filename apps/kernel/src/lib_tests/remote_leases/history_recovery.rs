@@ -257,7 +257,10 @@ fn leased_projection_recovers_output_from_history_when_terminal_records_are_miss
         output_chunks[0].bytes,
         b"remote output from history".to_vec()
     );
-    assert!(completions.is_empty(), "history recovery cannot settle a turn");
+    assert!(
+        completions.is_empty(),
+        "history recovery cannot settle a turn"
+    );
     assert!(app
         .prompt_owner_active_prompt_for_agent(
             &leased_agent.backing_session_id,

@@ -78,6 +78,7 @@ export function joinTerminalPairingLinkRequest(
   terminalId: string | null = null,
   terminalType: "cli" | "web" | "ios" | "android" | null = null,
   alias: string | null = null,
+  publicKeyThumbprint?: string | null,
 ) {
   return {
     JoinTerminalPairingLink: {
@@ -85,6 +86,7 @@ export function joinTerminalPairingLinkRequest(
       terminal_id: terminalId,
       terminal_type: terminalType,
       alias,
+      ...(publicKeyThumbprint ? { public_key_thumbprint: publicKeyThumbprint } : {}),
     },
   }
 }

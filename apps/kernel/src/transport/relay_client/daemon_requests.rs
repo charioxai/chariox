@@ -105,6 +105,12 @@ pub(super) async fn handle_daemon_request(
     };
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
+            if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key) {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(error),
+                };
+            }
             if let Err(error) = validate_browser_import_sender(
                 &request.request,
                 caller_identity.as_ref(),
@@ -288,6 +294,91 @@ pub(super) async fn handle_daemon_request(
             encrypted_response: None,
             error: Some(error),
         },
+    }
+}
+
+fn validate_cli_relay_sender_key(
+    request: &LocalDaemonRequest,
+    encrypted_sender_public_key: &str,
+) -> Result<(), RelayError> {
+    let claimed_thumbprint = match request {
+        LocalDaemonRequest::JoinTerminalPairingLink(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
+        LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
+        _ => return Ok(()),
+    };
+    let Some(claimed_thumbprint) = claimed_thumbprint else {
+        // Legacy pairing and unbound client-token requests retain non-viewer behavior.
+        return Ok(());
+    };
+    let sender_thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(
+        encrypted_sender_public_key,
+    );
+    if claimed_thumbprint == sender_thumbprint {
+        return Ok(());
+    }
+    Err(relay_error(
+        "unauthorized",
+        "CLI relay key thumbprint does not match its encrypted relay sender key",
+        false,
+    ))
+}
+
+#[cfg(test)]
+mod cli_relay_sender_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_pairing_join_requires_proof_of_the_claimed_cli_key() {
+        let sender_public_key = "Y2xpLXB1YmxpYy1rZXk=";
+        let thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
+        let request = LocalDaemonRequest::JoinTerminalPairingLink(
+            crate::local::JoinTerminalPairingLinkRequest {
+                pairing_link: "chariox-terminal-pair-v1.test".to_string(),
+                terminal_id: Some("cli-terminal-1".to_string()),
+                terminal_type: Some(crate::local::TerminalType::Cli),
+                alias: None,
+                public_key_thumbprint: Some(thumbprint),
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, sender_public_key).is_ok());
+        assert!(validate_cli_relay_sender_key(&request, "foreign-public-key").is_err());
+    }
+
+    #[test]
+    fn key_bound_client_token_request_requires_the_encrypted_cli_key() {
+        let sender_public_key = "Y2xpLXB1YmxpYy1rZXk=";
+        let thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
+        let request = LocalDaemonRequest::IssueCloudRelayClientToken(
+            crate::local::IssueCloudRelayClientTokenRequest {
+                target_daemon_alias: "home".to_string(),
+                client_id: "cli-terminal-1".to_string(),
+                session_id: None,
+                public_key_thumbprint: Some(thumbprint),
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, sender_public_key).is_ok());
+        assert!(validate_cli_relay_sender_key(&request, "foreign-public-key").is_err());
+    }
+
+    #[test]
+    fn legacy_terminal_pairing_join_without_thumbprint_remains_non_viewer_compatible() {
+        let request = LocalDaemonRequest::JoinTerminalPairingLink(
+            crate::local::JoinTerminalPairingLinkRequest {
+                pairing_link: "chariox-terminal-pair-v1.test".to_string(),
+                terminal_id: Some("cli-terminal-1".to_string()),
+                terminal_type: Some(crate::local::TerminalType::Cli),
+                alias: None,
+                public_key_thumbprint: None,
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, "any-key").is_ok());
     }
 }
 

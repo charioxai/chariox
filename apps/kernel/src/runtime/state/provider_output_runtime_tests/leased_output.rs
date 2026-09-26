@@ -120,13 +120,15 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
             crate::extension::RemoteExtensionManifest::default(),
             // The isolated fake CLI still enters through the real cold-launch
             // admission path. Supply only a synthetic, profile-bound token.
-            Some(crate::transport::relay_peer::RemoteProviderLaunchCredential {
-                provider: leased.provider.clone(),
-                account_profile: leased.account_profile.clone(),
-                secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
-                    "isolated-test-token-not-a-real-credential".to_string(),
-                ),
-            }),
+            Some(
+                crate::transport::relay_peer::RemoteProviderLaunchCredential {
+                    provider: leased.provider.clone(),
+                    account_profile: leased.account_profile.clone(),
+                    secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                        "isolated-test-token-not-a-real-credential".to_string(),
+                    ),
+                },
+            ),
         )
         .await
         .expect("leased prompt accepted");

@@ -795,11 +795,13 @@ impl PromptStateOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
-        let active_prompt = state.active_prompt.as_ref().ok_or_else(|| {
-            DaemonError::NoActivePrompt {
-                session_id: session.id().to_string(),
-            }
-        })?;
+        let active_prompt =
+            state
+                .active_prompt
+                .as_ref()
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session.id().to_string(),
+                })?;
         if active_prompt.id() != expected_active_prompt_id
             || active_prompt.status() != PromptStatus::Running
         {
@@ -819,9 +821,7 @@ impl PromptStateOwner {
                     expected_prompt.id()
                 ),
             })?;
-        if &*queued_prompt != expected_prompt
-            || queued_prompt.target_agent_id() != agent_id
-        {
+        if &*queued_prompt != expected_prompt || queued_prompt.target_agent_id() != agent_id {
             return Err(DaemonError::LocalTransport {
                 operation: "steer remote queued prompt",
                 message: format!(
@@ -1872,10 +1872,8 @@ mod tests {
         let queued = owner
             .peek_next_queued_prompt(&session, "agent-1")
             .expect("queued prompt should exist before reservation");
-        let reservation_entered =
-            std::sync::Arc::new(std::sync::Barrier::new(2));
-        let reservation_continue =
-            std::sync::Arc::new(std::sync::Barrier::new(2));
+        let reservation_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let reservation_continue = std::sync::Arc::new(std::sync::Barrier::new(2));
         let reservation = std::thread::scope(|scope| {
             let reservation_entered_for_thread = std::sync::Arc::clone(&reservation_entered);
             let reservation_continue_for_thread = std::sync::Arc::clone(&reservation_continue);

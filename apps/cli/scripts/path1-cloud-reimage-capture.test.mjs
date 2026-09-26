@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import test from "node:test"
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises"
+import { access, copyFile, mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 import { capturePath1CloudReimage, resolveCaptureOutput } from "./path1-cloud-reimage-capture.mjs"
 
 function fixture() {
@@ -34,7 +36,14 @@ function fixture() {
     receipt[`new${kind}`] = `new-${kind}`
   }
   const requests = []
+  const requestContract = {
+    getManagedEnvironmentReimageReceiptRequest(environmentId) {
+      return { GetManagedEnvironmentReimageReceipt: { environmentId } }
+    },
+    minimumProtocolVersion: 345,
+  }
   return { binding, receipt, requests, now: () => new Date("2026-09-26T05:02:00.000Z"),
+    requestContract,
     client: { async send(request) { requests.push(request); return { ManagedEnvironmentReimageReceipt: { receipt } } } } }
 }
 
@@ -94,6 +103,39 @@ test("a hung read has a bounded timeout", async () => {
   const input = fixture()
   input.client.send = () => new Promise(() => {})
   await assert.rejects(capturePath1CloudReimage({ ...input, timeoutMs: 20 }), /timed out/)
+})
+
+test("injected capture imports without generated client dist and CLI reports the build prerequisite", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "path1-capture-source-"))
+  const evidence = await mkdtemp(join(tmpdir(), "path1-capture-evidence-"))
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true })
+    await rm(evidence, { recursive: true, force: true })
+  })
+  const copiedScript = join(root, "apps/cli/scripts/path1-cloud-reimage-capture.mjs")
+  await mkdir(join(root, "apps/cli/scripts"), { recursive: true })
+  await copyFile(new URL("./path1-cloud-reimage-capture.mjs", import.meta.url), copiedScript)
+  const script = await realpath(copiedScript)
+  await assert.rejects(access(join(root, "packages/kernel-client/dist/ipc.js")), { code: "ENOENT" })
+  await assert.rejects(access(join(root, "packages/kernel-client/dist/ipc-managed-environment-requests.js")), { code: "ENOENT" })
+  const isolated = await import(`${pathToFileURL(script).href}?no-generated-dist=${Date.now()}`)
+  const input = fixture()
+  const capture = await isolated.capturePath1CloudReimage(input)
+  assert.equal(capture.minimumProtocolVersion, 345)
+  assert.deepEqual(input.requests, [{ GetManagedEnvironmentReimageReceipt: { environmentId: "environment-1" } }])
+
+  const output = join(evidence, "capture.json")
+  const result = spawnSync(process.execPath, [script,
+    "--kernel", "ws://127.0.0.1:1", "--environment", input.binding.environmentId,
+    "--operation", input.binding.operationId, "--generation", String(input.binding.generation),
+    "--release", input.binding.releaseDigest, "--commit", input.binding.sourceCommit,
+    "--tree", input.binding.sourceTree, "--output", output,
+  ], { encoding: "utf8", timeout: 10_000 })
+  assert.equal(result.status, 1)
+  assert.equal(result.stdout, "")
+  assert.equal(result.stderr,
+    "Path-1 Cloud capture requires built kernel-client artifacts; run pnpm --workspace-root run build:kernel-client.\n")
+  await assert.rejects(access(output), { code: "ENOENT" })
 })
 
 test("output resolution rejects symlinked repository parents before any capture", async (t) => {

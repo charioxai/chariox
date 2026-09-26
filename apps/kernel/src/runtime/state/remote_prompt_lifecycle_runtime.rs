@@ -90,11 +90,8 @@ impl KernelRuntimeState {
             });
         }
         let delivered_run_id = delivered_run_id.expect("checked above").to_string();
-        let cancellation_intent = owned.begin_remote_prompt_cancellation(
-            session_id,
-            target_agent_id,
-            attachment_id,
-        )?;
+        let cancellation_intent =
+            owned.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
         let Some(_cancellation_claim) =
             self.try_claim_remote_prompt_cancellation_send(session_id, target_agent_id)
         else {
