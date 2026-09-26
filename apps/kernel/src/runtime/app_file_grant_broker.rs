@@ -208,3 +208,24 @@ fn error(code: &str, retryable: bool) -> RemoteError {
         retryable: Some(retryable),
     }
 }
+
+#[cfg(test)]
+impl AppFileGrantBroker {
+    pub(super) fn fixture(
+        store: DurableKernelStateStore,
+        owner: String,
+        catalog: Arc<EventCatalog>,
+        admission: Arc<Semaphore>,
+        data: PrivateData,
+        user_selected: bool,
+    ) -> Self {
+        Self {
+            store,
+            owner,
+            catalog,
+            admission,
+            data,
+            user_selected,
+        }
+    }
+}
