@@ -452,12 +452,18 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
     let worker_config = crate::config::DaemonConfig::for_tests();
     let worker_private_key = worker_config.relay_private_key.clone();
 
-    let mut app = crate::app::DaemonApp::bootstrap(config).expect("home app should bootstrap");
+    let mut app = crate::test_support::bootstrap_authenticated_app(config)
+        .expect("home app should bootstrap with an authenticated Codex test profile");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "cancel-successor-workspace",
-            "cancel-successor-worktree",
-        ))
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                "cancel-successor-workspace",
+                "cancel-successor-worktree",
+            )
+            .with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex").with_model("gpt-test"),
+            ),
+        )
         .expect("home session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -466,18 +472,6 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("home attachment should be created");
-    app.provider_account_profile_registry()
-        .update_observation(
-            agent.owner_user_id(),
-            agent.provider(),
-            agent.provider_account_profile(),
-            crate::account_profile::ProviderAccountAuthState::Authenticated,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("selected provider account should satisfy queued advancement preflight");
     app.agents
         .bind_remote_execution(
             agent.id(),
@@ -545,7 +539,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
     let agent_id = agent.id().to_string();
     let attachment_id = attachment.id().to_string();
     let home_prompt_id = active_prompt.id().to_string();
-    let successor_prompt_id = successor_prompt.id().to_string();
+    let queued_successor_prompt_id = successor_prompt.id().to_string();
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let relay_state = Arc::clone(&runtime.owned.relay_state);
@@ -628,14 +622,18 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         .session_store
         .get_session(&session_id)
         .expect("home session should remain available after cancellation");
-    assert!(
-        runtime
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, &agent_id)
-            .is_some_and(|prompt| prompt.id() == successor_prompt_id),
-        "settling the exact cancellation must promote the queued successor"
+    let active_successor = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .expect("settling the exact cancellation must promote the queued successor");
+    assert_eq!(active_successor.prompt(), "queued successor");
+    assert_ne!(
+        active_successor.id(),
+        queued_successor_prompt_id,
+        "promotion must use the new active home prompt identity"
     );
+    let successor_prompt_id = active_successor.id().to_string();
 
     let mut submit_count = 0;
     loop {
