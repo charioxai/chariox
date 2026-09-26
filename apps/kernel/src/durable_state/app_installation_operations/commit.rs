@@ -33,6 +33,14 @@ pub(super) fn commit(
             time as u64,
         )
         .map_err(|_| InstallOperationError::Stale)?;
+    // An update that changes a routed event's schema breaks that automation
+    // visibly, in the same commit.
+    chariox_app_runtime::app_outbox::AppOutbox::break_changed_in(
+        &tx,
+        health.catalog(),
+        &admission.owner,
+    )
+    .map_err(|_| InstallOperationError::Storage)?;
     let committed = proofs(&tx, admission, health)?;
     sql(tx.execute("UPDATE app_installation_operations SET phase='committed',updated_ms=?1 WHERE owner_id=?2 AND request_id=?3",
         params![time,admission.owner,admission.request_id]))?;

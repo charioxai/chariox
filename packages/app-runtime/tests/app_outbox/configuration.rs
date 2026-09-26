@@ -259,3 +259,47 @@ fn configuration_revision_exhaustion_never_wraps_or_partially_changes_target() {
     assert!(!retained.scheduled);
     tx.commit().unwrap();
 }
+
+#[test]
+fn an_update_that_changes_a_routed_event_schema_breaks_its_automation_visibly() {
+    let directory = Database::new();
+    let mut db = directory.open();
+    let (mut package, trust, catalog) = setup(&mut db);
+    // The same schema in a new generation leaves the automation alone.
+    let tx = db.transaction().unwrap();
+    assert_eq!(AppOutbox::break_changed_in(&tx, &catalog, "owner").unwrap(), 0);
+    tx.commit().unwrap();
+
+    package.manifest.version = "1.1.0".into();
+    package.files.insert(
+        "schemas/events.json".into(),
+        serde_json::to_vec(&json!({"events":[{"name":"changed","schemaVersion":2,"direction":"outgoing","payloadSchema":{
+            "type":"object","additionalProperties":false,"required":["text"],
+            "properties":{"text":{"type":"string"},"count":{"type":"integer"},"tag":{"type":"string"}}
+        }}]}))
+        .unwrap(),
+    );
+    let (_, updated) = package.activate(&mut db, &trust, Some(catalog.generation()));
+    let tx = db.transaction().unwrap();
+    assert_eq!(AppOutbox::break_changed_in(&tx, &updated, "owner").unwrap(), 1);
+    let broken = AppOutbox::configuration_in(&tx, &updated, "owner", "automation").unwrap();
+    assert_eq!(broken.status, AutomationStatus::Broken);
+    assert_eq!(broken.revision, 2);
+    // Already broken: nothing more to do; re-adding it restores it.
+    assert_eq!(AppOutbox::break_changed_in(&tx, &updated, "owner").unwrap(), 0);
+    let restored = AppOutbox::configure_in(
+        &tx,
+        &updated,
+        "owner",
+        "automation",
+        2,
+        "changed",
+        &target("default"),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        (restored.status, restored.event_version),
+        (AutomationStatus::Active, 2)
+    );
+}
