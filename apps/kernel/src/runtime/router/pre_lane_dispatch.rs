@@ -419,6 +419,56 @@ impl CommandRouter {
                 connection_id,
             )
             .await?;
+            if let LocalDaemonRequest::CreateAppInboxRoute(
+                route @ crate::local::CreateAppInboxRouteRequest {
+                    connection: Some(connection),
+                    ..
+                },
+            ) = request
+            {
+                crate::runtime::event_catalog_control::validate_app_route_event(
+                    &self.runtime_state,
+                    &self.config_projection,
+                    caller_user_id,
+                    &connection.generator_id,
+                    &connection.connection_id,
+                    &route.source_event_type,
+                    route.source_event_version,
+                )
+                .await?;
+                let conflict = |message: String| DaemonError::LocalTransport {
+                    operation: "create App inbox route",
+                    message,
+                };
+                let event_interest_key = chariox_event_protocol::event_interest_key(
+                    &connection.generator_id,
+                    &route.source_event_type,
+                    route.source_event_version,
+                    &connection.connection_scope,
+                    &connection.filter,
+                )
+                .map_err(|error| conflict(format!("the event filter is invalid: {error}")))?;
+                let config = self.config_projection.snapshot();
+                let binding_id = chariox_app_runtime::app_inbox::route_binding_id(
+                    caller_user_id,
+                    &route.installation_id,
+                    &route.route_id,
+                );
+                if let Some(existing) = self
+                    .runtime_state
+                    .event_interest_claimed_by(
+                        &config.daemon_id,
+                        &config.event_delivery_environment_id,
+                        &binding_id,
+                        &event_interest_key,
+                    )
+                    .map_err(conflict)?
+                {
+                    return Err(conflict(format!(
+                        "another route (`{existing}`) already receives these events; remove it or use a different filter"
+                    )));
+                }
+            }
         }
         let connection_mutation = match request {
             LocalDaemonRequest::CreateWorkflowEventBinding(request) => {
