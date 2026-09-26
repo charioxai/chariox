@@ -92,7 +92,8 @@ let cleanup = false;
 let compiled = false;
 try {
   compiled = await run('offline', 'worker_process::storage_macos::tests::');
-  if (compiled) main = await run('real-storage', 'worker_process::storage_macos::tests::hosted::hosted_storage_create_quota_restart_and_crash_recovery', true);
+  if (compiled) main = await run('real-storage', 'worker_process::storage_macos::tests::hosted::hosted_storage_create_quota_restart_and_crash_recovery', true)
+    && await run('rollback', 'worker_process::storage_macos::tests::hosted::hosted_storage_failed_updates_roll_back_to_the_committed_snapshot', true);
 } finally {
   if (compiled) cleanup = await run('cleanup', 'worker_process::storage_macos::tests::hosted::hosted_storage_cleanup', true);
   // Retain bounded journal evidence only, never the disk images or file payloads.

@@ -223,6 +223,7 @@ impl MountedStorage {
         if self.released {
             return Ok(());
         }
+        self.settle_restore()?;
         // An explicit failed release leaves the journal for recovery. Drop must
         // not silently add another full cleanup deadline to that failed call.
         self.cleanup_attempted = true;
@@ -337,7 +338,7 @@ fn snapshot_name(generation: u64) -> String {
     format!("data-snapshot-{generation}.dmg")
 }
 
-fn is_snapshot(name: &OsStr) -> bool {
+pub(super) fn is_snapshot(name: &OsStr) -> bool {
     name.to_str().is_some_and(|name| {
         name.strip_prefix("data-snapshot-")
             .and_then(|rest| rest.strip_suffix(".dmg"))
@@ -349,11 +350,18 @@ impl MountedStorage {
     /// Before a staged generation mounts: a copy-on-write clone of the exact,
     /// detached data image of `generation` (the one it may roll back to).
     pub(super) fn snapshot_data(&mut self, generation: u64) -> Result<()> {
+        let name = snapshot_name(generation);
+        match self.root.read_file(OsStr::new(&name), false) {
+            // Already taken for this committed generation: keep it.
+            Ok(_) => return Ok(()),
+            Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         self.discard_snapshots()?;
         let Some(file) = self.open_image(0)? else {
             return Ok(());
         };
-        let name = crate::private_fs::cstring(OsStr::new(&snapshot_name(generation)))?;
+        let name = crate::private_fs::cstring(OsStr::new(&name))?;
         if unsafe {
             libc::fclonefileat(file.as_raw_fd(), self.root.0.as_raw_fd(), name.as_ptr(), 0)
         } != 0
@@ -377,6 +385,11 @@ impl MountedStorage {
             Err(error) => return Err(error.into()),
         };
         let identity = FileIdentity::of(&snapshot)?;
+        drop(snapshot);
+        // Durable intent first: a crash after the rename is finished by
+        // `settle_restore` instead of failing the data image's identity check.
+        self.journal.restoring = Some(identity.clone());
+        self.journal.save(&self.root)?;
         let from = crate::private_fs::cstring(OsStr::new(&name))?;
         let to = crate::private_fs::cstring(OsStr::new(&self.journal.images[0].image))?;
         let root = self.root.0.as_raw_fd();
@@ -385,8 +398,29 @@ impl MountedStorage {
         }
         self.root.sync()?;
         self.journal.images[0].identity = Some(identity);
+        self.journal.restoring = None;
         self.journal.save(&self.root)?;
         self.discard_snapshots()
+    }
+
+    /// Finishes a restore a crash interrupted: if the rename landed, the data
+    /// image now has the snapshot's identity; otherwise nothing changed and the
+    /// next rollback restores again.
+    pub(super) fn settle_restore(&mut self) -> Result<()> {
+        let Some(snapshot) = self.journal.restoring.clone() else {
+            return Ok(());
+        };
+        let data = OsStr::new(&self.journal.images[0].image);
+        match self.root.read_file(data, false) {
+            Ok(file) if FileIdentity::of(&file)? == snapshot => {
+                self.journal.images[0].identity = Some(snapshot);
+            }
+            Ok(_) => {}
+            Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        self.journal.restoring = None;
+        self.journal.save(&self.root)
     }
 
     /// No rollback is possible any more (the generation committed).

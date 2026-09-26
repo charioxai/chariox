@@ -1,7 +1,8 @@
 //! Kernel-private APFS storage preparation. All operations and Drop are blocking.
 //! The caller must quiesce/reap the previous worker before prepare/release. This
-//! component provides fixed private volume capacity, not signed runtime trust,
-//! App authorization, snapshot/rollback semantics, or aggregate runtime admission.
+//! component provides fixed private volume capacity and the data snapshot a
+//! failed update rolls back to, not signed runtime trust, App authorization,
+//! or aggregate runtime admission.
 
 mod commands;
 mod identity;
@@ -78,6 +79,27 @@ const HOST_RESERVE: u64 = 8 * 1024 * 1024 * 1024;
 /// generation that stayed active. An older, superseded worker stays refused.
 fn admits_generation(recorded: u64, generation: u64, committed: u64) -> bool {
     recorded <= generation || generation == committed
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SnapshotStep {
+    Take,
+    Keep,
+    Restore,
+    Discard,
+}
+
+/// What `generation` starting on data `previous` last used does with the
+/// committed generation's snapshot: a staged generation takes it while the
+/// data is still the committed one's and otherwise keeps it; the committed
+/// generation restores it after an uncommitted one ran, else drops it.
+fn snapshot_step(previous: u64, generation: u64, committed: u64) -> SnapshotStep {
+    match (generation == committed, previous) {
+        (false, previous) if previous == committed => SnapshotStep::Take,
+        (false, _) => SnapshotStep::Keep,
+        (true, previous) if previous > committed => SnapshotStep::Restore,
+        (true, _) => SnapshotStep::Discard,
+    }
 }
 
 const CAPACITIES: [u64; 2] = [512 * 1024 * 1024, 64 * 1024 * 1024];
@@ -221,6 +243,7 @@ impl StorageRoot {
                     journal::image("data", capacities[0], FileIdentity::of(&data?.0)?),
                     journal::image("tmp", capacities[1], FileIdentity::of(&tmp?.0)?),
                 ],
+                restoring: None,
             }
         };
         journal.save(&dir)?;
@@ -238,15 +261,18 @@ impl StorageRoot {
         // Recovery always detaches any prior mapping first. Reusing a remembered
         // /dev identifier or an existing mount without rediscovery is forbidden.
         storage.release_blocking()?;
-        // File-image snapshot: a staged update keeps the data it started from;
-        // rolling back restores it, and a committed start drops it.
-        let previous = storage.journal.generation;
-        if generation > previous && generation != committed {
-            storage.snapshot_data(previous)?;
-        } else if generation < previous && generation == committed {
-            storage.restore_data(generation)?;
-        } else if generation == committed {
-            storage.discard_snapshots()?;
+        // File-image snapshot of the committed generation's data. A staged
+        // update takes it while the data is still the committed generation's,
+        // and keeps it across further failed updates; the committed generation
+        // starting after an uncommitted one restores it; a committed start on
+        // its own data drops it.
+        match snapshot_step(storage.journal.generation, generation, committed) {
+            SnapshotStep::Take => storage.snapshot_data(committed)?,
+            // Without a snapshot (storage staged before snapshots existed) the
+            // data stays as the uncommitted generation left it.
+            SnapshotStep::Restore => storage.restore_data(committed)?,
+            SnapshotStep::Discard => storage.discard_snapshots()?,
+            SnapshotStep::Keep => {}
         }
         storage.journal.generation = generation;
         storage.journal.pending_recovery = true;
@@ -288,6 +314,19 @@ impl StorageRoot {
                     };
                     unallocated = unallocated
                         .checked_add(image.reserved().saturating_sub(allocated))
+                        .ok_or(Error::Capacity)?;
+                }
+                // A kept data snapshot grows toward a full data image as the
+                // staged generation rewrites blocks: it is reserved like one.
+                for name in dir.entries(16)? {
+                    if !volume::is_snapshot(&name) {
+                        continue;
+                    }
+                    let reserved = journal.images[0].reserved();
+                    let allocated = dir.read_file(&name, false)?.metadata()?.blocks() * 512;
+                    total = total.checked_add(reserved).ok_or(Error::Capacity)?;
+                    unallocated = unallocated
+                        .checked_add(reserved.saturating_sub(allocated))
                         .ok_or(Error::Capacity)?;
                 }
             } else if value != selected {

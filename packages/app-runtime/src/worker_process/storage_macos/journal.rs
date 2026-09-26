@@ -34,6 +34,10 @@ pub(super) struct Journal {
     /// cleared after exact-identity detachment has been observed and synced.
     pub pending_recovery: bool,
     pub images: [Image; 2],
+    /// A data snapshot about to replace the data image: set before the
+    /// rename, so recovery can finish a restore interrupted after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restoring: Option<FileIdentity>,
 }
 impl Journal {
     pub fn validate(&self) -> Result<()> {

@@ -61,6 +61,7 @@ fn record(dir: &Dir) -> Journal {
             journal::image("data", 64 * 1024 * 1024, FileIdentity::of(&data.0).unwrap()),
             journal::image("tmp", 64 * 1024 * 1024, FileIdentity::of(&tmp.0).unwrap()),
         ],
+        restoring: None,
     }
 }
 
@@ -273,4 +274,18 @@ fn only_the_committed_generation_may_reuse_storage_of_an_uncommitted_successor()
     // A superseded worker stays refused once 6 is committed.
     assert!(!super::admits_generation(6, 5, 6));
     assert!(!super::admits_generation(7, 6, 5));
+}
+
+#[test]
+fn failed_updates_roll_back_to_the_committed_generations_snapshot() {
+    use SnapshotStep::*;
+    // 5 committed; staged 6 snapshots 5's data; 7 staged on 6's data keeps it.
+    assert_eq!(snapshot_step(5, 6, 5), Take);
+    assert_eq!(snapshot_step(6, 7, 5), Keep);
+    // 5 starts again after 6 or 7 failed: restore its snapshot.
+    assert_eq!(snapshot_step(7, 5, 5), Restore);
+    assert_eq!(snapshot_step(6, 5, 5), Restore);
+    // 5 restarts on its own data, or 8 committed after running staged.
+    assert_eq!(snapshot_step(5, 5, 5), Discard);
+    assert_eq!(snapshot_step(8, 8, 8), Discard);
 }
