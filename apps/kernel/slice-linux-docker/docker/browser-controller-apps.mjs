@@ -126,6 +126,21 @@ export class AppTabs {
     return { target_id: targetId, origin };
   }
 
+  // An update (or a kernel restart) rebinds an open view: serve the current
+  // generation's assets and reload the page. A normal reload lets the App keep
+  // drafts in its own web storage; the Tab, window and panel stay.
+  async reload(params) {
+    await this.reconcile();
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry) throw invalid("unknown App tab");
+    const [sessionId, app] = entry;
+    const next = params.entry ?? "index.html";
+    app.assets = assets(params.assets, next);
+    app.entry = next;
+    await this.connection.send("Page.reload", { ignoreCache: true }, sessionId);
+    return { target_id: app.targetId };
+  }
+
   listen(connection) {
     if (this.connection === connection) return;
     this.unsubscribe?.();

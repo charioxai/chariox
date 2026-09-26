@@ -29,6 +29,12 @@ pub(crate) enum BrowserAppViewRequest {
         assets: Vec<BrowserAppViewAsset>,
     },
     Calls,
+    /// Serve the current generation's assets to an open view and reload it.
+    Reload {
+        target_id: String,
+        entry: String,
+        assets: Vec<BrowserAppViewAsset>,
+    },
     Respond {
         target_id: String,
         call_id: String,
@@ -44,6 +50,7 @@ impl BrowserAppViewRequest {
         match self {
             Self::Open { .. } => "browser.app.open",
             Self::Calls => "browser.app.calls",
+            Self::Reload { .. } => "browser.app.reload",
             Self::Respond { .. } => "browser.app.respond",
         }
     }

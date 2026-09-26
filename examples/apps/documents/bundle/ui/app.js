@@ -230,5 +230,32 @@ document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "s") { event.preventDefault(); save() }
 })
 
-refreshList().catch(() => {})
+// The kernel reloads an open view when the App updates (or after a kernel
+// restart). Unsaved edits survive in this origin's session storage and come
+// back on the revision they started from, so a conflicting save is refused.
+const DRAFT = "chariox-documents-draft"
+addEventListener("pagehide", () => {
+  try {
+    if (current && dirty) sessionStorage.setItem(DRAFT, JSON.stringify({ id: current.id, revision: current.revision, ...fields() }))
+    else sessionStorage.removeItem(DRAFT)
+  } catch {}
+})
+async function restoreDraft() {
+  let draft = null
+  try {
+    draft = JSON.parse(sessionStorage.getItem(DRAFT) ?? "null")
+    sessionStorage.removeItem(DRAFT)
+  } catch {}
+  if (!draft || !documents.some((doc) => doc.id === draft.id)) return
+  await open(draft.id)
+  $("title").value = draft.title
+  $("folder").value = draft.folder
+  $("content").value = draft.content
+  current.revision = draft.revision
+  dirty = true
+  renderPreview()
+  say("Restored your unsaved changes after the App reloaded.")
+}
+
+refreshList().then(restoreDraft).catch(() => {})
 setInterval(() => { if (!document.hidden) refreshList().catch(() => {}) }, 2000)

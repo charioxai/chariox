@@ -1892,6 +1892,16 @@ Workflow trigger and deployment direction:
   a final name component with no control or invisible format characters. The
   terminal chooses where to save it (a browser download, or
   `/app file save OPERATION "PATH"`, which never overwrites a file).
+- protocol 356: App view reconnection. A call from an open App view built for
+  an older generation, or from a view the kernel lost track of (for example
+  after a kernel restart; only the session host's own active installation),
+  is answered `APP_VIEW_RELOADING`. The kernel then binds the Tab to the
+  current generation and sends the room controller's `app_view` command
+  `{op: "reload", target_id, entry, assets}`. That command serves the Tab the
+  current generation's signed view assets and reloads it in place (same Tab,
+  window and panel). An App can keep drafts across the reload in its own web
+  storage. After a restart, the kernel polls every Room bound to a slice once,
+  so leftover views reconnect instead of hanging.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

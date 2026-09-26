@@ -75,6 +75,17 @@ impl SliceStore {
         require_environment_session(slice, session_id)
     }
 
+    /// Sessions whose Room is bound to a slice.
+    pub(crate) fn environment_sessions(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .records
+            .values()
+            .filter_map(|slice| slice.environment_session_id.clone())
+            .collect()
+    }
+
     pub(crate) fn environment_slice(&self, session_id: &str) -> Option<SliceRecord> {
         self.inner
             .lock()

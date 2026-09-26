@@ -27,10 +27,21 @@ struct SessionViews {
     pumping: bool,
     /// The App Tab markers the Room last showed, by target.
     published: BTreeMap<String, EnvironmentTabApp>,
+    /// Tabs whose reconnection failed (a Room controller without reload, a
+    /// transient Room failure, or a view the host does not own), with when:
+    /// answered unbound until the cooldown passes.
+    unreloadable: HashMap<String, std::time::Instant>,
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct AppViews(Arc<Mutex<HashMap<String, SessionViews>>>);
+pub(crate) struct AppViews(
+    Arc<Mutex<HashMap<String, SessionViews>>>,
+    /// Sessions whose Room this kernel already swept for leftover views.
+    Arc<Mutex<std::collections::HashSet<String>>>,
+);
+
+/// A failed reconnection is not retried sooner than this.
+const RELOAD_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl AppViews {
     /// Records the Tab; returns true when the caller must start the session's
@@ -43,6 +54,47 @@ impl AppViews {
             .tabs
             .insert(target.to_owned(), (binding, views.registrations));
         !std::mem::replace(&mut views.pumping, true)
+    }
+
+    /// True once per session and kernel: App Tabs outlive a kernel restart in
+    /// the Room browser, but their bindings do not; the caller resumes polling
+    /// them once the session's Room slice is known.
+    pub(crate) fn take_resume(&self, session: &str) -> bool {
+        self.1
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.to_owned())
+    }
+
+    /// Polls a session's Room for App Tabs this kernel did not open (left from
+    /// before a restart); true when the caller must start the pump. The first
+    /// poll reports how many are really open.
+    pub(crate) fn begin_pumping(&self, session: &str) -> bool {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let views = sessions.entry(session.to_owned()).or_default();
+        views.open_tabs = views.open_tabs.max(1);
+        !std::mem::replace(&mut views.pumping, true)
+    }
+
+    /// A failed reconnection: the Tab stays unbound until the cooldown passes.
+    pub(crate) fn unbind(&self, session: &str, target: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.tabs.remove(target);
+            views
+                .unreloadable
+                .insert(target.to_owned(), std::time::Instant::now());
+        }
+    }
+
+    pub(crate) fn reloadable(&self, session: &str, target: &str) -> bool {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(session).is_none_or(|views| {
+            views
+                .unreloadable
+                .get(target)
+                .is_none_or(|failed| failed.elapsed() >= RELOAD_COOLDOWN)
+        })
     }
 
     pub(crate) fn set_foreground(&self, session: &str, owner: &str, installation: &str) {
@@ -81,6 +133,9 @@ impl AppViews {
             views.tabs.retain(|target, (_, registered)| {
                 *registered > up_to || open_targets.contains(target)
             });
+            views
+                .unreloadable
+                .retain(|target, _| open_targets.contains(target));
         }
     }
 
@@ -228,5 +283,35 @@ mod tests {
         assert!(!views.publish("s", &apps));
         assert!(views.publish("s", &BTreeMap::new()));
         assert!(!views.publish("other", &apps));
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn a_restart_resumes_polling_once_and_a_reconnected_tab_can_be_unbound() {
+        let views = AppViews::default();
+        assert!(views.take_resume("s"));
+        assert!(!views.take_resume("s"));
+        assert!(views.take_resume("other"));
+        // A Room with no views this kernel opened is still polled once.
+        assert!(views.begin_pumping("s"));
+        assert!(!views.begin_pumping("s"));
+        assert!(views.keep_pumping("s"));
+        views.set_open_tabs("s", 0);
+        assert!(!views.keep_pumping("s"));
+        let binding = AppViewBinding {
+            owner: "user".into(),
+            installation: "a".into(),
+            generation: 2,
+        };
+        views.register("s", "t1", binding.clone());
+        assert_eq!(views.binding("s", "t1"), Some(binding));
+        assert!(views.reloadable("s", "t1"));
+        views.unbind("s", "t1");
+        assert_eq!(views.binding("s", "t1"), None);
+        assert!(!views.reloadable("s", "t1"));
     }
 }

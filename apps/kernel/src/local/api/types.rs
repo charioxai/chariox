@@ -124,4 +124,6 @@ pub use workspace::*;
 /// `host.pick_file` request with the chosen files (`AppFileGranted`).
 /// Version 355 adds `SaveAppFileExport`: the owner takes a copy of a file an
 /// App offered with `files.export` (`AppFileExport`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 355;
+/// Version 356 reconnects App views: the room-controller `app_view` command
+/// gains `reload`, which serves an open view the current generation's assets.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 356;
