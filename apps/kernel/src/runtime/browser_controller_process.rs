@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
@@ -22,24 +22,28 @@ use super::browser_controller_file_transfer::{
     BrowserControllerDownloadCancellationResult, BrowserControllerDownloadsResult,
     BrowserControllerUploadResult, BrowserDownloadCancellation, BrowserUploadFiles,
 };
-use super::browser_controller_history::{BrowserControllerHistoryResult, BrowserHistoryAction};
+use super::browser_controller_history::BrowserControllerHistoryResult;
 use super::browser_controller_permission::{
     BrowserControllerPermissionResult, BrowserPermissionName, BrowserPermissionSetting,
 };
 use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
-use super::browser_controller_tab::{BrowserControllerTabResult, BrowserTabAction};
+use super::browser_controller_tab::BrowserControllerTabResult;
 use crate::session::CanonicalViewport;
 
 mod cancellation;
 mod configuration_cancellation;
 mod lifecycle_cancellation;
 mod pending_action;
+mod pending_mutation;
 mod pending_responses;
+use self::pending_mutation::BrowserTabMutationLanes;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
 mod action_concurrency_tests;
 #[cfg(test)]
 mod import_cancellation_tests;
+#[cfg(test)]
+mod tab_mutation_concurrency_tests;
 #[cfg(test)]
 mod upload_cancellation_tests;
 
@@ -139,22 +143,6 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerStructuredSnapshot, String> {
         Err("browser controller backend does not support structured snapshots".to_string())
     }
-    fn manage_browser_tab(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _action: BrowserTabAction,
-    ) -> Result<BrowserControllerTabResult, String> {
-        Err("browser controller backend does not support tab lifecycle operations".to_string())
-    }
-    fn navigate_browser_history(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _action: BrowserHistoryAction,
-    ) -> Result<BrowserControllerHistoryResult, String> {
-        Err("browser controller backend does not support history navigation".to_string())
-    }
     fn perform_browser_action(
         &mut self,
         _target_id: &str,
@@ -164,14 +152,6 @@ pub(crate) trait BrowserControllerProcessBackend {
         _timeout_ms: u64,
     ) -> Result<BrowserControllerActionResult, String> {
         Err("browser controller backend does not support locator actions".to_string())
-    }
-    fn navigate_browser(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        Err("browser controller backend does not support navigation".to_string())
     }
     fn wait_for_browser(
         &mut self,
@@ -202,15 +182,6 @@ pub(crate) trait BrowserControllerProcessBackend {
         _cancellation: &BrowserDownloadCancellation,
     ) -> Result<BrowserControllerDownloadCancellationResult, String> {
         Err("browser controller backend does not support download cancellation".to_string())
-    }
-    fn upload_browser_files(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _node_ref: &str,
-        _files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        Err("browser controller backend does not support uploads".to_string())
     }
     fn set_browser_permission(
         &mut self,
@@ -769,44 +740,6 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(snapshot)
     }
 
-    fn manage_browser_tab(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserTabAction,
-    ) -> Result<BrowserControllerTabResult, String> {
-        let response = self.request(
-            "browser.tab",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "action": action.as_str(),
-            }),
-        )?;
-        let result = response.into_result::<BrowserControllerTabResult>("browser.tab")?;
-        result.validate(target_id, document_id, action)?;
-        Ok(result)
-    }
-
-    fn navigate_browser_history(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserHistoryAction,
-    ) -> Result<BrowserControllerHistoryResult, String> {
-        let response = self.request(
-            "browser.history",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "action": action.as_str(),
-            }),
-        )?;
-        let result = response.into_result::<BrowserControllerHistoryResult>("browser.history")?;
-        result.validate(target_id, action)?;
-        Ok(result)
-    }
-
     fn perform_browser_action(
         &mut self,
         target_id: &str,
@@ -829,27 +762,6 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         )?;
         let result = response.into_result::<BrowserControllerActionResult>("browser.action")?;
         result.validate(target_id, document_id, action.kind())?;
-        Ok(result)
-    }
-
-    fn navigate_browser(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        let url = normalize_browser_navigation_url(url)?;
-        let response = self.request(
-            "browser.navigate",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "url": url,
-            }),
-        )?;
-        let result =
-            response.into_result::<BrowserControllerNavigationResult>("browser.navigate")?;
-        result.validate(target_id, &url)?;
         Ok(result)
     }
 
@@ -928,28 +840,6 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             "browser.downloads.cancel",
         )?;
         result.validate(cancellation)?;
-        Ok(result)
-    }
-
-    fn upload_browser_files(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        node_ref: &str,
-        files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        let controller_paths = files.controller_paths();
-        let response = self.request(
-            "browser.upload",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "node_ref": node_ref,
-                "file_paths": controller_paths,
-            }),
-        )?;
-        let result = response.into_result::<BrowserControllerUploadResult>("browser.upload")?;
-        result.validate(target_id, document_id, controller_paths.len())?;
         Ok(result)
     }
 
@@ -1341,30 +1231,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .capture_browser_snapshot(target_id, document_id)
     }
 
-    pub(crate) fn manage_browser_tab(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserTabAction,
-    ) -> Result<BrowserControllerTabResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .manage_browser_tab(target_id, document_id, action)
-    }
-
-    pub(crate) fn navigate_browser_history(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserHistoryAction,
-    ) -> Result<BrowserControllerHistoryResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .navigate_browser_history(target_id, document_id, action)
-    }
-
     pub(crate) fn perform_browser_action(
         &mut self,
         session_id: &str,
@@ -1377,18 +1243,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.require_lease(session_id)?;
         self.supervisor
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
-    }
-
-    pub(crate) fn navigate_browser(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .navigate_browser(target_id, document_id, url)
     }
 
     pub(crate) fn wait_for_browser(
@@ -1434,19 +1288,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
     ) -> Result<BrowserControllerDownloadCancellationResult, String> {
         self.require_lease(session_id)?;
         self.supervisor.cancel_browser_download(cancellation)
-    }
-
-    pub(crate) fn upload_browser_files(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        node_ref: &str,
-        files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .upload_browser_files(target_id, document_id, node_ref, files)
     }
 
     pub(crate) fn set_browser_permission(
@@ -1532,6 +1373,8 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
 pub(crate) struct BrowserControllerProcessStore {
     ownership: Option<Arc<Mutex<StdioOwnership>>>,
     executions: cancellation::BrowserActionExecutions,
+    tab_mutation_barrier: Arc<RwLock<()>>,
+    tab_mutation_lanes: BrowserTabMutationLanes,
 }
 
 impl BrowserControllerProcessStore {
@@ -1582,6 +1425,7 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1595,6 +1439,7 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1609,6 +1454,7 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         viewport: &CanonicalViewport,
     ) -> Result<Option<BrowserControllerReconciliation>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1776,6 +1622,7 @@ impl BrowserControllerProcessStore {
         overwrite: bool,
         payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
     ) -> Result<Option<BrowserCookieImportOutcome>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1804,6 +1651,7 @@ impl BrowserControllerProcessStore {
         binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
         target_id: &str,
     ) -> Result<Option<()>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1816,6 +1664,7 @@ impl BrowserControllerProcessStore {
     }
 
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1923,28 +1772,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .capture_browser_snapshot(target_id, document_id)
     }
 
-    fn manage_browser_tab(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserTabAction,
-    ) -> Result<BrowserControllerTabResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .manage_browser_tab(target_id, document_id, action)
-    }
-
-    fn navigate_browser_history(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserHistoryAction,
-    ) -> Result<BrowserControllerHistoryResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .navigate_browser_history(target_id, document_id, action)
-    }
-
     fn perform_browser_action(
         &mut self,
         target_id: &str,
@@ -1956,16 +1783,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
-    }
-
-    fn navigate_browser(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend.navigate_browser(target_id, document_id, url)
     }
 
     fn wait_for_browser(
@@ -2007,18 +1824,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
     ) -> Result<BrowserControllerDownloadCancellationResult, String> {
         self.ensure_started_without_transparent_restart()?;
         self.backend.cancel_browser_download(cancellation)
-    }
-
-    fn upload_browser_files(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        node_ref: &str,
-        files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .upload_browser_files(target_id, document_id, node_ref, files)
     }
 
     fn set_browser_permission(
