@@ -415,7 +415,9 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
             },
         )
         .expect("home agent should bind to the fake worker");
-    let crate::session::PromptSubmissionOutcome::Started { prompt: active_prompt } = app
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: active_prompt,
+    } = app
         .prompt_owner_submit_prepared_prompt(
             session.id(),
             crate::session::PromptQueueItem::new(
