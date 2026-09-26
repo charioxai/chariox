@@ -201,13 +201,26 @@ fn apply(
 }
 
 impl DurableKernelStateStore {
-    /// Every inbox route an event generator feeds, for the kernel's claims.
-    /// Read on the query connection; a route changes only on the writer.
+    /// Every inbox route an event generator feeds for an active installation,
+    /// for the kernel's claims. Read on the query connection; a route changes
+    /// only on the writer.
     pub(crate) fn app_generator_routes(&self) -> Result<Vec<InboxRoute>, InboxError> {
         let connection = self
             .lock_connection("durable_state.app_generator_routes")
             .map_err(|_| InboxError::Corrupt)?;
-        app_inbox::generator_routes(&connection)
+        let mut active = connection.prepare(
+            "SELECT owner_id,installation_id FROM app_installations WHERE active_json IS NOT NULL",
+        )?;
+        let active = active
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        let mut routes = app_inbox::generator_routes(&connection)?;
+        routes.retain(|route| {
+            active.contains(&(route.owner_id.clone(), route.installation_id.clone()))
+        });
+        Ok(routes)
     }
 
     /// The route an event service delivers under `binding_id`.
