@@ -262,3 +262,15 @@ fn drop_preserves_recovery_after_an_explicit_cleanup_attempt() {
     let dir = Dir::open_private(&scratch.0).unwrap();
     assert!(journal::load(&dir).unwrap().unwrap().pending_recovery);
 }
+
+#[test]
+fn only_the_committed_generation_may_reuse_storage_of_an_uncommitted_successor() {
+    // Normal starts and updates move forward.
+    assert!(super::admits_generation(5, 5, 5));
+    assert!(super::admits_generation(5, 6, 5));
+    // Update 6 failed before commit: generation 5 starts again.
+    assert!(super::admits_generation(6, 5, 5));
+    // A superseded worker stays refused once 6 is committed.
+    assert!(!super::admits_generation(6, 5, 6));
+    assert!(!super::admits_generation(7, 6, 5));
+}

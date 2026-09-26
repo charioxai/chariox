@@ -72,6 +72,14 @@ type Result<T> = std::result::Result<T, Error>;
 const MAX_INSTALLATIONS: usize = 64;
 const MAX_RESERVED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const HOST_RESERVE: u64 = 8 * 1024 * 1024 * 1024;
+/// Storage last used by `recorded` admits `generation` when it is not older,
+/// or when it is the committed generation again: an update that was staged
+/// but never committed (it failed before commit) must not fence out the
+/// generation that stayed active. An older, superseded worker stays refused.
+fn admits_generation(recorded: u64, generation: u64, committed: u64) -> bool {
+    recorded <= generation || generation == committed
+}
+
 const CAPACITIES: [u64; 2] = [512 * 1024 * 1024, 64 * 1024 * 1024];
 
 pub(super) struct StorageRoot {
@@ -91,13 +99,15 @@ impl StorageRoot {
         })
     }
 
+    /// `committed` is the installation's committed (active) generation.
     pub fn prepare(
         &self,
         owner: &str,
         installation: &str,
         generation: u64,
+        committed: u64,
     ) -> Result<MountedStorage> {
-        self.prepare_with_capacities(owner, installation, generation, CAPACITIES)
+        self.prepare_with_capacities(owner, installation, generation, committed, CAPACITIES)
     }
 
     /// Kernel startup/failed-preparation recovery after all prior workers are
@@ -157,6 +167,7 @@ impl StorageRoot {
         owner: &str,
         installation: &str,
         generation: u64,
+        committed: u64,
         capacities: [u64; 2],
     ) -> Result<MountedStorage> {
         journal::identifier(owner)?;
@@ -184,7 +195,7 @@ impl StorageRoot {
         let journal = if let Some(journal) = prior {
             if journal.owner != owner
                 || journal.installation != installation
-                || journal.generation > generation
+                || !admits_generation(journal.generation, generation, committed)
                 || journal.images.each_ref().map(|image| image.capacity) != capacities
             {
                 return Err(Error::Identity);

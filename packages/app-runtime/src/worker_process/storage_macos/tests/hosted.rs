@@ -36,6 +36,7 @@ fn prepare(root: &StorageRoot, generation: u64) -> MountedStorage {
         "fixture-owner",
         "fixture-app",
         generation,
+        generation,
         [64 * 1024 * 1024; 2],
     )
     .unwrap()
@@ -79,7 +80,7 @@ fn hosted_storage_create_quota_restart_and_crash_recovery() {
     let store = StorageRoot::open(&path).unwrap();
     let mut storage = prepare(&store, 1);
     assert!(matches!(
-        store.prepare_with_capacities("fixture-owner", "fixture-app", 2, [64 * 1024 * 1024; 2]),
+        store.prepare_with_capacities("fixture-owner", "fixture-app", 2, 2, [64 * 1024 * 1024; 2]),
         Err(Error::Busy)
     ));
     let [data, tmp] = storage.paths();

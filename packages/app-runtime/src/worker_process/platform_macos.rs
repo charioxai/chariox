@@ -23,6 +23,7 @@ pub(super) fn prepare(
     release: VerifiedReleaseLease,
     binding: &StageTrustBinding,
     storage_root: &Path,
+    committed_generation: u64,
 ) -> Result<PreparedWorker> {
     if release.package_digest() != binding.package_digest() {
         return Err(WorkerError::Identity);
@@ -30,7 +31,14 @@ pub(super) fn prepare(
     let generation = binding.token().generation;
     let installation = binding.token().installation_id.clone();
     let storage = storage_macos::StorageRoot::open(storage_root)
-        .and_then(|root| root.prepare(binding.owner_id(), &installation, generation))
+        .and_then(|root| {
+            root.prepare(
+                binding.owner_id(),
+                &installation,
+                generation,
+                committed_generation,
+            )
+        })
         .map_err(|error| WorkerError::Storage(error.code()))?;
     let [data, temporary] = storage.paths();
     let [data_dir, temporary_dir] = storage

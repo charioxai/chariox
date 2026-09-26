@@ -69,14 +69,17 @@ impl PreparedWorker {
     }
     /// macOS preparation. `storage_root` is the kernel-owned private storage
     /// directory; the launcher applies Seatbelt to the derived canonical roots.
+    /// `committed_generation` is the installation's committed generation: it
+    /// may reuse storage last prepared for a newer, never-committed update.
     #[cfg(target_os = "macos")]
     pub fn prepare_macos(
         runtime: crate::runtime_enrollment::EnrolledRuntime,
         release: crate::release_store::VerifiedReleaseLease,
         binding: &crate::installation::StageTrustBinding,
         storage_root: &std::path::Path,
+        committed_generation: u64,
     ) -> Result<Self, WorkerError> {
-        platform_macos::prepare(runtime, release, binding, storage_root)
+        platform_macos::prepare(runtime, release, binding, storage_root, committed_generation)
     }
     /// Kernel startup recovery for macOS storage, before any worker of this
     /// kernel is prepared: detaches volumes and clears interrupted creations.
