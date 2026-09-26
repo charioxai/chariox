@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { once } from "node:events"
-import { unlink } from "node:fs/promises"
+import { EventEmitter, once } from "node:events"
+import { readFile as readRealFile, realpath as realRealpath, unlink } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,6 +9,8 @@ import { after, before, test } from "node:test"
 
 import {
   LIVE_KERNEL_BINDING_SCHEMA,
+  inspectLinuxKernelProcess,
+  readLocalKernelIdentity,
   startManagedOrdinaryLiveKernelBinding,
 } from "./managed-ordinary-live-kernel-binding.mjs"
 
@@ -22,6 +24,18 @@ const KERNEL_BYTES = Buffer.from("verified current kernel bytes\n")
 const KERNEL_DIGEST = `sha256:${createHash("sha256").update(KERNEL_BYTES).digest("hex")}`
 const OLD_KERNEL_BYTES = Buffer.from("previous running kernel bytes\n")
 const EXPECTED_BOUNDARY = "official-provider-turn"
+const RELAY_STATUS_REQUEST_FRAME = Buffer.from([
+  0x00, 0x00, 0x00, 0x14,
+  ...Buffer.from('{"RelayStatus":null}', "utf8"),
+])
+const RELAY_STATUS_RESPONSE = {
+  response: {
+    RelayStatus: {
+      status: { daemon_id: KERNEL_ID, machine_id: MACHINE_ID },
+    },
+  },
+  error: null,
+}
 
 function frame(value) {
   const bytes = Buffer.from(JSON.stringify(value), "utf8")
@@ -31,6 +45,72 @@ function frame(value) {
 }
 
 let ipcServer
+const receivedRequests = []
+
+class FakeSocket extends EventEmitter {
+  constructor() {
+    super()
+    this.request = null
+    this.destroyCalls = 0
+    this.destroyed = false
+  }
+
+  end(bytes) {
+    this.request = Buffer.from(bytes)
+  }
+
+  destroy() {
+    this.destroyCalls += 1
+    this.destroyed = true
+    this.emit("close", false)
+    return this
+  }
+}
+
+function manualTimers() {
+  let now = 0
+  let nextId = 1
+  let scheduled = 0
+  let cleared = 0
+  const pending = new Map()
+  return {
+    api: {
+      setTimeout(callback, delayMs) {
+        const id = nextId++
+        scheduled += 1
+        pending.set(id, { callback, deadline: now + delayMs })
+        return id
+      },
+      clearTimeout(id) {
+        cleared += 1
+        pending.delete(id)
+      },
+    },
+    advanceBy(delayMs) {
+      now += delayMs
+      for (const [id, timer] of [...pending]) {
+        if (timer.deadline > now) continue
+        pending.delete(id)
+        timer.callback()
+      }
+    },
+    get scheduled() { return scheduled },
+    get cleared() { return cleared },
+    get pendingCount() { return pending.size },
+  }
+}
+
+function fakeIdentityRequest({ timeoutMs = 100 } = {}) {
+  const socket = new FakeSocket()
+  const timers = manualTimers()
+  const result = readLocalKernelIdentity(SOCKET_PATH, {
+    connect: () => socket,
+    timeoutMs,
+    timerApi: timers.api,
+  })
+  socket.emit("connect")
+  return { socket, timers, result }
+}
 
 before(async () => {
   await unlink(SOCKET_PATH).catch((error) => {
@@ -43,14 +123,13 @@ before(async () => {
       if (request.length < 4) return
       const length = request.readUInt32BE(0)
       if (request.length < length + 4) return
-      socket.end(frame({
-        response: {
-          RelayStatus: {
-            status: { daemon_id: KERNEL_ID, machine_id: MACHINE_ID },
-          },
-        },
-        error: null,
-      }))
+      const received = Buffer.from(request.subarray(0, length + 4))
+      receivedRequests.push(received)
+      if (request.length !== length + 4 || !received.equals(RELAY_STATUS_REQUEST_FRAME)) {
+        socket.destroy()
+        return
+      }
+      socket.end(frame(RELAY_STATUS_RESPONSE))
     })
   })
   ipcServer.listen(SOCKET_PATH)
@@ -140,6 +219,7 @@ function binding(filesystem, environment = captureEnvironment()) {
 }
 
 test("current running kernel IPC identity and /proc executable bind to the verified artifact", async () => {
+  const requestStart = receivedRequests.length
   const filesystem = fakeFilesystem()
   const liveBinding = await binding(filesystem)
   const evidence = await liveBinding.finish()
@@ -159,6 +239,105 @@ test("current running kernel IPC identity and /proc executable bind to the verif
   assert.equal(evidence.kernel_process.executable_sha256, KERNEL_DIGEST)
   assert.deepEqual(evidence.verified_artifact, { path: KERNEL_PATH, sha256: KERNEL_DIGEST })
   assert.equal(evidence.stable_across_capture, true)
+  assert.deepEqual(receivedRequests.slice(requestStart), [RELAY_STATUS_REQUEST_FRAME, RELAY_STATUS_REQUEST_FRAME])
+})
+
+test("local IPC request matches Rust's length-prefixed RelayStatus unit-struct request", async () => {
+  const { socket, timers, result } = fakeIdentityRequest()
+  socket.emit("data", frame(RELAY_STATUS_RESPONSE))
+  socket.emit("end")
+
+  assert.deepEqual(await result, { kernel_id: KERNEL_ID, machine_id: MACHINE_ID })
+  assert.deepEqual(socket.request, RELAY_STATUS_REQUEST_FRAME)
+  assert.deepEqual(RELAY_STATUS_REQUEST_FRAME.subarray(4), Buffer.from('{"RelayStatus":null}', "utf8"))
+  assert.equal(timers.scheduled, 1)
+  assert.equal(timers.cleared, 1)
+  assert.equal(timers.pendingCount, 0)
+  assert.equal(socket.destroyCalls, 1)
+})
+
+test("local IPC response accepts split header and body fragments", async () => {
+  const { socket, timers, result } = fakeIdentityRequest()
+  const response = frame(RELAY_STATUS_RESPONSE)
+  socket.emit("data", response.subarray(0, 2))
+  socket.emit("data", response.subarray(2, 4))
+  socket.emit("data", response.subarray(4, 13))
+  socket.emit("data", response.subarray(13))
+  socket.emit("end")
+
+  assert.deepEqual(await result, { kernel_id: KERNEL_ID, machine_id: MACHINE_ID })
+  assert.deepEqual(socket.request, RELAY_STATUS_REQUEST_FRAME)
+  assert.equal(timers.cleared, 1)
+  assert.equal(socket.destroyCalls, 1)
+})
+
+test("truncated response at EOF rejects and cleans up once", async () => {
+  const { socket, timers, result } = fakeIdentityRequest()
+  const response = frame(RELAY_STATUS_RESPONSE)
+  socket.emit("data", response.subarray(0, 4))
+  socket.emit("data", response.subarray(4, 9))
+  socket.emit("end")
+
+  await assert.rejects(result, (error) => error.code === "kernel_ipc_response_truncated")
+  assert.equal(timers.cleared, 1)
+  assert.equal(socket.destroyCalls, 1)
+})
+
+test("abrupt IPC close rejects and cleans up once", async () => {
+  const { socket, timers, result } = fakeIdentityRequest()
+  socket.emit("data", Buffer.from([0, 0]))
+  socket.emit("close", false)
+
+  await assert.rejects(result, (error) => error.code === "kernel_ipc_response_closed")
+  assert.equal(timers.cleared, 1)
+  assert.equal(socket.destroyCalls, 1)
+})
+
+test("IPC socket error rejects and cleans up once", async () => {
+  const { socket, timers, result } = fakeIdentityRequest()
+  socket.emit("error", new Error("fixture transport error"))
+
+  await assert.rejects(result, (error) => error.code === "kernel_ipc_unavailable")
+  assert.equal(timers.cleared, 1)
+  assert.equal(socket.destroyCalls, 1)
+})
+
+test("oversized IPC response frame rejects before reading its body", async () => {
+  const { socket, timers, result } = fakeIdentityRequest()
+  const header = Buffer.alloc(4)
+  header.writeUInt32BE(1024 * 1024 + 1, 0)
+  socket.emit("data", header)
+
+  await assert.rejects(result, (error) => error.code === "kernel_ipc_frame_invalid")
+  assert.equal(timers.cleared, 1)
+  assert.equal(socket.destroyCalls, 1)
+})
+
+test("slow fragmented IPC response cannot extend the absolute deadline", async () => {
+  const { socket, timers, result } = fakeIdentityRequest({ timeoutMs: 17 })
+  const response = frame(RELAY_STATUS_RESPONSE)
+  for (const byte of response) {
+    if (socket.destroyed) break
+    socket.emit("data", Buffer.from([byte]))
+    timers.advanceBy(5)
+  }
+
+  await assert.rejects(result, (error) => error.code === "kernel_ipc_timeout")
+  assert.deepEqual(socket.request, RELAY_STATUS_REQUEST_FRAME)
+  assert.equal(timers.scheduled, 1)
+  assert.equal(timers.cleared, 1)
+  assert.equal(timers.pendingCount, 0)
+  assert.equal(socket.destroyCalls, 1)
+})
+
+test("trailing response bytes are rejected before clean EOF", async () => {
+  const { socket, timers, result } = fakeIdentityRequest()
+  socket.emit("data", frame(RELAY_STATUS_RESPONSE))
+  socket.emit("data", Buffer.from([0]))
+
+  await assert.rejects(result, (error) => error.code === "kernel_ipc_frame_invalid")
+  assert.equal(timers.cleared, 1)
+  assert.equal(socket.destroyCalls, 1)
 })
 
 test("old running executable is rejected when the selected signed artifact is new", async () => {
@@ -193,4 +372,37 @@ test("an unreadable running executable is rejected", async () => {
 test("a caller asserted kernel ID cannot replace the live IPC identity", async () => {
   const filesystem = fakeFilesystem()
   await assert.rejects(binding(filesystem, captureEnvironment("kernel-asserted", MACHINE_ID)), (error) => error.code === "kernel_capture_identity_mismatch")
+})
+
+test("Linux /proc socket owner and executable digest match the fixture process (unit conformance only)", {
+  skip: process.platform !== "linux",
+}, async () => {
+  const socketPath = join(tmpdir(), `chariox-proc-owner-${process.pid}-${Date.now()}.sock`)
+  const server = createServer()
+  await unlink(socketPath).catch((error) => {
+    if (error?.code !== "ENOENT") throw error
+  })
+  server.listen(socketPath)
+  await once(server, "listening")
+  try {
+    const executablePath = await realRealpath(process.execPath)
+    const executableBytes = await readRealFile(executablePath)
+    const expectedDigest = `sha256:${createHash("sha256").update(executableBytes).digest("hex")}`
+    const processIdentity = await inspectLinuxKernelProcess({
+      socketPath,
+      expectedExecutablePath: executablePath,
+      expectedExecutableDigest: expectedDigest,
+    })
+
+    assert.equal(processIdentity.pid, process.pid)
+    assert.equal(processIdentity.executable_path, executablePath)
+    assert.equal(processIdentity.executable_sha256, expectedDigest)
+    assert.match(processIdentity.linux_boot_id, /^[0-9a-f-]{36}$/i)
+    assert.match(processIdentity.start_time_ticks, /^\d+$/)
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    await unlink(socketPath).catch((error) => {
+      if (error?.code !== "ENOENT") throw error
+    })
+  }
 })

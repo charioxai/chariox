@@ -168,7 +168,12 @@ async function findSocketOwnerPid(filesystem, inode) {
   return Number([...owners][0])
 }
 
-async function inspectKernelProcess(filesystem, { socketPath, expectedKernelPath, expectedArtifactDigest }) {
+export async function inspectLinuxKernelProcess({
+  filesystem = NODE_FILESYSTEM,
+  socketPath,
+  expectedExecutablePath,
+  expectedExecutableDigest,
+}) {
   const socketInode = await findUnixSocketInode(filesystem, socketPath)
   const pid = await findSocketOwnerPid(filesystem, socketInode)
   const procPath = join(PROC_ROOT, String(pid))
@@ -196,12 +201,12 @@ async function inspectKernelProcess(filesystem, { socketPath, expectedKernelPath
   if (String(executableLink).endsWith(" (deleted)")) {
     throw bindingError("kernel_executable_deleted", "running kernel executable has been deleted")
   }
-  if (!isAbsolute(executableLink) || resolve(executableLink) !== expectedKernelPath) {
+  if (!isAbsolute(executableLink) || resolve(executableLink) !== expectedExecutablePath) {
     throw bindingError("kernel_executable_path_mismatch", "running kernel executable path is not the verified signed artifact")
   }
   const executableDigest = sha256(executableBytes)
-  if (executableDigest !== expectedArtifactDigest) {
-    throw bindingError("kernel_executable_digest_mismatch", "running kernel executable bytes do not match the verified signed artifact")
+  if (executableDigest !== expectedExecutableDigest) {
+    throw bindingError("kernel_executable_digest_mismatch", "running kernel executable bytes do not match the expected executable")
   }
 
   return {
@@ -233,23 +238,48 @@ function parseRelayStatusEnvelope(value) {
   return { kernel_id: status.daemon_id, machine_id: status.machine_id }
 }
 
-export async function readLocalKernelIdentity(socketPath, { connect = net.createConnection } = {}) {
+export async function readLocalKernelIdentity(socketPath, {
+  connect = net.createConnection,
+  timeoutMs = IPC_TIMEOUT_MS,
+  timerApi = globalThis,
+} = {}) {
   return await new Promise((resolvePromise, rejectPromise) => {
     let socket
     let buffer = Buffer.alloc(0)
     let expectedLength = null
+    let parsedIdentity = null
+    let sawEnd = false
     let settled = false
+    let deadlineHandle
+    let deadlineScheduled = false
+    let deadlineCleared = false
+    let socketDestroyed = false
+
+    const destroySocket = () => {
+      if (!socket || socketDestroyed) return
+      socketDestroyed = true
+      socket.destroy()
+    }
     const finish = (error, value) => {
       if (settled) return
       settled = true
+      if (deadlineScheduled && !deadlineCleared) {
+        deadlineCleared = true
+        timerApi.clearTimeout(deadlineHandle)
+      }
+      destroySocket()
       if (error) {
-        socket?.destroy()
         rejectPromise(error)
       } else {
-        socket?.destroy()
         resolvePromise(value)
       }
     }
+
+    deadlineScheduled = true
+    deadlineHandle = timerApi.setTimeout(
+      () => finish(bindingError("kernel_ipc_timeout", "local daemon IPC identity request exceeded its total deadline")),
+      timeoutMs,
+    )
 
     try {
       socket = connect({ path: socketPath })
@@ -257,16 +287,25 @@ export async function readLocalKernelIdentity(socketPath, { connect = net.create
       finish(bindingError("kernel_ipc_unavailable", "local daemon IPC could not be opened", error))
       return
     }
-    socket.setTimeout?.(IPC_TIMEOUT_MS, () => finish(bindingError("kernel_ipc_timeout", "local daemon IPC identity request timed out")))
     socket.on("error", (error) => finish(bindingError("kernel_ipc_unavailable", "local daemon IPC identity request failed", error)))
     socket.on("connect", () => {
+      if (settled) return
       const payload = Buffer.from(JSON.stringify({ RelayStatus: null }), "utf8")
       const frame = Buffer.allocUnsafe(4 + payload.length)
       frame.writeUInt32BE(payload.length, 0)
       payload.copy(frame, 4)
-      socket.end(frame)
+      try {
+        socket.end(frame)
+      } catch (error) {
+        finish(bindingError("kernel_ipc_unavailable", "local daemon IPC request could not be written", error))
+      }
     })
     socket.on("data", (chunk) => {
+      if (settled) return
+      if (buffer.length + chunk.length > MAX_IPC_FRAME_BYTES + 4) {
+        finish(bindingError("kernel_ipc_frame_invalid", "local daemon IPC response exceeds the reviewed frame limit"))
+        return
+      }
       buffer = Buffer.concat([buffer, chunk])
       if (expectedLength === null && buffer.length >= 4) {
         expectedLength = buffer.readUInt32BE(0)
@@ -282,7 +321,7 @@ export async function readLocalKernelIdentity(socketPath, { connect = net.create
       }
       try {
         const envelope = JSON.parse(buffer.subarray(4).toString("utf8"))
-        finish(null, parseRelayStatusEnvelope(envelope))
+        parsedIdentity = parseRelayStatusEnvelope(envelope)
       } catch (error) {
         finish(error instanceof LiveKernelBindingError
           ? error
@@ -290,17 +329,27 @@ export async function readLocalKernelIdentity(socketPath, { connect = net.create
       }
     })
     socket.on("end", () => {
-      if (buffer.length < (expectedLength ?? 4) + 4) {
+      sawEnd = true
+      if (expectedLength === null || buffer.length < expectedLength + 4) {
         finish(bindingError("kernel_ipc_response_truncated", "local daemon IPC identity response was truncated"))
+      } else if (buffer.length > expectedLength + 4) {
+        finish(bindingError("kernel_ipc_frame_invalid", "local daemon IPC response contains trailing frame data"))
+      } else {
+        finish(null, parsedIdentity)
+      }
+    })
+    socket.on("close", () => {
+      if (!settled && !sawEnd) {
+        finish(bindingError("kernel_ipc_response_closed", "local daemon IPC closed before a complete response EOF"))
       }
     })
   })
 }
 
 async function observeKernel(filesystem, options) {
-  const before = await inspectKernelProcess(filesystem, options)
+  const before = await inspectLinuxKernelProcess({ filesystem, ...options })
   const identity = await readLocalKernelIdentity(options.socketPath)
-  const after = await inspectKernelProcess(filesystem, options)
+  const after = await inspectLinuxKernelProcess({ filesystem, ...options })
   if (!sameProcess(before, after)) {
     throw bindingError("kernel_process_changed", "local daemon process changed while its IPC identity was observed")
   }
@@ -339,8 +388,8 @@ export async function startManagedOrdinaryLiveKernelBinding({
 
   const options = {
     socketPath,
-    expectedKernelPath,
-    expectedArtifactDigest: expectedArtifactDigest.toLowerCase(),
+    expectedExecutablePath: expectedKernelPath,
+    expectedExecutableDigest: expectedArtifactDigest.toLowerCase(),
     captureIdentity,
   }
   const initial = await observeKernel(filesystem, options)
