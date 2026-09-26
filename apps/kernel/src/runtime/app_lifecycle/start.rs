@@ -232,11 +232,19 @@ fn spawn(
         let runtime = chariox_app_runtime::runtime_enrollment::EnrolledRuntime::open_installed()
             .map_err(|error| failed("enrolled_runtime", error.to_string()))?;
         let storage_root = macos_storage_root(&context.store)?;
+        // After a failed update the committed generation starts again on
+        // storage its uncommitted successor last prepared.
+        let committed = context
+            .store
+            .get_app_installation(binding.owner_id(), &binding.token().installation_id)
+            .map(|installation| installation.generation)
+            .map_err(|_| failed("installation", "app_installation_unavailable".into()))?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_macos(
             runtime,
             release,
             binding,
             &storage_root,
+            committed,
         )
         .map_err(|error| failed("prepare", error.to_string()))?;
         if context.control.stopped() {

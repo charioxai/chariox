@@ -61,6 +61,7 @@ fn record(dir: &Dir) -> Journal {
             journal::image("data", 64 * 1024 * 1024, FileIdentity::of(&data.0).unwrap()),
             journal::image("tmp", 64 * 1024 * 1024, FileIdentity::of(&tmp.0).unwrap()),
         ],
+        restoring: None,
     }
 }
 
@@ -261,4 +262,36 @@ fn drop_preserves_recovery_after_an_explicit_cleanup_attempt() {
     });
     let dir = Dir::open_private(&scratch.0).unwrap();
     assert!(journal::load(&dir).unwrap().unwrap().pending_recovery);
+}
+
+#[test]
+fn only_the_committed_generation_may_reuse_storage_of_an_uncommitted_successor() {
+    // Normal starts and updates move forward.
+    assert!(super::admits_generation(5, 5, 5));
+    assert!(super::admits_generation(5, 6, 5));
+    // Update 6 failed before commit: generation 5 starts again.
+    assert!(super::admits_generation(6, 5, 5));
+    // A superseded worker stays refused once 6 is committed.
+    assert!(!super::admits_generation(6, 5, 6));
+    assert!(!super::admits_generation(7, 6, 5));
+}
+
+#[test]
+fn failed_updates_roll_back_to_the_committed_generations_snapshot() {
+    use SnapshotStep::*;
+    // 5 committed; staged 6 snapshots 5's data (or keeps the one it took).
+    assert_eq!(snapshot_step(5, 6, 5, false), Take);
+    assert_eq!(snapshot_step(5, 6, 5, true), Take);
+    // 6 retrying keeps its own writes.
+    assert_eq!(snapshot_step(6, 6, 5, true), Keep);
+    // 7 staged after 6 failed starts on 5's data again, not on 6's.
+    assert_eq!(snapshot_step(6, 7, 5, true), RestoreAndTake);
+    // Staged before snapshots existed: nothing to restore.
+    assert_eq!(snapshot_step(6, 7, 5, false), Keep);
+    // 5 starts again after 6 or 7 failed: restore its snapshot.
+    assert_eq!(snapshot_step(7, 5, 5, true), Restore);
+    assert_eq!(snapshot_step(6, 5, 5, true), Restore);
+    // 5 restarts on its own data, or 8 committed after running staged.
+    assert_eq!(snapshot_step(5, 5, 5, true), Discard);
+    assert_eq!(snapshot_step(8, 8, 8, true), Discard);
 }

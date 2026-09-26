@@ -36,6 +36,7 @@ fn prepare(root: &StorageRoot, generation: u64) -> MountedStorage {
         "fixture-owner",
         "fixture-app",
         generation,
+        generation,
         [64 * 1024 * 1024; 2],
     )
     .unwrap()
@@ -79,7 +80,7 @@ fn hosted_storage_create_quota_restart_and_crash_recovery() {
     let store = StorageRoot::open(&path).unwrap();
     let mut storage = prepare(&store, 1);
     assert!(matches!(
-        store.prepare_with_capacities("fixture-owner", "fixture-app", 2, [64 * 1024 * 1024; 2]),
+        store.prepare_with_capacities("fixture-owner", "fixture-app", 2, 2, [64 * 1024 * 1024; 2]),
         Err(Error::Busy)
     ));
     let [data, tmp] = storage.paths();
@@ -200,6 +201,75 @@ fn hosted_storage_create_quota_restart_and_crash_recovery() {
     drop(recovered);
     store.recover_all_blocking().unwrap();
     println!("actual_storage_create_quota_noexec_restart_and_process_crash_recovery_passed");
+}
+
+#[test]
+#[ignore = "dedicated disposable hosted macOS runner only"]
+fn hosted_storage_failed_updates_roll_back_to_the_committed_snapshot() {
+    let path = root();
+    let store = StorageRoot::open(&path).unwrap();
+    let start = |generation: u64, committed: u64| {
+        store
+            .prepare_with_capacities(
+                "fixture-owner",
+                "fixture-rollback",
+                generation,
+                committed,
+                [64 * 1024 * 1024; 2],
+            )
+            .unwrap()
+    };
+    let snapshots = |storage: &MountedStorage| {
+        storage
+            .root
+            .entries(16)
+            .unwrap()
+            .into_iter()
+            .filter(|name| volume::is_snapshot(name))
+            .count()
+    };
+    let mut storage = start(5, 5);
+    save(&storage.paths()[0].join("todos"), b"committed by 5");
+    storage.release_blocking().unwrap();
+    // Two failed updates in a row: each starts on 5's data, not on 6's.
+    for generation in [6, 7] {
+        let mut storage = start(generation, 5);
+        let data = &storage.paths()[0];
+        assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed by 5");
+        assert!(!data.join("only-6").exists());
+        save(
+            &data.join("todos"),
+            format!("written by {generation}").as_bytes(),
+        );
+        save(&data.join(format!("only-{generation}")), b"uncommitted");
+        assert_eq!(snapshots(&storage), 1, "the committed snapshot is kept");
+        storage.release_blocking().unwrap();
+    }
+    // 7 retrying keeps its own writes.
+    let mut storage = start(7, 5);
+    assert_eq!(
+        fs::read(storage.paths()[0].join("todos")).unwrap(),
+        b"written by 7"
+    );
+    storage.release_blocking().unwrap();
+    // 5 starts again on its own data; nothing 6 or 7 wrote survives.
+    let mut storage = start(5, 5);
+    let data = &storage.paths()[0];
+    assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed by 5");
+    assert!(!data.join("only-6").exists() && !data.join("only-7").exists());
+    assert_eq!(snapshots(&storage), 0);
+    storage.release_blocking().unwrap();
+    // An update that commits keeps its writes and drops the snapshot.
+    let mut storage = start(8, 5);
+    save(&storage.paths()[0].join("todos"), b"migrated by 8");
+    storage.release_blocking().unwrap();
+    let mut storage = start(8, 8);
+    assert_eq!(
+        fs::read(storage.paths()[0].join("todos")).unwrap(),
+        b"migrated by 8"
+    );
+    assert_eq!(snapshots(&storage), 0);
+    storage.release_blocking().unwrap();
 }
 
 #[test]
