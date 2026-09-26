@@ -27,16 +27,21 @@ struct SessionViews {
     pumping: bool,
     /// The App Tab markers the Room last showed, by target.
     published: BTreeMap<String, EnvironmentTabApp>,
-    /// Tabs whose reconnection failed (for example a Room controller without
-    /// reload): answered unbound without trying again.
-    unreloadable: std::collections::HashSet<String>,
+    /// Tabs whose reconnection failed (a Room controller without reload, a
+    /// transient Room failure, or a view the host does not own), with when:
+    /// answered unbound until the cooldown passes.
+    unreloadable: HashMap<String, std::time::Instant>,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct AppViews(
     Arc<Mutex<HashMap<String, SessionViews>>>,
-    Arc<std::sync::atomic::AtomicBool>,
+    /// Sessions whose Room this kernel already swept for leftover views.
+    Arc<Mutex<std::collections::HashSet<String>>>,
 );
+
+/// A failed reconnection is not retried sooner than this.
+const RELOAD_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl AppViews {
     /// Records the Tab; returns true when the caller must start the session's
@@ -51,10 +56,14 @@ impl AppViews {
         !std::mem::replace(&mut views.pumping, true)
     }
 
-    /// True once per kernel: App Tabs outlive a kernel restart in the Room
-    /// browser, but their bindings do not; the caller resumes polling them.
-    pub(crate) fn take_resume(&self) -> bool {
-        !self.1.swap(true, std::sync::atomic::Ordering::AcqRel)
+    /// True once per session and kernel: App Tabs outlive a kernel restart in
+    /// the Room browser, but their bindings do not; the caller resumes polling
+    /// them once the session's Room slice is known.
+    pub(crate) fn take_resume(&self, session: &str) -> bool {
+        self.1
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.to_owned())
     }
 
     /// Polls a session's Room for App Tabs this kernel did not open (left from
@@ -67,20 +76,25 @@ impl AppViews {
         !std::mem::replace(&mut views.pumping, true)
     }
 
-    /// A failed reconnection: the Tab stays unbound and is not retried.
+    /// A failed reconnection: the Tab stays unbound until the cooldown passes.
     pub(crate) fn unbind(&self, session: &str, target: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
             views.tabs.remove(target);
-            views.unreloadable.insert(target.to_owned());
+            views
+                .unreloadable
+                .insert(target.to_owned(), std::time::Instant::now());
         }
     }
 
     pub(crate) fn reloadable(&self, session: &str, target: &str) -> bool {
         let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions
-            .get(session)
-            .is_none_or(|views| !views.unreloadable.contains(target))
+        sessions.get(session).is_none_or(|views| {
+            views
+                .unreloadable
+                .get(target)
+                .is_none_or(|failed| failed.elapsed() >= RELOAD_COOLDOWN)
+        })
     }
 
     pub(crate) fn set_foreground(&self, session: &str, owner: &str, installation: &str) {
@@ -121,7 +135,7 @@ impl AppViews {
             });
             views
                 .unreloadable
-                .retain(|target| open_targets.contains(target));
+                .retain(|target, _| open_targets.contains(target));
         }
     }
 
@@ -279,8 +293,9 @@ mod reconnect_tests {
     #[test]
     fn a_restart_resumes_polling_once_and_a_reconnected_tab_can_be_unbound() {
         let views = AppViews::default();
-        assert!(views.take_resume());
-        assert!(!views.take_resume());
+        assert!(views.take_resume("s"));
+        assert!(!views.take_resume("s"));
+        assert!(views.take_resume("other"));
         // A Room with no views this kernel opened is still polled once.
         assert!(views.begin_pumping("s"));
         assert!(!views.begin_pumping("s"));
