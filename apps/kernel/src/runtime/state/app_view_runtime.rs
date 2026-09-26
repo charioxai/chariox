@@ -30,6 +30,8 @@ const COMMAND_RETRY: Duration = Duration::from_millis(100);
 /// 15 s command timeout); an answer is retried a few times.
 const OPEN_WAIT: Duration = Duration::from_secs(16);
 const RESPOND_ATTEMPTS: u32 = 5;
+/// A view's first call re-projects the Room, waiting this long for a busy slice.
+const REPROJECT_WINDOW: Duration = Duration::from_secs(5);
 /// Consecutive failed polls before the session's views are dropped (for
 /// example after the Room environment went away).
 const MAX_POLL_FAILURES: u32 = 20;
@@ -199,17 +201,39 @@ impl KernelRuntimeState {
             // A view's first call means its document loaded: project the
             // Room again so the Tab shows the App's title and URL, not the
             // blank page it had when it opened.
-            if batch
+            // Every Tab in the batch is marked; one reconcile covers them.
+            let first: Vec<String> = batch
                 .calls
                 .iter()
-                .any(|call| views.first_call(&session_id, &call.target_id))
-            {
+                .filter(|call| views.first_call(&session_id, &call.target_id))
+                .map(|call| call.target_id.clone())
+                .collect();
+            if !first.is_empty() {
                 let state = self.clone();
                 let session = session_id.clone();
+                let views = views.clone();
                 tokio::spawn(async move {
-                    let _ = state
-                        .reconcile_browser_controller_environment(&session)
-                        .await;
+                    // Another Room command may hold the slice briefly.
+                    let deadline = tokio::time::Instant::now() + REPROJECT_WINDOW;
+                    loop {
+                        match state
+                            .reconcile_browser_controller_environment(&session)
+                            .await
+                        {
+                            Ok(_) => return,
+                            Err(error)
+                                if tokio::time::Instant::now() < deadline
+                                    && error.to_string().contains("already has an active") =>
+                            {
+                                tokio::time::sleep(COMMAND_RETRY).await;
+                            }
+                            // Unmarked, so the Tab's next call tries again.
+                            Err(_) => break,
+                        }
+                    }
+                    for target in first {
+                        views.forget_call(&session, &target);
+                    }
                 });
             }
             for call in batch.calls {

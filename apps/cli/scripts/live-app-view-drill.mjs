@@ -7,7 +7,8 @@
 // Protocol 351: the page reserves a private conversation panel and the Room
 // snapshot marks the App Tab with it, in desktop pixels, for the focus agent.
 // Protocol 357: the App Tab's accessibility outline lists every node after its
-// parent. Opening the App again shows the same, single App Tab.
+// parent. Opening the App again shows the same, single App Tab, navigated to a
+// new document whose title the Room shows once the view calls.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
 // installed, running App:
@@ -74,12 +75,22 @@ try {
   }
   evidence.steps.push({ step: "outline", tab_id: tabId, nodes: outline.nodes.length, truncated: outline.truncated })
 
+  const loadedAt = await evaluate(view.target_id, "performance.timeOrigin")
   const again = (await client.send({
     OpenAppView: { session_id: options.session, installation_id: options.installation },
   })).AppViewOpened
   assert.equal(again?.target_id, view.target_id, "opening the App again showed another Tab")
   assert.equal(await roomApps((apps) => apps.length), 1, "the Room holds more than one Tab of this App")
-  evidence.steps.push({ step: "reopen", target_id: again.target_id })
+  // The same Tab navigated to a new document, and once the view called, the
+  // Room shows its title again, not a blank page.
+  let reloadedAt = loadedAt
+  for (let attempt = 0; attempt < 40 && reloadedAt === loadedAt; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    reloadedAt = await evaluate(view.target_id, "performance.timeOrigin").catch(() => loadedAt)
+  }
+  assert.ok(reloadedAt > loadedAt, "reopening did not load the App again")
+  const title = await roomTabTitle()
+  evidence.steps.push({ step: "reopen", target_id: again.target_id, loaded_at: loadedAt, reloaded_at: reloadedAt, title })
   await roomApps((apps) => apps.every((app) => !app.panel))
   evidence.steps.push({ step: "panel", marked })
 
@@ -141,6 +152,19 @@ async function roomApps(ready) {
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw new Error("the Room never showed the expected App Tabs")
+}
+
+// Waits until the Room shows this App Tab with a real title (projected after
+// the view's first call), and returns it.
+async function roomTabTitle() {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const state = await client.send({ GetRoomEnvironmentState: { session_id: options.session } })
+    const tab = (state.RoomEnvironmentState?.environment?.tabs ?? [])
+      .find((candidate) => candidate.app?.installation_id === options.installation)
+    if (tab?.title && tab.title !== "about:blank" && tab.url) return tab.title
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error("the Room never showed the App Tab's title")
 }
 
 // The Room Tab id of this installation's App view.

@@ -70,6 +70,14 @@ impl AppViews {
             .insert(target.to_owned())
     }
 
+    /// The Room could not be projected again after this Tab's first call.
+    pub(crate) fn forget_call(&self, session: &str, target: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.called.remove(target);
+        }
+    }
+
     /// True once per session and kernel: App Tabs outlive a kernel restart in
     /// the Room browser, but their bindings do not; the caller resumes polling
     /// them once the session's Room slice is known.
@@ -287,6 +295,12 @@ mod tests {
         // Reopening loads a new document: its first call counts again.
         views.register("s", "t1", binding("a"));
         assert!(views.first_call("s", "t1"));
+        // A failed re-projection is retried on the Tab's next call.
+        views.forget_call("s", "t1");
+        assert!(views.first_call("s", "t1"));
+        // Two Tabs in one batch are each marked.
+        assert!(views.first_call("s", "t2"));
+        assert!(!views.first_call("s", "t2"));
     }
 
     #[test]

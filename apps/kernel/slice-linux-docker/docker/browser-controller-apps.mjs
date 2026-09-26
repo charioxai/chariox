@@ -36,9 +36,12 @@ const BRIDGE_SOURCE = `(() => {
   if (typeof call !== "function") return;
   delete globalThis.${BINDING};
   const pending = new Map();
+  // Ids are unique per document: a reopened Tab loads a new one, and an
+  // answer still in flight for the old document must not match a new call.
+  const documentNonce = crypto.randomUUID();
   let next = 0;
   const request = (method, params) => new Promise((resolve, reject) => {
-    const id = String(++next);
+    const id = documentNonce + ":" + ++next;
     pending.set(id, { resolve, reject });
     call(JSON.stringify({ id, method, params }));
   });
