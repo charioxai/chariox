@@ -323,9 +323,14 @@ systemctl is-enabled --quiet "$managed_bootstrap_service" \
 if systemctl is-enabled --quiet "$other_managed_bootstrap_service"; then
   fail "a non-selected managed bootstrap service was also enabled"
 fi
-if systemctl is-active --quiet "$managed_bootstrap_service"; then
-  fail "managed bootstrap service started while the image was being built"
+if systemctl is-enabled --quiet chariox-disposable-worker-bootstrap.service; then
+  fail "disposable worker bootstrap service must not be enabled in a managed-home image"
 fi
+for bootstrap_service in "$managed_bootstrap_service" "$other_managed_bootstrap_service" chariox-disposable-worker-bootstrap.service; do
+  if systemctl is-active --quiet "$bootstrap_service"; then
+    fail "bootstrap service $bootstrap_service started while the image was being built"
+  fi
+done
 
 if find /var/lib/chariox -mindepth 1 -print -quit | grep -q .; then
   fail "managed runtime state entered the image"
