@@ -200,9 +200,10 @@ installation's private files, structured state and pending wakes into the
 kernel's snapshot store, outside App data. The reply is `{snapshotId,
 consistency, files, bytes}`. `name` is 1 to 64 characters from `A-Za-z0-9._-`,
 and `consistency` is the label the snapshot keeps:
-- `quiescent`: the kernel holds this worker's other SDK writes (`state.*`,
-  `events.*`, `schedule.*`, `files.atomic_replace`, `files.import`) until the
-  copy is done. The App must pause its own `node:fs` writes while it awaits the
+- `quiescent`: the kernel holds this worker's other state, event, schedule
+  and file SDK calls (`state.*`, `events.*`, `schedule.*`,
+  `files.atomic_replace`, `files.import`), reads included, until the copy is
+  done; a held call can reach its deadline. The App must pause its own `node:fs` writes while it awaits the
   call.
 - `crash_consistent`: nothing is held, so files may be copied mid-write.
 
