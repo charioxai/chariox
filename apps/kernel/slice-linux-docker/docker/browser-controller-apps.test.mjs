@@ -195,3 +195,14 @@ test("the bridge exposes panel reserve and release next to call", async () => {
   assert.match(bridge, /request\("chariox\.panel", \{ rect \}\)/);
   assert.match(bridge, /request\("chariox\.panel", \{ rect: null \}\)/);
 });
+
+test("reload serves the new generation's assets to the same Tab and reloads it", async () => {
+  const { tabs, connection } = await opened();
+  await assert.rejects(tabs.reload({ target_id: "other", assets: [asset("index.html", "x")] }));
+  await assert.rejects(tabs.reload({ target_id: "t1", assets: [asset("app.js", "2", "text/javascript")] }));
+  assert.deepEqual(await tabs.reload({ target_id: "t1", assets: [asset("index.html", "<p>v2</p>")] }), { target_id: "t1" });
+  assert.deepEqual(connection.sent.at(-1), { method: "Page.reload", params: { ignoreCache: true }, sessionId: "s1" });
+  const app = [...tabs.apps.values()][0];
+  assert.equal(Buffer.from(app.assets.get("index.html").body, "base64").toString(), "<p>v2</p>");
+  assert.equal(app.assets.has("app.js"), false);
+});

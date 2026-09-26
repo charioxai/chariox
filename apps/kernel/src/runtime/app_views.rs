@@ -30,7 +30,10 @@ struct SessionViews {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct AppViews(Arc<Mutex<HashMap<String, SessionViews>>>);
+pub(crate) struct AppViews(
+    Arc<Mutex<HashMap<String, SessionViews>>>,
+    Arc<std::sync::atomic::AtomicBool>,
+);
 
 impl AppViews {
     /// Records the Tab; returns true when the caller must start the session's
@@ -43,6 +46,29 @@ impl AppViews {
             .tabs
             .insert(target.to_owned(), (binding, views.registrations));
         !std::mem::replace(&mut views.pumping, true)
+    }
+
+    /// True once per kernel: App Tabs outlive a kernel restart in the Room
+    /// browser, but their bindings do not; the caller resumes polling them.
+    pub(crate) fn take_resume(&self) -> bool {
+        !self.1.swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    /// Polls a session's Room for App Tabs this kernel did not open (left from
+    /// before a restart); true when the caller must start the pump. The first
+    /// poll reports how many are really open.
+    pub(crate) fn begin_pumping(&self, session: &str) -> bool {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let views = sessions.entry(session.to_owned()).or_default();
+        views.open_tabs = views.open_tabs.max(1);
+        !std::mem::replace(&mut views.pumping, true)
+    }
+
+    pub(crate) fn unbind(&self, session: &str, target: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.tabs.remove(target);
+        }
     }
 
     pub(crate) fn set_foreground(&self, session: &str, owner: &str, installation: &str) {
@@ -228,5 +254,32 @@ mod tests {
         assert!(!views.publish("s", &apps));
         assert!(views.publish("s", &BTreeMap::new()));
         assert!(!views.publish("other", &apps));
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn a_restart_resumes_polling_once_and_a_reconnected_tab_can_be_unbound() {
+        let views = AppViews::default();
+        assert!(views.take_resume());
+        assert!(!views.take_resume());
+        // A Room with no views this kernel opened is still polled once.
+        assert!(views.begin_pumping("s"));
+        assert!(!views.begin_pumping("s"));
+        assert!(views.keep_pumping("s"));
+        views.set_open_tabs("s", 0);
+        assert!(!views.keep_pumping("s"));
+        let binding = AppViewBinding {
+            owner: "user".into(),
+            installation: "a".into(),
+            generation: 2,
+        };
+        views.register("s", "t1", binding.clone());
+        assert_eq!(views.binding("s", "t1"), Some(binding));
+        views.unbind("s", "t1");
+        assert_eq!(views.binding("s", "t1"), None);
     }
 }

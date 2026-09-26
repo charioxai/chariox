@@ -74,20 +74,13 @@ impl KernelRuntimeState {
                 _ => AppRequestErrorCode::NotFound,
             }
         })?;
-        let engine = base64::engine::general_purpose::STANDARD;
+        let generation = view.generation;
+        let (entry, assets) = view_assets(view);
         let request = BrowserAppViewRequest::Open {
             origin_label: origin_label(&owner, installation),
             installation_id: installation.to_owned(),
-            entry: view.entry,
-            assets: view
-                .assets
-                .into_iter()
-                .map(|asset| BrowserAppViewAsset {
-                    path: asset.path,
-                    content_type: asset.content_type.to_owned(),
-                    body_base64: engine.encode(asset.bytes),
-                })
-                .collect(),
+            entry,
+            assets,
         };
         let opened: BrowserAppViewOpened = self
             .app_view_command(session_id, request)
@@ -100,7 +93,7 @@ impl KernelRuntimeState {
             AppViewBinding {
                 owner: owner.clone(),
                 installation: installation.to_owned(),
-                generation: view.generation,
+                generation,
             },
         ) {
             let state = self.clone();
@@ -257,15 +250,42 @@ impl KernelRuntimeState {
 
     async fn answer_app_view_call(self, session_id: String, call: BrowserAppViewCall) {
         let views = self.app_control().views().clone();
-        let outcome = match views.binding(&session_id, &call.target_id) {
-            Some(binding) if binding.installation == call.installation_id => {
-                self.invoke_app_view_tool(&session_id, &binding, &call.method, call.params)
-                    .await
-            }
-            _ => Err(view_error(
+        let unbound = || {
+            view_error(
                 "APP_VIEW_UNBOUND",
                 "This view is not bound to an App",
-            )),
+            )
+        };
+        let outcome = match views.binding(&session_id, &call.target_id) {
+            Some(binding) if binding.installation == call.installation_id => {
+                match self
+                    .invoke_app_view_tool(&session_id, &binding, &call.method, call.params)
+                    .await
+                {
+                    // Built for an older generation: reload it with the current one.
+                    Err(error) if error.code == "APP_VIEW_STALE" => {
+                        self.reconnect_app_view(
+                            &session_id,
+                            &call.target_id,
+                            &binding.owner,
+                            &binding.installation,
+                        )
+                        .await
+                    }
+                    outcome => outcome,
+                }
+            }
+            // A view left open across a kernel restart. Only the session host's
+            // own active installation is reconnected; an uninstalled App, or a
+            // Tab bound to another installation, stays unbound.
+            None => match self.session_host(&session_id) {
+                Some(owner) => {
+                    self.reconnect_app_view(&session_id, &call.target_id, &owner, &call.installation_id)
+                        .await
+                }
+                None => Err(unbound()),
+            },
+            Some(_) => Err(unbound()),
         };
         let (result, error) = match outcome {
             Ok(value) => (Some(value), None),
@@ -284,6 +304,83 @@ impl KernelRuntimeState {
                 },
             )
             .await;
+    }
+
+    /// Binds the Tab to the installation's current generation, then reloads it
+    /// with that generation's view; the interrupted call asks the page to retry.
+    async fn reconnect_app_view(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        owner: &str,
+        installation: &str,
+    ) -> Result<Value, BrowserAppViewError> {
+        let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
+        let store = self.owned.durable_state_store.clone();
+        let (view_owner, view_installation) = (owner.to_owned(), installation.to_owned());
+        let Ok(Ok(view)) = tokio::task::spawn_blocking(move || {
+            store.app_view_assets(&view_owner, &view_installation)
+        })
+        .await
+        else {
+            return Err(unbound());
+        };
+        let views = self.app_control().views().clone();
+        views.register(
+            session_id,
+            target_id,
+            AppViewBinding {
+                owner: owner.to_owned(),
+                installation: installation.to_owned(),
+                generation: view.generation,
+            },
+        );
+        let (entry, assets) = view_assets(view);
+        let reloaded: Option<Value> = self
+            .app_view_command(
+                session_id,
+                BrowserAppViewRequest::Reload {
+                    target_id: target_id.to_owned(),
+                    entry,
+                    assets,
+                },
+            )
+            .await;
+        if reloaded.is_none() {
+            views.unbind(session_id, target_id);
+            return Err(unbound());
+        }
+        Err(view_error(
+            "APP_VIEW_RELOADING",
+            "The App changed; its view is reloading",
+        ))
+    }
+
+    /// The session's host, who owns the Room's reconnected views.
+    fn session_host(&self, session_id: &str) -> Option<String> {
+        self.owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .map(|session| session.owner_user_id().to_owned())
+    }
+
+    /// Once per kernel, polls every Room bound to a slice so views that
+    /// survived a restart reconnect instead of hanging.
+    pub(crate) fn resume_app_view_pumps(&self) {
+        let views = self.app_control().views().clone();
+        if !views.take_resume() {
+            return;
+        }
+        for session in self.owned.session_store.read().list_sessions() {
+            let session_id = session.id().to_owned();
+            if self.owned.slice_store.environment_slice(&session_id).is_some()
+                && views.begin_pumping(&session_id)
+            {
+                let state = self.clone();
+                tokio::spawn(async move { state.pump_app_view_calls(session_id).await });
+            }
+        }
     }
 
     async fn invoke_app_view_tool(
@@ -450,4 +547,20 @@ mod tests {
         assert_ne!(label, origin_label("other", "app-1"));
         assert_ne!(label, origin_label("user", "app-2"));
     }
+}
+
+fn view_assets(
+    view: crate::durable_state::app_view_assets::AppViewAssets,
+) -> (String, Vec<BrowserAppViewAsset>) {
+    let engine = base64::engine::general_purpose::STANDARD;
+    let assets = view
+        .assets
+        .into_iter()
+        .map(|asset| BrowserAppViewAsset {
+            path: asset.path,
+            content_type: asset.content_type.to_owned(),
+            body_base64: engine.encode(asset.bytes),
+        })
+        .collect();
+    (view.entry, assets)
 }

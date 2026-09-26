@@ -53,6 +53,8 @@ impl KernelRuntimeState {
             return;
         }
         self.owned.sweep_kernel_operation_interactions(false);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.resume_app_view_pumps();
         self.app_control().publishers().pump(self).await;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control().installs().pump(self).await;

@@ -78,6 +78,7 @@ impl KernelRuntimeState {
                 | Command::AppView {
                     request:
                         crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
+                            | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
                 }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
