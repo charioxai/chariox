@@ -551,13 +551,35 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
             }
             RelayPeerRequest::SubmitLeasedPrompt {
                 leased_agent_id,
-                home_prompt_id: request_prompt_id,
+                prompt,
+                git_context: Some(git_context),
                 ..
             } => {
                 assert_eq!(leased_agent_id, LEASED_AGENT_ID);
                 assert_eq!(
-                    request_prompt_id, successor_prompt_id,
-                    "the current queued successor should own the one dispatch"
+                    prompt, "queued successor",
+                    "the request should carry the current successor's exact prompt text"
+                );
+                assert_eq!(
+                    git_context.home_prompt_id, successor_prompt_id,
+                    "the request context should bind the one dispatch to the queued home prompt"
+                );
+                assert_eq!(
+                    git_context.home_turn_id, successor_prompt_id,
+                    "the request context should preserve the successor's home turn identity"
+                );
+                assert_eq!(
+                    git_context.home_session_id, session_id,
+                    "the request context should retain the home session binding"
+                );
+                assert_eq!(
+                    git_context.home_agent_id, agent_id,
+                    "the request context should retain the home agent binding"
+                );
+                assert_eq!(
+                    git_context.source_attachment_id.as_deref(),
+                    Some(attachment_id.as_str()),
+                    "the request context should retain the originating home attachment"
                 );
                 submit_count += 1;
                 assert_eq!(submit_count, 1, "successor dispatch must be claimed once");
