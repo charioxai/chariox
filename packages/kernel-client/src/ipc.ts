@@ -37,7 +37,6 @@ import { LocalIpcError } from "./local-ipc-error.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
 import {
   createRelayKeypair,
-  decryptRelayPayload,
   type RelayClientIdentity,
 } from "./relay-crypto.js"
 import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
@@ -45,6 +44,7 @@ import {
   buildRelayConnectFrame,
   buildRelaySubscribeFrame,
   buildRelayUnsubscribeFrame,
+  decryptRelayPayloadFromExpectedSender,
   normalizeRelayRequest,
 } from "./relay-transport.js"
 import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
@@ -455,6 +455,7 @@ export class LocalIpcClient {
       this.setWebSocket("event", null)
       this.setWebSocketConnectPromise("event", null)
     }
+    this.setRelayDaemonPublicKey("event", null)
     this.scheduleReconnect(25)
   }
 
@@ -542,17 +543,25 @@ export class LocalIpcClient {
       )
 
       try {
+        const daemonPublicKey = this.isRelayMode()
+          ? this.relayDaemonPublicKeyForSocket(lane, socket)
+          : null
         const relayRequest = this.isRelayMode()
           ? normalizeRelayRequest(
             requestId,
             request,
             this.relayTarget,
-            this.getRelayDaemonPublicKey(lane),
+            daemonPublicKey,
             this.relayIdentity,
           )
           : null
         if (relayRequest) {
-          pending.setRelayDecryptResponse(relayRequest.decryptResponse)
+          pending.setRelayDecryptResponse((payload) => {
+            if (this.getWebSocket(lane) !== socket) {
+              throw new Error("relay response belongs to a stale connection")
+            }
+            return relayRequest.decryptResponse(payload)
+          })
         }
         const payload = relayRequest
           ? relayRequest.frame
@@ -615,6 +624,7 @@ export class LocalIpcClient {
   ): Promise<void> {
     const lane: KernelSocketLane = "event"
     const socket = await this.ensureWebSocket(lane)
+    const daemonPublicKey = this.relayDaemonPublicKeyForSocket(lane, socket)
     const requestId = randomUUID()
     const subscription = this.activeKernelSubscription
     if (!subscription?.relaySubscriptionId) {
@@ -622,11 +632,17 @@ export class LocalIpcClient {
     }
     const subscriptionId = subscription.relaySubscriptionId
     const keypair = this.relayIdentity ? null : createRelayKeypair()
+    const identity = this.relayIdentity
     const clientPublicKey = this.relayIdentity?.publicKeyBase64
       ?? keypair!.publicKeyBase64
-    const decryptEvent = this.relayIdentity
-      ? (payload: EncryptedRelayPayload) => this.relayIdentity!.decrypt(payload)
-      : (payload: EncryptedRelayPayload) => decryptRelayPayload(keypair!.privateKey, payload)
+    const decryptEvent = (payload: EncryptedRelayPayload) => {
+      if (this.getWebSocket(lane) !== socket) {
+        throw new Error("relay event belongs to a stale connection")
+      }
+      return identity
+        ? identity.decrypt(payload, daemonPublicKey)
+        : decryptRelayPayloadFromExpectedSender(keypair!.privateKey, payload, daemonPublicKey)
+    }
     subscription.relayPublicKey = clientPublicKey
     subscription.relayDecryptEvent = decryptEvent
 
@@ -703,6 +719,9 @@ export class LocalIpcClient {
         }
         this.setWebSocketConnectPromise(lane, null)
         reject(new LocalIpcError(operation, formatTransportError(error, this.socketPath), code, retryable))
+        if (socket.readyState !== WebSocket.CLOSED) {
+          socket.terminate()
+        }
       }
 
       const handleConnectError = (error: unknown) => {
@@ -727,6 +746,9 @@ export class LocalIpcClient {
 
       socket.once("open", () => {
         const finalizeOpen = () => {
+          if (settled || this.getConnectingWebSocket(lane) !== socket) {
+            return
+          }
           settled = true
           clearConnectListeners()
           if (this.getConnectingWebSocket(lane) === socket) {
@@ -737,6 +759,9 @@ export class LocalIpcClient {
           this.setSuppressNextCloseEvent(lane, false)
           this.startKernelHeartbeat(socket, lane)
           socket.on("message", (data: WebSocket.RawData) => {
+            if (this.getWebSocket(lane) !== socket) {
+              return
+            }
             this.handleWebSocketMessage(data, lane)
           })
           socket.on("pong", () => {
@@ -795,6 +820,9 @@ export class LocalIpcClient {
         }
 
         const handleRelayHandshakeMessage = (data: WebSocket.RawData) => {
+          if (this.getConnectingWebSocket(lane) !== socket) {
+            return
+          }
           let frame: RelayConnectedFrame | RelayCloseFrame
           try {
             frame = JSON.parse(String(data)) as RelayConnectedFrame | RelayCloseFrame
@@ -802,8 +830,20 @@ export class LocalIpcClient {
             fail("connect relay transport", error)
             return
           }
+          if (!frame || typeof frame !== "object" || Array.isArray(frame)) {
+            fail("connect relay transport", "unexpected relay handshake frame")
+            return
+          }
           if (frame.kind === "client_connected") {
-            if (!frame.daemon_public_key) {
+            if (!relayTargetMatches(frame.target, this.relayTarget)) {
+              fail("connect relay transport", "relay connected to a different daemon target")
+              return
+            }
+            if (
+              typeof frame.daemon_public_key !== "string"
+              || frame.daemon_public_key.trim() === ""
+              || frame.daemon_public_key.trim() !== frame.daemon_public_key
+            ) {
               fail("connect relay transport", "relay did not provide daemon public key")
               return
             }
@@ -1143,6 +1183,25 @@ export class LocalIpcClient {
     return lane === "control" ? this.controlRelayDaemonPublicKey : this.eventRelayDaemonPublicKey
   }
 
+  private relayDaemonPublicKeyForSocket(lane: KernelSocketLane, socket: WebSocket): string {
+    if (this.getWebSocket(lane) !== socket) {
+      throw new LocalIpcError(
+        "encrypt relay request",
+        "relay connection changed before the request was sent",
+        "connection_closed",
+        true,
+      )
+    }
+    const publicKey = this.getRelayDaemonPublicKey(lane)
+    if (!publicKey) {
+      throw new LocalIpcError(
+        "encrypt relay request",
+        "relay daemon public key is missing for the active connection",
+      )
+    }
+    return publicKey
+  }
+
   private setRelayDaemonPublicKey(lane: KernelSocketLane, publicKey: string | null) {
     if (lane === "control") {
       this.controlRelayDaemonPublicKey = publicKey
@@ -1234,6 +1293,15 @@ function kernelEventFromValue(value: unknown): KernelEvent {
     throw new Error("kernel event envelope must contain a non-empty event name")
   }
   return value as KernelEvent
+}
+
+function relayTargetMatches(actual: unknown, expected: RelayTarget | null): boolean {
+  if (!expected || !actual || typeof actual !== "object" || Array.isArray(actual)) {
+    return false
+  }
+  const target = actual as Record<string, unknown>
+  return (target.daemon_id ?? null) === (expected.daemon_id ?? null)
+    && (target.daemon_alias ?? null) === (expected.daemon_alias ?? null)
 }
 
 function clampRandom(value: number): number {

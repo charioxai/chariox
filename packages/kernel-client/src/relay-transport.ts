@@ -43,8 +43,12 @@ export function normalizeRelayRequest(
     ? identity.encrypt(daemonPublicKey, plaintext)
     : ephemeral!.payload
   const decryptResponse = identity
-    ? (response: EncryptedRelayPayload) => identity.decrypt(response)
-    : (response: EncryptedRelayPayload) => decryptRelayPayload(ephemeral!.privateKey, response)
+    ? (response: EncryptedRelayPayload) => identity.decrypt(response, daemonPublicKey)
+    : (response: EncryptedRelayPayload) => decryptRelayPayloadFromExpectedSender(
+      ephemeral!.privateKey,
+      response,
+      daemonPublicKey,
+    )
   return {
     frame: {
       kind: "client_request",
@@ -54,6 +58,17 @@ export function normalizeRelayRequest(
     },
     decryptResponse,
   }
+}
+
+export function decryptRelayPayloadFromExpectedSender(
+  privateKey: Buffer,
+  payload: EncryptedRelayPayload,
+  expectedSenderPublicKey: string,
+): string {
+  if (!expectedSenderPublicKey || payload.sender_public_key !== expectedSenderPublicKey) {
+    throw new Error("relay sender identity mismatch")
+  }
+  return decryptRelayPayload(privateKey, payload)
 }
 
 function relayCommandEnvelope(value: unknown): { command_id: string; request: unknown } | null {

@@ -64,28 +64,64 @@ test("relay requests use the persistent CLI public key and decrypt with that sam
   privateKey.fill(0)
 })
 
+for (const persistent of [false, true]) {
+  test(`relay responses pin the ${persistent ? "persistent" : "ephemeral"} caller key to the daemon sender`, () => {
+    const clientKeypair = createRelayKeypair()
+    const identity = persistent ? new RelayClientIdentity(clientKeypair.privateKey) : null
+    const daemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+    const foreignDaemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+    const normalized = normalizeRelayRequest(
+      `request-${persistent ? "persistent" : "ephemeral"}-sender-pin`,
+      { GetDaemonHealth: null },
+      { daemon_id: "daemon-1", daemon_alias: null },
+      daemon.publicKeyBase64,
+      identity,
+    )
+    const clientPublicKey = normalized.frame.encrypted_request.sender_public_key
+    const responseText = JSON.stringify({ accepted: true })
+    const validResponse = daemon.encrypt(clientPublicKey, responseText)
+    const wrongSenderResponse = foreignDaemon.encrypt(clientPublicKey, responseText)
+
+    assert.equal(normalized.decryptResponse(validResponse), responseText)
+    assert.throws(() => normalized.decryptResponse(wrongSenderResponse), /relay sender identity mismatch/)
+    clientKeypair.privateKey.fill(0)
+  })
+}
+
 test("reconnected relay requests keep the same paired caller identity", () => {
   const privateKey = createRelayKeypair().privateKey
   const identity = new RelayClientIdentity(privateKey)
-  const daemon = createRelayKeypair()
+  const firstDaemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const reconnectedDaemon = new RelayClientIdentity(createRelayKeypair().privateKey)
   const first = normalizeRelayRequest(
     "request-before-reconnect",
     { GetDaemonHealth: null },
     { daemon_id: "daemon-1", daemon_alias: null },
-    daemon.publicKeyBase64,
+    firstDaemon.publicKeyBase64,
     identity,
   )
   const reconnected = normalizeRelayRequest(
     "request-after-reconnect",
     { GetDaemonHealth: null },
     { daemon_id: "daemon-1", daemon_alias: null },
-    daemon.publicKeyBase64,
+    reconnectedDaemon.publicKeyBase64,
     identity,
   )
 
   assert.equal(first.frame.encrypted_request.sender_public_key, identity.publicKeyBase64)
   assert.equal(reconnected.frame.encrypted_request.sender_public_key, identity.publicKeyBase64)
   assert.notEqual(first.frame.encrypted_request.nonce, reconnected.frame.encrypted_request.nonce)
+  const firstRecipient = first.frame.encrypted_request.sender_public_key
+  const reconnectedRecipient = reconnected.frame.encrypted_request.sender_public_key
+  assert.equal(first.decryptResponse(firstDaemon.encrypt(firstRecipient, "first-generation")), "first-generation")
+  assert.throws(
+    () => reconnected.decryptResponse(firstDaemon.encrypt(reconnectedRecipient, "stale-generation")),
+    /relay sender identity mismatch/,
+  )
+  assert.equal(
+    reconnected.decryptResponse(reconnectedDaemon.encrypt(reconnectedRecipient, "reconnected-generation")),
+    "reconnected-generation",
+  )
   privateKey.fill(0)
 })
 
