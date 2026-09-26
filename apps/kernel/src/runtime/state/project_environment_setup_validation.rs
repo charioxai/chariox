@@ -989,7 +989,7 @@ done
         assert!(prepared_path
             .starts_with(&preparation_home.path().join("go/bin").display().to_string()));
         run_worker_setup_steps(
-            &[r#"set -eu; mkdir -p "$HOME/go/bin"; printf '%s\n' '#!/bin/sh' 'printf "%s\n" installed-from-post-ready-provider' > "$HOME/go/bin/inner-tool"; chmod 700 "$HOME/go/bin/inner-tool"; printf '#!%s\n' "$HOME/go/bin/inner-tool" > "$HOME/go/bin/project-tool"; chmod 700 "$HOME/go/bin/project-tool""#.to_string()],
+            &[r#"set -eu; mkdir -p "$HOME/go/bin"; printf '%s\n' '#!/bin/sh' 'printf "%s\n" installed-from-post-ready-provider' > "$HOME/go/bin/inner-tool"; chmod 700 "$HOME/go/bin/inner-tool"; printf '%s\n' '#!/bin/sh' 'command -v inner-tool >/dev/null' 'exec inner-tool' > "$HOME/go/bin/project-tool"; chmod 700 "$HOME/go/bin/project-tool""#.to_string()],
             &workspace,
             &prepared_environment,
             || false,
@@ -1057,6 +1057,10 @@ done
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
+        std::fs::create_dir_all(&root).expect("project fixture root should exist");
+        let root = root
+            .canonicalize()
+            .expect("project fixture root should be canonicalized");
         let scripts = root.join("scripts");
         let testdata = root.join("testdata");
         std::fs::create_dir_all(&scripts).expect("script directory should exist");
@@ -1147,6 +1151,9 @@ done
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&root).expect("input fixture workspace should exist");
+        let root = root
+            .canonicalize()
+            .expect("input fixture workspace should be canonicalized");
         let path = root.join("package.json");
         let contents = br#"{"name":"fixture"}
 "#;
@@ -1182,6 +1189,53 @@ done
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn worker_input_attestation_rejects_materialized_symlink_parent_escape() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-input-escape-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).expect("input fixture workspace should exist");
+        std::fs::create_dir_all(&outside).expect("outside fixture should exist");
+        let workspace = workspace
+            .canonicalize()
+            .expect("input fixture workspace should be canonicalized");
+        let outside = outside
+            .canonicalize()
+            .expect("outside fixture should be canonicalized");
+        let contents = br#"{"name":"outside"}
+"#;
+        std::fs::write(outside.join("package.json"), contents)
+            .expect("outside input fixture should be written");
+        std::os::unix::fs::symlink(&outside, workspace.join("linked"))
+            .expect("workspace directory alias should be created");
+        let definition = ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: ProjectEnvironmentDefinitionSource::Devcontainer,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: Some("linked/package.json".to_string()),
+            inputs: vec![ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Recipe,
+                path: "linked/package.json".to_string(),
+                sha256: format!("sha256:{:x}", Sha256::digest(contents)),
+            }],
+            path_entries: Vec::new(),
+            setup_steps: Vec::new(),
+            validation_commands: vec!["true".to_string()],
+        };
+
+        let error = verify_project_environment_inputs(&workspace, &definition)
+            .expect_err("an input resolved outside the canonical worktree must be rejected");
+        assert!(error.contains("escapes the materialized worktree"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn worker_resolves_kernel_computed_input_attestation_before_persisting() {
         let root = std::env::temp_dir().join(format!(
@@ -1190,6 +1244,9 @@ done
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&root).expect("input fixture workspace should exist");
+        let root = root
+            .canonicalize()
+            .expect("input fixture workspace should be canonicalized");
         let path = root.join(".devcontainer/devcontainer.json");
         let contents = br#"{"name":"kernel-attested"}
 "#;
