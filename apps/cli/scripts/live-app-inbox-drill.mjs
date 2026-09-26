@@ -17,13 +17,16 @@ const evidence = { started_at: new Date().toISOString(), steps: [] }
 const route = `drill-${randomUUID().slice(0, 8)}`
 const occurrence = `occ-${randomUUID().slice(0, 8)}`
 const installation = options.installation
+// A failed run still removes the route it made.
+let created = false
 
 try {
-  const created = await client.send({ CreateAppInboxRoute: {
+  const answer = await client.send({ CreateAppInboxRoute: {
     installation_id: installation, route_id: route, event_name: options.event,
     source_event_type: "drill.event", source_event_version: 1,
   } })
-  assert.ok(created.AppInboxRoutes?.routes.some((row) => row.route_id === route), JSON.stringify(created))
+  assert.ok(answer.AppInboxRoutes?.routes.some((row) => row.route_id === route), JSON.stringify(answer))
+  created = true
   evidence.steps.push({ step: "create", route })
 
   const send = (payload) => client.send({ TestAppInboxRoute: {
@@ -49,6 +52,7 @@ try {
 
   const removed = await client.send({ RemoveAppInboxRoute: { installation_id: installation, route_id: route } })
   assert.ok(!removed.AppInboxRoutes?.routes.some((candidate) => candidate.route_id === route))
+  created = false
   evidence.steps.push({ step: "remove" })
   evidence.result = "passed"
   console.log(`App inbox drill passed: route ${route}, occurrence ${occurrence} delivered once`)
@@ -58,6 +62,9 @@ try {
   process.exitCode = 1
   console.error(error)
 } finally {
+  if (created) {
+    await client.send({ RemoveAppInboxRoute: { installation_id: installation, route_id: route } }).catch(() => {})
+  }
   evidence.finished_at = new Date().toISOString()
   if (options.evidence) await writeFile(options.evidence, `${JSON.stringify(evidence, null, 2)}\n`)
   client.close?.()
