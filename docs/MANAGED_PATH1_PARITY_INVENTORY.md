@@ -1,6 +1,6 @@
 # Managed Path-1 parity inventory (MP-11)
 
-Audit date: 2026-09-24 · OSS source baseline: `294ff610d03ddf57a367334a4da29bfad8e106cf`; Cloud source baseline: `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e`.
+Audit date: 2026-09-26 · published OSS source baseline: `4c8b979430d2dca6662de0b478a8b75b7ac3b231`; retained audit OSS baseline: `dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; Cloud source baseline last inspected: `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e` (stale; not refreshed in this pass).
 
 This is a source inventory for the canonical gate in
 `docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md`; it does not change that plan.
@@ -15,7 +15,85 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
-## Reconciled source inventory
+## Retained scoped OSS source audit (2026-09-26)
+
+This section carries forward the source-family audit recorded in commit
+`b221f2c626df8c55a07003cd491b0bdce58e5220` and its follow-up
+`bcfa97e6953ece7086d15a23bd6047418857b51e`. That audit used OSS baseline
+`dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; other source families were not
+re-audited at the published baseline above. Cloud findings retain their older
+baseline and are stale. No MP gate is closed by this source inventory.
+`managed_bootstrap/`, `provider/`, `runtime/`, and `git_worktree_placement.rs`
+abbreviate `apps/kernel/src/`. Deployment scripts, verifier, and unit names
+abbreviate `deploy/managed-kernel/`; `provision-linux-docker-slice.sh`,
+`docker/`, and the AppArmor profile abbreviate
+`apps/kernel/slice-linux-docker/`. `waiting-room-*` and
+`cli-waiting-room-composition.ts` abbreviate `apps/cli/src/`; the full
+`packages/kernel-client/src/` paths are shown. Swift kernel models/requests
+abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/Kernel/`, and Swift
+command/state files abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/State/`.
+
+### Source fixes and remaining acceptance
+
+1. The local placement fix protects only five slice control subdirectories.
+   The retained audit found the configured Path-1 slice root was not filtered.
+   Agent commit `347b823c4f55855a7d91fc127fc53314d98cdd3b` adds only
+   `runtime`, `states`, `backups`, `defaults`, and `logs` below
+   `CHARIOX_SLICE_ROOT` through the shared cwd and managed repository preflights
+   (`git_worktree_placement.rs:23-25,96-153,175-193,225-233`). Its regressions
+   allow the configured root, development project and unrelated siblings,
+   reject the control directories and descendants, and reject a symlink alias
+   to `backups` (`git_worktree_placement.rs:1141-1200`). Do not impose a blanket
+   slice-root ban. Root integrated this patch locally. Focused Rust execution
+   passed 14/15, including both new regressions, but an existing macOS fixture
+   expected `/var` instead of canonical `/private/var`. Its expectation-only
+   correction remains unexecuted. Placement publication, aggregate validation,
+   approval, deployment and fresh-worker evidence remain pending.
+
+2. The provider PATH fix is published in root commit
+   `aa4fa10831bbc3902fde005b0cf8f930c6224b7e`, integrated byte-identically from
+   `0832289de8feaf3ba30068c378d66cec965b6900`. Both Path-1 role units use
+   `/home/chariox/.local/bin:/usr/local/bin:/usr/bin:/bin`
+   (`chariox-path1-managed-bootstrap.service:25`,
+   `chariox-disposable-worker-bootstrap.service:30`). Codex, Claude and
+   OpenCode resolve commands in PATH order (`provider/codex.rs:164-176`,
+   `provider/claude.rs:508-524`, `provider/opencode.rs:163-176`); image setup
+   places pinned binaries under `/usr/local/bin`
+   (`prepare-hetzner-image.sh:197-199`). Root ran 17/17 focused source-contract
+   tests successfully. Actual effective units and resolved binaries on the
+   fresh worker, exact-head review and deployed parity remain unproven.
+
+3. The public Project setup regression found the generated repeatable
+   definition is persisted after validation. Agent75 is correcting the local
+   and authenticated leased-worker paths in `project_environment_setup.rs`,
+   preserving home authority, attempt/cancellation fencing and the validation
+   gate for Ready. The fix and its lifecycle tests are not yet integrated or
+   executed by root. This remains an MP-08 implementation requirement.
+
+### Source branch inventory
+
+| Family | Source classification and remaining evidence |
+| --- | --- |
+| Topology and provider launch — `managed_bootstrap/mod.rs:43-85`; `supervisor.rs:182-248`; `worker.rs:518-562`; `provider/managed_isolation.rs:157-165,908-936`; `provider/registry.rs:150-160,191-201,241-251`; catalog endpoints `codex/catalog_endpoint.rs:61-73`, `opencode/catalog_endpoint.rs:61-73` | Bootstrap topology is explicit and fail-closed. Path-1 removes shared-host isolation selectors; each official adapter uses the common unwrapped branch unless `CHARIOX_MANAGED_PROVIDER_ISOLATION` is truthy. Account utility endpoints use the same selector and command builder. This is source flow, not provider ancestry proof. |
+| Environment scrub, retry, restore, reconnect — `provider/managed_isolation.rs:107-143,168-188,908-936,1324-1351`; `provider/service/run_lifecycle.rs:11-64`; `runtime/state/provider_relaunch_runtime.rs:55-85`; `runtime/state/provider_launch_failure_runtime.rs:27-45,120-174`; `runtime/state/project_environment_setup.rs:2061-2099`; `provider/run_actor/command_execution.rs:25-70` | The fixed list removes managed topology, slice, bootstrap, broker and release controls; ambient secret-like and numbered workspace-root names are also removed. Selected account paths and resolved credentials are intentional launch inputs. Initial starts and policy relaunches resolve through the common adapter; setup-recovery snapshots preserve that launch. Prompt submit/abort restore live runtime slots without selecting a new topology. Launch-failure retry here retries durable cleanup, not provider execution. Live retry/reconnect comparison remains open. |
+| Supervisor restart and systemd — `managed_bootstrap/supervisor.rs:110-172`; `managed_bootstrap/worker.rs:278-304,463-489`; Path-1 units `chariox-path1-managed-bootstrap.service:9-32`, `chariox-disposable-worker-bootstrap.service:9-39`; `verify-image-release.mjs:369-445`; `upgrade-image.sh:121-134,654-660` | Kernel respawn uses the same Path-1 helper; worker preparation/restart remains Path-1. Role units contain no provider-restricting `Protect*`, `Private*`, `NoNewPrivileges`, namespace, address-family, `ReadWritePaths`, or `UMask` directives; release verification rejects those on the home unit and upgrade rejects Path-1 drop-ins. Worker `StateDirectory=chariox`/mode `0700` allocates service state, not a filesystem/process sandbox. Hardened shared-host, rootless Docker and broker services are separate. Effective installed units remain uninspected. |
+| Image, shell, container and AppArmor selectors — `prepare-hetzner-image.sh:36-54,137-149,239-241`; `install-image.sh:16-31,456-476,563-568`; `upgrade-image.sh:24-40,121-142`; `provision-linux-docker-slice.sh:766-784,860-883`; `docker/start-runtime.sh:146-174`; `chariox-slice-provider.apparmor:1-7` | Preparation/install/upgrade choose Path-1 explicitly and verify its unit. Bubblewrap/AppArmor/seccomp compatibility flags apply to the separate inner Docker slice; `start-runtime.sh` launches that slice kernel with managed isolation. The locked plan allows that distinct inner topology; it is not selected for host Path-1 provider children. No image build or effective policy inspection proves this on the live machine. |
+| Exact protected paths and Swift/TUI projections — `git_worktree_placement.rs:18-33,42-157,193-242`; `runtime/workspace_search.rs:198-253`; `packages/kernel-client/src/waiting-room-runtime-placement.ts:54-90,104-125`; CLI `waiting-room-controller.ts:320-411`, `waiting-room-managed-environments.ts:43-68,95-124`, `waiting-room-managed-environment-launch-controller.ts:88-120`, `waiting-room-managed-environment-reimage-controller.ts:78-145`, `waiting-room-start-rows.ts:136-147`, `cli-waiting-room-composition.ts:547-625,752-885`; `packages/kernel-client/src/ipc-managed-environment-requests.ts:24-140,183-218,234-305`; Swift `KernelProtocolModels.swift:3-89`, `KernelProtocolRequests.swift` | Exact entry and session/provider launch share cwd preflight. The local placement fix protects five control subdirectories, not the root/development/siblings. CLI projects catalog/readiness, trusted-root/context setup, lifecycle/auto-stop and reimage confirmation. After preparation it strips managed-only fields before ordinary session launch (`cli-waiting-room-composition.ts:598-625`). These are setup/control-plane projections, not an execution exception. Inspected Swift session/request models have no managed-environment projection; Swift managed commands concern live sync (`CharioxAppModelCommands.swift:85-98,157-189`; `CommandCenter.swift:164-167,464-495`). No Swift build or end-to-end client parity was run. |
+
+### Uninspected and live requirements
+
+- Finish Project persistence correction and rerun exact-head placement and
+  lifecycle tests. Published PATH source tests do not prove effective units.
+- Inspect systemd/drop-ins, provider ancestry, resolved binaries, environment,
+  mounts, permissions, `/home`, `/tmp` and actual slice-root behavior.
+- Exercise retry, policy relaunch, restart/reconnect, account selection,
+  Swift/client flows, errors, history and every shutdown trigger on the rebuilt
+  image. Preserve ordinary behavior except signed deployment and shutdown.
+- Re-audit deployed Cloud; bind allocation/rebuild, boot/machine/enrollment,
+  signed release, relay retirement, residue, cleanup, resources and soak.
+  MP-01 through MP-11 remain open pending full acceptance and review.
+
+## Previously reconciled source inventory (OSS `294ff610d03ddf57a367334a4da29bfad8e106cf`; Cloud `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e`)
 
 | Surface | Exact-head finding and remaining evidence |
 | --- | --- |
