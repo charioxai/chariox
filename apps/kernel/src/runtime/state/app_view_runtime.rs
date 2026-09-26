@@ -324,14 +324,17 @@ impl KernelRuntimeState {
         let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
         let store = self.owned.durable_state_store.clone();
         let (view_owner, view_installation) = (owner.to_owned(), installation.to_owned());
+        let views = self.app_control().views().clone();
         let Ok(Ok(view)) = tokio::task::spawn_blocking(move || {
             store.app_view_assets(&view_owner, &view_installation)
         })
         .await
         else {
+            // Not the host's active installation (or unreadable): answered
+            // unbound without re-reading the release on every call.
+            views.unbind(session_id, target_id);
             return Err(unbound());
         };
-        let views = self.app_control().views().clone();
         views.register(
             session_id,
             target_id,
@@ -371,22 +374,12 @@ impl KernelRuntimeState {
             .map(|session| session.owner_user_id().to_owned())
     }
 
-    /// Once per kernel, polls every Room bound to a slice so views that
-    /// survived a restart reconnect instead of hanging.
+    /// Once per session and kernel, as soon as its Room is bound to a slice,
+    /// polls it so views that survived a restart reconnect instead of hanging.
     pub(crate) fn resume_app_view_pumps(&self) {
         let views = self.app_control().views().clone();
-        if !views.take_resume() {
-            return;
-        }
-        for session in self.owned.session_store.read().list_sessions() {
-            let session_id = session.id().to_owned();
-            if self
-                .owned
-                .slice_store
-                .environment_slice(&session_id)
-                .is_some()
-                && views.begin_pumping(&session_id)
-            {
+        for session_id in self.owned.slice_store.environment_sessions() {
+            if views.take_resume(&session_id) && views.begin_pumping(&session_id) {
                 let state = self.clone();
                 tokio::spawn(async move { state.pump_app_view_calls(session_id).await });
             }
