@@ -1560,3 +1560,10 @@ Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS s
 Known test failures that none of these PRs caused:
 - `recovery_arms_a_fresh_nonce_without_reusing_a_prior_human_wait` fails because a stopped kernel's approval stays pending; #437 fixes this.
 - Three `room_environment_placement` tests fail on `main` as well.
+
+### macOS worker integration start (2026-09-24)
+
+The unsigned darwin-arm64 and linux-x64 native artifacts from run
+`34185809550`/`34185809490` expired on 2026-09-15. A fresh monitored macOS
+arm64 native build is admitted from the macOS worker integration PR, so local
+macOS development can execute Apps through the production launcher.

@@ -1,7 +1,8 @@
 //! Blocking ownership of a native App worker and its existing SDK channel.
 //!
 //! Linux preparation consumes installed-runtime and verified-package leases,
-//! then provisions fixed storage, code views and the owned cgroup domain.
+//! then provisions fixed storage, code views and the owned cgroup domain. macOS
+//! preparation provisions private APFS storage for the Seatbelt launcher.
 //! A private type or a native identity reply does not establish confinement.
 //!
 //! Spawn, wait, shutdown and Drop are blocking. The kernel must own this handle
@@ -13,6 +14,8 @@ mod private_data;
 pub use private_data::{PreparedDataReplace, PrivateData, PrivateDataError};
 #[cfg(target_os = "linux")]
 mod platform_linux;
+#[cfg(target_os = "macos")]
+mod platform_macos;
 mod record;
 mod spawn;
 #[cfg(target_os = "linux")]
@@ -66,6 +69,29 @@ impl PreparedWorker {
         migrate_from: Option<u32>,
     ) -> Result<Self, WorkerError> {
         platform_linux::prepare(runtime, release, binding, migrate_from)
+    }
+    /// macOS preparation. `storage_root` is the kernel-owned private storage
+    /// directory; the launcher applies Seatbelt to the derived canonical roots.
+    /// `committed_generation` is the installation's committed generation: it
+    /// may reuse storage last prepared for a newer, never-committed update.
+    #[cfg(target_os = "macos")]
+    pub fn prepare_macos(
+        runtime: crate::runtime_enrollment::EnrolledRuntime,
+        release: crate::release_store::VerifiedReleaseLease,
+        binding: &crate::installation::StageTrustBinding,
+        storage_root: &std::path::Path,
+        committed_generation: u64,
+    ) -> Result<Self, WorkerError> {
+        platform_macos::prepare(runtime, release, binding, storage_root, committed_generation)
+    }
+    /// Kernel startup recovery for macOS storage, before any worker of this
+    /// kernel is prepared: detaches volumes and clears interrupted creations.
+    /// The error is a stable code such as `app_storage_busy`, for diagnostics.
+    #[cfg(target_os = "macos")]
+    pub fn recover_macos_storage(storage_root: &std::path::Path) -> Result<(), &'static str> {
+        storage_macos::StorageRoot::open(storage_root)
+            .and_then(|root| root.recover_all_blocking())
+            .map_err(|error| error.code())
     }
 }
 
@@ -161,6 +187,10 @@ impl WorkerLimits {
 pub enum WorkerError {
     #[error("app_worker_preparation")]
     Preparation,
+    /// The installation's private storage could not be prepared; the code
+    /// (e.g. `app_storage_capacity`) is stable and names no App path.
+    #[error("app_worker_storage:{0}")]
+    Storage(&'static str),
     #[error("app_worker_spawn")]
     Spawn,
     #[error("app_worker_startup_timeout")]
