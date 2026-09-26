@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, relative, sep } from "node:path"
+import { basename, join, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { once } from "node:events"
@@ -964,12 +964,29 @@ case "$1 $2" in
     ! grep -F 'working tree drift' "$dockerfile" >/dev/null
     printf '%s\n' "$*" >> '${trace}'
     case " $* " in *" --builder fail-builder "*) exit 39 ;; esac
+    export_case=normal
+    case " $* " in
+      *" --builder missing-artifact "*) export_case=missing ;;
+      *" --builder extra-artifact "*) export_case=extra ;;
+      *" --builder symlink-export-directory "*) export_case=symlink-directory ;;
+      *" --builder symlink-export-artifact "*) export_case=symlink-artifact ;;
+    esac
     [ -n "$destination" ]
     [ ! -e "$destination" ]
+    if [ "$export_case" = symlink-directory ]; then
+      ln -s '${fixture.sourceRepository}' "$destination"
+      exit 0
+    fi
     mkdir "$destination"
     printf 'kernel from archived commit\n' > "$destination/chariox-kernel"
     printf 'supervisor from archived commit\n' > "$destination/chariox-managed-bootstrap"
     printf 'relay from archived commit\n' > "$destination/chariox-relay"
+    if [ "$export_case" = missing ]; then rm "$destination/chariox-relay"; fi
+    if [ "$export_case" = extra ]; then printf 'unexpected\n' > "$destination/unexpected-member"; fi
+    if [ "$export_case" = symlink-artifact ]; then
+      rm "$destination/chariox-relay"
+      ln -s "$dockerfile" "$destination/chariox-relay"
+    fi
     ;;
   *) exit 33 ;;
 esac
@@ -1057,6 +1074,36 @@ esac
   assert.match(failed.stderr, /artifact export failed with status 39/)
   assert.equal(await lstat(failedOutput).then(() => true, () => false), false)
   assert.equal((await readdir(root)).some((name) => name.startsWith(".new-builder-output-failure-")), false)
+  assert.deepEqual(await readdir(temp), [])
+
+  const rejectedExports = [
+    ["missing-artifact", /unexpected file set/],
+    ["extra-artifact", /unexpected file set/],
+    ["symlink-export-directory", /artifact export is not a directory/],
+    ["symlink-export-artifact", /did not export regular chariox-relay/],
+  ]
+  for (const [builderName, message] of rejectedExports) {
+    const destination = join(root, `builder-output-${builderName}`)
+    const rejected = runBuilder(destination, builderName)
+    assert.equal(rejected.status, 1, `${builderName}: ${rejected.stderr}`)
+    assert.match(rejected.stderr, message)
+    assert.equal(await lstat(destination).then(() => true, () => false), false)
+    assert.equal((await readdir(root)).some((name) => name.startsWith(`.new-${basename(destination)}-`)), false)
+    assert.deepEqual(await readdir(temp), [])
+    assert.equal((await lstat(fixture.sourceRepository)).isDirectory(), true)
+  }
+
+  const existingOutput = join(root, "builder-output-preserved")
+  await mkdir(existingOutput)
+  await writeFile(join(existingOutput, "sentinel"), "preserve existing output\n")
+  const traceBeforeExistingOutput = await readFile(trace, "utf8")
+  const existing = runBuilder(existingOutput, "capped-release-builder")
+  assert.equal(existing.status, 1)
+  assert.match(existing.stderr, /output must not exist/)
+  assert.deepEqual(await readdir(existingOutput), ["sentinel"])
+  assert.equal(await readFile(join(existingOutput, "sentinel"), "utf8"), "preserve existing output\n")
+  assert.equal(await readFile(trace, "utf8"), traceBeforeExistingOutput)
+  assert.equal((await readdir(root)).some((name) => name.startsWith(".new-builder-output-preserved-")), false)
   assert.deepEqual(await readdir(temp), [])
 })
 
