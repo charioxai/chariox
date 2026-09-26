@@ -153,6 +153,34 @@ fn accepting_dedupes_by_source_occurrence() {
 }
 
 #[test]
+fn settled_occurrences_are_pruned_after_the_dedupe_window() {
+    let db = db();
+    let route = route("r1");
+    let Accepted::New(first) =
+        app_inbox::accept_in(&db, &route, "occ-old", &json!({"text":"a"}), 3, 1_000).unwrap()
+    else {
+        panic!("first acceptance must be new");
+    };
+    app_inbox::delivered_in(&db, first, 3).unwrap();
+    // Inside the window a replay is still a duplicate.
+    let inside = 1_000 + app_inbox::DEDUPE_WINDOW_MS - 1;
+    assert_eq!(
+        app_inbox::accept_in(&db, &route, "occ-old", &json!({"text":"a"}), 3, inside).unwrap(),
+        Accepted::Duplicate(first)
+    );
+    // Past it, the next acceptance prunes the settled row.
+    let past = 1_000 + app_inbox::DEDUPE_WINDOW_MS;
+    app_inbox::accept_in(&db, &route, "occ-new", &json!({"text":"b"}), 3, past).unwrap();
+    assert_eq!(
+        app_inbox::counts(&db, &route).unwrap(),
+        app_inbox::InboxCounts {
+            pending: 1,
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
 fn failures_back_off_then_poison() {
     let db = db();
     let Accepted::New(sequence) =
