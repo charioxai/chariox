@@ -18,6 +18,8 @@ pub(super) struct FixturePlatform {
     pub(super) native: Arc<chariox_app_runtime::worker_process::test_fixture::Fixture>,
     pub(super) fail_health: bool,
     pub(super) fail_migration: bool,
+    /// The kernel stops right after an update commits, before activation.
+    pub(super) stop_after_commit: bool,
     pub(super) observations:
         Arc<Mutex<Vec<chariox_app_runtime::worker_process::test_fixture::Observation>>>,
 }
@@ -107,11 +109,29 @@ pub(super) fn register(
         .and_then(|releases| releases.lease_verified(&verified, active.bytes()))
         .map_err(|_| LifecycleError::Preparation)?;
     check()?;
-    // A staged worker whose update opened a migration runs its steps first.
-    let migrate_from = context
+    // A staged worker whose update opened a migration runs its steps first,
+    // always from the snapshot: a run a kernel stop interrupted may have
+    // written at the new schema without recording its step.
+    let installation = &binding.token().installation_id;
+    let mut migrate_from = context
         .store
-        .app_migration_from(&binding.token().installation_id, binding.token().generation)
+        .app_migration_from(installation, binding.token().generation)
         .map_err(|_| LifecycleError::Preparation)?;
+    if migrate_from.is_some() {
+        context
+            .store
+            .execute_app_state(
+                binding.owner_id(),
+                events.clone(),
+                crate::durable_state::app_state::AppStateOperation::MigrationRewind,
+                budget.fork(|| false),
+            )
+            .map_err(|_| LifecycleError::Preparation)?;
+        migrate_from = context
+            .store
+            .app_migration_from(installation, binding.token().generation)
+            .map_err(|_| LifecycleError::Preparation)?;
+    }
     let prepared = spawn(context, binding, &verified, release, migrate_from)?;
     let process = prepared.process;
     if context.control.stopped() {

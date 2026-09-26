@@ -292,6 +292,24 @@ fn crash_after_quiesce(
     String,
     InstallOperation,
 ) {
+    crash_during_update(scratch, runtime, request, fail_migration, |_, _| {})
+}
+
+/// As `crash_after_quiesce`, with `interrupted` run on the stopped kernel's
+/// database first, to leave what an interrupted step left.
+fn crash_during_update(
+    scratch: &Scratch,
+    runtime: &tokio::runtime::Runtime,
+    request: &str,
+    fail_migration: bool,
+    interrupted: impl FnOnce(&DurableKernelStateStore, &str),
+) -> (
+    DurableKernelStateStore,
+    AppControlService,
+    Arc<Mutex<Vec<Observation>>>,
+    String,
+    InstallOperation,
+) {
     let store = scratch.store();
     let (control, observations, id) = installed(&store, runtime);
     let update = stage_update(&store, &id, request, "2.0.0", 1);
@@ -308,6 +326,7 @@ fn crash_after_quiesce(
     let paused = store.get_app_installation("alice", &id).unwrap();
     assert_eq!(paused.pending_generation, Some(update.token.generation));
     assert!(paused.admission_paused);
+    interrupted(&store, &id);
     drop(control);
     drop(store);
 
@@ -484,5 +503,150 @@ fn an_update_breaks_only_automations_whose_event_schema_changed_and_logs_why() {
     assert_eq!(logged, 0);
     control.lifecycle().stop_blocking("alice", &id).unwrap();
     assert!(all_reaped(&observations));
+    control.lifecycle().shutdown_blocking().unwrap();
+}
+
+/// What a migration step that was stopped before `migration.step` leaves: a
+/// write at the new schema, with the step not recorded.
+fn interrupted_step(store: &DurableKernelStateStore, installation: &str) {
+    let db = rusqlite::Connection::open(store.path()).unwrap();
+    let (target, migrated): (i64, i64) = db
+        .query_row(
+            "SELECT target,migrated FROM app_state_migrations WHERE installation_id=?1",
+            [installation],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (target, migrated),
+        (1, 0),
+        "the snapshot is taken, no step recorded"
+    );
+    let value = "\"from the interrupted step\"";
+    db.execute(
+        "INSERT INTO app_state_values(installation_id,key,version,value_json) VALUES(?1,'partial',1,?2)",
+        rusqlite::params![installation, value],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO app_state_heads(installation_id,revision,key_count,payload_bytes)
+         VALUES(?1,1,1,?2) ON CONFLICT(installation_id) DO UPDATE SET
+           revision=revision+1,key_count=key_count+1,payload_bytes=payload_bytes+?2",
+        rusqlite::params![installation, value.len() as i64],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_stop_mid_migration_discards_the_interrupted_writes_before_migrating_again() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let (store, control, observations, id, update) =
+        crash_during_update(&scratch, &runtime, "mid_migration", false, interrupted_step);
+    let status = store
+        .first_app_install_status("alice", "mid_migration")
+        .unwrap();
+    assert_eq!(
+        status.phase,
+        InstallPhase::Committed,
+        "{:?}",
+        status.failure
+    );
+    wait(|| {
+        control
+            .active_app_lease("alice", &id)
+            .is_some_and(|lease| lease.catalog().generation() == update.token.generation)
+    });
+    // The rerun migrated from the snapshot: only its own write is there.
+    assert_eq!(state_value(&store, "migrated").as_deref(), Some("true"));
+    assert_eq!(state_value(&store, "partial"), None);
+    control.lifecycle().stop_blocking("alice", &id).unwrap();
+    assert!(all_reaped(&observations));
+    control.lifecycle().shutdown_blocking().unwrap();
+}
+
+#[test]
+fn a_stop_mid_migration_that_fails_again_restores_the_old_data() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let (store, control, observations, id, _) = crash_during_update(
+        &scratch,
+        &runtime,
+        "mid_migration_failure",
+        true,
+        interrupted_step,
+    );
+    assert_eq!(
+        store
+            .first_app_install_status("alice", "mid_migration_failure")
+            .unwrap()
+            .phase,
+        InstallPhase::Failed
+    );
+    let installation = store.get_app_installation("alice", &id).unwrap();
+    assert_eq!(installation.generation, 1);
+    assert_eq!(installation.active.unwrap().release.schema_version, 0);
+    assert_eq!(state_value(&store, "partial"), None);
+    assert_eq!(state_value(&store, "migrated"), None);
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn a_stop_between_commit_and_activation_runs_the_committed_generation_on_restart() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    let (control, observations, id) = installed(&store, &runtime);
+    control
+        .lifecycle()
+        .0
+        .fixture
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .stop_after_commit = true;
+    let update = stage_update(&store, &id, "commit_then_stop", "2.0.0", 1);
+    let _ = control.lifecycle().start_first_blocking(
+        "alice",
+        "commit_then_stop",
+        runtime.handle().clone(),
+    );
+    wait(|| {
+        store
+            .first_app_install_status("alice", "commit_then_stop")
+            .unwrap()
+            .phase
+            == InstallPhase::Committed
+    });
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+    // The commit holds: generation, schema and the migration's write.
+    let installation = store.get_app_installation("alice", &id).unwrap();
+    assert_eq!(installation.generation, update.token.generation);
+    assert_eq!(installation.active.unwrap().release.schema_version, 1);
+    assert_eq!(state_value(&store, "migrated").as_deref(), Some("true"));
+    drop(control);
+    drop(store);
+
+    // After a restart, recovery alone starts the committed generation.
+    let store = scratch.store();
+    let (control, restarted) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    wait(|| {
+        control.lifecycle().0.maintenance.lock().unwrap().next = Instant::now();
+        control
+            .lifecycle()
+            .schedule_recovery(runtime.handle().clone());
+        control
+            .active_app_lease("alice", &id)
+            .is_some_and(|lease| lease.catalog().generation() == update.token.generation)
+    });
+    let installation = store.get_app_installation("alice", &id).unwrap();
+    assert_eq!(installation.pending_generation, None);
+    assert!(!installation.admission_paused);
+    assert_eq!(state_value(&store, "migrated").as_deref(), Some("true"));
+    control.lifecycle().stop_blocking("alice", &id).unwrap();
+    assert!(all_reaped(&restarted));
     control.lifecycle().shutdown_blocking().unwrap();
 }

@@ -96,6 +96,7 @@ fn make_control(
         native,
         fail_health: false,
         fail_migration: false,
+        stop_after_commit: false,
         observations: observations.clone(),
     });
     (control, observations)

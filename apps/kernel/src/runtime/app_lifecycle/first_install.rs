@@ -63,6 +63,15 @@ pub(super) fn activate(
         context
             .store
             .commit_first_app_install(admission, report, budget.fork(|| false))?;
+    #[cfg(test)]
+    if context
+        .fixture
+        .as_ref()
+        .is_some_and(|fixture| fixture.stop_after_commit)
+    {
+        // Dropping `healthy` reaps the new worker unactivated, as a stop would.
+        return Err(LifecycleError::Stopped);
+    }
     let (owner, handle) = healthy
         .activate_blocking(committed.activation)
         .map_err(|_| LifecycleError::Registration)?;

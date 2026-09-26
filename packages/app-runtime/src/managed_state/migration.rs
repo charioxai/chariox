@@ -128,6 +128,37 @@ pub(crate) fn restore_in(
     installation: &str,
     generation: u64,
 ) -> std::result::Result<(), InstallationError> {
+    if put_back(tx, installation, generation)? {
+        discard(tx, installation)?;
+    }
+    Ok(())
+}
+
+/// A migrating worker starting (again): whatever an interrupted run wrote is
+/// dropped, and the migration restarts from the snapshot at the active
+/// release's schema. The snapshot stays for a later abort.
+pub(super) fn rewind(tx: &Connection, scope: StateScope<'_>) -> Result<()> {
+    if admit(tx, scope)?.is_none() {
+        return Ok(());
+    }
+    let from = load_installation(tx, scope.installation)?
+        .active
+        .map_or(0, |active| active.release.schema_version);
+    put_back(tx, scope.installation, scope.generation)?;
+    tx.execute(
+        "UPDATE app_state_migrations SET migrated=?3 WHERE installation_id=?1 AND generation=?2",
+        params![scope.installation, scope.generation as i64, from],
+    )?;
+    Ok(())
+}
+
+/// Replaces the installation's values and head with the snapshot's; false
+/// when this generation opened no migration.
+fn put_back(
+    tx: &Connection,
+    installation: &str,
+    generation: u64,
+) -> std::result::Result<bool, InstallationError> {
     let head: Option<Option<String>> = tx
         .query_row(
             "SELECT head_json FROM app_state_migrations WHERE installation_id=?1 AND generation=?2",
@@ -135,7 +166,7 @@ pub(crate) fn restore_in(
             |row| row.get(0),
         )
         .optional()?;
-    let Some(head) = head else { return Ok(()) };
+    let Some(head) = head else { return Ok(false) };
     let saved: (i64, i64, i64) = match head {
         Some(text) => serde_json::from_str(&text)?,
         None => (0, 0, 0),
@@ -170,7 +201,7 @@ pub(crate) fn restore_in(
            revision=excluded.revision,key_count=excluded.key_count,payload_bytes=excluded.payload_bytes",
         params![installation, revision, saved.1, saved.2],
     )?;
-    Ok(discard(tx, installation)?)
+    Ok(true)
 }
 
 fn discard(tx: &Connection, installation: &str) -> rusqlite::Result<()> {

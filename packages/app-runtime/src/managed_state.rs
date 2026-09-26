@@ -172,6 +172,12 @@ impl<'a> ManagedStateStore<'a> {
         migration::step(transaction, scope, to)
     }
 
+    /// A migrating worker starts: an interrupted run's writes are dropped
+    /// and the migration restarts from its snapshot.
+    pub fn migration_rewind_in(transaction: &Transaction<'_>, scope: StateScope<'_>) -> Result<()> {
+        migration::rewind(transaction, scope)
+    }
+
     /// The data schema an open migration of this pending generation starts
     /// the staged worker from, or None when there is nothing to migrate.
     pub fn migration_from(

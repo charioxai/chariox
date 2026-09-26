@@ -52,6 +52,8 @@ pub(crate) enum AppStateOperation {
     MigrationStep {
         to: u32,
     },
+    /// A migrating worker is about to (re)start its steps.
+    MigrationRewind,
 }
 impl AppStateOperation {
     fn name(&self) -> &'static str {
@@ -64,6 +66,7 @@ impl AppStateOperation {
             Self::Status { .. } => "status",
             Self::Retry { .. } => "retry",
             Self::MigrationStep { .. } => "migration_step",
+            Self::MigrationRewind => "migration_rewind",
         }
     }
 }
@@ -206,7 +209,9 @@ fn apply(
     let current = catalog.app_catalog().require_current(&transaction, owner);
     // A migrating worker of the pending stage may only read and write state.
     let migration = match &operation {
-        AppStateOperation::Get { .. } | AppStateOperation::MigrationStep { .. } => true,
+        AppStateOperation::Get { .. }
+        | AppStateOperation::MigrationStep { .. }
+        | AppStateOperation::MigrationRewind => true,
         AppStateOperation::Transaction {
             occurrences, wakes, ..
         } => occurrences.is_empty() && wakes.is_empty(),
@@ -243,6 +248,10 @@ fn apply(
         }
         AppStateOperation::MigrationStep { to } => {
             ManagedStateStore::migration_step_in(&transaction, scope, to)?;
+            AppStateOutcome::Value(None)
+        }
+        AppStateOperation::MigrationRewind => {
+            ManagedStateStore::migration_rewind_in(&transaction, scope)?;
             AppStateOutcome::Value(None)
         }
         event => AppStateOutcome::Receipt(events::apply(&mut transaction, catalog, owner, event)?),
