@@ -207,7 +207,10 @@ and `consistency` is the label the snapshot keeps:
 - `crash_consistent`: nothing is held, so files may be copied mid-write.
 
 Only the active generation can take one (`CONFLICT` while an update is
-staged). The copy follows no links and skips special and hard-linked files.
+staged), and an installation's snapshots run one at a time. The copy follows
+no links and skips special and hard-linked files, and entries that vanish
+while it walks. A failed copy is `STORAGE_UNAVAILABLE` (retryable when it may
+pass on retry) or `LIMIT_EXCEEDED`.
 It is bounded like the data volume (10,000 files, 512 MiB) and needs host free
 space beyond that (`LIMIT_EXCEEDED`). The kernel keeps the newest two per
 installation. Outbox, inbox and validation receipts are never part of a

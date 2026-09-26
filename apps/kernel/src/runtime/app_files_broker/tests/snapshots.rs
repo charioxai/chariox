@@ -153,8 +153,18 @@ fn a_snapshot_holds_files_and_state_and_restores_into_an_isolated_installation()
         .unwrap();
     let again = isolated.store.export_app_state("alice", target).unwrap();
     assert_eq!(
-        (&again["values"], &again["head"], &again["wakes"]),
-        (&state["values"], &state["head"], &state["wakes"])
+        (
+            &again["values"],
+            &again["head"],
+            &again["migration"],
+            &again["wakes"]
+        ),
+        (
+            &state["values"],
+            &state["head"],
+            &state["migration"],
+            &state["wakes"]
+        )
     );
     // The isolated worker's own start-up files were replaced.
     assert!(isolated.data().read_file("ready-ack", 64).is_err());
@@ -208,4 +218,71 @@ fn a_quiescent_snapshot_waits_for_sdk_writes_and_only_two_are_kept() {
     });
     let kept = std::fs::read_dir(&root).unwrap().count();
     assert_eq!(kept, app_snapshot_broker::RETAINED, "the oldest is dropped");
+}
+
+#[test]
+fn concurrent_snapshots_are_whole_the_newest_are_kept_and_restore_checks_first() {
+    let fixture = Fixture::new(Mode::Ready);
+    seed(&fixture);
+    let root =
+        app_snapshot_broker::root(&fixture.store, fixture.catalog.installation_id()).unwrap();
+    let broker = snapshots(&fixture);
+    let ids = fixture.runtime.block_on(async {
+        let mut peer = TestPeer::start_with(Arc::new(Snapshots(broker)));
+        let mut ids = Vec::new();
+        for round in 0..2 {
+            // Both requests are in flight together.
+            for name in ["a", "b"] {
+                peer.send(
+                    &format!("{name}-{round}"),
+                    "files.snapshot",
+                    serde_json::json!({"name": name, "consistency": "crash_consistent"}),
+                )
+                .await;
+            }
+            for _ in 0..2 {
+                let reply = peer.response().await.1.unwrap();
+                ids.push(reply["snapshotId"].as_str().unwrap().to_owned());
+            }
+        }
+        peer.close().await;
+        ids
+    });
+    let mut kept = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    kept.sort();
+    let mut newest = ids.clone();
+    newest.sort();
+    assert_eq!(
+        kept,
+        newest[2..],
+        "the two newest are kept, none half-written"
+    );
+    for id in &kept {
+        let manifest = read(root.join(id).join("manifest.json"));
+        assert_eq!(manifest["files"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            std::fs::read(root.join(id).join("files/notes/plan.md")).unwrap(),
+            b"# Plan"
+        );
+    }
+    // A copy asked to stop stops.
+    let target = root.join(".tmp-stopped");
+    private_dir(&target);
+    assert!(fixture
+        .data()
+        .copy_tree(&target, LIMITS, &mut || false)
+        .is_err());
+    // A source beyond the limits is refused before any App data is removed.
+    let small = chariox_app_runtime::worker_process::TreeLimits { files: 1, ..LIMITS };
+    assert!(fixture
+        .data()
+        .restore_tree(&root.join(&kept[0]).join("files"), small)
+        .is_err());
+    assert_eq!(
+        fixture.data().read_file("notes/plan.md", 64).unwrap(),
+        b"# Plan"
+    );
 }

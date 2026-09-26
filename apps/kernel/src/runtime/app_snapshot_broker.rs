@@ -32,6 +32,14 @@ pub(crate) const LIMITS: TreeLimits = TreeLimits {
 /// Free space the host keeps beyond a full-size snapshot.
 const HOST_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// One snapshot at a time per installation, across workers: a copy never
+/// races another's staging or retention.
+static IN_PROGRESS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(Default::default);
+/// Orders snapshots taken in the same millisecond.
+static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -91,6 +99,13 @@ impl AppSnapshotBroker {
             .clone()
             .try_acquire_owned()
             .map_err(|_| error("APP_BUSY", true))?;
+        let serial = IN_PROGRESS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(self.catalog.installation_id().to_owned())
+            .or_default()
+            .clone();
+        let serial = serial.lock_owned().await;
         // Held across the copy: in-flight SDK writes finish first, new ones wait.
         let fence = if quiescent {
             Some(self.fence.clone().write_owned().await)
@@ -103,6 +118,7 @@ impl AppSnapshotBroker {
         let service = self.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            let _serial = serial;
             let _fence = fence;
             service.take(&params.name, &params.consistency, &budget)
         })
@@ -126,15 +142,34 @@ impl AppSnapshotBroker {
         if free_bytes(&root).is_none_or(|free| free < LIMITS.bytes + HOST_RESERVE_BYTES) {
             return Err(error("LIMIT_EXCEEDED", false));
         }
-        let id = format!("snapshot-{:032x}", rand::random::<u128>());
+        // Sortable by name: time, then order within this kernel.
+        let id = format!(
+            "snapshot-{:013}-{:08x}-{:016x}",
+            crate::session::unix_epoch_ms(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            rand::random::<u64>()
+        );
         let staging = root.join(format!(".tmp-{id}"));
         let result = (|| {
             private_dir(&staging)?;
             private_dir(&staging.join("files"))?;
+            // Checked per file, so a stopped call releases the fence early.
+            let mut stopped = false;
             let files = self
                 .data
-                .copy_tree(&staging.join("files"), LIMITS)
-                .map_err(|_| error("LIMIT_EXCEEDED", false))?;
+                .copy_tree(&staging.join("files"), LIMITS, &mut || {
+                    stopped = budget.check().is_err();
+                    !stopped
+                })
+                .map_err(|failure| {
+                    use chariox_app_runtime::worker_process::PrivateDataError;
+                    match failure {
+                        _ if stopped => error("APP_OPERATION_STOPPED", false),
+                        PrivateDataError::Invalid => error("LIMIT_EXCEEDED", false),
+                        PrivateDataError::Identity => error("STORAGE_UNAVAILABLE", false),
+                        _ => error("STORAGE_UNAVAILABLE", true),
+                    }
+                })?;
             budget
                 .check()
                 .map_err(|_| error("APP_OPERATION_STOPPED", false))?;
@@ -238,29 +273,24 @@ fn sync_dir(path: &Path) -> Result<(), RemoteError> {
         .map_err(storage)
 }
 
-/// Keeps the newest `RETAINED` snapshots and drops unfinished copies.
+/// Keeps the newest `RETAINED` snapshots (ids sort by time) and drops copies
+/// a crash left unfinished; the caller holds the installation's snapshot lock.
 fn prune(root: &Path) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     let mut kept = Vec::new();
     for entry in entries.flatten() {
-        let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with(".tmp-") {
-            let _ = std::fs::remove_dir_all(&path);
-            continue;
+            let _ = std::fs::remove_dir_all(entry.path());
+        } else {
+            kept.push((name, entry.path()));
         }
-        let created = std::fs::read(path.join("manifest.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|manifest| manifest["created_at_ms"].as_u64())
-            .unwrap_or(0);
-        kept.push((created, name, path));
     }
     kept.sort();
     let excess = kept.len().saturating_sub(RETAINED);
-    for (_, _, path) in kept.into_iter().take(excess) {
+    for (_, path) in kept.into_iter().take(excess) {
         let _ = std::fs::remove_dir_all(path);
     }
 }

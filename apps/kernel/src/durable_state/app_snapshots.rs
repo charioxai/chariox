@@ -119,6 +119,19 @@ impl DurableKernelStateStore {
                 ],
             )?;
         }
+        if let Some(migration) = state["migration"].as_object() {
+            tx.execute(
+                "INSERT OR REPLACE INTO app_state_migrations(installation_id,generation,head_json,target,migrated)
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    installation,
+                    migration["generation"].as_i64(),
+                    migration["head_json"].as_str(),
+                    migration["target"].as_i64(),
+                    migration["migrated"].as_i64()
+                ],
+            )?;
+        }
         for wake in state["wakes"].as_array().into_iter().flatten() {
             tx.execute(
                 "INSERT OR REPLACE INTO app_wakes(owner_id,installation_id,wake_id,due_at_ms,revision,
