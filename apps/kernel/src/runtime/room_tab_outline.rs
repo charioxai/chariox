@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 
 use crate::local::RoomEnvironmentAccessibilityNode;
-use crate::runtime::browser_controller_snapshot::RoomBrowserAccessibilityNode;
+use crate::runtime::browser_controller_snapshot::{
+    RoomBrowserAccessibilityNode, MAX_SNAPSHOT_NODES,
+};
 
 /// Bound on the outline a terminal receives for one Tab.
 const MAX_NODES: usize = 2000;
@@ -34,40 +36,63 @@ pub(crate) fn outline(
             || (node.role == "StaticText"
                 && parent(node).is_some_and(|parent| parent.name.contains(node.name.as_str()))))
     };
-    let kept_ancestor = |node: &RoomBrowserAccessibilityNode| {
-        let mut current = parent(node);
-        for _ in 0..nodes.len() {
-            match current {
-                Some(ancestor) if kept(ancestor) => return Some(ancestor.element_ref.clone()),
-                Some(ancestor) => current = parent(ancestor),
-                None => break,
-            }
+    // Children in document order: the snapshot's own child list, else (for a
+    // node without one) the nodes naming it as parent, in snapshot order.
+    let mut by_parent: HashMap<&str, Vec<&RoomBrowserAccessibilityNode>> = HashMap::new();
+    for node in nodes {
+        if let Some(parent) = node.parent_ref.as_deref() {
+            by_parent.entry(parent).or_default().push(node);
         }
-        None
-    };
-    let mut children: HashMap<Option<String>, Vec<&RoomBrowserAccessibilityNode>> = HashMap::new();
-    for node in nodes.iter().filter(|node| kept(node)) {
-        children.entry(kept_ancestor(node)).or_default().push(node);
     }
+    let children = |node: &RoomBrowserAccessibilityNode| -> Vec<&RoomBrowserAccessibilityNode> {
+        if node.child_refs.is_empty() {
+            by_parent
+                .get(node.element_ref.as_str())
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            node.child_refs
+                .iter()
+                .filter_map(|child| by_ref.get(child.as_str()).copied())
+                .collect()
+        }
+    };
+    // The controller keeps at most MAX_SNAPSHOT_NODES raw nodes, cutting the
+    // deepest ones: an outline of a full snapshot may be missing text too.
+    let mut truncated = nodes.len() >= MAX_SNAPSHOT_NODES;
     let mut outline = Vec::new();
-    let mut truncated = false;
-    let mut pending: Vec<(Option<String>, &RoomBrowserAccessibilityNode)> = children
-        .get(&None)
-        .map(|roots| roots.iter().rev().map(|node| (None, *node)).collect())
-        .unwrap_or_default();
-    while let Some((parent_ref, node)) = pending.pop() {
-        if outline.len() == MAX_NODES {
-            truncated = true;
-            break;
+    let mut seen = std::collections::HashSet::new();
+    // Depth first over the raw tree; a kept node hangs from the nearest kept
+    // ancestor, so hoisted descendants keep their place in reading order.
+    let mut pending: Vec<(Option<String>, &RoomBrowserAccessibilityNode)> = nodes
+        .iter()
+        .filter(|node| parent(node).is_none())
+        .rev()
+        .map(|node| (None, node))
+        .collect();
+    while let Some((kept_ancestor, node)) = pending.pop() {
+        if !seen.insert(node.element_ref.as_str()) {
+            continue;
         }
-        if let Some(below) = children.get(&Some(node.element_ref.clone())) {
-            pending.extend(
-                below
-                    .iter()
-                    .rev()
-                    .map(|child| (Some(node.element_ref.clone()), *child)),
-            );
+        let below = if kept(node) {
+            if outline.len() == MAX_NODES {
+                truncated = true;
+                break;
+            }
+            Some(node.element_ref.clone())
+        } else {
+            kept_ancestor.clone()
+        };
+        pending.extend(
+            children(node)
+                .into_iter()
+                .rev()
+                .map(|child| (below.clone(), child)),
+        );
+        if !kept(node) {
+            continue;
         }
+        let parent_ref = kept_ancestor;
         outline.push(RoomEnvironmentAccessibilityNode {
             element_ref: node.element_ref.clone(),
             parent_ref,
@@ -143,6 +168,40 @@ mod tests {
                 ("e10", Some("e1")),
             ]
         );
+    }
+
+    #[test]
+    fn hoisted_text_keeps_its_place_in_reading_order() {
+        // <p><span>Hello</span> world</p>: the snapshot lists level by level
+        // (p, span, " world", "Hello"); the outline reads "Hello" first.
+        let mut paragraph = node("p", None, "paragraph", "");
+        paragraph.child_refs = vec!["span".into(), "world".into()];
+        let mut span = node("span", Some("p"), "generic", "");
+        span.child_refs = vec!["hello".into()];
+        let (outline, _) = outline(&[
+            paragraph,
+            span,
+            node("world", Some("p"), "StaticText", " world"),
+            node("hello", Some("span"), "StaticText", "Hello"),
+        ]);
+        let shape: Vec<_> = outline
+            .iter()
+            .map(|node| (node.element_ref.as_str(), node.parent_ref.as_deref()))
+            .collect();
+        assert_eq!(
+            shape,
+            [("p", None), ("hello", Some("p")), ("world", Some("p"))]
+        );
+    }
+
+    #[test]
+    fn a_full_snapshot_is_reported_as_truncated() {
+        let nodes: Vec<_> = (0..MAX_SNAPSHOT_NODES)
+            .map(|index| node(&format!("e{index}"), None, "generic", ""))
+            .collect();
+        let (outline, truncated) = outline(&nodes);
+        assert!(outline.is_empty());
+        assert!(truncated, "the controller may have cut deeper nodes");
     }
 
     #[test]
