@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   ROOM_PLACEMENT_ROWS,
   evaluateRoomPlacementRow,
+  probeForeignRoomDenial,
   validateRoomPlacementMatrixConfig,
 } from "./live-room-placement-matrix.mjs"
 
@@ -38,6 +39,84 @@ test("matrix config requires the six exact placement roles without substitution"
   rowSixHomeKernel.rows[5].agentWorkerKernelId = rowSixHomeKernel.homeKernel.kernelId
   rowSixHomeKernel.rows[5].agentWorkerMachineId = rowSixHomeKernel.homeKernel.machineId
   assertRejects(() => validateRoomPlacementMatrixConfig(rowSixHomeKernel), /must select a non-home remote worker/)
+})
+
+test("local-only config requires the selected row and a distinct foreign Room", () => {
+  const config = validConfig()
+  config.selectionMode = "local_only"
+  config.foreignRoomId = "foreign-room-probe"
+  config.rows = [config.rows[1]]
+  assert.equal(validateRoomPlacementMatrixConfig(config), config)
+
+  const evidence = validEvidence(config.rows[0])
+  evidence.selectionMode = "local_only"
+  evidence.foreignRoomId = config.foreignRoomId
+  evidence.foreignRoomDenial = {
+    requestedRoomId: config.foreignRoomId,
+    attachmentRoomId: config.rows[0].roomId,
+    denialCode: "attachment_not_in_session",
+  }
+  const proof = evaluateRoomPlacementRow({ row: config.rows[0], homeKernel, evidence })
+  assert.equal(proof.ok, true)
+  assert.equal(proof.foreignRoomDenial, true)
+  assert.equal(Object.hasOwn(proof.unexecutedGates, "foreignRoomDenial"), false)
+  for (const gate of ["takeover", "ordering", "reconnect", "forgedLeaseDenial",
+    "directCrossSliceFileProcess", "cloudWebViewRendering"]) {
+    assert.match(proof.unexecutedGates[gate], /^unexecuted:/)
+  }
+
+  evidence.foreignRoomDenial.denialCode = "room_has_no_environment"
+  const wrongDenial = evaluateRoomPlacementRow({ row: config.rows[0], homeKernel, evidence })
+  assert.equal(wrongDenial.ok, false)
+  assert.ok(wrongDenial.violations.includes("foreign_room_denial_not_proven"))
+
+  const missingForeignRoom = structuredClone(config)
+  delete missingForeignRoom.foreignRoomId
+  assertRejects(() => validateRoomPlacementMatrixConfig(missingForeignRoom), /foreignRoomId/)
+  const substituted = structuredClone(config)
+  substituted.rows = [validConfig().rows[0]]
+  assertRejects(() => validateRoomPlacementMatrixConfig(substituted), /local-only placement row/)
+})
+
+test("foreign-Room display probe accepts only an attachment-scope denial", async () => {
+  const row = validConfig().rows[1]
+  const requests = []
+  const requestApi = {
+    getSliceDisplayEndpointRequest(sliceRef, scope) {
+      return { sliceRef, scope }
+    },
+  }
+  const args = {
+    requestApi, row, foreignRoomId: "foreign-room-probe",
+    attachmentId: "attached-to-placement-room", viewerPublicKey: "viewer-key",
+  }
+  const accepted = await probeForeignRoomDenial({
+    ...args,
+    client: {
+      async send(request) {
+        requests.push(request)
+        throw Object.assign(new Error("denied"), { code: "attachment_not_in_session" })
+      },
+    },
+  })
+  assert.deepEqual(requests, [{ sliceRef: row.environmentSliceRef, scope: {
+    sessionId: "foreign-room-probe",
+    attachmentId: "attached-to-placement-room",
+    viewerPublicKey: "viewer-key",
+  } }])
+  assert.deepEqual(accepted, {
+    requestedRoomId: "foreign-room-probe",
+    attachmentRoomId: row.roomId,
+    denialCode: "attachment_not_in_session",
+  })
+  await assert.rejects(probeForeignRoomDenial({
+    ...args,
+    client: { async send() { throw Object.assign(new Error("missing"), { code: "room_has_no_environment" }) } },
+  }), /reason other than attachment scope/)
+  await assert.rejects(probeForeignRoomDenial({
+    ...args,
+    client: { async send() { return { endpoint: "wrongly allowed" } } },
+  }), /was not denied/)
 })
 
 test("all six placement proofs validate while acceptance-only gates remain explicitly unexecuted", () => {

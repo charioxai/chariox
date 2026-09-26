@@ -6,7 +6,12 @@ import { lstat, mkdir, open, readFile, rename, realpath, stat } from "node:fs/pr
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { ROOM_PLACEMENT_ROWS, validateRoomPlacementMatrixConfig } from "./live-room-placement-matrix.mjs"
+import {
+  LOCAL_ONLY_PLACEMENT_ROW_ID,
+  LOCAL_ONLY_SELECTION_MODE,
+  ROOM_PLACEMENT_ROWS,
+  validateRoomPlacementMatrixConfig,
+} from "./live-room-placement-matrix.mjs"
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..")
 const configSchema = "chariox.room_placement_matrix.config.v1"
@@ -24,26 +29,51 @@ const viewport = Object.freeze({
 })
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-export function buildPlacementRows({ homeKernel, remoteWorker, rooms, workspaceId }) {
+export function buildPlacementRows({
+  homeKernel,
+  remoteWorker,
+  rooms,
+  workspaceId,
+  selectionMode = "full_matrix",
+  foreignRoomId,
+}) {
   requireText(homeKernel?.kernelId, "homeKernel.kernelId")
   requireText(homeKernel?.machineId, "homeKernel.machineId")
-  requireText(remoteWorker?.kernelId, "remoteWorker.kernelId")
-  requireText(remoteWorker?.machineId, "remoteWorker.machineId")
-  assert.equal(remoteWorker.acceptingRemoteLeases, true,
-    "selected remote worker is not accepting remote leases")
-  assert.notEqual(remoteWorker.kernelId, homeKernel.kernelId,
-    "remote worker kernel must differ from the home kernel")
-  assert.notEqual(remoteWorker.machineId, homeKernel.machineId,
-    "remote worker machine must differ from the home machine")
+  assert.ok(selectionMode === "full_matrix" || selectionMode === LOCAL_ONLY_SELECTION_MODE,
+    "unsupported Room placement selection mode")
+  const selectedRows = selectionMode === LOCAL_ONLY_SELECTION_MODE
+    ? ROOM_PLACEMENT_ROWS.filter((row) => row.id === LOCAL_ONLY_PLACEMENT_ROW_ID)
+    : ROOM_PLACEMENT_ROWS
+  if (selectionMode === "full_matrix") {
+    requireText(remoteWorker?.kernelId, "remoteWorker.kernelId")
+    requireText(remoteWorker?.machineId, "remoteWorker.machineId")
+    assert.equal(remoteWorker.acceptingRemoteLeases, true,
+      "selected remote worker is not accepting remote leases")
+    assert.notEqual(remoteWorker.kernelId, homeKernel.kernelId,
+      "remote worker kernel must differ from the home kernel")
+    assert.notEqual(remoteWorker.machineId, homeKernel.machineId,
+      "remote worker machine must differ from the home machine")
+  } else {
+    requireText(foreignRoomId, "foreignRoomId")
+  }
   requireText(workspaceId, "workspaceId")
-  assert.ok(Array.isArray(rooms) && rooms.length === rowCount,
-    "setup must supply exactly six created Room records")
-  assert.equal(ROOM_PLACEMENT_ROWS.length, rowCount,
-    "placement runner must still define exactly six rows")
+  assert.ok(Array.isArray(rooms) && rooms.length === selectedRows.length,
+    selectionMode === LOCAL_ONLY_SELECTION_MODE
+      ? "local-only setup must supply exactly one created placement Room"
+      : "setup must supply exactly six created Room records")
+  if (selectionMode === "full_matrix") {
+    assert.equal(ROOM_PLACEMENT_ROWS.length, rowCount,
+      "placement runner must still define exactly six rows")
+  }
   const byRowId = new Map(rooms.map((room) => [room.rowId, room]))
-  assert.equal(byRowId.size, rowCount, "each placement row requires a different Room")
+  assert.equal(byRowId.size, selectedRows.length, "each placement row requires a different Room")
+  const preparedLocalRoom = byRowId.get(LOCAL_ONLY_PLACEMENT_ROW_ID)
+  if (selectionMode === LOCAL_ONLY_SELECTION_MODE) {
+    assert.notEqual(foreignRoomId, preparedLocalRoom?.room?.id,
+      "foreignRoomId must identify a different Room")
+  }
 
-  return ROOM_PLACEMENT_ROWS.map((spec) => {
+  return selectedRows.map((spec) => {
     const prepared = byRowId.get(spec.id)
     assert.ok(prepared, "created Room setup missing " + spec.id)
     const roomId = requireText(prepared.room?.id, spec.id + ".room.id")
@@ -228,32 +258,45 @@ export async function cleanupOwnedPlacement({ client, requests, manifest, timeou
 
 export function parseArgs(argv) {
   const mode = argv[0]
-  assert.ok(mode === "--create" || mode === "--cleanup", "select --create or --cleanup")
+  assert.ok(mode === "--create" || mode === "--cleanup",
+    "select --create [--local-only] or --cleanup")
   const values = new Map()
+  let localOnly = false
   for (let index = 1; index < argv.length; index += 1) {
     const name = argv[index]
+    if (name === "--local-only") {
+      assert.equal(localOnly, false, "duplicate option --local-only")
+      localOnly = true
+      continue
+    }
     const value = argv[index + 1]
     assert.ok(name?.startsWith("--") && value && !value.startsWith("--"), "missing value for " + name)
     assert.ok(!values.has(name), "duplicate option " + name)
     values.set(name, value)
     index += 1
   }
+  assert.ok(mode !== "--cleanup" || !localOnly, "--local-only is only valid with --create")
   const configPath = requiredOption(values, "--config")
   assert.ok(path.isAbsolute(configPath), "--config must be absolute")
   const options = { mode, configPath: path.resolve(configPath) }
   if (mode === "--cleanup") return options
+  options.selectionMode = localOnly ? LOCAL_ONLY_SELECTION_MODE : "full_matrix"
   Object.assign(options, {
     homeUrl: requiredOption(values, "--home-url"),
     workspaceId: requiredOption(values, "--workspace"),
     worktreeId: requiredOption(values, "--worktree"),
-    remoteMachineId: requiredOption(values, "--remote-machine-id"),
-    remoteKernelId: requiredOption(values, "--remote-kernel-id"),
+    remoteMachineId: localOnly ? null : requiredOption(values, "--remote-machine-id"),
+    remoteKernelId: localOnly ? null : requiredOption(values, "--remote-kernel-id"),
     provider: requiredOption(values, "--provider"),
     model: requiredOption(values, "--model"),
     accountProfile: requiredOption(values, "--account-profile"),
     effort: requiredOption(values, "--effort"),
     timeoutMs: values.has("--timeout-ms") ? Number(values.get("--timeout-ms")) : defaultTimeoutMs,
   })
+  if (localOnly) {
+    assert.ok(!values.has("--remote-machine-id") && !values.has("--remote-kernel-id"),
+      "--remote-machine-id and --remote-kernel-id are only used by the full matrix")
+  }
   assert.ok(isLocalKernelEndpoint(options.homeUrl), "--home-url must identify a local kernel endpoint")
   assert.ok(path.isAbsolute(options.workspaceId) && path.isAbsolute(options.worktreeId),
     "--workspace and --worktree must be absolute paths")
@@ -280,10 +323,12 @@ async function createPlacementSetup(options, LocalIpcClient, requests) {
       kernelId: requireText(status.daemon_id, "RelayStatus.daemon_id"),
       machineId: requireText(status.machine_id, "RelayStatus.machine_id"),
     }
-    const remoteWorker = await resolveRemoteWorker({
-      client, requests, machineId: options.remoteMachineId, kernelId: options.remoteKernelId,
-      homeKernel, deadline,
-    })
+    const remoteWorker = options.selectionMode === LOCAL_ONLY_SELECTION_MODE
+      ? null
+      : await resolveRemoteWorker({
+          client, requests, machineId: options.remoteMachineId, kernelId: options.remoteKernelId,
+          homeKernel, deadline,
+        })
     const priorSessions = responseVariant(await sendBounded(client,
       requests.listSessionsRequest(), remaining(deadline)), "SessionsListed").sessions
     const priorSlices = responseVariant(await sendBounded(client,
@@ -293,6 +338,7 @@ async function createPlacementSetup(options, LocalIpcClient, requests) {
     manifest = {
       schema: configSchema,
       homeKernel,
+      selectionMode: options.selectionMode,
       provider: {
         provider: options.provider,
         model: options.model,
@@ -305,7 +351,7 @@ async function createPlacementSetup(options, LocalIpcClient, requests) {
         status: "creating",
         invocationId,
         createdAt: new Date().toISOString(),
-        remoteWorker,
+        ...(remoteWorker ? { remoteWorker } : {}),
         ownership: {
           invocationId,
           homeKernelId: homeKernel.kernelId,
@@ -320,8 +366,11 @@ async function createPlacementSetup(options, LocalIpcClient, requests) {
     await writePrivateConfig(configPath, manifest, { create: true })
     configCreated = true
     const roomSetups = []
-    for (const spec of ROOM_PLACEMENT_ROWS) {
-      assert.ok(roomSetups.length < rowCount, "setup exceeded the fixed Room resource limit")
+    const selectedRows = options.selectionMode === LOCAL_ONLY_SELECTION_MODE
+      ? ROOM_PLACEMENT_ROWS.filter((row) => row.id === LOCAL_ONLY_PLACEMENT_ROW_ID)
+      : ROOM_PLACEMENT_ROWS
+    for (const spec of selectedRows) {
+      assert.ok(roomSetups.length < selectedRows.length, "setup exceeded the selected Room resource limit")
       const alias = "room-placement-" + invocationId + "-" + spec.id
       const room = await createOwnedRoom({
         client, requests, manifest, configPath, alias,
@@ -378,13 +427,29 @@ async function createPlacementSetup(options, LocalIpcClient, requests) {
         agentSlice,
       })
     }
-    assert.equal(manifest.setup.ownership.rooms.length, rowCount, "setup did not create exactly six Rooms")
-    assert.equal(manifest.setup.ownership.slices.length, sliceCount, "setup did not create exactly eight slices")
+    if (options.selectionMode === LOCAL_ONLY_SELECTION_MODE) {
+      const foreignRoom = await createOwnedRoom({
+        client, requests, manifest, configPath,
+        alias: "room-placement-" + invocationId + "-foreign-room-probe",
+        workspaceId: options.workspaceId,
+        worktreeId: options.worktreeId,
+        deadline,
+      })
+      manifest.foreignRoomId = requireText(foreignRoom.id, "foreign Room probe id")
+    }
+    const expectedRoomCount = options.selectionMode === LOCAL_ONLY_SELECTION_MODE ? 2 : rowCount
+    const expectedSliceCount = options.selectionMode === LOCAL_ONLY_SELECTION_MODE ? 2 : sliceCount
+    assert.equal(manifest.setup.ownership.rooms.length, expectedRoomCount,
+      "setup created an unexpected number of owned Rooms")
+    assert.equal(manifest.setup.ownership.slices.length, expectedSliceCount,
+      "setup created an unexpected number of owned slices")
     manifest.rows = buildPlacementRows({
       homeKernel,
       remoteWorker,
       rooms: roomSetups,
       workspaceId: options.workspaceId,
+      selectionMode: options.selectionMode,
+      foreignRoomId: manifest.foreignRoomId,
     })
     manifest.setup.status = "ready_for_official_runner"
     manifest.setup.readyAt = new Date().toISOString()
@@ -760,6 +825,8 @@ async function main(argv) {
       status: manifest.setup.status,
       configPath: options.configPath,
       roomCount: manifest.rows.length,
+      selectionMode: manifest.selectionMode,
+      ownedRoomCount: manifest.setup.ownership.rooms.length,
       sliceCount: manifest.setup.ownership.slices.length,
       officialProviderActionsRun: false,
       acceptanceClaimed: false,

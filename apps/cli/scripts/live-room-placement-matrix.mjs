@@ -11,8 +11,11 @@ import { runRoomRealProviderAction } from "./lib/live-room-real-provider.mjs"
 const repoRoot = path.resolve(import.meta.dirname, "../../..")
 const configSchema = "chariox.room_placement_matrix.config.v1"
 const reportSchema = "chariox.room_placement_matrix.report.v1"
+export const LOCAL_ONLY_SELECTION_MODE = "local_only"
+export const LOCAL_ONLY_PLACEMENT_ROW_ID = "home_environment_other_local_slice_agent"
 // Config supplies homeKernel {url,kernelId,machineId}, provider
-// {provider,model,accountProfile,effort}, and the six ordered rows. Each row
+// {provider,model,accountProfile,effort}, and either six ordered rows or the
+// explicitly selected local-only row. Each row
 // identifies its Room, headed Environment slice/id/Tab, both worker
 // kernel/machine identities, explicit agentPlacement, and importFirst flag.
 const unexecutedGates = Object.freeze({
@@ -21,6 +24,8 @@ const unexecutedGates = Object.freeze({
   reconnect: "unexecuted: requires a real disconnect/reconnect drill",
   foreignRoomDenial: "unexecuted: requires an authenticated foreign-Room denial drill",
   forgedLeaseDenial: "unexecuted: requires a forged worker lease denial drill",
+  directCrossSliceFileProcess: "unexecuted: requires OS-level filesystem and process probes across both slices",
+  cloudWebViewRendering: "unexecuted: this run checks the public Selkies stream, not Cloud frontend rendering or browser relay",
 })
 
 export const ROOM_PLACEMENT_ROWS = Object.freeze([
@@ -46,14 +51,31 @@ export function validateRoomPlacementMatrixConfig(config) {
   requireText(provider.model, "provider.model")
   requireText(provider.accountProfile, "provider.accountProfile")
   requireText(provider.effort, "provider.effort")
-  assert.ok(Array.isArray(config.rows) && config.rows.length === ROOM_PLACEMENT_ROWS.length,
-    "config must contain each of the six Room placement rows exactly once")
+  const selectionMode = config.selectionMode ?? "full_matrix"
+  assert.ok(selectionMode === "full_matrix" || selectionMode === LOCAL_ONLY_SELECTION_MODE,
+    "unsupported Room placement selection mode")
+  const selectedRows = selectionMode === LOCAL_ONLY_SELECTION_MODE
+    ? ROOM_PLACEMENT_ROWS.filter((row) => row.id === LOCAL_ONLY_PLACEMENT_ROW_ID)
+    : ROOM_PLACEMENT_ROWS
+  assert.ok(Array.isArray(config.rows) && config.rows.length === selectedRows.length,
+    selectionMode === LOCAL_ONLY_SELECTION_MODE
+      ? "local-only config must contain exactly the home Environment / other local slice row"
+      : "config must contain each of the six Room placement rows exactly once")
 
   const ids = config.rows.map((row) => row?.id)
-  assert.deepEqual(ids, ROOM_PLACEMENT_ROWS.map((row) => row.id),
-    "rows must use the six canonical placement identities in order")
-  for (let index = 0; index < ROOM_PLACEMENT_ROWS.length; index += 1) {
-    validateRowConfig(config.rows[index], ROOM_PLACEMENT_ROWS[index], home)
+  assert.deepEqual(ids, selectedRows.map((row) => row.id),
+    selectionMode === LOCAL_ONLY_SELECTION_MODE
+      ? "local-only placement row must be the home Environment / other local slice row"
+      : "rows must use the six canonical placement identities in order")
+  for (let index = 0; index < selectedRows.length; index += 1) {
+    validateRowConfig(config.rows[index], selectedRows[index], home)
+  }
+  if (selectionMode === LOCAL_ONLY_SELECTION_MODE) {
+    const foreignRoomId = requireText(config.foreignRoomId, "foreignRoomId")
+    assert.notEqual(foreignRoomId, config.rows[0].roomId,
+      "foreignRoomId must identify a different Room")
+    assert.equal(config.rows[0].importFirst, true,
+      "local-only different-slice placement must import the selected provider account")
   }
   return config
 }
@@ -255,6 +277,14 @@ export function evaluateRoomPlacementRow({ row, homeKernel, evidence } = {}) {
       && snapshot?.focusedTabPresent === true)
     && browser?.targetTabId === row.tabId
     && view?.tabId === row.tabId
+  const foreignRoomDenial = evidence.selectionMode === LOCAL_ONLY_SELECTION_MODE
+    && evidence.foreignRoomDenial?.requestedRoomId === evidence.foreignRoomId
+    && evidence.foreignRoomDenial?.requestedRoomId !== row.roomId
+    && evidence.foreignRoomDenial?.attachmentRoomId === row.roomId
+    && evidence.foreignRoomDenial?.denialCode === "attachment_not_in_session"
+  if (evidence.selectionMode === LOCAL_ONLY_SELECTION_MODE) {
+    require(foreignRoomDenial, "foreign_room_denial_not_proven")
+  }
 
   return {
     ok: violations.length === 0,
@@ -262,8 +292,57 @@ export function evaluateRoomPlacementRow({ row, homeKernel, evidence } = {}) {
     sameRoomEnvironment,
     sameAgent: Boolean(sameAgent),
     sameStableTab,
+    foreignRoomDenial: Boolean(foreignRoomDenial),
     fullAcceptance: "not_proven",
-    unexecutedGates,
+    unexecutedGates: unexecutedGatesFor({
+      selectionMode: evidence.selectionMode,
+      foreignRoomDenialProven: Boolean(foreignRoomDenial),
+    }),
+  }
+}
+
+function unexecutedGatesFor({ selectionMode, foreignRoomDenialProven = false } = {}) {
+  const remaining = { ...unexecutedGates }
+  if (selectionMode === LOCAL_ONLY_SELECTION_MODE && foreignRoomDenialProven) {
+    delete remaining.foreignRoomDenial
+  }
+  return remaining
+}
+
+export async function probeForeignRoomDenial({
+  client,
+  requestApi,
+  row,
+  foreignRoomId,
+  attachmentId,
+  viewerPublicKey,
+}) {
+  const requestedRoomId = requireText(foreignRoomId, "foreignRoomId")
+  assert.notEqual(requestedRoomId, row?.roomId, "foreign Room probe must target a different Room")
+  requireText(row?.environmentSliceRef, "row.environmentSliceRef")
+  requireText(row?.roomId, "row.roomId")
+  requireText(attachmentId, "attachmentId")
+  requireText(viewerPublicKey, "viewerPublicKey")
+  assert.equal(typeof requestApi?.getSliceDisplayEndpointRequest, "function",
+    "public GetSliceDisplayEndpoint request builder is required")
+
+  let error
+  try {
+    await client.send(requestApi.getSliceDisplayEndpointRequest(row.environmentSliceRef, {
+      sessionId: requestedRoomId,
+      attachmentId,
+      viewerPublicKey,
+    }))
+  } catch (caught) {
+    error = caught
+  }
+  assert.ok(error, "foreign-Room display request was not denied")
+  assert.equal(error.code, "attachment_not_in_session",
+    "foreign-Room display request failed for a reason other than attachment scope")
+  return {
+    requestedRoomId,
+    attachmentRoomId: row.roomId,
+    denialCode: error.code,
   }
 }
 
@@ -301,6 +380,7 @@ function environmentLedgerContains(actions, expected) {
 
 export async function runRoomPlacementMatrix(config) {
   validateRoomPlacementMatrixConfig(config)
+  const selectionMode = config.selectionMode ?? "full_matrix"
   const [{ LocalIpcClient }, requestApi, { openSelkiesDisplayStream }] = await Promise.all([
     import("../../../packages/kernel-client/dist/ipc.js"),
     import("../../../packages/kernel-client/dist/ipc-requests.js"),
@@ -316,6 +396,7 @@ export async function runRoomPlacementMatrix(config) {
       let stage = "public_preflight"
       try {
         const result = await runConfiguredRow({ client, requestApi, openSelkiesDisplayStream, config, row,
+          selectionMode,
           setStage: (value) => { stage = value } })
         rows.push(result)
       } catch {
@@ -326,19 +407,21 @@ export async function runRoomPlacementMatrix(config) {
   } finally {
     await client.close?.().catch(() => {})
   }
-  const complete = rows.length === ROOM_PLACEMENT_ROWS.length && rows.every((row) => row.status === "placement_proof_only")
+  const complete = rows.length === config.rows.length && rows.every((row) => row.status === "placement_proof_only")
+  const foreignRoomDenialProven = rows.some((row) => row.checks?.foreignRoomDenial === true)
   return {
     schema: reportSchema,
     status: complete ? "placement_proofs_collected" : "partial_failure",
+    selectionMode,
     fullAcceptance: "not_proven",
     evidenceSource: "official-provider-run-and-public-kernel-requests",
     placementProofOnly: true,
     rows,
-    unexecutedGates,
+    unexecutedGates: unexecutedGatesFor({ selectionMode, foreignRoomDenialProven }),
   }
 }
 
-async function runConfiguredRow({ client, requestApi, openSelkiesDisplayStream, config, row, setStage }) {
+async function runConfiguredRow({ client, requestApi, openSelkiesDisplayStream, config, row, selectionMode, setStage }) {
   const home = config.homeKernel
   const binding = variant(await client.send(requestApi.getRoomEnvironmentSliceRequest(row.roomId)),
     "RoomEnvironmentSlice").binding
@@ -418,6 +501,7 @@ async function runConfiguredRow({ client, requestApi, openSelkiesDisplayStream, 
   let stream
   let viewSnapshot
   let frame
+  let foreignRoomDenial = null
   try {
     stream = await openSelkiesDisplayStream({
       client,
@@ -432,6 +516,17 @@ async function runConfiguredRow({ client, requestApi, openSelkiesDisplayStream, 
     assert.equal(new TextDecoder().decode(started.data), "VIDEO_STARTED")
     frame = await stream.receive({ timeoutMs: 15_000 })
     viewSnapshot = await readRoomSnapshot(client, requestApi, row)
+    if (selectionMode === LOCAL_ONLY_SELECTION_MODE) {
+      setStage("foreign_room_denial")
+      foreignRoomDenial = await probeForeignRoomDenial({
+        client,
+        requestApi,
+        row,
+        foreignRoomId: config.foreignRoomId,
+        attachmentId: attachment.id,
+        viewerPublicKey: stream.viewerPublicKey,
+      })
+    }
   } finally {
     await stream?.close().catch(() => {})
     await client.send(requestApi.detachFromSessionRequest(attachment.id)).catch(() => {})
@@ -449,6 +544,11 @@ async function runConfiguredRow({ client, requestApi, openSelkiesDisplayStream, 
   assert.equal(stream.endpoint.slice_id, row.environmentSliceRef)
 
   const evidence = {
+    selectionMode,
+    ...(selectionMode === LOCAL_ONLY_SELECTION_MODE ? {
+      foreignRoomId: config.foreignRoomId,
+      foreignRoomDenial,
+    } : {}),
     baselineSequence,
     environment: {
       roomId: before.roomId,
@@ -506,9 +606,16 @@ async function runConfiguredRow({ client, requestApi, openSelkiesDisplayStream, 
       runtimeGeneration: action.runtimeGeneration,
     })),
     webView: { source: evidence.webView.source, kind: evidence.webView.kind, streamId: evidence.webView.streamId, visibleFrameBytes: evidence.webView.frameByteLength },
-    checks: { sameRoomEnvironment: true, sameAgent: true, sameStableTab: true, actionAttribution: true, noDuplicateAgentPlacement: true },
+    checks: {
+      sameRoomEnvironment: true,
+      sameAgent: true,
+      sameStableTab: true,
+      actionAttribution: true,
+      noDuplicateAgentPlacement: true,
+      ...(evaluation.foreignRoomDenial ? { foreignRoomDenial: true } : {}),
+    },
     fullAcceptance: evaluation.fullAcceptance,
-    unexecutedGates,
+    unexecutedGates: evaluation.unexecutedGates,
   }
 }
 

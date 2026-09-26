@@ -5,6 +5,7 @@ import { ROOM_PLACEMENT_ROWS } from "./live-room-placement-matrix.mjs"
 import {
   buildPlacementRows,
   cleanupOwnedPlacement,
+  parseArgs,
   planOwnedCleanup,
 } from "./live-room-placement-setup.mjs"
 
@@ -158,6 +159,48 @@ test("six-row setup records public placement identities and rejects worker subst
     ...notReady,
     workspaceId: "/workspace/repository",
   }), /Room Environment is not ready/)
+})
+
+test("local-only setup selects one local-slice row without a remote worker", () => {
+  const fixture = placementFixture()
+  const selectedRoom = fixture.rooms.find((room) =>
+    room.rowId === "home_environment_other_local_slice_agent")
+  const rows = buildPlacementRows({
+    homeKernel: fixture.homeKernel,
+    rooms: [selectedRoom],
+    workspaceId: "/workspace/repository",
+    selectionMode: "local_only",
+    foreignRoomId: "foreign-room-probe",
+  })
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].id, "home_environment_other_local_slice_agent")
+  assert.deepEqual(rows[0].agentPlacement, { kind: "slice_ref", sliceRef: selectedRoom.agentSlice.id })
+  assert.equal(rows[0].importFirst, true)
+  assert.throws(() => buildPlacementRows({
+    homeKernel: fixture.homeKernel,
+    rooms: [selectedRoom],
+    workspaceId: "/workspace/repository",
+    selectionMode: "local_only",
+    foreignRoomId: selectedRoom.room.id,
+  }), /foreignRoomId must identify a different Room/)
+})
+
+test("local-only command needs no remote worker identifiers", () => {
+  const args = [
+    "--create", "--local-only", "--config", "/tmp/placement-config.json",
+    "--home-url", "/tmp/home.sock", "--workspace", "/workspace",
+    "--worktree", "/workspace/worktree", "--provider", "codex",
+    "--model", "configured-model", "--account-profile", "codex-1",
+    "--effort", "high",
+  ]
+  const options = parseArgs(args)
+  assert.equal(options.selectionMode, "local_only")
+  assert.equal(options.remoteKernelId, null)
+  assert.equal(options.remoteMachineId, null)
+  assert.throws(() => parseArgs([...args, "--remote-machine-id", "remote"]),
+    /only used by the full matrix/)
+  assert.throws(() => parseArgs(["--cleanup", "--local-only", "--config", "/tmp/config.json"]),
+    /only valid with --create/)
 })
 
 test("cleanup plan is restricted to invocation-owned IDs and refuses an injected foreign ID", () => {
