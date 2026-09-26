@@ -233,7 +233,7 @@ async fn connect_once(
         .map_err(|error| format!("failed to connect to AEDS: {error}"))?;
     let (mut sink, mut stream) = websocket.split();
     let mut environments =
-        runtime_state.event_delivery_resumes(&config.kernel_id, &config.environment_id);
+        runtime_state.event_delivery_resumes(&config.kernel_id, &config.environment_id)?;
     let mut route_signature =
         serde_json::to_string(&environments).map_err(|error| error.to_string())?;
     send(
@@ -393,10 +393,14 @@ async fn connect_once(
                 }
             }
             _ = reconciliation.tick() => {
-                environments = runtime_state.event_delivery_resumes(
+                // A failed read skips this round; the last claims stay.
+                let Ok(next) = runtime_state.event_delivery_resumes(
                     &config.kernel_id,
                     &config.environment_id,
-                );
+                ) else {
+                    continue;
+                };
+                environments = next;
                 let next_signature =
                     serde_json::to_string(&environments).map_err(|error| error.to_string())?;
                 if next_signature != route_signature {
@@ -433,44 +437,44 @@ async fn reconcile_aegs_subscriptions(
     config: &EventDeliveryClientConfig,
 ) -> Result<(), String> {
     let mut generator_management_targets = config.generator_management_targets.clone();
-    let generator_ids = runtime_state
-        .event_generator_subscription_claims()
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    for generator_id in generator_ids {
+    let mut claims = runtime_state.event_generator_subscription_claims()?;
+    // Each generator reconciles on its own: one that is down, unresolvable, or
+    // refuses must not keep the others from receiving their subscriptions.
+    let mut failures = Vec::new();
+    for generator_id in claims.keys() {
         let current_config = config.config_projection.snapshot();
         let request = crate::local::LocalDaemonRequest::ListEventConnections(
             crate::local::ListEventConnectionsRequest {
-                generator_id: Some(generator_id),
+                generator_id: Some(generator_id.clone()),
                 cursor: None,
                 limit: 1,
             },
         );
-        let targets =
-            crate::runtime::event_catalog_control::resolve_event_generator_management_targets(
-                runtime_state,
-                &config.config_projection,
-                &current_config,
-                current_config
-                    .cloud_relay
-                    .as_ref()
-                    .map(|profile| profile.user_id.as_str())
-                    .unwrap_or("kernel"),
-                &request,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        generator_management_targets.extend(targets);
+        match crate::runtime::event_catalog_control::resolve_event_generator_management_targets(
+            runtime_state,
+            &config.config_projection,
+            &current_config,
+            current_config
+                .cloud_relay
+                .as_ref()
+                .map(|profile| profile.user_id.as_str())
+                .unwrap_or("kernel"),
+            &request,
+        )
+        .await
+        {
+            Ok(targets) => generator_management_targets.extend(targets),
+            Err(error) => failures.push(format!("{generator_id}: {error}")),
+        }
     }
     if generator_management_targets.is_empty() {
-        return Ok(());
+        return if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        };
     }
     let kernel_owner_id = config.kernel_id.clone();
-    let mut claims = runtime_state.event_generator_subscription_claims();
-    // Each generator reconciles on its own: one that is down or refuses must
-    // not keep the others from receiving their subscriptions.
-    let mut failures = Vec::new();
     for generator_id in generator_management_targets.keys() {
         let request = chariox_event_protocol::AegsSubscriptionReconcileRequest {
             owner_id: config.kernel_id.clone(),
@@ -948,6 +952,13 @@ mod tests {
             .expect("test daemon should bootstrap");
         let store = app.durable_state_store();
         let runtime_state = runtime_state_from_app(app);
+        rusqlite::Connection::open(store.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
+                 VALUES('app','dev.chariox.app','local',1,1,'{}')",
+            )
+            .unwrap();
         for generator_id in ["dev.chariox.down", "dev.chariox.up"] {
             store
                 .app_inbox(

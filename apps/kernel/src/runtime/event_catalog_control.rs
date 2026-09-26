@@ -509,11 +509,55 @@ pub(crate) async fn validate_event_binding_contract(
     config_projection: &DaemonConfigProjectionStore,
     contract: &WorkflowEventBindingContract,
 ) -> Result<Vec<String>, DaemonError> {
+    let detail = event_generator_detail(
+        config_projection,
+        &contract.generator_id,
+        Some(contract.generator_version.clone()),
+    )
+    .await?;
+    validate_event_binding_detail(&detail, contract)
+}
+
+/// Protocol 358: an App inbox route gets the checks a workflow binding gets:
+/// the generator's current catalog declares the event type at that version,
+/// and the connection was granted the event's required scopes.
+pub(crate) async fn validate_app_route_event(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    caller_user_id: &str,
+    generator_id: &str,
+    connection_id: &str,
+    event_type: &str,
+    event_type_version: u32,
+) -> Result<(), DaemonError> {
+    let detail = event_generator_detail(config_projection, generator_id, None).await?;
+    let event = detail
+        .events
+        .iter()
+        .find(|event| event.event_type == event_type && event.version == event_type_version)
+        .ok_or_else(|| {
+            connection_error(format!(
+                "event `{event_type}@{event_type_version}` is not declared by `{generator_id}`"
+            ))
+        })?;
+    validate_event_connection_scopes(
+        runtime_state,
+        caller_user_id,
+        connection_id,
+        &event.required_scopes,
+    )
+}
+
+async fn event_generator_detail(
+    config_projection: &DaemonConfigProjectionStore,
+    generator_id: &str,
+    version: Option<String>,
+) -> Result<EventGeneratorCatalogDetail, DaemonError> {
     let registry_url = config_projection.snapshot().event_registry_url;
     let request =
         LocalDaemonRequest::GetEventGeneratorDetail(crate::local::GetEventGeneratorDetailRequest {
-            generator_id: contract.generator_id.clone(),
-            version: Some(contract.generator_version.clone()),
+            generator_id: generator_id.to_owned(),
+            version,
         });
     let response = tokio::task::spawn_blocking(move || {
         if let Some(registry_url) = registry_url {
@@ -529,7 +573,7 @@ pub(crate) async fn validate_event_binding_contract(
             "event catalog returned an unexpected detail response".to_string(),
         ));
     };
-    validate_event_binding_detail(&detail, contract)
+    Ok(detail)
 }
 
 fn validate_event_binding_detail(

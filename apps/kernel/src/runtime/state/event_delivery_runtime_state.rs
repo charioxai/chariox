@@ -37,9 +37,11 @@ pub(crate) struct AcceptedWorkflowEventDelivery {
 }
 
 impl KernelRuntimeState {
+    /// Err when the App routes could not be read: the caller skips this round
+    /// rather than publish an authoritative set without them.
     pub(crate) fn event_generator_subscription_claims(
         &self,
-    ) -> BTreeMap<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>> {
+    ) -> Result<BTreeMap<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>, String> {
         let mut generators =
             BTreeMap::<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>::new();
         for session in self.owned.session_store.read().list_sessions() {
@@ -64,7 +66,7 @@ impl KernelRuntimeState {
                     });
             }
         }
-        for route in self.app_event_routes() {
+        for route in self.app_event_routes()? {
             let Some(claim) = app_route_subscription(&route) else {
                 continue;
             };
@@ -76,15 +78,16 @@ impl KernelRuntimeState {
         for claims in generators.values_mut() {
             claims.sort_by(|left, right| left.binding_id.cmp(&right.binding_id));
         }
-        generators
+        Ok(generators)
     }
 
-    /// App inbox routes fed by generator connections (protocol 358).
-    fn app_event_routes(&self) -> Vec<chariox_app_runtime::app_inbox::InboxRoute> {
+    /// App inbox routes fed by generator connections (protocol 358), of
+    /// active installations only.
+    fn app_event_routes(&self) -> Result<Vec<chariox_app_runtime::app_inbox::InboxRoute>, String> {
         self.owned
             .durable_state_store
             .app_generator_routes()
-            .unwrap_or_default()
+            .map_err(|error| format!("App event routes could not be read: {error}"))
     }
 
     pub(crate) fn active_event_route_claims(
@@ -111,7 +114,7 @@ impl KernelRuntimeState {
         &self,
         kernel_id: &str,
         default_environment_id: &str,
-    ) -> Vec<chariox_event_protocol::KernelEnvironmentResume> {
+    ) -> Result<Vec<chariox_event_protocol::KernelEnvironmentResume>, String> {
         let mut environments = BTreeMap::<
             String,
             (
@@ -153,7 +156,7 @@ impl KernelRuntimeState {
         }
         // App routes deliver in the kernel's default environment.
         let app_routes = self
-            .app_event_routes()
+            .app_event_routes()?
             .iter()
             .filter_map(|route| app_route_claim(route, kernel_id, default_environment_id))
             .collect::<Vec<_>>();
@@ -162,7 +165,7 @@ impl KernelRuntimeState {
             .expect("default environment")
             .0
             .extend(app_routes);
-        environments
+        Ok(environments
             .into_iter()
             .map(|(environment_id, (routes, last_delivery))| {
                 chariox_event_protocol::KernelEnvironmentResume {
@@ -171,7 +174,30 @@ impl KernelRuntimeState {
                     routes,
                 }
             })
-            .collect()
+            .collect())
+    }
+
+    /// The active route, workflow binding or App route, that already claims
+    /// `event_interest_key` in `environment_id` under another binding. The
+    /// event service keeps only one route per interest.
+    pub(crate) fn event_interest_claimed_by(
+        &self,
+        kernel_id: &str,
+        environment_id: &str,
+        binding_id: &str,
+        event_interest_key: &str,
+    ) -> Result<Option<String>, String> {
+        Ok(self
+            .event_delivery_resumes(kernel_id, environment_id)?
+            .into_iter()
+            .filter(|resume| resume.environment_id == environment_id)
+            .flat_map(|resume| resume.routes)
+            .find(|claim| {
+                claim.active
+                    && claim.event_interest_key == event_interest_key
+                    && claim.binding_id != binding_id
+            })
+            .map(|claim| claim.binding_id))
     }
 
     pub(crate) fn apply_event_route_conflicts(
@@ -180,6 +206,17 @@ impl KernelRuntimeState {
     ) {
         let mut changed_session_ids = BTreeSet::new();
         for conflict in conflicts {
+            if conflict.requested_binding_id.starts_with("app-route-") {
+                // An App route has no status to mark; its owner sees no
+                // deliveries, and the log names the route that holds the
+                // interest.
+                crate::logging::warn_with_fields(
+                    "daemon.event_delivery",
+                    "App inbox route conflicts with another route",
+                    serde_json::json!({ "conflict": conflict }),
+                );
+                continue;
+            }
             let Some((session_id, binding)) = self
                 .owned
                 .session_store
@@ -272,14 +309,18 @@ impl KernelRuntimeState {
         use crate::local::AppRequestErrorCode::*;
         match accepted {
             Ok(_) => Ok(()),
-            Err(NotFound) => refused(&delivery, "the App inbox route no longer exists"),
+            // Each code has more than one cause; the reason names them all.
+            Err(NotFound) => refused(
+                &delivery,
+                "the App inbox route or its installation is no longer active",
+            ),
             Err(InvalidRequest) => refused(
                 &delivery,
-                "the occurrence does not match the App's incoming schema",
+                "the occurrence does not fit the App's incoming schema or inbox limits",
             ),
             Err(Conflict) => refused(
                 &delivery,
-                "the occurrence was accepted before with other content",
+                "the occurrence differs from an earlier one, or the App's release cannot be verified",
             ),
             Err(code) => Err(format!("App inbox did not accept the occurrence: {code:?}")),
         }
@@ -647,7 +688,19 @@ mod tests {
             )
             .unwrap();
         let binding_id = route.binding_id();
-        let claims = runtime.event_generator_subscription_claims();
+        // Only an active installation's routes are claimed.
+        assert!(runtime
+            .event_generator_subscription_claims()
+            .unwrap()
+            .is_empty());
+        rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
+                 VALUES('app_slack','dev.chariox.slack-app','local',1,1,'{}')",
+            )
+            .unwrap();
+        let claims = runtime.event_generator_subscription_claims().unwrap();
         let claim = &claims["dev.chariox.slack"][0];
         assert_eq!(
             (
@@ -658,7 +711,9 @@ mod tests {
             ),
             (binding_id.as_str(), "connection-1", "app.mentioned", true)
         );
-        let resumes = runtime.event_delivery_resumes("kernel-1", "default");
+        let resumes = runtime
+            .event_delivery_resumes("kernel-1", "default")
+            .unwrap();
         let routes = &resumes
             .iter()
             .find(|resume| resume.environment_id == "default")
@@ -670,6 +725,21 @@ mod tests {
             (binding_id.as_str(), "mentions")
         );
         assert_eq!(routes[0].event_interest_key, claim.event_interest_key);
+        // A second route for the same interest is told which route holds it;
+        // the route itself is not a conflict with itself.
+        let key = claim.event_interest_key.as_str();
+        assert_eq!(
+            runtime
+                .event_interest_claimed_by("kernel-1", "default", "app-route-other", key)
+                .unwrap(),
+            Some(binding_id.clone())
+        );
+        assert_eq!(
+            runtime
+                .event_interest_claimed_by("kernel-1", "default", &binding_id, key)
+                .unwrap(),
+            None
+        );
         // A delivery that can never land (unknown route, wrong event type) is
         // acknowledged, not retried forever; the App is never reached.
         let delivery = |binding_id: &str, event_type: &str| {
