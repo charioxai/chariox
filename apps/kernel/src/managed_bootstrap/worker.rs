@@ -1243,10 +1243,13 @@ mod tests {
         )
         .expect("timeout login profile should be written");
         let broker_record = config.chariox_home.join("worker-broker-kernel-record.txt");
-        super::supervisor::write_path1_broker_kernel_probe(&config.kernel_binary, &broker_record);
+        super::super::supervisor::write_path1_broker_kernel_probe(
+            &config.kernel_binary,
+            &broker_record,
+        );
         let mut child = spawn_kernel(&config, &release, &receipt, ManagedProviderTopology::Path1)
             .expect("disposable worker kernel should receive the slice broker lease");
-        let request = super::supervisor::round_trip_path1_test_broker(&mut broker_peer)
+        let request = super::super::supervisor::round_trip_path1_test_broker(&mut broker_peer)
             .expect("worker kernel should use its broker FD");
         assert_eq!(
             u32::from_be_bytes(request[..4].try_into().expect("broker frame header")) as usize,
