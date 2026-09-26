@@ -120,17 +120,41 @@ select_supervisor_service() {
 
 assert_path1_units_have_no_dropins() {
   [ "$managed_provider_topology" = path1 ] || return 0
+  path1_preflight_failure=0
+  path1_drop_in_failure=0
   for unit in chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service; do
+    need_daemon_reload=$(systemctl show --property=NeedDaemonReload --value "$unit") || {
+      echo "could not inspect systemd reload state for Path-1 service $unit" >&2
+      path1_preflight_failure=1
+      path1_drop_in_failure=1
+      continue
+    }
+    case "$need_daemon_reload" in
+      no) ;;
+      yes)
+        echo "Path-1 service $unit needs systemd daemon-reload; refusing upgrade before service mutation" >&2
+        path1_preflight_failure=1
+        path1_drop_in_failure=1
+        ;;
+      *)
+        echo "could not verify systemd reload state for Path-1 service $unit" >&2
+        path1_preflight_failure=1
+        path1_drop_in_failure=1
+        ;;
+    esac
     drop_in_paths=$(systemctl show --property=DropInPaths --value "$unit") || {
       echo "could not inspect effective systemd drop-ins for $unit" >&2
-      return 1
+      path1_preflight_failure=1
+      path1_drop_in_failure=1
+      continue
     }
     if [ -n "$drop_in_paths" ]; then
       path1_drop_in_failure=1
+      path1_preflight_failure=1
       echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
-      return 1
     fi
   done
+  [ "$path1_preflight_failure" -eq 0 ]
 }
 
 verify_selected_release() {

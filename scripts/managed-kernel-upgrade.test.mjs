@@ -63,10 +63,13 @@ test("managed kernel upgrade requires an explicit valid provider topology before
   }
 })
 
-test("Path-1 upgrade drop-in guard checks both effective services", async (context) => {
+test("Path-1 upgrade drop-in guard checks reload freshness and both effective services", async (context) => {
   const source = await readFile(upgrade, "utf8")
   const guard = source.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
   assert.ok(guard)
+  assert.match(guard, /systemctl show --property=NeedDaemonReload --value "\$unit"/)
+  assert.match(guard, /systemctl show --property=DropInPaths --value "\$unit"/)
+  assert.ok(guard.indexOf("--property=NeedDaemonReload") < guard.indexOf("--property=DropInPaths"))
   assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nrecover_transaction/)
   assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_units_have_no_dropins \|\| return 1\n  health_not_before_ms=/)
   assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_units_have_no_dropins \\\n/)
@@ -76,8 +79,10 @@ test("Path-1 upgrade drop-in guard checks both effective services", async (conte
   const bin = join(scratch, "bin")
   await put(join(bin, "systemctl"), `#!/bin/sh
 case "$*" in
-  *chariox-path1-managed-bootstrap.service) printf '%s' "\${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;
-  *chariox-disposable-worker-bootstrap.service) printf '%s' "\${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;
+  *--property=NeedDaemonReload*chariox-path1-managed-bootstrap.service) printf '%s' "\${SYSTEMD_HOME_NEED_DAEMON_RELOAD:-no}" ;;
+  *--property=NeedDaemonReload*chariox-disposable-worker-bootstrap.service) printf '%s' "\${SYSTEMD_WORKER_NEED_DAEMON_RELOAD:-no}" ;;
+  *--property=DropInPaths*chariox-path1-managed-bootstrap.service) printf '%s' "\${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;
+  *--property=DropInPaths*chariox-disposable-worker-bootstrap.service) printf '%s' "\${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;
 esac
 `, 0o755)
   const command = `managed_provider_topology=path1\n${guard}\nassert_path1_units_have_no_dropins\n`
@@ -94,6 +99,17 @@ esac
     })
     assert.equal(inherited.status, 1)
     assert.match(inherited.stderr, new RegExp(`Path-1 service ${unit.replaceAll(".", "\\.")} has systemd drop-ins`))
+  }
+  for (const [name, unit] of [
+    ["SYSTEMD_HOME_NEED_DAEMON_RELOAD", "chariox-path1-managed-bootstrap.service"],
+    ["SYSTEMD_WORKER_NEED_DAEMON_RELOAD", "chariox-disposable-worker-bootstrap.service"],
+  ]) {
+    const stale = spawnSync("/bin/sh", ["-c", command], {
+      encoding: "utf8",
+      env: { ...env, [name]: "yes" },
+    })
+    assert.equal(stale.status, 1)
+    assert.match(stale.stderr, new RegExp(`Path-1 service ${unit.replaceAll(".", "\\.")} needs systemd daemon-reload`))
   }
 })
 
@@ -171,7 +187,7 @@ async function put(path, contents, mode = 0o644) {
 
 async function createRootPrivateDirectory(path) {
   await mkdir(path, { recursive: true, mode: 0o700 })
-  await chown(path, 0, 0)
+  if (process.getuid?.() === 0) await chown(path, 0, 0)
   await chmod(path, 0o700)
 }
 
@@ -425,6 +441,8 @@ async function makeHarness(context, {
   const state = join(root, "harness-state")
   const bin = join(root, "bin")
   const charioxIdentity = await effectiveCharioxIdentity()
+  // Keep root-owned install fixtures runnable when Node tests execute rootless.
+  const rootlessHarness = process.getuid?.() !== 0
   await mkdir(state)
   await mkdir(bin)
   await put(join(bin, "id"), `#!/bin/sh
@@ -437,29 +455,69 @@ if [ "\${1:-}" = "-g" ] && [ "\${2:-}" = "chariox" ]; then
   printf '%s\n' "${charioxIdentity.gid}"
   exit 0
 fi
+if [ "\${MANAGED_UPGRADE_TEST_ROOTLESS:-0}" = 1 ] \
+  && [ "\${1:-}" = "-u" ] && [ "$#" -eq 1 ]; then
+  printf '0\n'
+  exit 0
+fi
 exec /usr/bin/id "$@"
+`, 0o755)
+  await put(join(bin, "install"), `#!/bin/bash
+set -eu
+if [ "\${MANAGED_UPGRADE_TEST_ROOTLESS:-0}" != 1 ]; then
+  exec /usr/bin/install "$@"
+fi
+arguments=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|-g) shift 2 ;;
+    *) arguments+=("$1"); shift ;;
+  esac
+done
+exec /usr/bin/install "\${arguments[@]}"
 `, 0o755)
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
 if [ "$1" = "show" ]; then
   case "$*" in
-    *chariox-path1-managed-bootstrap.service)
-      if [ -f "$HARNESS_STATE/home-drop-in" ]; then
+    *--property=NeedDaemonReload*chariox-path1-managed-bootstrap.service)
+      if [ -f "$HARNESS_STATE/disk-home-drop-in" ] && [ ! -f "$HARNESS_STATE/systemd-reloaded" ]; then
+        printf 'yes\n'
+      else
+        printf 'no\n'
+      fi
+      ;;
+    *--property=NeedDaemonReload*chariox-disposable-worker-bootstrap.service)
+      if [ -f "$HARNESS_STATE/disk-worker-drop-in" ] && [ ! -f "$HARNESS_STATE/systemd-reloaded" ]; then
+        printf 'yes\n'
+      else
+        printf 'no\n'
+      fi
+      ;;
+    *--property=DropInPaths*chariox-path1-managed-bootstrap.service)
+      if [ -f "$HARNESS_STATE/home-drop-in" ] \
+        || { [ -f "$HARNESS_STATE/disk-home-drop-in" ] && [ -f "$HARNESS_STATE/systemd-reloaded" ]; }; then
         printf '%s\n' /etc/systemd/system/chariox-path1-managed-bootstrap.service.d/50-hardening.conf
       fi
       ;;
-    *chariox-disposable-worker-bootstrap.service)
-      if [ -f "$HARNESS_STATE/worker-drop-in" ]; then
+    *--property=DropInPaths*chariox-disposable-worker-bootstrap.service)
+      if [ -f "$HARNESS_STATE/worker-drop-in" ] \
+        || { [ -f "$HARNESS_STATE/disk-worker-drop-in" ] && [ -f "$HARNESS_STATE/systemd-reloaded" ]; }; then
         printf '%s\n' /etc/systemd/system/chariox-disposable-worker-bootstrap.service.d/50-hardening.conf
       fi
       ;;
   esac
   exit 0
 fi
-if [ "$1" = "daemon-reload" ] && [ -f "$HARNESS_STATE/worker-drop-in-after-reload" ]; then
-  rm -f -- "$HARNESS_STATE/worker-drop-in-after-reload"
-  printf 'present\n' > "$HARNESS_STATE/worker-drop-in"
+if [ "$1" = "daemon-reload" ]; then
+  if [ -f "$HARNESS_STATE/disk-home-drop-in" ] || [ -f "$HARNESS_STATE/disk-worker-drop-in" ]; then
+    printf 'present\n' > "$HARNESS_STATE/systemd-reloaded"
+  fi
+  if [ -f "$HARNESS_STATE/worker-drop-in-after-reload" ]; then
+    rm -f -- "$HARNESS_STATE/worker-drop-in-after-reload"
+    printf 'present\n' > "$HARNESS_STATE/worker-drop-in"
+  fi
 fi
 presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
@@ -602,6 +660,10 @@ if [ "\${1:-}" = "-c" ] && [ "\${2:-}" = "%u" ]; then
     printf '1\n'
     exit 0
   fi
+  if [ "\${MANAGED_UPGRADE_TEST_ROOTLESS:-0}" = 1 ]; then
+    printf '0\n'
+    exit 0
+  fi
 fi
 exec /usr/bin/stat "$@"
 `, 0o755)
@@ -615,6 +677,7 @@ exec /usr/bin/stat "$@"
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
+    MANAGED_UPGRADE_TEST_ROOTLESS: rootlessHarness ? "1" : "0",
     HARNESS_STATE: state,
     MANAGED_TRUSTED_KEY: trustedKey,
     MANAGED_RECEIPT_DIRECTORY: dirname(receiptPath),
@@ -648,6 +711,33 @@ async function persistentSnapshot(paths) {
     contents: await readFile(path, "utf8"),
     mode: (await stat(path)).mode & 0o777,
   })))
+}
+
+async function treeSnapshot(root) {
+  const entries = []
+  async function visit(directory, prefix = "") {
+    const names = (await readdir(directory)).sort()
+    for (const name of names) {
+      const path = join(directory, name)
+      const relativePath = prefix ? `${prefix}/${name}` : name
+      const metadata = await lstat(path)
+      const entry = {
+        path: relativePath,
+        mode: metadata.mode & 0o777,
+        mtimeMs: metadata.mtimeMs,
+      }
+      if (metadata.isSymbolicLink()) {
+        entries.push({ ...entry, type: "symlink", target: await readlink(path) })
+      } else if (metadata.isDirectory()) {
+        entries.push({ ...entry, type: "directory" })
+        await visit(path, relativePath)
+      } else {
+        entries.push({ ...entry, type: "file", contents: await readFile(path) })
+      }
+    }
+  }
+  await visit(root)
+  return entries
 }
 
 test("managed kernel upgrade atomically advances the release and receipt without changing persistent state", async (context) => {
@@ -695,9 +785,54 @@ test("Path-1 upgrade rejects effective home or worker drop-ins before recovery o
     assert.equal(result.status, 1)
     assert.match(result.stderr, new RegExp(`Path-1 service ${unit.replaceAll(".", "\\.")} has systemd drop-ins`))
     const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
-    assert.ok(calls.every((call) => call.startsWith("show --property=DropInPaths --value ")), calls.join("\n"))
+    assert.ok(calls.every((call) => call.startsWith("show --property=")), calls.join("\n"))
     assert.equal(await readFile(harness.receiptPath, "utf8"), priorReceipt)
     assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), priorRelease)
+  }
+})
+
+test("Path-1 upgrade refuses an unreloaded on-disk drop-in before pending transaction recovery or service mutation", async (context) => {
+  const services = [
+    ["disk-home-drop-in", "chariox-path1-managed-bootstrap.service"],
+    ["disk-worker-drop-in", "chariox-disposable-worker-bootstrap.service"],
+  ]
+  for (const phase of ["prepared", "stopped"]) {
+    for (const [diskDropIn, blockedUnit] of services) {
+      const harness = await makeHarness(context, { path1Release: true })
+      await put(join(harness.state, `crash-after-phase-${phase}`), "crash\n")
+      const seeded = harness.run({
+        CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
+        CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
+      })
+      assert.equal(seeded.signal, "SIGKILL", `${phase}: ${seeded.stderr}`)
+
+      const transactionRoot = join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade")
+      assert.equal(await readFile(join(transactionRoot, "phase"), "utf8"), `${phase}\n`)
+      const beforeInstall = await treeSnapshot(harness.installRoot)
+      const beforeTransaction = await treeSnapshot(transactionRoot)
+      const beforeSystemctl = (await readFile(join(harness.state, "systemctl.log"), "utf8"))
+        .trim().split("\n").length
+      await put(join(harness.state, diskDropIn), "unreloaded systemd drop-in\n")
+
+      const result = harness.run({
+        CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
+        CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
+      })
+      assert.equal(result.status, 1, `${phase}/${blockedUnit}: ${result.stderr}`)
+      assert.match(result.stderr, new RegExp(
+        `Path-1 service ${blockedUnit.replaceAll(".", "\\.")} needs systemd daemon-reload; refusing upgrade before service mutation`,
+      ))
+
+      const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8"))
+        .trim().split("\n").slice(beforeSystemctl)
+      assert.ok(calls.every((call) => call.startsWith("show --property=")), calls.join("\n"))
+      assert.ok(calls.includes("show --property=NeedDaemonReload --value chariox-path1-managed-bootstrap.service"), calls.join("\n"))
+      assert.ok(calls.includes("show --property=NeedDaemonReload --value chariox-disposable-worker-bootstrap.service"), calls.join("\n"))
+      assert.ok(calls.includes("show --property=DropInPaths --value chariox-path1-managed-bootstrap.service"), calls.join("\n"))
+      assert.ok(calls.includes("show --property=DropInPaths --value chariox-disposable-worker-bootstrap.service"), calls.join("\n"))
+      assert.deepEqual(await treeSnapshot(transactionRoot), beforeTransaction)
+      assert.deepEqual(await treeSnapshot(harness.installRoot), beforeInstall)
+    }
   }
 })
 
