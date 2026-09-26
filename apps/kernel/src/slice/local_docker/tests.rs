@@ -219,6 +219,8 @@ pub(super) fn test_options() -> LocalDockerSliceOptions {
         allow_provider_sandbox_compatibility: false,
         memory_mb: None,
         cpus: None,
+        disk_layer_mb: None,
+        disk_home_mb: None,
         screen_width: 1280,
         screen_height: 800,
         saved_home_archive: None,
