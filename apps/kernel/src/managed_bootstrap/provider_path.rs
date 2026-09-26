@@ -236,6 +236,7 @@ mod tests {
                 expected_path
             ),
         )
+        .expect("login profile should be written");
         let tool = local_bin.join("chariox-provider-path-probe");
         fs::write(&tool, "#!/bin/sh\nprintf 'ordinary-provider-tool\\n'\n")
             .expect("provider probe should be written");
@@ -270,6 +271,52 @@ mod tests {
             .expect("provider tool should resolve from the captured PATH");
         assert!(output.status.success());
         assert_eq!(output.stdout, b"ordinary-provider-tool\n");
+    }
+
+    #[test]
+    fn login_path_probe_times_out_and_kills_background_stdout_writer() {
+        let home = TestHome::new();
+        fs::write(
+            home.0.join(".profile"),
+            concat!(
+                "/bin/sh -c 'i=0; while [ \"$i\" -lt 1000 ]; do ",
+                "printf x || :; printf x >> \"$HOME/writer-heartbeat\"; ",
+                "/bin/sleep 0.02; i=$((i + 1)); done' &\n",
+            ),
+        )
+        .expect("login profile should be written");
+
+        let started = Instant::now();
+        let error = resolve_login_path(&home.0)
+            .expect_err("inherited stdout should hit the deadline");
+        assert_eq!(error, "login PATH probe timed out");
+        let elapsed = started.elapsed();
+        assert!(elapsed >= PROBE_TIMEOUT);
+        assert!(elapsed < PROBE_TIMEOUT + Duration::from_secs(3));
+
+        let heartbeat = home.0.join("writer-heartbeat");
+        let before = fs::read(&heartbeat).expect("background writer should have started");
+        assert!(!before.is_empty());
+        std::thread::sleep(Duration::from_millis(200));
+        let after = fs::read(&heartbeat)
+            .expect("background writer heartbeat should remain readable");
+        assert_eq!(after, before, "background writer survived probe cleanup");
+    }
+
+    #[test]
+    fn login_path_probe_rejects_oversized_output() {
+        let home = TestHome::new();
+        fs::write(
+            home.0.join(".profile"),
+            format!(
+                "head -c {} /dev/zero | tr '\\000' x\n",
+                MAX_PROBE_OUTPUT_BYTES + 1
+            ),
+        )
+        .expect("login profile should be written");
+
+        let error = resolve_login_path(&home.0).expect_err("oversized output should be rejected");
+        assert_eq!(error, "login PATH probe output exceeded its limit");
     }
 
     #[test]
