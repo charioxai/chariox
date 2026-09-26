@@ -70,6 +70,14 @@ impl PendingInteraction {
     pub(super) fn belongs_to(&self, sessions: &crate::session::SessionStateStore) -> bool {
         sessions.matches_identity(&self.session_store_identity)
     }
+
+    /// The component that asked is gone or the interaction was answered: no
+    /// receiver waits for a resolution any more.
+    pub(super) fn nobody_waits(&self) -> bool {
+        self.responder.lock().map_or(true, |responder| {
+            responder.as_ref().is_none_or(|sender| sender.is_closed())
+        })
+    }
 }
 
 #[derive(Clone)]

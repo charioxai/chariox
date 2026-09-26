@@ -21,9 +21,7 @@ impl KernelRuntimeOwnedState {
                     || pending
                         .kernel_operation_deadline
                         .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-                    || pending.responder.lock().map_or(true, |sender| {
-                        sender.as_ref().is_none_or(|sender| sender.is_closed())
-                    })
+                    || pending.nobody_waits()
             })
             .take(32)
             .map(|(id, pending)| (id.clone(), pending.clone()))

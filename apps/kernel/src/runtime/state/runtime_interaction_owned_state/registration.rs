@@ -48,22 +48,6 @@ impl KernelRuntimeOwnedState {
                 {
                     return Err(interaction_error("Invalid kernel operation decision"));
                 }
-                let pending = self.pending_interactions.write();
-                if pending
-                    .values()
-                    .filter(|p| p.belongs_to(&self.session_store))
-                    .filter(|p| p.kernel_operation_owner.is_some())
-                    .count()
-                    >= 32
-                    || pending
-                        .values()
-                        .filter(|p| p.belongs_to(&self.session_store))
-                        .filter(|p| p.kernel_operation_owner.as_deref() == Some(owner))
-                        .count()
-                        >= 8
-                {
-                    return Err(interaction_error("Kernel decision limit reached"));
-                }
             }
             _ => {
                 return Err(interaction_error(
@@ -71,10 +55,13 @@ impl KernelRuntimeOwnedState {
                 ))
             }
         }
-        // A kernel decision nobody waits for any more (the component that
-        // asked was replaced, or its operation was abandoned) does not block
-        // its subject: the new request supersedes it.
-        if kernel_operation_owner.is_some() {
+        // A kernel decision nobody waits for any more does not block its
+        // subject: the new request supersedes it. The pump's sweep times such
+        // decisions out too, but a registration must not depend on it having
+        // run first, and a decision restored after a restart has no pending
+        // entry, so no sweep ever sees it and no one can ever resolve it.
+        // Superseding comes before the limits, which count what remains.
+        if let Some(owner) = kernel_operation_owner {
             let mut pending = self.pending_interactions.write();
             let superseded = session
                 .active_interactions()
@@ -83,10 +70,8 @@ impl KernelRuntimeOwnedState {
                     existing.kernel_operation_id().is_some()
                         && existing.subject() == interaction.subject()
                         && pending.get(existing.id()).is_none_or(|entry| {
-                            entry.kernel_operation_owner.as_deref() == kernel_operation_owner
-                                && entry.responder.lock().map_or(true, |responder| {
-                                    responder.as_ref().is_none_or(|sender| sender.is_closed())
-                                })
+                            entry.kernel_operation_owner.as_deref() == Some(owner)
+                                && entry.nobody_waits()
                         })
                 })
                 .map(|existing| existing.id().to_owned())
@@ -94,6 +79,21 @@ impl KernelRuntimeOwnedState {
             for id in superseded {
                 session.remove_active_interaction(&id);
                 pending.remove(&id);
+            }
+            if pending
+                .values()
+                .filter(|p| p.belongs_to(&self.session_store))
+                .filter(|p| p.kernel_operation_owner.is_some())
+                .count()
+                >= 32
+                || pending
+                    .values()
+                    .filter(|p| p.belongs_to(&self.session_store))
+                    .filter(|p| p.kernel_operation_owner.as_deref() == Some(owner))
+                    .count()
+                    >= 8
+            {
+                return Err(interaction_error("Kernel decision limit reached"));
             }
         }
         if session
