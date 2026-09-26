@@ -47,7 +47,7 @@ test("test Chromium override is trimmed, absolute-only, and keeps the chrome def
   );
   assert.throws(
     () => browserControllerLaunchOptions({ CHARIOX_TEST_CHROMIUM_MODE: "headed" }),
-    /DISPLAY.*headed mode/,
+    /headed mode requires DISPLAY/,
   );
 });
 
