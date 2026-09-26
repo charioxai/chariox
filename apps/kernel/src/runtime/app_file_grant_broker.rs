@@ -154,31 +154,49 @@ impl AppFileGrantBroker {
             serde_json::from_value(params).map_err(|_| error("INVALID_ARGUMENT", false))?;
         let stopped = |_| error("APP_OPERATION_STOPPED", false);
         budget.check().map_err(stopped)?;
+        let grant = || {
+            (
+                self.owner.clone(),
+                self.installation().to_owned(),
+                request.grant_id.clone(),
+            )
+        };
+        let (owner, installation, grant_id) = grant();
         let file = self
             .store
-            .app_file_grant_contents(
-                &self.owner,
-                self.installation(),
-                &request.grant_id,
-                crate::session::unix_epoch_ms(),
-            )
-            .map_err(|code| error(code, true))?
-            .ok_or_else(|| error("NOT_FOUND", false))?;
-        let staged = self
+            .claim_app_file_grant(FileGrantCommand::Claim {
+                owner,
+                installation,
+                generation: self.catalog.generation(),
+                grant_id,
+                now_ms: crate::session::unix_epoch_ms(),
+            })
+            .map_err(|code| error(code, code == "STORAGE_UNAVAILABLE"))?;
+        let published = self
             .data
             .prepare_replace(&request.destination, &file.contents)
-            .map_err(|_| error("INVALID_ARGUMENT", false))?;
-        budget.check().map_err(stopped)?;
-        self.store
-            .publish_app_file(&self.owner, self.catalog.clone(), staged, budget)
-            .map_err(|_| error("APP_FILE_UNAVAILABLE", false))?;
-        // Published: the grant is spent. If recording that fails, the same
-        // bytes may be imported once more, which rewrites the same file.
-        let _ = self.store.app_file_grant(FileGrantCommand::Imported {
-            owner: self.owner.clone(),
-            installation: self.installation().to_owned(),
-            grant_id: request.grant_id,
-        });
+            .map_err(|_| error("INVALID_ARGUMENT", false))
+            .and_then(|staged| {
+                budget.check().map_err(stopped)?;
+                self.store
+                    .publish_app_file(&self.owner, self.catalog.clone(), staged, budget)
+                    .map_err(|_| error("APP_FILE_UNAVAILABLE", false))
+            });
+        let (owner, installation, grant_id) = grant();
+        let settle = match published {
+            Ok(()) => FileGrantCommand::Imported {
+                owner,
+                installation,
+                grant_id,
+            },
+            Err(_) => FileGrantCommand::Release {
+                owner,
+                installation,
+                grant_id,
+            },
+        };
+        let _ = self.store.app_file_grant(settle);
+        published?;
         Ok(json!({"bytesWritten": file.contents.len(), "name": file.name}))
     }
 }

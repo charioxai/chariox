@@ -1870,8 +1870,8 @@ Workflow trigger and deployment direction:
   subject `file_pick:<operation>`) in their most recent session. Its only
   choice is Decline. The owner answers from a terminal with `GrantAppFile
   {session_id, operation_id, files: [{name, contents_base64}]}` (at most 8
-  files of 512 KiB each, final name components only, matching the App's
-  accepted suffixes), which answers `AppFileGranted {operation_id, files}` and
+  files of 512 KiB each and 640 KiB together, final name components only,
+  matching the App's accepted suffixes), which answers `AppFileGranted {operation_id, files}` and
   closes the prompt. Only the owner can answer; App code, views and agents
   cannot. Grants are private copies that the App imports once with
   `files.import`. They expire after 30 minutes, or when the App updates.
