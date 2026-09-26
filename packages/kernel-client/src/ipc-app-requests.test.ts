@@ -8,7 +8,7 @@ import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRo
 import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 357)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 358)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -67,4 +67,20 @@ test("file grants carry names and bytes for one pending request, never a path", 
 
 test("saving an offered App file names only the session and the offer", () => {
   assert.deepEqual(saveAppFileExportRequest("s", "file-export-1"), { SaveAppFileExport: { session_id: "s", operation_id: "file-export-1" } })
+})
+
+test("an inbox route can subscribe to an event generator connection (protocol 358)", async () => {
+  assert.deepEqual(createAppInboxRouteRequest({ installationId: "slack", routeId: "mentions", eventName: "mentioned",
+    sourceEventType: "app.mentioned", sourceEventVersion: 1,
+    connection: { generatorId: "dev.chariox.slack", connectionId: "connection-1", connectionScope: "team:T1" } }),
+  { CreateAppInboxRoute: { installation_id: "slack", route_id: "mentions", event_name: "mentioned",
+    source_event_type: "app.mentioned", source_event_version: 1,
+    connection: { generator_id: "dev.chariox.slack", connection_id: "connection-1", connection_scope: "team:T1" } } })
+  const { inboxRequest } = await import("./shell-app-command.js")
+  assert.deepEqual(inboxRequest(["add", "slack", "mentions", "mentioned", "app.mentioned",
+    "--connection", "dev.chariox.slack/connection-1/team:T1"]),
+  { CreateAppInboxRoute: { installation_id: "slack", route_id: "mentions", event_name: "mentioned",
+    source_event_type: "app.mentioned", source_event_version: 1,
+    connection: { generator_id: "dev.chariox.slack", connection_id: "connection-1", connection_scope: "team:T1" } } })
+  assert.equal(inboxRequest(["add", "slack", "r", "e", "t", "--connection", "only-generator"]), null)
 })

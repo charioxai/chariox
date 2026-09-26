@@ -105,13 +105,23 @@ export function disableAppAutomationRequest(installationId: string, automationId
   return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision } }
 }
 
-/** Protocol 353: route one external event type to an App's declared incoming event. */
+/** An event generator connection an inbox route subscribes to (protocol 358). */
+export type AppInboxConnection = { generatorId: string; connectionId: string; connectionScope: string; filter?: unknown }
+
+/** Protocol 353: route one external event type to an App's declared incoming
+ * event; with a connection (358) the kernel subscribes to it at the generator. */
 export function createAppInboxRouteRequest(options: {
   installationId: string; routeId: string; eventName: string; sourceEventType: string; sourceEventVersion: number;
+  connection?: AppInboxConnection;
 }) {
+  const connection = options.connection
   return { CreateAppInboxRoute: {
     installation_id: options.installationId, route_id: options.routeId, event_name: options.eventName,
     source_event_type: options.sourceEventType, source_event_version: options.sourceEventVersion,
+    ...(connection ? { connection: {
+      generator_id: connection.generatorId, connection_id: connection.connectionId,
+      connection_scope: connection.connectionScope, ...(connection.filter == null ? {} : { filter: connection.filter }),
+    } } : {}),
   } }
 }
 

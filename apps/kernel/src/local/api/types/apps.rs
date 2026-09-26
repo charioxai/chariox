@@ -312,6 +312,23 @@ pub struct CreateAppInboxRouteRequest {
     pub event_name: String,
     pub source_event_type: String,
     pub source_event_version: u32,
+    /// Protocol 358: the owner's event generator connection that feeds the
+    /// route. The kernel checks it with the generator and subscribes to
+    /// `source_event_type` there; without it only `TestAppInboxRoute` feeds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<AppInboxConnection>,
+}
+
+/// Protocol 358: an event generator connection an inbox route subscribes to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppInboxConnection {
+    pub generator_id: String,
+    pub connection_id: String,
+    pub connection_scope: String,
+    /// The generator's event filter; `null` takes every occurrence.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub filter: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -340,6 +357,8 @@ pub struct AppInboxRouteSummary {
     pub source_event_type: String,
     pub source_event_version: u32,
     pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<AppInboxConnection>,
     /// Occurrences by outcome; `failed` ones exhausted their attempts.
     pub pending: u64,
     pub delivered: u64,

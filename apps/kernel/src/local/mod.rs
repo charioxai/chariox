@@ -256,7 +256,7 @@ pub use api::{
     AppInstallationRequest, AppInstallationSummary, AppReleaseSummary, AppWorkerAction,
     AppWorkerPhase, AppWorkerRequest, AppWorkerSummary, ConfigureAppAutomationRequest,
     ControlAppWorkerRequest, DisableAppAutomationRequest, OpenAppViewRequest, UninstallAppRequest, GetAppLogsRequest, AppLogEntrySummary,
-    AppInboxRouteRequest, AppInboxRouteSummary, CreateAppInboxRouteRequest, TestAppInboxRouteRequest,
+    AppInboxConnection, AppInboxRouteRequest, AppInboxRouteSummary, CreateAppInboxRouteRequest, TestAppInboxRouteRequest,
     AppFileContents, GrantAppFileRequest, SaveAppFileExportRequest,
     AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
 };

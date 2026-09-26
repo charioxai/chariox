@@ -199,3 +199,25 @@ fn apply(
         }
     }
 }
+
+impl DurableKernelStateStore {
+    /// Every inbox route an event generator feeds, for the kernel's claims.
+    /// Read on the query connection; a route changes only on the writer.
+    pub(crate) fn app_generator_routes(&self) -> Result<Vec<InboxRoute>, InboxError> {
+        let connection = self
+            .lock_connection("durable_state.app_generator_routes")
+            .map_err(|_| InboxError::Corrupt)?;
+        app_inbox::generator_routes(&connection)
+    }
+
+    /// The route an event service delivers under `binding_id`.
+    pub(crate) fn app_route_by_binding(
+        &self,
+        binding_id: &str,
+    ) -> Result<Option<InboxRoute>, InboxError> {
+        let connection = self
+            .lock_connection("durable_state.app_route_by_binding")
+            .map_err(|_| InboxError::Corrupt)?;
+        app_inbox::route_by_binding(&connection, binding_id)
+    }
+}

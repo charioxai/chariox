@@ -90,6 +90,8 @@ export interface AppInboxRouteSummary {
   source_event_type: string
   source_event_version: number
   active: boolean
+  /** Protocol 358: the generator connection that feeds the route. */
+  connection?: { generator_id: string; connection_id: string; connection_scope: string; filter?: unknown }
   pending: number
   delivered: number
   failed: number

@@ -10,7 +10,7 @@ use crate::local::{
     AppInboxRouteSummary, AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse,
 };
 use chariox_app_runtime::app_inbox::{
-    Accepted, InboxCounts, InboxError, InboxItem, InboxRoute, IncomingCatalog,
+    Accepted, InboxCounts, InboxError, InboxItem, InboxRoute, InboxSource, IncomingCatalog,
 };
 use serde_json::Value;
 
@@ -35,6 +35,12 @@ impl KernelRuntimeState {
                     source_event_type: request.source_event_type,
                     source_event_version: request.source_event_version,
                     active: true,
+                    source: request.connection.map(|connection| InboxSource {
+                        generator_id: connection.generator_id,
+                        connection_id: connection.connection_id,
+                        connection_scope: connection.connection_scope,
+                        filter_json: connection.filter.to_string(),
+                    }),
                 };
                 let now_ms = crate::session::unix_epoch_ms();
                 self.inbox(AppInboxOperation::CreateRoute { route, now_ms })
@@ -269,6 +275,12 @@ fn summary((route, counts): (InboxRoute, InboxCounts)) -> AppInboxRouteSummary {
         source_event_type: route.source_event_type,
         source_event_version: route.source_event_version,
         active: route.active,
+        connection: route.source.map(|source| crate::local::AppInboxConnection {
+            generator_id: source.generator_id,
+            connection_id: source.connection_id,
+            connection_scope: source.connection_scope,
+            filter: serde_json::from_str(&source.filter_json).unwrap_or_default(),
+        }),
         pending: counts.pending,
         delivered: counts.delivered,
         failed: counts.failed,

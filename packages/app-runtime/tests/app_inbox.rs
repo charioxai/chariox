@@ -64,6 +64,7 @@ fn route(id: &str) -> InboxRoute {
         source_event_type: "dev.chariox.dummy/dummy.test".into(),
         source_event_version: 1,
         active: true,
+        source: None,
     }
 }
 
@@ -280,5 +281,33 @@ fn routes_are_scoped_per_owner_and_installation_and_removal_forgets_occurrences(
     assert_eq!(
         app_inbox::state(&db, due[0].sequence).unwrap(),
         InboxState::Failed
+    );
+}
+
+#[test]
+fn generator_routes_carry_their_connection_and_an_opaque_binding_id() {
+    let db = db();
+    let fed = InboxRoute {
+        source: Some(app_inbox::InboxSource {
+            generator_id: "dev.chariox.dummy".into(),
+            connection_id: "connection-1".into(),
+            connection_scope: "workspace:1".into(),
+            filter_json: "null".into(),
+        }),
+        ..route("fed")
+    };
+    app_inbox::create_route_in(&db, &fed, 1).unwrap();
+    app_inbox::create_route_in(&db, &route("manual"), 1).unwrap();
+    assert_eq!(app_inbox::generator_routes(&db).unwrap(), vec![fed.clone()]);
+    let binding = fed.binding_id();
+    assert!(binding.starts_with("app-route-") && !binding.contains("owner"));
+    assert_ne!(binding, route("manual").binding_id());
+    assert_eq!(
+        app_inbox::route_by_binding(&db, &binding).unwrap(),
+        Some(fed)
+    );
+    assert_eq!(
+        app_inbox::route_by_binding(&db, "app-route-missing").unwrap(),
+        None
     );
 }

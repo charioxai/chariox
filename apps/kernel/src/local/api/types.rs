@@ -128,4 +128,6 @@ pub use workspace::*;
 /// gains `reload`, which serves an open view the current generation's assets.
 /// Version 357 adds `GetRoomEnvironmentTabAccessibility`: a Room Tab's
 /// accessibility outline for terminals (`RoomEnvironmentTabAccessibility`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 357;
+/// Version 358 lets an App inbox route subscribe to an event generator
+/// connection (`CreateAppInboxRoute.connection`, `AppInboxRouteSummary.connection`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 358;

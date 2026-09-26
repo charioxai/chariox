@@ -93,6 +93,38 @@ pub struct InboxRoute {
     pub source_event_type: String,
     pub source_event_version: u32,
     pub active: bool,
+    /// Set when occurrences come from an event generator connection; absent
+    /// for routes fed only by the owner (`TestAppInboxRoute`).
+    pub source: Option<InboxSource>,
+}
+
+/// The owner's event generator connection a route subscribes to. The kernel
+/// checked the connection with its generator when the route was created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxSource {
+    pub generator_id: String,
+    pub connection_id: String,
+    pub connection_scope: String,
+    /// Canonical JSON; `null` when the route takes every occurrence.
+    pub filter_json: String,
+}
+
+impl InboxRoute {
+    /// The opaque id event services deliver this route's occurrences under.
+    /// It names no owner or App.
+    pub fn binding_id(&self) -> String {
+        let digest = Sha256::digest(
+            [
+                self.owner_id.as_bytes(),
+                b"\0",
+                self.installation_id.as_bytes(),
+                b"\0",
+                self.route_id.as_bytes(),
+            ]
+            .concat(),
+        );
+        format!("app-route-{}", &format!("{digest:x}")[..40])
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +171,30 @@ pub enum Accepted {
 }
 
 pub fn initialize(connection: &Connection) -> Result<()> {
+    initialize_tables(connection)?;
+    // Protocol 358: routes fed by an event generator connection.
+    let has_source: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_inbox_routes') WHERE name='binding_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_source {
+        connection.execute_batch(
+            "ALTER TABLE app_inbox_routes ADD COLUMN binding_id TEXT;
+             ALTER TABLE app_inbox_routes ADD COLUMN generator_id TEXT;
+             ALTER TABLE app_inbox_routes ADD COLUMN connection_id TEXT;
+             ALTER TABLE app_inbox_routes ADD COLUMN connection_scope TEXT;
+             ALTER TABLE app_inbox_routes ADD COLUMN filter_json TEXT;",
+        )?;
+    }
+    connection.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS app_inbox_routes_binding ON app_inbox_routes(binding_id);
+         CREATE INDEX IF NOT EXISTS app_inbox_routes_generator ON app_inbox_routes(generator_id);",
+    )?;
+    Ok(())
+}
+
+fn initialize_tables(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_inbox_routes (
             owner_id TEXT NOT NULL, installation_id TEXT NOT NULL, route_id TEXT NOT NULL,
@@ -184,6 +240,18 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     if route.source_event_version == 0 {
         return Err(InboxError::Invalid);
     }
+    if let Some(source) = &route.source {
+        for value in [
+            &source.generator_id,
+            &source.connection_id,
+            &source.connection_scope,
+        ] {
+            text(value)?;
+        }
+        if source.filter_json.len() > 4096 {
+            return Err(InboxError::Invalid);
+        }
+    }
     let count: i64 = tx.query_row(
         "SELECT count(*) FROM app_inbox_routes WHERE owner_id=?1 AND installation_id=?2",
         params![route.owner_id, route.installation_id],
@@ -192,10 +260,12 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     if count as usize >= MAX_ROUTES {
         return Err(InboxError::Limit);
     }
+    let source = route.source.as_ref();
     tx.execute(
         "INSERT INTO app_inbox_routes(route_id,owner_id,installation_id,event_name,
-            source_event_type,source_event_version,active,created_at_ms)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            source_event_type,source_event_version,active,created_at_ms,
+            binding_id,generator_id,connection_id,connection_scope,filter_json)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         params![
             route.route_id,
             route.owner_id,
@@ -204,7 +274,12 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
             route.source_event_type,
             route.source_event_version,
             route.active,
-            now_ms as i64
+            now_ms as i64,
+            route.binding_id(),
+            source.map(|source| &source.generator_id),
+            source.map(|source| &source.connection_id),
+            source.map(|source| &source.connection_scope),
+            source.map(|source| &source.filter_json),
         ],
     )
     .map_err(|error| match error {
@@ -241,6 +316,7 @@ pub fn remove_route_in(
 }
 
 fn route_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxRoute> {
+    let generator_id: Option<String> = row.get(7)?;
     Ok(InboxRoute {
         route_id: row.get(0)?,
         owner_id: row.get(1)?,
@@ -249,10 +325,43 @@ fn route_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxRoute> {
         source_event_type: row.get(4)?,
         source_event_version: row.get(5)?,
         active: row.get(6)?,
+        source: match generator_id {
+            Some(generator_id) => Some(InboxSource {
+                generator_id,
+                connection_id: row.get(8)?,
+                connection_scope: row.get(9)?,
+                filter_json: row.get(10)?,
+            }),
+            None => None,
+        },
     })
 }
 const ROUTE_COLUMNS: &str = "route_id,owner_id,installation_id,event_name,source_event_type,\
-    source_event_version,active";
+    source_event_version,active,generator_id,connection_id,connection_scope,filter_json";
+
+/// Every route an event generator feeds, across owners, for the kernel's
+/// subscription and delivery claims.
+pub fn generator_routes(connection: &Connection) -> Result<Vec<InboxRoute>> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROUTE_COLUMNS} FROM app_inbox_routes WHERE generator_id IS NOT NULL
+         ORDER BY owner_id,installation_id,route_id LIMIT 4096"
+    ))?;
+    let routes = statement
+        .query_map([], route_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(routes)
+}
+
+/// The route an event service delivers under `binding_id`.
+pub fn route_by_binding(connection: &Connection, binding_id: &str) -> Result<Option<InboxRoute>> {
+    Ok(connection
+        .query_row(
+            &format!("SELECT {ROUTE_COLUMNS} FROM app_inbox_routes WHERE binding_id=?1"),
+            params![binding_id],
+            route_row,
+        )
+        .optional()?)
+}
 
 pub fn route(
     connection: &Connection,

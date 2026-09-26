@@ -392,6 +392,27 @@ impl CommandRouter {
                 .redact_result_for_user(Ok(response), caller_user_id)
                 .map(Some);
         }
+        // Protocol 358: an App inbox route fed by a generator connection is
+        // checked with that generator first, like a workflow event binding.
+        if let LocalDaemonRequest::CreateAppInboxRoute(crate::local::CreateAppInboxRouteRequest {
+            connection: Some(connection),
+            ..
+        }) = request
+        {
+            let _connection_guard = self
+                .event_connection_lanes
+                .lock(caller_user_id, &connection.connection_id)
+                .await;
+            validate_event_connection(
+                &self.runtime_state,
+                &self.config_projection,
+                &self.aegs_management_http_client,
+                caller_user_id,
+                &connection.generator_id,
+                &connection.connection_id,
+            )
+            .await?;
+        }
         let connection_mutation = match request {
             LocalDaemonRequest::CreateWorkflowEventBinding(request) => {
                 Some((WorkflowEventBindingContract::from(request), false))

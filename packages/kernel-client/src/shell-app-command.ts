@@ -2,6 +2,7 @@ import {
   configureAppAutomationRequest, controlAppWorkerRequest, disableAppAutomationRequest, getAppInstallationJournalRequest,
   getAppInstallationRequest, getAppWorkerRequest, listAppAutomationsRequest, listAppInstallationsRequest,
   getAppLogsRequest, openAppViewRequest, uninstallAppRequest, createAppInboxRouteRequest, listAppInboxRoutesRequest,
+  type AppInboxConnection,
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
 } from "./ipc-app-requests.js"
 import type { AppAutomationSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
@@ -17,7 +18,7 @@ const usage = [
   "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--revision <n>]",
   "       app automation disable <installation-id> <automation-id> <revision>",
   "       app inbox list <installation-id> | remove <installation-id> <route-id>",
-  "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>]",
+  "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
   "       app inbox test <installation-id> <route-id> <occurrence-id> <json-payload>",
 ].join("\n")
 
@@ -156,7 +157,8 @@ function automationRequest(args: string[]): Record<string, unknown> | null {
   })
 }
 
-function inboxRequest(args: string[]): Record<string, unknown> | null {
+/** `app inbox ...` arguments to a kernel request, or null when malformed. */
+export function inboxRequest(args: string[]): Record<string, unknown> | null {
   const [verb, installation, ...rest] = args
   if (!installation) return null
   if (verb === "list" && rest.length === 0) return listAppInboxRoutesRequest(installation)
@@ -168,18 +170,31 @@ function inboxRequest(args: string[]): Record<string, unknown> | null {
       return null
     }
   }
-  if (verb !== "add" || (rest.length !== 3 && rest.length !== 5)) return null
-  const [routeId, eventName, sourceEventType, flag, version] = rest
+  if (verb !== "add" || rest.length < 3 || rest.length % 2 === 0) return null
+  const [routeId, eventName, sourceEventType, ...flags] = rest
   if (!routeId || !eventName || !sourceEventType) return null
-  if (rest.length === 5 && (flag !== "--version" || !/^[1-9]\d{0,8}$/.test(version ?? ""))) return null
+  let version = 1
+  let connection: AppInboxConnection | undefined
+  for (let index = 0; index < flags.length; index += 2) {
+    const [flag, value = ""] = [flags[index], flags[index + 1]]
+    if (flag === "--version" && /^[1-9]\d{0,8}$/.test(value)) version = Number(value)
+    else if (flag === "--connection") {
+      // generator/connection-id/scope; the scope may itself contain slashes.
+      const [generatorId, connectionId, ...scope] = value.split("/")
+      if (!generatorId || !connectionId || scope.length === 0 || !scope.join("/")) return null
+      connection = { generatorId, connectionId, connectionScope: scope.join("/") }
+    } else return null
+  }
   return createAppInboxRouteRequest({
-    installationId: installation, routeId, eventName, sourceEventType, sourceEventVersion: Number(version ?? 1),
+    installationId: installation, routeId, eventName, sourceEventType, sourceEventVersion: version,
+    ...(connection ? { connection } : {}),
   })
 }
 
 function formatInboxRoute(route: AppInboxRouteSummary): string {
   const counts = `${route.pending} pending, ${route.delivered} delivered, ${route.failed} failed, ${route.expired} expired`
-  return `${route.route_id} · ${route.source_event_type} v${route.source_event_version} → ${route.event_name} · ${counts}`
+  const source = route.connection ? ` from ${route.connection.generator_id} (${route.connection.connection_scope})` : ""
+  return `${route.route_id} · ${route.source_event_type} v${route.source_event_version}${source} → ${route.event_name} · ${counts}`
 }
 
 function formatWorker(worker: AppWorkerSummary): string {

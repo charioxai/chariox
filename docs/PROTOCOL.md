@@ -1929,6 +1929,23 @@ Workflow trigger and deployment direction:
   call after it loads re-projects the Room, so the Tab shows the App's title
   and URL. Bridge call ids are unique per document, so an answer meant for
   the previous document never resolves a call in the new one.
+- protocol 358: App inbox routes fed by event generator connections.
+  `CreateAppInboxRoute` takes an optional `connection {generator_id,
+  connection_id, connection_scope, filter?}`: the owner's connection at an
+  event generator (AEGS). The kernel checks the connection with that
+  generator before it stores the route, then treats the route like a workflow
+  event binding: it subscribes to `source_event_type` at the generator and
+  claims the route at the event delivery service (AEDS) under an opaque
+  `app-route-...` binding id that names no owner or App. A delivery for it is
+  validated against the App's signed incoming schema and recorded in the
+  inbox before AEDS is acknowledged; one that can never land (the route was
+  removed, a different event type, a payload the schema refuses, or other
+  content under an accepted occurrence id) is logged and acknowledged. The App
+  receives `{source: {generator_id, connection_id, event_type,
+  event_type_version}, occurred_at, text, metadata, artifacts, reply_context}`
+  as the event payload, deduplicated by the source occurrence id.
+  `AppInboxRouteSummary` shows the `connection`. The route grants the App no
+  use of the connection beyond receiving these occurrences.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

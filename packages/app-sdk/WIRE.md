@@ -122,6 +122,20 @@ Occurrence acknowledgment is a normal request response. Durable receipt and
 workflow-enqueue deduplication are kernel responsibilities, not in-memory SDK
 deduplication.
 
+An inbox route fed by an event generator connection (kernel protocol 358)
+delivers `events.deliver` with this payload, which the App's signed incoming
+schema must accept:
+
+```json
+{"source": {"generator_id": "dev.chariox.slack", "connection_id": "connection-…",
+            "event_type": "app.mentioned", "event_type_version": 1},
+ "occurred_at": "2026-09-26T19:00:00.000Z", "text": "…", "metadata": {},
+ "artifacts": [], "reply_context": null}
+```
+
+`occurrence_id` is the source occurrence's id, so a redelivery is the same
+occurrence.
+
 ## Worker-to-supervisor requests
 
 `worker.ready` reports `{tools:string[],events:string[],lifecycle:string[]}` after

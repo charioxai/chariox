@@ -411,6 +411,7 @@ fn inbox_accepts_only_for_the_active_generation_and_settles_undeliverable_occurr
                 source_event_type: "slack.message".into(),
                 source_event_version: 1,
                 active: true,
+                source: None,
             },
             now_ms: 10,
         })
