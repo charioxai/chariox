@@ -8,6 +8,7 @@
 compile_error!("test-fixtures is test-only and must not be enabled in production release builds");
 
 pub mod app_catalog;
+pub mod app_inbox;
 pub mod app_outbox;
 pub mod installation;
 pub mod managed_state;

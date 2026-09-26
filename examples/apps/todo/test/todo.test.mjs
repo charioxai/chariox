@@ -12,11 +12,12 @@ function fakeKernel({ automation = true } = {}) {
   const wakes = new Map();
   const occurrences = [];
   const tools = new Map();
+  const incoming = new Map();
   let onWake;
   const chariox = {
     AppError,
     tools: { register: (name, handler) => tools.set(name, handler) },
-    events: { occurrenceId },
+    events: { occurrenceId, register: (name, handler) => incoming.set(name, handler) },
     schedule: { onWake: handler => { onWake = handler; } },
     state: {
       async get(key) { return state.get(key) ?? null; },
@@ -49,7 +50,7 @@ function fakeKernel({ automation = true } = {}) {
     const current = wakes.get(delivered.id);
     if (current?.revision === delivered.revision && current.dueAtMs === delivered.dueAtMs) wakes.delete(delivered.id);
   }
-  return { tools, wakes, occurrences, wake };
+  return { tools, wakes, occurrences, wake, incoming };
 }
 
 test('Todos are created, listed, completed and deleted with their wakes kept in step', async () => {
@@ -112,4 +113,16 @@ test('the App reports its own limit before the kernel value cap, for any text', 
     for (; created < 150; created += 1) await kernel.tools.get('create_todo')({ title: `t${created}`, notes });
   }, (error) => error instanceof AppError && error.code === 'LIMIT_EXCEEDED' && /too large/.test(error.message));
   assert.ok(created > 0 && created < 150);
+});
+
+test('an incoming request creates one Todo even when it is delivered twice', async () => {
+  const kernel = fakeKernel();
+  const deliver = () => kernel.incoming.get('todo_requested')(
+    { occurrenceId: 'occ-1', payload: { title: 'From Slack', due_at_ms: 9000 } });
+  const todo = await deliver();
+  assert.equal(todo.title, 'From Slack');
+  assert.equal(await deliver(), null);
+  const { todos } = await kernel.tools.get('list_todos')({});
+  assert.equal(todos.length, 1);
+  assert.deepEqual(kernel.wakes.get(`todo-${todo.id}`), { id: `todo-${todo.id}`, dueAtMs: 9000, revision: '1' });
 });

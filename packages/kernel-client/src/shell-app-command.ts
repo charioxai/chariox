@@ -1,9 +1,10 @@
 import {
   configureAppAutomationRequest, controlAppWorkerRequest, disableAppAutomationRequest, getAppInstallationJournalRequest,
   getAppInstallationRequest, getAppWorkerRequest, listAppAutomationsRequest, listAppInstallationsRequest,
-  getAppLogsRequest, openAppViewRequest, uninstallAppRequest,
+  getAppLogsRequest, openAppViewRequest, uninstallAppRequest, createAppInboxRouteRequest, listAppInboxRoutesRequest,
+  removeAppInboxRouteRequest, testAppInboxRouteRequest,
 } from "./ipc-app-requests.js"
-import type { AppAutomationSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
+import type { AppAutomationSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
 type Client = { send(request: Record<string, unknown>): Promise<Record<string, unknown>> }
@@ -15,6 +16,9 @@ const usage = [
   "       app automation list <installation-id>",
   "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--revision <n>]",
   "       app automation disable <installation-id> <automation-id> <revision>",
+  "       app inbox list <installation-id> | remove <installation-id> <route-id>",
+  "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>]",
+  "       app inbox test <installation-id> <route-id> <occurrence-id> <json-payload>",
 ].join("\n")
 
 export async function executeAppCommand(
@@ -58,6 +62,10 @@ export async function executeAppCommand(
       generation = installation.generation
     }
     request = uninstallAppRequest(rest[0], generation)
+  } else if (action === "inbox") {
+    const parsed = inboxRequest(rest)
+    if (!parsed) return { ok: false, message: usage }
+    request = parsed
   } else if (action === "automation") {
     const parsed = automationRequest(rest)
     if (!parsed) return { ok: false, message: usage }
@@ -100,6 +108,15 @@ export async function executeAppCommand(
     const data = expect<{ installation_id: string; automations: AppAutomationSummary[] }>(response, "AppAutomations")
     return { ok: true, message: data.automations.map(formatAutomation).join("\n") || "No App automations.", data }
   }
+  if (response.AppInboxRoutes) {
+    const data = expect<{ installation_id: string; routes: AppInboxRouteSummary[] }>(response, "AppInboxRoutes")
+    return { ok: true, message: data.routes.map(formatInboxRoute).join("\n") || "No App inbox routes.", data }
+  }
+  if (response.AppInboxOccurrenceAccepted) {
+    const data = expect<{ route_id: string; occurrence_id: string; duplicate: boolean }>(response, "AppInboxOccurrenceAccepted")
+    const note = data.duplicate ? "was already accepted" : "accepted; the App receives it shortly"
+    return { ok: true, message: `Occurrence ${data.occurrence_id} on ${data.route_id} ${note}.`, data }
+  }
   if (response.AppAutomation) {
     const data = expect<{ installation_id: string; automation: AppAutomationSummary }>(response, "AppAutomation")
     return { ok: true, message: formatAutomation(data.automation), data }
@@ -139,6 +156,32 @@ function automationRequest(args: string[]): Record<string, unknown> | null {
   })
 }
 
+function inboxRequest(args: string[]): Record<string, unknown> | null {
+  const [verb, installation, ...rest] = args
+  if (!installation) return null
+  if (verb === "list" && rest.length === 0) return listAppInboxRoutesRequest(installation)
+  if (verb === "remove" && rest.length === 1 && rest[0]) return removeAppInboxRouteRequest(installation, rest[0])
+  if (verb === "test" && rest.length === 3 && rest[0] && rest[1]) {
+    try {
+      return testAppInboxRouteRequest(installation, rest[0], rest[1], JSON.parse(rest[2] ?? ""))
+    } catch {
+      return null
+    }
+  }
+  if (verb !== "add" || (rest.length !== 3 && rest.length !== 5)) return null
+  const [routeId, eventName, sourceEventType, flag, version] = rest
+  if (!routeId || !eventName || !sourceEventType) return null
+  if (rest.length === 5 && (flag !== "--version" || !/^[1-9]\d{0,8}$/.test(version ?? ""))) return null
+  return createAppInboxRouteRequest({
+    installationId: installation, routeId, eventName, sourceEventType, sourceEventVersion: Number(version ?? 1),
+  })
+}
+
+function formatInboxRoute(route: AppInboxRouteSummary): string {
+  const counts = `${route.pending} pending, ${route.delivered} delivered, ${route.failed} failed, ${route.expired} expired`
+  return `${route.route_id} · ${route.source_event_type} v${route.source_event_version} → ${route.event_name} · ${counts}`
+}
+
 function formatWorker(worker: AppWorkerSummary): string {
   const enabled = worker.enabled ? "" : " (stopped by user)"
   const failure = worker.failure ? ` · ${worker.failure}` : ""
@@ -169,8 +212,11 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
     unauthorized: "This connection is not authorized to access Apps.",
     not_found: action === "automation"
       ? "Not found: check the App installation, session, workflow or automation."
+      : action === "inbox" ? "Not found: check the App installation and route."
       : "App installation not found.",
-    invalid_request: "Invalid App request.",
+    invalid_request: action === "inbox"
+      ? "Invalid App request: the event must be one the App declares as incoming, and a payload must match its schema."
+      : "Invalid App request.",
     busy: "App requests are busy. Try again shortly.",
     storage_unavailable: "App storage is unavailable.",
     conflict: "The request conflicts with the App's current state (for example a stale revision). Refresh and try again.",

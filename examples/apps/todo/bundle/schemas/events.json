@@ -24,6 +24,33 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "todo_requested",
+      "schemaVersion": 1,
+      "direction": "incoming",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "due_at_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      }
     }
   ]
 }

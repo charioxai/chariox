@@ -130,3 +130,32 @@ test("App logs page by sequence and escape App-authored control characters", asy
   assert.match(result.message!, /More: app logs todo --after 8/)
   assert.equal((await executeAppCommand(["logs", "todo", "--after", "x"], { send: async () => ({}) })).ok, false)
 })
+
+test("app inbox configures routes and test occurrences through the shared requests", async () => {
+  const sent: Record<string, unknown>[] = []
+  const route = { route_id: "mail", event_name: "todo_requested", source_event_type: "dev.chariox.dummy/dummy.test",
+    source_event_version: 2, active: true, pending: 1, delivered: 3, failed: 0, expired: 0 }
+  const client = { send: async (request: Record<string, unknown>) => {
+    sent.push(request)
+    if (request.TestAppInboxRoute) return { AppInboxOccurrenceAccepted: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", duplicate: true } }
+    return { AppInboxRoutes: { installation_id: "todo", routes: [route] } }
+  } }
+  const added = await executeAppCommand(["inbox", "add", "todo", "mail", "todo_requested", "dev.chariox.dummy/dummy.test", "--version", "2"], client)
+  assert.match(added.message!, /mail · dev.chariox.dummy\/dummy.test v2 → todo_requested · 1 pending, 3 delivered, 0 failed, 0 expired/)
+  const tested = await executeAppCommand(["inbox", "test", "todo", "mail", "occ-1", '{"title":"x"}'], client)
+  assert.equal(tested.message, "Occurrence occ-1 on mail was already accepted.")
+  await executeAppCommand(["inbox", "remove", "todo", "mail"], client)
+  await executeAppCommand(["inbox", "list", "todo"], client)
+  assert.deepEqual(sent, [
+    { CreateAppInboxRoute: { installation_id: "todo", route_id: "mail", event_name: "todo_requested", source_event_type: "dev.chariox.dummy/dummy.test", source_event_version: 2 } },
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x" } } },
+    { RemoveAppInboxRoute: { installation_id: "todo", route_id: "mail" } },
+    { ListAppInboxRoutes: { installation_id: "todo" } },
+  ])
+  for (const args of [["inbox", "test", "todo", "mail", "occ", "{bad"], ["inbox", "add", "todo", "mail", "e", "t", "--version", "0"], ["inbox", "list"]]) {
+    const result = await executeAppCommand(args, { send: async () => { throw new Error("unexpected request") } })
+    assert.equal(result.ok, false)
+  }
+  const refused = await executeAppCommand(["inbox", "list", "todo"], { send: async () => ({ AppRequestFailed: { code: "invalid_request" } }) })
+  assert.match(refused.message!, /declares as incoming/)
+})

@@ -764,6 +764,11 @@ mod tests {
                 "app-automation-list",
                 "app-automation-add",
                 "app-automation-disable",
+                "app-inbox",
+                "app-inbox-list",
+                "app-inbox-add",
+                "app-inbox-remove",
+                "app-inbox-test",
             ]
         );
     }

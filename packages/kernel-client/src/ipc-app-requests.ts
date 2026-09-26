@@ -104,3 +104,26 @@ export function configureAppAutomationRequest(options: {
 export function disableAppAutomationRequest(installationId: string, automationId: string, expectedRevision: number) {
   return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision } }
 }
+
+/** Protocol 353: route one external event type to an App's declared incoming event. */
+export function createAppInboxRouteRequest(options: {
+  installationId: string; routeId: string; eventName: string; sourceEventType: string; sourceEventVersion: number;
+}) {
+  return { CreateAppInboxRoute: {
+    installation_id: options.installationId, route_id: options.routeId, event_name: options.eventName,
+    source_event_type: options.sourceEventType, source_event_version: options.sourceEventVersion,
+  } }
+}
+
+export function removeAppInboxRouteRequest(installationId: string, routeId: string) {
+  return { RemoveAppInboxRoute: { installation_id: installationId, route_id: routeId } }
+}
+
+export function listAppInboxRoutesRequest(installationId: string) {
+  return { ListAppInboxRoutes: { installation_id: installationId } }
+}
+
+/** Accepts one occurrence as a source would; the payload must match the App's signed schema. */
+export function testAppInboxRouteRequest(installationId: string, routeId: string, occurrenceId: string, payload: unknown) {
+  return { TestAppInboxRoute: { installation_id: installationId, route_id: routeId, occurrence_id: occurrenceId, payload } }
+}

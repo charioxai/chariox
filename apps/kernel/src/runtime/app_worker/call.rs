@@ -193,4 +193,30 @@ impl AppWorkerLease {
             _ => Err(AppWorkerError::Unavailable),
         }
     }
+
+    /// Deliver one accepted inbox occurrence to the App's incoming event
+    /// handler. Retries keep the occurrence ID, so the App can deduplicate.
+    pub(crate) async fn deliver_event(
+        &self,
+        item: &chariox_app_runtime::app_inbox::InboxItem,
+        timeout: Duration,
+    ) -> Result<(), AppWorkerError> {
+        self.0.available()?;
+        self.touch();
+        let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
+        let params = serde_json::json!({
+            "name": item.event_name, "occurrence_id": item.occurrence_id, "payload": item.payload,
+        });
+        match slot
+            .request("events.deliver", params, None)
+            .await
+            .map_err(peer_error)?
+        {
+            Message::Response {
+                outcome: chariox_app_runtime::wire::Outcome::Success(_),
+                ..
+            } => Ok(()),
+            _ => Err(AppWorkerError::Unavailable),
+        }
+    }
 }

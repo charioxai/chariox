@@ -15,6 +15,8 @@ pub enum LocalDaemonResponse {
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
     AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
+    AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
+    AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },
     SessionDetached { attachment: RuntimeAttachment, },

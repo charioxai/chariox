@@ -4,9 +4,10 @@ import { abortAppPackageUploadRequest, beginAppPackageUploadRequest, getAppPacka
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest } from "./ipc-app-requests.js"
 import { beginAppPublisherEnrollmentRequest, getAppPublisherEnrollmentRequest, cancelAppPublisherEnrollmentRequest } from "./ipc-app-requests.js"
+import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRouteRequest, testAppInboxRouteRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 352)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 353)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -44,4 +45,15 @@ test("publisher enrollment sends review material and exact revisions without a c
   } })
   assert.deepEqual(getAppPublisherEnrollmentRequest("retry"), { GetAppPublisherEnrollment: { request_id: "retry" } })
   assert.deepEqual(cancelAppPublisherEnrollmentRequest("retry"), { CancelAppPublisherEnrollment: { request_id: "retry" } })
+})
+
+test("inbox routes name an installation and its signed incoming event only", () => {
+  assert.deepEqual(createAppInboxRouteRequest({ installationId: "todo", routeId: "mail", eventName: "todo_requested",
+    sourceEventType: "dev.chariox.dummy/dummy.test", sourceEventVersion: 1 }), { CreateAppInboxRoute: {
+    installation_id: "todo", route_id: "mail", event_name: "todo_requested",
+    source_event_type: "dev.chariox.dummy/dummy.test", source_event_version: 1 } })
+  assert.deepEqual(listAppInboxRoutesRequest("todo"), { ListAppInboxRoutes: { installation_id: "todo" } })
+  assert.deepEqual(removeAppInboxRouteRequest("todo", "mail"), { RemoveAppInboxRoute: { installation_id: "todo", route_id: "mail" } })
+  assert.deepEqual(testAppInboxRouteRequest("todo", "mail", "occ-1", { title: "x" }),
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x" } } })
 })

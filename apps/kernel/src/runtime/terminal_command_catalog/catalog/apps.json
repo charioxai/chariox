@@ -176,6 +176,58 @@
             ]
           }
         ]
+      },
+      {
+        "id": "app-inbox",
+        "label": "inbox",
+        "description": "Route external events to an App",
+        "value": "/app inbox ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-inbox-list",
+            "label": "list",
+            "description": "List an App's inbox routes",
+            "value": "/app inbox list ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-add",
+            "label": "add",
+            "description": "Route an external event type to an App's incoming event",
+            "value": "/app inbox add ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-remove",
+            "label": "remove",
+            "description": "Remove an App inbox route",
+            "value": "/app inbox remove ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-test",
+            "label": "test",
+            "description": "Send a test occurrence through an inbox route",
+            "value": "/app inbox test ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
       }
     ]
   }
