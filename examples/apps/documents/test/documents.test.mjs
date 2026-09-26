@@ -1,7 +1,7 @@
 // Exercises the Documents backend against an in-memory stand-in for the
 // kernel's App state (compare-and-set) and a temporary private data root.
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -16,6 +16,7 @@ async function fakeKernel() {
   let beforeCommit = async () => {};
   // Files the owner "chose" in the trusted prompt, by grant id.
   const grants = new Map();
+  const exported = [];
   let answerPick = async () => ({ grantIds: [...grants.keys()] });
   const chariox = {
     AppError,
@@ -37,6 +38,10 @@ async function fakeKernel() {
         grants.delete(grantId);
         await writeFile(join(data, destination), file.contents);
         return { bytesWritten: Buffer.byteLength(file.contents), name: file.name };
+      },
+      async export(path) {
+        exported.push({ path, contents: await readFile(join(data, path), 'utf8') });
+        return { operationId: 'file-export-1' };
       },
     },
     host: { pickFile: () => answerPick() },
@@ -60,7 +65,7 @@ async function fakeKernel() {
   register(chariox);
   const call = (name, input = {}) => tools.get(name)(input);
   return {
-    call, data, grants,
+    call, data, grants, exported,
     setBeforeCommit: (hook) => { beforeCommit = hook; },
     setAnswerPick: (answer) => { answerPick = answer; },
     cleanup: () => rm(data, { recursive: true, force: true }),
@@ -210,6 +215,17 @@ test('a declined file request imports nothing', async () => {
     assert.deepEqual(await kernel.call('import_documents'), { requested: true });
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual((await kernel.call('list_documents')).documents, []);
+  } finally {
+    await kernel.cleanup();
+  }
+});
+
+test('export offers a copy named after the document', async () => {
+  const kernel = await fakeKernel();
+  try {
+    const doc = await kernel.call('create_document', { title: 'Q3 plan: draft/2', content: '# Q3' });
+    assert.deepEqual(await kernel.call('export_document', { id: doc.id }), { offered: 'Q3 plan_ draft_2.md' });
+    assert.deepEqual(kernel.exported, [{ path: 'exports/Q3 plan_ draft_2.md', contents: '# Q3' }]);
   } finally {
     await kernel.cleanup();
   }

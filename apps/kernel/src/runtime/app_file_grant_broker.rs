@@ -1,10 +1,13 @@
-//! SDK `host.pick_file`, `host.pick_file_status` and `files.import`, for Apps
-//! whose signed manifest declares `externalFiles: ["user_selected"]`. A pick
-//! returns a pending reference at once; the owner answers through a trusted
-//! kernel prompt. An import copies one granted file into private data, once.
+//! SDK `host.pick_file`, `host.pick_file_status`, `files.import` and
+//! `files.export`, for Apps whose signed manifest declares
+//! `externalFiles: ["user_selected"]`. A pick or an export returns a pending
+//! reference at once; the owner answers through a trusted kernel prompt. An
+//! import copies one granted file into private data, once; an export offers a
+//! copy of one private file for the owner to save.
 use super::app_operation_budget::AppOperationBudget;
 use crate::durable_state::{
-    app_file_grants::{FileGrantCommand, FilePick, PickState, MAX_FILES, PICK_MS},
+    app_file_exports::{FileExport, FileExportCommand, FileExportReply, OFFER_MS},
+    app_file_grants::{FileGrantCommand, FilePick, PickState, MAX_FILES, MAX_FILE_BYTES, PICK_MS},
     DurableKernelStateStore,
 };
 use chariox_app_package::{ExternalFileAccess, VerifiedPackage};
@@ -42,6 +45,12 @@ struct Pick {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Status {
     operation_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Export {
+    path: String,
 }
 
 #[derive(Deserialize)]
@@ -92,6 +101,7 @@ impl AppFileGrantBroker {
                 "host.pick_file" => service.pick(request.params),
                 "host.pick_file_status" => service.status(request.params),
                 "files.import" => service.import(request.params, budget),
+                "files.export" => service.export(request.params),
                 _ => Err(error("METHOD_UNAVAILABLE", false)),
             }
         })
@@ -180,6 +190,41 @@ impl AppFileGrantBroker {
             grant_id: request.grant_id,
         });
         Ok(json!({"bytesWritten": file.contents.len(), "name": file.name}))
+    }
+}
+
+impl AppFileGrantBroker {
+    fn export(&self, params: Value) -> Result<Value, RemoteError> {
+        let request: Export =
+            serde_json::from_value(params).map_err(|_| error("INVALID_ARGUMENT", false))?;
+        let name = request
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let contents = self
+            .data
+            .read_file(&request.path, MAX_FILE_BYTES)
+            .map_err(|_| error("INVALID_ARGUMENT", false))?;
+        let export = FileExport {
+            operation_id: format!("file-export-{:032x}", rand::random::<u128>()),
+            owner: self.owner.clone(),
+            installation: self.installation().to_owned(),
+            generation: self.catalog.generation(),
+            name,
+            size: contents.len() as u64,
+            state: "pending".into(),
+            expires_ms: crate::session::unix_epoch_ms() + OFFER_MS,
+        };
+        match self
+            .store
+            .app_file_export(FileExportCommand::Create { export, contents })
+            .map_err(|code| error(code, code == "STORAGE_UNAVAILABLE"))?
+        {
+            FileExportReply::Export(export) => Ok(json!({"operationId": export.operation_id})),
+            _ => Err(error("STORAGE_UNAVAILABLE", true)),
+        }
     }
 }
 

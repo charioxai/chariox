@@ -181,6 +181,12 @@ updates. `files.import {grantId, destination}` copies one grant into private
 data, like `files.atomic_replace`, and spends it. It replies `{bytesWritten,
 name}`, where `name` is the file name the owner chose. The SDK's
 `host.pickFile` polls the status and resolves with `{grantIds}`.
+`files.export {path}` (same capability) copies one private regular file of at
+most 512 KiB. It follows no links. The kernel offers it to the owner in the
+same kind of trusted prompt, and the reply is `{operationId}` at once. The
+owner saves it from their terminal, which chooses the location, or declines.
+An offer is released once, and expires unanswered after 10 minutes or when the
+App updates.
 
 `validation.request`, `host.pick_file` and `outputs.request` return durable pending references when
 waiting for human input or model output. They must not retain a worker request

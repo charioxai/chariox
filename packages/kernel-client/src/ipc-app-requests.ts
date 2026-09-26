@@ -133,3 +133,8 @@ export function grantAppFileRequest(sessionId: string, operationId: string, file
   return { GrantAppFile: { session_id: sessionId, operation_id: operationId,
     files: files.map(file => ({ name: file.name, contents_base64: file.contentsBase64 })) } }
 }
+
+/** Protocol 355: the owner takes a copy of a file an App offered with `files.export`. */
+export function saveAppFileExportRequest(sessionId: string, operationId: string) {
+  return { SaveAppFileExport: { session_id: sessionId, operation_id: operationId } }
+}

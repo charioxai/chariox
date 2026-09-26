@@ -7,7 +7,7 @@ use crate::private_fs::{self, Dir};
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
-    io::Write,
+    io::{Read, Write},
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     sync::{Arc, Mutex},
 };
@@ -63,6 +63,35 @@ impl PrivateData {
     }
     pub fn release_digest(&self) -> &str {
         &self.release_digest
+    }
+
+    /// Reads one private regular file of at most `max` bytes, walking held
+    /// directory descriptors on the data device only (no symlinks, no hard
+    /// links), for an owner-approved export.
+    pub fn read_file(&self, path: &str, max: usize) -> Result<Vec<u8>> {
+        let parts = relative_path(path)?;
+        let device = self.root.0.metadata().map_err(io)?.dev();
+        let mut parent = Dir(self.root.0.try_clone().map_err(io)?);
+        for name in &parts[..parts.len() - 1] {
+            parent = parent.child(OsStr::new(name)).map_err(fs)?;
+            if parent.0.metadata().map_err(io)?.dev() != device {
+                return Err(PrivateDataError::Identity);
+            }
+        }
+        let file = parent
+            .read_file(OsStr::new(parts[parts.len() - 1]), false)
+            .map_err(fs)?;
+        if file.metadata().map_err(io)?.len() > max as u64 {
+            return Err(PrivateDataError::Invalid);
+        }
+        let mut contents = Vec::new();
+        file.take(max as u64 + 1)
+            .read_to_end(&mut contents)
+            .map_err(io)?;
+        if contents.len() > max {
+            return Err(PrivateDataError::Invalid);
+        }
+        Ok(contents)
     }
 
     /// Writes/fsyncs the new inode before entering the kernel's final generation

@@ -1,6 +1,6 @@
-import { readFile, stat } from "node:fs/promises"
+import { readFile, stat, writeFile } from "node:fs/promises"
 import { basename } from "node:path"
-import { grantAppFileRequest } from "@chariox/kernel-client/ipc-requests"
+import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-client/ipc-requests"
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 import type { AppDevLoop } from "./app-dev-loop.js"
@@ -58,10 +58,23 @@ export async function handleAppSlashCommand(
     // Tokenization preserves quoted local paths; only each file's name and
     // bytes are sent, never its path.
     const [, action, operation, ...paths] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
-    if (action !== "grant" || !operation || paths.length === 0 || paths.length > 8) {
-      throw new Error('usage: /app file grant OPERATION "FILE" ["FILE"...]')
-    }
     const session = deps.currentAppSessionId?.()
+    if (action === "save" && operation && paths.length === 1 && paths[0]) {
+      if (!session) throw new Error("Attach to the session showing the file offer")
+      const response = await deps.sendAppRequest(saveAppFileExportRequest(session, operation))
+      const offered = response.AppFileExport as { name?: string; contents_base64?: string } | undefined
+      if (!offered?.contents_base64 && offered?.contents_base64 !== "") {
+        const code = (response.AppRequestFailed as { code?: string } | undefined)?.code
+        throw new Error(code === "conflict" ? "That file offer was already answered or expired" : "No such file offer for you")
+      }
+      // Never replaces an existing file.
+      await writeFile(paths[0], Buffer.from(offered.contents_base64, "base64"), { flag: "wx" })
+      deps.appendNotice(`Saved ${offered.name ?? "the file"} to ${paths[0]}.`)
+      return
+    }
+    if (action !== "grant" || !operation || paths.length === 0 || paths.length > 8) {
+      throw new Error('usage: /app file grant OPERATION "FILE" ["FILE"...] | /app file save OPERATION "PATH"')
+    }
     if (!session) throw new Error("Attach to the session showing the file request")
     const files = []
     for (const path of paths) {

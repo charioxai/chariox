@@ -5,10 +5,10 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest } from "./ipc-app-requests.js"
 import { beginAppPublisherEnrollmentRequest, getAppPublisherEnrollmentRequest, cancelAppPublisherEnrollmentRequest } from "./ipc-app-requests.js"
 import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRouteRequest, testAppInboxRouteRequest } from "./ipc-app-requests.js"
-import { grantAppFileRequest } from "./ipc-app-requests.js"
+import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 354)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 355)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -63,4 +63,8 @@ test("file grants carry names and bytes for one pending request, never a path", 
   assert.deepEqual(grantAppFileRequest("s", "file-pick-1", [{ name: "notes.md", contentsBase64: "IyBO" }]), {
     GrantAppFile: { session_id: "s", operation_id: "file-pick-1", files: [{ name: "notes.md", contents_base64: "IyBO" }] },
   })
+})
+
+test("saving an offered App file names only the session and the offer", () => {
+  assert.deepEqual(saveAppFileExportRequest("s", "file-export-1"), { SaveAppFileExport: { session_id: "s", operation_id: "file-export-1" } })
 })

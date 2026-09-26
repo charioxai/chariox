@@ -57,3 +57,30 @@ test("/app file grant sends the chosen files' names and bytes, never their paths
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test("/app file save writes an offered file to a new path and never replaces one", async () => {
+  const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises")
+  const { join } = await import("node:path")
+  const { tmpdir } = await import("node:os")
+  const dir = await mkdtemp(join(tmpdir(), "chariox-save-"))
+  try {
+    const deps = {
+      currentAppSessionId: () => "session-1",
+      sendAppRequest: async (request: Record<string, unknown>) => {
+        assert.deepEqual(request, { SaveAppFileExport: { session_id: "session-1", operation_id: "file-export-1" } })
+        return { AppFileExport: { operation_id: "file-export-1", name: "plan.md", contents_base64: Buffer.from("# Plan").toString("base64") } }
+      },
+      appendNotice: () => {},
+      flashFooter: (message: string) => assert.fail(message),
+    }
+    const path = join(dir, "plan.md")
+    await handleAppSlashCommand(deps, { kind: "app", raw: `/app file save file-export-1 "${path}"`, args: ["file", "save", "file-export-1", path] })
+    assert.equal(await readFile(path, "utf8"), "# Plan")
+    const existing = join(dir, "existing.md")
+    await writeFile(existing, "keep")
+    await assert.rejects(handleAppSlashCommand(deps, { kind: "app", raw: `/app file save file-export-1 "${existing}"`, args: ["file", "save", "file-export-1", existing] }))
+    assert.equal(await readFile(existing, "utf8"), "keep")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

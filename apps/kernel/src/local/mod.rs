@@ -255,7 +255,7 @@ pub use api::{
     AppWorkerPhase, AppWorkerRequest, AppWorkerSummary, ConfigureAppAutomationRequest,
     ControlAppWorkerRequest, DisableAppAutomationRequest, OpenAppViewRequest, UninstallAppRequest, GetAppLogsRequest, AppLogEntrySummary,
     AppInboxRouteRequest, AppInboxRouteSummary, CreateAppInboxRouteRequest, TestAppInboxRouteRequest,
-    AppFileContents, GrantAppFileRequest,
+    AppFileContents, GrantAppFileRequest, SaveAppFileExportRequest,
     AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
 };
 pub use client::LocalDaemonClient;

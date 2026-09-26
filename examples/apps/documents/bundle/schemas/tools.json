@@ -160,6 +160,23 @@
         },
         "additionalProperties": false
       }
+    },
+    {
+      "name": "export_document",
+      "description": "Offer the owner a copy of a document to save on their computer. Returns at once; the owner saves it from their terminal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
     }
   ]
 }

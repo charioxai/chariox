@@ -24,6 +24,12 @@ impl KernelRuntimeState {
                 Err(code) => failed(code),
             });
         }
+        if let LocalDaemonRequest::SaveAppFileExport(request) = request {
+            return Some(match crate::runtime::app_control::owner(command) {
+                Ok(owner) => self.save_app_file_export(owner, request.clone()).await,
+                Err(code) => failed(code),
+            });
+        }
         let installation = match request {
             LocalDaemonRequest::GetAppWorker(request) => &request.installation_id,
             LocalDaemonRequest::ControlAppWorker(request) => &request.installation_id,

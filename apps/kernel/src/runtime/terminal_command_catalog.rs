@@ -771,6 +771,7 @@ mod tests {
                 "app-inbox-test",
                 "app-file",
                 "app-file-grant",
+                "app-file-save",
             ]
         );
     }

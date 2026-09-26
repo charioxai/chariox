@@ -1875,6 +1875,13 @@ Workflow trigger and deployment direction:
   closes the prompt. Only the owner can answer; App code, views and agents
   cannot. Grants are private copies that the App imports once with
   `files.import`. They expire after 30 minutes, or when the App updates.
+- protocol 355: `SaveAppFileExport {session_id, operation_id}` takes a copy of
+  a file an App offered with `files.export`. The offer is shown to the owner
+  as a kernel prompt with subject `file_export:<operation>` and a Decline
+  choice. The reply is `AppFileExport {operation_id, name, contents_base64}`,
+  released once to the owner only. The terminal chooses where to save it (a
+  browser download, or `/app file save OPERATION "PATH"`, which never
+  overwrites a file).
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -359,6 +359,16 @@ pub struct GrantAppFileRequest {
     pub files: Vec<AppFileContents>,
 }
 
+/// Protocol 355: the owner takes a copy of a file an App offered with
+/// `files.export`, once; the terminal decides where it is saved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveAppFileExportRequest {
+    /// The session showing the offer; its prompt closes once answered.
+    pub session_id: String,
+    pub operation_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppFileContents {

@@ -21,6 +21,7 @@ pub(crate) mod app_automations;
 pub(crate) mod app_bindings;
 pub(crate) mod app_event_delivery;
 pub(crate) mod app_event_maintenance;
+pub(crate) mod app_file_exports;
 pub(crate) mod app_file_grants;
 pub(crate) mod app_inbox;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -162,6 +163,7 @@ enum DurableWriterRequest {
     AppLog(Box<app_logs::AppLogRequest>),
     AppValidation(Box<app_validations::ValidationRequest>),
     AppFileGrant(Box<app_file_grants::FileGrantRequest>),
+    AppFileExport(Box<app_file_exports::FileExportRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
@@ -353,10 +355,12 @@ impl DurableKernelStateStore {
             operation: "durable_state.app_validations",
             message: "App validation schema could not be initialized".into(),
         })?;
-        app_file_grants::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
-            operation: "durable_state.app_file_grants",
-            message: "App file grant schema could not be initialized".into(),
-        })?;
+        app_file_grants::initialize(&connection)
+            .and_then(|()| app_file_exports::initialize(&connection))
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "durable_state.app_file_grants",
+                message: "App file grant schema could not be initialized".into(),
+            })?;
         app_logs::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
             operation: "durable_state.app_logs",
             message: "App log schema could not be initialized".into(),
@@ -1456,6 +1460,10 @@ fn run_durable_writer(
                 app_file_grants::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppFileExport(request) => {
+                app_file_exports::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppBinding(request) => {
                 app_bindings::execute(&mut connection, *request);
                 continue;
@@ -1558,6 +1566,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppLog(_)
                     | DurableWriterRequest::AppValidation(_)
                     | DurableWriterRequest::AppFileGrant(_)
+                    | DurableWriterRequest::AppFileExport(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
                     | DurableWriterRequest::AppActivation(_)

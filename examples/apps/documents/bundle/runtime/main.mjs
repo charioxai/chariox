@@ -1,9 +1,9 @@
 // Documents reference App. Markdown and HTML documents live as private files
 // in the App's data root; a small index in kernel-managed state names them.
 // Every edit states the revision it was made from, so concurrent human and
-// agent edits never silently overwrite each other. Import uses the kernel's
-// user-selected file grants: the owner chooses files in a trusted prompt, and
-// the App receives private copies, never host paths.
+// agent edits never silently overwrite each other. Import and export use the
+// kernel's user-selected file grants: the owner chooses files, or where to
+// save one, in a trusted prompt; the App never sees a host path.
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -201,6 +201,18 @@ export default function register(chariox) {
     await prune(id, restored.kept);
     delete restored.kept;
     return restored;
+  });
+
+  // Offers the owner a copy named after the document; they save it from their
+  // terminal. The staged copy is replaced by the next export of the same title.
+  chariox.tools.register('export_document', async ({ id }) => {
+    const { docs } = await load();
+    const doc = find(docs, id);
+    const name = `${doc.title.replace(/[^\p{L}\p{N} ._-]/gu, '_').trim().slice(0, 120) || 'document'}.${KINDS[doc.kind]}`;
+    await mkdir(join(chariox.paths.data, 'exports'), { recursive: true });
+    await chariox.files.atomicReplace(`exports/${name}`, await read(doc));
+    await chariox.files.export(`exports/${name}`);
+    return { offered: name };
   });
 
   chariox.tools.register('delete_document', async ({ id }) => {

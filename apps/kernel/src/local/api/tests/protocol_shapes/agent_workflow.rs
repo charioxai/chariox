@@ -5,7 +5,7 @@ use crate::session::{
 
 #[test]
 fn agent_workflow_shapes_are_versioned_and_record_their_origin() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 354);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 355);
 
     let request = LocalDaemonRequest::CreateAgentWorkflow(CreateAgentWorkflowRequest {
         session_id: "session-1".into(),
