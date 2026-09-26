@@ -21,6 +21,7 @@ pub(crate) mod app_automations;
 pub(crate) mod app_bindings;
 pub(crate) mod app_event_delivery;
 pub(crate) mod app_event_maintenance;
+pub(crate) mod app_connections;
 pub(crate) mod app_file_exports;
 pub(crate) mod app_file_grants;
 pub(crate) mod app_inbox;
@@ -165,6 +166,7 @@ enum DurableWriterRequest {
     AppValidation(Box<app_validations::ValidationRequest>),
     AppFileGrant(Box<app_file_grants::FileGrantRequest>),
     AppFileExport(Box<app_file_exports::FileExportRequest>),
+    AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
@@ -358,6 +360,7 @@ impl DurableKernelStateStore {
         })?;
         app_file_grants::initialize(&connection)
             .and_then(|()| app_file_exports::initialize(&connection))
+            .and_then(|()| app_connections::initialize(&connection))
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "durable_state.app_file_grants",
                 message: "App file grant schema could not be initialized".into(),
@@ -1465,6 +1468,10 @@ fn run_durable_writer(
                 app_file_exports::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppConnectionGrant(request) => {
+                app_connections::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppBinding(request) => {
                 app_bindings::execute(&mut connection, *request);
                 continue;
@@ -1568,6 +1575,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppValidation(_)
                     | DurableWriterRequest::AppFileGrant(_)
                     | DurableWriterRequest::AppFileExport(_)
+                    | DurableWriterRequest::AppConnectionGrant(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
                     | DurableWriterRequest::AppActivation(_)

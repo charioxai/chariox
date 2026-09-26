@@ -319,6 +319,33 @@ pub struct CreateAppInboxRouteRequest {
     pub connection: Option<AppInboxConnection>,
 }
 
+/// Protocol 359: lets one installation act through one of the owner's event
+/// generator connections, within the actions its signed manifest declares.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAppConnectionRequest {
+    pub installation_id: String,
+    pub generator_id: String,
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAppConnectionRequest {
+    pub installation_id: String,
+    pub connection_id: String,
+}
+
+/// A connection an installation may use, with the actions its manifest
+/// declares for that generator.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppConnectionSummary {
+    pub generator_id: String,
+    pub connection_id: String,
+    pub granted_at_ms: u64,
+    pub actions: Vec<String>,
+}
+
 /// Protocol 358: an event generator connection an inbox route subscribes to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

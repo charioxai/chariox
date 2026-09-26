@@ -125,6 +125,19 @@ export function createAppInboxRouteRequest(options: {
   } }
 }
 
+/** Protocol 359: let an App act through one of the owner's generator connections. */
+export function grantAppConnectionRequest(installationId: string, generatorId: string, connectionId: string) {
+  return { GrantAppConnection: { installation_id: installationId, generator_id: generatorId, connection_id: connectionId } }
+}
+
+export function revokeAppConnectionRequest(installationId: string, connectionId: string) {
+  return { RevokeAppConnection: { installation_id: installationId, connection_id: connectionId } }
+}
+
+export function listAppConnectionsRequest(installationId: string) {
+  return { ListAppConnections: { installation_id: installationId } }
+}
+
 export function removeAppInboxRouteRequest(installationId: string, routeId: string) {
   return { RemoveAppInboxRoute: { installation_id: installationId, route_id: routeId } }
 }

@@ -122,4 +122,15 @@ impl DurableKernelStateStore {
             IncomingCatalog::compile(&verified).map_err(|_| ActiveReleaseError::Invalid)?;
         Ok((release.generation(), catalog))
     }
+
+    /// The active release's signed `capabilities.connections` (protocol 359).
+    pub(crate) fn active_app_connection_access(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<Vec<chariox_app_package::ConnectionAccess>, ActiveReleaseError> {
+        let release = self.active_app_release(owner, installation)?;
+        let verified = release.verify()?;
+        Ok(verified.manifest().capabilities.connections.clone())
+    }
 }

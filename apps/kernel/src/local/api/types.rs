@@ -130,4 +130,8 @@ pub use workspace::*;
 /// accessibility outline for terminals (`RoomEnvironmentTabAccessibility`).
 /// Version 358 lets an App inbox route subscribe to an event generator
 /// connection (`CreateAppInboxRoute.connection`, `AppInboxRouteSummary.connection`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 358;
+/// Version 359 lets an owner grant an App one of their event generator
+/// connections (`GrantAppConnection`, `RevokeAppConnection`,
+/// `ListAppConnections` → `AppConnections`); the App acts through it only with
+/// the actions its signed `capabilities.connections` declares.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 359;

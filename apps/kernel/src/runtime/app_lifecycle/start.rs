@@ -148,6 +148,7 @@ pub(super) fn register(
             limits: context.http_limits.clone(),
             runtime: context.runtime.clone(),
         },
+        context.event_config.clone(),
     )
     .map_err(|_| LifecycleError::Preparation)?;
     let started = if migrate_from.is_some() {

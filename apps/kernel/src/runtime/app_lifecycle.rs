@@ -101,6 +101,9 @@ pub(crate) enum StartDisposition {
 pub(crate) struct AppLifecycleService(Arc<Inner>);
 struct Inner {
     http_limits: Arc<crate::runtime::app_http::HttpLimits>,
+    /// The kernel's config, for App actions through event generator
+    /// connections (protocol 359); attached once when the kernel starts.
+    event_config: EventConfig,
     store: DurableKernelStateStore,
     publisher: AppWorkerPublisher,
     admission: Arc<Semaphore>,
@@ -141,7 +144,17 @@ struct Operation<'a> {
     inner: &'a Inner,
     key: Key,
 }
+pub(crate) type EventConfig =
+    Arc<std::sync::OnceLock<crate::runtime::projection::DaemonConfigProjectionStore>>;
+
 impl AppLifecycleService {
+    pub(crate) fn attach_event_config(
+        &self,
+        config: crate::runtime::projection::DaemonConfigProjectionStore,
+    ) {
+        let _ = self.0.event_config.set(config);
+    }
+
     pub(crate) fn new(
         store: DurableKernelStateStore,
         admission: Arc<Semaphore>,
@@ -149,6 +162,7 @@ impl AppLifecycleService {
     ) -> Self {
         Self(Arc::new(Inner {
             http_limits: Arc::new(crate::runtime::app_http::HttpLimits::default()),
+            event_config: EventConfig::default(),
             store,
             publisher,
             admission,

@@ -1946,6 +1946,19 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
+- protocol 359: App connection grants. `GrantAppConnection {installation_id,
+  generator_id, connection_id}`, `RevokeAppConnection {installation_id,
+  connection_id}` and `ListAppConnections {installation_id}` answer
+  `AppConnections {installation_id, connections: [{generator_id,
+  connection_id, granted_at_ms, actions}]}`. Only the owner can grant; the
+  kernel checks the connection with its generator, and the App's signed
+  manifest must declare that generator under `capabilities.connections
+  [{generator, actions}]` (shown in the install approval). The App then calls
+  `connections.list` and `connections.action` (see the App SDK wire contract):
+  the kernel runs a declared action through the generator's reviewed action
+  endpoint as the owner's pseudonymous event owner, with an idempotency key
+  scoped to the installation. The App never holds the provider credential;
+  anything else is refused (`CONNECTION_NOT_GRANTED`, `CAPABILITY_REQUIRED`).
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

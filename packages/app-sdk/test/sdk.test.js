@@ -303,3 +303,20 @@ test('pickFile waits on a pending kernel reference and resolves with grants, or 
   await assert.rejects(declined, { code: 'DECLINED' });
   sdk.close();
 });
+
+test('connections list and act through the kernel with the exact wire fields', async () => {
+  const { transport, sdk } = setup();
+  const listed = sdk.connections.list();
+  await flush();
+  assert.equal(transport.sent[0].method, 'connections.list');
+  assert.deepEqual(transport.sent[0].params, {});
+  transport.receive(response(transport.sent[0].id, { connections: [{ generatorId: 'dev.chariox.slack', connectionId: 'c1', actions: ['notification.reply'] }] }));
+  assert.equal((await listed).connections[0].connectionId, 'c1');
+  const acted = sdk.connections.action({ connectionId: 'c1', action: 'notification.reply', input: { text: 'On it' }, context: { channel_id: 'C1' } });
+  await flush();
+  assert.equal(transport.sent[1].method, 'connections.action');
+  assert.deepEqual(transport.sent[1].params, { connectionId: 'c1', action: 'notification.reply', input: { text: 'On it' }, context: { channel_id: 'C1' } });
+  transport.receive(response(transport.sent[1].id, { accepted: true, result: { ts: '1.3' }, idempotencyKey: 'app:x:y' }));
+  assert.equal((await acted).accepted, true);
+  sdk.close();
+});

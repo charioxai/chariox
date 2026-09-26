@@ -133,6 +133,7 @@ impl AppLifecycleService {
         });
         let context = owner::Context {
             http_limits: self.0.http_limits.clone(),
+            event_config: self.0.event_config.clone(),
             store: self.0.store.clone(),
             publisher: self.0.publisher.clone(),
             admission: self.0.admission.clone(),

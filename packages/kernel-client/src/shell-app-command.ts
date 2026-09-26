@@ -4,8 +4,9 @@ import {
   getAppLogsRequest, openAppViewRequest, uninstallAppRequest, createAppInboxRouteRequest, listAppInboxRoutesRequest,
   type AppInboxConnection,
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
+  grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest,
 } from "./ipc-app-requests.js"
-import type { AppAutomationSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
+import type { AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
 type Client = { send(request: Record<string, unknown>): Promise<Record<string, unknown>> }
@@ -20,6 +21,7 @@ const usage = [
   "       app inbox list <installation-id> | remove <installation-id> <route-id>",
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
   "       app inbox test <installation-id> <route-id> <occurrence-id> <json-payload>",
+  "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
 ].join("\n")
 
 export async function executeAppCommand(
@@ -67,6 +69,14 @@ export async function executeAppCommand(
     const parsed = inboxRequest(rest)
     if (!parsed) return { ok: false, message: usage }
     request = parsed
+  } else if (action === "connection") {
+    const [verb, installation, target] = rest
+    if (verb === "list" && installation && rest.length === 2) request = listAppConnectionsRequest(installation)
+    else if (verb === "revoke" && installation && target && rest.length === 3) request = revokeAppConnectionRequest(installation, target)
+    else if (verb === "grant" && installation && target && rest.length === 3 && /^[^/]+\/[^/]+$/.test(target)) {
+      const [generatorId = "", connectionId = ""] = target.split("/")
+      request = grantAppConnectionRequest(installation, generatorId, connectionId)
+    } else return { ok: false, message: usage }
   } else if (action === "automation") {
     const parsed = automationRequest(rest)
     if (!parsed) return { ok: false, message: usage }
@@ -100,6 +110,12 @@ export async function executeAppCommand(
     const data = expect<{ installation_id: string; target_id: string; origin: string; bound_agent_id?: string | null }>(response, "AppViewOpened")
     const bound = data.bound_agent_id ? ` Its tools are available to the focus agent (${data.bound_agent_id}).` : ""
     return { ok: true, message: `Opened ${data.installation_id} as a Room browser Tab (${data.origin}). Use /room view to see it.${bound}`, data }
+  }
+  if (response.AppConnections) {
+    const data = expect<{ installation_id: string; connections: AppConnectionSummary[] }>(response, "AppConnections")
+    const lines = data.connections.map((connection) =>
+      `${connection.connection_id} · ${connection.generator_id} · actions: ${connection.actions.join(", ") || "none declared"}`)
+    return { ok: true, message: lines.join("\n") || "No connections granted to this App.", data }
   }
   if (response.AppWorker) {
     const data = expect<{ worker: AppWorkerSummary }>(response, "AppWorker")

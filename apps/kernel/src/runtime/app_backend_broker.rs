@@ -25,9 +25,17 @@ pub(crate) fn broker(
     process: &WorkerProcess,
     package: &VerifiedPackage<'_>,
     http: HttpContext,
+    event_config: super::app_lifecycle::EventConfig,
 ) -> Result<Arc<dyn Broker>, AppWorkerError> {
     Ok(Arc::new(build(
-        store, owner, catalog, admission, process, package, http,
+        store,
+        owner,
+        catalog,
+        admission,
+        process,
+        package,
+        http,
+        event_config,
     )?))
 }
 fn build(
@@ -38,6 +46,7 @@ fn build(
     process: &WorkerProcess,
     package: &VerifiedPackage<'_>,
     http: HttpContext,
+    event_config: super::app_lifecycle::EventConfig,
 ) -> Result<BackendBroker, AppWorkerError> {
     let data = process
         .private_data()
@@ -50,6 +59,14 @@ fn build(
     }
     let fence = Arc::new(tokio::sync::RwLock::new(()));
     Ok(BackendBroker {
+        connections: super::app_connection_broker::AppConnectionBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.installation_id().to_owned(),
+            package.manifest().capabilities.connections.clone(),
+            admission.clone(),
+            event_config,
+        ),
         state: AppStorageBroker::new(
             store.clone(),
             owner.clone(),
@@ -110,6 +127,7 @@ struct BackendBroker {
     file_grants: super::app_file_grant_broker::AppFileGrantBroker,
     http: AppHttpBroker,
     snapshots: super::app_snapshot_broker::AppSnapshotBroker,
+    connections: super::app_connection_broker::AppConnectionBroker,
     /// SDK writes share it; a quiescent snapshot holds it alone.
     fence: Arc<tokio::sync::RwLock<()>>,
 }
@@ -151,6 +169,9 @@ impl Broker for BackendBroker {
                     delegate.file_grants.dispatch(request).await
                 }
                 "files.snapshot" => delegate.snapshots.dispatch(request).await,
+                "connections.list" | "connections.action" => {
+                    delegate.connections.dispatch(request).await
+                }
                 "host.pick_file" | "host.pick_file_status" | "files.export" => {
                     delegate.file_grants.dispatch(request).await
                 }
@@ -179,7 +200,16 @@ pub(crate) fn fixture_http(
     http: HttpContext,
     network: Arc<super::app_http::fixture::NetworkFixture>,
 ) -> Result<Arc<dyn Broker>, AppWorkerError> {
-    let broker = build(store, owner, catalog, admission, process, package, http)?;
+    let broker = build(
+        store,
+        owner,
+        catalog,
+        admission,
+        process,
+        package,
+        http,
+        Default::default(),
+    )?;
     broker.http.fixture_network(network);
     Ok(Arc::new(broker))
 }

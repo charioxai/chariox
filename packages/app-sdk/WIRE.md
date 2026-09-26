@@ -136,6 +136,19 @@ schema must accept:
 `occurrence_id` is the source occurrence's id, so a redelivery is the same
 occurrence.
 
+`connections.list {}` returns `{connections: [{generatorId, connectionId,
+actions}]}`: the event generator connections the owner granted this
+installation (kernel protocol 359, `GrantAppConnection`), each with the actions
+the signed manifest's `capabilities.connections` declares for that generator.
+`connections.action {connectionId, action, input?, context?, idempotencyKey?}`
+runs one such action through the generator's reviewed action endpoint and
+replies `{accepted, result, idempotencyKey}`. `context` is a `reply_context` a
+generator-fed occurrence carried; the generator binds it to the connection.
+The App never holds the provider credential. A connection that was not granted
+is `CONNECTION_NOT_GRANTED`; an undeclared action is `CAPABILITY_REQUIRED`. The
+same call without an `idempotencyKey` reuses its derived key, so a retry is
+performed once.
+
 ## Worker-to-supervisor requests
 
 `worker.ready` reports `{tools:string[],events:string[],lifecycle:string[]}` after

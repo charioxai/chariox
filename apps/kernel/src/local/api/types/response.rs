@@ -16,6 +16,7 @@ pub enum LocalDaemonResponse {
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
     AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
     AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
+    AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
     AppFileGranted { operation_id: String, files: u32, },
     AppFileExport { operation_id: String, name: String, contents_base64: String, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },

@@ -180,6 +180,12 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       export: (path, options) => call('files.export', { path: relativePath(path) }, options),
     }),
     http: createHttp(call),
+    // Owner-granted event generator connections (kernel protocol 359). Only
+    // actions the signed manifest declares for that generator are accepted.
+    connections: Object.freeze({
+      list: (options) => call('connections.list', {}, options),
+      action: (request, options) => call('connections.action', record(request, 'connection action'), options),
+    }),
     log: Object.freeze({
       write(level, message, fields = {}, options) {
         if (!['debug', 'info', 'warn', 'error'].includes(level) || typeof message !== 'string') {

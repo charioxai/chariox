@@ -133,6 +133,12 @@ export interface AppSdk {
     list(options?: CallOptions): Promise<{ wakes: Required<Wake>[] }>;
     onWake(handler: Handler<DeliveredWake>): void;
   };
+  /** Event generator connections the owner granted this App (kernel protocol 359). */
+  readonly connections: {
+    list(options?: CallOptions): Promise<{ connections: Array<{ generatorId: string; connectionId: string; actions: string[] }> }>;
+    /** Runs one declared action; `context` is a generator-issued reply context from an inbox occurrence. */
+    action(request: { connectionId: string; action: string; input?: Json; context?: Json; idempotencyKey?: string }, options?: CallOptions): Promise<{ accepted: boolean; result: Json; idempotencyKey: string }>;
+  };
   readonly files: {
     atomicReplace(path: string, contents: string | Uint8Array, options?: CallOptions): Promise<{ bytesWritten: number }>;
     /** A kernel-kept copy of private files and state; `quiescent` holds this worker's other SDK writes meanwhile. */

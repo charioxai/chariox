@@ -8,7 +8,7 @@ import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRo
 import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 358)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 359)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -83,4 +83,25 @@ test("an inbox route can subscribe to an event generator connection (protocol 35
     source_event_type: "app.mentioned", source_event_version: 1,
     connection: { generator_id: "dev.chariox.slack", connection_id: "connection-1", connection_scope: "team:T1" } } })
   assert.equal(inboxRequest(["add", "slack", "r", "e", "t", "--connection", "only-generator"]), null)
+})
+
+test("an owner grants, lists and revokes an App's generator connections (protocol 359)", async () => {
+  const { grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest } = await import("./ipc-app-requests.js")
+  assert.deepEqual(grantAppConnectionRequest("slack", "dev.chariox.slack", "connection-1"),
+    { GrantAppConnection: { installation_id: "slack", generator_id: "dev.chariox.slack", connection_id: "connection-1" } })
+  assert.deepEqual(revokeAppConnectionRequest("slack", "connection-1"),
+    { RevokeAppConnection: { installation_id: "slack", connection_id: "connection-1" } })
+  assert.deepEqual(listAppConnectionsRequest("slack"), { ListAppConnections: { installation_id: "slack" } })
+  const { executeAppCommand } = await import("./shell-app-command.js")
+  const sent: unknown[] = []
+  const result = await executeAppCommand(["connection", "grant", "slack", "dev.chariox.slack/connection-1"], {
+    send: async (request) => {
+      sent.push(request)
+      return { AppConnections: { installation_id: "slack", connections: [
+        { generator_id: "dev.chariox.slack", connection_id: "connection-1", granted_at_ms: 1, actions: ["notification.reply"] }] } }
+    },
+  })
+  assert.deepEqual(sent, [grantAppConnectionRequest("slack", "dev.chariox.slack", "connection-1")])
+  assert.equal(result.message, "connection-1 · dev.chariox.slack · actions: notification.reply")
+  assert.equal((await executeAppCommand(["connection", "grant", "slack", "no-slash"], { send: async () => ({}) })).ok, false)
 })

@@ -97,3 +97,11 @@ export interface AppInboxRouteSummary {
   failed: number
   expired: number
 }
+
+/** Protocol 359: a generator connection an App may act through. */
+export interface AppConnectionSummary {
+  generator_id: string
+  connection_id: string
+  granted_at_ms: number
+  actions: string[]
+}

@@ -77,6 +77,21 @@ pub struct Capabilities {
     pub workflows: Vec<AssetAccess>,
     #[serde(default)]
     pub agents: Vec<AssetAccess>,
+    /// Actions the App may take through an event generator connection the
+    /// owner grants it (kernel protocol 359). Omitted when empty, so older
+    /// manifests and their capability summaries stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<ConnectionAccess>,
+}
+
+/// One event generator (for example `dev.chariox.slack`) and the actions of
+/// its reviewed allow-list the App may ask for. The owner still chooses which
+/// of their connections, if any, the App may use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectionAccess {
+    pub generator: String,
+    pub actions: Vec<String>,
 }
 
 /// Destinations are exact HTTP(S) origins. Paths, redirects, connected IPs and
@@ -192,6 +207,34 @@ impl Manifest {
         unique(&self.capabilities.external_files)?;
         unique(&self.capabilities.workflows)?;
         unique(&self.capabilities.agents)?;
+        if self.capabilities.connections.len() > 8 {
+            return Err(invalid("too many connection declarations"));
+        }
+        let mut generators = BTreeSet::new();
+        for connection in &self.capabilities.connections {
+            let name = |value: &str, dot: bool| {
+                !value.is_empty()
+                    && value.len() <= 128
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || byte == b'-'
+                            || byte == b'_'
+                            || (dot && byte == b'.')
+                    })
+            };
+            if !name(&connection.generator, true)
+                || !generators.insert(&connection.generator)
+                || connection.actions.is_empty()
+                || connection.actions.len() > 32
+                || !connection.actions.iter().all(|action| name(action, true))
+            {
+                return Err(invalid(
+                    "connections must name distinct generators and their allowed actions",
+                ));
+            }
+            unique(&connection.actions)?;
+        }
         if self.capabilities.network.len() > 64 {
             return Err(invalid("too many network destinations"));
         }

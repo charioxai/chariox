@@ -73,6 +73,7 @@ impl Fixture {
                 limits: Arc::new(crate::runtime::app_http::HttpLimits::default()),
                 runtime: runtime.handle().clone(),
             },
+            Default::default(),
         )
         .unwrap();
         let (starting, events) = AppWorkerOwner::start_blocking(
