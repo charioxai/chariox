@@ -28,6 +28,9 @@ function fakeKernel({ automation = true } = {}) {
             throw Object.assign(new Error('conflict'), { code: 'CONFLICT' });
           }
         }
+        for (const write of writes) {
+          if (Buffer.byteLength(JSON.stringify(write.value)) > 256 * 1024) throw new AppError('LIMIT_EXCEEDED', 'App state value is too large');
+        }
         for (const write of writes) state.set(write.key, { value: write.value, version: (state.get(write.key)?.version ?? 0) + 1 });
         occurrences.push(...emitted);
         return { revision: 1, receipts: [] };
@@ -95,4 +98,23 @@ test('reactions read from the reacted-to item, and the list filters and clears',
   assert.equal((await kernel.tools.get('list_notifications')({})).notifications[0].id, 'Ev3', 'newest first');
   assert.deepEqual(await kernel.tools.get('clear_notifications')({}), { cleared: 2 });
   assert.equal((await kernel.tools.get('list_notifications')({})).notifications.length, 0);
+});
+
+test('long multibyte messages stay under the state value cap, newest first, and never split a character', async () => {
+  const kernel = fakeKernel();
+  // 3999 CJK units then an emoji straddling the 4000-unit cut.
+  const text = '漢'.repeat(3999) + '😀' + 'tail';
+  for (let index = 0; index < 100; index += 1) {
+    await kernel.deliver('mentioned', `Ev${index}`, mention(text));
+  }
+  const { notifications } = await kernel.tools.get('list_notifications')({ limit: 100 });
+  assert.ok(notifications.length > 1 && notifications.length < 100);
+  assert.equal(notifications[0].id, 'Ev99');
+  assert.equal(notifications[0].text, '漢'.repeat(3999));
+  assert.equal(kernel.occurrences.length, 100, 'every event was still forwarded');
+  // A reply context too large to keep leaves the notification unanswerable.
+  await kernel.deliver('mentioned', 'EvBig', { ...mention('big'), reply_context: { blob: 'x'.repeat(5000) } });
+  const [big] = (await kernel.tools.get('list_notifications')({ limit: 1 })).notifications;
+  assert.equal(big.id, 'EvBig');
+  assert.ok(!big.reply_context && !big.can_reply);
 });
