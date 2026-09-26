@@ -14,6 +14,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs"
+import type { Stats } from "node:fs"
 import path from "node:path"
 
 import { RelayClientIdentity } from "@chariox/kernel-client/ipc"
@@ -166,7 +167,7 @@ function loadIdentity(identityPath: string): RelayClientIdentity | null {
 
 function assertIdentityFile(
   identityPath: string,
-  metadata: ReturnType<typeof fstatSync>,
+  metadata: Stats,
   currentUid: number | undefined,
 ): void {
   if (
@@ -192,7 +193,7 @@ function assertIdentityFile(
 function removePublishedTemporaryLink(
   identityPath: string,
   descriptor: number,
-  metadata: ReturnType<typeof fstatSync>,
+  metadata: Stats,
   currentUid: number | undefined,
 ): void {
   if (metadata.nlink !== 2) throw invalidIdentityFileError()
@@ -223,7 +224,7 @@ function removePublishedTemporaryLink(
     throw invalidIdentityFileError()
   }
   const temporaryPath = path.join(directory, alias)
-  let temporaryMetadata: ReturnType<typeof lstatSync>
+  let temporaryMetadata: Stats
   try {
     temporaryMetadata = lstatSync(temporaryPath)
   } catch (error) {
@@ -268,7 +269,7 @@ function removeAbandonedTemporaryFiles(
       continue
     }
     const temporaryPath = path.join(directory, name)
-    let metadata: ReturnType<typeof lstatSync>
+    let metadata: Stats
     try {
       metadata = lstatSync(temporaryPath)
     } catch (error) {
