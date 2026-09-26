@@ -169,3 +169,56 @@ fn install_test_skill(workspace: &std::path::Path, name: &str) {
 mod bootstrap;
 mod workflow_code_apply;
 mod workflow_code_preflight;
+
+#[test]
+fn a_session_without_a_provider_starts_with_the_owners_signed_in_account_not_a_placeholder() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let registry = app.provider_account_profile_registry();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let resolve = |app: &DaemonApp, owner: &str| {
+        crate::account_profile::resolve_placeholder_provider(
+            app.config(),
+            &registry,
+            owner,
+            "default",
+        )
+    };
+    // Nothing signed in (bootstrap accounts are unobserved), or no accounts:
+    // no provider can run new work, and the placeholder stays.
+    assert_eq!(resolve(&app, owner), "default");
+    assert_eq!(resolve(&app, "someone-without-accounts"), "default");
+    // A chosen provider is kept as it is.
+    assert_eq!(
+        crate::account_profile::resolve_placeholder_provider(
+            app.config(),
+            &registry,
+            owner,
+            "opencode"
+        ),
+        "opencode"
+    );
+    // A signed-in account comes before an unobserved one.
+    let codex = registry
+        .list(owner, Some("codex"))
+        .unwrap()
+        .into_iter()
+        .find(|profile| profile.is_default)
+        .expect("bootstrap registers a default Codex account");
+    registry
+        .update_observation(
+            owner,
+            "codex",
+            &codex.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("the Codex login should record");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    assert_eq!(agent.provider(), "codex");
+    assert_eq!(session.agent_defaults().provider, "codex");
+}
