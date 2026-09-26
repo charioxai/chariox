@@ -72,7 +72,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         runtime: &KernelRuntimeState,
         session_id: &str,
         agent_id: &str,
-        successor_prompt_id: &str,
+        successor_prompt: &str,
     ) -> String {
         let (active, queued) = runtime
             .owned
@@ -88,10 +88,10 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             .unwrap_or_default();
         let successor_active = active
             .as_ref()
-            .is_some_and(|prompt| prompt.id() == successor_prompt_id);
+            .is_some_and(|prompt| prompt.prompt() == successor_prompt);
         let successor_queued = queued
             .iter()
-            .any(|prompt| prompt.id() == successor_prompt_id);
+            .any(|prompt| prompt.prompt() == successor_prompt);
         let cancelling = active
             .as_ref()
             .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling);
@@ -534,12 +534,18 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         let worker_machine_id = format!("machine-receipt-{suffix}");
         let leased_agent_id = format!("leased-agent-receipt-{suffix}");
 
-        let mut app = DaemonApp::bootstrap(home_config).expect("home app should bootstrap");
+        let mut app = crate::test_support::bootstrap_authenticated_app(home_config)
+            .expect("home app should bootstrap with authenticated Codex test profiles");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                format!("workspace-receipt-{suffix}"),
-                format!("worktree-receipt-{suffix}"),
-            ))
+            .create_session(
+                crate::session::CreateSessionRequest::new(
+                    format!("workspace-receipt-{suffix}"),
+                    format!("worktree-receipt-{suffix}"),
+                )
+                .with_agent_defaults(
+                    crate::session::SessionAgentDefaults::new("codex").with_model("gpt-test"),
+                ),
+            )
             .expect("home session should be created");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
@@ -684,7 +690,7 @@ mod receipt_reconciliation {
         let agent_id = fixture.agent_id.clone();
         let prompt_id = fixture.dispatch.prompt_id.clone();
         let successor_prompt = fixture.successor_prompt.prompt().to_string();
-        let successor_prompt_id = fixture.successor_prompt_id.clone();
+        let state_tags_successor_prompt = successor_prompt.clone();
         let state_tags_runtime = fixture.runtime.clone();
         let state_tags_session_id = fixture.session_id.clone();
         let state_tags_agent_id = fixture.agent_id.clone();
@@ -835,7 +841,7 @@ mod receipt_reconciliation {
                         &state_tags_runtime,
                         &state_tags_session_id,
                         &state_tags_agent_id,
-                        &successor_prompt_id,
+                        &state_tags_successor_prompt,
                     )
                 },
             )
@@ -976,6 +982,93 @@ mod receipt_reconciliation {
             Some(crate::session::DurablePromptDeliveryPhase::Delivered),
             "the successor should dispatch once after terminal projection drain"
         );
+    }
+
+    #[tokio::test]
+    async fn claimed_successor_handoff_reconstructs_current_intent_and_prunes_stale_phases() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "claim-handoff").await;
+        let mut claim = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&fixture.runtime.owned.remote_prompt_recoveries),
+            &fixture.session_id,
+            &fixture.agent_id,
+        )
+        .expect("the test should own the production recovery claim");
+        claim.mark_active_prompt(&fixture.dispatch.prompt_id);
+        fixture
+            .runtime
+            .owned
+            .begin_remote_prompt_cancellation(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .expect("cancellation intent should persist before advancement");
+        fixture
+            .runtime
+            .finalize_remote_prompt_cancellation_and_advance(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .expect("settled cancellation should promote the queued successor");
+
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("home session should remain available");
+        let active = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &fixture.agent_id)
+            .expect("queued successor should be active");
+        assert_eq!(active.prompt(), fixture.successor_prompt.prompt());
+        assert_ne!(active.id(), fixture.successor_prompt_id.as_str());
+        assert!(claim.release_or_restart(), "queued dispatch should wake its owner");
+        let pending = claim
+            .take_pending_dispatch()
+            .expect("claim should retain the exact promoted dispatch intent");
+        assert_eq!(pending.prompt_id.as_str(), active.id());
+        assert_eq!(
+            pending.source_attachment_id,
+            fixture.dispatch.source_attachment_id
+        );
+
+        let rebuilt = fixture
+            .runtime
+            .remote_prompt_dispatch_after_claim_restart(&fixture.session_id, &fixture.agent_id)
+            .await
+            .expect("claim restart should inspect current prompt state")
+            .expect("current accepted successor should remain dispatchable");
+        assert_eq!(rebuilt.prompt_id.as_str(), active.id());
+        assert_eq!(rebuilt.worker_kernel_id, fixture.worker_id);
+        assert_eq!(rebuilt.leased_agent_id, fixture.leased_agent_id);
+
+        fixture
+            .app
+            .lock()
+            .await
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &rebuilt.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect("dispatch phase should persist before transport");
+        assert!(fixture
+            .runtime
+            .remote_prompt_dispatch_after_claim_restart(&fixture.session_id, &fixture.agent_id)
+            .await
+            .expect("dispatching successor should remain held for reconciliation")
+            .is_none());
     }
 
     #[tokio::test]
