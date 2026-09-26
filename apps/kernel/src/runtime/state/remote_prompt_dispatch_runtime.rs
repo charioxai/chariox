@@ -21,6 +21,7 @@ pub(super) struct RemotePromptAgentClaim {
     key: (String, String),
     claims: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
     seen_generation: u64,
+    cancellation_sends: BTreeSet<(String, String)>,
     released: bool,
 }
 
@@ -131,8 +132,19 @@ impl RemotePromptAgentClaim {
             key,
             claims,
             seen_generation: 0,
+            cancellation_sends: BTreeSet::new(),
             released: false,
         })
+    }
+
+    pub(super) fn cancellation_was_sent(&self, prompt_id: &str, provider_run_id: &str) -> bool {
+        self.cancellation_sends
+            .contains(&(prompt_id.to_string(), provider_run_id.to_string()))
+    }
+
+    pub(super) fn mark_cancellation_sent(&mut self, prompt_id: &str, provider_run_id: &str) {
+        self.cancellation_sends
+            .insert((prompt_id.to_string(), provider_run_id.to_string()));
     }
 
     fn release_or_restart(&mut self) -> bool {
@@ -589,12 +601,11 @@ impl KernelRuntimeState {
                                 == Some(expected_provider_run_id)
                     })
                 {
-                    self.owned
-                        .finalize_remote_prompt_cancellation_after_worker_settled(
-                            &dispatch.session_id,
-                            &dispatch.agent_id,
-                            prompt.source_attachment_id(),
-                        )?;
+                    self.finalize_remote_prompt_cancellation_and_advance(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        prompt.source_attachment_id(),
+                    )?;
                 }
                 Ok(())
             }
@@ -768,7 +779,7 @@ impl KernelRuntimeState {
         self.spawn_remote_prompt_projection_drain(session_id, agent_id);
     }
 
-    fn spawn_remote_prompt_projection_drain(&self, session_id: String, agent_id: String) {
+    pub(super) fn spawn_remote_prompt_projection_drain(&self, session_id: String, agent_id: String) {
         let Some(mut claim) = RemotePromptAgentClaim::try_acquire(
             Arc::clone(&self.owned.remote_prompt_projection_drains),
             &session_id,
@@ -1414,12 +1425,11 @@ impl KernelRuntimeState {
                 && prompt.durable_delivery_phase()
                     == Some(crate::session::DurablePromptDeliveryPhase::Accepted)
         }) {
-            self.owned
-                .finalize_remote_prompt_cancellation_after_worker_settled(
-                    session_id,
-                    agent_id,
-                    prompt.source_attachment_id(),
-                )?;
+            self.finalize_remote_prompt_cancellation_and_advance(
+                session_id,
+                agent_id,
+                prompt.source_attachment_id(),
+            )?;
             return Ok(false);
         }
         let prompt_is_current = active_prompt.as_ref().is_some_and(|prompt| {
@@ -1937,12 +1947,11 @@ impl KernelRuntimeState {
             if prompt.durable_delivery_phase()
                 == Some(crate::session::DurablePromptDeliveryPhase::Accepted)
             {
-                self.owned
-                    .finalize_remote_prompt_cancellation_after_worker_settled(
-                        session_id,
-                        agent_id,
-                        prompt.source_attachment_id(),
-                    )?;
+                self.finalize_remote_prompt_cancellation_and_advance(
+                    session_id,
+                    agent_id,
+                    prompt.source_attachment_id(),
+                )?;
             }
             return Ok(None);
         }
@@ -2001,6 +2010,59 @@ impl KernelRuntimeState {
     ) {
         let (session_id, agent_id) = claim.key.clone();
         loop {
+            let cancellation_pending = match self
+                .resume_remote_prompt_cancellation_with_claim(
+                    &session_id,
+                    &agent_id,
+                    &mut claim,
+                )
+                .await
+            {
+                Ok(pending) => pending,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "remote cancellation remains held under the recovery claim",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    true
+                }
+            };
+            if cancellation_pending {
+                // A cancelling prompt must never fall through to submission/replay. The
+                // durable phase or exact-run path above owns its next transition.
+                let session = self.owned.session_store.get_session(&session_id).ok();
+                let needs_receipt = session.as_ref().is_some_and(|session| {
+                    self.owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(session, &agent_id)
+                        .is_some_and(|prompt| {
+                            prompt.status() == crate::session::PromptStatus::Cancelling
+                                && prompt.durable_delivery_phase()
+                                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                        })
+                });
+                if needs_receipt {
+                    let mut pending_dispatch = dispatch.take();
+                    if pending_dispatch.is_none() {
+                        if let Ok(agent) = self.owned.agent_store.get_agent(&agent_id) {
+                            pending_dispatch = self
+                                .remote_prompt_recovery_dispatch(&agent)
+                                .ok()
+                                .flatten();
+                        }
+                    }
+                    if let Some(pending_dispatch) = pending_dispatch {
+                        self.retry_remote_prompt_receipt_with_claim(&pending_dispatch)
+                            .await;
+                    }
+                }
+                dispatch = None;
+            }
             if let Some(dispatch) = dispatch.take() {
                 if let Some(pending) = self.dispatch_remote_prompt_once(dispatch).await {
                     self.retry_remote_prompt_receipt_with_claim(&pending).await;
@@ -2889,6 +2951,319 @@ mod tests {
             worker_private_key,
             leased_agent_id,
         }
+    }
+
+    #[tokio::test]
+    async fn claimed_receipt_recovery_routes_one_cancellation_then_drains_completion() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "cancel-claimed").await;
+        fixture
+            .runtime
+            .owned
+            .begin_remote_prompt_cancellation(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .expect("cancellation intent should persist before receipt recovery");
+
+        let (cancel_seen_tx, cancel_seen_rx) = tokio::sync::oneshot::channel();
+        let (release_cancel_tx, release_cancel_rx) = tokio::sync::oneshot::channel();
+        let (drain_seen_tx, drain_seen_rx) = tokio::sync::oneshot::channel();
+        let (release_drain_tx, release_drain_rx) = tokio::sync::oneshot::channel();
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let leased_agent_id = fixture.leased_agent_id.clone();
+        let session_id = fixture.session_id.clone();
+        let agent_id = fixture.agent_id.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let successor_prompt = fixture.successor_prompt.prompt().to_string();
+        let run_id = "worker-run-cancel-claimed".to_string();
+        let server = tokio::spawn(async move {
+            let receipt_request = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
+            assert_eq!(receipt_request.target_id, worker_id);
+            assert!(matches!(
+                &receipt_request.request,
+                RelayPeerRequest::GetLeasedPromptReceipt {
+                    leased_agent_id: requested_agent,
+                    home_prompt_id: requested_prompt,
+                } if requested_agent == &leased_agent_id && requested_prompt == &prompt_id
+            ));
+            send_fake_worker_peer_response(
+                receipt_request,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: prompt_id.clone(),
+                        worker_provider_run_id: run_id.clone(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                        target_home_prompt_id: None,
+                        execution_lease_id: Some("lease-receipt-cancel-claimed".to_string()),
+                    }),
+                },
+            )
+            .await;
+
+            let cancel_request = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
+            assert_eq!(cancel_request.target_id, worker_id);
+            assert!(matches!(
+                &cancel_request.request,
+                RelayPeerRequest::CancelLeasedPrompt {
+                    leased_agent_id: requested_agent,
+                    home_prompt_id: requested_prompt,
+                    worker_provider_run_id: requested_run,
+                } if requested_agent == &leased_agent_id
+                    && requested_prompt == &prompt_id
+                    && requested_run == &run_id
+            ));
+            cancel_seen_tx
+                .send(())
+                .expect("test should still be waiting for the cancellation request");
+            release_cancel_rx
+                .await
+                .expect("test should release the cancellation response");
+            send_fake_worker_peer_response(
+                cancel_request,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedPromptCancelled {
+                    cancellation: crate::session::PromptCancellation {
+                        prompt: crate::session::PromptQueueItem::new(
+                            "worker-local-cancel-claimed",
+                            "worker-attachment-cancel-claimed",
+                            &leased_agent_id,
+                            "exact prompt whose worker admission is uncertain",
+                            crate::session::PromptStatus::Cancelling,
+                        ),
+                        started_next: None,
+                    },
+                },
+            )
+            .await;
+
+            // Requiring the projection request next proves concurrent callers did not issue a
+            // second cancellation request after the claimed send was acknowledged.
+            let drain_request = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
+            assert_eq!(drain_request.target_id, worker_id);
+            assert!(matches!(
+                &drain_request.request,
+                RelayPeerRequest::DrainLeasedRuntimeProjection {
+                    leased_agent_id: requested_agent,
+                    provider_run_id: requested_run,
+                    pump_output: true,
+                } if requested_agent == &leased_agent_id && requested_run == &run_id
+            ));
+            drain_seen_tx
+                .send(())
+                .expect("test should still be waiting for the projection drain");
+            release_drain_rx
+                .await
+                .expect("test should release the terminal projection");
+            send_fake_worker_peer_response(
+                drain_request,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                        home_session_id: session_id,
+                        home_agent_id: agent_id,
+                        provider_run_id: run_id,
+                        provider_run: None,
+                        prompts: Vec::new(),
+                        output_chunks: Vec::new(),
+                        notices: Vec::new(),
+                        completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            message_id: "cancel-claimed-completion".to_string(),
+                            completed_at_ms: 1,
+                            home_prompt_id: Some(prompt_id.clone()),
+                            provider_termination: None,
+                        }],
+                    }),
+                },
+            )
+            .await;
+
+            let (
+                mut successor_peer,
+                successor_request_id,
+                successor_sender_key,
+                successor_home_prompt_id,
+                successor_identity,
+            ) = accept_claim_test_prompt(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
+            assert_ne!(successor_home_prompt_id, prompt_id);
+            assert_eq!(
+                successor_identity,
+                format!("{leased_agent_id}\n{successor_prompt}")
+            );
+            acknowledge_claim_test_prompt(
+                &mut successor_peer,
+                successor_request_id,
+                &successor_sender_key,
+                &worker_id,
+                &worker_private_key,
+                &successor_home_prompt_id,
+                &leased_agent_id,
+                &successor_prompt,
+                "worker-run-cancel-successor",
+            )
+            .await;
+            assert_no_duplicate_claim_submission(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
+        });
+
+        fixture
+            .runtime
+            .spawn_remote_prompt_receipt_reconciliation(fixture.dispatch.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(3), cancel_seen_rx)
+            .await
+            .expect("claimed receipt recovery should route cancellation before timeout")
+            .expect("fake worker should report the exact cancellation request");
+
+        let duplicate_cancellation = fixture
+            .runtime
+            .cancel_remote_agent_prompt_if_remote(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .await
+            .expect("concurrent cancellation should preserve the durable intent")
+            .expect("the remote prompt should remain held for terminal projection");
+        assert_eq!(
+            duplicate_cancellation.cancellation.prompt.id(),
+            fixture.dispatch.prompt_id,
+            "the concurrent request must retain the same home prompt"
+        );
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("home session should remain available");
+        let pending_prompt = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &fixture.agent_id)
+            .expect("the worker run should remain held until terminal projection");
+        assert_eq!(pending_prompt.id(), fixture.dispatch.prompt_id);
+        assert_eq!(
+            pending_prompt.status(),
+            crate::session::PromptStatus::Cancelling
+        );
+        assert_eq!(
+            pending_prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            pending_prompt.durable_delivery_provider_run_id(),
+            Some("worker-run-cancel-claimed")
+        );
+        release_cancel_tx
+            .send(())
+            .expect("fake worker should still be waiting to acknowledge cancellation");
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), drain_seen_rx)
+            .await
+            .expect("successful cancellation must start an authoritative projection drain")
+            .expect("fake worker should report the projection request");
+        release_drain_tx
+            .send(())
+            .expect("fake worker should still be waiting to publish terminal projection");
+        server
+            .await
+            .expect("fake worker should serve receipt, cancellation, and terminal projection");
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let session = fixture
+                    .runtime
+                    .owned
+                    .session_store
+                    .get_session(&fixture.session_id)
+                    .unwrap();
+                let (active, queued) = fixture
+                    .runtime
+                    .owned
+                    .prompt_state_owner
+                    .state_parts(&session, &fixture.agent_id);
+                if active.as_ref().is_some_and(|prompt| {
+                    prompt.id() != fixture.dispatch.prompt_id
+                        && prompt.prompt() == fixture.successor_prompt.prompt()
+                        && prompt.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                }) && queued.is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("terminal projection should durably promote the queued successor once");
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("home session should remain available");
+        let (active, queued) = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &fixture.agent_id);
+        let active = active.expect("successor should be active after cancellation drain");
+        assert_eq!(active.prompt(), fixture.successor_prompt.prompt());
+        assert!(queued.is_empty(), "the queued successor should advance exactly once");
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+            "the successor should dispatch once after terminal projection drain"
+        );
     }
 
     #[tokio::test]

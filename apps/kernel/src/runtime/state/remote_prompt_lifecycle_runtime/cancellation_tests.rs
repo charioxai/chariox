@@ -749,22 +749,65 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         .await
         .expect("receipt recovery should join")
         .expect("the exact worker receipt should resume cancellation"));
+
+    let (drain_request_id, target_id, request) =
+        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    assert_eq!(target_id, WORKER_ID);
+    assert!(matches!(
+        request,
+        RelayPeerRequest::DrainLeasedRuntimeProjection {
+            leased_agent_id,
+            provider_run_id,
+            pump_output: true,
+        } if leased_agent_id == LEASED_AGENT_ID && provider_run_id == WORKER_RUN_ID
+    ));
+    acknowledge_peer_request(
+        &relay_state,
+        drain_request_id,
+        &worker_private_key,
+        &home_public_key,
+        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            event: Some(crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session_id.clone(),
+                home_agent_id: agent_id.clone(),
+                provider_run_id: WORKER_RUN_ID.to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    message_id: "cancel-ack-completion".to_string(),
+                    completed_at_ms: 1,
+                    home_prompt_id: Some(prompt_id.clone()),
+                    provider_termination: None,
+                }],
+            }),
+        },
+    )
+    .await;
     assert!(
         peer_requests.try_recv().is_err(),
-        "the home kernel must forward exactly one cancellation request and no prompt replay"
+        "the home kernel must forward one cancellation request and drain without replay"
     );
 
-    let session = runtime
-        .owned
-        .session_store
-        .get_session(&session_id)
-        .expect("home session should remain available");
-    assert!(
-        runtime
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, &agent_id)
-            .is_none(),
-        "the same prompt should finalize after the verified worker cancellation ACK"
-    );
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("home session should remain available");
+            if runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the exact terminal projection should settle the cancelled prompt");
 }
