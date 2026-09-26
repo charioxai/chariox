@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v1";
+export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v2";
 // These approvals are bound to a historical source only. They must not be
 // rebound when the inventory runs against a newer checkout.
 export const PRIOR_REVIEWED_SOURCE_COMMIT = "391b38b2be15c4f49d8ea70cc14b031385cf8331";
@@ -147,9 +147,7 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 const IGNORED_PATH_PARTS = [
   /(?:^|\/)docs(?:\/|$)/i,
   /(?:^|\/)(?:fixtures?|snapshots?)(?:\/|$)/i,
-  /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i,
   /(?:^|\/)(?:autogen|codegen|generated|__generated__)(?:\/|$)/i,
-  /(?:^|\/)(?:[^/]+\.(?:test|spec)|[^/]+_(?:test|spec)|test_[^/]+|tests?)\.[^/]+$/i,
   /(?:^|\/)[^/]*(?:\.generated|\.autogen|\.gen)\.[^/]+$/i,
 ];
 
@@ -284,9 +282,9 @@ const CATEGORY_SPECS = Object.freeze([
   },
 ]);
 
-// These are the only reviewed managed-only exemptions. They are deliberately
-// bound to the exact reviewed source identity, relative path, symbol, line,
-// and trimmed source line. A changed line stops matching and becomes red.
+// Preserve these historical predicate identities unchanged. They remain
+// useful audit anchors but are not semantic approvals without independent
+// review metadata and cannot classify candidates as allowed.
 export const DEFAULT_REVIEWED_PREDICATES = Object.freeze([
   {
     id: "MP-07-release-verify-release",
@@ -334,20 +332,21 @@ const ALLOWED_DISPOSITIONS = new Set([
   "required_automatic_shutdown",
 ]);
 
-const DISPOSITIONS = new Set([
+const SEMANTIC_DISPOSITIONS = new Set([
   ...ALLOWED_DISPOSITIONS,
   "removal_required",
-  "unreviewed",
+  "negative_guard",
+  "test_evidence",
+  "ordinary_path1_behavior",
+  "shared_host_isolation",
+  "inner_docker_slice_isolation",
 ]);
 
-const DIRECT_PATH1_PREFIXES = [
-  "apps/kernel/src/managed_bootstrap/",
-  "apps/kernel/src/managed_context/",
-  "apps/kernel/src/provider/",
-  "apps/kernel/src/runtime/managed_environment_control",
-  "apps/kernel/src/runtime/state/",
-  "deploy/managed-kernel/",
-];
+// Historical records above preserve the exact prior review identities. They
+// are not semantic approvals because they contain no independent reviewer
+// metadata. New approvals must bind the complete current source/candidate
+// anchor and the review that authorized the classification.
+export const DEFAULT_SEMANTIC_DISPOSITIONS = Object.freeze([]);
 
 const OWNED_DIRTY_PATHS = new Set([
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
@@ -528,17 +527,139 @@ function inferSymbol(lines, lineIndex) {
   return null;
 }
 
-function inferTopology(path, lines, lineIndex) {
-  const context = lines.slice(Math.max(0, lineIndex - 3), lineIndex + 4).join(" ").toLowerCase();
-  const lowerPath = path.toLowerCase();
-  if (lowerPath.includes("slice-linux-docker") || lowerPath.includes("/slice/local_docker/") || /inner[ -]?docker|docker[ -]?slice|nested docker/.test(context)) {
-    return "inner_docker_slice";
+function isTestSourcePath(path) {
+  return /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i.test(path)
+    || /(?:^|\/)(?:[^/]+\.(?:test|spec)|[^/]+_(?:test|spec)|test_[^/]+|tests?)\.[^/]+$/i.test(path);
+}
+
+function maskRustLiterals(text) {
+  const output = text.split("");
+  let index = 0;
+  while (index < text.length) {
+    const rawStart = /^(?:b)?r(#+)?"/.exec(text.slice(index));
+    if (rawStart) {
+      const hashes = rawStart[1] ?? "";
+      const terminator = `"${hashes}`;
+      const end = text.indexOf(terminator, index + rawStart[0].length);
+      const stop = end < 0 ? text.length : end + terminator.length;
+      for (let cursor = index; cursor < stop; cursor += 1) {
+        if (text[cursor] !== "\n" && text[cursor] !== "\r") output[cursor] = " ";
+      }
+      index = stop;
+      continue;
+    }
+    if (text[index] === '"') {
+      let cursor = index + 1;
+      while (cursor < text.length) {
+        if (text[cursor] === "\\") cursor += 2;
+        else if (text[cursor] === '"') {
+          cursor += 1;
+          break;
+        } else cursor += 1;
+      }
+      for (let position = index; position < Math.min(cursor, text.length); position += 1) {
+        if (text[position] !== "\n" && text[position] !== "\r") output[position] = " ";
+      }
+      index = cursor;
+      continue;
+    }
+    const charLiteral = /^'(?:\\.|[^'\\])'/.exec(text.slice(index));
+    if (charLiteral) {
+      for (let position = index; position < index + charLiteral[0].length; position += 1) {
+        if (text[position] !== "\n" && text[position] !== "\r") output[position] = " ";
+      }
+      index += charLiteral[0].length;
+      continue;
+    }
+    index += 1;
   }
-  if (lowerPath.includes("legacy") || lowerPath.includes("shared-host") || lowerPath.includes("shared_host") || /legacy shared[ -]?host/.test(context)) {
-    return "legacy_shared_host";
+  return output.join("");
+}
+
+function rustBlockEnd(codeLines, startLine) {
+  let depth = 0;
+  let opened = false;
+  for (let lineIndex = startLine; lineIndex < codeLines.length; lineIndex += 1) {
+    for (const character of codeLines[lineIndex]) {
+      if (character === "{") {
+        opened = true;
+        depth += 1;
+      } else if (character === "}" && opened) {
+        depth -= 1;
+        if (depth === 0) return lineIndex;
+      }
+    }
   }
-  if (DIRECT_PATH1_PREFIXES.some((prefix) => path.startsWith(prefix)) || path.startsWith("apps/kernel/src/")) return "direct_path1";
-  return "unknown";
+  return codeLines.length - 1;
+}
+
+function findRustTestRanges(text, path) {
+  const lines = stripComments(text, "rust").split(/\r?\n/);
+  const codeLines = maskRustLiterals(stripComments(text, "rust")).split(/\r?\n/);
+  const ranges = [];
+  if (isTestSourcePath(path)) ranges.push({ start: 0, end: lines.length - 1, kind: "test_source" });
+  for (let index = 0; index < lines.length; index += 1) {
+    const marker = /^\s*#\s*\[\s*(?:cfg\s*\(\s*test\s*\)|test)\s*\]\s*$/.test(lines[index]);
+    if (!marker) continue;
+    let declaration = index + 1;
+    while (declaration < lines.length && declaration <= index + 12) {
+      const candidate = lines[declaration].trim();
+      if (candidate && !candidate.startsWith("#")) break;
+      declaration += 1;
+    }
+    if (declaration >= lines.length || declaration > index + 12) continue;
+    if (!/\b(?:mod|fn)\s+[A-Za-z_][A-Za-z0-9_]*\b/.test(lines[declaration])) continue;
+    ranges.push({ start: index, end: rustBlockEnd(codeLines, declaration), kind: "cfg_test" });
+  }
+  return ranges;
+}
+
+function explicitUnitTopology(path, text) {
+  if (!path.endsWith(".service") && !path.endsWith(".service.in")) return "not_service_unit";
+  const values = [...text.matchAll(/^\s*Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=(path1|shared_host)\s*$/gm)]
+    .map((match) => match[1]);
+  if (values.length === 1) return values[0];
+  if (values.length > 1) return "ambiguous";
+  return "unresolved";
+}
+
+function isVerificationGuardCandidate(path, lines, lineIndex, format) {
+  if (format !== "javascript" || !/verify|release/i.test(path)) return false;
+  const nearby = lines.slice(Math.max(0, lineIndex - 48), Math.min(lines.length, lineIndex + 49)).join(" ");
+  return /\bforbidden\b/.test(nearby)
+    && /\.includes\s*\(/.test(nearby)
+    && /\b(?:fail|reject|throw)\s*\(/.test(nearby);
+}
+
+function inferSourceRoleHints({ path, format, lines, lineIndex, testRanges, unitTopology, category }) {
+  const inTestRegion = isTestSourcePath(path)
+    || testRanges.some((range) => lineIndex >= range.start && lineIndex <= range.end);
+  const verificationGuard = isVerificationGuardCandidate(path, lines, lineIndex, format);
+  const innerSlice = path.startsWith("apps/kernel/slice-linux-docker/")
+    || path.includes("/slice/local_docker/");
+  const topology = format === "unit" ? unitTopology
+    : innerSlice ? "inner_docker_slice" : "unresolved";
+  let executionRole = "unresolved_source_role";
+  if (inTestRegion) executionRole = "test_evidence_candidate";
+  else if (verificationGuard) executionRole = "verification_guard_candidate";
+  else if (format === "unit" && /^\s*Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=/.test(lines[lineIndex])) {
+    executionRole = "selected_service_topology_marker";
+  } else if (format === "unit" && topology === "path1") executionRole = "path1_service_directive_candidate";
+  else if (format === "unit" && topology === "shared_host") executionRole = "shared_host_service_directive_candidate";
+  else if (innerSlice) executionRole = "inner_docker_slice_configuration_candidate";
+
+  const positivePath1Directive = format === "unit"
+    && topology === "path1"
+    && ["bubblewrap", "managed_service_restriction"].includes(category);
+  return {
+    executionRole,
+    topologyHint: topology,
+    testRegion: inTestRegion ? (isTestSourcePath(path) ? "test_source" : "cfg_test") : "none_detected",
+    verificationGuardCandidate: verificationGuard,
+    selectedServiceTopology: topology === "path1" || topology === "shared_host" ? topology : null,
+    positivePath1Directive,
+    authoritative: false,
+  };
 }
 
 function lineMatches(spec, line) {
@@ -546,7 +667,7 @@ function lineMatches(spec, line) {
   return [...line.matchAll(spec.pattern)].map((match) => ({ value: match[0], index: match.index ?? 0 }));
 }
 
-function predicateMatches(finding, predicate, source) {
+function historicalPredicateMatches(finding, predicate, source) {
   return predicate.sourceCommit === source.commit
     && predicate.sourceTree === source.tree
     && predicate.path === finding.path
@@ -556,25 +677,98 @@ function predicateMatches(finding, predicate, source) {
     && predicate.sourceLine === finding.sourceLine;
 }
 
-function baseDisposition(finding) {
-  if (finding.topology !== "direct_path1") return "unreviewed";
-  if (["managed_env_selector", "bubblewrap", "managed_service_restriction", "managed_only_branch", "protected_path_filter", "managed_only_error_mapping", "client_projection"].includes(finding.category)) {
-    return "removal_required";
-  }
-  return "unreviewed";
+function candidateAnchor(candidate) {
+  return {
+    path: candidate.path,
+    blob: candidate.blob,
+    line: candidate.line,
+    column: candidate.column,
+    symbol: candidate.symbol,
+    category: candidate.category,
+    selector: candidate.selector,
+    contextHash: candidate.contextHash,
+  };
 }
 
-function assertDispositionClaims(claims, predicates, source) {
+function validateSemanticReview(review) {
+  const anchor = review?.anchor;
+  const metadata = review?.independentReview;
+  const validSha = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
+  if (typeof review?.id !== "string" || !review.id.trim()
+    || !validSha(review.sourceCommit) || !validSha(review.sourceTree)
+    || !anchor || typeof anchor.path !== "string" || !anchor.path
+    || !validSha(anchor.blob) || !Number.isInteger(anchor.line) || anchor.line < 1
+    || !Number.isInteger(anchor.column) || anchor.column < 1
+    || !(anchor.symbol === null || (typeof anchor.symbol === "string" && anchor.symbol))
+    || !REQUIRED_CATEGORIES.includes(anchor.category)
+    || typeof anchor.selector !== "string" || !anchor.selector
+    || !/^[0-9a-f]{64}$/.test(anchor.contextHash ?? "")
+    || !SEMANTIC_DISPOSITIONS.has(review.disposition)
+    || metadata?.independent !== true
+    || typeof metadata.reviewer !== "string" || !metadata.reviewer.trim()
+    || typeof metadata.reviewId !== "string" || !metadata.reviewId.trim()
+    || typeof metadata.reviewedAt !== "string" || !Number.isFinite(Date.parse(metadata.reviewedAt))
+    || typeof metadata.rationale !== "string" || metadata.rationale.trim().length < 20) {
+    throw new Error(`invalid independent semantic review metadata: ${review?.id ?? "unknown"}`);
+  }
+}
+
+function semanticReviewKey(candidate, source) {
+  return stableJson({
+    sourceCommit: source.commit,
+    sourceTree: source.tree,
+    anchor: candidateAnchor(candidate),
+  });
+}
+
+function buildSemanticReviewIndex(reviews) {
+  const index = new Map();
+  const approvalIds = new Set();
+  const reviewIds = new Set();
+  for (const review of reviews) {
+    validateSemanticReview(review);
+    if (approvalIds.has(review.id) || reviewIds.has(review.independentReview.reviewId)) {
+      throw new Error(`duplicate independent semantic review identity: ${review.id}`);
+    }
+    approvalIds.add(review.id);
+    reviewIds.add(review.independentReview.reviewId);
+    const key = stableJson({
+      sourceCommit: review.sourceCommit,
+      sourceTree: review.sourceTree,
+      anchor: review.anchor,
+    });
+    index.set(key, [...(index.get(key) ?? []), review]);
+  }
+  return index;
+}
+
+function resolveSemanticDisposition(candidate, source, reviewIndex) {
+  const matching = reviewIndex.get(semanticReviewKey(candidate, source)) ?? [];
+  if (matching.length > 1) throw new Error(`ambiguous independent semantic reviews for ${candidate.path}:${candidate.line}`);
+  if (matching.length === 0) return { status: "unreviewed", disposition: null, gateEffect: "fail_closed" };
+  const review = matching[0];
+  return {
+    status: "reviewed",
+    disposition: review.disposition,
+    gateEffect: review.disposition === "removal_required" ? "fail" : "reviewed",
+    reviewId: review.independentReview.reviewId,
+    reviewer: review.independentReview.reviewer,
+  };
+}
+
+// Exposed for focused contract tests. The inventory itself only builds this
+// index from its checked-in review records; caller claims never feed it.
+export function evaluateSemanticDisposition(candidate, source, reviews) {
+  return resolveSemanticDisposition(candidate, source, buildSemanticReviewIndex(reviews));
+}
+
+function assertDispositionClaims(claims, reviews, source) {
   for (const claim of claims ?? []) {
-    if (!DISPOSITIONS.has(claim.disposition)) throw new Error("unverified disposition claim: invalid disposition");
-    const verified = predicates.some((predicate) => predicateMatches({
-      path: claim.path,
-      line: claim.line,
-      symbol: claim.symbol,
-      category: claim.category,
-      sourceLine: claim.sourceLine,
-    }, predicate, source) && predicate.disposition === claim.disposition);
-    if (!verified) throw new Error(`unverified disposition claim for ${claim.path}:${claim.line}`);
+    const review = reviews.find((candidate) => candidate.id === claim?.id);
+    if (!review || review.sourceCommit !== source.commit || review.sourceTree !== source.tree
+      || stableJson(review) !== stableJson(claim)) {
+      throw new Error(`unverified independent semantic disposition claim: ${claim?.id ?? "unknown"}`);
+    }
   }
 }
 
@@ -631,13 +825,19 @@ export function collectSourceInventory({
     throw new Error(`inventory source has unexpected dirty paths: ${unexpectedDirtyPaths.sort().join(", ")}`);
   }
   const reviewedPredicates = DEFAULT_REVIEWED_PREDICATES;
-  assertDispositionClaims(claimedDispositions, reviewedPredicates, source);
+  const semanticReviews = DEFAULT_SEMANTIC_DISPOSITIONS;
+  const semanticReviewIndex = buildSemanticReviewIndex(semanticReviews);
+  assertDispositionClaims(claimedDispositions, semanticReviews, source);
 
   const files = collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit });
   const entries = [];
+  const presentHistoricalPredicateIds = new Set();
+  const appliedSemanticReviewIds = new Set();
   for (const file of files) {
     const rawLines = file.text.split(/\r?\n/);
     const lines = stripComments(file.text, file.format).split(/\r?\n/);
+    const testRanges = file.format === "rust" ? findRustTestRanges(file.text, file.path) : [];
+    const unitTopology = explicitUnitTopology(file.path, file.text);
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const sourceLine = rawLines[lineIndex].trim();
       const scanLine = lines[lineIndex];
@@ -656,22 +856,29 @@ export function collectSourceInventory({
             sourceLine,
             contextHash: sha256(sourceLine),
             affectedBehavior: spec.affectedBehavior,
-            topology: inferTopology(file.path, lines, lineIndex),
             applicableMpIds: [...new Set(spec.mpIds)].sort(),
           };
-          const matchingPredicates = reviewedPredicates.filter((predicate) => predicateMatches(finding, predicate, source));
-          if (matchingPredicates.length > 1) throw new Error(`ambiguous reviewed predicate at ${file.path}:${lineIndex + 1}`);
-          if (matchingPredicates.length === 1) {
-            const predicate = matchingPredicates[0];
-            if (!ALLOWED_DISPOSITIONS.has(predicate.disposition)) throw new Error(`reviewed predicate has forbidden disposition: ${predicate.id}`);
-            finding.disposition = predicate.disposition;
-            finding.applicableMpIds = [...new Set([...finding.applicableMpIds, ...predicate.applicableMpIds])].sort();
-            finding.reviewedPredicateId = predicate.id;
-          } else {
-            finding.disposition = baseDisposition(finding);
+          const sourceRoleHints = inferSourceRoleHints({
+            path: file.path,
+            format: file.format,
+            lines,
+            lineIndex,
+            testRanges,
+            unitTopology,
+            category: spec.category,
+          });
+          for (const predicate of reviewedPredicates) {
+            if (historicalPredicateMatches(finding, predicate, source)) presentHistoricalPredicateIds.add(predicate.id);
           }
           delete finding.sourceLine;
-          entries.push(finding);
+          const candidate = {
+            id: sha256(stableJson({ commit: source.commit, tree: source.tree, ...candidateAnchor(finding) })),
+            ...finding,
+          };
+          const disposition = resolveSemanticDisposition(candidate, source, semanticReviewIndex);
+          if (disposition.status === "reviewed") appliedSemanticReviewIds.add(disposition.reviewId);
+          const { id: candidateId, ...candidateFields } = candidate;
+          entries.push({ candidateId, ...candidateFields, sourceRoleHints, semanticDisposition: disposition });
         }
       }
     }
@@ -685,20 +892,33 @@ export function collectSourceInventory({
     files.filter((file) => file.format === format).length,
   ]));
   const missingRows = rowCoverage.filter((row) => row.status === "missing").map((row) => row.id);
-  const removalRequired = entries.filter((entry) => entry.disposition === "removal_required").length;
-  const unreviewed = entries.filter((entry) => entry.disposition === "unreviewed").length;
-  const appliedPredicateIds = new Set(entries.map((entry) => entry.reviewedPredicateId).filter(Boolean));
+  const removalRequired = entries.filter((entry) => entry.semanticDisposition.disposition === "removal_required").length;
+  const unreviewed = entries.filter((entry) => entry.semanticDisposition.status !== "reviewed").length;
   const reviewedPredicateStatus = reviewedPredicates.map((predicate) => {
     const sourceMatches = predicate.sourceCommit === source.commit && predicate.sourceTree === source.tree;
-    const applied = appliedPredicateIds.has(predicate.id);
+    const anchorPresent = presentHistoricalPredicateIds.has(predicate.id);
     return {
       id: predicate.id,
       sourceCommit: predicate.sourceCommit,
       sourceTree: predicate.sourceTree,
-      status: applied ? "applied" : sourceMatches ? "source_drift" : "pending_source_review",
+      status: !sourceMatches ? "pending_source_review"
+        : anchorPresent ? "pending_independent_review" : "source_drift",
     };
   });
   const pendingReviewedPredicates = reviewedPredicateStatus.filter((predicate) => predicate.status !== "applied").length;
+  const semanticReviewStatus = semanticReviews.map((review) => {
+    const sourceMatches = review.sourceCommit === source.commit && review.sourceTree === source.tree;
+    return {
+      id: review.id,
+      sourceCommit: review.sourceCommit,
+      sourceTree: review.sourceTree,
+      independentReviewer: review.independentReview.reviewer,
+      independentReviewId: review.independentReview.reviewId,
+      status: !sourceMatches ? "pending_source_review"
+        : appliedSemanticReviewIds.has(review.independentReview.reviewId) ? "applied" : "source_drift",
+    };
+  });
+  const pendingSemanticReviews = semanticReviewStatus.filter((review) => review.status !== "applied").length;
   const report = {
     schema: INVENTORY_SCHEMA,
     source: {
@@ -713,6 +933,7 @@ export function collectSourceInventory({
       sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
     },
     reviewedPredicates: reviewedPredicateStatus,
+    semanticReviews: semanticReviewStatus,
     rows: rowCoverage,
     requiredCategories: [...REQUIRED_CATEGORIES],
     observedCategories,
@@ -720,18 +941,19 @@ export function collectSourceInventory({
     missingRows,
     entries,
     summary: {
-      entryCount: entries.length,
+      candidateCount: entries.length,
       removalRequired,
       unreviewed,
       pendingReviewedPredicates,
-      allowedReleaseDeployment: entries.filter((entry) => entry.disposition === "allowed_release_deployment").length,
-      requiredAutomaticShutdown: entries.filter((entry) => entry.disposition === "required_automatic_shutdown").length,
+      pendingSemanticReviews,
+      allowedReleaseDeployment: entries.filter((entry) => entry.semanticDisposition.disposition === "allowed_release_deployment").length,
+      requiredAutomaticShutdown: entries.filter((entry) => entry.semanticDisposition.disposition === "required_automatic_shutdown").length,
     },
     status: missingCategories.length === 0
       && missingRows.length === 0
       && removalRequired === 0
       && unreviewed === 0
-      && pendingReviewedPredicates === 0
+      && pendingSemanticReviews === 0
       ? "pass"
       : "fail",
   };

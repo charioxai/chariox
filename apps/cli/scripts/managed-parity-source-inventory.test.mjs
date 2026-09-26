@@ -6,6 +6,9 @@ import test from "node:test";
 import {
   collectSourceInventory,
   DEFAULT_SOURCE_REF,
+  DEFAULT_REVIEWED_PREDICATES,
+  evaluateSemanticDisposition,
+  INVENTORY_SCHEMA,
   MP_ROWS,
   parseArgs,
   PRIOR_REVIEWED_SOURCE_COMMIT,
@@ -16,7 +19,7 @@ import {
 const COMMIT = PRIOR_REVIEWED_SOURCE_COMMIT;
 const TREE = PRIOR_REVIEWED_SOURCE_TREE;
 
-function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inheritedRestriction = false, unknownProjection = false, protectedParent = true, errorMapping = true, shutdown = true } = {}) {
+function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inheritedRestriction = false, unknownProjection = false, protectedParent = true, errorMapping = true, shutdown = true, path1ServiceTopology = "path1" } = {}) {
   const release = [...Array(38).fill("// reviewed release fixture"), "pub(super) fn verify_release(", "  manifest_path: &Path,", ");"].join("\n") + "\n";
   const autoStop = [
     ...Array(108).fill("// reviewed auto-stop fixture"),
@@ -53,6 +56,14 @@ function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inherite
       directBwrap ? "  let command = \"/usr/bin/bwrap\";" : "  let command = \"ordinary-provider\";",
       "  if (is_managed) { run_managed(); }",
       "}",
+      "#[cfg(test)]",
+      "mod tests {",
+      "  #[test]",
+      "  fn keeps_test_literals_visible_to_inventory() {",
+      "    let fixture = \"bwrap CHARIOX_MANAGED_TEST_LITERAL\";",
+      "    assert!(!fixture.is_empty());",
+      "  }",
+      "}",
     ].join("\n") + "\n",
     "apps/cli/src/selector-typescript.ts": [
       "// CHARIOX_DISPOSABLE_WORKER_RECEIPT_COMMENT_ONLY",
@@ -69,9 +80,22 @@ function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inherite
       "receipt=\"${CHARIOX_DISPOSABLE_WORKER_RECEIPT:?}\"",
     ].join("\n") + "\n",
     "deploy/managed-kernel/provider.service": [
+      ...(path1ServiceTopology ? [`Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=${path1ServiceTopology}`] : []),
       inheritedRestriction ? "RestrictAddressFamilies=AF_UNIX" : "NoNewPrivileges=true",
       "Environment=CHARIOX_PUBLICATION_CONTROL_STATE_DIR=/var/lib/chariox/publication",
       "ProtectSystem=strict",
+      directBwrap ? "ExecStart=/usr/bin/bwrap --unshare-user chariox-managed-bootstrap" : "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
+    ].join("\n") + "\n",
+    "deploy/managed-kernel/chariox-managed-bootstrap.service": [
+      "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host",
+      "Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1",
+      "ProtectSystem=strict",
+    ].join("\n") + "\n",
+    "deploy/managed-kernel/verify-image-release.mjs": [
+      "function verifyPath1Service(service) {",
+      "  const forbidden = [\"bwrap\", \"ProtectSystem=\"];",
+      "  for (const marker of forbidden) if (service.includes(marker)) fail(`forbidden ${marker}`);",
+      "}",
     ].join("\n") + "\n",
     "docker/selector-image/Dockerfile": [
       "# CHARIOX_MANAGED_DOCKER_COMMENT_ONLY",
@@ -172,29 +196,44 @@ function withFixture(options, callback) {
   }
 }
 
-test("exactly pinned source fixture applies only path, line, symbol, and text matches", () => {
+test("exactly pinned source fixture retains historical anchors without semantic approval", () => {
   withFixture({}, (fixture) => {
     const report = collect(fixture);
+    assert.equal(report.schema, INVENTORY_SCHEMA);
+    assert.equal(INVENTORY_SCHEMA, "chariox.managed-parity.source-inventory.v2");
     assert.equal(report.source.commit, COMMIT);
     assert.equal(report.source.tree, TREE);
     assert.deepEqual(report.missingCategories, []);
     assert.deepEqual(report.missingRows, []);
-    assert.equal(report.summary.allowedReleaseDeployment, 1);
-    assert.equal(report.summary.requiredAutomaticShutdown, 2);
-    assert.equal(report.summary.pendingReviewedPredicates, 0);
-    assert.deepEqual(report.reviewedPredicates.map(({ status }) => status), ["applied", "applied", "applied"]);
-    assert.equal(report.status, "fail", "unapproved managed selectors must fail closed");
+    assert.equal(report.summary.allowedReleaseDeployment, 0);
+    assert.equal(report.summary.requiredAutomaticShutdown, 0);
+    assert.equal(report.summary.pendingReviewedPredicates, 3);
+    assert.deepEqual(report.reviewedPredicates.map(({ status }) => status), ["pending_independent_review", "pending_independent_review", "pending_independent_review"]);
+    assert.equal(report.summary.unreviewed, report.summary.candidateCount);
+    assert.equal(report.semanticReviews.length, 0);
+    assert.equal(report.status, "fail", "source-role hints and historical identities do not approve semantic dispositions");
     assert.ok(report.entries.some((entry) => entry.category === "managed_env_selector"));
     assert.ok(report.entries.some((entry) => entry.category === "cleanup_selector"));
   });
 });
 
-test("production scripts are scanned while this inventory tool is excluded", () => {
+test("production and test sources are scanned while this inventory tool is excluded", () => {
   withFixture({}, (fixture) => {
     const report = collect(fixture);
     assert.ok(report.entries.some((entry) => entry.path === "apps/cli/scripts/live-managed-selector.sh"
       && entry.selector === "CHARIOX_MANAGED_CLI_SCRIPT_SELECTOR"));
     assert.equal(report.entries.some((entry) => entry.path === "apps/cli/scripts/managed-parity-source-inventory.mjs"), false);
+    const inlineTest = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_TEST_LITERAL");
+    assert.equal(inlineTest?.sourceRoleHints.testRegion, "cfg_test");
+    assert.equal(inlineTest?.semanticDisposition.status, "unreviewed");
+    assert.equal(inlineTest?.semanticDisposition.gateEffect, "fail_closed");
+    const inlineTestBwrap = report.entries.find((entry) => entry.category === "bubblewrap"
+      && entry.path.endsWith("managed_isolation.rs")
+      && entry.sourceRoleHints.testRegion === "cfg_test");
+    assert.ok(inlineTestBwrap, "test-only Bubblewrap literals remain lexical candidates");
+    assert.equal(inlineTestBwrap.semanticDisposition.status, "unreviewed");
+    assert.ok(report.entries.some((entry) => entry.path === "apps/kernel/src/tests/false.rs"
+      && entry.sourceRoleHints.testRegion === "test_source"));
   });
 });
 
@@ -247,6 +286,92 @@ test("historical approvals stay pending on current source instead of being repin
   });
 });
 
+test("historical approval identities remain exact and separate from semantic reviews", () => {
+  assert.deepEqual(DEFAULT_REVIEWED_PREDICATES, [
+    {
+      id: "MP-07-release-verify-release",
+      sourceCommit: "391b38b2be15c4f49d8ea70cc14b031385cf8331",
+      sourceTree: "199b565b83e9582acd38a38a76520e2ba5ac02b4",
+      path: "apps/kernel/src/managed_bootstrap/release.rs",
+      line: 39,
+      symbol: "verify_release",
+      sourceLine: "pub(super) fn verify_release(",
+      category: "release_activation",
+      topology: "direct_path1",
+      applicableMpIds: ["MP-07", "MP-11"],
+      disposition: "allowed_release_deployment",
+    },
+    {
+      id: "MP-09-auto-stop-policy",
+      sourceCommit: "391b38b2be15c4f49d8ea70cc14b031385cf8331",
+      sourceTree: "199b565b83e9582acd38a38a76520e2ba5ac02b4",
+      path: "apps/kernel/src/runtime/managed_environment_control/cloud_contract.rs",
+      line: 110,
+      symbol: "AutoStopPolicy",
+      sourceLine: "minimum_runtime_seconds: u64,",
+      category: "automatic_shutdown_selector",
+      topology: "direct_path1",
+      applicableMpIds: ["MP-09", "MP-11"],
+      disposition: "required_automatic_shutdown",
+    },
+    {
+      id: "MP-09-auto-stop-idle-delay",
+      sourceCommit: "391b38b2be15c4f49d8ea70cc14b031385cf8331",
+      sourceTree: "199b565b83e9582acd38a38a76520e2ba5ac02b4",
+      path: "apps/kernel/src/runtime/managed_environment_control/cloud_contract.rs",
+      line: 111,
+      symbol: "AutoStopPolicy",
+      sourceLine: "idle_delay_seconds: Option<u64>,",
+      category: "automatic_shutdown_selector",
+      topology: "direct_path1",
+      applicableMpIds: ["MP-09", "MP-11"],
+      disposition: "required_automatic_shutdown",
+    },
+  ]);
+});
+
+test("semantic review requires the exact source identity, candidate anchor, and independent metadata", () => {
+  const source = { commit: COMMIT, tree: TREE };
+  const candidate = {
+    path: "apps/kernel/src/provider/guard.rs",
+    blob: "c".repeat(40),
+    line: 12,
+    column: 8,
+    symbol: "reject_bubblewrap",
+    category: "bubblewrap",
+    selector: "bwrap",
+    contextHash: "d".repeat(64),
+  };
+  const review = {
+    id: "MP-01-guard-review",
+    sourceCommit: COMMIT,
+    sourceTree: TREE,
+    anchor: { ...candidate },
+    disposition: "negative_guard",
+    independentReview: {
+      independent: true,
+      reviewer: "independent-reviewer",
+      reviewId: "review-2026-09-26-001",
+      reviewedAt: "2026-09-26T12:00:00Z",
+      rationale: "Source control flow rejects this observed marker before launch.",
+    },
+  };
+  assert.deepEqual(evaluateSemanticDisposition(candidate, source, [review]), {
+    status: "reviewed",
+    disposition: "negative_guard",
+    gateEffect: "reviewed",
+    reviewId: "review-2026-09-26-001",
+    reviewer: "independent-reviewer",
+  });
+  assert.equal(evaluateSemanticDisposition(candidate, { ...source, tree: "e".repeat(40) }, [review]).status, "unreviewed");
+  assert.equal(evaluateSemanticDisposition({ ...candidate, selector: "bwrap --unshare-user" }, source, [review]).status, "unreviewed");
+  assert.equal(evaluateSemanticDisposition(candidate, { ...source, commit: "f".repeat(40) }, [review]).status, "unreviewed");
+  assert.throws(() => evaluateSemanticDisposition(candidate, source, [{
+    ...review,
+    independentReview: { ...review.independentReview, independent: false },
+  }]), /invalid independent semantic review metadata/);
+});
+
 test("all supported production formats and managed selector families are inventoried", () => {
   withFixture({}, (fixture) => {
     const report = collect(fixture);
@@ -271,11 +396,15 @@ test("all supported production formats and managed selector families are invento
     assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_ATTESTATION_SELECTOR"));
     assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_PUBLICATION_CONTROL_STATE_DIR"));
     assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_DISPOSABLE_WORKER_RECEIPT"));
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_TEST_SUFFIX_FALSE_POSITIVE"
+      && entry.sourceRoleHints.testRegion === "test_source"));
     assert.equal(report.entries.some((entry) => entry.selector === "CHARIOX_PUBLICATION_CLOUD_API_URL"), false);
     assert.equal(report.entries.some((entry) => entry.selector.includes("COMMENT_ONLY")), false);
     assert.equal(report.entries.some((entry) => entry.path.includes("/generated/")), false);
-    assert.equal(report.entries.some((entry) => entry.path.includes("/tests/")), false);
-    assert.equal(report.entries.some((entry) => entry.path.endsWith("selector.test.rs")), false);
+    assert.ok(report.entries.some((entry) => entry.path.includes("/tests/")
+      && entry.sourceRoleHints.testRegion === "test_source"));
+    assert.ok(report.entries.some((entry) => entry.path.endsWith("selector.test.rs")
+      && entry.sourceRoleHints.testRegion === "test_source"));
     assert.ok(report.source.formats.rust >= 1);
     assert.ok(report.source.formats.javascript >= 1);
     assert.ok(report.source.formats.swift >= 1);
@@ -319,12 +448,14 @@ test("tracked dotfiles use exact reviewed names and unknown hidden files still f
   });
 });
 
-test("a new hidden CHARIOX_MANAGED flag is a direct Path-1 removal finding", () => {
+test("unknown positive Path-1 behavior remains an unreviewed fail-closed candidate", () => {
   withFixture({ hiddenManagedFlag: true }, (fixture) => {
     const report = collect(fixture);
     const hidden = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_HIDDEN_FLAG");
-    assert.equal(hidden?.topology, "direct_path1");
-    assert.equal(hidden?.disposition, "removal_required");
+    assert.equal(hidden?.sourceRoleHints.topologyHint, "unresolved");
+    assert.equal(hidden?.semanticDisposition.status, "unreviewed");
+    assert.equal(hidden?.semanticDisposition.gateEffect, "fail_closed");
+    assert.equal(report.status, "fail");
   });
 });
 
@@ -342,8 +473,8 @@ test("kernel slice broker controls are inventoried separately from provider sand
       ],
     );
     for (const entry of brokerControls) {
-      assert.equal(entry.topology, "direct_path1");
-      assert.equal(entry.disposition, "unreviewed");
+      assert.equal(entry.sourceRoleHints.topologyHint, "unresolved");
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
       assert.deepEqual(entry.applicableMpIds, ["MP-01", "MP-03", "MP-08", "MP-11"]);
     }
     assert.ok(report.rows.find((row) => row.id === "MP-01")?.categories.includes("kernel_slice_broker_control"));
@@ -365,8 +496,8 @@ test("native release artifact exporter is inventoried separately from release ac
         "FROM scratch AS managed-release-artifacts",
       ].sort(),
     );
-    assert.ok(artifacts.every((entry) => entry.topology === "inner_docker_slice"));
-    assert.ok(artifacts.every((entry) => entry.disposition === "unreviewed"));
+    assert.ok(artifacts.every((entry) => entry.sourceRoleHints.topologyHint === "inner_docker_slice"));
+    assert.ok(artifacts.every((entry) => entry.semanticDisposition.status === "unreviewed"));
     assert.ok(report.rows.find((row) => row.id === "MP-07")?.categories.includes("release_artifact_exporter"));
   });
 });
@@ -413,34 +544,52 @@ test("current Path-1 source keeps the slice lease in the kernel launch boundary"
   assert.match(broker, /set_close_on_exec\(raw_fd\)/);
 });
 
-test("Bubblewrap added to direct Path 1 is not confused with the Docker slice", () => {
+test("verification guard literals, selected Path-1 directives, and inner-slice Bubblewrap stay distinct", () => {
   withFixture({ directBwrap: true }, (fixture) => {
     const report = collect(fixture);
-    const direct = report.entries.find((entry) => entry.category === "bubblewrap" && entry.path.includes("managed_isolation"));
-    assert.equal(direct?.topology, "direct_path1");
-    assert.equal(direct?.disposition, "removal_required");
-    const docker = report.entries.find((entry) => entry.category === "bubblewrap" && entry.topology === "inner_docker_slice");
-    assert.equal(docker?.disposition, "unreviewed");
+    const guard = report.entries.find((entry) => entry.category === "bubblewrap" && entry.path.endsWith("verify-image-release.mjs"));
+    assert.equal(guard?.sourceRoleHints.executionRole, "verification_guard_candidate");
+    assert.equal(guard?.sourceRoleHints.verificationGuardCandidate, true);
+    assert.equal(guard?.semanticDisposition.status, "unreviewed");
+    assert.equal(guard?.semanticDisposition.gateEffect, "fail_closed");
+
+    const direct = report.entries.find((entry) => entry.category === "bubblewrap" && entry.path.endsWith("provider.service"));
+    assert.equal(direct?.sourceRoleHints.selectedServiceTopology, "path1");
+    assert.equal(direct?.sourceRoleHints.executionRole, "path1_service_directive_candidate");
+    assert.equal(direct?.sourceRoleHints.positivePath1Directive, true);
+    assert.equal(direct?.semanticDisposition.status, "unreviewed");
+    assert.equal(direct?.semanticDisposition.gateEffect, "fail_closed");
+
+    const docker = report.entries.find((entry) => entry.category === "bubblewrap"
+      && entry.sourceRoleHints.topologyHint === "inner_docker_slice");
+    assert.equal(docker?.semanticDisposition.status, "unreviewed");
     assert.equal(docker?.path, "apps/kernel/slice-linux-docker/docker/Dockerfile");
+
+    const sharedHostRestriction = report.entries.find((entry) => entry.category === "managed_service_restriction"
+      && entry.path.endsWith("chariox-managed-bootstrap.service"));
+    assert.equal(sharedHostRestriction?.sourceRoleHints.selectedServiceTopology, "shared_host");
+    assert.equal(sharedHostRestriction?.sourceRoleHints.positivePath1Directive, false);
+    assert.equal(sharedHostRestriction?.semanticDisposition.status, "unreviewed");
   });
 });
 
-test("an inherited systemd restriction remains a direct Path-1 removal finding", () => {
+test("an explicit Path-1 systemd restriction remains an unreviewed positive directive", () => {
   withFixture({ inheritedRestriction: true }, (fixture) => {
     const report = collect(fixture);
     const restriction = report.entries.find((entry) => entry.selector === "RestrictAddressFamilies");
     assert.equal(restriction?.category, "managed_service_restriction");
-    assert.equal(restriction?.topology, "direct_path1");
-    assert.equal(restriction?.disposition, "removal_required");
+    assert.equal(restriction?.sourceRoleHints.selectedServiceTopology, "path1");
+    assert.equal(restriction?.sourceRoleHints.positivePath1Directive, true);
+    assert.equal(restriction?.semanticDisposition.status, "unreviewed");
   });
 });
 
-test("protected-parent filtering is inventoried as MP-02/MP-03/MP-11 evidence", () => {
+test("protected-parent filtering remains unreviewed MP-02/MP-03/MP-11 evidence", () => {
   withFixture({ protectedParent: true }, (fixture) => {
     const report = collect(fixture);
     const protectedFinding = report.entries.find((entry) => entry.category === "protected_path_filter");
     assert.deepEqual(protectedFinding?.applicableMpIds, ["MP-02", "MP-03", "MP-11"]);
-    assert.equal(protectedFinding?.disposition, "removal_required");
+    assert.equal(protectedFinding?.semanticDisposition.status, "unreviewed");
   });
 });
 
@@ -449,35 +598,92 @@ test("an unknown client projection is unreviewed rather than allowed by its file
     const report = collect(fixture);
     const projection = report.entries.find((entry) => entry.path === "apps/client/unknown.ts");
     assert.equal(projection?.category, "client_projection");
-    assert.equal(projection?.topology, "unknown");
-    assert.equal(projection?.disposition, "unreviewed");
+    assert.equal(projection?.sourceRoleHints.topologyHint, "unresolved");
+    assert.equal(projection?.semanticDisposition.status, "unreviewed");
   });
 });
 
-test("a caller cannot forge an allowed disposition", () => {
+test("forged and stale caller claims cannot supply independent semantic approvals", () => {
   withFixture({}, (fixture) => {
     assert.throws(() => collect(fixture, {
       claimedDispositions: [{
-        path: "apps/kernel/src/provider/evil.rs",
-        line: 1,
-        symbol: "evil",
-        category: "managed_env_selector",
-        sourceLine: "CHARIOX_MANAGED_FORGED",
+        id: "forged-release-exemption",
+        sourceCommit: COMMIT,
+        sourceTree: TREE,
+        anchor: {
+          path: "apps/kernel/src/provider/evil.rs",
+          blob: "c".repeat(40),
+          line: 1,
+          column: 1,
+          symbol: "evil",
+          category: "managed_env_selector",
+          selector: "CHARIOX_MANAGED_FORGED",
+          contextHash: "d".repeat(64),
+        },
         disposition: "allowed_release_deployment",
+        independentReview: {
+          independent: true,
+          reviewer: "unconfigured-reviewer",
+          reviewId: "forged-review-1",
+          reviewedAt: "2026-09-26T00:00:00Z",
+          rationale: "A caller supplied this approval without a configured review record.",
+        },
       }],
-    }), /unverified disposition claim/);
+    }), /unverified independent semantic disposition claim/);
+
+    assert.throws(() => collect(fixture, {
+      claimedDispositions: [{
+        id: "MP-07-release-verify-release",
+        sourceCommit: PRIOR_REVIEWED_SOURCE_COMMIT,
+        sourceTree: PRIOR_REVIEWED_SOURCE_TREE,
+        anchor: { path: "apps/kernel/src/managed_bootstrap/release.rs", line: 39 },
+        disposition: "allowed_release_deployment",
+        independentReview: {
+          independent: true,
+          reviewer: "unconfigured-reviewer",
+          reviewId: "stale-review-1",
+          reviewedAt: "2025-01-01T00:00:00Z",
+          rationale: "This old approval does not bind the current semantic review anchor.",
+        },
+      }],
+    }), /unverified independent semantic disposition claim/);
   });
 });
 
-test("source drift removes the exact release exemption", () => {
+test("selector topology drift changes only a hint and never carries semantic approval", () => {
+  withFixture({ path1ServiceTopology: "shared_host" }, (fixture) => {
+    const report = collect(fixture);
+    const restriction = report.entries.find((entry) => entry.selector === "ProtectSystem"
+      && entry.path.endsWith("provider.service"));
+    assert.equal(restriction?.sourceRoleHints.selectedServiceTopology, "shared_host");
+    assert.equal(restriction?.sourceRoleHints.positivePath1Directive, false);
+    assert.equal(restriction?.semanticDisposition.status, "unreviewed");
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("service path prefixes do not imply Path-1 without an explicit topology marker", () => {
+  withFixture({ path1ServiceTopology: null }, (fixture) => {
+    const report = collect(fixture);
+    const restriction = report.entries.find((entry) => entry.selector === "ProtectSystem"
+      && entry.path.endsWith("provider.service"));
+    assert.equal(restriction?.path, "deploy/managed-kernel/provider.service");
+    assert.equal(restriction?.sourceRoleHints.topologyHint, "unresolved");
+    assert.equal(restriction?.sourceRoleHints.selectedServiceTopology, null);
+    assert.equal(restriction?.semanticDisposition.gateEffect, "fail_closed");
+  });
+});
+
+test("source drift keeps the exact historical release predicate pending", () => {
   withFixture({}, (fixture) => {
     const releasePath = join(fixture.root, "apps/kernel/src/managed_bootstrap/release.rs");
     const original = readFileSync(releasePath, "utf8");
     writeFileSync(releasePath, original.replace("pub(super) fn verify_release(", "pub(super) fn verify_release( // drift"));
     const report = collect(fixture);
     const drifted = report.entries.find((entry) => entry.path.endsWith("release.rs") && entry.line === 39);
-    assert.equal(drifted?.disposition, "unreviewed");
+    assert.equal(drifted?.semanticDisposition.status, "unreviewed");
     assert.equal(report.summary.allowedReleaseDeployment, 0);
+    assert.ok(report.reviewedPredicates.find(({ id }) => id === "MP-07-release-verify-release")?.status === "source_drift");
   });
 });
 

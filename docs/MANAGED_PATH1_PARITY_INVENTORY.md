@@ -135,12 +135,54 @@ predicates classify only policy data; Cloud enforcement and all live shutdown
 triggers remain uninspected. All three scanner predicates remain pending, and
 MP-01 through MP-11 remain open.
 
-The updated `managed-parity-source-inventory` scanner enumerates the broker
+The previous v1 `managed-parity-source-inventory` scanner enumerated broker
 scope/FD/required-marker variables separately from other managed selectors and
-records the `managed-release-artifacts` stage separately from signature
-verification and activation. Its new fixtures verify those categories and the
-Path-1 source flow; unreviewed findings remain unapproved and the scan is not
-runtime or fresh-machine evidence.
+recorded the `managed-release-artifacts` stage separately from signature
+verification and activation. Its counts and automatic `removal_required`
+labels are historical lexical output, not reviewed semantic findings. The v2
+correction below supersedes that disposition model.
+
+### Source inventory v2 correction (2026-09-26)
+
+The inventory now keeps three layers distinct. Each entry retains the lexical
+candidate (category, source anchor, selector, and affected behavior), attaches
+non-authoritative `sourceRoleHints`, and carries a separate
+`semanticDisposition`. A role hint never changes a disposition or makes a
+candidate pass. An unreviewed candidate, including unknown positive Path-1
+behavior, remains `fail_closed`.
+
+The scanner retains matches from inline Rust `#[cfg(test)]`/`#[test]` regions
+and conventional test source paths. It marks them as test evidence candidates
+without deleting or approving their lexical matches. It derives a service
+topology hint only from an exact
+`Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1|shared_host` declaration
+inside that unit; kernel/deploy directory prefixes do not imply Path-1. The
+unit declaration is source evidence, not proof of the effective installed
+service. Inner Docker-slice paths receive a location hint and remain visible.
+
+The verifier's forbidden-marker arrays can be hinted as verification guards;
+an actual Bubblewrap command or restriction in an explicitly Path-1 unit is
+hinted as a positive service directive. Shared-host unit restrictions and
+inner-slice isolation remain separate hints. These distinctions do not grant
+policy exemptions: guards, tests, shared-host behavior, and slice isolation
+need an exact independent semantic review just like any other candidate.
+
+New semantic review records must bind the exact source commit/tree and a
+candidate anchor containing blob, path, line, column, symbol, category,
+selector, and context hash. They also require independent reviewer identity,
+review ID, review time, and rationale. Caller-supplied claims cannot add
+approvals. The three historical predicate objects above are preserved exactly;
+they remain pending on changed source heads and, even at their original head,
+do not grant a semantic disposition because they lack independent review
+metadata. `removal_required` counts only independently reviewed findings;
+unreviewed candidates still fail the inventory closed. This source-only
+scanner correction does not close an MP gate or replace root's exact-head full
+inventory and acceptance evidence.
+
+The v2 focused scanner suite passes 27/27 with
+`node --test apps/cli/scripts/managed-parity-source-inventory.test.mjs`; both
+scanner modules pass `node --check`. No full inventory scan was run here; root
+owns that exact-head result.
 
 ### Uninspected and live requirements
 
@@ -188,20 +230,22 @@ create/bootstrap, child-worker allocation/bootstrap, cloud-init, Web browser
 projection, and launch-plan code: 61 passed, 0 failed. These do not replace
 deployed Cloud or fresh-machine evidence.
 
-The focused inventory scanner suite now passes 23/23 Node tests, including
-fixtures for the broker-control and release-exporter categories, a d3 source
-guard for the kernel-only FD/provider scrub boundary. The separate
+The previous v1 focused inventory scanner suite passed 23/23 Node tests,
+including fixtures for the broker-control and release-exporter categories and
+a d3 source guard for the kernel-only FD/provider scrub boundary. Those v1
+results are historical. The separate
 `managed-kernel-release.test.mjs` already has an exact artifact-stage guard; it
 was not rerun here. No Rust build or test, Docker build, provider run, host
 installation, service change, Cloud refresh, or VM rebuild was performed in
 this pass.
 
-The updated scanner's d3 source pass returns `fail`: it enumerates all required
-categories, including 138 broker-control references and the four exact
-artifact-exporter lines, while retaining 1,285 raw `removal_required` matches,
-2,312 `unreviewed` matches, and three pending historical source predicates.
-These lexical findings are not a confirmed defect count; the scan approves no
-release or shutdown disposition and does not close any MP gate.
+The previous v1 scanner's d3 source pass returned `fail`: it enumerated all
+required categories, including 138 broker-control references and the four
+exact artifact-exporter lines, while labeling 1,285 lexical matches
+`removal_required`, 2,312 `unreviewed`, and three historical predicates
+pending. Those v1 lexical counts are not a confirmed defect count and are
+superseded by v2 candidate/source-role/semantic separation. Root owns the
+current full inventory run and its exact results.
 
 The 2026-09-26 follow-up on production source `64c8e96888a7832693f0c5e28f5a2cefeb34a15b`
 requires explicit installer topology and rejects conflicting enabled or active
