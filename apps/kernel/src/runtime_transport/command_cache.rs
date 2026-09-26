@@ -132,6 +132,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::RemoveAppInboxRoute(_)
             | LocalDaemonRequest::ListAppInboxRoutes(_)
             | LocalDaemonRequest::TestAppInboxRoute(_)
+            | LocalDaemonRequest::GrantAppFile(_)
             | LocalDaemonRequest::PrepareBrowserImport(_)
             | LocalDaemonRequest::ApproveBrowserImport(_)
             | LocalDaemonRequest::ClaimBrowserImportSource(_)

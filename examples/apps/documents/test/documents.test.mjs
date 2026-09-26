@@ -14,6 +14,9 @@ async function fakeKernel() {
   const state = new Map();
   const tools = new Map();
   let beforeCommit = async () => {};
+  // Files the owner "chose" in the trusted prompt, by grant id.
+  const grants = new Map();
+  let answerPick = async () => ({ grantIds: [...grants.keys()] });
   const chariox = {
     AppError,
     paths: { package: '/package', data, temporary: '/tmp' },
@@ -27,7 +30,17 @@ async function fakeKernel() {
         await writeFile(join(data, path), contents);
         return { bytesWritten: Buffer.byteLength(contents) };
       },
+      // Like the kernel: a grant imports once, into an existing parent.
+      async import(grantId, destination) {
+        const file = grants.get(grantId);
+        if (!file) throw new AppError('NOT_FOUND', 'No such file request or grant');
+        grants.delete(grantId);
+        await writeFile(join(data, destination), file.contents);
+        return { bytesWritten: Buffer.byteLength(file.contents), name: file.name };
+      },
     },
+    host: { pickFile: () => answerPick() },
+    log: { write: async () => null },
     state: {
       async get(key) { return state.get(key) ?? null; },
       async transaction({ schemaVersion, checks, writes }) {
@@ -46,7 +59,12 @@ async function fakeKernel() {
   };
   register(chariox);
   const call = (name, input = {}) => tools.get(name)(input);
-  return { call, data, setBeforeCommit: (hook) => { beforeCommit = hook; }, cleanup: () => rm(data, { recursive: true, force: true }) };
+  return {
+    call, data, grants,
+    setBeforeCommit: (hook) => { beforeCommit = hook; },
+    setAnswerPick: (answer) => { answerPick = answer; },
+    cleanup: () => rm(data, { recursive: true, force: true }),
+  };
 }
 
 test('documents are created, edited with revision checks, restored and deleted', async () => {
@@ -155,4 +173,44 @@ test('HTML preview drops foreign SVG and MathML subtrees whose names are lowerca
   const target = { createTextNode: (value) => value, createElement: node, createDocumentFragment: () => node('') };
   const render = (item) => typeof item === 'string' ? item : item.name ? `<${item.name}>${item.children.map(render).join('')}</${item.name}>` : item.children.map(render).join('');
   assert.equal(render(sanitizeHtmlInto('', target, () => ({ body }))), '<p>kept</p>unwrapped');
+});
+
+test('import turns the files the owner chose into documents, in the background', async () => {
+  const kernel = await fakeKernel();
+  try {
+    let answer;
+    kernel.setAnswerPick(() => new Promise(resolve => { answer = resolve; }));
+    kernel.grants.set('grant-1', { name: 'Plan.md', contents: '# Plan' });
+    kernel.grants.set('grant-2', { name: 'page.HTML', contents: '<p>Hi</p>' });
+    // The tool returns before the owner has answered.
+    assert.deepEqual(await kernel.call('import_documents', { folder: 'imported' }), { requested: true });
+    assert.deepEqual((await kernel.call('list_documents')).documents, []);
+    answer({ grantIds: ['grant-1', 'grant-2'] });
+    let documents = [];
+    for (let i = 0; i < 50 && documents.length < 2; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      documents = (await kernel.call('list_documents')).documents;
+    }
+    assert.deepEqual(documents.map(({ title, kind, folder }) => ({ title, kind, folder })), [
+      { title: 'Plan', kind: 'markdown', folder: 'imported' },
+      { title: 'page', kind: 'html', folder: 'imported' },
+    ]);
+    assert.equal((await kernel.call('read_document', { id: documents[0].id })).content, '# Plan');
+    // The staged copies are removed once imported.
+    assert.deepEqual(await readdir(join(kernel.data, 'imports')), []);
+  } finally {
+    await kernel.cleanup();
+  }
+});
+
+test('a declined file request imports nothing', async () => {
+  const kernel = await fakeKernel();
+  try {
+    kernel.setAnswerPick(async () => { throw new AppError('DECLINED', 'The owner declined to share a file'); });
+    assert.deepEqual(await kernel.call('import_documents'), { requested: true });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual((await kernel.call('list_documents')).documents, []);
+  } finally {
+    await kernel.cleanup();
+  }
 });

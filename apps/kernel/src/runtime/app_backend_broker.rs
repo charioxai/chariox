@@ -80,6 +80,14 @@ fn build(
             catalog.installation_id().to_owned(),
             admission.clone(),
         ),
+        file_grants: super::app_file_grant_broker::AppFileGrantBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.clone(),
+            admission.clone(),
+            data.clone(),
+            package,
+        ),
         files: AppFilesBroker::new(store, owner, catalog, admission, data),
     })
 }
@@ -89,6 +97,7 @@ struct BackendBroker {
     logs: super::app_log_broker::AppLogBroker,
     validation: super::app_validation_broker::AppValidationBroker,
     files: AppFilesBroker,
+    file_grants: super::app_file_grant_broker::AppFileGrantBroker,
     http: AppHttpBroker,
 }
 impl Broker for BackendBroker {
@@ -120,6 +129,9 @@ impl Broker for BackendBroker {
                 }
                 name if name.starts_with("http.") => delegate.http.dispatch(request).await,
                 "files.atomic_replace" => delegate.files.dispatch(request).await,
+                "host.pick_file" | "host.pick_file_status" | "files.import" => {
+                    delegate.file_grants.dispatch(request).await
+                }
                 "log.write" => delegate.logs.dispatch(request).await,
                 "validation.request" | "validation.status" => {
                     delegate.validation.dispatch(request).await

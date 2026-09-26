@@ -1863,6 +1863,18 @@ Workflow trigger and deployment direction:
   payload}` accepts one occurrence as a source would (`AppInboxOccurrenceAccepted
   {installation_id, route_id, occurrence_id, duplicate}`). Event
   generator subscriptions for routes follow with the packaged Slack App.
+- protocol 354: user-selected external file grants. An App whose signed
+  manifest declares `capabilities.externalFiles: ["user_selected"]` calls
+  `host.pick_file`, which returns a pending reference. The kernel shows the
+  App's owner a trusted kernel-operation prompt (id `app_file_pick_<operation>`,
+  subject `file_pick:<operation>`) in their most recent session. Its only
+  choice is Decline. The owner answers from a terminal with `GrantAppFile
+  {session_id, operation_id, files: [{name, contents_base64}]}` (at most 8
+  files of 512 KiB each, final name components only, matching the App's
+  accepted suffixes), which answers `AppFileGranted {operation_id, files}` and
+  closes the prompt. Only the owner can answer; App code, views and agents
+  cannot. Grants are private copies that the App imports once with
+  `files.import`. They expire after 30 minutes, or when the App updates.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

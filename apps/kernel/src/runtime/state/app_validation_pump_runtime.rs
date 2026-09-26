@@ -27,6 +27,7 @@ impl KernelRuntimeState {
         tokio::spawn(async move {
             let _pass = pass;
             runtime.app_validation_pass(now_ms).await;
+            runtime.app_file_pick_pass(now_ms).await;
         });
     }
 
@@ -101,7 +102,7 @@ impl KernelRuntimeState {
     /// The owner's most recently used session hosts the approval, so it
     /// appears on the terminals the person is using: preferably one the owner
     /// hosts. Collaborators in that session see it; only the owner answers.
-    fn validation_session(&self, owner: &str) -> Option<String> {
+    pub(super) fn validation_session(&self, owner: &str) -> Option<String> {
         self.owned
             .session_store
             .list_sessions()

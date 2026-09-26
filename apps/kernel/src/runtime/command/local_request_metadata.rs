@@ -543,6 +543,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RemoveAppInboxRoute(_) => "app.inbox.route.remove",
         LocalDaemonRequest::ListAppInboxRoutes(_) => "app.inbox.route.list",
         LocalDaemonRequest::TestAppInboxRoute(_) => "app.inbox.route.test",
+        LocalDaemonRequest::GrantAppFile(_) => "app.file.grant",
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::RenameProject(_) => "project.rename",

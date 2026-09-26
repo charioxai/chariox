@@ -146,6 +146,20 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "import_documents",
+      "description": "Ask the owner to choose Markdown, HTML or text files to import as new documents. Returns at once; the documents appear after the owner chooses the files in their terminal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
+      }
     }
   ]
 }

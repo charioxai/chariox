@@ -1,8 +1,9 @@
 // Documents reference App. Markdown and HTML documents live as private files
 // in the App's data root; a small index in kernel-managed state names them.
 // Every edit states the revision it was made from, so concurrent human and
-// agent edits never silently overwrite each other. Import/export arrives with
-// the kernel's user-selected file grants (host.pickFile, files.import/export).
+// agent edits never silently overwrite each other. Import uses the kernel's
+// user-selected file grants: the owner chooses files in a trusted prompt, and
+// the App receives private copies, never host paths.
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -20,6 +21,7 @@ const MAX_DOCUMENTS = 300;
 const MAX_CONTENT = 512 * 1024;
 const KEEP_VERSIONS = 10;
 const KINDS = { markdown: 'md', html: 'html' };
+const IMPORTS = { '.md': 'markdown', '.markdown': 'markdown', '.txt': 'markdown', '.html': 'html', '.htm': 'html' };
 
 export default function register(chariox) {
   const fail = (code, message) => new chariox.AppError(code, message);
@@ -118,7 +120,7 @@ export default function register(chariox) {
     return { ...summary(doc), content: await read(doc, revision ?? doc.revision) };
   });
 
-  chariox.tools.register('create_document', ({ title, kind = 'markdown', folder = '', content = '' }) => {
+  function create({ title, kind = 'markdown', folder = '', content = '' }) {
     // One id for every retry, so a lost compare-and-set leaves no stray folder.
     const id = randomUUID().slice(0, 8);
     return change(async docs => {
@@ -128,6 +130,34 @@ export default function register(chariox) {
       await write(docs, doc, content);
       return summary(doc);
     });
+  }
+  chariox.tools.register('create_document', create);
+
+  // The owner may take minutes to choose, so the tool returns at once and the
+  // import finishes in the background; the list shows the new documents.
+  async function importGranted(grantIds, folder) {
+    await mkdir(join(chariox.paths.data, 'imports'), { recursive: true });
+    for (const grantId of grantIds) {
+      const staged = `imports/${grantId}`;
+      try {
+        const { name } = await chariox.files.import(grantId, staged);
+        const extension = name.slice(name.lastIndexOf('.')).toLowerCase();
+        const content = await readFile(join(chariox.paths.data, staged), 'utf8');
+        const title = name.slice(0, name.length - extension.length).slice(0, 200) || name.slice(0, 200);
+        await create({ title, kind: IMPORTS[extension] ?? 'markdown', folder, content });
+      } catch (error) {
+        await chariox.log.write('warn', 'A document import failed', { code: String(error?.code ?? 'ERROR') }).catch(() => {});
+      } finally {
+        await rm(join(chariox.paths.data, staged), { force: true });
+      }
+    }
+  }
+
+  chariox.tools.register('import_documents', ({ folder = '' } = {}) => {
+    chariox.host.pickFile({ multiple: true, accept: Object.keys(IMPORTS) })
+      .then(({ grantIds }) => importGranted(grantIds, folder))
+      .catch(error => chariox.log.write('info', 'No documents imported', { code: String(error?.code ?? 'ERROR') }).catch(() => {}));
+    return { requested: true };
   });
 
   // `expected_revision` is the revision the editor started from. A mismatch

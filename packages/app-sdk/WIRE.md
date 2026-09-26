@@ -167,7 +167,22 @@ path) with `hasBody: false` and no header but `accept`. The kernel sends the
 approved canonical parameters as the whole JSON body. Any other request to a protected origin fails
 `VALIDATION_REQUIRED` or is denied.
 
-`validation.request` and `outputs.request` return durable pending references when
+`host.pick_file {multiple?, accept?}` (Apps whose signed manifest declares
+`capabilities.externalFiles: ["user_selected"]`; others get
+`CAPABILITY_REQUIRED`) replies `{operationId, state: "pending", grantIds: [],
+expiresAtMs}` at once. `accept` holds up to 16 file name suffixes such as `.md`.
+The kernel shows the owner a trusted prompt, like a validation. The owner
+either declines or chooses files (at most 8, each up to 512 KiB) in their
+terminal. The chosen bytes become grants; the App never learns a host path.
+`host.pick_file_status {operationId}` returns the same shape. The state is
+`pending`, `granted` (with `grantIds`), `declined` or `expired`: unanswered
+after 10 minutes, or unimported 30 minutes after the grant, or when the App
+updates. `files.import {grantId, destination}` copies one grant into private
+data, like `files.atomic_replace`, and spends it. It replies `{bytesWritten,
+name}`, where `name` is the file name the owner chose. The SDK's
+`host.pickFile` polls the status and resolves with `{grantIds}`.
+
+`validation.request`, `host.pick_file` and `outputs.request` return durable pending references when
 waiting for human input or model output. They must not retain a worker request
 slot for the duration of that wait. App-specific meaning stays in App handlers
 and validators; the kernel performs generic authorization, correlation, schema

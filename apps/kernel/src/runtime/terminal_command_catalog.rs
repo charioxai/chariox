@@ -769,6 +769,8 @@ mod tests {
                 "app-inbox-add",
                 "app-inbox-remove",
                 "app-inbox-test",
+                "app-file",
+                "app-file-grant",
             ]
         );
     }

@@ -279,3 +279,23 @@ test('a migration step writes only its target schema version and reports complet
   assert.equal(await step, null);
   sdk.close();
 });
+
+test('pickFile waits on a pending kernel reference and resolves with grants, or rejects a decline', async () => {
+  const { transport, sdk } = setup();
+  const picked = sdk.host.pickFile({ accept: ['.md'] });
+  await flush();
+  assert.equal(transport.sent[0].method, 'host.pick_file');
+  assert.deepEqual(transport.sent[0].params, { accept: ['.md'] });
+  transport.receive(response(transport.sent[0].id, { operationId: 'file-pick-1', state: 'pending', grantIds: [], expiresAtMs: 1 }));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(transport.sent[1].method, 'host.pick_file_status');
+  assert.deepEqual(transport.sent[1].params, { operationId: 'file-pick-1' });
+  transport.receive(response(transport.sent[1].id, { operationId: 'file-pick-1', state: 'granted', grantIds: ['grant-1'], expiresAtMs: 2 }));
+  assert.deepEqual(await picked, { grantIds: ['grant-1'] });
+
+  const declined = sdk.host.pickFile({});
+  await flush();
+  transport.receive(response(transport.sent[2].id, { operationId: 'file-pick-2', state: 'declined', grantIds: [], expiresAtMs: 1 }));
+  await assert.rejects(declined, { code: 'DECLINED' });
+  sdk.close();
+});

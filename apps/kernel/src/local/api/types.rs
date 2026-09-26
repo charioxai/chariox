@@ -120,4 +120,6 @@ pub use workspace::*;
 /// agent that gets a trigger or deployment, with `WorkflowDefinition.origin`.
 /// Version 353 adds the installation inbox: `CreateAppInboxRoute`,
 /// `RemoveAppInboxRoute`, `ListAppInboxRoutes` and `TestAppInboxRoute`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 353;
+/// Version 354 adds user-selected file grants: `GrantAppFile` answers an App's
+/// `host.pick_file` request with the chosen files (`AppFileGranted`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 354;

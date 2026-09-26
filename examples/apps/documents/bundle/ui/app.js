@@ -148,6 +148,16 @@ async function save() {
   }
 }
 
+// The owner chooses files in the terminal's trusted prompt, outside this view;
+// imported documents then appear through the regular list refresh.
+$("import-docs").addEventListener("click", async () => {
+  const button = $("import-docs")
+  await call("import_documents")
+  button.textContent = "Choose files in the prompt…"
+  button.disabled = true
+  setTimeout(() => { button.textContent = "Import"; button.disabled = false }, 8000)
+})
+
 $("new-doc").addEventListener("click", async () => {
   if (dirty && pendingOpen !== "new") {
     pendingOpen = "new"

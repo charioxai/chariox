@@ -228,6 +228,28 @@
             ]
           }
         ]
+      },
+      {
+        "id": "app-file",
+        "label": "file",
+        "description": "Answer an App's file request",
+        "value": "/app file ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-file-grant",
+            "label": "grant",
+            "description": "Share local files with an App that asked for them",
+            "value": "/app file grant ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
       }
     ]
   }
