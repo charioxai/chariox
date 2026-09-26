@@ -2,9 +2,10 @@
 
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, readlink, realpath, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 
+import { startManagedOrdinaryLiveKernelBinding } from "./lib/managed-ordinary-live-kernel-binding.mjs"
 import {
   ALLOWED_CAPTURE_BOUNDARIES,
   ALLOWED_TOPOLOGIES,
@@ -26,7 +27,7 @@ const PROTOCOL_VERSION = /^\d+$/
 const DIGEST = /^sha256:[0-9a-f]{64}$/i
 const PROBE_RELATIVE_PATH = "apps/cli/scripts/managed-ordinary-parity-probe.mjs"
 const RELEASE_VERIFIER_RELATIVE_PATH = "deploy/managed-kernel/verify-image-release.mjs"
-const NODE_FILESYSTEM = Object.freeze({ mkdir, readFile, realpath, writeFile })
+const NODE_FILESYSTEM = Object.freeze({ mkdir, readFile, readdir, readlink, realpath, writeFile })
 
 class CollectorError extends Error {
   constructor(code, message, details = {}) {
@@ -485,8 +486,8 @@ export function createParityCollector({
   clock = () => new Date(),
   processApi = process,
 } = {}) {
-  if (!filesystem || typeof filesystem.mkdir !== "function" || typeof filesystem.readFile !== "function" || typeof filesystem.realpath !== "function" || typeof filesystem.writeFile !== "function") {
-    throw new TypeError("filesystem must provide mkdir, readFile, realpath, and writeFile")
+  if (!filesystem || typeof filesystem.mkdir !== "function" || typeof filesystem.readFile !== "function" || typeof filesystem.readdir !== "function" || typeof filesystem.readlink !== "function" || typeof filesystem.realpath !== "function" || typeof filesystem.writeFile !== "function") {
+    throw new TypeError("filesystem must provide mkdir, readFile, readdir, readlink, realpath, and writeFile")
   }
   if (typeof runCommand !== "function") throw new TypeError("runCommand must be a function")
 
@@ -711,6 +712,23 @@ export function createParityCollector({
     const actualRelayProtocol = parseRelayVersion(relayStep.text)
     if (actualRelayProtocol !== ctx.relayProtocol) throw new CollectorError("protocol_identity_mismatch", "relay protocol mismatch")
 
+    let liveKernelBinding
+    try {
+      liveKernelBinding = await startManagedOrdinaryLiveKernelBinding({
+        filesystem,
+        processApi,
+        selectedKernelPath: selectedKernelRealPath,
+        expectedArtifactDigest: releaseIdentity.kernelDigest,
+        expectedBoundary: ctx.boundary,
+      })
+    } catch (error) {
+      throw new CollectorError(
+        error?.code ?? "kernel_runtime_unverified",
+        error instanceof Error ? error.message : "running kernel process could not be bound to the signed release",
+      )
+    }
+    const liveKernelEvidencePath = join(ctx.evidenceDir, ctx.topology, "MP-10", "source_protocol_identity", "live-kernel-binding.json")
+
     const providerCommandName = basename(ctx.providerCommand)
     if (providerCommandName !== ctx.provider) throw new CollectorError("provider_identity_mismatch", `provider command basename must be ${ctx.provider}`)
     const providerVersionStep = await runText(ctx, "MP-08", "official_provider_identity", "provider-version", ctx.providerCommand, ["--version"], { cwd: ctx.sourceRoot })
@@ -746,7 +764,7 @@ export function createParityCollector({
               probe_identity_verified: true,
             },
             command: commandText(git, ["rev-parse", "HEAD"]),
-            evidence_refs: [sourceCommitStep.stepResult.evidencePath, cleanStep.stepResult.evidencePath, statusStep.stepResult.evidencePath, filesStep.stepResult.evidencePath, ...probeIdentity.evidenceRefs, ...releaseVerifierIdentity.evidenceRefs, sourceTreeStep.stepResult.evidencePath, kernelReleaseStep.stepResult.evidencePath, versionStep.stepResult.evidencePath, kernelProtocolStep.stepResult.evidencePath, relayStep.stepResult.evidencePath],
+            evidence_refs: [sourceCommitStep.stepResult.evidencePath, cleanStep.stepResult.evidencePath, statusStep.stepResult.evidencePath, filesStep.stepResult.evidencePath, ...probeIdentity.evidenceRefs, ...releaseVerifierIdentity.evidenceRefs, sourceTreeStep.stepResult.evidencePath, kernelReleaseStep.stepResult.evidencePath, versionStep.stepResult.evidencePath, kernelProtocolStep.stepResult.evidencePath, relayStep.stepResult.evidencePath, liveKernelEvidencePath],
           },
           fresh_worker: freshWorker,
           capture_boundary: captureBoundary,
@@ -778,6 +796,18 @@ export function createParityCollector({
       shutdownChecks[checkId] = await runProbe(ctx, "MP-09", checkId, (result) => normalizeShutdownResult(result, ctx.topology, checkId))
     }
     rows["MP-09"] = { checks: shutdownChecks }
+
+    let liveKernelEvidence
+    try {
+      liveKernelEvidence = await liveKernelBinding.finish()
+    } catch (error) {
+      throw new CollectorError(
+        error?.code ?? "kernel_runtime_unverified",
+        error instanceof Error ? error.message : "running kernel process changed during capture",
+      )
+    }
+    await filesystem.mkdir(dirname(liveKernelEvidencePath), { recursive: true })
+    await filesystem.writeFile(liveKernelEvidencePath, `${JSON.stringify(stable(liveKernelEvidence), null, 2)}\n`, "utf8")
 
     const sourceDigest = `sha256:${sha256(filesStep.text)}`
     const manifest = createSignedManifest({

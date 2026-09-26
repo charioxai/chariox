@@ -1,6 +1,11 @@
 import assert from "node:assert/strict"
+import { once } from "node:events"
 import { createHash } from "node:crypto"
-import { test } from "node:test"
+import { unlink } from "node:fs/promises"
+import { createServer } from "node:net"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { after, before, test } from "node:test"
 
 import {
   createParityCollector,
@@ -27,17 +32,86 @@ const KERNEL_RELEASE_ROOT = "/release/rootfs"
 const KERNEL_BINARY = `${KERNEL_RELEASE_ROOT}/usr/local/bin/chariox-kernel`
 const KERNEL_RELEASE_PUBLIC_KEY = "/release/trusted-release-public-key"
 const KERNEL_BUILDER_PUBLIC_KEY = "/release/trusted-builder-public-key"
+const LIVE_KERNEL_PID = 43210
+const LIVE_KERNEL_SOCKET_INODE = "880042"
+const LIVE_KERNEL_SOCKET = join(tmpdir(), `chariox-managed-ordinary-parity-${process.pid}.sock`)
+const LIVE_KERNEL_IDENTITY = Object.freeze({ kernel_id: "kernel-current", machine_id: "machine-current" })
+
+function frame(payload) {
+  const bytes = Buffer.from(JSON.stringify(payload), "utf8")
+  const header = Buffer.allocUnsafe(4)
+  header.writeUInt32BE(bytes.length, 0)
+  return Buffer.concat([header, bytes])
+}
+
+let liveKernelServer
+
+before(async () => {
+  await unlink(LIVE_KERNEL_SOCKET).catch((error) => {
+    if (error?.code !== "ENOENT") throw error
+  })
+  liveKernelServer = createServer((socket) => {
+    let request = Buffer.alloc(0)
+    socket.on("data", (chunk) => {
+      request = Buffer.concat([request, chunk])
+      if (request.length < 4) return
+      const length = request.readUInt32BE(0)
+      if (request.length < length + 4) return
+      socket.end(frame({
+        response: {
+          RelayStatus: {
+            status: { daemon_id: LIVE_KERNEL_IDENTITY.kernel_id, machine_id: LIVE_KERNEL_IDENTITY.machine_id },
+          },
+        },
+        error: null,
+      }))
+    })
+  })
+  liveKernelServer.listen(LIVE_KERNEL_SOCKET)
+  await once(liveKernelServer, "listening")
+})
+
+after(async () => {
+  if (liveKernelServer?.listening) {
+    await new Promise((resolve, reject) => liveKernelServer.close((error) => error ? reject(error) : resolve()))
+  }
+  await unlink(LIVE_KERNEL_SOCKET).catch((error) => {
+    if (error?.code !== "ENOENT") throw error
+  })
+})
+
+function procStat(pid, startTime = 123456) {
+  const fields = ["S", "1", ...Array(17).fill("0"), String(startTime)]
+  return `${pid} (chariox-kernel fixture) ${fields.join(" ")}\n`
+}
 
 function memoryFilesystem() {
   const files = new Map()
   const directories = new Set(["/repo"])
+  directories.add(`/proc/${LIVE_KERNEL_PID}/fd`)
   return {
     files,
     directories,
     async mkdir(directory) { directories.add(directory) },
     async readFile(file) {
+      if (file === "/proc/net/unix") {
+        return `Num RefCount Protocol Flags Type St Inode Path\n0000000000000000: 00000002 00000000 00010000 0001 01 ${LIVE_KERNEL_SOCKET_INODE} ${LIVE_KERNEL_SOCKET}\n`
+      }
+      if (file === "/proc/sys/kernel/random/boot_id") return "7a2b9ea4-cd3d-4bc2-9b36-46cba658217a\n"
+      if (file === `/proc/${LIVE_KERNEL_PID}/stat`) return procStat(LIVE_KERNEL_PID)
+      if (file === `/proc/${LIVE_KERNEL_PID}/exe`) return KERNEL_BYTES
       if (!files.has(file)) throw Object.assign(new Error(`missing fixture file ${file}`), { code: "ENOENT" })
       return files.get(file)
+    },
+    async readdir(directory) {
+      if (directory === "/proc") return [String(LIVE_KERNEL_PID)]
+      if (directory === `/proc/${LIVE_KERNEL_PID}/fd`) return ["3"]
+      throw Object.assign(new Error(`missing fixture directory ${directory}`), { code: "ENOENT" })
+    },
+    async readlink(file) {
+      if (file === `/proc/${LIVE_KERNEL_PID}/exe`) return KERNEL_BINARY
+      if (file === `/proc/${LIVE_KERNEL_PID}/fd/3`) return `socket:[${LIVE_KERNEL_SOCKET_INODE}]`
+      throw Object.assign(new Error(`missing fixture link ${file}`), { code: "ENOENT" })
     },
     async realpath(file) {
       if (directories.has(file)) return file
@@ -206,7 +280,25 @@ function makeHarness(topology, overrides = {}) {
     filesystem,
     runCommand,
     clock,
-    processApi: { platform: "linux", pid: 77, cwd: () => processCwd },
+    processApi: {
+      platform: "linux",
+      pid: 77,
+      cwd: () => processCwd,
+      env: {
+        CHARIOX_DAEMON_SOCKET: LIVE_KERNEL_SOCKET,
+        CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON: JSON.stringify({
+          observed: true,
+          boundary: "official-provider-turn",
+          inside_provider_turn: true,
+          independent: true,
+          kernel_identity: {
+            observed: true,
+            ...LIVE_KERNEL_IDENTITY,
+            transport: "local-unix-ipc",
+          },
+        }),
+      },
+    },
   })
   const options = {
     topology,
@@ -247,6 +339,16 @@ test("collects a real-command ordinary snapshot and validates all required rows"
     signingKey: SIGNING_KEY,
   }).ok, true)
   assert.equal(calls.some(([command, args]) => command === process.execPath && args[0].endsWith("managed-ordinary-parity-probe.mjs") && args.includes("session_agent_launch")), true)
+  const sourceIdentity = manifest.rows["MP-10"].checks.source_protocol_identity
+  const bindingPath = sourceIdentity.evidence_refs.find((reference) => reference.endsWith("live-kernel-binding.json"))
+  assert.ok(bindingPath)
+  const binding = JSON.parse(filesystem.files.get(bindingPath))
+  assert.equal(binding.schema, "chariox.managed-ordinary-live-kernel-binding/v1")
+  assert.equal(binding.observed, true)
+  assert.equal(binding.observed_kernel.kernel_id, LIVE_KERNEL_IDENTITY.kernel_id)
+  assert.equal(binding.transport.kind, "local-unix-ipc")
+  assert.equal(binding.kernel_process.executable_sha256, KERNEL_DIGEST)
+  assert.equal(binding.stable_across_capture, true)
   assert.ok(filesystem.files.size > 30)
 })
 
