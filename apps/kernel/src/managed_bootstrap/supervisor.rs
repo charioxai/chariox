@@ -234,6 +234,17 @@ fn spawn_kernel_with_handoff(
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if topology == ManagedProviderTopology::Path1 {
+        // `release` is verified before this launch path is reached. Resolve
+        // ordinary provider tools after that check and pass only PATH onward.
+        let provider_path = super::provider_path::resolve_login_path(&config.process_home)
+            .map_err(|error| supervisor_error(&format!("resolve Path-1 provider PATH: {error}")))?;
+        command
+            .env("PATH", provider_path)
+            .env_remove("LD_PRELOAD")
+            .env_remove("BASH_ENV")
+            .env_remove("ENV");
+    }
     if let Some(isolation_root) = isolation_root {
         command
             .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
@@ -1176,6 +1187,11 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
             process_home.display()
         );
+        std::fs::write(
+            process_home.join(".profile"),
+            format!("export PATH='{path_value}'\n"),
+        )
+        .expect("test login profile should set the provider PATH");
         let mut environment_names = PATH1_SHARED_HOST_SELECTOR_ENVS.to_vec();
         environment_names.extend([
             "HOME",

@@ -526,6 +526,10 @@ fn spawn_kernel(
             "disposable worker kernel requires path1 topology",
         ));
     }
+    // `release` was verified during `prepare`; user profile data contributes
+    // only the validated provider PATH to the kernel child.
+    let provider_path = super::provider_path::resolve_login_path(&config.process_home)
+        .map_err(|error| worker_error(format!("resolve worker provider PATH: {error}")))?;
     let home_caller = serde_json::to_string(&receipt.home_caller.lease_binding())
         .map_err(|error| worker_error(format!("encode home caller: {error}")))?;
     let mut command = Command::new(&release.kernel_binary);
@@ -545,12 +549,16 @@ fn spawn_kernel(
         .env("CHARIOX_LEASE_WORKER_HOME_CALLER", home_caller)
         .env(ACTIVITY_RECEIPT_ENV, &config.receipt_path)
         .env(MANAGED_PROVIDER_TOPOLOGY_ENV, topology.as_str())
+        .env("PATH", provider_path)
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_PATH")
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
         .env_remove("CHARIOX_DAEMON_ID")
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
         .env_remove("CHARIOX_DAEMON_SOCKET")
+        .env_remove("LD_PRELOAD")
+        .env_remove("BASH_ENV")
+        .env_remove("ENV")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -1464,6 +1472,11 @@ mod tests {
             "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
             process_home.display()
         );
+        fs::write(
+            process_home.join(".profile"),
+            format!("export PATH='{path_value}'\n"),
+        )
+        .expect("test login profile should set the provider PATH");
         let test_module = module_path!()
             .split_once("::")
             .map(|(_, path)| path)

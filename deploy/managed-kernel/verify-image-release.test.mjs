@@ -11,8 +11,9 @@ const imagePreparation = new URL("./prepare-hetzner-image.sh", import.meta.url)
 const SOURCE_COMMIT = "a".repeat(40)
 const SOURCE_TREE = "b".repeat(40)
 const TARGET = "x86_64-unknown-linux-gnu"
-const PATH1_HOME_EXEC_START = "ExecStart=/bin/bash --login -c 'exec /usr/local/bin/chariox-managed-bootstrap'"
-const PATH1_WORKER_EXEC_START = "ExecStart=/bin/bash --login -c 'exec /usr/local/bin/chariox-managed-bootstrap --disposable-worker'"
+const PATH1_HOME_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap"
+const PATH1_WORKER_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
+const PATH1_BOOTSTRAP_PATH = "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 const PATH1_SERVICE = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
 const WORKER_SERVICE = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
 const ARTIFACTS = [
@@ -235,20 +236,29 @@ test("Path-1 verification refuses to use the image's builder key as its trust ro
   assert.match(result.stderr, /must be supplied outside the image root/)
 })
 
-test("Path-1 verification accepts signed login ExecStart commands for home and worker services", async (context) => {
+test("Path-1 verification accepts signed direct ExecStart commands and static bootstrap PATHs", async (context) => {
   const fixture = await createReleaseFixture(context)
   const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
   assert.equal(result.status, 0, result.stderr)
 })
 
 for (const [description, fixtureOptions] of [
-  ["a non-Bash Path-1 shell", {
-    path1Service: PATH1_SERVICE.replace(PATH1_HOME_EXEC_START, PATH1_HOME_EXEC_START.replace("/bin/bash", "/bin/sh")),
+  ["a login shell that could read a provider-writable profile", {
+    path1Service: PATH1_SERVICE.replace(
+      PATH1_HOME_EXEC_START,
+      "ExecStart=/bin/bash --login -c 'exec /usr/local/bin/chariox-managed-bootstrap'",
+    ),
+  }],
+  ["a worker login shell that could read a provider-writable profile", {
+    workerService: WORKER_SERVICE.replace(
+      PATH1_WORKER_EXEC_START,
+      "ExecStart=/bin/bash --login -c 'exec /usr/local/bin/chariox-managed-bootstrap --disposable-worker'",
+    ),
   }],
   ["an extra Path-1 command", {
     path1Service: PATH1_SERVICE.replace(
       PATH1_HOME_EXEC_START,
-      PATH1_HOME_EXEC_START.replace("'exec /usr/local/bin/chariox-managed-bootstrap'", "'exec /usr/local/bin/chariox-managed-bootstrap; /tmp/untrusted'"),
+      `${PATH1_HOME_EXEC_START}; /tmp/untrusted`,
     ),
   }],
   ["an untrusted Path-1 executable", {
@@ -266,15 +276,30 @@ for (const [description, fixtureOptions] of [
   ["a worker command with an unexpected flag", {
     workerService: WORKER_SERVICE.replace(
       PATH1_WORKER_EXEC_START,
-      PATH1_WORKER_EXEC_START.replace("--disposable-worker'", "--disposable-worker --unexpected'"),
+      `${PATH1_WORKER_EXEC_START} --unexpected`,
     ),
+  }],
+  ["a user-writable home bootstrap PATH", {
+    path1Service: PATH1_SERVICE.replace(
+      PATH1_BOOTSTRAP_PATH,
+      "Environment=PATH=/home/chariox/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    ),
+  }],
+  ["a user-writable worker bootstrap PATH", {
+    workerService: WORKER_SERVICE.replace(
+      PATH1_BOOTSTRAP_PATH,
+      "Environment=PATH=/home/chariox/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    ),
+  }],
+  ["multiple home bootstrap PATH declarations", {
+    path1Service: `${PATH1_SERVICE}${PATH1_BOOTSTRAP_PATH}\n`,
   }],
 ]) {
   test(`Path-1 verification rejects ${description}`, async (context) => {
     const fixture = await createReleaseFixture(context, fixtureOptions)
     const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
     assert.notEqual(result.status, 0)
-    assert.match(result.stderr, /incompatible ExecStart/)
+    assert.match(result.stderr, /incompatible ExecStart|incompatible bootstrap PATH|overrides Environment=PATH/)
   })
 }
 
