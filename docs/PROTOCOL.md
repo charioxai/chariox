@@ -1903,14 +1903,17 @@ Workflow trigger and deployment direction:
   `description`, `disabled`, `focused`, and `states`: what a reader announces
   about the control, among `checked`, `not checked`, `mixed`, `pressed`,
   `not pressed`, `expanded`, `collapsed`, `selected`, `required`, `invalid`),
-  bounded to 2000. The Room browser controller's snapshot nodes gain the same
-  `states` (absent from older controllers). It holds what a
-  reader announces: ignored nodes, inline text boxes, unnamed layout wrappers
-  and text its parent's name already says (an aria-labelled button's text)
-  are left out, and their children hang from the nearest kept ancestor.
-  Nodes are depth first, so each follows its parent. Terminals present it so App
-  views and other pages can be read with a screen reader or keyboard; it
-  grants no input.
+  bounded to 2000 (`truncated` is also set when the controller's snapshot
+  reached its own 5000-node bound, which cuts the deepest nodes first). The
+  Room browser controller's snapshot nodes gain the same `states` (absent
+  from older controllers). It holds what a reader announces: ignored nodes,
+  inline text boxes, unnamed layout wrappers and text its parent's name
+  already says (an aria-labelled button's text) are left out, and their
+  children hang from the nearest kept ancestor. Nodes are in document order
+  (depth first over the Tab's accessibility tree), so each follows its parent
+  and hoisted text keeps its place. Terminals present it so App views and
+  other pages can be read with a screen reader or keyboard; it grants no
+  input.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

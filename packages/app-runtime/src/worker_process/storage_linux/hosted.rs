@@ -134,36 +134,35 @@ fn hosted_failed_update_restores_the_committed_data_snapshot() {
     let mut lease = context.lease("rollback", 1);
     fs::write(lease.data_path().join("todos"), b"committed").unwrap();
     lease.release().unwrap();
-    // A staged update starts on a snapshot of the committed data and writes.
-    let mut staged = context.staged("rollback", 2, 1);
-    assert_eq!(
-        fs::read(staged.data_path().join("todos")).unwrap(),
-        b"committed"
-    );
-    fs::write(staged.data_path().join("todos"), b"migrated").unwrap();
-    fs::write(staged.data_path().join("staged-only"), b"written by 2").unwrap();
-    staged.release().unwrap();
-    // The update failed: the committed generation starts on its own data.
+    // Two failed updates in a row: 2 starts on the committed data, 3 on the
+    // data 2 left; both write.
+    for generation in [2, 3] {
+        let mut staged = context.staged("rollback", generation, 1);
+        let data = staged.data_path();
+        if generation == 2 {
+            assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed");
+        }
+        fs::write(data.join("todos"), format!("written by {generation}")).unwrap();
+        fs::write(data.join(format!("only-{generation}")), b"uncommitted").unwrap();
+        staged.release().unwrap();
+    }
+    // The committed generation starts again on its own data.
     let mut restored = context.lease("rollback", 1);
-    assert_eq!(
-        fs::read(restored.data_path().join("todos")).unwrap(),
-        b"committed"
-    );
-    assert!(!restored.data_path().join("staged-only").exists());
+    let data = restored.data_path();
+    assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed");
+    assert!(!data.join("only-2").exists() && !data.join("only-3").exists());
     restored.release().unwrap();
     // An update that commits keeps what it wrote.
-    let mut staged = context.staged("rollback", 2, 1);
+    let mut staged = context.staged("rollback", 4, 1);
     fs::write(staged.data_path().join("todos"), b"migrated").unwrap();
     staged.release().unwrap();
-    let mut committed = context.lease("rollback", 2);
+    let mut committed = context.lease("rollback", 4);
     assert_eq!(
         fs::read(committed.data_path().join("todos")).unwrap(),
         b"migrated"
     );
     committed.release().unwrap();
-    println!(
-        "failed update restored the committed data snapshot; a committed update kept its writes"
-    );
+    println!("two failed updates restored the committed data snapshot; a committed update kept its writes");
 }
 #[test]
 #[ignore = "requires dedicated hosted Linux root helper and owned process cancellation"]

@@ -6,6 +6,8 @@
 // make Room commands fail with "already has an active" operation errors.
 // Protocol 351: the page reserves a private conversation panel and the Room
 // snapshot marks the App Tab with it, in desktop pixels, for the focus agent.
+// Protocol 357: the App Tab's accessibility outline lists every node after its
+// parent.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
 // installed, running App:
@@ -58,6 +60,19 @@ try {
   assert.equal(marked.installation_id, options.installation)
   assert.equal(marked.panel.agent_id, view.bound_agent_id ?? null)
   assert.deepEqual(await evaluate(view.target_id, `window.chariox.panel.release()`), { released: true })
+
+  const tabId = await roomAppTab()
+  const read = await client.send({ GetRoomEnvironmentTabAccessibility: { session_id: options.session, tab_id: tabId } })
+  const outline = read.RoomEnvironmentTabAccessibility?.accessibility
+  assert.ok(outline, `GetRoomEnvironmentTabAccessibility answered ${JSON.stringify(read)}`)
+  assert.deepEqual([outline.session_id, outline.tab_id], [options.session, tabId])
+  assert.ok(outline.nodes.length > 0, "the App view has no readable content")
+  const listed = new Set()
+  for (const node of outline.nodes) {
+    assert.ok(!node.parent_ref || listed.has(node.parent_ref), `${node.element_ref} comes before its parent`)
+    listed.add(node.element_ref)
+  }
+  evidence.steps.push({ step: "outline", tab_id: tabId, nodes: outline.nodes.length, truncated: outline.truncated })
   await roomApps((apps) => apps.every((app) => !app.panel))
   evidence.steps.push({ step: "panel", marked })
 
@@ -119,6 +134,15 @@ async function roomApps(ready) {
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw new Error("the Room never showed the expected App Tabs")
+}
+
+// The Room Tab id of this installation's App view.
+async function roomAppTab() {
+  const state = await client.send({ GetRoomEnvironmentState: { session_id: options.session } })
+  const tab = (state.RoomEnvironmentState?.environment?.tabs ?? [])
+    .find((candidate) => candidate.app?.installation_id === options.installation)
+  assert.ok(tab, "the Room has no Tab of this App")
+  return tab.tab_id
 }
 
 async function pageCall(targetId, tool, input) {
