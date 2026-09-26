@@ -135,7 +135,8 @@ export interface AppSdk {
   };
   readonly files: {
     atomicReplace(path: string, contents: string | Uint8Array, options?: CallOptions): Promise<{ bytesWritten: number }>;
-    snapshot(request: { name: string; consistency: 'quiescent' | 'crash_consistent' }, options?: CallOptions): Promise<{ snapshotId: string }>;
+    /** A kernel-kept copy of private files and state; `quiescent` holds this worker's other SDK writes meanwhile. */
+    snapshot(request: { name: string; consistency: 'quiescent' | 'crash_consistent' }, options?: CallOptions): Promise<{ snapshotId: string; consistency: 'quiescent' | 'crash_consistent'; files: number; bytes: number }>;
     /** Copies a granted file into private data, once per grant. */
     import(grantId: string, destination: string, options?: CallOptions): Promise<{ bytesWritten: number; name: string }>;
     /**

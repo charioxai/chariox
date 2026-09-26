@@ -8,6 +8,7 @@ mod authority;
 mod cancellation;
 mod file_grants;
 mod outcomes;
+mod snapshots;
 mod support;
 
 #[test]

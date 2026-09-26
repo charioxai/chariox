@@ -235,5 +235,8 @@ fn fs(error: private_fs::FsError) -> PrivateDataError {
     }
 }
 
+mod tree;
+pub use tree::{TreeCopy, TreeFile, TreeLimits};
+
 #[cfg(test)]
 mod tests;

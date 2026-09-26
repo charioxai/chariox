@@ -33,6 +33,7 @@ pub(crate) mod app_installation_operations;
 pub(crate) mod app_installation_staging;
 pub(crate) mod app_publisher_operations;
 pub(crate) mod app_publishers;
+pub(crate) mod app_snapshots;
 pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;

@@ -217,6 +217,11 @@ export default function register(chariox) {
     return { offered: name };
   });
 
+  // Every document write goes through the SDK (state and atomic replace),
+  // which a quiescent snapshot holds, so the copy is consistent.
+  chariox.tools.register('snapshot_documents', ({ name = 'documents' } = {}) =>
+    chariox.files.snapshot({ name, consistency: 'quiescent' }));
+
   chariox.tools.register('delete_document', async ({ id }) => {
     const deleted = await change(async docs => {
       const index = docs.findIndex(doc => doc.id === id);

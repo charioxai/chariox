@@ -17,6 +17,7 @@ async function fakeKernel() {
   // Files the owner "chose" in the trusted prompt, by grant id.
   const grants = new Map();
   const exported = [];
+  const snapshots = [];
   let answerPick = async () => ({ grantIds: [...grants.keys()] });
   const chariox = {
     AppError,
@@ -43,6 +44,10 @@ async function fakeKernel() {
         exported.push({ path, contents: await readFile(join(data, path), 'utf8') });
         return { operationId: 'file-export-1' };
       },
+      async snapshot(request) {
+        snapshots.push(request);
+        return { snapshotId: 'snapshot-1', consistency: request.consistency, files: 0, bytes: 0 };
+      },
     },
     host: { pickFile: () => answerPick() },
     log: { write: async () => null },
@@ -65,7 +70,7 @@ async function fakeKernel() {
   register(chariox);
   const call = (name, input = {}) => tools.get(name)(input);
   return {
-    call, data, grants, exported,
+    call, data, grants, exported, snapshots,
     setBeforeCommit: (hook) => { beforeCommit = hook; },
     setAnswerPick: (answer) => { answerPick = answer; },
     cleanup: () => rm(data, { recursive: true, force: true }),
@@ -226,6 +231,20 @@ test('export offers a copy named after the document', async () => {
     const doc = await kernel.call('create_document', { title: 'Q3 plan: draft/2', content: '# Q3' });
     assert.deepEqual(await kernel.call('export_document', { id: doc.id }), { offered: 'Q3 plan_ draft_2.md' });
     assert.deepEqual(kernel.exported, [{ path: 'exports/Q3 plan_ draft_2.md', contents: '# Q3' }]);
+  } finally {
+    await kernel.cleanup();
+  }
+});
+
+test('a snapshot is quiescent, since every document write goes through the SDK', async () => {
+  const kernel = await fakeKernel();
+  try {
+    assert.equal((await kernel.call('snapshot_documents', {})).consistency, 'quiescent');
+    await kernel.call('snapshot_documents', { name: 'before-import' });
+    assert.deepEqual(kernel.snapshots, [
+      { name: 'documents', consistency: 'quiescent' },
+      { name: 'before-import', consistency: 'quiescent' },
+    ]);
   } finally {
     await kernel.cleanup();
   }

@@ -48,6 +48,7 @@ fn build(
     {
         return Err(AppWorkerError::Identity);
     }
+    let fence = Arc::new(tokio::sync::RwLock::new(()));
     Ok(BackendBroker {
         state: AppStorageBroker::new(
             store.clone(),
@@ -88,7 +89,16 @@ fn build(
             data.clone(),
             package,
         ),
+        snapshots: super::app_snapshot_broker::AppSnapshotBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.clone(),
+            admission.clone(),
+            data.clone(),
+            fence.clone(),
+        ),
         files: AppFilesBroker::new(store, owner, catalog, admission, data),
+        fence,
     })
 }
 #[derive(Clone)]
@@ -99,6 +109,9 @@ struct BackendBroker {
     files: AppFilesBroker,
     file_grants: super::app_file_grant_broker::AppFileGrantBroker,
     http: AppHttpBroker,
+    snapshots: super::app_snapshot_broker::AppSnapshotBroker,
+    /// SDK writes share it; a quiescent snapshot holds it alone.
+    fence: Arc<tokio::sync::RwLock<()>>,
 }
 impl Broker for BackendBroker {
     fn take_response_guard(
@@ -125,11 +138,20 @@ impl Broker for BackendBroker {
                     || name.starts_with("schedule.")
                     || name == "migration.step" =>
                 {
+                    let _write = delegate.fence.read().await;
                     delegate.state.dispatch(request).await
                 }
                 name if name.starts_with("http.") => delegate.http.dispatch(request).await,
-                "files.atomic_replace" => delegate.files.dispatch(request).await,
-                "host.pick_file" | "host.pick_file_status" | "files.import" | "files.export" => {
+                "files.atomic_replace" => {
+                    let _write = delegate.fence.read().await;
+                    delegate.files.dispatch(request).await
+                }
+                "files.import" => {
+                    let _write = delegate.fence.read().await;
+                    delegate.file_grants.dispatch(request).await
+                }
+                "files.snapshot" => delegate.snapshots.dispatch(request).await,
+                "host.pick_file" | "host.pick_file_status" | "files.export" => {
                     delegate.file_grants.dispatch(request).await
                 }
                 "log.write" => delegate.logs.dispatch(request).await,

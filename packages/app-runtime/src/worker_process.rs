@@ -10,7 +10,9 @@
 
 mod monitor;
 mod private_data;
-pub use private_data::{PreparedDataReplace, PrivateData, PrivateDataError};
+pub use private_data::{
+    PreparedDataReplace, PrivateData, PrivateDataError, TreeCopy, TreeFile, TreeLimits,
+};
 #[cfg(target_os = "linux")]
 mod platform_linux;
 mod record;

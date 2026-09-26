@@ -195,6 +195,28 @@ it, or when the App is updated or uninstalled. A file name with control or
 invisible format characters (such as bidi overrides) is refused with
 `INVALID_ARGUMENT`.
 
+`files.snapshot {name, consistency}` (no capability needed) copies the
+installation's private files, structured state and pending wakes into the
+kernel's snapshot store, outside App data. The reply is `{snapshotId,
+consistency, files, bytes}`. `name` is 1 to 64 characters from `A-Za-z0-9._-`,
+and `consistency` is the label the snapshot keeps:
+- `quiescent`: the kernel holds this worker's other SDK writes (`state.*`,
+  `events.*`, `schedule.*`, `files.atomic_replace`, `files.import`) until the
+  copy is done. The App must pause its own `node:fs` writes while it awaits the
+  call.
+- `crash_consistent`: nothing is held, so files may be copied mid-write.
+
+Only the active generation can take one (`CONFLICT` while an update is
+staged), and an installation's snapshots run one at a time. The copy follows
+no links and skips special and hard-linked files, and entries that vanish
+while it walks. A failed copy is `STORAGE_UNAVAILABLE` (retryable when it may
+pass on retry) or `LIMIT_EXCEEDED`.
+It is bounded like the data volume (10,000 files, 512 MiB) and needs host free
+space beyond that (`LIMIT_EXCEEDED`). The kernel keeps the newest two per
+installation. Outbox, inbox and validation receipts are never part of a
+snapshot, so restoring one cannot replay or forget delivered work. Restoring
+a snapshot into an installation is a kernel operation, not an App call.
+
 `validation.request`, `host.pick_file` and `outputs.request` return durable pending references when
 waiting for human input or model output. They must not retain a worker request
 slot for the duration of that wait. App-specific meaning stays in App handlers
