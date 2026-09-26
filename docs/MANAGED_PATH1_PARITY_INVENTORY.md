@@ -46,9 +46,24 @@ create/bootstrap, child-worker allocation/bootstrap, cloud-init, Web browser
 projection, and launch-plan code: 61 passed, 0 failed. These do not replace
 deployed Cloud or fresh-machine evidence.
 
-The next source action is to close the browser read-action evidence gap needed
-for live three-agent Drill E, then prove the provider and client behavior in
-the real ordinary-versus-Path-1 campaign.
+The 2026-09-26 follow-up on production source `64c8e96888a7832693f0c5e28f5a2cefeb34a15b`
+requires explicit installer topology and rejects conflicting enabled or active
+bootstrap roles during image preparation. The managed-image Node suite passes
+16/16; signature and release-activation suites pass 30/30. The full upgrade
+fixture suite passes 54/54 as Linux root in a disposable cached Node image,
+with one CPU, 1 GiB memory, no network, and a read-only source mount. That suite
+requires Linux-root execution; the non-root macOS invocation fails the root
+guard before exercising upgrade behavior. No real host service, release, VM,
+or enrollment was changed by these fixture tests.
+
+The status/find read-action implementation is now present in
+`apps/kernel/src/runtime/state/tool_dispatch/slice/controller_browser.rs`,
+including inline actor/tab/history tests. The Drill E verifier's focused Node
+tests pass 3/3 on the 2026-09-26 integration source. This closes neither the
+exact-head Rust execution gate nor the live three-agent concurrency gate.
+The next action is to verify the implementation and retain live overlapping
+read and mutation evidence, then prove provider and client behavior in the
+ordinary-versus-Path-1 campaign.
 The remaining acceptance is a residue-free approved-image rebuild
 and the full exact-head ordinary-versus-Path-1 matrix, shutdown triggers,
 Browser/Computer and Web/TUI parity, cleanup, and soak. `MP-01` through `MP-11`
