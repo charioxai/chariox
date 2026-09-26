@@ -1367,7 +1367,9 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
         assert_eq!(fields.next(), Some("FROM"));
         let first = fields.next().expect("FROM should name a base image");
         let image = if first.starts_with("--platform=") {
-            fields.next().expect("FROM platform should be followed by an image")
+            fields
+                .next()
+                .expect("FROM platform should be followed by an image")
         } else {
             first
         };
