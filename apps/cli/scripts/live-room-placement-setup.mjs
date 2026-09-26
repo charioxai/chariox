@@ -307,6 +307,12 @@ export function parseArgs(argv) {
   return options
 }
 
+export function assertPlacementRelayReady(status, selectionMode) {
+  if (selectionMode === LOCAL_ONLY_SELECTION_MODE) return
+  assert.equal(selectionMode, "full_matrix", "unsupported Room placement selection mode")
+  assert.equal(status.connected, true, "selected home kernel is not connected to its relay")
+}
+
 async function createPlacementSetup(options, LocalIpcClient, requests) {
   const configPath = await preparePrivateConfigPath(options.configPath)
   const client = new LocalIpcClient(options.homeUrl)
@@ -317,7 +323,7 @@ async function createPlacementSetup(options, LocalIpcClient, requests) {
   try {
     const status = responseVariant(await sendBounded(client,
       requests.relayStatusRequest(), remaining(deadline)), "RelayStatus").status
-    assert.equal(status.connected, true, "selected home kernel is not connected to its relay")
+    assertPlacementRelayReady(status, options.selectionMode)
     const homeKernel = {
       url: options.homeUrl,
       kernelId: requireText(status.daemon_id, "RelayStatus.daemon_id"),

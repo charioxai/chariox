@@ -3,6 +3,7 @@ import test from "node:test"
 
 import { ROOM_PLACEMENT_ROWS } from "./live-room-placement-matrix.mjs"
 import {
+  assertPlacementRelayReady,
   buildPlacementRows,
   cleanupOwnedPlacement,
   parseArgs,
@@ -201,6 +202,20 @@ test("local-only command needs no remote worker identifiers", () => {
     /only used by the full matrix/)
   assert.throws(() => parseArgs(["--cleanup", "--local-only", "--config", "/tmp/config.json"]),
     /only valid with --create/)
+})
+
+test("local-only setup accepts a disconnected relay while the remote matrix does not", () => {
+  const disconnected = {
+    connected: false,
+    daemon_id: "home-kernel",
+    machine_id: "home-machine",
+  }
+  assert.doesNotThrow(() => assertPlacementRelayReady(disconnected, "local_only"))
+  assert.throws(() => assertPlacementRelayReady(disconnected, "full_matrix"),
+    /not connected to its relay/)
+  assert.doesNotThrow(() => assertPlacementRelayReady({ ...disconnected, connected: true }, "full_matrix"))
+  assert.throws(() => assertPlacementRelayReady({ ...disconnected, connected: true }, "unknown"),
+    /unsupported Room placement selection mode/)
 })
 
 test("cleanup plan is restricted to invocation-owned IDs and refuses an injected foreign ID", () => {
