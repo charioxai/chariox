@@ -27,19 +27,44 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
     prompt: String,
     attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
 ) -> Result<String, DaemonError> {
+    #[cfg(test)]
+    super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+        &dispatch.prompt_id,
+        "submission_reconciliation_check_started",
+    );
     if remote_prompt_reconciliation_pending(state, dispatch)? {
         return Err(remote_prompt_reconciliation_pending_error(
             dispatch,
             "a previous submission has no reconciled worker receipt",
         ));
     }
+    #[cfg(test)]
+    super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+        &dispatch.prompt_id,
+        "submission_reconciliation_clear",
+    );
     ensure_remote_prompt_dispatching(state, dispatch)?;
+    #[cfg(test)]
+    super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+        &dispatch.prompt_id,
+        "submission_dispatching_verified",
+    );
     let mut attempt = 0_u32;
     let mut provider_credential_retry_used = false;
     let mut binding_refresh_used = false;
     let transport_retry_started_at = tokio::time::Instant::now();
+    #[cfg(test)]
+    super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+        &dispatch.prompt_id,
+        "submission_credential_resolution_started",
+    );
     let mut provider_launch_credential =
         remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
+    #[cfg(test)]
+    super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+        &dispatch.prompt_id,
+        "submission_credential_ready",
+    );
     loop {
         if let Some(error) = remote_prompt_dispatch_unavailable_slice_error(state, dispatch) {
             return Err(error);
@@ -49,6 +74,11 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 session_id: dispatch.session_id.clone(),
             });
         }
+        #[cfg(test)]
+        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+            &dispatch.prompt_id,
+            "worker_attempt_started",
+        );
         let outcome = state
             .submit_remote_prompt_attempt_with_outcome(
                 dispatch,
@@ -58,6 +88,11 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 "unexpected remote prompt response",
             )
             .await;
+        #[cfg(test)]
+        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+            &dispatch.prompt_id,
+            "worker_attempt_resolved",
+        );
         match outcome {
             RemotePromptSubmissionOutcome::Accepted(provider_run_id) => {
                 // Dispatch settlement clears the hold only after its durable ACK write.
@@ -771,6 +806,10 @@ impl KernelRuntimeState {
         unexpected_response_message: &'static str,
     ) -> RemotePromptSubmissionAttempt {
         let agent_id = dispatch.agent_id.clone();
+        #[cfg(test)]
+        let prompt_id = dispatch.prompt_id.clone();
+        #[cfg(test)]
+        let closure_prompt_id = prompt_id.clone();
         let expected_leased_agent_id = dispatch.leased_agent_id.clone();
         let hidden_system_context = dispatch.hidden_system_context.clone();
         let workflow_context = dispatch.workflow_context.clone();
@@ -778,10 +817,20 @@ impl KernelRuntimeState {
         let callback_state = self.clone();
         let transport_started = std::sync::Arc::new(AtomicBool::new(false));
         let mark_transport_started = std::sync::Arc::clone(&transport_started);
+        #[cfg(test)]
+        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+            &prompt_id,
+            "leased_agent_lane_wait_started",
+        );
         let result = self.with_current_remote_extension_manifest(
             &agent_id,
             &expected_leased_agent_id,
             move |agent, remote_execution, manifest| async move {
+                #[cfg(test)]
+                super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                    &closure_prompt_id,
+                    "leased_agent_lane_acquired",
+                );
                 if !remote_execution.relay_peer_protocol_compatible() {
                     return Err(DaemonError::LocalTransport {
                         operation: "dispatch remote agent prompt",
@@ -841,20 +890,46 @@ impl KernelRuntimeState {
                 let relay_state = callback_state.connected_relay_state_for_config(&config).await;
                 match relay_state {
                     Some(relay_state) => {
+                        #[cfg(test)]
+                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                            &closure_prompt_id,
+                            "connected_relay_selected",
+                        );
                         mark_transport_started.store(true, Ordering::Relaxed);
-                        crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
+                        #[cfg(test)]
+                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                            &closure_prompt_id,
+                            "connected_peer_enqueue_started",
+                        );
+                        let waiter = crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
                             &config,
                             &relay_state,
                             target,
                             request,
                             crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
                         )
-                        .await
+                        .await?;
+                        #[cfg(test)]
+                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                            &closure_prompt_id,
+                            "connected_peer_enqueued",
+                        );
+                        Ok(waiter)
                     }
                     None => {
+                        #[cfg(test)]
+                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                            &closure_prompt_id,
+                            "temporary_relay_selected",
+                        );
                         mark_transport_started.store(true, Ordering::Relaxed);
                         // Temporary sockets have no shared FIFO sender with manifest updates, so
                         // keep this fallback serialized through its response.
+                        #[cfg(test)]
+                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                            &closure_prompt_id,
+                            "temporary_peer_request_started",
+                        );
                         let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                             &config,
                             target,
@@ -862,6 +937,11 @@ impl KernelRuntimeState {
                             crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
                         )
                         .await?;
+                        #[cfg(test)]
+                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                            &closure_prompt_id,
+                            "temporary_peer_request_returned",
+                        );
                         Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready(
                             response,
                         ))
@@ -871,16 +951,29 @@ impl KernelRuntimeState {
         )
         .await;
         let result = match result {
-            Ok(waiter) => match waiter.wait().await {
-                Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                    provider_run_id, ..
-                }) => Ok(provider_run_id),
-                Ok(other) => Err(DaemonError::LocalTransport {
-                    operation: "submit remote prepared prompt",
-                    message: format!("{unexpected_response_message}: {other:?}"),
-                }),
-                Err(error) => Err(error),
-            },
+            Ok(waiter) => {
+                #[cfg(test)]
+                super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                    &prompt_id,
+                    "peer_response_wait_started",
+                );
+                let result = match waiter.wait().await {
+                    Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                        provider_run_id, ..
+                    }) => Ok(provider_run_id),
+                    Ok(other) => Err(DaemonError::LocalTransport {
+                        operation: "submit remote prepared prompt",
+                        message: format!("{unexpected_response_message}: {other:?}"),
+                    }),
+                    Err(error) => Err(error),
+                };
+                #[cfg(test)]
+                super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                    &prompt_id,
+                    "peer_response_wait_returned",
+                );
+                result
+            }
             Err(error) => Err(error),
         };
         RemotePromptSubmissionAttempt {

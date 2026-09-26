@@ -155,8 +155,17 @@ fn cancellation_successor_state_tags(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .contains_key(&(session_id.to_string(), agent_id.to_string()));
+    let dispatch_stages = prompt
+        .as_ref()
+        .filter(|prompt| prompt.id() == successor_prompt_id)
+        .map(|prompt| {
+            super::super::remote_prompt_dispatch_execution_runtime::remote_prompt_dispatch_test_stages(
+                prompt.id(),
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "successor_active={successor_active},active_cancelling={cancelling},active_accepted={},active_dispatching={},active_delivered={},reconciliation_pending={},recovery_claim_held={claim_held}",
+        "successor_active={successor_active},active_cancelling={cancelling},active_accepted={},active_dispatching={},active_delivered={},reconciliation_pending={},recovery_claim_held={claim_held},dispatch_stages=[{dispatch_stages}]",
         phase == Some(crate::session::DurablePromptDeliveryPhase::Accepted),
         phase == Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
         phase == Some(crate::session::DurablePromptDeliveryPhase::Delivered),
