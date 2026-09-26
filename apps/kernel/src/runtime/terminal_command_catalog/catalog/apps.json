@@ -232,7 +232,7 @@
       {
         "id": "app-file",
         "label": "file",
-        "description": "Answer an App's file request",
+        "description": "Answer an App's file request or offer",
         "value": "/app file ",
         "surfaces": [
           "session",
@@ -244,6 +244,16 @@
             "label": "grant",
             "description": "Share local files with an App that asked for them",
             "value": "/app file grant ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-file-save",
+            "label": "save",
+            "description": "Save a file an App offered",
+            "value": "/app file save ",
             "surfaces": [
               "session",
               "waiting_room"

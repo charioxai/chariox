@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn publisher_review_wire_preserves_exact_revisions_and_excludes_client_consent() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 354);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 355);
     let requests = vec![
         LocalDaemonRequest::BeginAppPublisherEnrollment(BeginAppPublisherEnrollmentRequest {
             session_id: "session".into(),

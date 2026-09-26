@@ -129,7 +129,7 @@ impl Broker for BackendBroker {
                 }
                 name if name.starts_with("http.") => delegate.http.dispatch(request).await,
                 "files.atomic_replace" => delegate.files.dispatch(request).await,
-                "host.pick_file" | "host.pick_file_status" | "files.import" => {
+                "host.pick_file" | "host.pick_file_status" | "files.import" | "files.export" => {
                     delegate.file_grants.dispatch(request).await
                 }
                 "log.write" => delegate.logs.dispatch(request).await,

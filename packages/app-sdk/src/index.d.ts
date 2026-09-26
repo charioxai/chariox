@@ -138,6 +138,10 @@ export interface AppSdk {
     snapshot(request: { name: string; consistency: 'quiescent' | 'crash_consistent' }, options?: CallOptions): Promise<{ snapshotId: string }>;
     /** Copies a granted file into private data, once per grant. */
     import(grantId: string, destination: string, options?: CallOptions): Promise<{ bytesWritten: number; name: string }>;
+    /**
+     * Offers the owner a copy of one private file (at most 512 KiB); they save it
+     * from their terminal or decline. Requires `externalFiles: ["user_selected"]`.
+     */
     export(path: string, options?: CallOptions): Promise<{ operationId: string }>;
   };
   readonly http: {

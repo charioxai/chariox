@@ -29,6 +29,7 @@ pub enum LocalDaemonRequest {
     ListAppInboxRoutes(AppWorkerRequest),
     TestAppInboxRoute(TestAppInboxRouteRequest),
     GrantAppFile(GrantAppFileRequest),
+    SaveAppFileExport(SaveAppFileExportRequest),
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
     DetachFromSession(DetachFromSessionRequest),

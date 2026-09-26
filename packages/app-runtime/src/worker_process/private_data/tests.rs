@@ -190,3 +190,23 @@ fn failure_after_rename_reports_uncertainty_and_preserves_published_file() {
     assert_eq!(fs::read(f.path.join("value")).unwrap(), b"new");
     assert_eq!(fs::read_dir(&f.path).unwrap().count(), 1);
 }
+
+#[test]
+fn reads_follow_neither_symlinks_nor_hard_links_and_stay_bounded() {
+    let f = Fixture::new();
+    let outside = Fixture::new();
+    fs::write(outside.path.join("valuable"), b"secret").unwrap();
+    symlink(&outside.path, f.path.join("alias")).unwrap();
+    symlink(outside.path.join("valuable"), f.path.join("link")).unwrap();
+    fs::hard_link(outside.path.join("valuable"), f.path.join("hard")).unwrap();
+    fs::create_dir(f.path.join("nested")).unwrap();
+    fs::write(f.path.join("nested/notes.md"), b"# Notes").unwrap();
+    assert_eq!(f.data().read_file("nested/notes.md", 16).unwrap(), b"# Notes");
+    assert_eq!(
+        f.data().read_file("nested/notes.md", 3),
+        Err(PrivateDataError::Invalid)
+    );
+    for path in ["alias/valuable", "link", "hard", "nested", "../valuable", "missing"] {
+        assert!(f.data().read_file(path, 64).is_err(), "{path:?}");
+    }
+}

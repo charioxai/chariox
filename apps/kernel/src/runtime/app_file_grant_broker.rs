@@ -1,10 +1,13 @@
-//! SDK `host.pick_file`, `host.pick_file_status` and `files.import`, for Apps
-//! whose signed manifest declares `externalFiles: ["user_selected"]`. A pick
-//! returns a pending reference at once; the owner answers through a trusted
-//! kernel prompt. An import copies one granted file into private data, once.
+//! SDK `host.pick_file`, `host.pick_file_status`, `files.import` and
+//! `files.export`, for Apps whose signed manifest declares
+//! `externalFiles: ["user_selected"]`. A pick or an export returns a pending
+//! reference at once; the owner answers through a trusted kernel prompt. An
+//! import copies one granted file into private data, once; an export offers a
+//! copy of one private file for the owner to save.
 use super::app_operation_budget::AppOperationBudget;
 use crate::durable_state::{
-    app_file_grants::{FileGrantCommand, FilePick, PickState, MAX_FILES, PICK_MS},
+    app_file_exports::{FileExport, FileExportCommand, FileExportReply, OFFER_MS},
+    app_file_grants::{FileGrantCommand, FilePick, PickState, MAX_FILES, MAX_FILE_BYTES, PICK_MS},
     DurableKernelStateStore,
 };
 use chariox_app_package::{ExternalFileAccess, VerifiedPackage};
@@ -42,6 +45,12 @@ struct Pick {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Status {
     operation_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Export {
+    path: String,
 }
 
 #[derive(Deserialize)]
@@ -92,6 +101,7 @@ impl AppFileGrantBroker {
                 "host.pick_file" => service.pick(request.params),
                 "host.pick_file_status" => service.status(request.params),
                 "files.import" => service.import(request.params, budget),
+                "files.export" => service.export(request.params),
                 _ => Err(error("METHOD_UNAVAILABLE", false)),
             }
         })
@@ -201,6 +211,46 @@ impl AppFileGrantBroker {
     }
 }
 
+impl AppFileGrantBroker {
+    fn export(&self, params: Value) -> Result<Value, RemoteError> {
+        let request: Export =
+            serde_json::from_value(params).map_err(|_| error("INVALID_ARGUMENT", false))?;
+        let name = request
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        // The name is shown in the owner's trusted prompt and suggested as
+        // the saved file's name: nothing may reorder or hide what it reads.
+        if !displayable(&name) {
+            return Err(error("INVALID_ARGUMENT", false));
+        }
+        let contents = self
+            .data
+            .read_file(&request.path, MAX_FILE_BYTES)
+            .map_err(|_| error("INVALID_ARGUMENT", false))?;
+        let export = FileExport {
+            operation_id: format!("file-export-{:032x}", rand::random::<u128>()),
+            owner: self.owner.clone(),
+            installation: self.installation().to_owned(),
+            generation: self.catalog.generation(),
+            name,
+            size: contents.len() as u64,
+            state: "pending".into(),
+            expires_ms: crate::session::unix_epoch_ms() + OFFER_MS,
+        };
+        match self
+            .store
+            .app_file_export(FileExportCommand::Create { export, contents })
+            .map_err(|code| error(code, code == "STORAGE_UNAVAILABLE"))?
+        {
+            FileExportReply::Export(export) => Ok(json!({"operationId": export.operation_id})),
+            _ => Err(error("STORAGE_UNAVAILABLE", true)),
+        }
+    }
+}
+
 fn reply(pick: &FilePick) -> Value {
     debug_assert!(pick.grants.len() <= MAX_FILES);
     json!({
@@ -244,6 +294,42 @@ impl AppFileGrantBroker {
             admission,
             data,
             user_selected,
+        }
+    }
+}
+
+/// No control or invisible format characters (bidi overrides, zero-width
+/// characters, byte order marks), which could make a name read differently.
+fn displayable(name: &str) -> bool {
+    !name.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '\u{00ad}'
+                    | '\u{061c}'
+                    | '\u{180e}'
+                    | '\u{200b}'..='\u{200f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2060}'..='\u{206f}'
+                    | '\u{feff}'
+                    | '\u{fff9}'..='\u{fffb}'
+            )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn offered_names_cannot_hide_or_reorder_text() {
+        assert!(super::displayable("Plan (v2).md"));
+        assert!(super::displayable("résumé 計画.md"));
+        for name in [
+            "invoice\u{202e}fdp.exe",
+            "a\u{200b}b.md",
+            "\u{feff}x.md",
+            "a\nb.md",
+        ] {
+            assert!(!super::displayable(name), "{name:?}");
         }
     }
 }

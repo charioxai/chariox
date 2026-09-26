@@ -158,6 +158,12 @@ $("import-docs").addEventListener("click", async () => {
   setTimeout(() => { button.textContent = "Import"; button.disabled = false }, 8000)
 })
 
+$("export").addEventListener("click", async () => {
+  if (!current) return
+  const { offered } = await call("export_document", { id: current.id })
+  say(`Save ${offered} from the prompt in your terminal.`)
+})
+
 $("new-doc").addEventListener("click", async () => {
   if (dirty && pendingOpen !== "new") {
     pendingOpen = "new"

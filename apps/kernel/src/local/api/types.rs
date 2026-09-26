@@ -122,4 +122,6 @@ pub use workspace::*;
 /// `RemoveAppInboxRoute`, `ListAppInboxRoutes` and `TestAppInboxRoute`.
 /// Version 354 adds user-selected file grants: `GrantAppFile` answers an App's
 /// `host.pick_file` request with the chosen files (`AppFileGranted`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 354;
+/// Version 355 adds `SaveAppFileExport`: the owner takes a copy of a file an
+/// App offered with `files.export` (`AppFileExport`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 355;

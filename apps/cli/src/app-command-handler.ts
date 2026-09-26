@@ -1,6 +1,6 @@
-import { readFile, stat } from "node:fs/promises"
+import { open, readFile, rm, stat } from "node:fs/promises"
 import { basename } from "node:path"
-import { grantAppFileRequest } from "@chariox/kernel-client/ipc-requests"
+import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-client/ipc-requests"
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 import type { AppDevLoop } from "./app-dev-loop.js"
@@ -58,10 +58,34 @@ export async function handleAppSlashCommand(
     // Tokenization preserves quoted local paths; only each file's name and
     // bytes are sent, never its path.
     const [, action, operation, ...paths] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
-    if (action !== "grant" || !operation || paths.length === 0 || paths.length > 8) {
-      throw new Error('usage: /app file grant OPERATION "FILE" ["FILE"...]')
-    }
     const session = deps.currentAppSessionId?.()
+    if (action === "save" && operation && paths.length === 1 && paths[0]) {
+      if (!session) throw new Error("Attach to the session showing the file offer")
+      // Create the destination first (never replacing a file), so a bad path
+      // fails before the offer is taken.
+      const output = await open(paths[0], "wx")
+      try {
+        const response = await deps.sendAppRequest(saveAppFileExportRequest(session, operation))
+        const offered = response.AppFileExport as { name?: string; contents_base64?: string } | undefined
+        if (typeof offered?.contents_base64 !== "string") {
+          const code = (response.AppRequestFailed as { code?: string } | undefined)?.code
+          throw new Error(code === "conflict" ? "That file offer was declined or has ended"
+            : code === "not_found" ? "No such file offer for you" : "Saving the file failed")
+        }
+        await output.writeFile(Buffer.from(offered.contents_base64, "base64"))
+        await output.close()
+        // The prompt closes now; the offer can still be taken until it ends.
+        deps.appendNotice(`Saved ${offered.name ?? "the file"} to ${paths[0]}. To save it again before the offer ends: /app file save ${operation} "PATH"`)
+      } catch (error) {
+        await output.close().catch(() => {})
+        await rm(paths[0], { force: true })
+        throw error
+      }
+      return
+    }
+    if (action !== "grant" || !operation || paths.length === 0 || paths.length > 8) {
+      throw new Error('usage: /app file grant OPERATION "FILE" ["FILE"...] | /app file save OPERATION "PATH"')
+    }
     if (!session) throw new Error("Attach to the session showing the file request")
     const files = []
     let total = 0

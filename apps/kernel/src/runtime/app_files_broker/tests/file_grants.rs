@@ -134,3 +134,57 @@ fn another_installations_pick_is_not_visible() {
         peer.close().await;
     });
 }
+
+#[test]
+fn an_export_offers_a_copy_of_one_private_file_for_the_owner_to_save_once() {
+    let fixture = Fixture::new(Mode::Ready);
+    fixture.runtime.block_on(async {
+        let mut peer = TestPeer::start(fixture.service());
+        peer.replace("write", b"# Plan").await;
+        peer.response().await.1.unwrap();
+        peer.close().await;
+
+        let mut peer = TestPeer::start_with(broker(&fixture, true));
+        for path in ["../fixture-file", "missing"] {
+            peer.send("bad", "files.export", serde_json::json!({"path": path}))
+                .await;
+            assert_eq!(
+                peer.response().await.1.unwrap_err().code,
+                "INVALID_ARGUMENT"
+            );
+        }
+        peer.send(
+            "export",
+            "files.export",
+            serde_json::json!({"path": "fixture-file"}),
+        )
+        .await;
+        let operation = peer.response().await.1.unwrap()["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        peer.close().await;
+
+        let store = fixture.store.clone();
+        let saved = tokio::task::spawn_blocking(move || {
+            store.app_file_export(
+                crate::durable_state::app_file_exports::FileExportCommand::Save {
+                    owner: "alice".into(),
+                    operation_id: operation,
+                    now_ms: crate::session::unix_epoch_ms(),
+                },
+            )
+        })
+        .await
+        .unwrap();
+        let Ok(crate::durable_state::app_file_exports::FileExportReply::Saved { name, contents }) =
+            saved
+        else {
+            panic!("the owner saves the offered copy");
+        };
+        assert_eq!(
+            (name.as_str(), contents.as_slice()),
+            ("fixture-file", b"# Plan".as_slice())
+        );
+    });
+}
