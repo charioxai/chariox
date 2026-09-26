@@ -196,6 +196,22 @@ impl KernelRuntimeState {
             if let Some(panels) = &batch.panels {
                 self.publish_app_tabs(&session_id, &views, panels).await;
             }
+            // A view's first call means its document loaded: project the
+            // Room again so the Tab shows the App's title and URL, not the
+            // blank page it had when it opened.
+            if batch
+                .calls
+                .iter()
+                .any(|call| views.first_call(&session_id, &call.target_id))
+            {
+                let state = self.clone();
+                let session = session_id.clone();
+                tokio::spawn(async move {
+                    let _ = state
+                        .reconcile_browser_controller_environment(&session)
+                        .await;
+                });
+            }
             for call in batch.calls {
                 let state = self.clone();
                 let session = session_id.clone();
