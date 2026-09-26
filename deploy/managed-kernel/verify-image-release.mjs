@@ -8,6 +8,10 @@ import { basename, join, relative, resolve, sep } from "node:path"
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const MANAGED_BUILD_TARGET = "x86_64-unknown-linux-gnu"
 const SLICE_RELAY_PATH = "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay"
+const SHARED_HOST_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap"
+const PATH1_HOME_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap"
+const PATH1_WORKER_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
+const PATH1_BOOTSTRAP_PATH = "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 const EXPECTED_ARTIFACTS = new Map([
   ["chariox-kernel", { path: "/usr/local/bin/chariox-kernel", type: "file" }],
   ["chariox-managed-bootstrap", { path: "/usr/local/bin/chariox-managed-bootstrap", type: "file" }],
@@ -378,10 +382,27 @@ async function verifyImageRelease(
       .toString("utf8")
     const lines = service.split(/\r?\n/)
     const execStarts = lines.filter((line) => line.startsWith("ExecStart="))
-    if (execStarts.length !== 1 || execStarts[0] !== "ExecStart=/usr/local/bin/chariox-managed-bootstrap") {
+    const expectedExecStart = selectedTopology === "path1" ? PATH1_HOME_EXEC_START : SHARED_HOST_EXEC_START
+    if (execStarts.length !== 1 || execStarts[0] !== expectedExecStart) {
       fail(`selected ${selectedTopology} managed bootstrap service has an incompatible ExecStart`)
     }
     if (selectedTopology === "path1") {
+      const workerServiceName = "chariox-disposable-worker-bootstrap.service"
+      if (!seen.has(workerServiceName)) {
+        fail("release does not declare the selected Path-1 disposable-worker service")
+      }
+      const workerServicePath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(workerServiceName).path)
+      const workerService = (await readRegularFile(workerServicePath, "Path-1 disposable-worker service", 64 * 1024))
+        .toString("utf8")
+      const workerLines = workerService.split(/\r?\n/)
+      const workerExecStarts = workerLines.filter((line) => line.startsWith("ExecStart="))
+      if (workerExecStarts.length !== 1 || workerExecStarts[0] !== PATH1_WORKER_EXEC_START) {
+        fail("selected Path-1 disposable-worker service has an incompatible ExecStart")
+      }
+      const workerPaths = workerLines.filter((line) => line.startsWith("Environment=PATH="))
+      if (workerPaths.length !== 1 || workerPaths[0] !== PATH1_BOOTSTRAP_PATH) {
+        fail("selected Path-1 disposable-worker service has an incompatible bootstrap PATH")
+      }
       for (const [name, required] of [
         ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"],
         ["CHARIOX_MANAGED_BOOTSTRAP_PATH", "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json"],
@@ -389,6 +410,7 @@ async function verifyImageRelease(
         ["HOME", "Environment=HOME=/home/chariox"],
         ["CHARIOX_HOME", "Environment=CHARIOX_HOME=/home/chariox/.chariox"],
         ["CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock"],
+        ["PATH", PATH1_BOOTSTRAP_PATH],
       ]) {
         const assignments = lines.filter((line) => line.startsWith(`Environment=${name}=`))
         if (assignments.length !== 1 || assignments[0] !== required) {

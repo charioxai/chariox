@@ -582,7 +582,8 @@ test("managed image validation requires an explicit topology and preserves both 
   assert.match(path1ManagedService, /Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=\/var\/lib\/chariox\/managed-bootstrap\.json/)
   assert.match(path1ManagedService, /Environment=HOME=\/home\/chariox/)
   assert.match(path1ManagedService, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
-  assert.match(path1ManagedService, /ExecStart=\/usr\/local\/bin\/chariox-managed-bootstrap\n/)
+  assert.match(path1ManagedService, /^Environment=PATH=\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin$/m)
+  assert.match(path1ManagedService, /^ExecStart=\/usr\/local\/bin\/chariox-managed-bootstrap$/m)
   assert.doesNotMatch(path1ManagedService, /^UMask=/m, "Path-1 must use systemd's ordinary system-unit umask")
   for (const forbidden of [
     "CHARIOX_MANAGED_PROVIDER_ISOLATION",

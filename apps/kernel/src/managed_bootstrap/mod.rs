@@ -1,6 +1,7 @@
 mod cloud;
 mod context_plan;
 mod freshness;
+mod provider_path;
 mod release;
 mod state;
 mod supervisor;
