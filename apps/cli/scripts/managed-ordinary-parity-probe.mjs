@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { ROW_DEFINITIONS, SHUTDOWN_EXPECTATIONS } from "./managed-ordinary-parity-matrix.mjs"
+import { startManagedOrdinaryProviderTurnBinding } from "./lib/managed-ordinary-provider-turn-binding.mjs"
 
 const execFileAsync = promisify(execFile)
 const PROBE_RELATIVE_PATH = "apps/cli/scripts/managed-ordinary-parity-probe.mjs"
@@ -310,15 +311,26 @@ async function observeProviderIdentity(identity, values) {
   })
 }
 
-async function observeCaptureBoundary(identity) {
-  const evidence = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON"), "capture boundary")
-  const boundary = evidence.boundary ?? process.env.CHARIOX_PARITY_BOUNDARY
-  if (!new Set(["official-provider-turn", "remote-command"]).has(boundary)
-    || evidence.inside_provider_turn !== true
-    || evidence.independent !== true) {
-    throw new ProbeError("capture boundary is not an independent approved product boundary")
+async function observeCaptureBoundary(identity, values) {
+  if (!OFFICIAL_PROVIDERS.has(values.provider)) {
+    throw new ProbeError("capture boundary requires an official provider selection")
   }
-  return identityResult(identity, { boundary, inside_provider_turn: true, independent: true })
+  let binding
+  try {
+    binding = await startManagedOrdinaryProviderTurnBinding({
+      expectedProvider: values.provider,
+      expectedBoundary: "official-provider-turn",
+    })
+    const captureProvenance = await binding.finish()
+    return identityResult(identity, {
+      boundary: "official-provider-turn",
+      inside_provider_turn: true,
+      independent: true,
+      capture_provenance: captureProvenance,
+    })
+  } catch (error) {
+    throw new ProbeError("kernel-owned provider turn could not be verified", { cause: error })
+  }
 }
 
 async function observeDirectoryCheck(identity, values, checkId) {
@@ -865,7 +877,7 @@ async function observe(values) {
   const { parity_row: rowId, parity_check: checkId } = values
   if (rowId === "MP-10" && checkId === "fresh_worker") return observeFreshWorker(identity)
   if (rowId === "MP-08" && checkId === "official_provider_identity") return observeProviderIdentity(identity, values)
-  if (rowId === "MP-10" && checkId === "capture_boundary") return observeCaptureBoundary(identity)
+  if (rowId === "MP-10" && checkId === "capture_boundary") return observeCaptureBoundary(identity, values)
   if (rowId === "MP-02") return observeDirectoryCheck(identity, values, checkId)
   if (rowId === "MP-03" && checkId === "control_file_protection") return observeControlFileProtection(identity)
   if (rowId === "MP-03" && checkId === "filesystem_permissions") return observeFilesystemPermissions(identity, values)

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { test } from "node:test"
 
 import {
   MATRIX_SCHEMA,
+  CAPTURE_PROVENANCE_SCHEMA,
   ROW_DEFINITIONS,
   REPORT_SCHEMA,
   SHUTDOWN_EXPECTATIONS,
   compareManifests,
+  canonicalJson,
   createParityMatrixRunner,
   createSignedManifest,
   runEvidenceCommand,
@@ -18,6 +21,53 @@ const REVIEWED_COMMIT = "c899b9ce9fe3ca91d49e771d9bd6bbde07416576"
 const BUILD_ID = "build-kernel-20260920"
 const KERNEL_BUILD_ID = "kernel-build-ordinary-managed-20260920"
 const SOURCE_DIGEST = "sha256:" + "a".repeat(64)
+
+function captureProvenance(topology = "ordinary") {
+  const suffix = topology === "ordinary" ? "ordinary" : "path1"
+  return {
+    schema: CAPTURE_PROVENANCE_SCHEMA,
+    boundary: "official-provider-turn",
+    observed: true,
+    kernel_identity: {
+      kernel_id: `kernel-${suffix}`,
+      machine_id: `machine-${suffix}`,
+      transport: "local-unix-ipc",
+    },
+    session_id: `session-${suffix}`,
+    agent_id: `agent-${suffix}`,
+    attachment_id: `attachment-${suffix}`,
+    prompt_id: `prompt-${suffix}`,
+    prompt_origin: "chariox",
+    prompt_status: "running",
+    prompt_phase_start: "awaiting_first_output",
+    prompt_phase_end: "streaming",
+    provider: {
+      provider_run_id: `provider-run-${suffix}`,
+      name: "codex",
+      status: "Running",
+      process_status: "active",
+    },
+    process: {
+      pid: topology === "ordinary" ? 301 : 401,
+      linux_boot_id: "b4a8b0e7-0f5b-4fd8-bcd9-ccc1e8b3c5ac",
+      start_time_ticks: topology === "ordinary" ? "7001" : "8001",
+      ancestry_depth: 1,
+      executable_basename: "codex",
+      executable_path_sha256: `sha256:${"1".repeat(64)}`,
+      executable_sha256: `sha256:${"2".repeat(64)}`,
+      command_line_sha256: `sha256:${"3".repeat(64)}`,
+      current_working_directory_sha256: `sha256:${"4".repeat(64)}`,
+      launch_program_basename: "codex",
+      launch_program_sha256: `sha256:${"5".repeat(64)}`,
+      launch_arguments_sha256: `sha256:${"6".repeat(64)}`,
+      launch_working_directory_sha256: `sha256:${"7".repeat(64)}`,
+    },
+  }
+}
+
+function provenanceFingerprint(proof) {
+  return `sha256:${createHash("sha256").update(canonicalJson(proof)).digest("hex")}`
+}
 
 const RESULT_TRUE_FIELDS = Object.freeze({
   "MP-01/mount_visibility": ["mounts_match_ordinary", "mount_probe_complete"],
@@ -56,7 +106,7 @@ const RESULT_TRUE_FIELDS = Object.freeze({
   "MP-08/cleanup": ["owned_processes_gone", "owned_artifacts_removed", "foreign_processes_untouched", "cleanup_complete"],
 })
 
-function ordinaryResult(rowId, checkId) {
+function ordinaryResult(rowId, checkId, topology = "ordinary") {
   if (rowId === "MP-10" && checkId === "source_protocol_identity") {
     return {
       observed: true,
@@ -86,7 +136,13 @@ function ordinaryResult(rowId, checkId) {
     }
   }
   if (rowId === "MP-10" && checkId === "capture_boundary") {
-    return { observed: true, boundary_verified: true, inside_provider_turn: true, independent: true }
+    return {
+      observed: true,
+      boundary_verified: true,
+      inside_provider_turn: true,
+      independent: true,
+      provenance_sha256: provenanceFingerprint(captureProvenance(topology)),
+    }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
     return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true }
@@ -161,7 +217,7 @@ function path1Result(rowId, checkId) {
       observed_delay_seconds: expectation.observesDelay ? configuredDelay : null,
     }
   }
-  return ordinaryResult(rowId, checkId)
+  return ordinaryResult(rowId, checkId, "path1")
 }
 
 function makeManifest(topology) {
@@ -172,7 +228,7 @@ function makeManifest(topology) {
       checks[checkId] = {
         status: "pass",
         result: topology === "ordinary"
-          ? ordinaryResult(definition.id, checkId)
+          ? ordinaryResult(definition.id, checkId, topology)
           : path1Result(definition.id, checkId),
         command: `collector-${topology} ${definition.id} ${checkId}`,
         evidence_refs: [`evidence://${topology}/${definition.id}/${checkId}`],
@@ -206,6 +262,7 @@ function makeManifest(topology) {
       inside_provider_turn: true,
       independent: true,
       fixture: true,
+      capture_provenance: captureProvenance(topology),
     },
     rows,
   }, SIGNING_KEY)
@@ -262,6 +319,33 @@ test("green fixture covers MP-01 through MP-10 and permits only the two exemptio
   assert.deepEqual(report.rows.map((row) => row.id), ROW_DEFINITIONS.map((row) => row.id))
   assert.deepEqual(report.rows.filter((row) => row.exemption).map((row) => row.id), ["MP-07", "MP-09"])
   assert.equal(report.failures.length, 0)
+})
+
+test("matrix v3 requires linked provider-turn provenance and allows capture-specific fingerprints", () => {
+  const ordinary = makeManifest("ordinary")
+  const path1 = makeManifest("path1")
+  assert.notEqual(
+    ordinary.rows["MP-10"].checks.capture_boundary.result.provenance_sha256,
+    path1.rows["MP-10"].checks.capture_boundary.result.provenance_sha256,
+  )
+  assert.equal(compare(ordinary, path1).status, "pass")
+
+  const unbound = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+    delete manifest.collection.capture_provenance
+  })
+  const report = compare(unbound, path1)
+  assert.equal(report.status, "fail")
+  assert.ok(report.failures.some((failure) => failure.code === "capture_provenance_missing"))
+  assert.ok(report.failures.some((failure) => failure.code === "capture_provenance_fingerprint_mismatch"))
+})
+
+test("matrix v3 rejects remote-command boundary claims without an authority", () => {
+  const ordinary = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+    manifest.collection.boundary = "remote-command"
+  })
+  const report = compare(ordinary, makeManifest("path1"))
+  assert.equal(report.status, "fail")
+  assert.ok(report.failures.some((failure) => failure.code === "capture_boundary_invalid"))
 })
 
 test("missing row and missing shutdown check fail closed", () => {

@@ -6,12 +6,15 @@ import { mkdir, readFile, readdir, readlink, realpath, writeFile } from "node:fs
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 
 import { startManagedOrdinaryLiveKernelBinding } from "./lib/managed-ordinary-live-kernel-binding.mjs"
+import { startManagedOrdinaryProviderTurnBinding } from "./lib/managed-ordinary-provider-turn-binding.mjs"
 import {
   ALLOWED_CAPTURE_BOUNDARIES,
   ALLOWED_TOPOLOGIES,
+  CAPTURE_PROVENANCE_SCHEMA,
   MATRIX_SCHEMA,
   ROW_DEFINITIONS,
   SHUTDOWN_EXPECTATIONS,
+  canonicalJson,
   createSignedManifest,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
@@ -351,14 +354,55 @@ function normalizeShutdownResult(result, topology, checkId) {
   }
 }
 
-function normalizeBoundary(result, expectedBoundary) {
+function normalizeBoundary(result, expectedBoundary, expectedProvider) {
   requireObserved(result, "MP-10", "capture_boundary")
   if (result.boundary !== expectedBoundary) {
     throw new CollectorError("capture_boundary_mismatch", `probe reported ${String(result.boundary)}`)
   }
-  expectedBoolean(result, "inside_provider_turn", "MP-10", "capture_boundary")
-  expectedBoolean(result, "independent", "MP-10", "capture_boundary")
-  return { observed: true, boundary_verified: true, inside_provider_turn: true, independent: true }
+  const proof = result.capture_provenance
+  if (!isPlainObject(proof) || proof.observed !== true
+    || proof.schema !== CAPTURE_PROVENANCE_SCHEMA
+    || proof.boundary !== "official-provider-turn"
+    || proof.provider?.name !== expectedProvider) {
+    throw new CollectorError("capture_provenance_missing", "probe did not return verified provider-turn provenance")
+  }
+  return {
+    observed: true,
+    boundary_verified: true,
+    inside_provider_turn: true,
+    independent: true,
+    capture_provenance: proof,
+  }
+}
+
+function comparableProviderTurnProof(proof) {
+  if (!isPlainObject(proof) || !isPlainObject(proof.process)) return null
+  const { ancestry_depth: _depth, ...process } = proof.process
+  return {
+    schema: proof.schema,
+    boundary: proof.boundary,
+    observed: proof.observed,
+    kernel_identity: proof.kernel_identity,
+    session_id: proof.session_id,
+    agent_id: proof.agent_id,
+    attachment_id: proof.attachment_id,
+    prompt_id: proof.prompt_id,
+    prompt_origin: proof.prompt_origin,
+    prompt_status: proof.prompt_status,
+    provider: proof.provider,
+    process,
+  }
+}
+
+function sameProviderTurnProof(left, right) {
+  const leftComparable = comparableProviderTurnProof(left)
+  const rightComparable = comparableProviderTurnProof(right)
+  return leftComparable !== null && rightComparable !== null
+    && canonicalJson(leftComparable) === canonicalJson(rightComparable)
+}
+
+function providerTurnProofFingerprint(proof) {
+  return `sha256:${sha256(canonicalJson(proof))}`
 }
 
 function normalizeFreshWorker(result) {
@@ -485,11 +529,13 @@ export function createParityCollector({
   runCommand = defaultRunCommand,
   clock = () => new Date(),
   processApi = process,
+  providerTurnBindingFactory = startManagedOrdinaryProviderTurnBinding,
 } = {}) {
   if (!filesystem || typeof filesystem.mkdir !== "function" || typeof filesystem.readFile !== "function" || typeof filesystem.readdir !== "function" || typeof filesystem.readlink !== "function" || typeof filesystem.realpath !== "function" || typeof filesystem.writeFile !== "function") {
     throw new TypeError("filesystem must provide mkdir, readFile, readdir, readlink, realpath, and writeFile")
   }
   if (typeof runCommand !== "function") throw new TypeError("runCommand must be a function")
+  if (typeof providerTurnBindingFactory !== "function") throw new TypeError("providerTurnBindingFactory must be a function")
 
   async function executeStep(ctx, rowId, checkId, step, command, args, options = {}) {
     const startedAt = nowIso(clock)
@@ -569,6 +615,9 @@ export function createParityCollector({
     ]
     if (rowId === "MP-02" && checkId === "exact_path_entry") {
       args.push("--expected-cwd", ctx.expectedCwd)
+    }
+    if (rowId === "MP-10" && checkId === "capture_boundary") {
+      args.push("--provider", ctx.provider)
     }
     return args
   }
@@ -712,14 +761,54 @@ export function createParityCollector({
     const actualRelayProtocol = parseRelayVersion(relayStep.text)
     if (actualRelayProtocol !== ctx.relayProtocol) throw new CollectorError("protocol_identity_mismatch", "relay protocol mismatch")
 
+    let providerTurnBinding
+    try {
+      providerTurnBinding = await providerTurnBindingFactory({
+        filesystem,
+        processApi,
+        expectedProvider: ctx.provider,
+        expectedBoundary: ctx.boundary,
+      })
+    } catch (error) {
+      throw new CollectorError(
+        error?.code ?? "provider_turn_unverified",
+        error instanceof Error ? error.message : "kernel-owned provider turn could not be bound",
+      )
+    }
+
+    if (!isPlainObject(providerTurnBinding)
+      || typeof providerTurnBinding.finish !== "function"
+      || typeof providerTurnBinding.socketPath !== "string"
+      || !providerTurnBinding.socketPath) {
+      throw new CollectorError("provider_turn_unverified", "provider-turn verifier did not return a local kernel identity")
+    }
+    const observedKernelIdentity = providerTurnBinding.kernelIdentity
+    if (!isPlainObject(observedKernelIdentity)) {
+      throw new CollectorError("provider_turn_unverified", "provider-turn verifier did not return a local kernel identity")
+    }
+    const liveKernelProcessApi = {
+      ...processApi,
+      env: {
+        ...(processApi.env ?? {}),
+        CHARIOX_DAEMON_SOCKET: providerTurnBinding.socketPath,
+        CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON: JSON.stringify({
+          observed: true,
+          boundary: "official-provider-turn",
+          inside_provider_turn: true,
+          independent: true,
+          kernel_identity: { observed: true, ...observedKernelIdentity },
+        }),
+      },
+    }
+
     let liveKernelBinding
     try {
       liveKernelBinding = await startManagedOrdinaryLiveKernelBinding({
         filesystem,
-        processApi,
+        processApi: liveKernelProcessApi,
         selectedKernelPath: selectedKernelRealPath,
         expectedArtifactDigest: releaseIdentity.kernelDigest,
-        expectedBoundary: ctx.boundary,
+        expectedBoundary: "official-provider-turn",
       })
     } catch (error) {
       throw new CollectorError(
@@ -734,7 +823,7 @@ export function createParityCollector({
     const providerVersionStep = await runText(ctx, "MP-08", "official_provider_identity", "provider-version", ctx.providerCommand, ["--version"], { cwd: ctx.sourceRoot })
     const providerIdentity = await runProbe(ctx, "MP-08", "official_provider_identity", (result) => normalizeProviderIdentity(result, ctx.provider, providerCommandName))
     const freshWorker = await runProbe(ctx, "MP-10", "fresh_worker", normalizeFreshWorker)
-    const captureBoundary = await runProbe(ctx, "MP-10", "capture_boundary", (result) => normalizeBoundary(result, ctx.boundary))
+    const captureBoundary = await runProbe(ctx, "MP-10", "capture_boundary", (result) => normalizeBoundary(result, ctx.boundary, ctx.provider))
 
     const rows = {
       "MP-08": {
@@ -798,6 +887,26 @@ export function createParityCollector({
     rows["MP-09"] = { checks: shutdownChecks }
 
     let liveKernelEvidence
+    let providerTurnProof
+    try {
+      providerTurnProof = await providerTurnBinding.finish()
+    } catch (error) {
+      throw new CollectorError(
+        error?.code ?? "provider_turn_unverified",
+        error instanceof Error ? error.message : "kernel-owned provider turn changed during capture",
+      )
+    }
+    if (!sameProviderTurnProof(captureBoundary.result.capture_provenance, providerTurnProof)) {
+      throw new CollectorError("capture_provenance_mismatch", "probe and collector did not observe the same kernel-owned provider turn")
+    }
+    captureBoundary.result = {
+      observed: true,
+      boundary_verified: true,
+      inside_provider_turn: true,
+      independent: true,
+      provenance_sha256: providerTurnProofFingerprint(providerTurnProof),
+    }
+
     try {
       liveKernelEvidence = await liveKernelBinding.finish()
     } catch (error) {
@@ -836,6 +945,7 @@ export function createParityCollector({
         inside_provider_turn: true,
         independent: true,
         fixture: false,
+        capture_provenance: providerTurnProof,
       },
       rows,
     }, ctx.signingKey)
@@ -884,7 +994,7 @@ export function usage() {
     "  --kernel-protocol <n> --relay-protocol <n> --provider codex|claude|opencode \\",
     "  --provider-command <official-provider> --kernel-binary <chariox-kernel> \\",
     "  --kernel-release-root <verified-rootfs> --kernel-release-digest <sha256:digest> \\",
-    "  --kernel-release-public-key <trusted-public-key> --boundary official-provider-turn|remote-command \\",
+    "  --kernel-release-public-key <trusted-public-key> --boundary official-provider-turn \\",
     "  --kernel-builder-public-key <external-trusted-builder-key> (required for path1) \\",
     "  --source-root <reviewed-checkout> --expected-cwd <provider-working-directory> \\",
     "  --output <manifest.json> \\",

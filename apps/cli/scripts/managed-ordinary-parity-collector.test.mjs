@@ -12,6 +12,7 @@ import {
   defaultRunCommand,
 } from "./managed-ordinary-parity-collector.mjs"
 import {
+  CAPTURE_PROVENANCE_SCHEMA,
   SHUTDOWN_EXPECTATIONS,
   compareManifests,
   validateManifest,
@@ -36,6 +37,41 @@ const LIVE_KERNEL_PID = 43210
 const LIVE_KERNEL_SOCKET_INODE = "880042"
 const LIVE_KERNEL_SOCKET = join(tmpdir(), `chariox-managed-ordinary-parity-${process.pid}.sock`)
 const LIVE_KERNEL_IDENTITY = Object.freeze({ kernel_id: "kernel-current", machine_id: "machine-current" })
+const CAPTURE_PROVENANCE = Object.freeze({
+  schema: CAPTURE_PROVENANCE_SCHEMA,
+  boundary: "official-provider-turn",
+  observed: true,
+  kernel_identity: { ...LIVE_KERNEL_IDENTITY, transport: "local-unix-ipc" },
+  session_id: "session-owned",
+  agent_id: "agent-owned",
+  attachment_id: "attachment-owned",
+  prompt_id: "prompt-owned",
+  prompt_origin: "chariox",
+  prompt_status: "running",
+  prompt_phase_start: "streaming",
+  prompt_phase_end: "streaming",
+  provider: {
+    provider_run_id: "provider-run-owned",
+    name: "codex",
+    status: "Running",
+    process_status: "active",
+  },
+  process: {
+    pid: 201,
+    linux_boot_id: "b4a8b0e7-0f5b-4fd8-bcd9-ccc1e8b3c5ac",
+    start_time_ticks: "7001",
+    ancestry_depth: 2,
+    executable_basename: "codex",
+    executable_path_sha256: `sha256:${"1".repeat(64)}`,
+    executable_sha256: `sha256:${"2".repeat(64)}`,
+    command_line_sha256: `sha256:${"3".repeat(64)}`,
+    current_working_directory_sha256: `sha256:${"4".repeat(64)}`,
+    launch_program_basename: "codex",
+    launch_program_sha256: `sha256:${"5".repeat(64)}`,
+    launch_arguments_sha256: `sha256:${"6".repeat(64)}`,
+    launch_working_directory_sha256: `sha256:${"7".repeat(64)}`,
+  },
+})
 
 function frame(payload) {
   const bytes = Buffer.from(JSON.stringify(payload), "utf8")
@@ -137,7 +173,13 @@ function genericResult(rowId, checkId, topology) {
     return { observed: true, official: true, provider_name: "codex", executable_matches: true }
   }
   if (rowId === "MP-10" && checkId === "capture_boundary") {
-    return { observed: true, boundary: "official-provider-turn", inside_provider_turn: true, independent: true }
+    return {
+      observed: true,
+      boundary: "official-provider-turn",
+      inside_provider_turn: true,
+      independent: true,
+      capture_provenance: CAPTURE_PROVENANCE,
+    }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
     return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true, ancestry_complete: true }
@@ -276,10 +318,21 @@ function makeHarness(topology, overrides = {}) {
     const overridden = overrides.command ? await overrides.command(command, args, defaultCommand) : undefined
     return overridden ?? defaultCommand(command, args)
   }
+  const providerTurnBindingFactory = overrides.providerTurnBindingFactory ?? (async ({ expectedProvider, expectedBoundary }) => {
+    assert.equal(expectedProvider, "codex")
+    assert.equal(expectedBoundary, "official-provider-turn")
+    return {
+      socketPath: LIVE_KERNEL_SOCKET,
+      kernelIdentity: { ...LIVE_KERNEL_IDENTITY, transport: "local-unix-ipc" },
+      initialProof: CAPTURE_PROVENANCE,
+      async finish() { return CAPTURE_PROVENANCE },
+    }
+  })
   const collector = createParityCollector({
     filesystem,
     runCommand,
     clock,
+    providerTurnBindingFactory,
     processApi: {
       platform: "linux",
       pid: 77,
@@ -287,14 +340,15 @@ function makeHarness(topology, overrides = {}) {
       env: {
         CHARIOX_DAEMON_SOCKET: LIVE_KERNEL_SOCKET,
         CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON: JSON.stringify({
-          observed: true,
-          boundary: "official-provider-turn",
-          inside_provider_turn: true,
-          independent: true,
+          observed: false,
+          boundary: "remote-command",
+          inside_provider_turn: false,
+          independent: false,
           kernel_identity: {
-            observed: true,
-            ...LIVE_KERNEL_IDENTITY,
-            transport: "local-unix-ipc",
+            observed: false,
+            kernel_id: "caller-stale-kernel",
+            machine_id: "caller-stale-machine",
+            transport: "remote",
           },
         }),
       },
@@ -545,6 +599,47 @@ test("forged caller pass values and forged probe status are ignored", async () =
   harness.options.forgedPass = true
   await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
     assert.equal(error.code, "probe_assertion_failed")
+    return true
+  })
+})
+
+test("MP-10 caller boundary booleans without kernel provider-turn provenance fail closed", async () => {
+  const harness = makeHarness("ordinary", {
+    results: {
+      "MP-10/capture_boundary": {
+        observed: true,
+        boundary: "official-provider-turn",
+        inside_provider_turn: true,
+        independent: true,
+      },
+    },
+  })
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "capture_provenance_missing")
+    return true
+  })
+})
+
+test("collector rejects a probe proof for a different prompt than its capture binding", async () => {
+  const harness = makeHarness("ordinary", {
+    providerTurnBindingFactory: async () => ({
+      socketPath: LIVE_KERNEL_SOCKET,
+      kernelIdentity: { ...LIVE_KERNEL_IDENTITY, transport: "local-unix-ipc" },
+      initialProof: CAPTURE_PROVENANCE,
+      async finish() { return { ...CAPTURE_PROVENANCE, prompt_id: "prompt-foreign" } },
+    }),
+  })
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "capture_provenance_mismatch")
+    return true
+  })
+})
+
+test("remote-command capture boundary is rejected without its own authority", async () => {
+  const harness = makeHarness("ordinary")
+  harness.options.boundary = "remote-command"
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "capture_boundary_invalid")
     return true
   })
 })
