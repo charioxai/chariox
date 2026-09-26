@@ -382,6 +382,151 @@ async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
 }
 
 #[tokio::test]
+async fn active_chariox_prompt_keeps_running_provider_from_advancing_queued_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("external-queue-active-chariox");
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-active-chariox-queue",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let active_prompt = crate::session::PromptQueueItem::new(
+        "active-chariox-prompt",
+        attachment.id(),
+        agent.id(),
+        "active Chariox prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: started_active_prompt,
+    } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), active_prompt, false)
+        .expect("active prompt should start")
+    else {
+        panic!("first Chariox prompt should start immediately");
+    };
+    let active_prompt = app
+        .prompt_owner_mark_active_prompt_running(session.id(), agent.id())
+        .expect("active Chariox prompt should be running");
+    assert_eq!(active_prompt.id(), started_active_prompt.id());
+    assert_eq!(
+        active_prompt.status(),
+        crate::session::PromptStatus::Running
+    );
+    assert_eq!(
+        active_prompt.prompt_origin(),
+        crate::session::PromptOrigin::Chariox
+    );
+
+    let queued_prompt = crate::session::PromptQueueItem::new(
+        "queued-chariox-prompt",
+        attachment.id(),
+        agent.id(),
+        "queued Chariox prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued {
+        prompt: queued_prompt,
+    } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+        .expect("second Chariox prompt should queue")
+    else {
+        panic!("second Chariox prompt should queue behind the active prompt");
+    };
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let started = runtime
+        .owned
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should start while the active prompt is in flight");
+
+    runtime.finish_provider_launch(&started, None).await;
+    let provider_run = runtime
+        .owned
+        .provider_store
+        .get_run(started.run.id())
+        .expect("provider run should remain available");
+    assert_eq!(
+        provider_run.state(),
+        crate::provider::ProviderRunState::Running,
+        "queue advancement during launch completion must not fail the running provider"
+    );
+
+    assert!(runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session.id(), agent.id(), provider_run.id())
+        .expect("active Chariox prompt should defer queue advancement")
+        .is_none());
+    let snapshot = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should remain available");
+    let active = snapshot
+        .active_prompt_for_agent(agent.id())
+        .expect("active Chariox prompt should remain active");
+    assert_eq!(active.id(), started_active_prompt.id());
+    assert_eq!(active.status(), crate::session::PromptStatus::Running);
+    assert_eq!(
+        active.prompt_origin(),
+        crate::session::PromptOrigin::Chariox
+    );
+    let queued = snapshot
+        .queued_prompts_for_agent(agent.id())
+        .expect("queued prompt should remain mirrored");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id(), queued_prompt.id());
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(provider_run.id())
+            .expect("provider run should remain available")
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+
+    app.lock()
+        .await
+        .prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+        .expect("completing the active prompt should settle it");
+    let dispatch = runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session.id(), agent.id(), provider_run.id())
+        .expect("settled active prompt should release the queue")
+        .expect("queued prompt should dispatch after active prompt completion");
+    assert_eq!(dispatch.prompt, "queued Chariox prompt");
+    assert_eq!(dispatch.provider_run_id, provider_run.id());
+    let promoted_snapshot = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should remain available");
+    let promoted = promoted_snapshot
+        .active_prompt_for_agent(agent.id())
+        .expect("queued prompt should become active after dispatch");
+    assert_eq!(promoted.id(), dispatch.prompt_id);
+    assert_eq!(
+        promoted.prompt_origin(),
+        crate::session::PromptOrigin::Chariox
+    );
+}
+
+#[tokio::test]
 async fn external_active_prompt_rejects_queued_prompt_steering() {
     let worktree = crate::test_support::TestWorktree::new("external-queue-steering");
     let mut app =

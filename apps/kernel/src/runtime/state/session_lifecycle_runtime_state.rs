@@ -858,12 +858,8 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(session_id)?;
-        self.append_session_durable_event(
-            "session.ended",
-            &durable_session,
-            "runtime_end_session",
-        )
-        .await?;
+        self.append_session_durable_event("session.ended", &durable_session, "runtime_end_session")
+            .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
@@ -889,7 +885,7 @@ impl KernelRuntimeState {
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session_id = self
-            .resolve_session_ref_id(session_ref, workspace_id)
+            .resolve_session_ref_id_for_delete(session_ref, workspace_id)
             .await?;
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(&session_id)?;
@@ -1522,11 +1518,8 @@ mod tests {
             .get(&session_id)
             .expect("busy session should project")
             .status();
-        let connection = install_durable_event_failure(
-            &runtime,
-            "fail_session_end_order",
-            "session.ended",
-        );
+        let connection =
+            install_durable_event_failure(&runtime, "fail_session_end_order", "session.ended");
 
         let error = runtime
             .end_session(&session_id)
@@ -1622,11 +1615,8 @@ mod tests {
             .expect("busy session projection should publish");
         let runtime_sequence = runtime.managed_activity_change_sequence();
         let projection_sequence = runtime.owned.session_projection.change_sequence();
-        let connection = install_durable_event_failure(
-            &runtime,
-            "fail_session_delete_order",
-            "session.deleted",
-        );
+        let connection =
+            install_durable_event_failure(&runtime, "fail_session_delete_order", "session.deleted");
 
         let error = runtime
             .delete_session_ref(&session_id, None)

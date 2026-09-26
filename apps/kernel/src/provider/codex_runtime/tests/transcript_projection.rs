@@ -572,6 +572,7 @@ fn home_proxy_mcp_tool_is_projected_into_tool_placement() {
             timeout_sec: Some(5),
             version_hash: Some("hash-1".to_string()),
         }],
+        ..crate::extension::RemoteExtensionManifest::default()
     };
     let rendered = render_codex_tool_transcript_update(
         &CodexToolTranscriptState {

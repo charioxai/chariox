@@ -362,7 +362,8 @@ impl CommandRouter {
                 .await
             }),
             request @ (LocalDaemonRequest::ListRemoteMachines(_)
-            | LocalDaemonRequest::ListRemoteMachineKernels(_)) => Box::pin(async move {
+            | LocalDaemonRequest::ListRemoteMachineKernels(_)
+            | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)) => Box::pin(async move {
                 execute_remote_relay_inventory_request(
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),

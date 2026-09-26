@@ -455,39 +455,48 @@ fn handle_workflow_prompt_submission_outcome(
 ) -> Result<(), DaemonError> {
     match outcome {
         PromptSubmissionOutcome::Started { prompt } => {
-            if let Err(error) = dispatch_workflow_prompt(app, session_id, target_agent_id, &prompt)
-            {
-                record_and_route_workflow_failure(
-                    app,
-                    session_id,
-                    workflow_run_id,
-                    &WorkflowFailureEvent::new(
-                        WorkflowFailureKind::TransportFailure,
-                        workflow_node_run_id,
-                        Vec::new(),
-                        error.to_string(),
-                    ),
-                );
-                let provider_run_id = app
-                    .providers()
-                    .get_run_for_agent(session_id, target_agent_id)
-                    .map(|run| run.id().to_string());
-                if let Ok(cancelled) =
-                    app.prompt_owner_cancel_active_prompt_only(session_id, target_agent_id)
-                {
-                    if let Some(provider_run_id) = provider_run_id.as_deref() {
-                        crate::transport::flow_control::clear_prompt_activity(app, provider_run_id);
+            let deferred_remote_dispatch =
+                match dispatch_workflow_prompt(app, session_id, target_agent_id, &prompt) {
+                    Ok(dispatch) => dispatch,
+                    Err(error) => {
+                        record_and_route_workflow_failure(
+                            app,
+                            session_id,
+                            workflow_run_id,
+                            &WorkflowFailureEvent::new(
+                                WorkflowFailureKind::TransportFailure,
+                                workflow_node_run_id,
+                                Vec::new(),
+                                error.to_string(),
+                            ),
+                        );
+                        let provider_run_id = app
+                            .providers()
+                            .get_run_for_agent(session_id, target_agent_id)
+                            .map(|run| run.id().to_string());
+                        if let Ok(cancelled) =
+                            app.prompt_owner_cancel_active_prompt_only(session_id, target_agent_id)
+                        {
+                            if let Some(provider_run_id) = provider_run_id.as_deref() {
+                                crate::transport::flow_control::clear_prompt_activity(
+                                    app,
+                                    provider_run_id,
+                                );
+                            }
+                            let _ = on_workflow_prompt_cancelled(app, session_id, &cancelled);
+                        }
+                        return Err(error);
                     }
-                    let _ = on_workflow_prompt_cancelled(app, session_id, &cancelled);
-                }
-                return Err(error);
-            }
+                };
             app.sessions_mut().mark_workflow_turn_dispatched(
                 session_id,
                 workflow_run_id,
                 workflow_node_run_id,
             )?;
             on_workflow_prompt_started(app, session_id, &prompt)?;
+            if let Some(dispatch) = deferred_remote_dispatch {
+                app.defer_workflow_remote_prompt_dispatch(dispatch);
+            }
         }
         PromptSubmissionOutcome::Queued { .. } => {
             app.record_notice(

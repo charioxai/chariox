@@ -159,6 +159,7 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
         },
     );
     run.mark_running();
+    spawn_inert_pty_for_run(&mut app, run.id());
     app.providers_mut().insert_run_for_test(run.clone());
     app.sessions
         .set_active_provider_run(session.id(), Some(run.id().to_string()))
@@ -197,18 +198,40 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
     };
 
     let app = Arc::new(Mutex::new(app));
+    let _pty_cleanup = InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().to_string(),
+    };
     let runtime = owned_runtime_state(&app).await;
-    runtime.owned.mark_prompt_completion_recorded(run.id());
-    if let Some(activity) = runtime.owned.prompt_activity.write().get_mut(run.id()) {
-        activity.saw_response_content = true;
-        activity.last_output_at =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
-        activity.settlement_requested = true;
-    }
     runtime
-        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("codex-assistant-output".to_string()),
+                    bytes: b"assistant message completed".to_vec(),
+                }],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "codex-assistant-message".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                ..Default::default()
+            },
+        )
         .await
-        .expect("quiet completion evidence should be accepted");
+        .expect("assistant message completion should be accepted");
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch::default(),
+        )
+        .await
+        .expect("quiet assistant output should remain non-authoritative");
     assert_eq!(
         runtime
             .owned
@@ -216,14 +239,41 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
             .expect("session snapshot should exist")
             .active_prompt_for_agent(agent.id())
             .map(|prompt| prompt.id().to_string()),
-        Some(active_prompt_id),
+        Some(active_prompt_id.clone()),
         "Codex assistant output must keep the current prompt active before turn/completed"
     );
 
+    let in_flight_tool = runtime.owned.runtime_tool_call_activity.begin(
+        [run.id().to_string()],
+        runtime.owned.provider_output_deadlines.clone(),
+    );
     runtime
-        .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                prompt_completed: true,
+                ..Default::default()
+            },
+        )
         .await
-        .expect("authoritative turn completion should be accepted");
+        .expect("authoritative turn completion should defer behind the in-flight tool");
+    assert_eq!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("deferred session snapshot should exist")
+            .active_prompt_for_agent(agent.id())
+            .map(|prompt| prompt.id().to_string()),
+        Some(active_prompt_id.clone()),
+        "authoritative completion must retain the active prompt while its tool is running"
+    );
+    drop(in_flight_tool);
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await
+        .expect("deferred authoritative turn completion should settle after the tool returns");
     let settled_session = runtime
         .owned
         .session_snapshot(session.id())
@@ -234,6 +284,132 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
             .map(|prompt| prompt.prompt().to_string()),
         Some("run only after turn/completed".to_string()),
         "turn/completed should release the current prompt and advance exactly one queued prompt"
+    );
+}
+
+#[tokio::test]
+async fn codex_turn_completion_survives_dispatching_delivery_retry() {
+    let worktree = crate::test_support::TestWorktree::new("codex-dispatching-completion");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-codex-dispatching-completion",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-codex-dispatching-completion",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-codex-dispatching-completion".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("ws://test-codex-dispatching-completion".to_string()),
+        },
+    );
+    run.mark_running();
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-codex-dispatching-completion",
+        attachment.id(),
+        agent.id(),
+        "finish after delivery acknowledgement",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Dispatching,
+        Some(run.id().to_string()),
+        run.provider_session_id().map(str::to_string),
+    )
+    .expect("prompt should enter durable dispatch");
+
+    let app = Arc::new(Mutex::new(app));
+    let _pty_cleanup = InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().to_string(),
+    };
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                prompt_completed: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("authoritative completion should be retained during dispatch");
+    let dispatching_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should remain available during dispatch");
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&dispatching_session, agent.id())
+        .expect("dispatching prompt should remain active")
+        .delivery_pending());
+
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run.id().to_string()),
+            run.provider_session_id().map(str::to_string),
+        )
+        .expect("provider acknowledgement should complete prompt delivery");
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await
+        .expect("retained turn completion should settle after delivery acknowledgement");
+    let settled_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist after settlement");
+    assert!(
+        settled_session
+            .active_prompt_for_agent(agent.id())
+            .is_none(),
+        "authoritative completion received during Dispatching must survive delivery retry"
     );
 }
 

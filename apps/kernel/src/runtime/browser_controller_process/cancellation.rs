@@ -373,26 +373,49 @@ impl BrowserControllerProcessStore {
     ) -> Result<crate::transport::room_browser_controller::RoomBrowserControllerResult, String>
     {
         let fingerprint = action_fingerprint(target_id, document_id, node_ref, action, timeout_ms)?;
-        self.perform_cancellable_operation(
-            session_id,
-            execution_id,
-            fingerprint,
-            Response::Action { result: None },
-            |ownership| {
-                ownership
-                    .perform_browser_action(
-                        session_id,
-                        target_id,
-                        document_id,
-                        node_ref,
-                        action,
-                        timeout_ms,
-                    )
-                    .map(|result| Response::Action {
-                        result: Some(result),
-                    })
-            },
-        )
+        let Some(ownership) = &self.ownership else {
+            return Ok(Response::Action { result: None });
+        };
+        let active = match self
+            .executions
+            .register(session_id, execution_id, fingerprint, false)?
+        {
+            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Wait(record) => return record.wait(),
+            ExecutionAdmission::Start(active) => active,
+        };
+        let result = (|| {
+            let _barrier = self.lock_tab_mutation_barrier(&active.signal)?;
+            let lane = self.tab_mutation_lane(target_id)?;
+            let _lane = Self::lock_tab_mutation_lane(&lane, &active.signal)?;
+            let pending = ownership
+                .lock()
+                .map_err(|_| "browser controller supervisor lock poisoned")?
+                .begin_action(
+                    session_id,
+                    target_id,
+                    document_id,
+                    node_ref,
+                    action,
+                    timeout_ms,
+                    &active.signal,
+                )?;
+            let result = pending
+                .wait(&active.signal)?
+                .into_result::<BrowserControllerActionResult>("browser.action")?;
+            result.validate(target_id, document_id, action.kind())?;
+            Ok(Response::Action {
+                result: Some(result),
+            })
+        })();
+        let outcome = if active.signal.stopped.load(Ordering::Acquire) && active.signal.accepted() {
+            Ok(Response::ActionCancelled {
+                controller_fenced: active.signal.fenced(),
+            })
+        } else {
+            result
+        };
+        active.finish(outcome)
     }
 
     pub(crate) fn perform_cancellable_browser_upload(
@@ -405,17 +428,28 @@ impl BrowserControllerProcessStore {
         files: &BrowserUploadFiles,
     ) -> ExecutionOutcome {
         let fingerprint = upload_fingerprint(target_id, document_id, node_ref, files)?;
-        self.perform_cancellable_operation(
+        let controller_paths = files.controller_paths();
+        let file_count = controller_paths.len();
+        self.perform_cancellable_tab_mutation(
             session_id,
             execution_id,
             fingerprint,
             Response::Upload { result: None },
-            |ownership| {
-                ownership
-                    .upload_browser_files(session_id, target_id, document_id, node_ref, files)
-                    .map(|result| Response::Upload {
-                        result: Some(result),
-                    })
+            target_id,
+            "browser.upload",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+                "node_ref": node_ref,
+                "file_paths": controller_paths,
+            }),
+            move |response| {
+                let result =
+                    response.into_result::<BrowserControllerUploadResult>("browser.upload")?;
+                result.validate(target_id, document_id, file_count)?;
+                Ok(Response::Upload {
+                    result: Some(result),
+                })
             },
         )
     }
@@ -498,6 +532,48 @@ impl BrowserControllerProcessStore {
         )
     }
 
+    pub(super) fn perform_cancellable_tab_mutation(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        fingerprint: [u8; 32],
+        unavailable: Response,
+        target_id: &str,
+        method: &str,
+        params: serde_json::Value,
+        finish: impl FnOnce(BrowserControllerRpcResponse) -> ExecutionOutcome,
+    ) -> ExecutionOutcome {
+        let Some(ownership) = &self.ownership else {
+            return Ok(unavailable);
+        };
+        let active = match self
+            .executions
+            .register(session_id, execution_id, fingerprint, false)?
+        {
+            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Wait(record) => return record.wait(),
+            ExecutionAdmission::Start(active) => active,
+        };
+        let result = (|| {
+            let _barrier = self.lock_tab_mutation_barrier(&active.signal)?;
+            let lane = self.tab_mutation_lane(target_id)?;
+            let _lane = Self::lock_tab_mutation_lane(&lane, &active.signal)?;
+            let pending = ownership
+                .lock()
+                .map_err(|_| "browser controller supervisor lock poisoned")?
+                .begin_cancellable_tab_mutation(session_id, method, &params, &active.signal)?;
+            finish(pending.wait(&active.signal)?)
+        })();
+        let outcome = if active.signal.stopped.load(Ordering::Acquire) && active.signal.accepted() {
+            Ok(Response::ActionCancelled {
+                controller_fenced: active.signal.fenced(),
+            })
+        } else {
+            result
+        };
+        active.finish(outcome)
+    }
+
     fn perform_cancellable_operation_inner(
         &self,
         session_id: &str,
@@ -520,6 +596,7 @@ impl BrowserControllerProcessStore {
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
         };
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned")?;

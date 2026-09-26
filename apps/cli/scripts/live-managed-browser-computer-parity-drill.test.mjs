@@ -113,10 +113,10 @@ function placementProof(kind) {
     tabId: "tab-stable-1",
   }
   if (kind === "browser-action") {
-    return { ...common, source: "public-room-action", kind, actionId: "browser-action-1", actorId: "agent:browser-agent-1" }
+    return { ...common, source: "public-room-action", kind, actionId: "browser-action-1", actorId: "agent:room-agent-1" }
   }
   if (kind === "computer-action") {
-    return { ...common, source: "public-room-action", kind, actionId: "computer-action-1", actorId: "agent:computer-agent-1" }
+    return { ...common, source: "public-room-action", kind, actionId: "computer-action-1", actorId: "agent:room-agent-1" }
   }
   return { ...common, source: "public-web-view", kind: "web-view", visible: true }
 }
@@ -257,6 +257,49 @@ test("live M0 rejects public Browser, Computer, and Web View evidence split acro
   assert.ok(report.browserComputerGuard.placement.violations.includes("web_view_tab_mismatch"))
 })
 
+test("live M0 rejects Browser and Computer placement evidence attributed to different agents", async () => {
+  const injected = transport()
+  const run = injected.run.bind(injected)
+  injected.run = async (step, input, options) => {
+    const result = await run(step, input, options)
+    if (step === "selkies.computer") {
+      return {
+        ...result,
+        placementProof: { ...result.placementProof, actorId: "agent:computer-agent-2" },
+      }
+    }
+    return result
+  }
+
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_placement_proof_required")
+  assert.equal(report.browserComputerGuard.placement.ok, false)
+  assert.ok(report.browserComputerGuard.placement.violations.includes("browser_computer_actor_mismatch"))
+})
+
+test("live M0 rejects matching Browser and Computer actions from the wrong assigned agent", async () => {
+  const runConfig = config()
+  runConfig.expected.actorId = "agent:assigned-room-agent"
+  const report = await runManagedBrowserComputerParityLive({
+    config: runConfig,
+    transport: transport(),
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_placement_proof_required")
+  assert.ok(report.browserComputerGuard.placement.violations.includes("browser_action_actor_mismatch"))
+  assert.ok(report.browserComputerGuard.placement.violations.includes("computer_action_actor_mismatch"))
+})
+
 test("live M0 wrapper validates the released kernel lifecycle plan without Docker argv assumptions", async () => {
   const kernelConfig = config()
   kernelConfig.browserComputerGuard.dockerPreconditions = []
@@ -287,7 +330,7 @@ test("live M0 binds released kernel-client source modules before managed telemet
   )
   const daemonProtocol = releasedSourceConstant(typesSource, "LOCAL_DAEMON_PROTOCOL_VERSION")
   assert.equal(telemetryProtocol, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
-  assert.equal(daemonProtocol, 343, "kernel-types.ts is authoritative for the current daemon protocol")
+  assert.equal(daemonProtocol, 344, "kernel-types.ts is authoritative for the current daemon protocol")
   assert.match(controlSource, /return \{ GetKernelResourceTelemetry: null \}/)
 
   const requestApi = {

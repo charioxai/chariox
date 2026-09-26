@@ -1,4 +1,5 @@
 use crate::app::RemoteLeaseRuntime;
+use crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptPhase;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 use crate::runtime::projection::SessionSnapshotProjection;
@@ -8,12 +9,32 @@ use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayProjectedCompletion,
     RelayProjectedOutputChunk, RelayProjectedPrompt, RelayPromptAttachment, RemoteGitObservation,
     RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext, RemoteSkillMaterialization,
-    RemoteSkillSyncContext, RequiredRemoteMcp,
+    RemoteSkillSyncContext, RequiredRemoteMcp, REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
 };
 
 use super::*;
 
 impl KernelRuntimeState {
+    async fn update_relay_leased_prompt_admission_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+        phase: WorkerPromptReceiptPhase,
+        worker_provider_run_id: Option<String>,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let home_prompt_id = home_prompt_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).update_leased_prompt_receipt(
+                &leased_agent_id,
+                &home_prompt_id,
+                phase,
+                worker_provider_run_id.as_deref(),
+            )
+        })
+        .await
+    }
+
     pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
         self.with_app_side_effect(|app| app.relay_registration())
             .await
@@ -308,15 +329,30 @@ impl KernelRuntimeState {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
+        let operation = move |app: &mut DaemonApp| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
             runtime.update_leased_agent_remote_extension_manifest(
                 &leased_agent_id,
                 remote_extension_manifest,
             )
-        })
-        .await
+        };
+        #[cfg(test)]
+        if let Some(observer) = self.take_capability_push_lock_observer_for_test() {
+            use std::future::Future;
+            let mut observer = Some(observer);
+            let mut lock = Box::pin(self.app.lock());
+            let mut app = std::future::poll_fn(|cx| {
+                let result = lock.as_mut().poll(cx);
+                if let Some(observer) = observer.take() {
+                    let _ = observer.send(result.is_ready());
+                }
+                result
+            })
+            .await;
+            return operation(&mut app);
+        }
+        self.with_app_side_effect(operation).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -407,6 +443,66 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn query_relay_leased_prompt_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+        let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
+        let leased_agent_id = leased_agent_id.to_string();
+        let home_prompt_id = home_prompt_id.to_string();
+        let provider_run_id = self
+            .with_app_side_effect(|app| {
+                RemoteLeaseRuntime::new(app)
+                    .leased_prompt_receipt_provider_run_id(&leased_agent_id, &home_prompt_id)
+            })
+            .await?;
+        let _provider_lane = match provider_run_id.as_deref() {
+            Some(provider_run_id) => {
+                Some(self.provider_runtime_lanes.acquire(provider_run_id).await)
+            }
+            None => None,
+        };
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.leased_prompt_receipt(&leased_agent_id, &home_prompt_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn reconcile_relay_leased_prompt_steer_receipt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        execution_lease_id: &str,
+    ) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
+        let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
+        let _provider_lane = self
+            .provider_runtime_lanes
+            .acquire(worker_provider_run_id)
+            .await;
+        let leased_agent_id = leased_agent_id.to_string();
+        let steer_id = steer_id.to_string();
+        let target_home_prompt_id = target_home_prompt_id.to_string();
+        let worker_provider_run_id = worker_provider_run_id.to_string();
+        let execution_lease_id = execution_lease_id.to_string();
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.reconcile_leased_prompt_steer_receipt(
+                &leased_agent_id,
+                &steer_id,
+                &target_home_prompt_id,
+                &worker_provider_run_id,
+                &execution_lease_id,
+            )
+        })
+        .await
+    }
+
     // Keep the relay request fields explicit, like the adjacent lease adapters.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn submit_relay_leased_prompt(
@@ -429,35 +525,112 @@ impl KernelRuntimeState {
         let leased_agent_id = leased_agent_id.to_string();
         let prompt = prompt.to_string();
         let hidden_system_context = hidden_system_context.to_string();
-        let replay_leased_agent_id = leased_agent_id.clone();
-        let replay_git_context = git_context.clone();
-        if let Some(replayed) = self
+        let home_prompt_id = git_context
+            .as_ref()
+            .map(|context| context.home_prompt_id.clone())
+            .filter(|prompt_id| !prompt_id.trim().is_empty());
+        let begin_leased_agent_id = leased_agent_id.clone();
+        let begin_home_prompt_id = home_prompt_id.clone();
+        let existing_receipt = self
             .with_app_side_effect(move |app| {
                 let mut runtime = RemoteLeaseRuntime::new(app);
-                runtime.consume_leased_agent_authorization(&replay_leased_agent_id)?;
+                runtime.consume_leased_agent_authorization(&begin_leased_agent_id)?;
+                if let Some(home_prompt_id) = begin_home_prompt_id.as_deref() {
+                    runtime.begin_leased_prompt_receipt(&begin_leased_agent_id, home_prompt_id)
+                } else {
+                    Ok(None)
+                }
+            })
+            .await?;
+        let new_receipt = home_prompt_id.is_some() && existing_receipt.is_none();
+        if let Some(receipt) = existing_receipt.as_ref() {
+            match receipt.receipt.phase {
+                WorkerPromptReceiptPhase::Accepted => {}
+                WorkerPromptReceiptPhase::Dispatching => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "submit remote leased prompt",
+                        message: "earlier worker submission is unresolved; query its receipt before retrying"
+                            .to_string(),
+                    });
+                }
+                WorkerPromptReceiptPhase::Rejected => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "submit remote leased prompt",
+                        message: "worker rejection receipt fences this home prompt from retry"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+
+        let profile = expected_profile.clone();
+        let replay_leased_agent_id = leased_agent_id.clone();
+        let replay_git_context = git_context.clone();
+        let profile_home_prompt_id = home_prompt_id.clone();
+        let profile_receipt_is_new = new_receipt;
+        let profile_replay = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
                 // A prior profile acknowledgement may have been lost. Home remains
                 // authoritative, including when this is a retry of an active prompt.
-                runtime.update_leased_agent_profile(
+                if let Err(error) = runtime.update_leased_agent_profile(
                     &replay_leased_agent_id,
-                    expected_profile.provider,
-                    expected_profile.account_profile,
-                    expected_profile.model,
-                    expected_profile.effort,
-                )?;
-                runtime.replay_active_leased_prompt_submission(
+                    profile.provider,
+                    profile.account_profile,
+                    profile.model,
+                    profile.effort,
+                ) {
+                    if let Some(home_prompt_id) = profile_home_prompt_id
+                        .as_deref()
+                        .filter(|_| profile_receipt_is_new)
+                    {
+                        runtime.update_leased_prompt_receipt(
+                            &replay_leased_agent_id,
+                            home_prompt_id,
+                            WorkerPromptReceiptPhase::Rejected,
+                            None,
+                        )?;
+                    }
+                    return Err(error);
+                }
+                let replayed = runtime.replay_active_leased_prompt_submission(
                     &replay_leased_agent_id,
                     replay_git_context.as_ref(),
-                )
+                )?;
+                if profile_receipt_is_new {
+                    if let (Some(home_prompt_id), Some((worker_provider_run_id, _))) =
+                        (profile_home_prompt_id.as_deref(), replayed.as_ref())
+                    {
+                        runtime.update_leased_prompt_receipt(
+                            &replay_leased_agent_id,
+                            home_prompt_id,
+                            WorkerPromptReceiptPhase::Accepted,
+                            Some(worker_provider_run_id.as_str()),
+                        )?;
+                    }
+                }
+                Ok(replayed)
             })
-            .await?
-        {
+            .await?;
+        if let Some(replayed) = profile_replay {
             return Ok(replayed);
         }
-        let prepared = self
+        if existing_receipt.is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "submit remote leased prompt",
+                message: "accepted worker receipt cannot replay from current live state"
+                    .to_string(),
+            });
+        }
+
+        let leased_agent_for_prepare = leased_agent_id.clone();
+        let prompt_for_prepare = prompt.clone();
+        let context_for_prepare = home_prompt_id.clone();
+        let prepared = match self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
-                    &leased_agent_id,
-                    &prompt,
+                    &leased_agent_for_prepare,
+                    &prompt_for_prepare,
                     &hidden_system_context,
                     attachments,
                     workflow_context,
@@ -467,7 +640,23 @@ impl KernelRuntimeState {
                     remote_extension_manifest,
                 )
             })
-            .await?;
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                if let Some(home_prompt_id) = context_for_prepare.as_deref().filter(|_| new_receipt)
+                {
+                    self.update_relay_leased_prompt_admission_receipt(
+                        &leased_agent_id,
+                        home_prompt_id,
+                        WorkerPromptReceiptPhase::Rejected,
+                        None,
+                    )
+                    .await?;
+                }
+                return Err(error);
+            }
+        };
         let provider_run_id = match &prepared.provider_run {
             crate::app::PreparedLeasedProviderRun::Ready(provider_run_id) => {
                 provider_run_id.clone()
@@ -476,28 +665,77 @@ impl KernelRuntimeState {
                 if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
                     && provider_launch_credential.is_none()
                 {
+                    if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt)
+                    {
+                        self.update_relay_leased_prompt_admission_receipt(
+                            &leased_agent_id,
+                            home_prompt_id,
+                            WorkerPromptReceiptPhase::Rejected,
+                            None,
+                        )
+                        .await?;
+                    }
                     return Err(DaemonError::LocalTransport {
                         operation: "launch remote provider without credential",
                         message: format!(
                             "{}: the worker must relaunch the selected Claude profile",
-                            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                            REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
                         ),
                     });
                 }
-                self.launch_provider_for_remote_lease_detached(
-                    request.clone(),
-                    provider_launch_credential,
-                )
-                .await?
-                .id()
-                .to_string()
+                match self
+                    .launch_provider_for_remote_lease_detached(
+                        request.clone(),
+                        provider_launch_credential,
+                    )
+                    .await
+                {
+                    Ok(run) => run.id().to_string(),
+                    Err(error) => {
+                        if let Some(home_prompt_id) =
+                            home_prompt_id.as_deref().filter(|_| new_receipt)
+                        {
+                            self.update_relay_leased_prompt_admission_receipt(
+                                &leased_agent_id,
+                                home_prompt_id,
+                                WorkerPromptReceiptPhase::Rejected,
+                                None,
+                            )
+                            .await?;
+                        }
+                        return Err(error);
+                    }
+                }
             }
         };
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app)
-                .finish_prepared_leased_prompt_submission(prepared, provider_run_id)
-        })
-        .await
+        if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
+            self.update_relay_leased_prompt_admission_receipt(
+                &leased_agent_id,
+                home_prompt_id,
+                WorkerPromptReceiptPhase::Dispatching,
+                Some(provider_run_id.clone()),
+            )
+            .await?;
+        }
+        let finish_leased_agent_id = leased_agent_id.clone();
+        let finish_home_prompt_id = home_prompt_id.clone();
+        let finish_provider_run_id = provider_run_id.clone();
+        let outcome = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app)
+                    .finish_prepared_leased_prompt_submission(prepared, provider_run_id)
+            })
+            .await?;
+        if let Some(home_prompt_id) = finish_home_prompt_id.as_deref().filter(|_| new_receipt) {
+            self.update_relay_leased_prompt_admission_receipt(
+                &finish_leased_agent_id,
+                home_prompt_id,
+                WorkerPromptReceiptPhase::Accepted,
+                Some(finish_provider_run_id.clone()),
+            )
+            .await?;
+        }
+        Ok(outcome)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -526,11 +764,13 @@ impl KernelRuntimeState {
                     session_id: format!("leased-agent:{leased_agent_id}"),
                 })?;
             let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-            let (prepared_provider_run_id, dispatch) = self
+            self.with_app_side_effect(|app| {
+                RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&leased_agent_id)
+            })
+            .await?;
+            let prepared_result = self
                 .with_app_side_effect(|app| {
-                    let mut runtime = RemoteLeaseRuntime::new(app);
-                    runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-                    runtime.prepare_leased_prompt_steer(
+                    RemoteLeaseRuntime::new(app).prepare_leased_prompt_steer(
                         &leased_agent_id,
                         &steer_id,
                         &target_home_prompt_id,
@@ -540,32 +780,98 @@ impl KernelRuntimeState {
                         required_skills.clone(),
                     )
                 })
-                .await?;
+                .await;
+            let (prepared_provider_run_id, dispatch) = match prepared_result {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let _ = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app).mark_leased_prompt_steer_rejected(
+                                &leased_agent_id,
+                                &steer_id,
+                                &target_home_prompt_id,
+                                &provider_run_id,
+                            )
+                        })
+                        .await;
+                    return Err(error);
+                }
+            };
             if prepared_provider_run_id != provider_run_id {
                 continue;
             }
             let Some(dispatch) = dispatch else {
                 return Ok((provider_run_id, true));
             };
-            let reserved = self
+            let reserve_result = self
                 .with_app_side_effect(|app| {
                     RemoteLeaseRuntime::new(app).reserve_leased_prompt_steer(
                         &leased_agent_id,
                         &steer_id,
                         &target_home_prompt_id,
+                        &prepared_provider_run_id,
                     )
                 })
-                .await?;
+                .await;
+            let reserved = match reserve_result {
+                Ok(reserved) => reserved,
+                Err(error) => {
+                    let _ = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app)
+                                .mark_leased_prompt_steer_definitely_not_accepted(
+                                    &leased_agent_id,
+                                    &steer_id,
+                                    &target_home_prompt_id,
+                                    &prepared_provider_run_id,
+                                )
+                        })
+                        .await;
+                    return Err(error);
+                }
+            };
             if !reserved {
                 return Ok((provider_run_id, true));
             }
-            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                self.with_app_side_effect(|app| {
-                    RemoteLeaseRuntime::new(app)
-                        .rollback_leased_prompt_steer(&leased_agent_id, &steer_id);
-                })
-                .await;
-                return Err(error);
+            match self
+                .enqueue_prompt_dispatch_with_acceptance(&dispatch)
+                .await
+            {
+                Ok(true) => {
+                    self.with_app_side_effect(|app| {
+                        RemoteLeaseRuntime::new(app).mark_leased_prompt_steer_accepted(
+                            &leased_agent_id,
+                            &steer_id,
+                            &target_home_prompt_id,
+                            &prepared_provider_run_id,
+                        )
+                    })
+                    .await?;
+                }
+                Ok(false) => {
+                    let rejected = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app)
+                                .mark_leased_prompt_steer_definitely_not_accepted(
+                                    &leased_agent_id,
+                                    &steer_id,
+                                    &target_home_prompt_id,
+                                    &prepared_provider_run_id,
+                                )
+                        })
+                        .await?;
+                    if !rejected {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "steer leased prompt",
+                            message: "worker did not enqueue the steer and could not persist an exact rejection receipt"
+                                .to_string(),
+                        });
+                    }
+                    return Err(DaemonError::NoActivePrompt {
+                        session_id: format!("leased-agent:{leased_agent_id}"),
+                    });
+                }
+                Err(error) => return Err(error),
             }
             return Ok((provider_run_id, false));
         }
@@ -624,6 +930,31 @@ impl KernelRuntimeState {
             runtime.complete_leased_prompt(&leased_agent_id)
         })
         .await
+    }
+
+    pub(crate) async fn relay_resolve_leased_project_environment_setup_target(
+        &self,
+        leased_agent_id: &str,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<(String, String), DaemonError> {
+        let authorization_id = leased_agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&authorization_id)?;
+            runtime.project_environment_setup_target(
+                &authorization_id,
+                &home_session_id,
+                &home_agent_id,
+                None,
+            )
+        })
+        .await?;
+        let config = self.owned.config_projection.snapshot();
+        Ok((
+            config.host_machine_id,
+            super::project_environment_setup::current_worker_platform(),
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -704,6 +1035,47 @@ impl KernelRuntimeState {
             target,
             &target_leased_agent_id,
             &operation_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_acknowledge_leased_project_environment_setup_definition(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        definition_digest: String,
+    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupDefinitionAck, DaemonError>
+    {
+        let authorization_id = leased_agent_id.to_string();
+        let target_leased_agent_id = authorization_id.clone();
+        let worker_leased_agent_id = target_leased_agent_id.clone();
+        let target_home_session_id = home_session_id.clone();
+        let target_home_agent_id = home_agent_id.clone();
+        let target = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&authorization_id)?;
+                runtime.project_environment_setup_target(
+                    &worker_leased_agent_id,
+                    &target_home_session_id,
+                    &target_home_agent_id,
+                    None,
+                )
+            })
+            .await?;
+        self.acknowledge_leased_project_environment_setup_definition(
+            target,
+            &target_leased_agent_id,
+            &operation_id,
+            attempt,
+            &project_id,
+            &home_session_id,
+            &home_agent_id,
+            &definition_digest,
         )
         .await
     }
@@ -791,19 +1163,27 @@ impl KernelRuntimeState {
     pub(crate) async fn cancel_relay_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        let authorized_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&authorized_id)
-        })
-        .await?;
-        self.cancel_remote_home_extension_invocations_for_leased_agent(leased_agent_id)
-            .await;
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).cancel_leased_prompt(&leased_agent_id)
-        })
-        .await
+        let app_leased_agent_id = leased_agent_id.clone();
+        let home_prompt_id = home_prompt_id.to_string();
+        let worker_provider_run_id = worker_provider_run_id.to_string();
+        let cancellation = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&app_leased_agent_id)?;
+                runtime.cancel_leased_prompt(
+                    &app_leased_agent_id,
+                    &home_prompt_id,
+                    &worker_provider_run_id,
+                )
+            })
+            .await?;
+        self.cancel_remote_home_extension_invocations_for_leased_agent(&leased_agent_id)
+            .await;
+        Ok(cancellation)
     }
 
     pub(crate) async fn relay_leased_agent_provider_run_id(
@@ -909,6 +1289,9 @@ impl KernelRuntimeState {
             .await?;
         if !outcome.accepted {
             return Ok(());
+        }
+        for intent in outcome.remote_dispatches {
+            self.spawn_remote_prompt_dispatch(intent.dispatch);
         }
         if let Some(failure) = outcome.provider_failure {
             self.finish_remote_provider_failure(
@@ -1104,8 +1487,8 @@ mod relay_native_provider_launch_tests {
     fn native_lease_fixture() -> NativeLeaseFixture {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        let mut app = crate::app::DaemonApp::bootstrap(config)
-            .expect("worker app should bootstrap");
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("worker app should bootstrap");
         let (leased_agent_id, matching_request) = {
             let mut runtime = RemoteLeaseRuntime::new(&mut app);
             let lease = runtime

@@ -100,4 +100,10 @@ pub use workspace::*;
 /// Version 342 carries the create-selected trusted managed repository root and
 /// returns the persisted root in managed-environment summaries.
 /// Version 343 carries the originating home prompt in forwarded worker tool context.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 343;
+/// Version 344 carries the home-owned Room browser capability in provider-run responses.
+/// Version 345 carries provider/Cloud owner-bound correlation metadata.
+/// Version 346 adds an explicit fresh relay kernel inventory observation.
+/// Version 347 requires home persistence acknowledgment before leased setup validation.
+/// Version 348 projects owner-authorized managed activity and operation history.
+/// Version 349 binds CLI relay and display requests to a persisted terminal key.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 349;

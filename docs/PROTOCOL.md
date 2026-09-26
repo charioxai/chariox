@@ -1661,6 +1661,79 @@ Workflow trigger and deployment direction:
   turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
   at peer binding before provider dispatch rather than failing on a missing
   tool field mid-turn. The local daemon shape and client minimums do not change.
+- protocol 344 and relay peer protocol 58 add `room_browser_available` to the
+  home-authored remote extension manifest. The field defaults to false and is
+  omitted when false. It advertises the Room's shared browser independently of
+  the leased agent's execution placement. It does not grant authority: home
+  validates current Room membership, worker/run binding, and Environment
+  binding on every forwarded browser call. Client minimums remain unchanged.
+  Successful Environment binding and deletion enqueue manifest refreshes for
+  agents already leased in the Room, without waiting for another prompt.
+  Refreshes share the leased-agent operation lane with grant updates and
+  retries, and recompute the manifest after acquiring that lane. The binding
+  operation does not wait for relay I/O. Until delivery succeeds, tools may
+  remain hidden after binding or advertised after deletion; forwarded calls
+  still validate the current binding at home. Stop and input release do not
+  remove the Environment binding. Live validation must cover updates to an
+  already-running agent, not only an Environment bound before agent launch.
+- protocol 345 adds owner-authenticated, read-only
+  `GetManagedEnvironmentReimageReceipt` and `ManagedEnvironmentReimageReceipt`.
+  The home kernel reads Cloud's existing receipt route using its authenticated
+  Cloud session and rejects a response for a different environment. This request
+  does not admit a rebuild, authorize context transfer, or introduce another
+  runtime authority. Clients using this request require protocol 345; existing
+  web/native minimum versions remain unchanged. The request/response snapshot
+  and managed-control drill cover owner/session admission, URL escaping,
+  environment binding, and incomplete versus finalized receipt projection.
+  `apps/cli/scripts/path1-cloud-reimage-capture.mjs` uses this shared request
+  against the reviewed local home kernel. It checks the selected operation,
+  generation and release binding and retains only allowlisted receipt fields
+  in a new external mode-0600 file. It is not the full fresh-equivalent rebuild
+  gate and does not independently verify Cloud's receipt digest.
+- relay peer protocol 60 adds durable queued-steer receipts and the
+  `ReconcileLeasedPromptSteerReceipt` operation. It carries the exact queued
+  home prompt, target active home prompt, worker provider run, and execution
+  lease. The existing `GetLeasedPromptReceipt` remains read-only. A receipt names the exact queued
+  home prompt, target active home prompt, worker provider run, and execution
+  lease, and reports `steer_dispatching`, `steer_accepted`, or
+  `steer_rejected`. The worker persists `dispatching` before provider enqueue,
+  changes it to accepted only after local dispatch accepts the input, and
+  records rejection only when non-admission is known. After a lost steer reply,
+  the home keeps the exact queue item durably held and queries only the current
+  matching worker binding. It removes that item after an exact accepted receipt
+  or releases it after an exact rejected receipt. Under the worker run lane,
+  reconciliation records a durable rejected tombstone when no receipt exists;
+  a delayed original steer then encounters that tombstone and cannot enqueue.
+  Dispatching, stale, or conflicting receipts never replay or promote the uncertain item. The
+  focused fake-relay regression covers lost-reply acceptance, restart hold,
+  receipt reconciliation, and at-most-once worker input. The local daemon
+  request and response shapes are unchanged, so client minimum versions do not
+  change; home and worker kernels must both support relay peer protocol 60.
+  Lease operations also bind the authenticated home daemon and sender key to
+  the worker's execution lease. Leases created before that binding was stored
+  cannot pass the new authorization check after an upgrade; the home must
+  rebind them with a current peer protocol instead of reusing the old lease.
+- relay peer protocol 61 adds `ResolveLeasedProjectEnvironmentSetupTarget` and
+  `LeasedProjectEnvironmentSetupTargetResolved`. Before starting Project setup,
+  the home kernel derives the selected worker from the agent binding and asks
+  that authenticated lease worker for its actual platform. An explicitly
+  supplied worker or platform remains an assertion and must match the resolved
+  values; empty fields request resolution. The worker verifies the leased
+  agent and home session/agent binding before replying. The local-daemon shape
+  and client minimum versions do not change; remote Project setup requires
+  both home and worker kernels to support relay peer protocol 61.
+- relay peer protocol 62 gives original leased prompts a durable worker admission
+  receipt using the existing `GetLeasedPromptReceipt` response. A receipt with
+  no `target_home_prompt_id` and an exact `execution_lease_id` reports
+  `steer_dispatching` before the worker starts provider admission, then
+  `active` or `completed` after admission, or `steer_rejected` only when
+  non-admission is known. A lost reply must be reconciled against the current
+  leased agent and execution lease; an absent or dispatching receipt is not
+  proof that resubmission is safe. Worker restart retains the receipt, so a
+  delayed duplicate cannot launch a second provider prompt. The wire shape
+  is unchanged, but the receipt's original-prompt semantics require both home
+  and worker kernels to support relay peer protocol 62. Local-daemon client
+  minimum versions do not change.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

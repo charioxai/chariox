@@ -43,6 +43,8 @@ export type SliceCommandHandlerDeps = {
   isAttached?: () => boolean
   sessionId?: () => string
   attachmentId?: () => string | null
+  createViewerPublicKey?: () => Promise<string>
+  isRelayConnection?: () => boolean
   sendRoomEnvironmentRequest?: <TResponse>(request: unknown) => Promise<TResponse>
   openRoomViewer?: (target: RoomViewerTarget) => Promise<RoomViewerOpenResult | null>
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
@@ -58,7 +60,10 @@ export type SliceCommandHandlerDeps = {
   importSliceProviderAuth?: (sliceRef: string, provider: string, accountProfile: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
   removeSliceProviderAuth?: (sliceRef: string, provider: string, accountProfile: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
   startSliceProviderLogin?: (sliceRef: string, provider: string, accountProfile: string) => Promise<{ slice: SliceRecord; login: SliceProviderLogin }>
-  getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
+  getSliceDisplayEndpoint?: (
+    sliceRef: string,
+    room?: { sessionId: string; attachmentId: string; viewerPublicKey: string },
+  ) => Promise<SliceDisplayEndpoint>
   getSliceLogs?: (sliceRef: string, tailLines?: number | null) => Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }>
   listSliceAudit?: (sliceRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
   saveSliceState?: (sliceRef: string, mode?: "restart_agents" | "shutdown" | null, scope?: "this_slice" | "future_slices" | null) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }>

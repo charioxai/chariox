@@ -55,6 +55,17 @@ pub(crate) enum TestPeerRequestObservation {
     StartProjectEnvironmentSetup {
         operation_id: String,
     },
+    RetryProjectEnvironmentSetup {
+        operation_id: String,
+        leased_agent_id: String,
+        release: oneshot::Sender<()>,
+    },
+    AcknowledgeProjectEnvironmentSetupDefinition {
+        operation_id: String,
+        attempt: u32,
+        definition_digest: String,
+        release: oneshot::Sender<()>,
+    },
     GetProjectEnvironmentSetupStatus {
         operation_id: String,
         release: oneshot::Sender<()>,
@@ -502,6 +513,38 @@ impl RelayClientState {
                 },
                 None,
             ),
+            RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
+                leased_agent_id,
+                operation_id,
+                ..
+            } => {
+                let (release_tx, release_rx) = oneshot::channel();
+                (
+                    TestPeerRequestObservation::RetryProjectEnvironmentSetup {
+                        operation_id: operation_id.clone(),
+                        leased_agent_id: leased_agent_id.clone(),
+                        release: release_tx,
+                    },
+                    Some(release_rx),
+                )
+            }
+            RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+                operation_id,
+                attempt,
+                definition_digest,
+                ..
+            } => {
+                let (release_tx, release_rx) = oneshot::channel();
+                (
+                    TestPeerRequestObservation::AcknowledgeProjectEnvironmentSetupDefinition {
+                        operation_id: operation_id.clone(),
+                        attempt: *attempt,
+                        definition_digest: definition_digest.clone(),
+                        release: release_tx,
+                    },
+                    Some(release_rx),
+                )
+            }
             RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { operation_id, .. } => {
                 let (release_tx, release_rx) = oneshot::channel();
                 (

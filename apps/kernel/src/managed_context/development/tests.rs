@@ -856,17 +856,17 @@ fn managed_publication_preserves_basename_under_trusted_root_and_recovers_retry(
         expected_source_repositories: None,
         destination_root: control_parent.join("transfer-1"),
     };
-    let receipt = import_development_context_with_publication(
-        request.clone(),
-        "transfer-1".to_string(),
-    )
-    .expect("publish under the bootstrap-selected repository root");
+    let receipt =
+        import_development_context_with_publication(request.clone(), "transfer-1".to_string())
+            .expect("publish under the bootstrap-selected repository root");
     let copied_repository = repository_root.join("source-project-name");
-    assert_eq!(receipt.repositories[0].target_directory, "source-project-name");
+    assert_eq!(
+        receipt.repositories[0].target_directory,
+        "source-project-name"
+    );
     assert_eq!(receipt.repositories[0].destination_path, copied_repository);
     assert_eq!(
-        fs::read_to_string(copied_repository.join("tracked.txt"))
-            .expect("read copied repository"),
+        fs::read_to_string(copied_repository.join("tracked.txt")).expect("read copied repository"),
         "copied repository\n"
     );
     assert_eq!(
@@ -894,8 +894,8 @@ fn managed_publication_rejects_existing_and_symlink_repository_targets() {
 
     let source = root.join("same-basename");
     init_repository(&source, "tracked.txt", "source\n");
-    let exported = one_repo_export(&root, &source, "target-collision")
-        .expect("export collision fixture");
+    let exported =
+        one_repo_export(&root, &source, "target-collision").expect("export collision fixture");
     let occupied = repository_root.join("same-basename");
     fs::create_dir_all(&occupied).expect("create existing repository target");
     fs::write(occupied.join("owner.txt"), "keep existing data\n")
@@ -967,8 +967,8 @@ fn managed_publication_rejects_symlinked_and_traversing_repository_roots() {
 
     let source = root.join("unsafe-root-repository");
     init_repository(&source, "tracked.txt", "source\n");
-    let exported = one_repo_export(&root, &source, "unsafe-managed-root")
-        .expect("export unsafe-root fixture");
+    let exported =
+        one_repo_export(&root, &source, "unsafe-managed-root").expect("export unsafe-root fixture");
 
     let repository_root_link = root.join("selected-root-link");
     symlink(&repository_root, &repository_root_link).expect("create root symlink");
@@ -987,7 +987,9 @@ fn managed_publication_rejects_symlinked_and_traversing_repository_roots() {
         "symlink-root".to_string(),
     )
     .expect_err("a symlink repository root must be rejected");
-    assert!(symlink_error.to_string().contains("must be a real directory"));
+    assert!(symlink_error
+        .to_string()
+        .contains("must be a real directory"));
     assert!(!control_parent.join("symlink-root").exists());
     assert!(!repository_root.join("unsafe-root-repository").exists());
 
@@ -1007,7 +1009,9 @@ fn managed_publication_rejects_symlinked_and_traversing_repository_roots() {
         "traversing-root".to_string(),
     )
     .expect_err("a parent-directory root component must be rejected");
-    assert!(traversal_error.to_string().contains("managed repository root"));
+    assert!(traversal_error
+        .to_string()
+        .contains("managed repository root"));
     assert!(!control_parent.join("traversing-root").exists());
     assert!(!repository_root.join("unsafe-root-repository").exists());
 
@@ -1934,6 +1938,104 @@ fn managed_materialization_uses_the_bootstrap_repository_root() {
         }
         None => std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV),
     }
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_import_rejects_repository_root_alias_into_kernel_state_before_copy() {
+    use std::os::unix::fs::symlink;
+
+    let _lock = crate::env_lock::lock();
+    let root = test_root("managed-root-state-alias");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let chariox_home = root.join("home/.chariox");
+    let protected_repositories = chariox_home.join("repositories");
+    let root_alias = root.join("alias");
+    let selected_root = root_alias.join("repositories");
+    fs::create_dir_all(&control_parent).expect("create control parent");
+    fs::create_dir_all(&protected_repositories).expect("create protected repository fixture");
+    symlink(&chariox_home, &root_alias).expect("alias protected state ancestor");
+
+    let source = root.join("source-project");
+    init_repository(&source, "tracked.txt", "source remains separate\n");
+    let exported = one_repo_export(&root, &source, "managed-root-state-alias")
+        .expect("export source repository");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &selected_root);
+    let _state_home =
+        TestEnvironmentVariableGuard::set("CHARIOX_HOME", Some(chariox_home.as_os_str()));
+
+    let error = import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: "project-managed-root-state-alias".to_string(),
+            expected_source_repositories: None,
+            destination_root: control_parent.join("transfer-1"),
+        },
+        "transfer-1".to_string(),
+    )
+    .expect_err("custom root resolving inside kernel state must fail before copy");
+    assert!(
+        error
+            .to_string()
+            .contains("protected Chariox service state"),
+        "unexpected import rejection: {error}"
+    );
+    assert!(matches!(error, DaemonError::ManagedContext { .. }));
+    assert!(!protected_repositories.join("source-project").exists());
+    assert!(!control_parent.join("transfer-1").exists());
+
+    drop(_state_home);
+    drop(_environment);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_import_rejects_protected_repository_destination_below_allowed_root() {
+    let _lock = crate::env_lock::lock();
+    let root = test_root("managed-protected-repository-destination");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let repository_root = root.join("selected-root");
+    let protected_destination = repository_root.join("chariox");
+    fs::create_dir_all(&control_parent).expect("create control parent");
+    fs::create_dir_all(&repository_root).expect("create selected repository root");
+
+    let source = root.join("chariox");
+    init_repository(&source, "tracked.txt", "source remains separate\n");
+    let exported =
+        one_repo_export(&root, &source, "protected-destination").expect("export source repository");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &repository_root);
+    let _protected_root = TestEnvironmentVariableGuard::set(
+        "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+        Some(protected_destination.as_os_str()),
+    );
+
+    let error = import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: "project-protected-destination".to_string(),
+            expected_source_repositories: None,
+            destination_root: control_parent.join("transfer-1"),
+        },
+        "transfer-1".to_string(),
+    )
+    .expect_err("protected final repository destination must fail before copy");
+    assert!(
+        error
+            .to_string()
+            .contains("protected Chariox service state"),
+        "unexpected import rejection: {error}"
+    );
+    assert!(matches!(error, DaemonError::ManagedContext { .. }));
+    assert!(!protected_destination.exists());
+    assert!(!control_parent.join("transfer-1").exists());
+
+    drop(_protected_root);
+    drop(_environment);
     fs::remove_dir_all(root).expect("remove test root");
 }
 

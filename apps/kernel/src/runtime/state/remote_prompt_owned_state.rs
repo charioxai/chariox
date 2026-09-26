@@ -5,7 +5,92 @@
 
 use super::*;
 
+pub(super) enum RemotePromptDispatchSettlement {
+    Settled(crate::session::PromptQueueItem),
+    Superseded,
+    BindingChanged(crate::session::PromptQueueItem),
+}
+
 impl KernelRuntimeOwnedState {
+    pub(super) fn settle_remote_dispatch_if_current(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        delivered_run_id: Option<&str>,
+    ) -> Result<RemotePromptDispatchSettlement, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let session = sessions.get_session(&dispatch.session_id)?;
+        let mut binding_changed = None;
+        let settled = self
+            .prompt_state_owner
+            .settle_active_remote_dispatch_if_matches(
+                &session,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                delivered_run_id,
+                |previous, active, queued| {
+                    // Lock order: activity -> session -> prompt owner -> agent.
+                    // No projection/history helper may reenter prompt ownership here.
+                    let mut agents = self.agent_store.write();
+                    let agent = agents.get_agent(&dispatch.agent_id)?;
+                    if !agent.remote_execution().is_some_and(|binding| {
+                        binding.worker_kernel_id == dispatch.worker_kernel_id
+                            && binding.leased_agent_id == dispatch.leased_agent_id
+                    }) {
+                        binding_changed = Some(previous.clone());
+                        return Ok(false);
+                    }
+                    let mirrored = sessions.mirror_agent_prompt_state(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        active,
+                        queued.clone(),
+                    )?;
+                    // Persist under the ownership locks so a successor cannot
+                    // race the durable commit. This briefly blocks readers.
+                    if let Err(error) =
+                        self.persist_prompt_session_state(&mirrored, &dispatch.agent_id)
+                    {
+                        sessions.mirror_agent_prompt_state(
+                            &dispatch.session_id,
+                            &dispatch.agent_id,
+                            Some(previous.clone()),
+                            queued,
+                        )?;
+                        return Err(error);
+                    }
+                    agents.set_remote_execution_active_worker_provider_run_id(
+                        &dispatch.agent_id,
+                        delivered_run_id.map(str::to_string),
+                    )?;
+                    if delivered_run_id.is_some() {
+                        if agent.state() == crate::agent::AgentState::Error {
+                            agents.set_agent_state(
+                                &dispatch.agent_id,
+                                crate::agent::AgentState::Idle,
+                            )?;
+                        }
+                    } else {
+                        agents.set_agent_processing(&dispatch.agent_id, false)?;
+                        agents
+                            .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Error)?;
+                    }
+                    Ok(true)
+                },
+            )?;
+        // Recording activity samples session state; never do it while holding
+        // the session write lock or the nested ownership locks.
+        drop(sessions);
+        if settled.is_some() {
+            activity_mutation.record();
+        }
+        Ok(match (settled, binding_changed) {
+            (Some(prompt), _) => RemotePromptDispatchSettlement::Settled(prompt),
+            (None, Some(prompt)) => RemotePromptDispatchSettlement::BindingChanged(prompt),
+            (None, None) => RemotePromptDispatchSettlement::Superseded,
+        })
+    }
+
     pub(super) fn advance_next_queued_remote_prompt_dispatch(
         &self,
         session_id: &str,
@@ -47,6 +132,9 @@ impl KernelRuntimeOwnedState {
             else {
                 return Ok(None);
             };
+            if prompt.remote_steer_reserved() {
+                return Ok(None);
+            }
             Some(prompt)
         } else {
             None
@@ -839,9 +927,6 @@ mod tests {
                 &mut dispatch,
                 "prompt for stopped slice".to_string(),
                 Vec::new(),
-                Vec::new(),
-                None,
-                crate::extension::RemoteExtensionManifest::default(),
             )
             .await
             .expect_err("stopped slice must fail before relay transport");

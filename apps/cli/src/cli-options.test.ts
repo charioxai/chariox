@@ -5,6 +5,7 @@ import {
   applyProviderPreferenceDefaults,
   parseArgs,
   resolveConfiguredCloudRelayApiUrl,
+  terminalPairingLinkFromArgs,
 } from "./cli-options.js"
 
 test("parseArgs applies terminal pairing links", () => {
@@ -26,6 +27,12 @@ test("parseArgs applies terminal pairing links", () => {
     targetDaemonId: "kernel-1",
     targetDaemonAlias: "devbox",
   })
+})
+
+test("terminal pairing bootstrap retrieves only the pairing-link argument", () => {
+  const link = "chariox-terminal-pair-v1.fixture"
+  assert.equal(terminalPairingLinkFromArgs(["--session", "session-1", "--pairing-link", link]), link)
+  assert.equal(terminalPairingLinkFromArgs(["--session", "session-1"]), null)
 })
 
 test("parseArgs rejects invalid option combinations", () => {

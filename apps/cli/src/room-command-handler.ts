@@ -45,7 +45,9 @@ import type {
 import type { ParsedSlashCommand } from "./commands.js"
 import { sendWithProtocolMinimum, withProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import type { DownloadedRoomEnvironmentScreenshot } from "./room-screenshot-api.js"
+import { readRoomViewerAvailability } from "./room-viewer-availability.js"
 import { formatSliceStateSaved } from "./slice-command-handlers.js"
+import { formatSliceViewerAvailability } from "./slice-viewer-availability.js"
 
 type RoomCommand = Extract<ParsedSlashCommand, { kind: "room" }>
 type SliceStateSavedResponse = {
@@ -72,8 +74,11 @@ export type RoomViewerOpenResult = {
 
 export type RoomCommandHandlerDeps = {
   isAttached: () => boolean
+  attachmentId?: () => string | null
   sessionId: () => string
   focusedAgentId?: () => string | null
+  createViewerPublicKey?: () => Promise<string>
+  isRelayConnection?: () => boolean
   createIdempotencyKey?: () => string
   send: <TResponse>(request: unknown) => Promise<TResponse>
   reconnectEventStream?: () => Promise<boolean>
@@ -213,25 +218,22 @@ export async function handleRoomSlashCommand(
       deps.flashFooter("focus an agent before opening the Room Environment", "error")
       return
     }
-    const bindingResponse = await sendWithProtocolMinimum<RoomEnvironmentSliceResponse>(
-      deps.send,
-      getRoomEnvironmentSliceRequest(sessionId),
-      {
-        capability: "Room slice binding",
-        requestVariant: "GetRoomEnvironmentSlice",
-        minimumProtocolVersion: roomEnvironmentSliceBindingMinimumProtocolVersion,
-      },
-    )
-    if (!bindingResponse || typeof bindingResponse !== "object" || !("RoomEnvironmentSlice" in bindingResponse)) {
-      throw new Error("Room Environment slice response is malformed")
-    }
-    const binding = bindingResponse.RoomEnvironmentSlice.binding
+    const viewer = await readRoomViewerAvailability(deps, sessionId, "/room view", true)
+    const binding = viewer.binding
     if (!binding) {
-      deps.flashFooter("Room Environment has no bound slice to view", "error")
+      deps.flashFooter(viewer.availability.state === "unavailable"
+        ? viewer.availability.message
+        : formatSliceViewerAvailability(viewer.availability), "error")
+      return
+    }
+    if (viewer.availability.state !== "available") {
+      deps.flashFooter(viewer.availability.state === "check_required"
+        ? "Room Environment display availability was not checked; inspect the slice and retry"
+        : viewer.availability.message, "error")
       return
     }
     const opened = await deps.openViewer?.({
-      sessionId,
+      sessionId: binding.session_id,
       agentId,
       sliceId: binding.slice_id,
     })
@@ -259,7 +261,15 @@ export async function handleRoomSlashCommand(
     if (!response || typeof response !== "object" || !("RoomEnvironmentState" in response)) {
       throw new Error("Room Environment state response is malformed")
     }
-    deps.appendNotice(formatRoomEnvironmentStatus(response.RoomEnvironmentState.environment))
+    const environment = response.RoomEnvironmentState.environment
+    if (environment.session_id !== sessionId) {
+      throw new Error("Room Environment state response belongs to a different Room")
+    }
+    const viewer = await readRoomViewerAvailability(deps, sessionId, "/room status", false)
+    deps.appendNotice([
+      formatRoomEnvironmentStatus(environment),
+      formatSliceViewerAvailability(viewer.availability),
+    ].join("\n"))
     return
   }
   if (subcommand === "actions") {

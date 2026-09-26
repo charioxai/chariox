@@ -64,20 +64,27 @@ export function roomProviderSandboxConfigLines(options) {
 // this exact ready metadata against the authoritative kernel state.
 export async function prepareRoomRealProviderAgent(input) {
   const { client, requests, sessionId, sliceId, options } = input
+  const placement = resolveAgentPlacement(input)
   const accountProfile = options.accountProfile ?? "default"
   assert.ok(options.provider && options.model, "provider preparation requires a provider and model")
   assert.ok(!(input.agent && options.importFirst), "import-first must precede agent creation")
   if (options.importFirst) {
+    assert.equal(placement.kind, "slice_ref",
+      "account import is only supported for slice_ref agent placement")
     await input.checkpoint?.({ phase: "importing-account", provider: options.provider })
     unwrap(await client.send(requests.importSliceProviderAuthRequest(
-      sliceId, options.provider, accountProfile,
+      placement.sliceRef, options.provider, accountProfile,
     )), "SliceProviderAuthImported")
   }
   await input.checkpoint?.({ phase: "spawning", provider: options.provider, importFirst: options.importFirst })
   const alias = `real-${options.provider}`
   const candidate = input.agent ?? unwrap(await client.send(requests.spawnAgentRequest(
     sessionId, options.provider, alias, options.model, input.workspace,
-    options.effort ?? "low", "build", "yolo", undefined, undefined, sliceId, accountProfile,
+    options.effort ?? "low", "build", "yolo",
+    placement.kind === "kernel_ref" ? placement.kernelRef : undefined,
+    undefined,
+    placement.kind === "slice_ref" ? placement.sliceRef : undefined,
+    accountProfile,
   )), "AgentSpawned").agent
   assert.ok(candidate && typeof candidate.id === "string" && candidate.id.length > 0,
     "provider preparation did not return an agent identity")
@@ -98,15 +105,73 @@ export async function prepareRoomRealProviderAgent(input) {
 
   const slices = unwrap(await input.withTimeout(client.send(requests.listSlicesRequest()),
     5_000, "provider slice lookup"), "SlicesListed").slices
-  const matchingSlices = slices.filter((slice) => slice.id === sliceId
-    && (slice.session_id === sessionId
-      || slice.environment_session_id === sessionId
-      || slice.session_ids?.includes?.(sessionId))
-    && slice.agent_ids?.includes?.(agent.id))
-  assert.equal(matchingSlices.length, 1,
-    "provider must belong to exactly one intended slice/Room")
+  assert.ok(Array.isArray(slices), "authoritative provider slice membership is unavailable")
+  const memberships = slices.filter((item) => item.agent_ids?.includes?.(agent.id))
+  let slice = null
+  if (placement.kind === "home_kernel") {
+    assert.equal(agent.remote_execution, null,
+      "authoritative provider placement does not match the requested home kernel")
+    assert.equal(memberships.length, 0,
+      "home-kernel provider must not be duplicated on a slice")
+  } else if (placement.kind === "kernel_ref") {
+    assertRemoteKernelPlacement(agent, placement.kernelRef)
+    assert.equal(memberships.length, 0,
+      "kernel_ref provider must not be duplicated on a slice")
+  } else {
+    const matchingSlices = memberships.filter((item) => item.id === placement.sliceRef
+      && (item.session_id === sessionId
+        || item.environment_session_id === sessionId
+        || item.session_ids?.includes?.(sessionId)))
+    assert.equal(memberships.length, 1,
+      "provider must not be duplicated across slices")
+    assert.equal(matchingSlices.length, 1,
+      "provider must belong to exactly one intended slice/Room")
+    slice = matchingSlices[0]
+    if (typeof slice.worker_kernel_id === "string" && slice.worker_kernel_id.length > 0) {
+      assertRemoteKernelPlacement(agent, slice.worker_kernel_id)
+    }
+  }
   await input.checkpoint?.({ phase: "agent-prepared", provider: agent.provider, agentId: agent.id })
-  return { agent, slice: matchingSlices[0], accountProfile }
+  return { agent, slice, accountProfile, placement }
+}
+
+function resolveAgentPlacement(input) {
+  const placement = input.agentPlacement
+  if (placement === undefined || placement === null) {
+    const sliceRef = typeof input.sliceId === "string" ? input.sliceId.trim() : ""
+    assert.ok(sliceRef, "provider placement requires agentPlacement or the existing sliceId")
+    return { kind: "slice_ref", sliceRef }
+  }
+  assert.ok(placement && typeof placement === "object" && !Array.isArray(placement),
+    "agentPlacement must be an object")
+  const keys = Object.keys(placement).sort()
+  if (placement.kind === "home_kernel") {
+    assert.deepEqual(keys, ["kind"], "home_kernel placement must not include a slice_ref or kernel_ref")
+    return { kind: "home_kernel" }
+  }
+  if (placement.kind === "slice_ref") {
+    assert.deepEqual(keys, ["kind", "sliceRef"], "slice_ref placement must select exactly one placement target")
+    const sliceRef = typeof placement.sliceRef === "string" ? placement.sliceRef.trim() : ""
+    assert.ok(sliceRef, "slice_ref placement requires sliceRef")
+    return { kind: "slice_ref", sliceRef }
+  }
+  if (placement.kind === "kernel_ref") {
+    assert.deepEqual(keys, ["kernelRef", "kind"], "kernel_ref placement must select exactly one placement target")
+    const kernelRef = typeof placement.kernelRef === "string" ? placement.kernelRef.trim() : ""
+    assert.ok(kernelRef, "kernel_ref placement requires kernelRef")
+    return { kind: "kernel_ref", kernelRef }
+  }
+  throw new Error("agentPlacement kind must be home_kernel, slice_ref, or kernel_ref")
+}
+
+function assertRemoteKernelPlacement(agent, workerKernelId) {
+  const binding = agent.remote_execution
+  assert.ok(binding && typeof binding === "object"
+    && binding.worker_kernel_id === workerKernelId
+    && typeof binding.worker_machine_id === "string" && binding.worker_machine_id.length > 0
+    && typeof binding.execution_lease_id === "string" && binding.execution_lease_id.length > 0
+    && typeof binding.leased_agent_id === "string" && binding.leased_agent_id.length > 0,
+  "authoritative provider placement does not match the requested worker kernel")
 }
 
 export function roomProviderAgentReadyMetadata({ agent, sessionId, sliceId, options }) {
@@ -296,6 +361,7 @@ export async function runRoomRealProviderAction(input) {
     provider: verifiedAgent.provider, model: verifiedAgent.model, accountProfile: verifiedAgent.account_profile ?? "default", importFirst: options.importFirst,
     ...(options.effort !== undefined ? { effort: verifiedAgent.effort } : {}),
     agentId: agent.id, actorId, actionId: action.action_id, mode, actionKind,
+    placement: prepared.placement,
     baselineSequence, actionSequence: action.sequence,
     settlement,
     ...(form ? { browserTask: "form", fillActionId: fillAction.action_id, fillActionSequence: fillAction.sequence } : {}),

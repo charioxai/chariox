@@ -187,7 +187,10 @@ impl KernelRuntimeState {
                 canonical_tool_name,
                 self.slice_kernel_id().is_some()
                     || matches!(provider_runs.as_slice(), [run]
-                    if self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some()),
+                    if room_browser_tools_available(
+                        self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some(),
+                        run.remote_extension_manifest().room_browser_available,
+                    )),
             );
             if is_metaagent_auth_token && !is_meta_tool && !is_metaagent_allowed_direct_tool {
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -420,9 +423,11 @@ impl KernelRuntimeState {
                     .await;
             }
             if is_slice_runtime_tool(canonical_tool_name) {
+                let provider_run =
+                    provider_run.expect("non-workflow tool should have provider run");
                 if let Some(result) = self
                     .try_dispatch_remote_room_browser_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
+                        provider_run,
                         canonical_tool_name,
                         arguments.clone(),
                     )
@@ -430,12 +435,14 @@ impl KernelRuntimeState {
                 {
                     return Ok(result);
                 }
+                ensure_leased_room_browser_context(
+                    owned
+                        .provider_run_projection
+                        .is_leased_provider_run(provider_run.id()),
+                    is_room_browser_controller_runtime_tool(canonical_tool_name),
+                )?;
                 return self
-                    .dispatch_slice_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
-                        canonical_tool_name,
-                        arguments,
-                    )
+                    .dispatch_slice_runtime_tool_call(provider_run, canonical_tool_name, arguments)
                     .await;
             }
             self.dispatch_authenticated_workflow_runtime_tool_call(
@@ -456,7 +463,10 @@ impl KernelRuntimeState {
             .filter(|spec| {
                 self.slice_kernel_id().is_some()
                     || matches!(runs, [run]
-                if self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some())
+                    if room_browser_tools_available(
+                        self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some(),
+                        run.remote_extension_manifest().room_browser_available,
+                    ))
             })
             .collect()
     }
@@ -510,6 +520,26 @@ impl KernelRuntimeState {
             .strip_prefix("slice:")
             .map(str::to_string)
     }
+}
+
+fn room_browser_tools_available(
+    local_environment_available: bool,
+    home_manifest_available: bool,
+) -> bool {
+    local_environment_available || home_manifest_available
+}
+
+fn ensure_leased_room_browser_context(
+    is_leased_provider_run: bool,
+    is_room_browser_tool: bool,
+) -> Result<(), DaemonError> {
+    if is_leased_provider_run && is_room_browser_tool {
+        return Err(DaemonError::LocalTransport {
+            operation: "dispatch leased Room browser runtime tool",
+            message: "leased Room browser tool has no authoritative home invocation context; refusing local slice fallback".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
@@ -702,5 +732,30 @@ mod tests {
         ] {
             assert_eq!(super::canonical_room_browser_runtime_tool(name), None);
         }
+    }
+
+    #[test]
+    fn room_browser_tools_are_not_advertised_without_environment_or_home_capability() {
+        let manifest = crate::extension::RemoteExtensionManifest::default();
+        let available = super::room_browser_tools_available(false, manifest.room_browser_available);
+        let advertised = crate::transport::runtime_tools::slice_runtime_tool_specs()
+            .into_iter()
+            .filter(|_| available)
+            .collect::<Vec<_>>();
+
+        assert!(advertised.is_empty());
+        assert!(!super::room_browser_tools_available(false, false));
+        assert!(super::room_browser_tools_available(true, false));
+        assert!(super::room_browser_tools_available(false, true));
+    }
+
+    #[test]
+    fn leased_room_browser_missing_context_fails_closed_before_local_fallback() {
+        let error = super::ensure_leased_room_browser_context(true, true)
+            .expect_err("missing home context must reject the local fallback");
+
+        assert!(error.to_string().contains("refusing local slice fallback"));
+        assert!(super::ensure_leased_room_browser_context(false, true).is_ok());
+        assert!(super::ensure_leased_room_browser_context(true, false).is_ok());
     }
 }

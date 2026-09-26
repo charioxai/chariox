@@ -29,8 +29,18 @@ pub(super) struct SetupEntry {
     pub(super) status: ProjectEnvironmentSetupStatus,
     pub(super) fingerprint: String,
     pub(super) cancel_requested: bool,
+    #[serde(default)]
+    pub(super) home_definition_ack: Option<HomeDefinitionPersistenceAck>,
     #[serde(skip)]
     active_executions: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct HomeDefinitionPersistenceAck {
+    pub(super) attempt: u32,
+    pub(super) lease_id: String,
+    pub(super) project_id: String,
+    pub(super) definition_digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +56,12 @@ pub(super) enum RemoteSetupRecoveryDecision {
     Acknowledged,
     Cancelled,
     Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteSetupReconcileSource {
+    StatusObservation,
+    InitialStartReply,
 }
 
 #[derive(Debug, Clone)]
@@ -306,6 +322,7 @@ impl ProjectEnvironmentSetupStore {
             status: status.clone(),
             fingerprint,
             cancel_requested: false,
+            home_definition_ack: None,
             active_executions: 0,
         };
         entries.insert(status.operation_id.clone(), entry.clone());
@@ -359,6 +376,7 @@ impl ProjectEnvironmentSetupStore {
         entry.status.retryable = true;
         entry.status.updated_at_ms = crate::session::unix_epoch_ms();
         entry.cancel_requested = false;
+        entry.home_definition_ack = None;
         let execution = entry.execution.clone();
         let status = entry.status.clone();
         let persisted = entry.clone();
@@ -902,6 +920,34 @@ impl ProjectEnvironmentSetupStore {
         definition: Option<ProjectEnvironmentDefinition>,
         observation_generation: Option<u64>,
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        self.reconcile_remote_with(
+            operation_id,
+            expected,
+            status,
+            definition,
+            observation_generation,
+            RemoteSetupReconcileSource::StatusObservation,
+            |_, _, _| Ok(()),
+        )
+    }
+
+    pub(super) fn reconcile_remote_with<F>(
+        &self,
+        operation_id: &str,
+        expected: &SetupExecution,
+        status: ProjectEnvironmentSetupStatus,
+        definition: Option<ProjectEnvironmentDefinition>,
+        observation_generation: Option<u64>,
+        source: RemoteSetupReconcileSource,
+        before_commit: F,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError>
+    where
+        F: FnOnce(
+            &mut SetupEntry,
+            &ProjectEnvironmentSetupStatus,
+            Option<&ProjectEnvironmentDefinition>,
+        ) -> Result<(), DaemonError>,
+    {
         let mut entries = self
             .entries
             .lock()
@@ -922,7 +968,91 @@ impl ProjectEnvironmentSetupStore {
             ));
         }
         validate_remote_setup_status(expected, entry.status.attempt, &status, definition.as_ref())?;
+        if entry.cancel_requested && status.phase != ProjectEnvironmentSetupPhase::Cancelled {
+            if matches!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Ready | ProjectEnvironmentSetupPhase::Failed
+            ) {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
+                entry.status.progress_percent = 0;
+                entry.status.validation = None;
+                entry.status.message =
+                    Some("setup cancellation completed after the worker stopped".to_string());
+                entry.status.failure_code = None;
+                entry.status.failure_message = None;
+                entry.status.retryable = true;
+                entry.status.updated_at_ms = crate::session::unix_epoch_ms();
+                let persisted = entry.clone();
+                let cancelled = entry.status.clone();
+                drop(entries);
+                self.persist(&persisted);
+                self.execution_settled.notify_waiters();
+                self.mark_remote_recovery_observed(
+                    operation_id,
+                    status.attempt,
+                    expected
+                        .remote_leased_agent_id
+                        .as_deref()
+                        .unwrap_or_default(),
+                    observation_generation,
+                );
+                return Ok(cancelled);
+            }
+            let current = entry.status.clone();
+            drop(entries);
+            self.mark_remote_recovery_observed(
+                operation_id,
+                status.attempt,
+                expected
+                    .remote_leased_agent_id
+                    .as_deref()
+                    .unwrap_or_default(),
+                observation_generation,
+            );
+            return Ok(current);
+        }
+        if matches!(
+            entry.status.phase,
+            ProjectEnvironmentSetupPhase::Ready
+                | ProjectEnvironmentSetupPhase::Failed
+                | ProjectEnvironmentSetupPhase::Cancelled
+        ) {
+            let current = entry.status.clone();
+            drop(entries);
+            self.mark_remote_recovery_observed(
+                operation_id,
+                status.attempt,
+                expected
+                    .remote_leased_agent_id
+                    .as_deref()
+                    .unwrap_or_default(),
+                observation_generation,
+            );
+            return Ok(current);
+        }
+        // Initial Start can return its Requested snapshot after a Get has
+        // already committed the same attempt's newer worker status. Ignore
+        // only that exact, definition-matched stale snapshot.
+        if source == RemoteSetupReconcileSource::InitialStartReply
+            && observation_generation.is_none()
+            && expected.operation_id == operation_id
+            && entry.execution.operation_id == operation_id
+            && status.operation_id == operation_id
+            && status.phase == ProjectEnvironmentSetupPhase::Requested
+            && matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Preparing | ProjectEnvironmentSetupPhase::Validating
+            )
+            && definition.as_ref().is_some_and(|definition| {
+                entry.execution.definition.as_ref() == Some(definition)
+                    && entry.status.definition_digest.as_ref()
+                        == status.definition_digest.as_ref()
+            })
+        {
+            return Ok(entry.status.clone());
+        }
         validate_remote_setup_transition(entry.status.phase, status.phase)?;
+        before_commit(entry, &status, definition.as_ref())?;
         if let Some(definition) = definition {
             entry.execution.definition = Some(definition);
         }
@@ -948,6 +1078,137 @@ impl ProjectEnvironmentSetupStore {
             observation_generation,
         );
         Ok(status)
+    }
+
+    pub(super) fn acknowledge_home_definition_persistence(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        lease_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        project_id: &str,
+        definition_digest: &str,
+    ) -> Result<HomeDefinitionPersistenceAck, DaemonError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get_mut(operation_id)
+            .ok_or_else(|| setup_error("setup operation was not found"))?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+            || entry.execution.remote_leased_agent_id.as_deref() != Some(lease_id)
+            || entry.execution.session_id != home_session_id
+            || entry.execution.agent_id != home_agent_id
+            || entry.execution.project_id != project_id
+        {
+            return Err(setup_error(
+                "home definition acknowledgment does not match the active leased setup attempt",
+            ));
+        }
+        let definition = entry
+            .execution
+            .definition
+            .as_ref()
+            .filter(|definition| {
+                definition.origin == ProjectEnvironmentDefinitionOrigin::UtilityGenerated
+            })
+            .ok_or_else(|| {
+                setup_error("worker has no utility-generated definition to acknowledge")
+            })?;
+        if definition.digest() != definition_digest
+            || entry.status.definition_digest.as_deref() != Some(definition_digest)
+        {
+            return Err(setup_error(
+                "home definition acknowledgment digest does not match the staged definition",
+            ));
+        }
+        let acknowledgment = HomeDefinitionPersistenceAck {
+            attempt,
+            lease_id: lease_id.to_string(),
+            project_id: project_id.to_string(),
+            definition_digest: definition_digest.to_string(),
+        };
+        if let Some(previous) = entry.home_definition_ack.as_ref() {
+            if previous != &acknowledgment {
+                return Err(setup_error(
+                    "home definition acknowledgment conflicts with the staged attempt",
+                ));
+            }
+            return Ok(acknowledgment);
+        }
+        if entry.status.phase == ProjectEnvironmentSetupPhase::Validating {
+            return Err(setup_error(
+                "worker validation began without a home definition acknowledgment",
+            ));
+        }
+        entry.home_definition_ack = Some(acknowledgment.clone());
+        let persisted = entry.clone();
+        drop(entries);
+        self.persist(&persisted);
+        self.execution_settled.notify_waiters();
+        Ok(acknowledgment)
+    }
+
+    pub(super) async fn wait_for_home_definition_persistence_ack(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        lease_id: &str,
+        project_id: &str,
+        definition_digest: &str,
+    ) -> Result<(), DaemonError> {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let settled = self.execution_settled.notified();
+                tokio::pin!(settled);
+                settled.as_mut().enable();
+                let acknowledged = {
+                    let entries = self
+                        .entries
+                        .lock()
+                        .expect("setup state lock should not be poisoned");
+                    let entry = entries
+                        .get(operation_id)
+                        .ok_or_else(|| setup_error("setup operation was not found"))?;
+                    if entry.status.attempt != attempt
+                        || entry.cancel_requested
+                        || matches!(
+                            entry.status.phase,
+                            ProjectEnvironmentSetupPhase::Ready
+                                | ProjectEnvironmentSetupPhase::Failed
+                                | ProjectEnvironmentSetupPhase::Cancelled
+                        )
+                    {
+                        return Err(setup_error(
+                            "setup attempt ended before home definition persistence was acknowledged",
+                        ));
+                    }
+                    entry.home_definition_ack.as_ref().is_some_and(|ack| {
+                        ack.attempt == attempt
+                            && ack.lease_id == lease_id
+                            && ack.project_id == project_id
+                            && ack.definition_digest == definition_digest
+                    })
+                };
+                if acknowledged {
+                    return Ok(());
+                }
+                settled.await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            setup_error("timed out waiting for home definition persistence acknowledgment")
+        })?
     }
 
     pub(super) fn cancel(
@@ -994,6 +1255,7 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.execution_settled.notify_waiters();
         self.clear_remote_recovery(operation_id);
         Ok(status)
     }
@@ -1189,7 +1451,7 @@ impl ProjectEnvironmentSetupStore {
     }
 
     pub(super) fn mark_failed(&self, operation_id: &str, attempt: u32, code: &str, message: &str) {
-        self.mark_failed_with_retryability(operation_id, attempt, code, message, true);
+        let _ = self.mark_failed_with_retryability(operation_id, attempt, code, message, true);
     }
 
     pub(super) fn mark_failed_non_retryable(
@@ -1199,7 +1461,17 @@ impl ProjectEnvironmentSetupStore {
         code: &str,
         message: &str,
     ) {
-        self.mark_failed_with_retryability(operation_id, attempt, code, message, false);
+        let _ = self.mark_failed_non_retryable_if_active(operation_id, attempt, code, message);
+    }
+
+    pub(super) fn mark_failed_non_retryable_if_active(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        code: &str,
+        message: &str,
+    ) -> bool {
+        self.mark_failed_with_retryability(operation_id, attempt, code, message, false)
     }
 
     fn mark_failed_with_retryability(
@@ -1209,22 +1481,24 @@ impl ProjectEnvironmentSetupStore {
         code: &str,
         message: &str,
         retryable: bool,
-    ) {
+    ) -> bool {
         let mut entries = self
             .entries
             .lock()
             .expect("setup state lock should not be poisoned");
         let Some(entry) = entries.get_mut(operation_id) else {
-            return;
+            return false;
         };
         if entry.status.attempt != attempt
             || entry.cancel_requested
             || matches!(
                 entry.status.phase,
-                ProjectEnvironmentSetupPhase::Ready | ProjectEnvironmentSetupPhase::Cancelled
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
             )
         {
-            return;
+            return false;
         }
         entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
         entry.status.progress_percent = 0;
@@ -1237,6 +1511,7 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        true
     }
 
     fn persist(&self, entry: &SetupEntry) {

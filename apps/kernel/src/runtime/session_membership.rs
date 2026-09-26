@@ -98,6 +98,22 @@ pub(crate) async fn authorize_session_membership(
             }
             Ok(user_id)
         }
+        SessionMembershipScope::DeleteSessionRef {
+            session_ref,
+            workspace_id,
+        } => {
+            let session_id = runtime_state
+                .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
+                .await?;
+            let session = runtime_state.session_snapshot(&session_id).await?;
+            if !session.has_member(&user_id) {
+                return Err(DaemonError::SessionAccessDenied {
+                    session_id,
+                    user_id,
+                });
+            }
+            Ok(user_id)
+        }
         SessionMembershipScope::AttachmentId(attachment_id) => {
             let session_id = if let Some(session_id) =
                 session_projection.session_id_for_attachment(&attachment_id)

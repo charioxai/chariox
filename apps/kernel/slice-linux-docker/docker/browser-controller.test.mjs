@@ -46,6 +46,105 @@ test("controller rejects invalid and unknown requests", async () => {
   );
 });
 
+test("stdio snapshot reads overlap and shutdown drains them", async (t) => {
+  const started = Promise.withResolvers();
+  const secondStarted = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const input = new PassThrough();
+  const output = new PassThrough();
+  output.resume();
+  let closed = false;
+  const browser = {
+    async snapshot(params) {
+      if (params.target_id === "first") {
+        started.resolve();
+        await release.promise;
+      } else {
+        secondStarted.resolve();
+      }
+      return {};
+    },
+    async close() { closed = true; },
+  };
+  const server = new BrowserControllerStdioServer({ input, output, browser });
+  const running = server.run();
+  t.after(async () => {
+    release.resolve();
+    input.end();
+    await running;
+    output.end();
+  });
+  input.write(`${JSON.stringify({ id: 1, method: "browser.snapshot", params: { target_id: "first" } })}\n`);
+  await started.promise;
+  input.write(`${JSON.stringify({ id: 2, method: "browser.snapshot", params: { target_id: "second" } })}\n`);
+  let timeout;
+  try {
+    await Promise.race([
+      secondStarted.promise,
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("second snapshot was serialized")), 1000); }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+  input.write(`${JSON.stringify({ id: 3, method: "shutdown" })}\n`);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closed, false, "shutdown must not close the browser during a read");
+  release.resolve();
+  input.end();
+  await running;
+  assert.equal(closed, true);
+});
+
+test("stdio snapshots preserve preceding and following mutation barriers", async (t) => {
+  const writeStarted = Promise.withResolvers();
+  const readStarted = Promise.withResolvers();
+  const releaseWrite = Promise.withResolvers();
+  const releaseRead = Promise.withResolvers();
+  const input = new PassThrough();
+  const output = new PassThrough();
+  output.resume();
+  let writes = 0;
+  let reading = false;
+  const browser = {
+    async navigate() {
+      writes += 1;
+      if (writes === 1) {
+        writeStarted.resolve();
+        await releaseWrite.promise;
+      }
+      return {};
+    },
+    async snapshot() {
+      reading = true;
+      readStarted.resolve();
+      await releaseRead.promise;
+      return {};
+    },
+  };
+  const running = new BrowserControllerStdioServer({ input, output, browser }).run();
+  t.after(async () => {
+    releaseWrite.resolve();
+    releaseRead.resolve();
+    input.end();
+    await running;
+    output.end();
+  });
+  input.write(`${JSON.stringify({ id: 1, method: "browser.navigate" })}\n`);
+  await writeStarted.promise;
+  input.write(`${JSON.stringify({ id: 2, method: "browser.snapshot" })}\n`);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reading, false);
+  releaseWrite.resolve();
+  await readStarted.promise;
+  input.write(`${JSON.stringify({ id: 3, method: "browser.navigate" })}\n`);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(writes, 1);
+  releaseRead.resolve();
+  input.end();
+  await running;
+  assert.equal(writes, 2);
+});
+
 test("stdio controller fences duplicate pending observation IDs", async (t) => {
   const started = Promise.withResolvers();
   const release = Promise.withResolvers();

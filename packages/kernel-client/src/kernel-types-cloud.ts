@@ -314,6 +314,12 @@ export type TerminalPairingLinkRecord = {
   expires_at_ms: number
 }
 
+export type TerminalPairingLinkJoined = {
+  terminal: TerminalRecord
+  pairing: PairingJoinRecord
+  relay_token?: string | null
+}
+
 export type RelayKernelPresence = {
   kernel_id: string
   machine_id: string

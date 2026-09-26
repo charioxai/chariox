@@ -301,7 +301,7 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    fn record_cancelled_prompt_settlement(
+    pub(super) fn record_cancelled_prompt_settlement(
         &self,
         session_id: &str,
         agent_id: &str,

@@ -156,6 +156,10 @@ function runVerifier(rootfs, digest, trustedPublicKey, topology, trustedBuilderP
   )
 }
 
+function installerArguments(rootfs, digest, fixture, topology = "shared_host") {
+  return [rootfs, digest, fixture.trustedPublicKey, topology]
+}
+
 async function snapshotTree(root, current = root) {
   const metadata = await lstat(current)
   const record = {
@@ -543,6 +547,7 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     "Wants=network-online.target chariox-rootless-docker.service",
     "After=network-online.target chariox-rootless-docker.service",
     "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
+    "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
   ]) {
     assert.ok(path1Unit.includes(required), `Path-1 unit is missing ${required}`)
@@ -590,6 +595,8 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     "Wants=network-online.target chariox-rootless-docker.service",
     "After=network-online.target chariox-rootless-docker.service",
     "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
+    "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker",
   ]) {
     assert.ok(workerUnit.includes(required), `Path-1 worker unit is missing ${required}`)
   }
@@ -705,12 +712,13 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
     CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: fixture.trustedBuilderPublicKey,
   }
-  const installed = spawnSync(installer, [
+  const path1InstallerArgs = installerArguments(
     join(output, "rootfs"),
     packaged.stdout.trim(),
-    fixture.trustedPublicKey,
+    fixture,
     "path1",
-  ], { encoding: "utf8", env })
+  )
+  const installed = spawnSync(installer, path1InstallerArgs, { encoding: "utf8", env })
   assert.equal(installed.status, 0, installed.stderr)
   assert.equal(
     await readFile(join(harness.installRoot, "etc/systemd/system/chariox-path1-managed-bootstrap.service"), "utf8"),
@@ -896,6 +904,14 @@ test("managed release materialization ignores ambient Git attributes and tar opt
   )
 })
 
+test("managed kernel builder rejects malformed explicit builder names", () => {
+  for (const name of ["bad/name", "b".repeat(64)]) {
+    const result = spawnSync(process.execPath, [builder, "--builder", name], { encoding: "utf8" })
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /builder name must be 1 to 63/)
+  }
+})
+
 test("managed kernel builder archives the exact commit and emits a signed binary attestation", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-builder-"))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -925,7 +941,7 @@ case "$1" in
     [ "$dockerfile" = "$source/apps/kernel/slice-linux-docker/docker/Dockerfile" ]
     [ ! -e "$source/.git" ]
     [ ! -e "$source/working-tree-only" ]
-    printf '%s\n' "$*" > '${trace}'
+    printf '%s\n' "$*" >> '${trace}'
     ;;
   run)
     case " $* " in *" --rm --pull=never --platform linux/amd64 --entrypoint cat sha256:"*) ;; *) exit 32 ;; esac
@@ -966,14 +982,15 @@ esac
 `)
   await writeFile(join(fixture.sourceRepository, "working-tree-only"), "must not enter the build\n")
   await writeFile(join(fixture.sourceRepository, ".git/info/attributes"), "* export-ignore\n")
-  const result = spawnSync(
+  const runBuilder = (destination, builderName) => spawnSync(
     process.execPath,
     [
       builder,
       "--source-repository", fixture.sourceRepository,
       "--source-commit", fixture.sourceCommit,
       "--builder-signing-key", fixture.signingKey,
-      "--output", output,
+      ...(builderName ? ["--builder", builderName] : []),
+      "--output", destination,
     ],
     {
       encoding: "utf8",
@@ -987,12 +1004,12 @@ esac
       },
     },
   )
+  const result = runBuilder(output)
   assert.equal(result.status, 0, result.stderr)
-  assert.match(await readFile(trace, "utf8"), /--target rust-builder/)
-  assert.match(
-    await readFile(trace, "utf8"),
-    /--file .*\/apps\/kernel\/slice-linux-docker\/docker\/Dockerfile/,
-  )
+  const defaultBuildArguments = await readFile(trace, "utf8")
+  assert.match(defaultBuildArguments, /--pull --platform linux\/amd64 --target rust-builder/)
+  assert.match(defaultBuildArguments, /--file .*\/apps\/kernel\/slice-linux-docker\/docker\/Dockerfile/)
+  assert.doesNotMatch(defaultBuildArguments, /--builder|--load/)
   const attestationBytes = await readFile(join(output, "build-attestation.json"))
   const attestation = JSON.parse(attestationBytes)
   assert.equal(attestation.sourceCommit, fixture.sourceCommit)
@@ -1007,6 +1024,16 @@ esac
   assert.equal(
     await readFile(join(output, "builder-public-key"), "utf8"),
     rawPublicKey(fixture.publicKey).toString("base64"),
+  )
+
+  const namedBuilderOutput = join(root, "builder-output-with-named-builder")
+  const namedBuilderResult = runBuilder(namedBuilderOutput, "capped-release-builder")
+  assert.equal(namedBuilderResult.status, 0, namedBuilderResult.stderr)
+  const buildInvocations = (await readFile(trace, "utf8")).trim().split("\n")
+  assert.equal(buildInvocations.length, 2)
+  assert.match(
+    buildInvocations[1],
+    /--builder capped-release-builder --load --pull --platform linux\/amd64 --target rust-builder/,
   )
 })
 
@@ -1211,8 +1238,8 @@ exec /bin/mv "$@"
 }
 
 test("managed image installer verifies, installs twice, and rejects seeded runtime state", async (context) => {
-  if (process.platform !== "linux") {
-    context.skip("requires Linux stat and filesystem ownership semantics")
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
     return
   }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-"))
@@ -1230,10 +1257,10 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
   }
   await writeFile(join(output, "rootfs/usr/local/bin/unsigned-extra"), "must not publish\n")
-  const args = [join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey]
+  const args = installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture)
   const badDigest = spawnSync(
     installer,
-    [args[0], `sha256:${"0".repeat(64)}`, args[2]],
+    installerArguments(args[0], `sha256:${"0".repeat(64)}`, fixture),
     { encoding: "utf8", env },
   )
   assert.equal(badDigest.status, 1)
@@ -1417,7 +1444,7 @@ test("managed image installer migrates legacy home state without clobbering cano
     CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
   }
-  const args = [join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey]
+  const args = installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture)
   const migrated = spawnSync(installer, args, { encoding: "utf8", env })
   assert.equal(migrated.status, 0, migrated.stderr)
   assert.equal(await lstat(legacyHome).then(() => true, () => false), false)
@@ -1517,7 +1544,7 @@ test("managed image installer resumes interrupted home migration by identity", a
       faultMarker: harness.migrationFaultMarker,
       journal: join(stateRoot, "home-migration.json"),
       controlPath: join(stateRoot, "kernels/active"),
-      args: [rootfs, digest, fixture.trustedPublicKey],
+      args: installerArguments(rootfs, digest, fixture),
       env,
     }
   }
@@ -1691,7 +1718,7 @@ test("managed image installer resumes interrupted home migration by identity", a
   }
   const ownershipResult = spawnSync(
     installer,
-    [rootfs, digest, fixture.trustedPublicKey],
+    installerArguments(rootfs, digest, fixture),
     { encoding: "utf8", env: ownershipEnv, timeout: 20_000, killSignal: "SIGKILL" },
   )
   assert.equal(ownershipResult.status, 0, ownershipResult.stderr)
@@ -1719,7 +1746,7 @@ test("managed image installer rejects a linked artifact ancestor before host mut
   const harness = await createInstallerHarness(root)
   const result = spawnSync(
     installer,
-    [rootfs, packaged.stdout.trim(), fixture.trustedPublicKey],
+    installerArguments(rootfs, packaged.stdout.trim(), fixture),
     {
       encoding: "utf8",
       env: {
@@ -1737,8 +1764,8 @@ test("managed image installer rejects a linked artifact ancestor before host mut
 })
 
 test("managed image installer atomically pivots current to a different release", async (context) => {
-  if (process.platform !== "linux") {
-    context.skip("requires Linux stat and filesystem ownership semantics")
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
     return
   }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-pivot-"))
@@ -1765,9 +1792,12 @@ test("managed image installer atomically pivots current to a different release",
     CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
   }
-  const installRelease = (output, packaged, fixture, environment = env) => spawnSync(installer, [
-    join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey,
-  ], { encoding: "utf8", env: environment })
+  const installRelease = (output, packaged, fixture, environment = env) =>
+    spawnSync(
+      installer,
+      installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture),
+      { encoding: "utf8", env: environment },
+    )
   const first = installRelease(firstOutput, firstPackage, firstFixture)
   assert.equal(first.status, 0, first.stderr)
   const current = join(harness.installRoot, "usr/lib/chariox/current")
@@ -1799,8 +1829,8 @@ test("managed image installer atomically pivots current to a different release",
 })
 
 test("a terminated managed image install releases the lock for a concurrent install", async (context) => {
-  if (process.platform !== "linux") {
-    context.skip("requires Linux stat and filesystem ownership semantics")
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
     return
   }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-lock-"))
@@ -1817,7 +1847,7 @@ test("a terminated managed image install releases the lock for a concurrent inst
     CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
   }
-  const args = [join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey]
+  const args = installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture)
   const first = spawn(installer, args, { env: { ...env, HARNESS_FLOCK_ID: "first" } })
   context.after(() => {
     first.kill("SIGKILL")

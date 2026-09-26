@@ -118,14 +118,54 @@ select_supervisor_service() {
   fi
 }
 
+assert_path1_units_have_no_dropins() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  path1_preflight_failure=0
+  path1_drop_in_failure=0
+  for unit in chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service; do
+    need_daemon_reload=$(systemctl show --property=NeedDaemonReload --value "$unit") || {
+      echo "could not inspect systemd reload state for Path-1 service $unit" >&2
+      path1_preflight_failure=1
+      path1_drop_in_failure=1
+      continue
+    }
+    case "$need_daemon_reload" in
+      no) ;;
+      yes)
+        echo "Path-1 service $unit needs systemd daemon-reload; refusing upgrade before service mutation" >&2
+        path1_preflight_failure=1
+        path1_drop_in_failure=1
+        ;;
+      *)
+        echo "could not verify systemd reload state for Path-1 service $unit" >&2
+        path1_preflight_failure=1
+        path1_drop_in_failure=1
+        ;;
+    esac
+    drop_in_paths=$(systemctl show --property=DropInPaths --value "$unit") || {
+      echo "could not inspect effective systemd drop-ins for $unit" >&2
+      path1_preflight_failure=1
+      path1_drop_in_failure=1
+      continue
+    }
+    if [ -n "$drop_in_paths" ]; then
+      path1_drop_in_failure=1
+      path1_preflight_failure=1
+      echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
+    fi
+  done
+  [ "$path1_preflight_failure" -eq 0 ]
+}
+
 verify_selected_release() {
   if [ "$managed_provider_topology" = path1 ]; then
-    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key"
+    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key" || return 1
   elif [ "$service_name" = chariox-disposable-worker-bootstrap.service ]; then
-    node "$script_root/verify-image-release.mjs" "$@"
+    node "$script_root/verify-image-release.mjs" "$@" || return 1
   else
-    node "$script_root/verify-image-release.mjs" "$@" "$managed_provider_topology"
+    node "$script_root/verify-image-release.mjs" "$@" "$managed_provider_topology" || return 1
   fi
+  node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0
 }
 
 require_regular_file() {
@@ -461,6 +501,7 @@ rollback_transaction() {
   atomic_symlink "$previous_slice_build_context" "$slice_build_context_link" || return 1
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   systemctl daemon-reload || return 1
+  assert_path1_units_have_no_dropins || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
   systemctl start "$service_name" || return 1
   active_previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
@@ -635,6 +676,7 @@ require_root_owned_directory "$releases_root"
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
+assert_path1_units_have_no_dropins
 recover_transaction
 select_receipt_path
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
@@ -810,10 +852,17 @@ if [ "${activation_failed:-0}" -ne 0 ]; then
 fi
 write_phase activated
 if ! systemctl daemon-reload \
+  || ! assert_path1_units_have_no_dropins \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
   || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then
-  if rollback_transaction; then
+  if [ "${path1_drop_in_failure:-0}" -eq 1 ]; then
+    if rollback_transaction; then
+      echo "Path-1 systemd drop-ins blocked activation; restored previous managed kernel release" >&2
+    else
+      echo "Path-1 systemd drop-ins blocked activation; rollback remains pending; verify the managed kernel service state before retry" >&2
+    fi
+  elif rollback_transaction; then
     echo "managed kernel health check failed; restored previous managed kernel release" >&2
   else
     echo "managed kernel health check failed; rollback remains pending" >&2

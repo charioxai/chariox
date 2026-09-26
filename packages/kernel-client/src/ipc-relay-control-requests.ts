@@ -72,12 +72,18 @@ export function connectCloudRelayRequest() {
   return { ConnectCloudRelay: null }
 }
 
-export function issueCloudRelayClientTokenRequest(targetDaemonAlias: string, clientId: string, sessionId?: string | null) {
+export function issueCloudRelayClientTokenRequest(
+  targetDaemonAlias: string,
+  clientId: string,
+  sessionId?: string | null,
+  publicKeyThumbprint?: string | null,
+) {
   return {
     IssueCloudRelayClientToken: {
       target_daemon_alias: targetDaemonAlias,
       client_id: clientId,
       session_id: sessionId ?? null,
+      ...(publicKeyThumbprint ? { public_key_thumbprint: publicKeyThumbprint } : {}),
     },
   }
 }

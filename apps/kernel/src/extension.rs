@@ -4,6 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static REMOTE_EXTENSION_INVOCATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionKind {
@@ -51,11 +55,15 @@ pub enum ExtensionExecutionLocation {
 pub struct RemoteExtensionManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<RemoteExtensionTool>,
+    /// Home-authoritative Room browser capability for this remote agent.
+    /// Older peers omit it, which is equivalent to having no Room browser Environment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub room_browser_available: bool,
 }
 
 impl RemoteExtensionManifest {
     pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
+        self.tools.is_empty() && !self.room_browser_available
     }
 
     pub fn manifest_hash(&self) -> String {
@@ -306,6 +314,7 @@ mod tests {
                 tool(ExtensionKind::Connector, "home_connector_lookup"),
                 tool(ExtensionKind::Mcp, "home_browser"),
             ],
+            ..RemoteExtensionManifest::default()
         };
 
         let specs = manifest
@@ -330,6 +339,7 @@ mod tests {
                 tool(ExtensionKind::Connector, "home_connector_lookup"),
                 tool(ExtensionKind::Mcp, "worker_browser"),
             ],
+            ..RemoteExtensionManifest::default()
         }
         .without_mcp_tools();
 
@@ -350,6 +360,7 @@ mod tests {
                 tool(ExtensionKind::Script, "shared_name"),
                 tool(ExtensionKind::Connector, "shared_name"),
             ],
+            ..RemoteExtensionManifest::default()
         };
 
         let error = manifest
@@ -363,12 +374,33 @@ mod tests {
     fn remote_manifest_hash_changes_with_projected_tools() {
         let first = RemoteExtensionManifest {
             tools: vec![tool(ExtensionKind::Script, "home_script")],
+            ..RemoteExtensionManifest::default()
         };
         let second = RemoteExtensionManifest {
             tools: vec![tool(ExtensionKind::Script, "home_script_v2")],
+            ..RemoteExtensionManifest::default()
         };
 
         assert_ne!(first.manifest_hash(), second.manifest_hash());
+    }
+
+    #[test]
+    fn room_browser_manifest_capability_defaults_false_and_distinguishes_removal() {
+        let absent: RemoteExtensionManifest = serde_json::from_value(serde_json::json!({}))
+            .expect("legacy manifest should deserialize");
+        assert!(!absent.room_browser_available);
+        assert!(absent.is_empty());
+
+        let available = RemoteExtensionManifest {
+            room_browser_available: true,
+            ..RemoteExtensionManifest::default()
+        };
+        assert!(!available.is_empty());
+        assert_eq!(
+            serde_json::to_value(&available).expect("capability should serialize"),
+            serde_json::json!({"room_browser_available": true})
+        );
+        assert!(RemoteExtensionManifest::default().is_empty());
     }
 
     #[test]

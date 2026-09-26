@@ -1,17 +1,18 @@
 import type { KernelSocketLane } from "./kernel-transport-frames.js"
+import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 
 export type PendingKernelRequest = {
   resolve: (value: unknown) => void
   reject: (error: LocalIpcError) => void
   timeout: NodeJS.Timeout
-  relayPrivateKey: Buffer | null
+  relayDecryptResponse: ((payload: EncryptedRelayPayload) => string) | null
   lane: KernelSocketLane
 }
 
 export type RegisteredKernelRequest<TResponse> = {
   readonly promise: Promise<TResponse>
-  readonly setRelayPrivateKey: (privateKey: Buffer | null) => void
+  readonly setRelayDecryptResponse: (decryptResponse: (payload: EncryptedRelayPayload) => string) => void
   readonly reject: (error: LocalIpcError) => void
 }
 
@@ -39,17 +40,17 @@ export class KernelPendingRequestRegistry {
         resolve: resolve as (value: unknown) => void,
         reject,
         timeout,
-        relayPrivateKey: null,
+        relayDecryptResponse: null,
         lane,
       })
     })
 
     return {
       promise,
-      setRelayPrivateKey: (privateKey) => {
+      setRelayDecryptResponse: (decryptResponse) => {
         const pending = this.pending.get(requestId)
         if (pending) {
-          pending.relayPrivateKey = privateKey
+          pending.relayDecryptResponse = decryptResponse
         }
       },
       reject: (error) => {

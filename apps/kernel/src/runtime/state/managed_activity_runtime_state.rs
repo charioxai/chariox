@@ -200,6 +200,10 @@ impl KernelRuntimeOwnedState {
     }
 
     fn record_managed_activity_transition_unlocked(&self) {
+        self.record_managed_activity_transition_at_unlocked(None);
+    }
+
+    fn record_managed_activity_transition_at_unlocked(&self, observed_at_ms: Option<u64>) {
         if !self.managed_activity_transitions.is_enabled() {
             return;
         }
@@ -228,7 +232,7 @@ impl KernelRuntimeOwnedState {
                 (
                     self.runtime_projection_changes.sequence(),
                     self.managed_running_agent_count_unlocked(),
-                    crate::session::unix_epoch_ms(),
+                    observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 )
             })
         {
@@ -253,6 +257,11 @@ impl ManagedActivityMutation<'_> {
     // Consuming the guard prevents a later mutation from overtaking this capture.
     pub(super) fn record(self) {
         self.state.record_managed_activity_transition_unlocked();
+    }
+
+    pub(super) fn record_at(self, observed_at_ms: Option<u64>) {
+        self.state
+            .record_managed_activity_transition_at_unlocked(observed_at_ms);
     }
 }
 
@@ -500,11 +509,7 @@ mod tests {
             idle_acquired_rx.recv_timeout(std::time::Duration::from_millis(50)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
-        assert!(runtime
-            .owned
-            .active_turns
-            .get("provider-run-1")
-            .is_some());
+        assert!(runtime.owned.active_turns.get("provider-run-1").is_some());
 
         release_busy_tx
             .send(())

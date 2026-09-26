@@ -13,7 +13,7 @@ use crate::runtime::cloud_api_client::{
 mod cloud_contract;
 use cloud_contract::{
     EnvironmentDetailsResponse, EnvironmentResult, EnvironmentsResponse, OptionsResponse,
-    ReimageResult,
+    ReimageReceipt, ReimageResult,
 };
 
 pub(crate) async fn execute_managed_environment_control_request(
@@ -84,6 +84,7 @@ pub(crate) async fn execute_managed_environment_control_request(
             .await?;
             Ok(LocalDaemonResponse::ManagedEnvironment {
                 environment: response.environment.into(),
+                operations: response.operations.into_iter().map(Into::into).collect(),
             })
         }
         LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(request) => {
@@ -103,6 +104,26 @@ pub(crate) async fn execute_managed_environment_control_request(
                 ));
             }
             Ok(LocalDaemonResponse::ManagedEnvironmentReimagePreflight { preflight })
+        }
+        LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(request) => {
+            let path = format!(
+                "/managed-environments/{}/reimage/receipt?{account_query}",
+                cloud_url_component(&request.environment_id),
+            );
+            let receipt: crate::local::ManagedEnvironmentReimageReceipt =
+                get_cloud_json_authenticated::<ReimageReceipt>(
+                    cloud.api_url.clone(),
+                    path,
+                    token.to_string(),
+                )
+                .await?
+                .into();
+            if receipt.environment_id != request.environment_id {
+                return Err(control_error(
+                    "Cloud returned reimage receipt for another managed environment",
+                ));
+            }
+            Ok(LocalDaemonResponse::ManagedEnvironmentReimageReceipt { receipt })
         }
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(request) => {
             let path = format!(
@@ -691,6 +712,108 @@ mod tests {
     }
 
     #[test]
+    fn managed_environment_details_project_activity_and_exact_operation_history() {
+        let mut environment = environment_json();
+        environment["runningAgentCount"] = serde_json::json!(0);
+        environment["lastActivityReportedAt"] =
+            serde_json::json!("2026-09-26T05:00:02.000Z");
+        environment["lastActivityChangedAt"] =
+            serde_json::json!("2026-09-26T04:59:00.000Z");
+        environment["autoStopWarningAt"] = serde_json::Value::Null;
+        environment["autoStopDeadlineAt"] = serde_json::json!("2026-09-26T05:14:00.000Z");
+        let mut operation = operation_json();
+        operation["kind"] = serde_json::json!("stop");
+        operation["status"] = serde_json::json!("succeeded");
+        operation["desiredRevision"] = serde_json::json!(7);
+        operation["completedAt"] = serde_json::json!("2026-09-26T05:14:03.000Z");
+        let details: cloud_contract::EnvironmentDetailsResponse = serde_json::from_value(
+            serde_json::json!({ "environment": environment, "operations": [operation] }),
+        )
+        .expect("owner-authorized Cloud details response");
+
+        let summary: crate::local::ManagedEnvironmentSummary = details.environment.into();
+        assert_eq!(summary.running_agent_count, Some(0));
+        assert_eq!(
+            summary.last_activity_reported_at.as_deref(),
+            Some("2026-09-26T05:00:02.000Z")
+        );
+        assert_eq!(
+            summary.last_activity_changed_at.as_deref(),
+            Some("2026-09-26T04:59:00.000Z")
+        );
+        assert_eq!(summary.auto_stop_warning_at, None);
+        assert_eq!(
+            summary.auto_stop_deadline_at.as_deref(),
+            Some("2026-09-26T05:14:00.000Z")
+        );
+        let operations: Vec<crate::local::ManagedEnvironmentOperationSummary> =
+            details.operations.into_iter().map(Into::into).collect();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].operation_id, "operation-1");
+        assert_eq!(operations[0].kind, crate::local::ManagedEnvironmentOperationKind::Stop);
+        assert_eq!(operations[0].status, crate::local::ManagedEnvironmentOperationStatus::Succeeded);
+        assert_eq!(operations[0].desired_revision, 7);
+        assert_eq!(
+            operations[0].completed_at.as_deref(),
+            Some("2026-09-26T05:14:03.000Z")
+        );
+    }
+
+    #[test]
+    fn managed_environment_details_legacy_null_and_invalid_activity_are_distinguished() {
+        let mut legacy_environment = environment_json();
+        for field in [
+            "runningAgentCount",
+            "lastActivityReportedAt",
+            "lastActivityChangedAt",
+            "autoStopWarningAt",
+            "autoStopDeadlineAt",
+        ] {
+            legacy_environment
+                .as_object_mut()
+                .expect("environment object")
+                .remove(field);
+        }
+        let legacy: cloud_contract::EnvironmentDetailsResponse = serde_json::from_value(
+            serde_json::json!({ "environment": legacy_environment }),
+        )
+        .expect("legacy Cloud details response");
+        let summary: crate::local::ManagedEnvironmentSummary = legacy.environment.into();
+        assert_eq!(summary.running_agent_count, None);
+        assert_eq!(summary.last_activity_changed_at, None);
+        assert!(legacy.operations.is_empty());
+
+        let mut nullable = environment_json();
+        for field in [
+            "runningAgentCount",
+            "lastActivityReportedAt",
+            "lastActivityChangedAt",
+            "autoStopWarningAt",
+            "autoStopDeadlineAt",
+        ] {
+            nullable[field] = serde_json::Value::Null;
+        }
+        let decoded: cloud_contract::EnvironmentSummary =
+            serde_json::from_value(nullable).expect("explicit null is unknown");
+        let summary: crate::local::ManagedEnvironmentSummary = decoded.into();
+        assert_eq!(summary.running_agent_count, None);
+        assert_eq!(summary.last_activity_reported_at, None);
+        assert_eq!(summary.last_activity_changed_at, None);
+        assert_eq!(summary.auto_stop_warning_at, None);
+        assert_eq!(summary.auto_stop_deadline_at, None);
+
+        let mut invalid_count = environment_json();
+        invalid_count["runningAgentCount"] = serde_json::json!(2);
+        assert!(serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_count).is_err());
+        let mut invalid_timestamp = environment_json();
+        invalid_timestamp["lastActivityChangedAt"] =
+            serde_json::json!("2026-09-26T04:59:00Z");
+        assert!(
+            serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_timestamp).is_err()
+        );
+    }
+
+    #[test]
     fn git_credential_enrollment_ticket_matches_the_local_selection_and_source() {
         let thumbprint = "a".repeat(64);
         let ticket = crate::managed_context::outbound_service::ManagedContextTransferTicket {
@@ -938,6 +1061,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_environment_reimage_receipt_is_read_only_owner_bound_and_environment_bound() {
+        let server = ManagedEnvironmentCloudFixture::start_with_preflight_environment(
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            "environment / one",
+        );
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            account_id: "account / one".to_string(),
+            user_id: "owner-1".to_string(),
+            cloud_session_token: Some("session-secret".to_string()),
+            api_url: server.url(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            config.account_profile_registry_path(),
+        )
+        .expect("provider account registry");
+        let store =
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            );
+        let request =
+            LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
+                environment_id: "environment / one".to_string(),
+            });
+        let denied = execute_managed_environment_control_request(
+            config.clone(),
+            profiles.clone(),
+            store.clone(),
+            "other-user",
+            request.clone(),
+        )
+        .await
+        .expect_err("receipt requires the Cloud owner");
+        assert!(denied.to_string().contains("belongs to another Cloud user"));
+        let mut missing_session = config.clone();
+        missing_session
+            .cloud_relay
+            .as_mut()
+            .unwrap()
+            .cloud_session_token = None;
+        let denied = execute_managed_environment_control_request(
+            missing_session,
+            profiles.clone(),
+            store.clone(),
+            "owner-1",
+            request.clone(),
+        )
+        .await
+        .expect_err("receipt requires the Cloud session");
+        assert!(denied.to_string().contains("Cloud session is unavailable"));
+        assert!(server.requests().is_empty());
+        let response = execute_managed_environment_control_request(
+            config.clone(),
+            profiles.clone(),
+            store.clone(),
+            "owner-1",
+            request,
+        )
+        .await
+        .expect("read receipt");
+        let LocalDaemonResponse::ManagedEnvironmentReimageReceipt { receipt } = response else {
+            panic!("unexpected receipt response");
+        };
+        assert_eq!(receipt.environment_id, "environment / one");
+        assert_eq!(receipt.receipt_id, "receipt-reimage-1");
+        assert!(!receipt.fresh_equivalent, "pending is not fresh-equivalent");
+        let denied = execute_managed_environment_control_request(
+            config,
+            profiles,
+            store,
+            "owner-1",
+            LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
+                environment_id: "environment-other".to_string(),
+            }),
+        )
+        .await
+        .expect_err("wrong environment receipt must fail");
+        assert!(denied
+            .to_string()
+            .contains("receipt for another managed environment"));
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /managed-environments/environment%20%2F%20one/reimage/receipt?accountId=account%20%2F%20one HTTP/1.1"));
+        assert!(requests.iter().all(|request| request.starts_with("GET ")));
+    }
+
+    #[tokio::test]
     async fn managed_environment_control_uses_authenticated_cloud_profile_for_all_operations() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
@@ -1084,10 +1295,20 @@ mod tests {
         )
         .await
         .expect("get request");
-        assert!(matches!(
-            get,
-            LocalDaemonResponse::ManagedEnvironment { .. }
-        ));
+        let LocalDaemonResponse::ManagedEnvironment {
+            environment,
+            operations,
+        } = get
+        else {
+            panic!("unexpected managed environment response");
+        };
+        assert_eq!(environment.running_agent_count, Some(0));
+        assert_eq!(
+            environment.last_activity_changed_at.as_deref(),
+            Some("2026-08-21T00:00:00.000Z")
+        );
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].operation_id, "operation-1");
 
         let preflight = execute_managed_environment_control_request(
             config.clone(),
@@ -1458,6 +1679,11 @@ mod tests {
         if request.contains("/reimage/preflight?") {
             return reimage_preflight_json(preflight_environment_id);
         }
+        if request.contains("/reimage/receipt?") {
+            let mut receipt = reimage_receipt_json();
+            receipt["environmentId"] = serde_json::json!(preflight_environment_id);
+            return receipt;
+        }
         if request.contains("/reimage HTTP/1.1") {
             return serde_json::json!({
                 "environment": environment_json(),
@@ -1469,7 +1695,7 @@ mod tests {
         if request.starts_with("GET /managed-environments/") {
             return serde_json::json!({
                 "environment": environment_json(),
-                "operations": [],
+                "operations": [operation_json()],
                 "futureDetailsField": true
             });
         }
@@ -1512,6 +1738,11 @@ mod tests {
             },
             "contextManifestDigest": "sha256:manifest",
             "autoStopPolicy": { "minimumRuntimeSeconds": 0, "idleDelaySeconds": 900 },
+            "runningAgentCount": 0,
+            "lastActivityReportedAt": "2026-08-21T00:00:00.000Z",
+            "lastActivityChangedAt": "2026-08-21T00:00:00.000Z",
+            "autoStopWarningAt": null,
+            "autoStopDeadlineAt": "2026-08-21T00:15:00.000Z",
             "lastErrorCode": null,
             "lastErrorMessage": null,
             "createdAt": "2026-08-21T00:00:00.000Z",

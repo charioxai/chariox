@@ -239,6 +239,11 @@ impl KernelRuntimeState {
                 let _ = owned.session_snapshot(session_id)?;
             }
         }
+        if workflow_failed {
+            // Workflow failures bypass the non-workflow claim-release retry above. Sweep after
+            // queued-prompt/provider recovery so newly eligible work is not left pending.
+            self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+        }
         Ok(true)
     }
 

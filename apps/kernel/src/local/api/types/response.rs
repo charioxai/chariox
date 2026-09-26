@@ -152,8 +152,13 @@ pub enum LocalDaemonResponse {
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
-    ManagedEnvironment { environment: ManagedEnvironmentSummary, },
+    ManagedEnvironment {
+        environment: ManagedEnvironmentSummary,
+        #[serde(default)]
+        operations: Vec<ManagedEnvironmentOperationSummary>,
+    },
     ManagedEnvironmentReimagePreflight { preflight: ManagedEnvironmentReimagePreflight, },
+    ManagedEnvironmentReimageReceipt { receipt: ManagedEnvironmentReimageReceipt, },
     ManagedEnvironmentContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
     ManagedEnvironmentCreated { result: ManagedEnvironmentResult, },
     ManagedEnvironmentLifecycleRequested { result: ManagedEnvironmentResult, },
@@ -180,6 +185,14 @@ pub enum LocalDaemonResponse {
     SliceBackupRestored { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, },
     RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, },
     RemoteMachineKernelsListed { machine_ref: String, kernels: Vec<RelayKernelPresence>, },
+    /// A direct current relay registration observation. This does not prove
+    /// historical heartbeat-ID absence or full MP-10 acceptance.
+    FreshRemoteMachineKernelsObserved {
+        machine_ref: String,
+        query_started_at_ms: u64,
+        query_completed_at_ms: u64,
+        kernels: Vec<RelayKernelPresence>,
+    },
     WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
     WaitingRoomPublicSnapshot { snapshot: WaitingRoomPublicSnapshot, },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
@@ -221,7 +234,12 @@ pub enum LocalDaemonResponse {
     PairingInviteCreated { invite: PairingInviteRecord, },
     PairingInviteJoined { pairing: PairingJoinRecord, },
     TerminalPairingLinkCreated { pairing: TerminalPairingLinkRecord, },
-    TerminalPairingLinkJoined { terminal: TerminalRecord, pairing: PairingJoinRecord, },
+    TerminalPairingLinkJoined {
+        terminal: TerminalRecord,
+        pairing: PairingJoinRecord,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_token: Option<String>,
+    },
     TerminalsListed { terminals: Vec<TerminalRecord>, },
     PairedClientsListed { clients: Vec<PairedClientRecord>, },
     PairedClientRecorded { client: PairedClientRecord, },

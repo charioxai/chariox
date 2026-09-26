@@ -177,10 +177,15 @@ export class BrowserControllerStdioServer {
   }
 
   async run() {
+    const server = this;
     const actions = new Map();
     const pendingRequestIds = new Set();
-    let pending = Promise.resolve();
+    const waiting = [];
+    const targetOperations = new Map();
+    const idleWaiters = [];
     let queued = 0;
+    let activeOperations = 0;
+    let activeBarrier = false;
     const lines = readline.createInterface({
       input: this.input,
       crlfDelay: Infinity,
@@ -249,34 +254,140 @@ export class BrowserControllerStdioServer {
       if (action) actions.set(request.id, action);
       pendingRequestIds.add(request.id);
       queued += 1;
-      pending = pending.then(async () => {
-        try {
-          const response = await handleBrowserControllerRequest(request, {
-            processId: this.processId,
-            browser: this.browser,
-            resourceInventory: this.resourceInventory,
-            signal: action?.controller.signal,
-          });
-          if (action) action.response = response;
-          this.write(response);
-        } finally {
-          actions.delete(request.id);
-          pendingRequestIds.delete(request.id);
-          stopAction?.();
-          queued -= 1;
-        }
-      });
+      waiting.push({ request, action, stopAction, scheduling: classifyScheduling(request) });
+      pump();
       if (request.method === "shutdown") {
         lines.close();
         break;
       }
     }
-    await pending;
+    await waitUntilIdle();
+
+    function pump() {
+      while (!activeBarrier) {
+        const barrierIndex = waiting.findIndex(({ scheduling }) => scheduling.kind === "barrier");
+        if (barrierIndex === 0) {
+          if (activeOperations === 0) {
+            startBarrier(waiting.shift());
+            continue;
+          }
+          return;
+        }
+        let limit = barrierIndex < 0 ? waiting.length : barrierIndex;
+        let started = false;
+        for (let index = 0; index < limit;) {
+          const operation = waiting[index];
+          if (!canStart(operation, index)) {
+            index += 1;
+            continue;
+          }
+          waiting.splice(index, 1);
+          limit -= 1;
+          startOrdinary(operation);
+          started = true;
+        }
+        if (!started) return;
+      }
+    }
+
+    function canStart(operation, index) {
+      const { kind, targetId } = operation.scheduling;
+      if (!targetId) return true;
+      const target = targetOperations.get(targetId) ?? { readers: 0, writer: false };
+      const earlierForTarget = waiting.slice(0, index)
+        .some((candidate) => candidate.scheduling.targetId === targetId);
+      if (kind === "mutation") {
+        return !target.writer && target.readers === 0 && !earlierForTarget;
+      }
+      const earlierMutation = waiting.slice(0, index)
+        .some((candidate) => candidate.scheduling.targetId === targetId
+          && candidate.scheduling.kind === "mutation");
+      return !target.writer && !earlierMutation;
+    }
+
+    function startOrdinary(operation) {
+      const { kind, targetId } = operation.scheduling;
+      if (targetId) {
+        const target = targetOperations.get(targetId) ?? { readers: 0, writer: false };
+        if (kind === "mutation") target.writer = true;
+        else target.readers += 1;
+        targetOperations.set(targetId, target);
+      }
+      activeOperations += 1;
+      void execute(operation, false);
+    }
+
+    function startBarrier(operation) {
+      activeBarrier = true;
+      void execute(operation, true);
+    }
+
+    async function execute(operation, barrier) {
+      const { request, action, stopAction, scheduling } = operation;
+      try {
+        // Queued cancellation must terminalize before physical browser dispatch.
+        const response = action?.controller.signal.aborted
+          ? errorResponse(request.id, "browser_action_cancelled", "browser action was cancelled")
+          : await handleBrowserControllerRequest(request, {
+              processId: server.processId,
+              browser: server.browser,
+              resourceInventory: server.resourceInventory,
+              signal: action?.controller.signal,
+            });
+        if (action) action.response = response;
+        server.write(response);
+      } catch (error) {
+        server.write(errorResponse(request.id, "browser_controller_internal",
+          error instanceof Error ? error.message : String(error)));
+      } finally {
+        actions.delete(request.id);
+        pendingRequestIds.delete(request.id);
+        stopAction?.();
+        queued -= 1;
+        if (barrier) activeBarrier = false;
+        else {
+          activeOperations -= 1;
+          if (scheduling.targetId) {
+            const target = targetOperations.get(scheduling.targetId);
+            if (scheduling.kind === "mutation") target.writer = false;
+            else target.readers -= 1;
+            if (target.readers === 0 && !target.writer) targetOperations.delete(scheduling.targetId);
+          }
+        }
+        pump();
+        if (queued === 0 && waiting.length === 0 && activeOperations === 0 && !activeBarrier) {
+          while (idleWaiters.length > 0) idleWaiters.shift()();
+        }
+      }
+    }
+
+    function waitUntilIdle() {
+      if (queued === 0 && waiting.length === 0 && activeOperations === 0 && !activeBarrier) return Promise.resolve();
+      return new Promise((resolve) => idleWaiters.push(resolve));
+    }
   }
 
   write(response) {
     this.output.write(`${JSON.stringify(response)}\n`);
   }
+}
+
+function classifyScheduling(request) {
+  const method = request?.method;
+  if (["health", "browser.reconcile", "browser.tab", "browser.downloads.configure",
+    "browser.downloads.cancel", "browser.permission", "browser.cookies.import",
+    "browser.cookies.recover", "shutdown"].includes(method)) return { kind: "barrier" };
+  if (["browser.snapshot", "browser.wait"].includes(method)) return targetScheduling(request, "read");
+  if (["browser.action", "browser.navigate", "browser.history", "browser.dialog", "browser.upload"].includes(method)) {
+    return targetScheduling(request, "mutation");
+  }
+  // Unknown or uncertain-scope operations use conservative global barriers.
+  return { kind: "barrier" };
+}
+
+function targetScheduling(request, kind) {
+  const targetId = request.params?.target_id;
+  return typeof targetId === "string" && targetId.trim() ? { kind, targetId } : { kind: "barrier" };
 }
 
 function successResponse(id, result) {

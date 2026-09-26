@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { once } from "node:events"
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
@@ -57,6 +57,33 @@ const sliceProvisionerUrl = new URL(
   import.meta.url,
 )
 
+test("managed image installer rejects omitted topology before staging", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-installer-topology-"))
+  try {
+    const fakeId = join(scratch, "id")
+    await writeFile(fakeId, "#!/bin/sh\nprintf '0\\n'\n")
+    await chmod(fakeId, 0o700)
+
+    const result = spawnSync(
+      fileURLToPath(installerUrl),
+      ["/nonexistent/managed-rootfs", "sha256:invalid", "/nonexistent/trusted-key"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${scratch}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+          TMPDIR: scratch,
+        },
+      },
+    )
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /usage: install-image\.sh .*<path1\|shared_host>/)
+    assert.deepEqual(await readdir(scratch), ["id"])
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test("Hetzner image preparation is pinned, guarded, and leaves no runtime identity", async () => {
   const script = await readFile(scriptUrl, "utf8")
 
@@ -80,7 +107,7 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /\.required == false and \.rootIdentity == null and \.entries == \[\]/)
   assert.match(script, /rm -f -- "\$migration_journal" "\$migration_complete"/)
   assert.match(script, /systemctl is-enabled --quiet "\$managed_bootstrap_service"/)
-  assert.match(script, /systemctl is-active --quiet "\$managed_bootstrap_service"/)
+  assert.match(script, /systemctl is-active --quiet "\$bootstrap_service"/)
   assert.match(script, /managed runtime state entered the image/)
   assert.match(script, /rootless Docker state entered the image/)
   assert.match(script, /managed slice state entered the image/)
@@ -135,6 +162,48 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /rm -f \/etc\/ssh\/ssh_host_\* "\$MARKER_PATH"/)
   assert.doesNotMatch(script, /systemctl (?:start|restart|enable --now) chariox-managed-bootstrap/)
   assert.doesNotMatch(script, /\.arroba/)
+})
+
+test("managed image preparation rejects conflicting or active bootstrap roles", async () => {
+  const script = await readFile(scriptUrl, "utf8")
+  const start = script.indexOf('systemctl is-enabled --quiet "$managed_bootstrap_service"')
+  const end = script.indexOf("\nif find /var/lib/chariox", start)
+  assert.ok(start >= 0 && end > start, "bootstrap-role validation block must exist")
+  const validation = script.slice(start, end)
+  const input = `set -eu
+managed_bootstrap_service=chariox-path1-managed-bootstrap.service
+other_managed_bootstrap_service=chariox-managed-bootstrap.service
+fail() { echo "$1" >&2; exit 1; }
+systemctl() {
+  if [ "$1" = is-enabled ]; then
+    [ "$3" = "$managed_bootstrap_service" ] || [ "$3" = "$ENABLED_UNIT" ]
+  else
+    [ "$3" = "$ACTIVE_UNIT" ]
+  fi
+}
+${validation}
+`
+  const run = (enabled = "", active = "") => spawnSync("sh", ["-s"], {
+    input,
+    encoding: "utf8",
+    env: { ...process.env, ENABLED_UNIT: enabled, ACTIVE_UNIT: active },
+  })
+  assert.equal(run().status, 0)
+  const alternateEnabled = run("chariox-managed-bootstrap.service")
+  assert.equal(alternateEnabled.status, 1)
+  assert.match(alternateEnabled.stderr, /non-selected/)
+  const workerEnabled = run("chariox-disposable-worker-bootstrap.service")
+  assert.equal(workerEnabled.status, 1)
+  assert.match(workerEnabled.stderr, /must not be enabled/)
+  for (const unit of [
+    "chariox-path1-managed-bootstrap.service",
+    "chariox-managed-bootstrap.service",
+    "chariox-disposable-worker-bootstrap.service",
+  ]) {
+    const result = run("", unit)
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /started while the image was being built/)
+  }
 })
 
 test("provider probes use a credential-free disposable home and remove it", async () => {
@@ -582,7 +651,8 @@ test("managed image validation requires an explicit topology and preserves both 
   assert.match(path1ManagedService, /Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=\/var\/lib\/chariox\/managed-bootstrap\.json/)
   assert.match(path1ManagedService, /Environment=HOME=\/home\/chariox/)
   assert.match(path1ManagedService, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
-  assert.match(path1ManagedService, /ExecStart=\/usr\/local\/bin\/chariox-managed-bootstrap\n/)
+  assert.match(path1ManagedService, /^Environment=PATH=\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin$/m)
+  assert.match(path1ManagedService, /^ExecStart=\/usr\/local\/bin\/chariox-managed-bootstrap$/m)
   assert.doesNotMatch(path1ManagedService, /^UMask=/m, "Path-1 must use systemd's ordinary system-unit umask")
   for (const forbidden of [
     "CHARIOX_MANAGED_PROVIDER_ISOLATION",

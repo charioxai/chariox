@@ -5,15 +5,15 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "install-image.sh must run as root" >&2
   exit 1
 fi
-if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
-  echo "usage: install-image.sh <managed-kernel-rootfs> <expected-release-digest> <trusted-public-key> [path1|shared_host]" >&2
+if [ "$#" -ne 4 ]; then
+  echo "usage: install-image.sh <managed-kernel-rootfs> <expected-release-digest> <trusted-public-key> <path1|shared_host>" >&2
   exit 1
 fi
 
 image_root=$1
 expected_release_digest=$2
 trusted_public_key=$3
-managed_provider_topology=${4:-shared_host}
+managed_provider_topology=$4
 case "$managed_provider_topology" in
   path1)
     selected_bootstrap_service=chariox-path1-managed-bootstrap.service
@@ -104,10 +104,11 @@ require_directory() {
 require_regular_file "$trusted_public_key"
 verify_selected_release() {
   if [ "$managed_provider_topology" = path1 ]; then
-    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key"
+    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key" || return 1
   else
-    node "$script_root/verify-image-release.mjs" "$@" shared_host
+    node "$script_root/verify-image-release.mjs" "$@" shared_host || return 1
   fi
+  node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0
 }
 verify_selected_release "$image_root" "$expected_release_digest" "$trusted_public_key"
 

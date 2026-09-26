@@ -175,6 +175,17 @@ function isTerminalPairingLink(value: string) {
   return value.trim().startsWith("chariox-terminal-pair-v1.")
 }
 
+export function terminalPairingLinkFromArgs(args: string[]): string | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index] ?? ""
+    if (value === "--terminal-pairing-link" || value === "--pairing-link") {
+      return args[index + 1]?.trim() || null
+    }
+    if (isTerminalPairingLink(value)) return value.trim()
+  }
+  return null
+}
+
 function applyTerminalPairingLinkOptions(options: CliOptions, pairingLink: string) {
   const parsed = parseTerminalPairingLink(pairingLink)
   options.relayUrl = parsed.relayUrl

@@ -1,17 +1,140 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { spawnSync } from "node:child_process"
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 
 const installSource = await readFile(new URL("./install-image.sh", import.meta.url), "utf8")
 const upgradeSource = await readFile(new URL("./upgrade-image.sh", import.meta.url), "utf8")
 const prepareSource = await readFile(new URL("./prepare-hetzner-image.sh", import.meta.url), "utf8")
 const path1Service = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
+const disposableWorkerService = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
+const providerResolverSources = await Promise.all(["codex", "claude", "opencode"].map((provider) =>
+  readFile(new URL(`../../apps/kernel/src/provider/${provider}.rs`, import.meta.url), "utf8")))
+const upgradeStateScript = new URL("./managed-kernel-upgrade-state.mjs", import.meta.url)
 
 function indexOf(source, text, label, from = 0) {
   const index = source.indexOf(text, from)
   assert.notEqual(index, -1, `${label} must be present`)
   return index
 }
+
+function sourceFunction(source, name, nextName) {
+  const start = indexOf(source, `fn ${name}(`, `${name} function`)
+  const end = indexOf(source, `\nfn ${nextName}(`, `${nextName} function`, start)
+  return source.slice(start, end)
+}
+
+test("Path-1 service starts use the current login PATH for tool lookup across restarts", async (context) => {
+  const units = [
+    [path1Service, "exec /usr/local/bin/chariox-managed-bootstrap"],
+    [disposableWorkerService, "exec /usr/local/bin/chariox-managed-bootstrap --disposable-worker"],
+  ]
+  for (const [unit, command] of units) {
+    assert.doesNotMatch(unit, /^Environment=PATH=/m, "Path-1 must not pin a fixed executable search path")
+    assert.ok(unit.includes(`ExecStart=/bin/bash --login -c '${command}'`))
+  }
+
+  const [codex, claude, opencode] = providerResolverSources
+  assert.match(sourceFunction(codex, "resolve_candidate", "is_executable_file"),
+    /env::split_paths\(&path_var\)[\s\S]*?\.find\(\|path\| is_executable_file\(path\)\)/)
+  assert.match(sourceFunction(claude, "resolve_candidate", "is_executable_file"),
+    /for directory in env::split_paths\(&path_var\)/)
+  assert.match(sourceFunction(opencode, "resolve_candidate", "is_executable_file"),
+    /env::split_paths\(&path_var\)[\s\S]*?\.find\(\|path\| is_executable_file\(path\)\)/)
+
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-path1-provider-path-"))
+  context.after(() => rm(scratch, { recursive: true, force: true }))
+  const home = join(scratch, "home")
+  const profileBinA = join(home, "toolchain-a", "bin")
+  const profileBinB = join(home, "toolchain-b", "bin")
+  const userBin = join(home, ".local", "bin")
+  const profileProviderBin = join(home, "profile-provider-bin")
+  await Promise.all([home, profileBinA, profileBinB, userBin, profileProviderBin].map((directory) =>
+    mkdir(directory, { recursive: true })))
+
+  const executable = "#!/bin/sh\nexit 0\n"
+  await Promise.all([
+    writeFile(join(profileBinA, "path1-profile-tool"), executable, { mode: 0o755 }),
+    writeFile(join(profileBinB, "path1-profile-tool"), executable, { mode: 0o755 }),
+    writeFile(join(userBin, "codex"), executable, { mode: 0o755 }),
+    writeFile(join(userBin, "claude"), executable, { mode: 0o755 }),
+    writeFile(join(profileProviderBin, "opencode"), executable, { mode: 0o755 }),
+  ])
+
+  const servicePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  const launchFromCurrentProfile = () => spawnSync("/bin/bash", [
+    "--login",
+    "-c",
+    "set -eu; command -v path1-profile-tool; command -v codex; command -v claude; command -v opencode",
+  ], {
+    encoding: "utf8",
+    env: { HOME: home, PATH: servicePath },
+  })
+  const writeProfile = (profileBin) => writeFile(join(home, ".profile"),
+    `PATH="$HOME/${profileBin.slice(home.length + 1)}:$HOME/.local/bin:$HOME/profile-provider-bin:$PATH"\nexport PATH\n`)
+
+  // Each invocation is the actual service-launch shell shape. A new launch
+  // rereads the user's profile, just as a systemd restart does.
+  await writeProfile(profileBinA)
+  const first = launchFromCurrentProfile()
+  assert.equal(first.status, 0, first.stderr)
+  assert.deepEqual(first.stdout.trim().split(/\r?\n/), [
+    join(profileBinA, "path1-profile-tool"),
+    join(userBin, "codex"),
+    join(userBin, "claude"),
+    join(profileProviderBin, "opencode"),
+  ])
+
+  await writeProfile(profileBinB)
+  const restarted = launchFromCurrentProfile()
+  assert.equal(restarted.status, 0, restarted.stderr)
+  assert.deepEqual(restarted.stdout.trim().split(/\r?\n/), [
+    join(profileBinB, "path1-profile-tool"),
+    join(userBin, "codex"),
+    join(userBin, "claude"),
+    join(profileProviderBin, "opencode"),
+  ])
+})
+
+test("Path-1 role units do not inherit shared-host provider sandbox controls", () => {
+  const forbidden = [
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
+    "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+    "CHARIOX_SLICE_ROOT",
+    "bwrap",
+    "NoNewPrivileges=",
+    "PrivateTmp=",
+    "PrivateUsers=",
+    "PrivateDevices=",
+    "PrivateNetwork=",
+    "ProtectSystem=",
+    "ProtectHome=",
+    "ProtectKernel",
+    "ProtectControlGroups=",
+    "RestrictNamespaces=",
+    "RestrictAddressFamilies=",
+    "RestrictSUIDSGID=",
+    "ReadWritePaths=",
+    "ReadOnlyPaths=",
+    "InaccessiblePaths=",
+    "BindPaths=",
+    "BindReadOnlyPaths=",
+    "RootDirectory=",
+    "RootImage=",
+    "SystemCallFilter=",
+    "CapabilityBoundingSet=",
+    "SupplementaryGroups=chariox-slice",
+  ]
+  for (const unit of [path1Service, disposableWorkerService]) {
+    assert.ok(unit.includes("Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"))
+    for (const control of forbidden) assert.ok(!unit.includes(control), `Path-1 unit must omit ${control}`)
+  }
+})
 
 test("install refuses to replace an invalid digest-named release", () => {
   const publishedBranch = installSource.slice(
@@ -32,6 +155,70 @@ test("install names releases from the validated manifest digest", () => {
   assert.ok(installSource.includes('verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"'))
   assert.ok(installSource.includes('"$@" path1 "$trusted_builder_public_key"'))
   assert.ok(upgradeSource.includes('"$@" path1 "$trusted_builder_public_key"'))
+})
+
+test("install and upgrade enforce immutable permissions after release signature verification", () => {
+  for (const source of [installSource, upgradeSource]) {
+    const start = indexOf(source, "verify_selected_release() {", "selected release verifier")
+    const end = indexOf(source, "\n}", "selected release verifier end", start)
+    const verifier = source.slice(start, end)
+    const signatureLines = verifier.split("\n").filter((line) => line.includes('node "$script_root/verify-image-release.mjs"'))
+    assert.ok(signatureLines.length > 0, "release signature verification must be present")
+    assert.ok(signatureLines.every((line) => line.trimEnd().endsWith("|| return 1")),
+      "signature failure must remain fatal when the wrapper is called conditionally")
+    const signature = verifier.lastIndexOf('node "$script_root/verify-image-release.mjs"')
+    const immutableTree = indexOf(
+      verifier,
+      'node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0',
+      "immutable release-tree verification",
+    )
+    assert.ok(signature < immutableTree, "permissions are checked after verifying the signed release")
+  }
+})
+
+test("selected release verifier cannot mask a signature failure with a successful tree check", () => {
+  for (const source of [installSource, upgradeSource]) {
+    const start = indexOf(source, "verify_selected_release() {", "selected release verifier")
+    const end = indexOf(source, "\n}", "selected release verifier end", start)
+    const verifier = source.slice(start, end + 2)
+    const command = [
+      "set -e",
+      "managed_provider_topology=shared_host",
+      "service_name=chariox-managed-bootstrap.service",
+      "script_root=/stub",
+      "trusted_builder_public_key=unused",
+      "node() { case \"$1\" in */verify-image-release.mjs) return 1 ;; */managed-kernel-upgrade-state.mjs) return 0 ;; *) return 2 ;; esac; }",
+      verifier,
+      "if verify_selected_release /tmp/release sha256:bad /tmp/key; then exit 22; fi",
+      "exit 0",
+    ].join("\n")
+    const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" })
+    assert.equal(result.status, 0, result.stderr)
+  }
+})
+
+test("release-tree verification rejects group-writable signed content", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-release-tree-"))
+  try {
+    const context = join(root, "usr", "lib", "chariox", "slice-build-context")
+    await mkdir(context, { recursive: true })
+    const file = join(context, "tamperable-source")
+    await writeFile(file, "signed but writable", { mode: 0o666 })
+    await chmod(file, 0o666)
+
+    const result = spawnSync(process.execPath, [
+      upgradeStateScript.pathname,
+      "verify-immutable-release-tree",
+      root,
+      String(process.getuid()),
+    ], {
+      encoding: "utf8",
+    })
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /managed release tree grants group or other write access/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("Path-1 install and upgrade keep the independent builder key available to runtime", () => {
@@ -130,6 +317,37 @@ test("upgrade recovers interrupted phases and rolls back failed migration or hea
   assert.ok(upgradeSource.includes('atomic_symlink "$previous_target" "$current_link"'))
   assert.ok(upgradeSource.includes("write_phase committed"))
   assert.ok(upgradeSource.includes("write_phase rolled_back"))
+})
+
+test("Path-1 upgrade checks both effective units before recovery and after reload", async (context) => {
+  const guard = upgradeSource.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  assert.ok(guard, "upgrade must inspect effective systemd drop-ins")
+
+  const initialGuard = indexOf(upgradeSource, "assert_path1_units_have_no_dropins\nrecover_transaction", "pre-recovery guard")
+  const transaction = indexOf(upgradeSource, "pending_transaction=$chariox_root/.managed-kernel-upgrade.pending", "transaction preparation")
+  assert.ok(initialGuard < transaction, "drop-ins must block recovery and transaction writes")
+  assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_units_have_no_dropins \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
+  assert.match(upgradeSource, /if ! systemctl daemon-reload \\\n\s*\|\| ! assert_path1_units_have_no_dropins \\\n[\s\S]*?\|\| ! systemctl start "\$service_name"/, "activation must recheck after reload before starting")
+
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-test-"))
+  context.after(() => rm(scratch, { recursive: true, force: true }))
+  const systemctl = join(scratch, "systemctl")
+  await writeFile(systemctl, '#!/bin/sh\ncase "$*" in\n  *chariox-disposable-worker-bootstrap.service) printf "%s" "${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;\n  *) printf "%s" "${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;\nesac\n')
+  await chmod(systemctl, 0o755)
+  const command = `${guard}\nassert_path1_units_have_no_dropins\n`
+  const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}`, managed_provider_topology: "path1" }
+  for (const [name, home, worker, expectedExit] of [
+    ["clean", "", "", 0],
+    ["home drop-in", "/etc/systemd/system/home.d/50-hardening.conf", "", 1],
+    ["worker drop-in", "", "/etc/systemd/system/worker.d/50-hardening.conf", 1],
+  ]) {
+    const result = spawnSync("/bin/sh", ["-c", command], {
+      encoding: "utf8",
+      env: { ...env, SYSTEMD_HOME_DROP_IN_PATHS: home, SYSTEMD_WORKER_DROP_IN_PATHS: worker },
+    })
+    assert.equal(result.status, expectedExit, `${name}: ${result.stderr}`)
+    if (expectedExit) assert.match(result.stderr, /Path-1 service .* has systemd drop-ins/)
+  }
 })
 
 test("release paths stay separate from mutable managed home state", () => {

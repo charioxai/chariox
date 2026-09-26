@@ -7,9 +7,15 @@ import { spawnSync } from "node:child_process"
 import test from "node:test"
 
 const verifier = new URL("./verify-image-release.mjs", import.meta.url)
+const imagePreparation = new URL("./prepare-hetzner-image.sh", import.meta.url)
 const SOURCE_COMMIT = "a".repeat(40)
 const SOURCE_TREE = "b".repeat(40)
 const TARGET = "x86_64-unknown-linux-gnu"
+const PATH1_HOME_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap"
+const PATH1_WORKER_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
+const PATH1_BOOTSTRAP_PATH = "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+const PATH1_SERVICE = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
+const WORKER_SERVICE = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
 const ARTIFACTS = [
   ["chariox-kernel", "/usr/local/bin/chariox-kernel", "file"],
   ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", "file"],
@@ -26,22 +32,6 @@ const ARTIFACTS = [
 const KERNEL = Buffer.from("kernel artifact")
 const BOOTSTRAP = Buffer.from("bootstrap artifact")
 const RELAY = Buffer.from("relay artifact")
-const PATH1_SERVICE = [
-  "[Unit]",
-  "After=network-online.target chariox-rootless-docker.service",
-  "Wants=network-online.target chariox-rootless-docker.service",
-  "[Service]",
-  "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
-  "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json",
-  "Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key",
-  "Environment=HOME=/home/chariox",
-  "Environment=CHARIOX_HOME=/home/chariox/.chariox",
-  "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
-  "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
-  "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
-  "",
-].join("\n")
-
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`
 }
@@ -90,6 +80,7 @@ async function createReleaseFixture(context, {
   invalidBuilderSignature = false,
   wrongTrustedBuilderKey = false,
   path1Service = PATH1_SERVICE,
+  workerService = WORKER_SERVICE,
 } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "chariox-release-provenance-test-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
@@ -143,7 +134,7 @@ async function createReleaseFixture(context, {
     ["chariox-managed-bootstrap", BOOTSTRAP],
     ["chariox-managed-bootstrap.service", Buffer.from("[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n")],
     ["chariox-path1-managed-bootstrap.service", Buffer.from(path1Service)],
-    ["chariox-disposable-worker-bootstrap.service", Buffer.from("[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n")],
+    ["chariox-disposable-worker-bootstrap.service", Buffer.from(workerService)],
     ["chariox-rootless-docker.service", Buffer.from("[Service]\n")],
     ["chariox-slice-broker.service", Buffer.from("[Service]\n")],
     ["chariox-build-attestation", attestationBytes],
@@ -191,6 +182,45 @@ function runVerifier(fixture, topology, trustedBuilderKeyPath) {
   return spawnSync(process.execPath, args, { encoding: "utf8", timeout: 10_000 })
 }
 
+test("Path-1 image preparation rejects inherited systemd drop-ins", async (context) => {
+  const source = await readFile(imagePreparation, "utf8")
+  const guard = source.match(/assert_path1_unit_has_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  assert.ok(guard, "Path-1 preparation must define an effective-unit drop-in guard")
+  assert.match(
+    source,
+    /if \[ "\$managed_provider_topology" = path1 \]; then\n[\s\S]*?assert_path1_unit_has_no_dropins "\$managed_bootstrap_service"\n\s*assert_path1_unit_has_no_dropins chariox-disposable-worker-bootstrap\.service/,
+    "Path-1 image preparation must guard both home and disposable-worker services",
+  )
+
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-path1-dropin-test-"))
+  context.after(() => rm(scratch, { recursive: true, force: true }))
+  const systemctl = join(scratch, "systemctl")
+  await writeFile(systemctl, '#!/bin/sh\ncase "$*" in\n  *chariox-disposable-worker-bootstrap.service) printf "%s" "${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;\n  *) printf "%s" "${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;\nesac\n')
+  await chmod(systemctl, 0o755)
+  const command = `fail() { echo "$*" >&2; exit 1; }\n${guard}\nassert_path1_unit_has_no_dropins chariox-path1-managed-bootstrap.service\nassert_path1_unit_has_no_dropins chariox-disposable-worker-bootstrap.service\n`
+  const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}` }
+  const clean = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...env, SYSTEMD_HOME_DROP_IN_PATHS: "", SYSTEMD_WORKER_DROP_IN_PATHS: "" },
+  })
+  assert.equal(clean.status, 0, clean.stderr)
+
+  const inheritedHome = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...env, SYSTEMD_HOME_DROP_IN_PATHS: "/etc/systemd/system/service.d/50-hardening.conf" },
+  })
+  assert.notEqual(inheritedHome.status, 0)
+  assert.match(inheritedHome.stderr, /systemd drop-ins/)
+
+  const inheritedWorker = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...env, SYSTEMD_WORKER_DROP_IN_PATHS: "/etc/systemd/system/service.d/50-hardening.conf" },
+  })
+  assert.notEqual(inheritedWorker.status, 0)
+  assert.match(inheritedWorker.stderr, /systemd drop-ins/)
+  assert.match(inheritedWorker.stderr, /chariox-disposable-worker-bootstrap\.service/)
+})
+
 test("Path-1 verification requires an independently supplied builder trust root", async (context) => {
   const fixture = await createReleaseFixture(context)
   const result = runVerifier(fixture, "path1")
@@ -206,11 +236,72 @@ test("Path-1 verification refuses to use the image's builder key as its trust ro
   assert.match(result.stderr, /must be supplied outside the image root/)
 })
 
-test("Path-1 verification accepts a valid externally trusted builder attestation", async (context) => {
+test("Path-1 verification accepts signed direct ExecStart commands and static bootstrap PATHs", async (context) => {
   const fixture = await createReleaseFixture(context)
   const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
   assert.equal(result.status, 0, result.stderr)
 })
+
+for (const [description, fixtureOptions] of [
+  ["a login shell that could read a provider-writable profile", {
+    path1Service: PATH1_SERVICE.replace(
+      PATH1_HOME_EXEC_START,
+      "ExecStart=/bin/bash --login -c 'exec /usr/local/bin/chariox-managed-bootstrap'",
+    ),
+  }],
+  ["a worker login shell that could read a provider-writable profile", {
+    workerService: WORKER_SERVICE.replace(
+      PATH1_WORKER_EXEC_START,
+      "ExecStart=/bin/bash --login -c 'exec /usr/local/bin/chariox-managed-bootstrap --disposable-worker'",
+    ),
+  }],
+  ["an extra Path-1 command", {
+    path1Service: PATH1_SERVICE.replace(
+      PATH1_HOME_EXEC_START,
+      `${PATH1_HOME_EXEC_START}; /tmp/untrusted`,
+    ),
+  }],
+  ["an untrusted Path-1 executable", {
+    path1Service: PATH1_SERVICE.replace(PATH1_HOME_EXEC_START, PATH1_HOME_EXEC_START.replace(
+      "/usr/local/bin/chariox-managed-bootstrap",
+      "/tmp/chariox-managed-bootstrap",
+    )),
+  }],
+  ["multiple Path-1 ExecStart directives", {
+    path1Service: `${PATH1_SERVICE}ExecStart=/tmp/untrusted\n`,
+  }],
+  ["a worker command without its disposable-worker flag", {
+    workerService: WORKER_SERVICE.replace(PATH1_WORKER_EXEC_START, PATH1_HOME_EXEC_START),
+  }],
+  ["a worker command with an unexpected flag", {
+    workerService: WORKER_SERVICE.replace(
+      PATH1_WORKER_EXEC_START,
+      `${PATH1_WORKER_EXEC_START} --unexpected`,
+    ),
+  }],
+  ["a user-writable home bootstrap PATH", {
+    path1Service: PATH1_SERVICE.replace(
+      PATH1_BOOTSTRAP_PATH,
+      "Environment=PATH=/home/chariox/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    ),
+  }],
+  ["a user-writable worker bootstrap PATH", {
+    workerService: WORKER_SERVICE.replace(
+      PATH1_BOOTSTRAP_PATH,
+      "Environment=PATH=/home/chariox/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    ),
+  }],
+  ["multiple home bootstrap PATH declarations", {
+    path1Service: `${PATH1_SERVICE}${PATH1_BOOTSTRAP_PATH}\n`,
+  }],
+]) {
+  test(`Path-1 verification rejects ${description}`, async (context) => {
+    const fixture = await createReleaseFixture(context, fixtureOptions)
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /incompatible ExecStart|incompatible bootstrap PATH|overrides Environment=PATH/)
+  })
+}
 
 test("Path-1 verification rejects a signed service without the independent runtime builder key", async (context) => {
   const fixture = await createReleaseFixture(context, {
@@ -261,7 +352,7 @@ for (const [field, mutateAttestation] of [
   })
 }
 
-test("shared-host rollback retains release-signature verification without a new builder pin", async (context) => {
+test("shared-host rollback retains direct ExecStart and release-signature verification without a builder pin", async (context) => {
   const fixture = await createReleaseFixture(context, { malformedAttestation: true })
   const result = runVerifier(fixture, "shared_host")
   assert.equal(result.status, 0, result.stderr)

@@ -57,7 +57,7 @@ fn leased_agent_cleanup_error(agent_id: &str, source: DaemonError) -> DaemonErro
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LeaseCallerBinding {
     pub(crate) home_kernel_id: String,
     pub(crate) authenticated_machine_id: String,
@@ -235,8 +235,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .leased_agent_callers
             .get(leased_agent_id)
-            .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id));
-        if owner == Some(caller) {
+            .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id))
+            .cloned()
+            .or_else(|| {
+                self.app
+                    .worker_steer_receipts
+                    .caller_for_leased_agent(leased_agent_id)
+            })
+            .or_else(|| {
+                self.app
+                    .worker_prompt_receipts
+                    .caller_for_leased_agent(leased_agent_id)
+            });
+        if owner.as_ref() == Some(caller) {
             Ok(())
         } else {
             Err(DaemonError::LeaseCallerUnauthorized {

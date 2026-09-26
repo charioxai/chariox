@@ -16,6 +16,36 @@ const viewport = {
   desktop_pixel_height: 1440,
 };
 
+test("concurrent reads share connection initialization", async () => {
+  const ready = Promise.withResolvers();
+  const connection = new FakeConnection();
+  let opens = 0;
+  const browser = new BrowserCdpClient({ connectionFactory: async () => {
+    opens += 1;
+    await ready.promise;
+    return connection;
+  } });
+  const first = browser.ensureConnection();
+  const second = browser.ensureConnection();
+  ready.resolve();
+  const connections = await Promise.all([first, second]);
+  assert.equal(opens, 1);
+  assert.equal(connections[0], connections[1]);
+});
+
+test("concurrent reads share fully initialized target sessions", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.ensureConnection();
+  const [first, second] = await Promise.all([
+    browser.ensureTargetSession(connection, "target-a"),
+    browser.ensureTargetSession(connection, "target-a"),
+  ]);
+  assert.equal(first, second);
+  assert.equal(connection.calls.filter(call => call.method === "Target.attachToTarget").length, 1);
+  assert.equal(connection.calls.filter(call => call.method === "Page.enable").length, 1);
+});
+
 test("persistent browser connection returns page identities, focus, and applied viewport", async () => {
   const connection = new FakeConnection();
   let connectionCount = 0;

@@ -599,6 +599,7 @@ fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
                     terminal_id: None,
                     terminal_type: None,
                     alias: Some("browser paired".to_string()),
+                    public_key_thumbprint: None,
                 },
             ))
             .expect("terminal pairing link should redeem")

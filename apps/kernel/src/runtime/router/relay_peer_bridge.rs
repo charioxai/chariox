@@ -450,6 +450,38 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_query_leased_prompt_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+        relay_peer_runtime::query_relay_leased_prompt_receipt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_reconcile_leased_prompt_steer_receipt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        execution_lease_id: &str,
+    ) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
+        relay_peer_runtime::reconcile_relay_leased_prompt_steer_receipt(
+            &self.runtime_state,
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            worker_provider_run_id,
+            execution_lease_id,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_steer_leased_prompt(
         &self,
@@ -530,6 +562,21 @@ impl CommandRouter {
         relay_peer_runtime::complete_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
     }
 
+    pub(crate) async fn relay_resolve_leased_project_environment_setup_target(
+        &self,
+        leased_agent_id: &str,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<(String, String), DaemonError> {
+        relay_peer_runtime::resolve_relay_leased_project_environment_setup_target(
+            &self.runtime_state,
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_start_leased_project_environment_setup(
         &self,
@@ -575,6 +622,30 @@ impl CommandRouter {
             operation_id,
             home_session_id,
             home_agent_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_acknowledge_leased_project_environment_setup_definition(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        definition_digest: String,
+    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupDefinitionAck, DaemonError>
+    {
+        relay_peer_runtime::acknowledge_relay_leased_project_environment_setup_definition(
+            &self.runtime_state,
+            leased_agent_id,
+            operation_id,
+            attempt,
+            project_id,
+            home_session_id,
+            home_agent_id,
+            definition_digest,
         )
         .await
     }
@@ -656,8 +727,16 @@ impl CommandRouter {
     pub(crate) async fn relay_cancel_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        relay_peer_runtime::cancel_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
+        relay_peer_runtime::cancel_relay_leased_prompt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        )
+        .await
     }
 
     pub(crate) async fn relay_leased_agent_provider_run_id(

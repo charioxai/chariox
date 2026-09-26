@@ -9,6 +9,13 @@ fail() {
   exit 1
 }
 
+assert_path1_unit_has_no_dropins() {
+  drop_in_paths=$(systemctl show --property=DropInPaths --value "$1") \
+    || fail "could not inspect effective systemd drop-ins for $1"
+  [ -z "$drop_in_paths" ] \
+    || fail "Path-1 service $1 has systemd drop-ins: $drop_in_paths"
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   fail "run as root on the disposable Hetzner image builder"
 fi
@@ -130,6 +137,8 @@ docker buildx version >/dev/null || fail "Docker Buildx is unavailable"
 "$script_root/install-image.sh" \
   "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
 if [ "$managed_provider_topology" = path1 ]; then
+  assert_path1_unit_has_no_dropins "$managed_bootstrap_service"
+  assert_path1_unit_has_no_dropins chariox-disposable-worker-bootstrap.service
   runtime_builder_key=/etc/chariox/trusted-builder-public-key
   [ -f "$runtime_builder_key" ] && [ ! -L "$runtime_builder_key" ] \
     || fail "Path-1 image is missing its independent runtime builder key"
@@ -314,9 +323,14 @@ systemctl is-enabled --quiet "$managed_bootstrap_service" \
 if systemctl is-enabled --quiet "$other_managed_bootstrap_service"; then
   fail "a non-selected managed bootstrap service was also enabled"
 fi
-if systemctl is-active --quiet "$managed_bootstrap_service"; then
-  fail "managed bootstrap service started while the image was being built"
+if systemctl is-enabled --quiet chariox-disposable-worker-bootstrap.service; then
+  fail "disposable worker bootstrap service must not be enabled in a managed-home image"
 fi
+for bootstrap_service in "$managed_bootstrap_service" "$other_managed_bootstrap_service" chariox-disposable-worker-bootstrap.service; do
+  if systemctl is-active --quiet "$bootstrap_service"; then
+    fail "bootstrap service $bootstrap_service started while the image was being built"
+  fi
+done
 
 if find /var/lib/chariox -mindepth 1 -print -quit | grep -q .; then
   fail "managed runtime state entered the image"

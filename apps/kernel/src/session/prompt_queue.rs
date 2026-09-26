@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +87,8 @@ pub struct PromptQueueItem {
     updated_at_ms: u64,
     #[serde(default, skip_serializing, skip_deserializing)]
     private_metadata: Option<Box<PromptPrivateMetadata>>,
+    #[serde(skip)]
+    remote_steer_reservation: RemoteSteerReservation,
     status: PromptStatus,
     #[serde(default)]
     prompt_origin: PromptOrigin,
@@ -97,6 +101,38 @@ pub struct PromptQueueItem {
     workflow_run_id: Option<String>,
     workflow_node_run_id: Option<String>,
 }
+
+/// Durable identity needed to keep an ambiguously delivered queued steer blocked
+/// until a future exact worker receipt can reconcile it. Relay credentials are
+/// deliberately excluded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DurableRemoteQueuedSteerUncertainty {
+    target_home_prompt_id: String,
+    worker_provider_run_id: Option<String>,
+    worker_kernel_id: String,
+    worker_machine_id: String,
+    execution_lease_id: String,
+    leased_agent_id: String,
+}
+
+/// Clone-shared runtime reservation and fail-closed uncertainty marker. The
+/// transient reservation is not serialized; uncertainty is persisted separately
+/// in `DurablePromptPrivateState`.
+#[derive(Debug, Clone, Default)]
+struct RemoteSteerReservation {
+    id: Arc<AtomicU64>,
+    uncertainty: Arc<Mutex<Option<DurableRemoteQueuedSteerUncertainty>>>,
+}
+
+impl PartialEq for RemoteSteerReservation {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for RemoteSteerReservation {}
+
+static NEXT_REMOTE_STEER_RESERVATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DurablePromptPrivateState {
@@ -123,6 +159,8 @@ pub(crate) struct DurablePromptPrivateState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delivery_provider_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub(crate) delivery_reconciliation_pending: bool,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
     pub(crate) delivery_failure_pending: bool,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub(crate) recovery_generation: u32,
@@ -130,6 +168,8 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) recovery_operation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) recovery_phase: Option<DurablePromptDeliveryPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote_steer_uncertainty: Option<DurableRemoteQueuedSteerUncertainty>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -144,6 +184,7 @@ struct PromptPrivateMetadata {
     delivery_phase: Option<DurablePromptDeliveryPhase>,
     delivery_provider_run_id: Option<String>,
     delivery_provider_session_id: Option<String>,
+    delivery_reconciliation_pending: bool,
     delivery_failure_pending: bool,
     recovery_generation: u32,
     recovery_operation_id: Option<String>,
@@ -160,23 +201,36 @@ fn is_false_bool(value: &bool) -> bool {
 
 impl DurablePromptPrivateState {
     pub(crate) fn from_prompt(session_id: &str, prompt: &PromptQueueItem) -> Option<Self> {
-        prompt.private_metadata.as_ref().map(|metadata| Self {
+        let remote_steer_uncertainty = prompt
+            .remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let metadata = prompt
+            .private_metadata
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
+        (prompt.private_metadata.is_some() || remote_steer_uncertainty.is_some()).then(|| Self {
             session_id: session_id.to_string(),
             prompt_id: prompt.id.clone(),
-            agent_prompt_schedule_id: metadata.agent_prompt_schedule_id.clone(),
-            source_client_id: metadata.source_client_id.clone(),
-            source_user_id: metadata.source_user_id.clone(),
-            hidden_system_context: metadata.hidden_system_context.clone(),
-            operation_id: metadata.operation_id.clone(),
-            operation_fingerprint: metadata.operation_fingerprint.clone(),
+            agent_prompt_schedule_id: metadata.agent_prompt_schedule_id,
+            source_client_id: metadata.source_client_id,
+            source_user_id: metadata.source_user_id,
+            hidden_system_context: metadata.hidden_system_context,
+            operation_id: metadata.operation_id,
+            operation_fingerprint: metadata.operation_fingerprint,
             initially_queued: metadata.initially_queued,
             delivery_phase: metadata.delivery_phase,
-            delivery_provider_run_id: metadata.delivery_provider_run_id.clone(),
-            delivery_provider_session_id: metadata.delivery_provider_session_id.clone(),
+            delivery_provider_run_id: metadata.delivery_provider_run_id,
+            delivery_provider_session_id: metadata.delivery_provider_session_id,
+            delivery_reconciliation_pending: metadata.delivery_reconciliation_pending,
             delivery_failure_pending: metadata.delivery_failure_pending,
             recovery_generation: metadata.recovery_generation,
-            recovery_operation_id: metadata.recovery_operation_id.clone(),
+            recovery_operation_id: metadata.recovery_operation_id,
             recovery_phase: metadata.recovery_phase,
+            remote_steer_uncertainty,
         })
     }
 }
@@ -192,6 +246,8 @@ pub struct PendingPromptSubmission {
     updated_at_ms: u64,
     #[serde(default, skip_serializing, skip_deserializing)]
     private_metadata: Option<Box<PromptPrivateMetadata>>,
+    #[serde(skip)]
+    remote_steer_reservation: RemoteSteerReservation,
     prompt_origin: PromptOrigin,
     external_provider: Option<String>,
     external_provider_session_id: Option<String>,
@@ -215,6 +271,7 @@ impl PendingPromptSubmission {
             created_at_ms: now,
             updated_at_ms: now,
             private_metadata: prompt.private_metadata,
+            remote_steer_reservation: prompt.remote_steer_reservation,
             prompt_origin: prompt.prompt_origin,
             external_provider: prompt.external_provider,
             external_provider_session_id: prompt.external_provider_session_id,
@@ -235,6 +292,7 @@ impl PendingPromptSubmission {
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
             private_metadata: self.private_metadata,
+            remote_steer_reservation: self.remote_steer_reservation,
             status: PromptStatus::Queued,
             prompt_origin: self.prompt_origin,
             external_provider: self.external_provider,
@@ -265,6 +323,7 @@ impl PromptQueueItem {
             created_at_ms: now,
             updated_at_ms: now,
             private_metadata: None,
+            remote_steer_reservation: RemoteSteerReservation::default(),
             status,
             prompt_origin: PromptOrigin::Chariox,
             external_provider: None,
@@ -444,6 +503,151 @@ impl PromptQueueItem {
         self.updated_at_ms
     }
 
+    pub(crate) fn reserve_remote_steer(&self) -> Option<u64> {
+        if self.remote_steer_outcome_uncertainty().is_some() {
+            return None;
+        }
+        let reservation = NEXT_REMOTE_STEER_RESERVATION.fetch_add(1, Ordering::Relaxed);
+        self.remote_steer_reservation
+            .id
+            .compare_exchange(0, reservation, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| reservation)
+    }
+
+    pub(crate) fn remote_steer_reserved(&self) -> bool {
+        self.remote_steer_reservation.id.load(Ordering::Acquire) != 0
+            || self.remote_steer_outcome_uncertainty().is_some()
+    }
+
+    pub(crate) fn remote_steer_reservation_matches(&self, reservation: u64) -> bool {
+        self.remote_steer_reservation.id.load(Ordering::Acquire) == reservation
+    }
+
+    pub(crate) fn release_remote_steer(&self, reservation: u64) -> bool {
+        self.remote_steer_reservation
+            .id
+            .compare_exchange(reservation, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub(crate) fn mark_remote_steer_outcome_uncertain(
+        &self,
+        reservation: u64,
+        target_home_prompt_id: String,
+        worker_provider_run_id: Option<String>,
+        worker_kernel_id: String,
+        worker_machine_id: String,
+        execution_lease_id: String,
+        leased_agent_id: String,
+    ) -> bool {
+        if !self.remote_steer_reservation_matches(reservation) {
+            return false;
+        }
+        *self
+            .remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(DurableRemoteQueuedSteerUncertainty {
+                target_home_prompt_id,
+                worker_provider_run_id,
+                worker_kernel_id,
+                worker_machine_id,
+                execution_lease_id,
+                leased_agent_id,
+            });
+        true
+    }
+
+    pub(crate) fn clear_remote_steer_outcome_uncertainty(
+        &self,
+        reservation: u64,
+    ) -> Option<(String, Option<String>, String, String, String, String)> {
+        if !self.remote_steer_reservation_matches(reservation) {
+            return None;
+        }
+        self.remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|uncertainty| {
+                (
+                    uncertainty.target_home_prompt_id,
+                    uncertainty.worker_provider_run_id,
+                    uncertainty.worker_kernel_id,
+                    uncertainty.worker_machine_id,
+                    uncertainty.execution_lease_id,
+                    uncertainty.leased_agent_id,
+                )
+            })
+    }
+
+    pub(crate) fn clear_remote_steer_outcome_uncertainty_for_receipt(
+        &self,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        worker_kernel_id: &str,
+        worker_machine_id: &str,
+        execution_lease_id: &str,
+        leased_agent_id: &str,
+    ) -> bool {
+        let mut uncertainty = self
+            .remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(current) = uncertainty.as_ref() else {
+            return false;
+        };
+        if current.target_home_prompt_id != target_home_prompt_id
+            || current.worker_provider_run_id.as_deref() != Some(worker_provider_run_id)
+            || current.worker_kernel_id != worker_kernel_id
+            || current.worker_machine_id != worker_machine_id
+            || current.execution_lease_id != execution_lease_id
+            || current.leased_agent_id != leased_agent_id
+        {
+            return false;
+        }
+        uncertainty.take();
+        self.remote_steer_reservation.id.store(0, Ordering::Release);
+        true
+    }
+
+    pub(crate) fn remote_steer_outcome_uncertainty(
+        &self,
+    ) -> Option<(String, Option<String>, String, String, String, String)> {
+        self.remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|uncertainty| {
+                (
+                    uncertainty.target_home_prompt_id.clone(),
+                    uncertainty.worker_provider_run_id.clone(),
+                    uncertainty.worker_kernel_id.clone(),
+                    uncertainty.worker_machine_id.clone(),
+                    uncertainty.execution_lease_id.clone(),
+                    uncertainty.leased_agent_id.clone(),
+                )
+            })
+    }
+
+    fn restore_remote_steer_outcome_uncertainty(
+        &self,
+        uncertainty: Option<DurableRemoteQueuedSteerUncertainty>,
+    ) {
+        if let Some(uncertainty) = uncertainty {
+            *self
+                .remote_steer_reservation
+                .uncertainty
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(uncertainty);
+        }
+    }
+
     pub fn hidden_system_context(&self) -> &str {
         self.private_metadata
             .as_ref()
@@ -488,12 +692,9 @@ impl PromptQueueItem {
     }
 
     pub(crate) fn set_durable_initially_queued(&mut self, queued: bool) {
-        if let Some(metadata) = self.private_metadata.as_mut() {
-            if metadata.operation_id.is_none() {
-                return;
-            }
-            metadata.initially_queued = Some(queued);
-        }
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .initially_queued = Some(queued);
     }
 
     pub(crate) fn durable_delivery_phase(&self) -> Option<DurablePromptDeliveryPhase> {
@@ -539,6 +740,18 @@ impl PromptQueueItem {
             .delivery_failure_pending = pending;
     }
 
+    pub(crate) fn durable_delivery_reconciliation_pending(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.delivery_reconciliation_pending)
+    }
+
+    pub(crate) fn set_durable_delivery_reconciliation_pending(&mut self, pending: bool) {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .delivery_reconciliation_pending = pending;
+    }
+
     pub(crate) fn set_durable_delivery(
         &mut self,
         phase: DurablePromptDeliveryPhase,
@@ -553,6 +766,7 @@ impl PromptQueueItem {
         metadata.delivery_provider_session_id = provider_session_id;
         if phase == DurablePromptDeliveryPhase::Delivered {
             metadata.delivery_failure_pending = false;
+            metadata.delivery_reconciliation_pending = false;
         }
     }
 
@@ -607,12 +821,15 @@ impl PromptQueueItem {
             && private.agent_prompt_schedule_id.is_none()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
+            && !private.delivery_reconciliation_pending
             && !private.delivery_failure_pending
             && private.recovery_operation_id.is_none()
             && private.source_client_id.is_none()
             && private.source_user_id.is_none()
+            && private.remote_steer_uncertainty.is_none()
         {
             self.private_metadata = None;
+            self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
             return;
         }
         self.private_metadata = Some(Box::new(PromptPrivateMetadata {
@@ -626,11 +843,13 @@ impl PromptQueueItem {
             delivery_phase: private.delivery_phase,
             delivery_provider_run_id: private.delivery_provider_run_id.clone(),
             delivery_provider_session_id: private.delivery_provider_session_id.clone(),
+            delivery_reconciliation_pending: private.delivery_reconciliation_pending,
             delivery_failure_pending: private.delivery_failure_pending,
             recovery_generation: private.recovery_generation,
             recovery_operation_id: private.recovery_operation_id.clone(),
             recovery_phase: private.recovery_phase,
         }));
+        self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
     }
 
     pub fn status(&self) -> PromptStatus {
@@ -785,6 +1004,102 @@ mod tests {
     }
 
     #[test]
+    fn remote_steer_reservation_is_clone_shared_exact_and_transient() {
+        let prompt = PromptQueueItem::new(
+            "prompt-queued",
+            "attachment-1",
+            "agent-1",
+            "queued prompt",
+            PromptStatus::Queued,
+        );
+        let clone = prompt.clone();
+        let before = serde_json::to_value(&prompt).expect("prompt should serialize");
+        let reservation = prompt
+            .reserve_remote_steer()
+            .expect("the first remote steer should own the queue item");
+
+        assert!(clone.remote_steer_reserved());
+        assert!(clone.reserve_remote_steer().is_none());
+        assert!(!clone.release_remote_steer(reservation + 1));
+        assert!(prompt.remote_steer_reservation_matches(reservation));
+        assert_eq!(
+            serde_json::to_value(&prompt).expect("reserved prompt should serialize"),
+            before,
+            "the transient steer reservation must not change serialized prompt state"
+        );
+        let restored: PromptQueueItem =
+            serde_json::from_value(before).expect("serialized prompt should deserialize");
+        assert!(!restored.remote_steer_reserved());
+        assert!(clone.release_remote_steer(reservation));
+        assert!(!prompt.remote_steer_reserved());
+    }
+
+    #[test]
+    fn uncertain_remote_steer_survives_durable_restore_and_remains_reserved() {
+        let prompt = PromptQueueItem::new(
+            "queued-steer-1",
+            "attachment-1",
+            "agent-1",
+            "queued body",
+            PromptStatus::Queued,
+        );
+        let reservation = prompt
+            .reserve_remote_steer()
+            .expect("steer should reserve before delivery");
+        let uncertainty = DurableRemoteQueuedSteerUncertainty {
+            target_home_prompt_id: "home-prompt-1".to_string(),
+            worker_provider_run_id: Some("worker-run-1".to_string()),
+            worker_kernel_id: "worker-kernel-1".to_string(),
+            worker_machine_id: "worker-machine-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+        };
+        assert!(prompt.mark_remote_steer_outcome_uncertain(
+            reservation,
+            uncertainty.target_home_prompt_id.clone(),
+            uncertainty.worker_provider_run_id.clone(),
+            uncertainty.worker_kernel_id.clone(),
+            uncertainty.worker_machine_id.clone(),
+            uncertainty.execution_lease_id.clone(),
+            uncertainty.leased_agent_id.clone(),
+        ));
+        assert!(prompt.release_remote_steer(reservation));
+        assert!(
+            prompt.remote_steer_reserved(),
+            "dropping the transient reservation must not release an uncertain prompt"
+        );
+
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt)
+            .expect("uncertain state should be included in durable private state");
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let public_prompt = serde_json::to_value(&prompt).unwrap();
+        assert!(public_prompt.get("remote_steer_uncertainty").is_none());
+        let mut restored: PromptQueueItem =
+            serde_json::from_value(public_prompt).expect("public prompt should restore");
+        assert!(!restored.remote_steer_reserved());
+        restored.restore_durable_private_state(&private);
+
+        assert!(restored.remote_steer_reserved());
+        assert_eq!(restored.id(), "queued-steer-1");
+        assert_eq!(
+            restored.remote_steer_outcome_uncertainty(),
+            Some((
+                uncertainty.target_home_prompt_id,
+                uncertainty.worker_provider_run_id,
+                uncertainty.worker_kernel_id,
+                uncertainty.worker_machine_id,
+                uncertainty.execution_lease_id,
+                uncertainty.leased_agent_id,
+            ))
+        );
+        assert!(
+            restored.reserve_remote_steer().is_none(),
+            "restored uncertain prompt must not be retried as a new steer"
+        );
+    }
+
+    #[test]
     fn prompt_queue_item_deserialization_drops_hidden_system_context() {
         let payload = r#"{
             "id":"prompt-1",
@@ -835,6 +1150,40 @@ mod tests {
             .remove("agent_prompt_schedule_id");
         let legacy: DurablePromptPrivateState = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy.agent_prompt_schedule_id, None);
+    }
+
+    #[test]
+    fn reconciliation_pending_survives_private_state_restore_until_delivery_is_durable() {
+        let mut prompt = PromptQueueItem::new(
+            "prompt-uncertain",
+            "attachment-1",
+            "agent-1",
+            "same prompt body",
+            PromptStatus::Running,
+        );
+        prompt.set_durable_delivery(DurablePromptDeliveryPhase::Dispatching, None, None);
+        prompt.set_durable_delivery_reconciliation_pending(true);
+
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt).unwrap();
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let mut restored: PromptQueueItem =
+            serde_json::from_value(serde_json::to_value(&prompt).unwrap()).unwrap();
+        restored.restore_durable_private_state(&private);
+
+        assert_eq!(restored.id(), "prompt-uncertain");
+        assert_eq!(
+            restored.durable_delivery_phase(),
+            Some(DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert!(restored.durable_delivery_reconciliation_pending());
+
+        restored.set_durable_delivery(
+            DurablePromptDeliveryPhase::Delivered,
+            Some("worker-run-1".to_string()),
+            None,
+        );
+        assert!(!restored.durable_delivery_reconciliation_pending());
     }
 
     #[test]

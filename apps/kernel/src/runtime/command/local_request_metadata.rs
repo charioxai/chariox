@@ -200,6 +200,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_) => {
             LocalRequestMetadata::new("managed_environment.reimage.preflight", Normal)
         }
+        LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_) => {
+            LocalRequestMetadata::new("managed_environment.reimage.receipt", Normal)
+        }
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_) => {
             LocalRequestMetadata::new("managed_environment.context_transfer.prepare", Interactive)
         }
@@ -675,6 +678,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
+        LocalDaemonRequest::QueryFreshRemoteMachineKernels(_) => {
+            "remote_machine.kernel.query_fresh"
+        }
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",
@@ -925,6 +931,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
         | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
         | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
         | LocalDaemonRequest::CreateManagedEnvironment(_)

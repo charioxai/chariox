@@ -151,6 +151,7 @@ pub enum LocalDaemonRequest {
     ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),
     GetManagedEnvironment(GetManagedEnvironmentRequest),
     GetManagedEnvironmentReimagePreflight(GetManagedEnvironmentReimagePreflightRequest),
+    GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest),
     PrepareManagedEnvironmentContextTransfer(PrepareManagedEnvironmentContextTransferRequest),
     PrepareManagedEnvironmentGitCredentialEnrollment(
         PrepareManagedEnvironmentGitCredentialEnrollmentRequest,
@@ -181,6 +182,7 @@ pub enum LocalDaemonRequest {
     RestoreSliceBackup(RestoreSliceBackupRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
+    QueryFreshRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
     GetWaitingRoomPublicSnapshot(GetWaitingRoomPublicSnapshotRequest),
     ListExternalProviderSessions(ListExternalProviderSessionsRequest),

@@ -16,6 +16,8 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     let before_environment = &before_environment["RoomEnvironmentState"]["environment"];
     let before_action_count = before_environment["actions"].as_array().unwrap().len();
     let before_ownership = before_environment["input_ownership"].clone();
+    let controller_state_path = fixture._worker_state.root.join("chromium-state.json");
+    let clicks_before_recovery = controller_click_count(&controller_state_path);
     let old_field = before.payload["browser"]["buttons"][0]["field_id"]
         .as_str()
         .unwrap()
@@ -94,6 +96,11 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
             .unwrap()["outcome"]["code"],
         "process_lost"
     );
+    assert_eq!(
+        controller_click_count(&controller_state_path),
+        clicks_before_recovery,
+        "a stale-reference failure must not dispatch physical input"
+    );
 
     let recovered = fixture
         .home
@@ -130,6 +137,34 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     .await
     .unwrap();
     let recovered_environment = &recovered_environment["RoomEnvironmentState"]["environment"];
+    let failed_action_count = after_failed_mutation["actions"].as_array().unwrap().len();
+    let recovered_actions = recovered_environment["actions"].as_array().unwrap();
+    assert_eq!(
+        recovered_actions.len(),
+        failed_action_count + 1,
+        "the post-restart status read records one browser observation"
+    );
+    let recovery_observation = recovered_actions.last().unwrap();
+    assert_eq!(recovery_observation["kind"], "browser_status");
+    assert_eq!(recovery_observation["state"], "completed");
+    assert_eq!(
+        recovery_observation["actor_id"],
+        crate::session::agent_environment_actor_id(before.payload["agent_id"].as_str().unwrap()),
+        "the recovery observation remains attributed to the requesting agent"
+    );
+    assert_eq!(
+        recovery_observation["runtime_generation"],
+        before.payload["runtime_generation"]
+    );
+    assert_eq!(
+        recovery_observation["targets"][0],
+        json!({"kind":"browser_tab","id":before.payload["tab_id"]})
+    );
+    assert_eq!(
+        controller_click_count(&controller_state_path),
+        clicks_before_recovery,
+        "recovering through a browser status observation must not replay a click"
+    );
     for component in ["browser_controller", "browser"] {
         assert!(
             recovered_environment["health"]
@@ -178,16 +213,36 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     let after_completed = &after_completed["RoomEnvironmentState"]["environment"];
     assert_eq!(
         after_completed["actions"].as_array().unwrap().len(),
-        before_action_count + 2,
-        "one fresh mutation must create exactly one additional action"
+        recovered_actions.len() + 1,
+        "one fresh mutation must append one action after the recovery observation"
+    );
+    let completed_action = after_completed["actions"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(
+        completed_action["action_id"],
+        completed.payload["action_id"]
+    );
+    assert_eq!(completed_action["kind"], "click");
+    assert_eq!(completed_action["state"], "completed");
+    assert_eq!(
+        completed_action["actor_id"],
+        crate::session::agent_environment_actor_id(before.payload["agent_id"].as_str().unwrap())
     );
     assert_eq!(
-        after_completed["actions"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()["state"],
-        "completed"
+        completed_action["runtime_generation"],
+        recovered.payload["runtime_generation"]
+    );
+    assert_eq!(
+        completed_action["targets"][0],
+        json!({"kind":"browser_tab","id":recovered.payload["tab_id"]})
+    );
+    assert_eq!(
+        controller_click_count(&controller_state_path),
+        clicks_before_recovery + 1,
+        "the fresh post-recovery click is physically dispatched exactly once"
     );
     let dialog_crash_pid =
         std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
@@ -267,8 +322,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         .as_str()
         .expect("recovered browser button reference")
         .to_string();
-    let state_path = fixture._worker_state.root.join("chromium-state.json");
-    let clicks_before_queue_fault = controller_click_count(&state_path);
+    let clicks_before_queue_fault = controller_click_count(&controller_state_path);
     let actions_before_queue_fault = dispatch_json(
         &fixture.home,
         json!({"GetRoomEnvironmentState":{"session_id":fixture.rooms[0]}}),
@@ -278,6 +332,12 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         .as_array()
         .unwrap()
         .len();
+    let controller_action_requests_path = fixture
+        ._worker_state
+        .root
+        .join("controller-action-requests.ndjson");
+    let controller_action_entries_before_queue_fault =
+        controller_action_entry_count(&controller_action_requests_path);
     let hold = fixture._worker_state.root.join("hold-click");
     std::fs::write(&hold, b"hold controller mutation during crash").unwrap();
     let running = controller_fault_tool_task(
@@ -288,6 +348,11 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     );
     let running_action_id =
         wait_for_fault_action(fixture, actions_before_queue_fault, "running").await;
+    let running_controller_request = wait_for_controller_action_request(
+        &controller_action_requests_path,
+        controller_action_entries_before_queue_fault,
+    )
+    .await;
     let queued = controller_fault_tool_task(
         fixture,
         token,
@@ -296,7 +361,37 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     );
     let queued_action_id =
         wait_for_fault_action(fixture, actions_before_queue_fault + 1, "queued").await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let running_controller_request_ref = running_controller_request["request_ref"]
+        .as_str()
+        .expect("controller action request has a fixture correlation id");
+    let controller_action_requests_at_kill =
+        controller_action_request_evidence(&controller_action_requests_path);
+    assert_eq!(
+        controller_action_requests_at_kill
+            .iter()
+            .filter(|event| event["event"] == "controller_request_entered")
+            .count(),
+        controller_action_entries_before_queue_fault + 1,
+        "the running mutation crossed browser.action, while the queued mutation did not: {controller_action_requests_at_kill:#?}"
+    );
+    assert!(
+        controller_action_requests_at_kill.iter().any(|event| {
+            event["event"] == "fixture_actionability_wait"
+                && event["request_ref"] == running_controller_request_ref
+                && event["state"] == "disabled"
+        }),
+        "the running browser.action must be held inside the fixture actionability check: {controller_action_requests_at_kill:#?}"
+    );
+    assert!(
+        !controller_action_requests_at_kill.iter().any(|event| {
+            event["request_ref"] == running_controller_request_ref
+                && matches!(
+                    event["event"].as_str(),
+                    Some("controller_request_completed" | "controller_request_failed")
+                )
+        }),
+        "the running browser.action must still be awaiting its result at the fault boundary: {controller_action_requests_at_kill:#?}"
+    );
     let queue_fault_pid =
         std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
             .unwrap()
@@ -322,8 +417,6 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         .expect("queued mutation should settle after controller loss")
         .expect("queued mutation task should join")
         .expect_err("queued pre-crash mutation must not execute with a stale reference");
-    assert_controller_execution_loss(&running_error);
-    assert_controller_restart_error(&queued_error);
 
     let after_queue_fault = dispatch_json(
         &fixture.home,
@@ -344,10 +437,22 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
             "pre-crash mutation must settle failed: {action}"
         );
     }
+    let clicks_after_queue_fault = controller_click_count(&controller_state_path);
     assert_eq!(
-        controller_click_count(&state_path),
-        clicks_before_queue_fault,
+        clicks_after_queue_fault, clicks_before_queue_fault,
         "controller recovery must not repeat a running or queued mutation"
+    );
+    let controller_action_requests_after_fault =
+        controller_action_request_evidence(&controller_action_requests_path);
+    assert!(
+        !controller_action_requests_after_fault.iter().any(|event| {
+            event["request_ref"] == running_controller_request_ref
+                && matches!(
+                    event["event"].as_str(),
+                    Some("controller_request_completed" | "controller_request_failed")
+                )
+        }),
+        "a SIGKILL must leave the entered controller action without a fabricated terminal receipt: {controller_action_requests_after_fault:#?}"
     );
 
     let after_queue_recovery = fixture
@@ -359,7 +464,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     let post_recovery_field = after_queue_recovery.payload["browser"]["buttons"][0]["field_id"]
         .as_str()
         .expect("post-recovery browser button reference");
-    fixture
+    let fresh_click = fixture
         .home
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
@@ -369,11 +474,49 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         )
         .await
         .expect("one newly discovered post-recovery mutation should execute");
+    assert!(fresh_click.ok, "{:?}", fresh_click.payload);
+    let fresh_action_id = fresh_click.payload["action_id"]
+        .as_str()
+        .expect("post-recovery click action id");
+    let after_fresh_click = dispatch_json(
+        &fixture.home,
+        json!({"GetRoomEnvironmentState":{"session_id":fixture.rooms[0]}}),
+    )
+    .await
+    .unwrap();
+    let after_fresh_actions = after_fresh_click["RoomEnvironmentState"]["environment"]["actions"]
+        .as_array()
+        .unwrap();
+    let fresh_action = after_fresh_actions
+        .iter()
+        .find(|action| action["action_id"] == fresh_action_id)
+        .expect("post-recovery click remains in the authoritative action ledger");
+    assert_eq!(fresh_action["action_id"].as_str(), Some(fresh_action_id));
+    assert_eq!(fresh_action["kind"], "click");
+    assert_eq!(fresh_action["state"], "completed");
+    let clicks_after_fresh_click = controller_click_count(&controller_state_path);
     assert_eq!(
-        controller_click_count(&state_path),
+        clicks_after_fresh_click,
         clicks_before_queue_fault + 1,
         "only the explicit post-recovery mutation may change the page"
     );
+    let controller_action_requests_after_fresh_click =
+        controller_action_request_evidence(&controller_action_requests_path);
+    let fresh_controller_request = controller_action_requests_after_fresh_click
+        .iter()
+        .filter(|event| event["event"] == "controller_request_entered")
+        .nth(controller_action_entries_before_queue_fault + 1)
+        .expect("fresh post-recovery mutation enters browser.action");
+    assert_eq!(fresh_controller_request["method"], "browser.action");
+    let fresh_controller_request_ref = fresh_controller_request["request_ref"]
+        .as_str()
+        .expect("fresh controller request correlation id");
+    assert!(controller_action_requests_after_fresh_click
+        .iter()
+        .any(|event| {
+            event["request_ref"] == fresh_controller_request_ref
+                && event["event"] == "controller_request_completed"
+        }));
     super::controller_upload_recovery::check_restart(fixture, token).await;
     super::controller_configuration_recovery::check(fixture, token).await;
     super::controller_lifecycle_cancellation::check(fixture, token).await;
@@ -391,9 +534,22 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
             "postRecoveryActionExactlyOnce": true,
             "runningMutationNotRepeated": true,
             "queuedMutationSettled": true,
-            "freshMutationExactlyOnce": true
+            "freshMutationExactlyOnce": true,
+            "runningActionId": running_action_id,
+            "queuedActionId": queued_action_id,
+            "runningControllerRequest": running_controller_request,
+            "faultBoundaryControllerRequests": controller_action_requests_at_kill,
+            "runningError": running_error.to_string(),
+            "queuedError": queued_error.to_string(),
+            "clickCountBeforeFault": clicks_before_queue_fault,
+            "clickCountAfterFault": clicks_after_queue_fault,
+            "clickCountAfterFreshClick": clicks_after_fresh_click,
+            "freshActionId": fresh_action_id,
+            "freshControllerRequest": fresh_controller_request
         })
     );
+    assert_controller_restart_error(&queued_error);
+    assert_controller_execution_loss(&running_error);
 }
 
 fn controller_fault_tool_task(
@@ -450,6 +606,60 @@ fn controller_click_count(path: &std::path::Path) -> u64 {
         .expect("controller state should decode")["clickCount"]
         .as_u64()
         .expect("controller click count")
+}
+
+fn controller_action_request_evidence(path: &std::path::Path) -> Vec<Value> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("controller action request evidence should be readable: {error}"),
+    };
+    contents
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line).expect("controller action request evidence should decode")
+        })
+        .collect()
+}
+
+fn controller_action_entry_count(path: &std::path::Path) -> usize {
+    controller_action_request_evidence(path)
+        .iter()
+        .filter(|event| event["event"] == "controller_request_entered")
+        .count()
+}
+
+async fn wait_for_controller_action_request(
+    path: &std::path::Path,
+    previous_entries: usize,
+) -> Value {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let evidence = controller_action_request_evidence(path);
+            if let Some(request) = evidence
+                .iter()
+                .filter(|event| event["event"] == "controller_request_entered")
+                .nth(previous_entries)
+            {
+                let request_ref = request["request_ref"].as_str().unwrap_or_default();
+                if evidence.iter().any(|event| {
+                    event["event"] == "fixture_actionability_wait"
+                        && event["request_ref"] == request_ref
+                        && event["state"] == "disabled"
+                }) {
+                    return request.clone();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "running mutation did not enter browser.action and reach the held fixture actionability check: {:#?}",
+            controller_action_request_evidence(path)
+        )
+    })
 }
 
 fn assert_controller_restart_error(error: &DaemonError) {

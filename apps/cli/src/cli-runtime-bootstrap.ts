@@ -1,4 +1,5 @@
 import type { LocalIpcClient } from "./ipc.js"
+import type { RelayClientIdentity } from "./ipc.js"
 import { LocalIpcClient as DefaultLocalIpcClient } from "./ipc.js"
 import type {
   BootstrapState,
@@ -8,7 +9,10 @@ import {
   applyProviderPreferenceDefaults,
   defaultKernelEndpoint,
   parseArgs,
+  terminalPairingLinkFromArgs,
 } from "./cli-options.js"
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
+import { joinKernelTerminalPairingLink } from "./relay-api.js"
 import {
   attachToSession,
   createSession,
@@ -83,6 +87,7 @@ type RelayClientOptions = {
   relayAuthToken?: string
   targetDaemonId?: string
   targetDaemonAlias?: string
+  relayIdentity?: RelayClientIdentity
 }
 
 type BootstrapAttachedSession = (
@@ -100,6 +105,7 @@ export type CliRuntimeBootstrapDeps = {
   applyProviderPreferenceDefaults: (options: CliOptions, preferences: CharioxPreferences) => CliOptions
   defaultKernelEndpoint: () => string
   createClient: (endpoint: string, relayOptions?: RelayClientOptions) => LocalIpcClient
+  getRelayIdentity: (createIfMissing: boolean) => RelayClientIdentity | null
   inferWorkspaceTargetsFromLaunchDirectory: (cwd: string) => Promise<{ workspace: string; worktree: string }>
   primeWaitingRoomWorktreeInventory: (options: {
     cwd: string
@@ -149,6 +155,10 @@ export const defaultCliRuntimeBootstrapDeps: CliRuntimeBootstrapDeps = {
   createClient(endpoint, relayOptions) {
     return new DefaultLocalIpcClient(endpoint, relayOptions)
   },
+  getRelayIdentity(createIfMissing) {
+    const store = createCliRelayIdentityStore()
+    return createIfMissing ? store.getOrCreate() : store.load()
+  },
   inferWorkspaceTargetsFromLaunchDirectory,
   primeWaitingRoomWorktreeInventory,
   loadThemeRegistry,
@@ -171,7 +181,33 @@ export async function bootstrapCliRuntime(
     ?? cliOptions.kernelUrl
     ?? cliOptions.socketPath
     ?? deps.defaultKernelEndpoint()
-  const client = deps.createClient(kernelEndpoint, relayClientOptions(cliOptions))
+  const pairingLink = terminalPairingLinkFromArgs(options.argv)
+  const relayIdentity = cliOptions.relayUrl
+    ? deps.getRelayIdentity(Boolean(pairingLink))
+    : null
+  let client = deps.createClient(kernelEndpoint, relayClientOptions(cliOptions, relayIdentity))
+  if (pairingLink && relayIdentity) {
+    const bootstrapClient = client
+    try {
+      const joined = await joinKernelTerminalPairingLink(
+        bootstrapClient,
+        pairingLink,
+        cliOptions.clientId,
+        relayIdentity.publicKeyThumbprint,
+      )
+      if (!joined.relay_token?.trim()) {
+        throw new Error("key-bound terminal pairing returned no fresh relay token; refusing to continue with the unbound bootstrap token")
+      }
+      await client.close()
+      client = deps.createClient(
+        kernelEndpoint,
+        relayClientOptions(cliOptions, relayIdentity, joined.relay_token),
+      )
+    } catch (error) {
+      await Promise.resolve(bootstrapClient.close()).catch(() => {})
+      throw error
+    }
+  }
   const inferredTargets = await deps.inferWorkspaceTargetsFromLaunchDirectory(options.cwd)
   const workspace = cliOptions.workspace ?? inferredTargets.workspace
   const worktree = cliOptions.worktree ?? inferredTargets.worktree
@@ -339,19 +375,26 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
   })
 }
 
-function relayClientOptions(options: CliOptions): RelayClientOptions | undefined {
+function relayClientOptions(
+  options: CliOptions,
+  relayIdentity: RelayClientIdentity | null,
+  relayAuthTokenOverride?: string,
+): RelayClientOptions | undefined {
   if (!options.relayUrl) {
     return undefined
   }
   const relayOptions: RelayClientOptions = {}
-  if (options.relayToken !== undefined) {
-    relayOptions.relayAuthToken = options.relayToken
+  if (relayAuthTokenOverride ?? options.relayToken) {
+    relayOptions.relayAuthToken = relayAuthTokenOverride ?? options.relayToken
   }
   if (options.targetDaemonId !== undefined) {
     relayOptions.targetDaemonId = options.targetDaemonId
   }
   if (options.targetDaemonAlias !== undefined) {
     relayOptions.targetDaemonAlias = options.targetDaemonAlias
+  }
+  if (relayIdentity) {
+    relayOptions.relayIdentity = relayIdentity
   }
   return relayOptions
 }

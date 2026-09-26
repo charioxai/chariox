@@ -48,13 +48,13 @@ impl SessionRuntimeStore {
         Self { state }
     }
 
-    pub(super) async fn resolve_session_ref_id(
+    pub(super) async fn resolve_session_ref_id_for_delete(
         &self,
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<String, DaemonError> {
         self.state
-            .resolve_session_ref_id(session_ref, workspace_id)
+            .resolve_session_ref_id_for_delete(session_ref, workspace_id)
             .await
     }
 

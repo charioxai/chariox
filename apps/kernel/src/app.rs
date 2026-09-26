@@ -71,7 +71,7 @@ pub(crate) use prompt_lifecycle::{
     serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
     KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
     KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelQueuedPromptUpdate,
-    KernelRemotePromptDispatch,
+    KernelRemotePromptDispatch, KernelRemotePromptDispatchIntent,
 };
 pub(crate) use provider_output_claude_native::{
     claude_native_recent_terminal_failure, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
@@ -155,6 +155,8 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    worker_prompt_receipts: crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore,
+    worker_steer_receipts: crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     managed_context_outbound:
         crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
@@ -178,6 +180,7 @@ pub struct DaemonApp {
     terminal: TerminalStreamStore,
     workflow_design_events: WorkflowDesignEventStore,
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
+    pending_workflow_remote_prompt_dispatches: Vec<KernelRemotePromptDispatch>,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
@@ -263,6 +266,14 @@ impl DaemonApp {
 
         let durable_state_started = Instant::now();
         let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
+        let worker_prompt_receipts =
+            crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore::restore(
+                durable_state.clone(),
+            )?;
+        let worker_steer_receipts =
+            crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore::restore(
+                durable_state.clone(),
+            )?;
         let managed_context_root = config.private_runtime_state_root();
         let managed_kernel_registration =
             crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
@@ -337,6 +348,8 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            worker_prompt_receipts,
+            worker_steer_receipts,
             managed_context_transfers,
             managed_context_outbound,
             managed_kernel_registration,
@@ -361,6 +374,7 @@ impl DaemonApp {
             workflow_design_events: WorkflowDesignEventStore::default(),
             pending_structured_output_records:
                 provider_output::StructuredOutputRecordStore::default(),
+            pending_workflow_remote_prompt_dispatches: Vec::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             execution_lease_callers: BTreeMap::new(),

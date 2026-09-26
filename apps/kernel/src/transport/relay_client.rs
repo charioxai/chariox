@@ -63,11 +63,12 @@ use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
-use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
 pub(crate) use peer_client::{
+    enqueue_peer_request_via_connected_relay_with_timeout,
     send_peer_request_to_known_kernel_via_relay,
-    send_peer_request_to_known_kernel_via_relay_with_timeout,
+    send_peer_request_to_known_kernel_via_relay_with_timeout, RelayPeerResponseWaiter,
 };
+use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
 pub use peer_client::{
     send_peer_request_via_connected_relay, send_peer_request_via_connected_relay_with_timeout,
     send_peer_request_via_temporary_connection,
@@ -114,6 +115,25 @@ pub(crate) async fn resolve_pending_peer_response_for_test(
             from_daemon_id,
             encrypted_response: Some(encrypted_response),
             error: None,
+        },
+    )
+    .await;
+}
+
+#[cfg(test)]
+pub(crate) async fn resolve_pending_peer_error_for_test(
+    state: &Arc<RwLock<RelayClientState>>,
+    request_id: String,
+    from_daemon_id: String,
+    error: RelayError,
+) {
+    resolve_pending_peer_response(
+        state,
+        request_id,
+        RelayPeerResponseEnvelope {
+            from_daemon_id,
+            encrypted_response: None,
+            error: Some(error),
         },
     )
     .await;

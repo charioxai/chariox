@@ -77,7 +77,8 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         .expect("worker registration should send");
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
 
-    let (active_prompt_tx, active_prompt_rx) = oneshot::channel();
+    let (active_prompt_tx, active_prompt_rx) =
+        oneshot::channel::<crate::session::PromptQueueItem>();
     let worker_response = tokio::spawn(async move {
         let (submit_relay_request_id, submit_home_public_key) = loop {
             let message = timeout(Duration::from_secs(2), worker_socket.next())
@@ -173,13 +174,85 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                 &encrypted_request,
             )
             .expect("worker should decrypt completion request");
-            assert!(matches!(
-                serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext)
-                    .expect("completion request should decode"),
-                RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id }
-                    if leased_agent_id == "termination-leased-agent"
-            ));
-            break (relay_request_id, decrypted.sender_public_key);
+            let request = serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext)
+                .expect("completion request should decode");
+            match request {
+                RelayPeerRequest::GetLeasedPromptReceipt {
+                    leased_agent_id,
+                    home_prompt_id,
+                } => {
+                    assert_eq!(leased_agent_id, "termination-leased-agent");
+                    assert_eq!(home_prompt_id, active_prompt.id());
+                    let response = RelayPeerResponse::LeasedPromptReceiptQueried {
+                        receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                            home_prompt_id,
+                            worker_provider_run_id: "worker-provider-run".to_string(),
+                            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                            target_home_prompt_id: None,
+                            execution_lease_id: Some("termination-lease".to_string()),
+                        }),
+                    };
+                    let encrypted_response =
+                        crate::transport::relay_crypto::encrypt_payload_for_peer(
+                            &worker_private_key,
+                            &decrypted.sender_public_key,
+                            &serde_json::to_vec(&response)
+                                .expect("worker receipt response should serialize"),
+                        )
+                        .expect("worker receipt response should encrypt");
+                    worker_socket
+                        .send(Message::Text(
+                            serde_json::to_string(
+                                &chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerResponse {
+                                    relay_request_id,
+                                    encrypted_response: Some(encrypted_response),
+                                    error: None,
+                                },
+                            )
+                            .expect("worker receipt envelope should serialize")
+                            .into(),
+                        ))
+                        .await
+                        .expect("worker receipt response should send");
+                }
+                RelayPeerRequest::DrainLeasedRuntimeProjection {
+                    leased_agent_id,
+                    provider_run_id,
+                    ..
+                } => {
+                    assert_eq!(leased_agent_id, "termination-leased-agent");
+                    assert_eq!(provider_run_id, "worker-provider-run");
+                    let response =
+                        RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None };
+                    let encrypted_response =
+                        crate::transport::relay_crypto::encrypt_payload_for_peer(
+                            &worker_private_key,
+                            &decrypted.sender_public_key,
+                            &serde_json::to_vec(&response)
+                                .expect("empty projection response should serialize"),
+                        )
+                        .expect("empty projection response should encrypt");
+                    worker_socket
+                        .send(Message::Text(
+                            serde_json::to_string(
+                                &chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerResponse {
+                                    relay_request_id,
+                                    encrypted_response: Some(encrypted_response),
+                                    error: None,
+                                },
+                            )
+                            .expect("empty projection envelope should serialize")
+                            .into(),
+                        ))
+                        .await
+                        .expect("empty projection response should send");
+                }
+                RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
+                    assert_eq!(leased_agent_id, "termination-leased-agent");
+                    break (relay_request_id, decrypted.sender_public_key);
+                }
+                other => panic!("unexpected remote completion request: {other:?}"),
+            }
         };
         let response = RelayPeerResponse::LeasedPromptCompleted {
             provider_run_id: Some("worker-provider-run".to_string()),
@@ -222,8 +295,11 @@ async fn public_remote_completion_preserves_worker_termination_async() {
     home_config.relay_url = Some(relay_url);
     home_config.relay_token = Some("termination-test-token".to_string());
     home_config.relay_request_timeout_ms = 2_000;
-    let mut app = DaemonApp::bootstrap(home_config).expect("home daemon should bootstrap");
-    let (session_id, agent_id, prompt_id, active_prompt) = {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(home_config).expect("home daemon should bootstrap"),
+    ));
+    let (session_id, agent_id, attachment_id) = {
+        let mut app = app.lock().await;
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
                 "workspace-remote-termination",
@@ -254,38 +330,70 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                 },
             )
             .expect("home agent should bind to worker");
-        let PromptSubmissionOutcome::Started { prompt } = app
-            .submit_prompt(
-                session.id(),
-                attachment.id(),
-                Some(agent.id()),
-                "remote prompt with worker termination",
-                Vec::new(),
-            )
-            .expect("remote prompt should start")
-        else {
-            panic!("remote prompt should be active");
-        };
         (
             session.id().to_string(),
             agent.id().to_string(),
-            prompt.id().to_string(),
-            prompt,
+            attachment.id().to_string(),
         )
     };
+
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let prompt_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(agent_id.clone()),
+        prompt: "remote prompt with worker termination".to_string(),
+        attachments: Vec::new(),
+    });
+    let prompt_command = KernelCommand::from_local_request(
+        "public-remote-completion-worker-termination-submit",
+        None,
+        None,
+        &prompt_request,
+    );
+    let LocalDaemonResponse::PromptSubmitted {
+        outcome: PromptSubmissionOutcome::Started { prompt },
+        ..
+    } = router
+        .dispatch(prompt_command, prompt_request)
+        .await
+        .expect("remote prompt should start through the public kernel runtime")
+    else {
+        panic!("public remote prompt submission should start");
+    };
+    let prompt_id = prompt.id().to_string();
+    let active_prompt =
+        wait_for_home_remote_prompt_receipt(&app, &session_id, &agent_id, &prompt_id).await;
 
     active_prompt_tx
         .send(active_prompt)
         .expect("worker should wait for the home prompt before completion");
 
-    let completion =
-        crate::transport::TransportService::complete_active_prompt(&mut app, &session_id)
-            .expect("public remote completion should succeed");
+    let completion_request =
+        LocalDaemonRequest::CompletePrompt(crate::local::CompletePromptRequest {
+            session_id: session_id.clone(),
+        });
+    let completion_command = KernelCommand::from_local_request(
+        "public-remote-completion-worker-termination-complete",
+        None,
+        None,
+        &completion_request,
+    );
+    let LocalDaemonResponse::PromptCompleted { completion } = router
+        .dispatch(completion_command, completion_request)
+        .await
+        .expect("public remote completion should succeed")
+    else {
+        panic!("public remote completion should return a completed prompt");
+    };
     worker_response
         .await
         .expect("worker response task should join");
     assert_eq!(completion.completed.id(), prompt_id);
     let projected = app
+        .lock()
+        .await
         .completed_git_turn_snapshot_store()
         .latest_projection_for_agent(&session_id, &agent_id)
         .expect("remote completion should be projected");
@@ -302,7 +410,9 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         "worker-reported termination must not project a successful turn"
     );
     assert_eq!(
-        app.agents()
+        app.lock()
+            .await
+            .agents()
             .get_agent(&agent_id)
             .expect("remote agent should remain available")
             .state(),
@@ -311,6 +421,43 @@ async fn public_remote_completion_preserves_worker_termination_async() {
 
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("relay server task should join");
+}
+
+async fn wait_for_home_remote_prompt_receipt(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    agent_id: &str,
+    prompt_id: &str,
+) -> crate::session::PromptQueueItem {
+    for _ in 0..400 {
+        let delivered_prompt = {
+            let app = app.lock().await;
+            let active_prompt = app
+                .prompt_owner_active_prompt_for_agent_snapshot(session_id, agent_id)
+                .expect("home active remote prompt should be readable");
+            let active_worker_provider_run_id = app
+                .agents()
+                .get_agent(agent_id)
+                .expect("home remote agent should remain available")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.clone());
+            active_prompt.filter(|prompt| {
+                prompt.id() == prompt_id
+                    && prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                    && prompt.durable_delivery_provider_run_id()
+                        == active_worker_provider_run_id.as_deref()
+                    && active_worker_provider_run_id.is_some()
+            })
+        };
+        if let Some(prompt) = delivered_prompt {
+            return prompt;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "home prompt `{prompt_id}` did not receive its exact durable worker-run receipt for agent `{agent_id}`"
+    );
 }
 
 #[test]
@@ -641,7 +788,9 @@ async fn assert_remote_native_terminal_resize(
 #[test]
 fn remote_machine_agents_execute_prompts_through_the_home_session() {
     run_async_with_large_test_stack("remote-agents-execute-prompts", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(false)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(
+            false, false, false, false, false, false,
+        )
     });
 }
 
@@ -650,13 +799,66 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
     // Fixed worker IDs must not retain the previous fixture's generated trust key.
     for _ in 0..2 {
         run_async_with_large_test_stack("remote-agent-direct-message", || {
-            remote_machine_agents_execute_prompts_through_the_home_session_async(true)
+            remote_machine_agents_execute_prompts_through_the_home_session_async(
+                true, false, false, false, false, false,
+            )
         });
     }
 }
 
+#[test]
+fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_waits() {
+    run_async_with_large_test_stack("remote-agent-message-home-lock", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(
+            true, true, false, false, false, false,
+        )
+    });
+}
+
+#[test]
+fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_steer() {
+    run_async_with_large_test_stack("remote-agent-message-stale-reply", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(
+            true, true, false, true, false, false,
+        )
+    });
+}
+
+#[test]
+fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_while_worker_reply_waits(
+) {
+    run_async_with_large_test_stack("remote-queued-steer-home-lock", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(
+            false, false, true, false, false, false,
+        )
+    });
+}
+
+#[test]
+fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
+    run_async_with_large_test_stack("remote-queued-steer-failed-advance", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(
+            false, false, true, false, true, false,
+        )
+    });
+}
+
+#[test]
+fn ambiguous_remote_queued_steer_reply_reconciles_exact_receipt_without_replay() {
+    run_async_with_large_test_stack("remote-queued-steer-uncertain", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(
+            false, false, true, false, false, true,
+        )
+    });
+}
+
 async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     direct_message_only: bool,
+    hold_agent_message_reply: bool,
+    hold_queued_prompt_reply: bool,
+    finish_target_before_direct_reply: bool,
+    fail_queued_prompt_reply: bool,
+    lose_queued_prompt_reply: bool,
 ) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
@@ -979,6 +1181,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     );
     assert_ne!(projected_provider_run_id, local_provider_run_id);
 
+    let mut held_reply_observation = None;
     if direct_message_only {
         let sender_prompt_id = {
             let mut app = app_home.lock().await;
@@ -1019,15 +1222,99 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             "origin_prompt_id": sender_prompt_id,
             "idempotency_key": "remote-direct-message",
         });
-        let direct_message = router
-            .runtime_state()
-            .dispatch_authenticated_runtime_tool_call(
-                &sender_token,
-                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
-                direct_message_args.clone(),
-            )
+        let direct_message = if hold_agent_message_reply {
+            let pending_before = registry.read().await.pending_request_count();
+            // Keep the worker from producing a reply until the relay has recorded the steer.
+            let worker_app_guard = app_worker.lock().await;
+            let dispatch_router = Arc::clone(&router);
+            let dispatch_sender_token = sender_token.clone();
+            let dispatch_args = direct_message_args.clone();
+            let dispatch = tokio::spawn(async move {
+                dispatch_router
+                    .runtime_state()
+                    .dispatch_authenticated_runtime_tool_call(
+                        &dispatch_sender_token,
+                        crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                        dispatch_args,
+                    )
+                    .await
+            });
+            let relay_reply_is_waiting = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if registry.read().await.pending_request_count() > pending_before {
+                        break;
+                    }
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
             .await
-            .expect("agent message should steer to the leased worker");
+            .is_ok();
+            let mut home_app_lock_available = false;
+            for _ in 0..20 {
+                if let Ok(guard) = app_home.try_lock() {
+                    home_app_lock_available = true;
+                    drop(guard);
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+            if finish_target_before_direct_reply {
+                let mut home = app_home
+                    .try_lock()
+                    .expect("the home lock should be free while the worker reply is held");
+                home.prompt_owner_complete_active_prompt_only(&session_id, &remote_agent_id)
+                    .expect("target turn should complete before the steer reply");
+                assert!(home
+                    .prompt_owner_active_prompt_for_agent(&session_id, &remote_agent_id)
+                    .expect("home active prompt should load")
+                    .is_none());
+            }
+            drop(worker_app_guard);
+            let direct_message_result = dispatch
+                .await
+                .expect("agent message dispatch task should join");
+            held_reply_observation = Some((relay_reply_is_waiting, home_app_lock_available));
+            if finish_target_before_direct_reply {
+                assert!(
+                    !direct_message_result.as_ref().is_ok_and(|result| result.ok),
+                    "a reply for a completed target turn must not commit as a current steer"
+                );
+                let home = app_home.lock().await;
+                assert!(!home.terminal().output_records().iter().any(|record| {
+                    record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                        && String::from_utf8_lossy(&record.bytes)
+                            .contains("REMOTE_AGENT_MESSAGE_DIRECT")
+                }));
+                assert!(!home
+                    .operational_history_store()
+                    .load_session_events(&session_id, Some(&remote_agent_id))
+                    .expect("home history should load")
+                    .iter()
+                    .any(|event| event.content.as_deref().is_some_and(|content| {
+                        content.contains("REMOTE_AGENT_MESSAGE_DIRECT")
+                    })));
+                drop(home);
+                let _ = shutdown_home_tx.send(true);
+                let _ = shutdown_worker_tx.send(true);
+                connector_home.await.expect("home connector should join");
+                connector_worker
+                    .await
+                    .expect("worker connector should join");
+                let _ = server_shutdown_tx.send(());
+                server_task.await.expect("server task should join");
+                return;
+            }
+            direct_message_result.expect("agent message should steer to the leased worker")
+        } else {
+            router
+                .runtime_state()
+                .dispatch_authenticated_runtime_tool_call(
+                    &sender_token,
+                    crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                    direct_message_args.clone(),
+                )
+                .await
+                .expect("agent message should steer to the leased worker")
+        };
         assert!(direct_message.ok, "{:?}", direct_message.payload);
         assert_eq!(direct_message.payload["status"], "steered");
         assert_eq!(
@@ -1156,10 +1443,407 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     });
     let command =
         KernelCommand::from_local_request("command-remote-queued-steer", None, None, &request);
-    let response = router
-        .dispatch(command, request)
+    let response = if hold_queued_prompt_reply {
+        let pending_before = registry.read().await.pending_request_count();
+        let mut worker_app_guard = app_worker.lock().await;
+        if lose_queued_prompt_reply {
+            state_worker
+                .write()
+                .await
+                .test_lose_next_peer_response_payload();
+        }
+        let dispatch_router = Arc::clone(&router);
+        let dispatch =
+            tokio::spawn(async move { dispatch_router.dispatch(command, request).await });
+        let relay_reply_is_waiting = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if registry.read().await.pending_request_count() > pending_before {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
         .await
-        .expect("remote queued prompt should steer through the worker");
+        .is_ok();
+        let mut home_app_lock_available = false;
+        for _ in 0..20 {
+            if let Ok(guard) = app_home.try_lock() {
+                home_app_lock_available = true;
+                drop(guard);
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        let mut queue_advance_deferred = false;
+        if relay_reply_is_waiting && home_app_lock_available {
+            let mut app = app_home
+                .try_lock()
+                .expect("home app lock should remain available during held worker reply");
+            let queue_head = app
+                .prompt_owner_peek_next_queued_prompt(&session_id, &remote_agent_id)
+                .expect("home queue head should load");
+            assert!(
+                queue_head.is_none(),
+                "ordinary queue peeks must hide the reserved head while its relay reply is pending"
+            );
+            assert_eq!(
+                app.prompt_owner_queued_prompt_count_for_agent(&session_id, &remote_agent_id)
+                    .expect("home queued prompt count should load"),
+                1,
+                "the reserved prompt must remain queued until the relay response commits"
+            );
+            app.prompt_owner_complete_active_prompt_only(&session_id, &remote_agent_id)
+                .expect("the active turn should be able to complete while steer reply waits");
+            let completion_path_activation = app
+                .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+                    &session_id,
+                    &remote_agent_id,
+                    Some(&queued_prompt_id),
+                    "prompt-should-remain-queued".to_string(),
+                )
+                .expect("remote completion activation should inspect the reserved queue head");
+            queue_advance_deferred = completion_path_activation.is_none();
+            let next = crate::app::KernelAgentService::new(&mut app)
+                .admit_next_queued_remote_prompt(&session_id, &remote_agent_id, None)
+                .expect("ordinary completion advancement should inspect the queue");
+            queue_advance_deferred &= next.is_none();
+            if lose_queued_prompt_reply {
+                let snapshot = app
+                    .sessions()
+                    .get_session(&session_id)
+                    .expect("home session should snapshot while worker receipt is pending");
+                let queued = snapshot
+                    .queued_prompts_for_agent(&remote_agent_id)
+                    .and_then(|prompts| prompts.front())
+                    .expect("uncertain steer must remain in the home queue");
+                let uncertainty = queued
+                    .remote_steer_outcome_uncertainty()
+                    .expect("send intent must be uncertain before the relay response arrives");
+                assert_eq!(queued.id(), queued_prompt_id);
+                assert_eq!(uncertainty.0, "prompt-1");
+                assert_eq!(
+                    uncertainty.1.as_deref(),
+                    Some(worker_provider_run_id.as_str())
+                );
+
+                let durable = crate::durable_prompt_state::DurablePromptStateEventPayload::capture(
+                    &snapshot,
+                    &remote_agent_id,
+                );
+                let encoded = serde_json::to_vec(&durable)
+                    .expect("pre-send uncertainty should serialize into durable prompt state");
+                let mut restored = serde_json::from_slice::<
+                    crate::durable_prompt_state::DurablePromptStateEventPayload,
+                >(&encoded)
+                .expect("pre-send durable prompt state should deserialize");
+                restored.restore_private_states();
+                let restored_prompt = restored
+                    .queued_prompts
+                    .front()
+                    .expect("pre-send durable state must retain the exact queued prompt");
+                assert_eq!(restored_prompt.id(), queued_prompt_id);
+                assert_eq!(
+                    restored_prompt.remote_steer_outcome_uncertainty(),
+                    Some(uncertainty),
+                    "durable state must identify the worker run before any reply can be lost"
+                );
+                let public_session = serde_json::to_vec(&snapshot)
+                    .expect("home prompt state should serialize for restart");
+                let mut restarted_session =
+                    serde_json::from_slice::<crate::session::RuntimeSession>(&public_session)
+                        .expect("home prompt state should deserialize for restart");
+                restarted_session.restore_durable_prompt_private_states(&durable.private_states);
+                let restarted_prompt_owner =
+                    crate::runtime::prompt_state::PromptStateOwner::default();
+                assert!(
+                    restarted_prompt_owner
+                        .peek_next_queued_prompt(&restarted_session, &remote_agent_id)
+                        .is_none(),
+                    "restart must not promote an uncertain queued steer"
+                );
+                assert!(restarted_prompt_owner
+                    .activate_next_queued_prompt_with_prompt_id(
+                        &restarted_session,
+                        &remote_agent_id,
+                        Some(&queued_prompt_id),
+                        "restart-must-not-promote-uncertain-steer".to_string(),
+                    )
+                    .expect("restored uncertain queue should remain fail closed")
+                    .is_none());
+            }
+        }
+        if fail_queued_prompt_reply {
+            assert!(
+                relay_reply_is_waiting,
+                "the worker request must be held before injecting its rejection"
+            );
+            let leased_agent = RemoteLeaseRuntime::new(&mut worker_app_guard)
+                .leased_agent_snapshot_for_test(&leased_agent_id)
+                .expect("worker leased agent should remain available");
+            worker_app_guard
+                .providers_mut()
+                .terminate_run_provider_only(
+                    &leased_agent.backing_session_id,
+                    &worker_provider_run_id,
+                )
+                .expect("the held worker run should terminate for explicit rejection");
+            assert_eq!(
+                worker_app_guard
+                    .providers()
+                    .get_run(&worker_provider_run_id)
+                    .expect("terminated worker run should remain recorded")
+                    .state(),
+                crate::provider::ProviderRunState::Ended
+            );
+        }
+        drop(worker_app_guard);
+        let dispatch_result = dispatch
+            .await
+            .expect("queued steer dispatch task should join");
+        assert!(
+            relay_reply_is_waiting,
+            "worker reply should be held by its app lock"
+        );
+        assert!(
+            home_app_lock_available,
+            "home app lock must remain available during the relay round trip"
+        );
+        assert!(
+            queue_advance_deferred,
+            "ordinary completion must leave the reserved queued prompt for the steer reply"
+        );
+        if fail_queued_prompt_reply {
+            let rejection = match dispatch_result {
+                Err(DaemonError::RelayTransport {
+                    operation: "read temporary relay peer response",
+                    code,
+                    retryable: false,
+                    ..
+                }) => code,
+                other => panic!("expected a terminal explicit worker rejection, got {other:?}"),
+            };
+            assert_eq!(
+                rejection, "no_active_provider_run",
+                "the worker must return its validated terminal rejection code"
+            );
+            let mut worker_queue_count = 0;
+            for _ in 0..80 {
+                worker_queue_count = {
+                    let mut worker = app_worker.lock().await;
+                    let leased_agent = RemoteLeaseRuntime::new(&mut worker)
+                        .leased_agent_snapshot_for_test(&leased_agent_id)
+                        .expect("worker leased agent should remain available");
+                    worker
+                        .prompt_owner_queued_prompt_count_for_agent(
+                            &leased_agent.backing_session_id,
+                            &leased_agent.backing_agent_id,
+                        )
+                        .expect("worker prompt queue should load")
+                };
+                if worker_queue_count == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+            assert_eq!(
+                worker_queue_count, 1,
+                "the rejected steer must be admitted once as an ordinary worker prompt"
+            );
+            let (active_prompt, queued_count) = {
+                let mut app = app_home.lock().await;
+                let active = app
+                    .prompt_owner_active_prompt_for_agent(&session_id, &remote_agent_id)
+                    .expect("home active prompt should load");
+                let queued = app
+                    .prompt_owner_queued_prompt_count_for_agent(&session_id, &remote_agent_id)
+                    .expect("home prompt queue should load");
+                (active, queued)
+            };
+            let active_prompt = active_prompt.expect("ordinary queue advancement should start");
+            assert_eq!(active_prompt.prompt(), "REMOTE_QUEUE_STEER_DELIVERY\n");
+            assert_ne!(
+                active_prompt.id(),
+                queued_prompt_id,
+                "promotion must allocate one new active-turn identity"
+            );
+            assert_eq!(active_prompt.pending_prompt_id(), None);
+            assert_eq!(
+                queued_count, 0,
+                "the head must be removed from the queue once"
+            );
+            let steer_deliveries = app_worker
+                .lock()
+                .await
+                .terminal()
+                .input_records()
+                .into_iter()
+                .filter(|record| {
+                    String::from_utf8_lossy(&record.bytes).contains("REMOTE_QUEUE_STEER_DELIVERY")
+                })
+                .count();
+            assert_eq!(
+                steer_deliveries, 0,
+                "a rejected steer must not also be recorded as a steer delivery"
+            );
+            let _ = shutdown_home_tx.send(true);
+            let _ = shutdown_worker_tx.send(true);
+            connector_home.await.expect("home connector should join");
+            connector_worker
+                .await
+                .expect("worker connector should join");
+            let _ = server_shutdown_tx.send(());
+            server_task.await.expect("server task should join");
+            return;
+        }
+        if lose_queued_prompt_reply {
+            let uncertain_error = match dispatch_result {
+                Err(DaemonError::LocalTransport { message, .. }) => message,
+                other => panic!("expected a diagnostic for the lost worker receipt, got {other:?}"),
+            };
+            assert!(
+                uncertain_error.contains("remote steer outcome is uncertain")
+                    && uncertain_error.contains(queued_prompt_id.as_str()),
+                "lost reply should explain the exact queued prompt is held pending a worker receipt: {uncertain_error}"
+            );
+
+            let mut worker_deliveries = 0;
+            for _ in 0..80 {
+                worker_deliveries = app_worker
+                    .lock()
+                    .await
+                    .terminal()
+                    .input_records()
+                    .into_iter()
+                    .filter(|record| {
+                        String::from_utf8_lossy(&record.bytes)
+                            .contains("REMOTE_QUEUE_STEER_DELIVERY")
+                    })
+                    .count();
+                if worker_deliveries == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+            assert_eq!(
+                worker_deliveries, 1,
+                "the worker must accept the steer before its response payload is lost"
+            );
+
+            let steering_merge_key = crate::history::steering_prompt_merge_key(&queued_prompt_id);
+            let mut reconciled = false;
+            for _ in 0..240 {
+                let (queued, active, matching_history) = {
+                    let mut home = app_home.lock().await;
+                    let snapshot = home
+                        .sessions()
+                        .get_session(&session_id)
+                        .expect("home session should remain available");
+                    let queued = snapshot
+                        .queued_prompts_for_agent(&remote_agent_id)
+                        .is_some_and(|prompts| {
+                            prompts.iter().any(|prompt| prompt.id() == queued_prompt_id)
+                        });
+                    let active = snapshot.active_prompt_for_agent(&remote_agent_id).is_some();
+                    let matching_history = home
+                        .operational_history_store()
+                        .load_session_events(&session_id, Some(&remote_agent_id))
+                        .expect("home history should load")
+                        .into_iter()
+                        .filter(|event| {
+                            event
+                                .metadata
+                                .get("merge_key")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(steering_merge_key.as_str())
+                        })
+                        .count();
+                    (queued, active, matching_history)
+                };
+                if !queued && !active && matching_history == 1 {
+                    reconciled = true;
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+            assert!(
+                reconciled,
+                "the exact accepted worker receipt should remove only its queue item and merge one history event"
+            );
+            let (queued, active, history) = {
+                let mut home = app_home.lock().await;
+                let snapshot = home
+                    .sessions()
+                    .get_session(&session_id)
+                    .expect("reconciled home session should snapshot");
+                let queued = snapshot
+                    .queued_prompts_for_agent(&remote_agent_id)
+                    .is_some_and(|prompts| {
+                        prompts.iter().any(|prompt| prompt.id() == queued_prompt_id)
+                    });
+                let active = snapshot.active_prompt_for_agent(&remote_agent_id).is_some();
+                let history = home
+                    .operational_history_store()
+                    .load_session_events(&session_id, Some(&remote_agent_id))
+                    .expect("reconciled history should load")
+                    .into_iter()
+                    .filter(|event| {
+                        event
+                            .metadata
+                            .get("merge_key")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(steering_merge_key.as_str())
+                    })
+                    .collect::<Vec<_>>();
+                (queued, active, history)
+            };
+            assert!(
+                !queued,
+                "receipt reconciliation must settle the exact queued ID"
+            );
+            assert!(
+                !active,
+                "accepted steer reconciliation must not promote a second prompt"
+            );
+            assert_eq!(
+                history.len(),
+                1,
+                "history reconciliation must be idempotent"
+            );
+            assert_eq!(
+                history[0].provider_run_id.as_deref(),
+                Some(projected_provider_run_id.as_str()),
+                "reconciled history must identify the exact worker run projection"
+            );
+            let worker_steer_deliveries = app_worker
+                .lock()
+                .await
+                .terminal()
+                .input_records()
+                .into_iter()
+                .filter(|record| {
+                    String::from_utf8_lossy(&record.bytes).contains("REMOTE_QUEUE_STEER_DELIVERY")
+                })
+                .count();
+            assert_eq!(
+                worker_steer_deliveries, 1,
+                "receipt recovery must never resend the steer"
+            );
+            let _ = shutdown_home_tx.send(true);
+            let _ = shutdown_worker_tx.send(true);
+            connector_home.await.expect("home connector should join");
+            connector_worker
+                .await
+                .expect("worker connector should join");
+            let _ = server_shutdown_tx.send(());
+            server_task.await.expect("server task should join");
+            return;
+        }
+        dispatch_result.expect("remote queued prompt should steer through the worker")
+    } else {
+        router
+            .dispatch(command, request)
+            .await
+            .expect("remote queued prompt should steer through the worker")
+    };
     let LocalDaemonResponse::QueuedPromptSteered {
         prompt, session, ..
     } = response
@@ -1167,15 +1851,41 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         panic!("unexpected remote queued prompt steer response");
     };
     assert_eq!(prompt.id(), queued_prompt_id);
+    assert!(session
+        .queued_prompts_for_agent(&remote_agent_id)
+        .is_none_or(|prompts| prompts.is_empty()));
+    if hold_queued_prompt_reply {
+        assert!(
+            session.active_prompt_for_agent(&remote_agent_id).is_none(),
+            "completion should remain settled while the exact queued prompt is steered"
+        );
+        let worker_steer_deliveries = app_worker
+            .lock()
+            .await
+            .terminal()
+            .input_records()
+            .into_iter()
+            .filter(|record| {
+                String::from_utf8_lossy(&record.bytes).contains("REMOTE_QUEUE_STEER_DELIVERY")
+            })
+            .count();
+        assert_eq!(worker_steer_deliveries, 1);
+        let _ = shutdown_home_tx.send(true);
+        let _ = shutdown_worker_tx.send(true);
+        connector_home.await.expect("home connector should join");
+        connector_worker
+            .await
+            .expect("worker connector should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+        return;
+    }
     assert_eq!(
         session
             .active_prompt_for_agent(&remote_agent_id)
             .map(|prompt| prompt.prompt()),
         Some("remote prompt over home session\n")
     );
-    assert!(session
-        .queued_prompts_for_agent(&remote_agent_id)
-        .is_none_or(|prompts| prompts.is_empty()));
     let worker_steer_deliveries = app_worker
         .lock()
         .await
@@ -1393,10 +2103,28 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         .expect("worker connector should join");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
+    if let Some((relay_reply_is_waiting, home_app_lock_available)) = held_reply_observation {
+        assert!(
+            relay_reply_is_waiting,
+            "fake relay should have a routed agent-message request pending while the worker is paused"
+        );
+        assert!(
+            home_app_lock_available,
+            "home DaemonApp lock must remain available while the remote worker reply is pending"
+        );
+    }
 }
-#[tokio::test(flavor = "multi_thread")]
-async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
+#[test]
+fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
+    run_async_with_large_test_stack(
+        "remote-machine-agent-attachment-materialization",
+        remote_machine_agents_materialize_file_attachments_on_the_worker_async,
+    );
+}
+
+async fn remote_machine_agents_materialize_file_attachments_on_the_worker_async() {
     let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
@@ -1528,25 +2256,42 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
     std::fs::write(&source_path, b"remote attachment body")
         .expect("source attachment should be written");
 
-    let outcome = app_home
-        .lock()
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app_home), 1);
+    let submit_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(remote_agent_id.clone()),
+        prompt: "prompt with attachment\n".to_string(),
+        attachments: vec![crate::session::PromptAttachment::new(
+            format!("file://{}", source_path.display()),
+            "text/plain",
+            Some("note.txt".to_string()),
+        )],
+    });
+    let submit_command = KernelCommand::from_local_request(
+        "remote-machine-agent-attachment-submit",
+        None,
+        None,
+        &submit_request,
+    );
+    let LocalDaemonResponse::PromptSubmitted { outcome, .. } = router
+        .dispatch(submit_command, submit_request)
         .await
-        .submit_prompt(
-            &session_id,
-            &attachment_id,
-            Some(&remote_agent_id),
-            "prompt with attachment\n",
-            vec![crate::session::PromptAttachment::new(
-                format!("file://{}", source_path.display()),
-                "text/plain",
-                Some("note.txt".to_string()),
-            )],
-        )
-        .expect("remote prompt should submit");
+        .expect("remote prompt should submit through the public kernel runtime")
+    else {
+        panic!("public remote attachment submission should return prompt state");
+    };
     assert!(matches!(
-        outcome,
+        &outcome,
         crate::session::PromptSubmissionOutcome::Started { .. }
     ));
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome else {
+        panic!("remote attachment prompt should start");
+    };
+    let _delivered_prompt =
+        wait_for_home_remote_prompt_receipt(&app_home, &session_id, &remote_agent_id, prompt.id())
+            .await;
 
     let worker_attachments = wait_for_leased_agent_active_prompt_attachments(
         app_worker.clone(),
@@ -1598,9 +2343,17 @@ async fn wait_for_leased_agent_active_prompt_attachments(
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
+#[test]
+fn remote_machine_agents_cancel_prompts_through_the_home_session() {
+    run_async_with_large_test_stack(
+        "remote-machine-agent-home-session-cancellation",
+        remote_machine_agents_cancel_prompts_through_the_home_session_async,
+    );
+}
+
+async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
     let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
@@ -1713,7 +2466,7 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
             .spawn_agent(
                 CreateAgentRequest::new(&session_id, &provider)
                     .with_alias("remote-reviewer")
-                    .with_model("default")
+                    .with_model("native-tui-idle")
                     .with_kernel(&config_worker.daemon_id),
             )
             .expect("remote agent should spawn")
@@ -1721,27 +2474,71 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
             .to_string()
     };
 
-    let (outcome, cancellation, forced_cancellation) = {
-        // Keep the home state locked from admission through the repeated
-        // cancellation. The remote dev-stub may otherwise finish the prompt
-        // between these assertions when the full suite is under load.
-        let mut app_home = app_home.lock().await;
-        let outcome = app_home
-            .submit_prompt(
-                &session_id,
-                &attachment_id,
-                Some(&remote_agent_id),
-                "cancel this remote prompt\n",
-                Vec::new(),
-            )
-            .expect("remote prompt should submit");
-        let cancellation = app_home
-            .cancel_active_prompt(&session_id, &attachment_id)
-            .expect("remote prompt should cancel");
-        let forced_cancellation = app_home
-            .cancel_active_prompt(&session_id, &attachment_id)
-            .expect("a repeated remote cancellation should force settlement");
-        (outcome, cancellation, forced_cancellation)
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app_home), 1);
+    let submit_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(remote_agent_id.clone()),
+        prompt: "cancel this remote prompt\n".to_string(),
+        attachments: Vec::new(),
+    });
+    let submit_command = KernelCommand::from_local_request(
+        "remote-machine-agent-cancel-submit",
+        None,
+        None,
+        &submit_request,
+    );
+    let LocalDaemonResponse::PromptSubmitted { outcome, .. } = router
+        .dispatch(submit_command, submit_request)
+        .await
+        .expect("remote prompt should submit through the public kernel runtime")
+    else {
+        panic!("public remote prompt submission should return prompt state");
+    };
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome else {
+        panic!("remote prompt should start before cancellation");
+    };
+    let _delivered_prompt =
+        wait_for_home_remote_prompt_receipt(&app_home, &session_id, &remote_agent_id, prompt.id())
+            .await;
+
+    let cancel_request = || {
+        LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment_id.clone(),
+            target_agent_id: None,
+        })
+    };
+    let cancellation_request = cancel_request();
+    let cancellation_command = KernelCommand::from_local_request(
+        "remote-machine-agent-cancel-first",
+        None,
+        None,
+        &cancellation_request,
+    );
+    let LocalDaemonResponse::PromptCancelled { cancellation } = router
+        .dispatch(cancellation_command, cancellation_request)
+        .await
+        .expect("remote prompt should cancel through the public kernel runtime")
+    else {
+        panic!("public remote cancellation should return prompt state");
+    };
+    let forced_cancellation_request = cancel_request();
+    let forced_cancellation_command = KernelCommand::from_local_request(
+        "remote-machine-agent-cancel-repeat",
+        None,
+        None,
+        &forced_cancellation_request,
+    );
+    let LocalDaemonResponse::PromptCancelled {
+        cancellation: forced_cancellation,
+    } = router
+        .dispatch(forced_cancellation_command, forced_cancellation_request)
+        .await
+        .expect("a repeated remote cancellation should force settlement")
+    else {
+        panic!("repeated remote cancellation should return prompt state");
     };
     assert!(matches!(
         outcome,

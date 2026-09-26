@@ -23,6 +23,7 @@ export type ManagedEnvironmentReimageReceiptStatus =
 
 export const managedEnvironmentReimagePreflightMinimumProtocolVersion = 341
 export const managedEnvironmentCreateMinimumProtocolVersion = 342
+export const managedEnvironmentShutdownObservationMinimumProtocolVersion = 348
 
 export type ManagedEnvironmentAutoStopPolicy = {
   readonly minimumRuntimeSeconds: number
@@ -108,6 +109,11 @@ export type ManagedEnvironmentSummary = {
   readonly contextPlan: ManagedEnvironmentContextPlan
   readonly contextManifestDigest: string | null
   readonly autoStopPolicy: ManagedEnvironmentAutoStopPolicy
+  readonly runningAgentCount?: 0 | 1 | null
+  readonly lastActivityReportedAt?: string | null
+  readonly lastActivityChangedAt?: string | null
+  readonly autoStopWarningAt?: string | null
+  readonly autoStopDeadlineAt?: string | null
   readonly lastErrorCode: string | null
   readonly lastErrorMessage: string | null
   readonly createdAt: string
@@ -130,6 +136,11 @@ export type ManagedEnvironmentOperationSummary = {
   readonly completedAt: string | null
   readonly createdAt: string
   readonly updatedAt: string
+}
+
+export type ManagedEnvironmentDetails = {
+  readonly environment: ManagedEnvironmentSummary
+  readonly operations?: readonly ManagedEnvironmentOperationSummary[]
 }
 
 export type ManagedEnvironmentResult = {
@@ -241,6 +252,12 @@ export function getManagedEnvironmentRequest(environmentId: string) {
 
 export function getManagedEnvironmentReimagePreflightRequest(environmentId: string) {
   return { GetManagedEnvironmentReimagePreflight: { environmentId } } as const
+}
+
+export const managedEnvironmentReimageReceiptMinimumProtocolVersion = 345
+
+export function getManagedEnvironmentReimageReceiptRequest(environmentId: string) {
+  return { GetManagedEnvironmentReimageReceipt: { environmentId } } as const
 }
 
 export function prepareManagedEnvironmentContextTransferRequest(environmentId: string) {

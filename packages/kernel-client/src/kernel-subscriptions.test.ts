@@ -15,7 +15,8 @@ test("kernel session subscription resumes only matching session attachments", ()
     attachmentId: "attachment-a",
     scope: "session",
     relaySubscriptionId: null,
-    relayPrivateKey: null,
+    relayPublicKey: null,
+    relayDecryptEvent: null,
   }
 
   const resumed = createKernelSessionSubscriptionStart({
@@ -46,7 +47,8 @@ test("waiting room inventory subscription owns sentinel identity and scope", () 
     attachmentId: "__waiting_room_inventory__",
     scope: "waiting_room_inventory",
     relaySubscriptionId: null,
-    relayPrivateKey: null,
+    relayPublicKey: null,
+    relayDecryptEvent: null,
   }
 
   const start = createWaitingRoomInventorySubscriptionStart({
@@ -68,7 +70,8 @@ test("kernel subscription transport request preserves scope and resume cursor", 
     attachmentId: "__waiting_room_inventory__",
     scope: "waiting_room_inventory",
     relaySubscriptionId: null,
-    relayPrivateKey: null,
+    relayPublicKey: null,
+    relayDecryptEvent: null,
   }, 9)
 
   assert.deepEqual(request, {

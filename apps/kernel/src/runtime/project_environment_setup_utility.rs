@@ -255,13 +255,18 @@ fn parse_project_environment_setup_utility_output_with_policy(
     let definition = match expected {
         Some(expected) => {
             let returned = definition.with_origin(expected.origin);
-            if !allow_definition_revision && returned != *expected {
+            let revised = returned != *expected;
+            if !allow_definition_revision && revised {
                 return Err(DaemonError::LocalTransport {
                     operation: "run project environment setup utility",
                     message: "utility changed the selected environment definition".to_string(),
                 });
             }
-            returned
+            if revised {
+                returned.with_origin(ProjectEnvironmentDefinitionOrigin::UtilityGenerated)
+            } else {
+                returned
+            }
         }
         None => definition.with_origin(ProjectEnvironmentDefinitionOrigin::UtilityGenerated),
     };
@@ -646,9 +651,20 @@ mod tests {
     }
 
     #[test]
-    fn repair_parser_accepts_revised_definition_but_preserves_selected_origin() {
+    fn repair_parser_marks_revisions_generated_and_preserves_unchanged_supplied_origin() {
         let mut expected = definition();
         expected.origin = ProjectEnvironmentDefinitionOrigin::UserAuthored;
+        let unchanged = parse_project_environment_setup_utility_output_for_repair(
+            &serde_json::json!({"definition": expected.clone()}).to_string(),
+            Some(&expected),
+            "linux-x86_64",
+        )
+        .expect("an unchanged supplied definition should remain reusable");
+        assert_eq!(
+            unchanged.origin,
+            ProjectEnvironmentDefinitionOrigin::UserAuthored
+        );
+
         let mut repaired = expected.clone();
         repaired.origin = ProjectEnvironmentDefinitionOrigin::UtilityGenerated;
         repaired.setup_steps[0].command =
@@ -664,7 +680,7 @@ mod tests {
         assert_eq!(parsed.setup_steps, repaired.setup_steps);
         assert_eq!(
             parsed.origin,
-            ProjectEnvironmentDefinitionOrigin::UserAuthored
+            ProjectEnvironmentDefinitionOrigin::UtilityGenerated
         );
 
         let error = parse_project_environment_setup_utility_output(
@@ -823,9 +839,10 @@ mod tests {
             "{\"definition\":null}",
             &project_environment_setup_utility_schema(),
         );
+        let normalized_prompt = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
         for fragment in [
             "selected environment recipe",
-            "Invoke repair only after",
+            "Invoke repair only when the kernel has reported that applying or validating that selected definition failed",
             "package.json",
             "pyproject.toml",
             "go.mod",
@@ -844,7 +861,10 @@ mod tests {
             "dd",
             "enforced boundary",
         ] {
-            assert!(prompt.contains(fragment), "prompt omitted `{fragment}`");
+            assert!(
+                normalized_prompt.contains(fragment),
+                "prompt omitted `{fragment}`"
+            );
         }
     }
 

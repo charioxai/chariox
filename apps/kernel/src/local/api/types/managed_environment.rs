@@ -222,6 +222,16 @@ pub struct ManagedEnvironmentSummary {
     pub context_plan: ManagedEnvironmentContextPlan,
     pub context_manifest_digest: Option<String>,
     pub auto_stop_policy: ManagedEnvironmentAutoStopPolicy,
+    #[serde(default)]
+    pub running_agent_count: Option<u8>,
+    #[serde(default)]
+    pub last_activity_reported_at: Option<String>,
+    #[serde(default)]
+    pub last_activity_changed_at: Option<String>,
+    #[serde(default)]
+    pub auto_stop_warning_at: Option<String>,
+    #[serde(default)]
+    pub auto_stop_deadline_at: Option<String>,
     pub last_error_code: Option<String>,
     pub last_error_message: Option<String>,
     pub created_at: String,
