@@ -90,6 +90,24 @@ fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileExport> {
     })
 }
 
+/// The offer's generation is still the installation's active one.
+const ACTIVE: &str = "SELECT 1 FROM app_installations i
+    WHERE i.installation_id=app_file_exports.installation_id
+      AND i.owner_id=app_file_exports.owner_id
+      AND i.generation=app_file_exports.generation
+      AND i.active_json IS NOT NULL";
+
+fn offering_generation_active(
+    connection: &Connection,
+    export: &FileExport,
+) -> rusqlite::Result<bool> {
+    connection.query_row(
+        &format!("SELECT EXISTS ({ACTIVE}) FROM app_file_exports WHERE operation_id=?1"),
+        params![export.operation_id],
+        |row| row.get(0),
+    )
+}
+
 fn load(connection: &Connection, operation_id: &str) -> rusqlite::Result<Option<FileExport>> {
     connection
         .query_row(
@@ -196,7 +214,9 @@ fn apply(
             else {
                 return Err("NOT_FOUND");
             };
-            if !matches!(export.state.as_str(), "pending" | "saved") || export.expires_ms <= now_ms
+            if !matches!(export.state.as_str(), "pending" | "saved")
+                || export.expires_ms <= now_ms
+                || !offering_generation_active(&transaction, &export).map_err(storage)?
             {
                 return Err("CONFLICT");
             }
@@ -235,19 +255,21 @@ fn apply(
         FileExportCommand::Expire { now_ms } => {
             transaction
                 .execute(
-                    "UPDATE app_file_exports SET state='expired', contents=NULL, updated_ms=?1
-                     WHERE state='pending' AND (expires_ms<=?1 OR NOT EXISTS (
-                       SELECT 1 FROM app_installations i
-                       WHERE i.installation_id=app_file_exports.installation_id
-                         AND i.owner_id=app_file_exports.owner_id
-                         AND i.generation=app_file_exports.generation
-                         AND i.active_json IS NOT NULL))",
+                    &format!(
+                        "UPDATE app_file_exports SET state='expired', contents=NULL, updated_ms=?1
+                     WHERE state='pending' AND (expires_ms<=?1 OR NOT EXISTS ({ACTIVE}))"
+                    ),
                     params![now_ms as i64],
                 )
                 .map_err(storage)?;
+            // A saved offer ends the same way: at expiry, or once the App
+            // that offered it is updated or uninstalled.
             transaction
                 .execute(
-                    "UPDATE app_file_exports SET contents=NULL WHERE state='saved' AND expires_ms<=?1",
+                    &format!(
+                        "UPDATE app_file_exports SET state='expired', contents=NULL, updated_ms=?1
+                         WHERE state='saved' AND (expires_ms<=?1 OR NOT EXISTS ({ACTIVE}))"
+                    ),
                     params![now_ms as i64],
                 )
                 .map_err(storage)?;
@@ -305,7 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn only_the_owner_saves_an_offer_once_and_declined_or_expired_offers_release_nothing() {
+    fn only_the_owner_saves_an_offer_until_it_ends_and_declined_or_expired_offers_release_nothing()
+    {
         let (root, store) = store();
         offer(&store, "offer", 1_000);
         let save = |owner: &str, now_ms| {
@@ -352,6 +375,39 @@ mod tests {
             ));
         }
         assert!(store.pending_app_file_exports(8).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_saved_offer_ends_when_the_app_updates() {
+        let (root, store) = store();
+        offer(&store, "offer", 1_000);
+        let save = || {
+            store.app_file_export(FileExportCommand::Save {
+                owner: "alice".into(),
+                operation_id: "offer".into(),
+                now_ms: 10,
+            })
+        };
+        assert!(matches!(save(), Ok(FileExportReply::Saved { .. })));
+        let db = rusqlite::Connection::open(store.path()).unwrap();
+        db.execute(
+            "UPDATE app_installations SET generation=4, allocated_generation=4 WHERE installation_id='docs'",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(save(), Err("CONFLICT")));
+        store
+            .app_file_export(FileExportCommand::Expire { now_ms: 20 })
+            .unwrap();
+        let (state, dropped): (String, bool) = db
+            .query_row(
+                "SELECT state, contents IS NULL FROM app_file_exports WHERE operation_id='offer'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((state.as_str(), dropped), ("expired", true));
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -47,6 +47,8 @@ impl KernelRuntimeState {
                 self.app_control().end_validation_prompt(&pick.operation_id);
                 continue;
             };
+            self.app_control()
+                .show_validation_prompt(&pick.operation_id, &session);
             let remaining_sec = pick.expires_ms.saturating_sub(now_ms) / 1000;
             let interaction = pick_interaction(&pick).with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
@@ -232,9 +234,14 @@ impl KernelRuntimeState {
             Ok(Err("INVALID_ARGUMENT")) => return failed(AppRequestErrorCode::InvalidRequest),
             _ => return failed(AppRequestErrorCode::StorageUnavailable),
         };
-        // The prompt has no grant choice; close it now that it is answered.
+        // The prompt has no grant choice; close it now that it is answered,
+        // in the session that shows it (the answer may come from another).
+        let session = self
+            .app_control()
+            .validation_prompt_session(&pick.operation_id)
+            .unwrap_or(request.session_id);
         let _ = self
-            .timeout_runtime_interaction(&request.session_id, &interaction_id(&pick.operation_id))
+            .timeout_runtime_interaction(&session, &interaction_id(&pick.operation_id))
             .await;
         LocalDaemonResponse::AppFileGranted {
             operation_id: pick.operation_id,
