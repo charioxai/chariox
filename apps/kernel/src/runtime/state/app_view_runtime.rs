@@ -213,26 +213,23 @@ impl KernelRuntimeState {
                 let session = session_id.clone();
                 let views = views.clone();
                 tokio::spawn(async move {
-                    // Another Room command may hold the slice briefly.
-                    let deadline = tokio::time::Instant::now() + REPROJECT_WINDOW;
-                    loop {
-                        match state
+                    let reconcile = || async {
+                        state
                             .reconcile_browser_controller_environment(&session)
                             .await
-                        {
-                            Ok(_) => return,
-                            Err(error)
-                                if tokio::time::Instant::now() < deadline
-                                    && error.to_string().contains("already has an active") =>
-                            {
-                                tokio::time::sleep(COMMAND_RETRY).await;
-                            }
-                            // Unmarked, so the Tab's next call tries again.
-                            Err(_) => break,
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    };
+                    let projected = crate::runtime::app_views::reproject(
+                        reconcile,
+                        REPROJECT_WINDOW,
+                        COMMAND_RETRY,
+                    )
+                    .await;
+                    if !projected {
+                        for target in first {
+                            views.forget_call(&session, &target);
                         }
-                    }
-                    for target in first {
-                        views.forget_call(&session, &target);
                     }
                 });
             }
