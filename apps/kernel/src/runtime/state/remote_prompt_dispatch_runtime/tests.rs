@@ -36,6 +36,86 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         .expect("temporary relay envelope should deserialize")
     }
 
+    async fn receive_claim_test_envelope_with_diagnostics(
+        socket: &mut WebSocketStream<TcpStream>,
+        stage: &'static str,
+        diagnostics: impl Fn() -> String,
+    ) -> RelayEnvelope {
+        let message = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            socket.next(),
+        )
+        .await
+        {
+            Err(_) => panic!(
+                "temporary relay did not receive a client envelope at {stage} [{}]",
+                diagnostics()
+            ),
+            Ok(None) => panic!(
+                "temporary relay socket closed at {stage} [{}]",
+                diagnostics()
+            ),
+            Ok(Some(Err(error))) => panic!("{stage}: {error:?} [{}]", diagnostics()),
+            Ok(Some(Ok(message))) => message,
+        };
+        serde_json::from_str(
+            message
+                .to_text()
+                .expect("temporary relay envelope should be text"),
+        )
+        .expect("temporary relay envelope should deserialize")
+    }
+
+    fn claim_test_successor_state_tags(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+        successor_prompt_id: &str,
+    ) -> String {
+        let (active, queued) = runtime
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .map(|session| {
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .state_parts(&session, agent_id)
+            })
+            .unwrap_or_default();
+        let successor_active = active
+            .as_ref()
+            .is_some_and(|prompt| prompt.id() == successor_prompt_id);
+        let successor_queued = queued
+            .iter()
+            .any(|prompt| prompt.id() == successor_prompt_id);
+        let cancelling = active
+            .as_ref()
+            .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling);
+        let phase = active
+            .as_ref()
+            .and_then(|prompt| prompt.durable_delivery_phase());
+        let recovery_claim_held = runtime
+            .owned
+            .remote_prompt_recoveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&(session_id.to_string(), agent_id.to_string()));
+        let projection_claim_held = runtime
+            .owned
+            .remote_prompt_projection_drains
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&(session_id.to_string(), agent_id.to_string()));
+        format!(
+            "successor_active={successor_active},successor_queued={successor_queued},active_cancelling={cancelling},active_dispatching={},active_delivered={},reconciliation_pending={},recovery_claim_held={recovery_claim_held},projection_claim_held={projection_claim_held}",
+            phase == Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+            phase == Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+            active.as_ref().is_some_and(|prompt| prompt.durable_delivery_reconciliation_pending()),
+        )
+    }
+
     async fn send_claim_test_envelope(
         socket: &mut WebSocketStream<TcpStream>,
         envelope: RelayEnvelope,
@@ -56,6 +136,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         machine_id: &str,
         worker_public_key: &str,
         worker_private_key: &str,
+        diagnostics: impl Fn() -> String,
     ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
         let (stream, _) =
             tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
@@ -66,7 +147,12 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             .await
             .expect("temporary relay should upgrade discovery connection");
         let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
-            receive_claim_test_envelope(&mut discovery, "successor discovery request").await
+            receive_claim_test_envelope_with_diagnostics(
+                &mut discovery,
+                "successor discovery request",
+                diagnostics,
+            )
+            .await
         else {
             panic!("expected relay metadata request");
         };
@@ -596,6 +682,10 @@ mod receipt_reconciliation {
         let agent_id = fixture.agent_id.clone();
         let prompt_id = fixture.dispatch.prompt_id.clone();
         let successor_prompt = fixture.successor_prompt.prompt().to_string();
+        let successor_prompt_id = fixture.successor_prompt_id.clone();
+        let state_tags_runtime = fixture.runtime.clone();
+        let state_tags_session_id = fixture.session_id.clone();
+        let state_tags_agent_id = fixture.agent_id.clone();
         let run_id = "worker-run-cancel-claimed".to_string();
         let server = tokio::spawn(async move {
             let receipt_request = receive_fake_worker_peer_request(
@@ -738,6 +828,14 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                move || {
+                    claim_test_successor_state_tags(
+                        &state_tags_runtime,
+                        &state_tags_session_id,
+                        &state_tags_agent_id,
+                        &successor_prompt_id,
+                    )
+                },
             )
             .await;
             assert_ne!(successor_home_prompt_id, prompt_id);
@@ -3402,6 +3500,7 @@ mod dispatch_settlement {
                 MACHINE_ID,
                 &worker_public_key,
                 &worker_private_key,
+                || "state_tags_available=false".to_string(),
             )
             .await;
             predecessor_seen_tx
@@ -3438,6 +3537,7 @@ mod dispatch_settlement {
                 MACHINE_ID,
                 &worker_public_key,
                 &worker_private_key,
+                || "state_tags_available=false".to_string(),
             )
             .await;
             acknowledge_claim_test_prompt(

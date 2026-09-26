@@ -94,6 +94,13 @@ async fn next_peer_request(
         .await
         .unwrap_or_else(|_| panic!("{stage}: fake relay did not receive the peer request"))
         .unwrap_or_else(|| panic!("{stage}: fake relay request channel closed"));
+    decode_peer_request(envelope, worker_private_key)
+}
+
+fn decode_peer_request(
+    envelope: RelayEnvelope,
+    worker_private_key: &str,
+) -> (String, String, RelayPeerRequest) {
     let RelayEnvelope::DaemonPeerRequest {
         request_id,
         target,
@@ -114,6 +121,76 @@ async fn next_peer_request(
     let request =
         serde_json::from_slice(&decrypted.plaintext).expect("fake worker request should decode");
     (request_id, target_id, request)
+}
+
+fn cancellation_successor_state_tags(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    successor_prompt_id: &str,
+) -> String {
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(session_id)
+        .ok();
+    let (prompt, _) = session
+        .map(|session| {
+            runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, agent_id)
+        })
+        .unwrap_or_default();
+    let successor_active = prompt
+        .as_ref()
+        .is_some_and(|prompt| prompt.id() == successor_prompt_id);
+    let cancelling = prompt
+        .as_ref()
+        .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling);
+    let phase = prompt.as_ref().and_then(|prompt| prompt.durable_delivery_phase());
+    let claim_held = runtime
+        .owned
+        .remote_prompt_recoveries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(&(session_id.to_string(), agent_id.to_string()));
+    format!(
+        "successor_active={successor_active},active_cancelling={cancelling},active_accepted={},active_dispatching={},active_delivered={},reconciliation_pending={},recovery_claim_held={claim_held}",
+        phase == Some(crate::session::DurablePromptDeliveryPhase::Accepted),
+        phase == Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+        phase == Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+        prompt.as_ref().is_some_and(|prompt| prompt.durable_delivery_reconciliation_pending()),
+    )
+}
+
+async fn next_successor_peer_request(
+    receiver: &mut mpsc::Receiver<RelayEnvelope>,
+    worker_private_key: &str,
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    successor_prompt_id: &str,
+) -> (String, String, RelayPeerRequest) {
+    let envelope = match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        receiver.recv(),
+    )
+    .await
+    {
+        Ok(Some(envelope)) => envelope,
+        Ok(None) => panic!("queued successor dispatch request: fake relay request channel closed"),
+        Err(_) => panic!(
+            "queued successor dispatch request: fake relay did not receive the peer request [{}]",
+            cancellation_successor_state_tags(
+                runtime,
+                session_id,
+                agent_id,
+                successor_prompt_id,
+            )
+        ),
+    };
+    decode_peer_request(envelope, worker_private_key)
 }
 
 async fn acknowledge_peer_request(
@@ -542,14 +619,30 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         home_prompt_id,
         "settling the worker run must preserve the exact cancelled home prompt"
     );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("home session should remain available after cancellation");
+    assert!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .is_some_and(|prompt| prompt.id() == successor_prompt_id),
+        "settling the exact cancellation must promote the queued successor"
+    );
 
     let mut submit_count = 0;
     loop {
         let (request_id, target_id, request) =
-            next_peer_request(
+            next_successor_peer_request(
                 &mut peer_requests,
                 &worker_private_key,
-                "queued successor dispatch request",
+                &runtime,
+                &session_id,
+                &agent_id,
+                &successor_prompt_id,
             )
             .await;
         assert_eq!(target_id, WORKER_ID);
@@ -1001,7 +1094,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                 worker_provider_run_id: WORKER_RUN_ID.to_string(),
                 phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
                 target_home_prompt_id: None,
-                execution_lease_id: None,
+                execution_lease_id: Some("worker-lease-cancel-ack".to_string()),
             }),
         },
     )
