@@ -1288,3 +1288,45 @@ fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
         "606757082a57ec9fd0435bcf4a64aa62f4410316ac22193566288ae8e474effa"
     );
 }
+
+#[test]
+fn local_daemon_protocol_claude_setup_token_login_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 356);
+
+    let request = LocalDaemonRequest::StartProviderLogin(StartProviderLoginRequest {
+        provider: "claude".to_string(),
+        account_profile: "work".to_string(),
+        method: Some("setup_token".to_string()),
+    });
+    let started = LocalDaemonResponse::ProviderLoginStarted {
+        login: ProviderLoginStart {
+            provider: "claude".to_string(),
+            account_profile: "work".to_string(),
+            login_kind: "terminal_setup_token".to_string(),
+            login_id: Some("provider-login-1".to_string()),
+            auth_url: None,
+            verification_url: None,
+            user_code: None,
+        },
+    };
+
+    let snapshot = serde_json::json!([request, started]);
+    assert_eq!(
+        snapshot.pointer("/0/StartProviderLogin/method"),
+        Some(&serde_json::json!("setup_token"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/ProviderLoginStarted/login/login_kind"),
+        Some(&serde_json::json!("terminal_setup_token"))
+    );
+    crate::account_profile::validate_provider_enrollment_method("claude", Some("setup_token"))
+        .expect("kernel 344 accepts the Claude setup-token method");
+
+    let serialized =
+        serde_json::to_string(&snapshot).expect("setup-token login snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "61fd156d07bde442ccc678f7875dcf24e419fe7208aed934d5d2ecc15a2cf0ce"
+    );
+}

@@ -63,6 +63,10 @@ pub(crate) fn resolve_provider_account_credentials(
     Ok(environment)
 }
 
+/// One sign-in per account: the account's own Claude login runs every agent of
+/// that account, interactive or not, on Linux (its credential file) and macOS
+/// (its login Keychain) alike. A Chariox-vault setup token is only the fallback
+/// for an account without a usable login, such as a headless server.
 pub(crate) fn resolve_provider_account_credentials_for_launch(
     config: &DaemonConfig,
     profiles: &crate::account_profile::ProviderAccountProfileRegistry,
@@ -71,32 +75,54 @@ pub(crate) fn resolve_provider_account_credentials_for_launch(
     profile_id: &str,
     client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
+    if crate::provider::canonical_provider_family(provider) != Some("claude")
+        || client_interface == crate::provider::ProviderClientInterface::NativeTui
+    {
+        return resolve_provider_account_credentials(config, owner_user_id, provider, profile_id);
+    }
+    if claude_login_runs_agents(profiles, owner_user_id, profile_id)? {
+        return Ok(ProviderCredentialEnvironment::default());
+    }
     let environment =
         resolve_provider_account_credentials(config, owner_user_id, provider, profile_id)?;
-    if !environment.is_empty()
-        || crate::provider::canonical_provider_family(provider) != Some("claude")
-        || client_interface == crate::provider::ProviderClientInterface::NativeTui
-        || (portable_claude_credentials_authorize_unattended_launch()
-            && profiles.has_portable_claude_credentials(owner_user_id, profile_id)?)
-    {
+    if !environment.is_empty() {
         return Ok(environment);
     }
     Err(DaemonError::InvalidConfig {
         field: "provider account credential",
-        message: unattended_claude_credential_error_message(),
+        message:
+            "this Claude account is not signed in; open Provider Accounts and choose Log in on it",
     })
 }
 
-fn portable_claude_credentials_authorize_unattended_launch() -> bool {
-    std::env::consts::OS == "linux"
+/// The account's own Claude login is usable by a background launch: a portable
+/// credential file on Linux, a verified login-Keychain sign-in on macOS.
+fn claude_login_runs_agents(
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    profile_id: &str,
+) -> Result<bool, DaemonError> {
+    match std::env::consts::OS {
+        "linux" => profiles.has_portable_claude_credentials(owner_user_id, profile_id),
+        "macos" => Ok(profiles
+            .get(owner_user_id, "claude", profile_id)?
+            .auth_state
+            == crate::account_profile::ProviderAccountAuthState::Authenticated),
+        _ => Ok(false),
+    }
 }
 
-fn unattended_claude_credential_error_message() -> &'static str {
-    if portable_claude_credentials_authorize_unattended_launch() {
-        "unattended Claude launch requires a Chariox-vault setup token or a portable provider-native credential; use `provider setup-token claude <account-profile>` or launch the native Claude TUI to sign in interactively"
-    } else {
-        "unattended Claude launch requires a Chariox-vault setup token on this platform; use `provider setup-token claude <account-profile>` or launch the native Claude TUI to sign in interactively"
-    }
+/// Whether a Chariox-held launch credential is registered for the account.
+/// Reads only the registry; no secret is resolved.
+pub(crate) fn provider_account_credential_registered(
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+) -> Result<bool, DaemonError> {
+    let credential_id = provider_account_credential_id(owner_user_id, provider, profile_id);
+    Ok(crate::credential::load_user_credentials()?
+        .iter()
+        .any(|credential| credential.id == credential_id))
 }
 
 pub(crate) fn provider_account_credential_uses_vault(
@@ -218,20 +244,6 @@ mod tests {
             provider_account_credential_id("local", "claude", "personal"),
             provider_account_credential_id("local", "claude", "work")
         );
-    }
-
-    #[test]
-    fn portable_claude_credentials_authorize_unattended_launch_only_on_linux() {
-        assert_eq!(
-            portable_claude_credentials_authorize_unattended_launch(),
-            cfg!(target_os = "linux")
-        );
-        let message = unattended_claude_credential_error_message();
-        assert_eq!(
-            message.contains("portable provider-native credential"),
-            cfg!(target_os = "linux")
-        );
-        assert!(message.contains("Chariox-vault setup token"));
     }
 
     #[test]
