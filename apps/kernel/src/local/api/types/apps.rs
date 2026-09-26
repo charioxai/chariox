@@ -353,7 +353,7 @@ pub struct AppInboxRouteSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GrantAppFileRequest {
-    /// The session showing the request; its prompt closes once answered.
+    /// The answering session. The prompt closes in the session that shows it.
     pub session_id: String,
     pub operation_id: String,
     pub files: Vec<AppFileContents>,

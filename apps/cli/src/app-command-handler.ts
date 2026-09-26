@@ -69,7 +69,7 @@ export async function handleAppSlashCommand(
       const size = (await stat(path)).size
       if (size > 512 * 1024) throw new Error(`${basename(path)} is larger than 512 KiB`)
       total += size
-      if (total > 640 * 1024) throw new Error("The chosen files are larger than 640 KiB together")
+      if (total > 512 * 1024) throw new Error("The chosen files are larger than 512 KiB together")
       files.push({ name: basename(path), contentsBase64: (await readFile(path)).toString("base64") })
     }
     const response = await deps.sendAppRequest(grantAppFileRequest(session, operation, files))
