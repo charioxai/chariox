@@ -17,7 +17,9 @@ function fixture() {
     runtimeReleaseDigest: binding.releaseDigest, sourceEvidence: release,
     runtimeEvidence: {
       oldKernelIdentityBaseline: { source: "cloud_retained_old_kernel_identity", environmentId: "environment-1", generation: 1,
-        machineId: "old-MachineId", kernelId: "old-KernelId", linuxBootId: "11111111-1111-1111-1111-111111111111", osMachineId: "1".repeat(32) },
+        machineId: "old-MachineId", kernelId: "old-KernelId", linuxBootId: "11111111-1111-1111-1111-111111111111", osMachineId: "1".repeat(32),
+        runtimeReleaseDigest: `sha256:${"e".repeat(64)}`, runtimeSourceCommit: "f".repeat(40), runtimeSourceTree: "0".repeat(40),
+        observedAt: "2026-09-26T04:59:00.000Z" },
       freshnessEvidence: { ...release, linuxBootId: "22222222-2222-2222-2222-222222222222", osMachineId: "2".repeat(32) },
     },
     providerServerId: "1234", providerImageId: "5678", resourceObservation: { rebuildActionId: "88" },
@@ -45,6 +47,11 @@ test("captures the exact finalized Cloud operation through one read-only kernel 
   assert.equal(capture.minimumProtocolVersion, 345)
   assert.equal(capture.rebuildActionId, "88")
   assert.equal(capture.release.sourceCommit, input.binding.sourceCommit)
+  assert.deepEqual(capture.before.release, {
+    digest: input.receipt.runtimeEvidence.oldKernelIdentityBaseline.runtimeReleaseDigest,
+    sourceCommit: "f".repeat(40), sourceTree: "0".repeat(40),
+  })
+  assert.equal(capture.before.observedAt, "2026-09-26T04:59:00.000Z")
   assert.ok(!JSON.stringify(capture).includes("DO-NOT-RETAIN-SECRET"))
   assert.equal(capture.status, undefined, "a capture is not a full acceptance verdict")
 })
@@ -59,6 +66,11 @@ for (const [name, mutate, message] of [
   ["wrong retained environment", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.environmentId = "another-environment" }, /rotated host/],
   ["wrong retained generation", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.generation = 2 }, /rotated host/],
   ["wrong retained machine", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.machineId = "another-machine" }, /rotated host/],
+  ["missing retained release", (r) => { delete r.runtimeEvidence.oldKernelIdentityBaseline.runtimeReleaseDigest }, /retained release/],
+  ["malformed retained source", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.runtimeSourceCommit = "unreviewed" }, /retained release/],
+  ["missing retained observation time", (r) => { delete r.runtimeEvidence.oldKernelIdentityBaseline.observedAt }, /baseline time/],
+  ["post-rebuild baseline", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.observedAt = r.completedAt }, /baseline time/],
+  ["noncanonical retained time", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.observedAt = "2026-09-26 04:59" }, /baseline time/],
   ["unchanged control identity", (r) => { r.newMachineId = r.oldMachineId }, /rotated control/],
   ["missing rebuild", (r) => { delete r.resourceObservation.rebuildActionId }, /provider rebuild/],
   ["incomplete retirement", (r) => { r.residueChecks.cloudOldHeartbeatsAbsent = false }, /retirement/],

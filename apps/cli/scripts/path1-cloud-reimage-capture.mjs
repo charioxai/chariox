@@ -23,6 +23,11 @@ function validId(value) {
   return typeof value === "string" && ID.test(value)
 }
 
+function validTimestamp(value) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value))
+    && new Date(value).toISOString() === value
+}
+
 export async function resolveCaptureOutput(output, repo = resolve(import.meta.dirname, "../../..")) {
   requireValue(typeof output === "string" && isAbsolute(output), "capture output must be an absolute external evidence path")
   const canonicalRepo = await realpath(repo)
@@ -72,6 +77,11 @@ export async function capturePath1CloudReimage({ client, binding, now = () => ne
     && UUID.test(fresh.linuxBootId) && /^[a-f0-9]{32}$/.test(fresh.osMachineId)
     && old.linuxBootId !== fresh.linuxBootId && old.osMachineId !== fresh.osMachineId,
   "Cloud receipt lacks rotated host identities")
+  requireValue(DIGEST.test(old.runtimeReleaseDigest) && COMMIT.test(old.runtimeSourceCommit)
+    && COMMIT.test(old.runtimeSourceTree), "Cloud receipt lacks a valid retained release identity")
+  requireValue(validTimestamp(old.observedAt) && validTimestamp(receipt.requestedAt)
+    && Date.parse(old.observedAt) <= Date.parse(receipt.requestedAt),
+  "Cloud receipt has an invalid retained baseline time")
   for (const kind of ["MachineId", "KernelId", "RelayRealmId", "RelayTargetId", "BootstrapGrantId"]) {
     requireValue(validId(receipt[`old${kind}`]) && validId(receipt[`new${kind}`])
       && receipt[`old${kind}`] !== receipt[`new${kind}`], "Cloud receipt lacks rotated control identities")
@@ -85,8 +95,7 @@ export async function capturePath1CloudReimage({ client, binding, now = () => ne
     && receipt.cleanupState?.oldGenerationRetired === true
     && receipt.cleanupState?.newGenerationEnrolled === true, "Cloud receipt has incomplete retirement evidence")
   const capturedAt = now().toISOString()
-  requireValue(typeof receipt.requestedAt === "string" && Number.isFinite(Date.parse(receipt.requestedAt))
-    && typeof receipt.completedAt === "string" && Number.isFinite(Date.parse(receipt.completedAt))
+  requireValue(validTimestamp(receipt.requestedAt) && validTimestamp(receipt.completedAt)
     && Date.parse(receipt.completedAt) >= Date.parse(receipt.requestedAt)
     && Date.parse(receipt.completedAt) <= Date.parse(capturedAt), "Cloud receipt has invalid completion times")
   // Do not retain free-form evidence, failure text, provider output or credentials.
@@ -99,7 +108,8 @@ export async function capturePath1CloudReimage({ client, binding, now = () => ne
     providerServerId: receipt.providerServerId, providerImageId: receipt.providerImageId,
     rebuildActionId: receipt.resourceObservation.rebuildActionId,
     release: { digest: binding.releaseDigest, sourceCommit: binding.sourceCommit, sourceTree: binding.sourceTree },
-    before: { bootId: old.linuxBootId, machineId: old.osMachineId },
+    before: { bootId: old.linuxBootId, machineId: old.osMachineId, observedAt: old.observedAt,
+      release: { digest: old.runtimeReleaseDigest, sourceCommit: old.runtimeSourceCommit, sourceTree: old.runtimeSourceTree } },
     after: { bootId: fresh.linuxBootId, machineId: fresh.osMachineId },
     controlIdentities: Object.fromEntries(["MachineId", "KernelId", "RelayRealmId", "RelayTargetId", "BootstrapGrantId"]
       .map((kind) => [kind, { before: receipt[`old${kind}`], after: receipt[`new${kind}`] }])),
