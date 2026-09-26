@@ -463,7 +463,7 @@ impl KernelRuntimeOwnedState {
         let session = self
             .session_store
             .read()
-            .resolve_session_ref(session_ref, workspace_id)?;
+            .resolve_session_ref_for_delete(session_ref, workspace_id)?;
         let session_id = session.id().to_string();
         let (ended, terminated_run_ids) =
             if session.status() == crate::session::SessionStatus::Ended {

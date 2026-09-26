@@ -3,6 +3,20 @@ use super::*;
 use crate::session::PromptStatus;
 
 impl SessionService {
+    pub fn resolve_session_ref_for_delete(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let normalized_ref = session_ref.trim().to_lowercase();
+        if let Ok(session) = self.get_session(&normalized_ref) {
+            if session.status() == SessionStatus::Ended {
+                return Ok(session);
+            }
+        }
+        self.resolve_session_ref(session_ref, workspace_id)
+    }
+
     pub fn resolve_session_ref(
         &self,
         session_ref: &str,
