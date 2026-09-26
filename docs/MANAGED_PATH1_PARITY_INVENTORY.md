@@ -1,6 +1,6 @@
 # Managed Path-1 parity inventory (MP-11)
 
-Audit date: 2026-09-26 · published OSS source baseline: `4c8b979430d2dca6662de0b478a8b75b7ac3b231`; retained audit OSS baseline: `dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; Cloud source baseline last inspected: `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e` (stale; not refreshed in this pass).
+Audit date: 2026-09-26 · current scoped OSS review baseline: `d3f47513bda80ea222b6cd7e4d1e6b9d106038b9` (tree `08b8cd11bd31a69c3ed0d9b7b2066b6cb07196fd`); published OSS source baseline: `4c8b979430d2dca6662de0b478a8b75b7ac3b231`; retained prior audit OSS baseline: `dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; Cloud source baseline last inspected: `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e` (stale; not refreshed in this pass).
 
 This is a source inventory for the canonical gate in
 `docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md`; it does not change that plan.
@@ -23,6 +23,12 @@ This section carries forward the source-family audit recorded in commit
 `dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; other source families were not
 re-audited at the published baseline above. Cloud findings retain their older
 baseline and are stale. No MP gate is closed by this source inventory.
+The current `d3f47513bda80ea222b6cd7e4d1e6b9d106038b9` follow-up re-read the
+locked MP-01 through MP-11 ledger and refreshed only the Path-1 bootstrap,
+kernel broker/provider environment boundary, release exporter/installer, and
+OSS auto-stop policy projection described below. Rows marked `Current d3` are
+source inspection at that exact aggregate; unmarked rows retain their earlier
+audit baseline. Cloud behavior remains stale and uninspected in this pass.
 `managed_bootstrap/`, `provider/`, `runtime/`, and `git_worktree_placement.rs`
 abbreviate `apps/kernel/src/`. Deployment scripts, verifier, and unit names
 abbreviate `deploy/managed-kernel/`; `provision-linux-docker-slice.sh`,
@@ -71,42 +77,58 @@ command/state files abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/S
    and oversized output; actual effective units and resolved binaries on the
    fresh worker and deployed parity remain unproven.
 
-3. The public Project setup regression found the generated repeatable
-   definition is persisted after validation. Agent75 is correcting the local
-   and authenticated leased-worker paths in `project_environment_setup.rs`,
-   preserving home authority, attempt/cancellation fencing and the validation
-   gate for Ready. The fix and its lifecycle tests are not yet integrated or
-   executed by root. This remains an MP-08 implementation requirement.
+3. The d3 source includes the Project setup persistence correction, so the
+   earlier “not integrated” status is stale. Utility-generated repeatable
+   definitions are persisted under the active attempt before target validation;
+   a leased worker waits for a home acknowledgment bound to attempt, lease,
+   project, and definition digest before it validates or reports Ready
+   (`runtime/state/project_environment_setup.rs:1450-1529,1701-1733`; `project_environment_setup_ack.rs:466-555`). The home/worker path keeps cancellation and retry fencing, and rejects an acknowledgment that does not match the active attempt. Source regressions include local generated-definition persistence before validation (`project_environment_setup_lifecycle_tests.rs:128-132,1000-1017`), the remote status/repair/ack path (`project_environment_setup_lifecycle_tests.rs:1567-1588,2287-2307`), and acknowledgment binding/cancel/retry tests (`project_environment_setup_ack.rs:653-915`). These Rust tests were inspected, not executed in this source-only pass. Runtime behavior on a fresh worker and ordinary-versus-Path-1 Project parity remain open MP-08 evidence.
 
 4. Path-1 kernel slice access uses a broker lease, separate from the ordinary
-   provider launch boundary. The supervisor derives `CHARIOX_SLICE_ROOT` from
-   its configured broker socket, removes inherited broker controls, and hands
-   the kernel a private FD; without a lease it marks broker access required.
-   Kernel initialization consumes the FD, scrubs broker environment values,
-   and marks the stream close-on-exec before provider launches. This restores
-   kernel slice operations without selecting provider Bubblewrap or an
-   allowlist. The focused home-supervisor and worker launch regressions now
-   assert the derived root, required-marker fallback, framed broker round trip,
-   FD close-on-exec and non-inheritance by a provider child. They have not
-   been executed in this source-only pass; live slice access, effective
-   protected-control paths and fresh-worker behavior remain open MP-01/03/08/11
-   evidence.
+   provider launch boundary. In `supervisor.rs:301-317,451-516`, Path 1 drops
+   inherited sandbox and broker values, derives `CHARIOX_SLICE_ROOT` only from
+   the configured absolute broker socket, and gives the kernel a private
+   `CHARIOX_SLICE_DOCKER_BROKER_FD`; without a lease it removes socket/FD values
+   and sets the required marker. The worker uses this supervisor helper at
+   `worker.rs:575`. Kernel initialization in `slice/local_docker/broker.rs:119-197`
+   consumes and scrubs the transport variables, makes the stream
+   close-on-exec, and configures the private connection. Provider control-env
+   removal in `provider/managed_isolation.rs:110-143,168-201,908-936` excludes
+   the socket, FD, required marker, and slice root from ordinary and isolated
+   provider commands. Linux Rust regressions at `supervisor.rs:713-1010,1366-1449`
+   and `worker.rs:1056-1293` inspect a framed round trip, the derived root,
+   required-marker fallback, close-on-exec, and provider-child non-inheritance
+   through the production launch seam. They were inspected but not executed in
+   this source-only pass. This is a kernel slice capability, not a provider
+   Bubblewrap/allowlist branch. Live slice access, effective protected-control
+   paths, and fresh-worker behavior remain open MP-01/03/08/11 evidence.
 
 ### Source branch inventory
 
 | Family | Source classification and remaining evidence |
 | --- | --- |
-| Topology and provider launch — `managed_bootstrap/mod.rs:43-85`; `supervisor.rs:182-248`; `worker.rs:518-562`; `provider/managed_isolation.rs:157-165,908-936`; `provider/registry.rs:150-160,191-201,241-251`; catalog endpoints `codex/catalog_endpoint.rs:61-73`, `opencode/catalog_endpoint.rs:61-73` | Bootstrap topology is explicit and fail-closed. Path-1 removes shared-host isolation selectors; each official adapter uses the common unwrapped branch unless `CHARIOX_MANAGED_PROVIDER_ISOLATION` is truthy. Account utility endpoints use the same selector and command builder. This is source flow, not provider ancestry proof. |
-| Environment scrub, retry, restore, reconnect — `provider/managed_isolation.rs:107-143,168-188,908-936,1324-1351`; `provider/service/run_lifecycle.rs:11-64`; `runtime/state/provider_relaunch_runtime.rs:55-85`; `runtime/state/provider_launch_failure_runtime.rs:27-45,120-174`; `runtime/state/project_environment_setup.rs:2061-2099`; `provider/run_actor/command_execution.rs:25-70` | The fixed list removes managed topology, slice, bootstrap, broker and release controls; ambient secret-like and numbered workspace-root names are also removed. Selected account paths and resolved credentials are intentional launch inputs. Initial starts and policy relaunches resolve through the common adapter; setup-recovery snapshots preserve that launch. Prompt submit/abort restore live runtime slots without selecting a new topology. Launch-failure retry here retries durable cleanup, not provider execution. Live retry/reconnect comparison remains open. |
+| **Current d3** · Topology and ordinary provider launch — `managed_bootstrap/mod.rs:43-59,76-89`; `supervisor.rs:182-284`; `worker.rs:308-355,519-575`; `provider/managed_isolation.rs:157-165,908-936`; `provider/registry.rs:150-160,191-201,241-251`; catalog endpoints `codex/catalog_endpoint.rs:61-73`, `opencode/catalog_endpoint.rs:61-73` | Bootstrap topology is explicit and fail-closed. The supervisor receives a `VerifiedRelease`; Path 1 resolves the profile PATH before preparing local-auth state, starts with no shared-host isolation roots, and removes shared-host selectors. The worker starts the ordinary Path-1 kernel. Official adapters and account utilities use the common unwrapped provider branch unless the explicit shared-host isolation selector is active. This source path does not prove provider ancestry or effective installed units. |
+| **Current d3** · Kernel-only slice broker lease vs provider inheritance — `managed_bootstrap/mod.rs:44-59`; `supervisor.rs:301-317,451-516,713-1010,1366-1449`; `worker.rs:575,1056-1293`; `slice/local_docker/broker.rs:119-197,215-235`; `provider/managed_isolation.rs:110-143,168-201,908-936` | Path-1 clears inherited broker controls and restores only a slice root derived from the absolute broker socket. The private lease is passed to the kernel by FD; without a lease the kernel gets a required marker and no socket/FD. Kernel startup consumes and scrubs the controls and sets close-on-exec. The provider launch scrub removes all broker controls and the slice root, while the Linux launch regressions use the production provider command seam to check the child has no broker environment or FD. This supports ordinary provider launch while retaining kernel-owned slice operations; it does not establish live access or fresh-worker behavior. The Rust tests were inspected, not run here. |
+| **Current d3** · Environment scrub, retry, restore, reconnect — `provider/managed_isolation.rs:107-143,168-201,908-936,1324-1351`; `provider/service/run_lifecycle.rs:11-64`; `runtime/state/provider_relaunch_runtime.rs:55-85`; `runtime/state/provider_launch_failure_runtime.rs:27-45,120-174`; `runtime/state/project_environment_setup.rs:2061-2099`; `provider/run_actor/command_execution.rs:25-70` | The fixed list removes managed topology, slice, bootstrap, broker and release controls; ambient secret-like and numbered workspace-root names are also removed. Selected account paths and resolved credentials are intentional launch inputs. Initial starts and policy relaunches resolve through the common adapter; setup-recovery snapshots preserve that launch. Prompt submit/abort restore live runtime slots without selecting a new topology. Launch-failure retry here retries durable cleanup, not provider execution. Live retry/reconnect comparison remains open. |
+| Environment scrub, retry, restore, reconnect — `provider/managed_isolation.rs:107-143,168-201,908-936,1324-1351`; `provider/service/run_lifecycle.rs:11-64`; `runtime/state/provider_relaunch_runtime.rs:55-85`; `runtime/state/provider_launch_failure_runtime.rs:27-45,120-174`; `runtime/state/project_environment_setup.rs:2061-2099`; `provider/run_actor/command_execution.rs:25-70` | The fixed list removes managed topology, slice, bootstrap, broker and release controls; ambient secret-like and numbered workspace-root names are also removed. Selected account paths and resolved credentials are intentional launch inputs. Initial starts and policy relaunches resolve through the common adapter; setup-recovery snapshots preserve that launch. Prompt submit/abort restore live runtime slots without selecting a new topology. Launch-failure retry here retries durable cleanup, not provider execution. Live retry/reconnect comparison remains open. |
 | Supervisor restart and systemd — `managed_bootstrap/supervisor.rs:110-172`; `managed_bootstrap/worker.rs:278-304,463-489`; Path-1 units `chariox-path1-managed-bootstrap.service:9-32`, `chariox-disposable-worker-bootstrap.service:9-39`; `verify-image-release.mjs:369-445`; `upgrade-image.sh:121-134,654-660` | Kernel respawn uses the same Path-1 helper; worker preparation/restart remains Path-1. Role units contain no provider-restricting `Protect*`, `Private*`, `NoNewPrivileges`, namespace, address-family, `ReadWritePaths`, or `UMask` directives; release verification rejects those on the home unit and upgrade rejects Path-1 drop-ins. Worker `StateDirectory=chariox`/mode `0700` allocates service state, not a filesystem/process sandbox. Hardened shared-host, rootless Docker and broker services are separate. Effective installed units remain uninspected. |
-| Image, shell, container and AppArmor selectors — `prepare-hetzner-image.sh:36-54,137-149,239-241`; `install-image.sh:16-31,456-476,563-568`; `upgrade-image.sh:24-40,121-142`; `provision-linux-docker-slice.sh:766-784,860-883`; `docker/start-runtime.sh:146-174`; `chariox-slice-provider.apparmor:1-7` | Preparation/install/upgrade choose Path-1 explicitly and verify its unit. Bubblewrap/AppArmor/seccomp compatibility flags apply to the separate inner Docker slice; `start-runtime.sh` launches that slice kernel with managed isolation. The locked plan allows that distinct inner topology; it is not selected for host Path-1 provider children. No image build or effective policy inspection proves this on the live machine. |
+| **Current d3** · Image, shell, container and AppArmor selectors — `prepare-hetzner-image.sh:36-54,137-149,239-241`; `install-image.sh:16-31,104-113,445-537,563-568`; `upgrade-image.sh:24-40,121-142`; builder `scripts/build-managed-kernel-release.mjs:11-16,121-182`; guard `scripts/managed-kernel-release.test.mjs:915-940,1013-1050`; slice `docker/Dockerfile:2,5,53-56,58,67`; `provision-linux-docker-slice.sh:766-784,860-883`; `docker/start-runtime.sh:146-174`; `chariox-slice-provider.apparmor:1-7` | Preparation/install/upgrade choose Path-1 explicitly and verify its unit. The builder selects the named `scratch` target, which exports exactly the kernel, managed-bootstrap, and relay binaries; it then creates and signs the build attestation outside that image stage. The other Dockerfile base images are digest-pinned. The exporter is an artifact stage, not an installed runtime/state image. The installer separately verifies the signed release/attestation and publishes it under the digest-named root-owned release tree. Bubblewrap/AppArmor/seccomp compatibility flags apply to the separate inner Docker slice; they are not selected for host Path-1 provider children. The image was not built or installed here; effective host policy remains uninspected. |
+| **Current d3** · Allowed managed differences and mandatory shutdown — `managed_bootstrap/release.rs:81-190,285-345`; `install-image.sh:104-113,445-537`; `upgrade-image.sh:620-654`; `local/api/types/managed_environment.rs:92-103,220-237`; `runtime/managed_environment_control/cloud_contract.rs:153-170,206-211,362-368`; CLI `waiting-room-managed-environments.ts:312-381` | The only approved differences remain signed release deployment/atomic activation and mandatory managed-machine automatic shutdown. The ordinary Path-1 provider launch and kernel/provider protocol remain shared. OSS defines and projects minimum-runtime/idle-delay policy; the Cloud timer, reconciliation, and last-agent-finished execution are outside this refreshed OSS source pass and the retained Cloud baseline is stale. Inspect current Cloud and run every required shutdown trigger on the rebuilt machine before closing MP-09. |
 | Exact protected paths and Swift/TUI projections — `git_worktree_placement.rs:18-33,42-157,193-242`; `runtime/workspace_search.rs:198-253`; `packages/kernel-client/src/waiting-room-runtime-placement.ts:54-90,104-125`; CLI `waiting-room-controller.ts:320-411`, `waiting-room-managed-environments.ts:43-68,95-124`, `waiting-room-managed-environment-launch-controller.ts:88-120`, `waiting-room-managed-environment-reimage-controller.ts:78-145`, `waiting-room-start-rows.ts:136-147`, `cli-waiting-room-composition.ts:547-625,752-885`; `packages/kernel-client/src/ipc-managed-environment-requests.ts:24-140,183-218,234-305`; Swift `KernelProtocolModels.swift:3-89`, `KernelProtocolRequests.swift` | Exact entry and session/provider launch share cwd preflight. The local placement fix protects five control subdirectories, not the root/development/siblings. CLI projects catalog/readiness, trusted-root/context setup, lifecycle/auto-stop and reimage confirmation. After preparation it strips managed-only fields before ordinary session launch (`cli-waiting-room-composition.ts:598-625`). These are setup/control-plane projections, not an execution exception. Inspected Swift session/request models have no managed-environment projection; Swift managed commands concern live sync (`CharioxAppModelCommands.swift:85-98,157-189`; `CommandCenter.swift:164-167,464-495`). No Swift build or end-to-end client parity was run. |
+
+The updated `managed-parity-source-inventory` scanner enumerates the broker
+scope/FD/required-marker variables separately from other managed selectors and
+records the `managed-release-artifacts` stage separately from signature
+verification and activation. Its new fixtures verify those categories and the
+Path-1 source flow; unreviewed findings remain unapproved and the scan is not
+runtime or fresh-machine evidence.
 
 ### Uninspected and live requirements
 
-- Finish Project persistence correction, including remote pre-validation home
-  acknowledgment and fenced writes, and run exact-head lifecycle tests. The
-  15/15 placement and 17/17 PATH source tests do not prove effective units.
+- The d3 source contains the Project persistence correction and focused
+  lifecycle/acknowledgment regressions described above. Run those exact-head
+  Rust tests and validate the remote worker behavior on the rebuilt machine;
+  source inspection does not prove runtime persistence or MP-08 parity.
 - Inspect systemd/drop-ins, provider ancestry, resolved binaries, environment,
   mounts, permissions, `/home`, `/tmp` and actual slice-root behavior.
 - Exercise retry, policy relaunch, restart/reconnect, account selection,
@@ -146,6 +168,21 @@ The Cloud MP-06 audit ran 61 focused compiled Node tests across managed-home
 create/bootstrap, child-worker allocation/bootstrap, cloud-init, Web browser
 projection, and launch-plan code: 61 passed, 0 failed. These do not replace
 deployed Cloud or fresh-machine evidence.
+
+The focused inventory scanner suite now passes 23/23 Node tests, including
+fixtures for the broker-control and release-exporter categories, a d3 source
+guard for the kernel-only FD/provider scrub boundary. The separate
+`managed-kernel-release.test.mjs` already has an exact artifact-stage guard; it
+was not rerun here. No Rust build or test, Docker build, provider run, host
+installation, service change, Cloud refresh, or VM rebuild was performed in
+this pass.
+
+The updated scanner's d3 source pass returns `fail`: it enumerates all required
+categories, including 138 broker-control references and the four exact
+artifact-exporter lines, while retaining 1,285 raw `removal_required` matches,
+2,312 `unreviewed` matches, and three pending historical source predicates.
+These lexical findings are not a confirmed defect count; the scan approves no
+release or shutdown disposition and does not close any MP gate.
 
 The 2026-09-26 follow-up on production source `64c8e96888a7832693f0c5e28f5a2cefeb34a15b`
 requires explicit installer topology and rejects conflicting enabled or active

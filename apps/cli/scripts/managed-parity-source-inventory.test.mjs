@@ -32,6 +32,14 @@ function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inherite
       "// CHARIOX_MANAGED_COMMENT_ONLY_RUST",
       "let selector = std::env::var_os(\"CHARIOX_MANAGED_RUST_SELECTOR\");",
     ].join("\n") + "\n",
+    "apps/kernel/src/managed_bootstrap/mod.rs": [
+      "const PATH1_KERNEL_SLICE_BROKER_ENVS: &[&str] = &[",
+      "    \"CHARIOX_SLICE_ROOT\",",
+      "    \"CHARIOX_SLICE_DOCKER_BROKER_SOCKET\",",
+      "    \"CHARIOX_SLICE_DOCKER_BROKER_FD\",",
+      "    \"CHARIOX_SLICE_DOCKER_BROKER_REQUIRED\",",
+      "];",
+    ].join("\n") + "\n",
     "apps/kernel/src/ordinary-env.rs": "let endpoint = std::env::var(\"CHARIOX_PUBLICATION_CLOUD_API_URL\");\n",
     "apps/kernel/src/comments.rs": [
       "// CHARIOX_MANAGED_LINE_COMMENT_ONLY",
@@ -92,7 +100,13 @@ function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inherite
     "apps/kernel/src/path.rs": "const ROOT = CHARIOX_MANAGED_REPOSITORY_ROOT; // /home/chariox and /tmp\n",
     "apps/kernel/src/cleanup.rs": "let managed = cleanup;\n",
     "apps/cli/src/client.ts": "const managed = projection;\n",
-    "apps/kernel/slice-linux-docker/docker/Dockerfile": "RUN bwrap --unshare-user --die-with-parent\n",
+    "apps/kernel/slice-linux-docker/docker/Dockerfile": [
+      "FROM scratch AS managed-release-artifacts",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+      "RUN bwrap --unshare-user --die-with-parent",
+    ].join("\n") + "\n",
   };
   if (unknownProjection) files["apps/client/unknown.ts"] = "const value = { managed: projection };\n";
   return files;
@@ -203,6 +217,12 @@ test("dirty production source cannot be reported under the committed tree identi
   });
 });
 
+test("the source inventory can scan committed production while its own report is edited", () => {
+  withFixture({ dirtyPath: "docs/MANAGED_PATH1_PARITY_INVENTORY.md" }, (fixture) => {
+    assert.doesNotThrow(() => collect(fixture));
+  });
+});
+
 test("historical approvals stay pending on current source instead of being repinned", () => {
   withFixture({}, (fixture) => {
     const currentCommit = "a".repeat(40);
@@ -306,6 +326,91 @@ test("a new hidden CHARIOX_MANAGED flag is a direct Path-1 removal finding", () 
     assert.equal(hidden?.topology, "direct_path1");
     assert.equal(hidden?.disposition, "removal_required");
   });
+});
+
+test("kernel slice broker controls are inventoried separately from provider sandbox selectors", () => {
+  withFixture({}, (fixture) => {
+    const report = collect(fixture);
+    const brokerControls = report.entries.filter((entry) => entry.category === "kernel_slice_broker_control");
+    assert.deepEqual(
+      brokerControls.map((entry) => entry.selector).sort(),
+      [
+        "CHARIOX_SLICE_DOCKER_BROKER_FD",
+        "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+        "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+        "CHARIOX_SLICE_ROOT",
+      ],
+    );
+    for (const entry of brokerControls) {
+      assert.equal(entry.topology, "direct_path1");
+      assert.equal(entry.disposition, "unreviewed");
+      assert.deepEqual(entry.applicableMpIds, ["MP-01", "MP-03", "MP-08", "MP-11"]);
+    }
+    assert.ok(report.rows.find((row) => row.id === "MP-01")?.categories.includes("kernel_slice_broker_control"));
+    assert.ok(report.rows.find((row) => row.id === "MP-03")?.categories.includes("kernel_slice_broker_control"));
+    assert.ok(report.rows.find((row) => row.id === "MP-08")?.categories.includes("kernel_slice_broker_control"));
+  });
+});
+
+test("native release artifact exporter is inventoried separately from release activation", () => {
+  withFixture({}, (fixture) => {
+    const report = collect(fixture);
+    const artifacts = report.entries.filter((entry) => entry.category === "release_artifact_exporter");
+    assert.deepEqual(
+      artifacts.map((entry) => entry.selector).sort(),
+      [
+        "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
+        "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
+        "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+        "FROM scratch AS managed-release-artifacts",
+      ].sort(),
+    );
+    assert.ok(artifacts.every((entry) => entry.topology === "inner_docker_slice"));
+    assert.ok(artifacts.every((entry) => entry.disposition === "unreviewed"));
+    assert.ok(report.rows.find((row) => row.id === "MP-07")?.categories.includes("release_artifact_exporter"));
+  });
+});
+
+test("current Path-1 source keeps the slice lease in the kernel launch boundary", () => {
+  const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const bootstrap = source("../../../apps/kernel/src/managed_bootstrap/mod.rs");
+  const worker = source("../../../apps/kernel/src/managed_bootstrap/worker.rs");
+  const supervisor = source("../../../apps/kernel/src/managed_bootstrap/supervisor.rs");
+  const broker = source("../../../apps/kernel/src/slice/local_docker/broker.rs");
+  const provider = source("../../../apps/kernel/src/provider/managed_isolation.rs");
+
+  assert.match(worker, /super::supervisor::spawn_with_broker_lease\(&mut command,\s*topology\)/);
+  const kernelBrokerEnvStart = bootstrap.indexOf("pub(crate) const PATH1_KERNEL_SLICE_BROKER_ENVS");
+  const kernelBrokerEnvEnd = bootstrap.indexOf("];", kernelBrokerEnvStart);
+  assert.ok(kernelBrokerEnvStart >= 0 && kernelBrokerEnvEnd > kernelBrokerEnvStart);
+  const kernelBrokerEnvs = bootstrap.slice(kernelBrokerEnvStart, kernelBrokerEnvEnd);
+  for (const name of [
+    "CHARIOX_SLICE_ROOT",
+    "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+    "CHARIOX_SLICE_DOCKER_BROKER_FD",
+    "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+  ]) {
+    assert.ok(kernelBrokerEnvs.includes(`"${name}"`), `${name} must be cleared before kernel launch`);
+  }
+  assert.match(supervisor, /fn broker_share_root_from_socket\(\)\s*-> Option<std::path::PathBuf>\s*\{[\s\S]*?if !socket\.is_absolute\(\)[\s\S]*?socket\s*\.parent\(\)\?\s*\.parent\(\)\?\s*\.parent\(\)/);
+  assert.match(supervisor, /fn path1_managed_slice_root_from_broker_socket\(\)\s*-> Option<std::path::PathBuf>\s*\{\s*broker_share_root_from_socket\(\)\.map\(\|share_root\| share_root\.join\("slices"\)\)/);
+  assert.match(supervisor, /for name in PATH1_KERNEL_SLICE_BROKER_ENVS\s*\{\s*command\.env_remove\(name\);/);
+  assert.match(supervisor, /path1_managed_slice_root_from_broker_socket\(\)\s*\{\s*command\.env\("CHARIOX_SLICE_ROOT",\s*slice_root\);/);
+  assert.match(supervisor, /command\s*\.env_remove\(BROKER_SOCKET_ENV\)\s*\.env_remove\(BROKER_REQUIRED_ENV\)\s*\.env\(BROKER_FD_ENV,\s*fd\.to_string\(\)\)/);
+  assert.match(supervisor, /command\s*\.env_remove\(BROKER_SOCKET_ENV\)\s*\.env_remove\(BROKER_FD_ENV\)\s*\.env\(BROKER_REQUIRED_ENV,\s*"1"\)/);
+
+  for (const [name, brokerEnv] of [
+    ["CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "BROKER_SOCKET_ENV"],
+    ["CHARIOX_SLICE_DOCKER_BROKER_FD", "BROKER_FD_ENV"],
+    ["CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "BROKER_REQUIRED_ENV"],
+  ]) {
+    assert.ok(provider.includes(`"${name}"`), `${name} must be in the provider control scrub`);
+    assert.ok(broker.includes(`std::env::remove_var(${brokerEnv})`), `${brokerEnv} must be consumed at kernel startup`);
+  }
+  assert.ok(provider.includes('"CHARIOX_SLICE_ROOT"'), "provider children must not receive the slice root");
+  assert.match(provider, /if !managed_provider_isolation_required\(\)[\s\S]*?managed_provider_control_env_remove\(\)/);
+  assert.match(provider, /for name in launch\.pty_env_remove\s*\{\s*command\.env_remove\(name\);/);
+  assert.match(broker, /set_close_on_exec\(raw_fd\)/);
 });
 
 test("Bubblewrap added to direct Path 1 is not confused with the Docker slice", () => {

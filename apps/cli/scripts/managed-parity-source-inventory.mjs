@@ -17,6 +17,7 @@ const INVENTORY_TOOL_PATH = "apps/cli/scripts/managed-parity-source-inventory.mj
 export const REQUIRED_CATEGORIES = Object.freeze([
   "managed_only_branch",
   "managed_env_selector",
+  "kernel_slice_broker_control",
   "bubblewrap",
   "managed_service_restriction",
   "protected_path_filter",
@@ -25,6 +26,7 @@ export const REQUIRED_CATEGORIES = Object.freeze([
   "client_projection",
   "cleanup_selector",
   "release_activation",
+  "release_artifact_exporter",
   "automatic_shutdown_selector",
 ]);
 
@@ -32,7 +34,7 @@ export const MP_ROWS = Object.freeze([
   {
     id: "MP-01",
     name: "remove Path-1 Bubblewrap and inherited managed sandboxing",
-    categories: ["managed_env_selector", "bubblewrap", "managed_service_restriction"],
+    categories: ["managed_env_selector", "kernel_slice_broker_control", "bubblewrap", "managed_service_restriction"],
   },
   {
     id: "MP-02",
@@ -42,7 +44,7 @@ export const MP_ROWS = Object.freeze([
   {
     id: "MP-03",
     name: "protect exact managed control state without blocking siblings",
-    categories: ["protected_path_filter"],
+    categories: ["protected_path_filter", "kernel_slice_broker_control"],
   },
   {
     id: "MP-04",
@@ -62,12 +64,12 @@ export const MP_ROWS = Object.freeze([
   {
     id: "MP-07",
     name: "signed content-addressed release activation",
-    categories: ["release_activation"],
+    categories: ["release_activation", "release_artifact_exporter"],
   },
   {
     id: "MP-08",
     name: "ordinary kernel runtime, protocol, adapters, state, and clients",
-    categories: ["managed_only_branch", "managed_only_error_mapping", "client_projection", "cleanup_selector"],
+    categories: ["managed_only_branch", "kernel_slice_broker_control", "managed_only_error_mapping", "client_projection", "cleanup_selector"],
   },
   {
     id: "MP-09",
@@ -203,6 +205,12 @@ const COMPOSE_FILE_RE = /(?:^|\/)(?:docker-compose|compose)(?:\.[^/]*)?$/i;
 
 const CATEGORY_SPECS = Object.freeze([
   {
+    category: "kernel_slice_broker_control",
+    mpIds: ["MP-01", "MP-03", "MP-08", "MP-11"],
+    affectedBehavior: "kernel-only slice broker scope, lease transport, or required-lease marker",
+    pattern: /\bCHARIOX_SLICE_(?:ROOT|DOCKER_BROKER_(?:SOCKET|FD|REQUIRED))\b/g,
+  },
+  {
     category: "managed_env_selector",
     mpIds: ["MP-01", "MP-08", "MP-11"],
     affectedBehavior: "managed environment selector or injected managed runtime marker",
@@ -261,6 +269,12 @@ const CATEGORY_SPECS = Object.freeze([
     mpIds: ["MP-07", "MP-11"],
     affectedBehavior: "signed managed release activation and artifact identity",
     pattern: /\b(?:verify_release|release[-_ ]manifest|release[-_ ]signature|release[-_]public[-_]key|signed release|release_digest|kernel artifact)\b/gi,
+  },
+  {
+    category: "release_artifact_exporter",
+    mpIds: ["MP-07", "MP-11"],
+    affectedBehavior: "managed image stage exporting only native release artifacts",
+    pattern: /\bFROM\s+scratch\s+AS\s+managed-release-artifacts\b[^\n]*|\bCOPY\s+--from=rust-builder\s+\/opt\/chariox-source\/target\/release\/chariox-(?:kernel|managed-bootstrap|relay)\s+\/chariox-(?:kernel|managed-bootstrap|relay)\b[^\n]*/gi,
   },
   {
     category: "automatic_shutdown_selector",
@@ -338,6 +352,7 @@ const DIRECT_PATH1_PREFIXES = [
 const OWNED_DIRTY_PATHS = new Set([
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
+  "docs/MANAGED_PATH1_PARITY_INVENTORY.md",
 ]);
 
 const SELF_EXCLUDED_PATHS = new Set([
