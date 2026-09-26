@@ -674,6 +674,7 @@ mod broker_proxy_tests {
     use std::io::Cursor;
     use std::sync::mpsc;
 
+    #[cfg(target_os = "linux")]
     fn provider_fd_probe_script() -> &'static str {
         concat!(
             r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-}" || exit 24; "#,
@@ -687,6 +688,7 @@ mod broker_proxy_tests {
         )
     }
 
+    #[cfg(target_os = "linux")]
     fn run_provider_fd_probe(
         target: &str,
         injected_env: Option<(&str, &str)>,
@@ -711,6 +713,7 @@ mod broker_proxy_tests {
         command.status().expect("shell probe fixture should start")
     }
 
+    #[cfg(target_os = "linux")]
     fn shell_quote(value: &str) -> String {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
