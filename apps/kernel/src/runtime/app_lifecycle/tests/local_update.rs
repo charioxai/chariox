@@ -491,7 +491,7 @@ fn an_update_breaks_only_automations_whose_event_schema_changed_and_logs_why() {
     assert_eq!(level, "warn");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&fields).unwrap(),
-        serde_json::json!({"automation_id": "stale", "undelivered": 1})
+        serde_json::json!({"automation_id": "stale", "undelivered": 1, "kernel": true})
     );
     let logged: i64 = db
         .query_row(
