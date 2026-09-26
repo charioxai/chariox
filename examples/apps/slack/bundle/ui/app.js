@@ -25,7 +25,38 @@ function item(notification) {
   text.className = "text"
   text.textContent = notification.text
   li.append(meta, text)
+  if (notification.can_reply) li.append(replyForm(notification))
   return li
+}
+
+// Replies go back through the App's granted Slack connection, into the
+// notification's thread.
+function replyForm(notification) {
+  const form = document.createElement("form")
+  form.className = "reply"
+  const input = document.createElement("input")
+  input.required = true
+  input.maxLength = 4000
+  input.placeholder = "Reply in thread"
+  input.setAttribute("aria-label", `Reply to ${LABELS[notification.kind] ?? "notification"} from ${notification.user || "Slack"}`)
+  const send = document.createElement("button")
+  send.type = "submit"
+  send.textContent = "Reply"
+  form.append(input, send)
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault()
+    send.disabled = true
+    try {
+      await window.chariox.call("reply", { id: notification.id, text: input.value })
+      input.value = ""
+      say("Replied in Slack.")
+    } catch (error) {
+      say(error.message || "The reply could not be sent.", true)
+    } finally {
+      send.disabled = false
+    }
+  })
+  return form
 }
 
 async function refresh() {

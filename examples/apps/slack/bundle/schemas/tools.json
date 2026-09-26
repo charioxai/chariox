@@ -31,6 +31,58 @@
         "properties": {},
         "additionalProperties": false
       }
+    },
+    {
+      "name": "reply",
+      "description": "Reply to a Slack notification, in its thread unless mode is channel. Uses the Slack connection the owner granted this App.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "thread",
+              "channel"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "react",
+      "description": "Add an emoji reaction (for example eyes or white_check_mark) to the Slack message behind a notification.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9_+-]{1,64}$"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "additionalProperties": false
+      }
     }
   ]
 }

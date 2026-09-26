@@ -10,12 +10,20 @@ import register from '../bundle/runtime/main.mjs';
 function fakeKernel({ automation = true } = {}) {
   const state = new Map();
   const occurrences = [];
+  const actions = [];
   const tools = new Map();
   const incoming = new Map();
   const chariox = {
     AppError,
     tools: { register: (name, handler) => tools.set(name, handler) },
     events: { occurrenceId, register: (name, handler) => incoming.set(name, handler) },
+    // Like the kernel: only a granted connection and a declared action pass.
+    connections: {
+      async action(request) {
+        actions.push(request);
+        return { accepted: true, result: { message_ts: '1.9' }, idempotencyKey: 'app:slack:k' };
+      },
+    },
     state: {
       async get(key) { return state.get(key) ?? null; },
       async transaction({ schemaVersion, checks, writes, occurrences: emitted = [] }) {
@@ -36,7 +44,7 @@ function fakeKernel({ automation = true } = {}) {
   };
   register(chariox);
   const deliver = (name, id, payload) => incoming.get(name)({ occurrenceId: id, payload });
-  return { tools, occurrences, deliver, incoming };
+  return { tools, occurrences, deliver, incoming, actions };
 }
 
 // As the Slack event generator forwards an app_mention through AEDS.
@@ -64,8 +72,8 @@ test('a mention is kept once and forwarded once to the notifications automation'
   assert.equal(notifications.length, 1, 'a redelivered event is stored once');
   assert.deepEqual(notifications[0], {
     id: 'Ev1', kind: 'mentioned', text: '<@B1> deploy status?', channel: 'C1', user: 'U1',
-    occurred_at: '2026-09-26T19:00:00.000Z',
-  }, 'the reply context stays inside the App');
+    occurred_at: '2026-09-26T19:00:00.000Z', can_reply: true,
+  }, 'the reply context and connection stay inside the App');
   assert.equal(kernel.occurrences.length, 1);
   const [occurrence] = kernel.occurrences;
   assert.equal(occurrence.automationId, 'notifications');
@@ -95,4 +103,19 @@ test('reactions read from the reacted-to item, and the list filters and clears',
   assert.equal((await kernel.tools.get('list_notifications')({})).notifications[0].id, 'Ev3', 'newest first');
   assert.deepEqual(await kernel.tools.get('clear_notifications')({}), { cleared: 2 });
   assert.equal((await kernel.tools.get('list_notifications')({})).notifications.length, 0);
+});
+
+test('a reply goes back through the notification\'s own connection and context', async () => {
+  const kernel = fakeKernel();
+  await kernel.deliver('mentioned', 'Ev1', mention('<@B1> deploy status?'));
+  assert.deepEqual(await kernel.tools.get('reply')({ id: 'Ev1', text: 'Deploying now' }), { posted: true, message_ts: '1.9' });
+  await kernel.tools.get('react')({ id: 'Ev1', name: 'eyes' });
+  assert.deepEqual(kernel.actions, [
+    { connectionId: 'connection-1', action: 'notification.reply', input: { text: 'Deploying now', mode: 'thread' },
+      context: mention('').reply_context },
+    { connectionId: 'connection-1', action: 'slack.reaction.add', input: { name: 'eyes' }, context: mention('').reply_context },
+  ]);
+  await assert.rejects(kernel.tools.get('reply')({ id: 'missing', text: 'x' }), { code: 'NOT_FOUND' });
+  await kernel.deliver('mentioned', 'Ev9', { ...mention('no context'), reply_context: null });
+  await assert.rejects(kernel.tools.get('reply')({ id: 'Ev9', text: 'x' }), { code: 'INVALID_ARGUMENT' });
 });

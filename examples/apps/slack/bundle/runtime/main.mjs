@@ -3,7 +3,10 @@
 // an App inbox route per event type (`/app inbox add … --connection`), and
 // this App's signed incoming events. It keeps the latest notifications in its
 // own state and hands each one to the workflow the owner chose, through the
-// ordinary App automation `notifications`. No Slack code runs in the kernel.
+// ordinary App automation `notifications`. Replies and reactions go back
+// through the Slack connection the owner granted this App
+// (`/app connection grant`), with the generator's reply context: the App never
+// sees a Slack token. No Slack code runs in the kernel.
 
 const KEY = 'notifications';
 // The package's data schema version: 0 until it declares migrations.
@@ -65,6 +68,7 @@ export default function register(chariox) {
       // Opaque to the App: the generator binds it to the connection, so a
       // later reply goes to the same conversation.
       reply_context: payload.reply_context ?? null,
+      connection_id: payload.source?.connection_id ?? null,
     };
   }
 
@@ -110,8 +114,44 @@ export default function register(chariox) {
       notifications: items
         .filter(item => !kind || item.kind === kind)
         .slice(0, limit)
-        .map(({ reply_context: _context, ...item }) => item),
+        .map(({ reply_context: _context, connection_id: _connection, ...item }) => ({
+          ...item, can_reply: Boolean(_context && _connection),
+        })),
     };
+  });
+
+  // The notification's own connection and reply context: a reply can only
+  // go back to the conversation Slack delivered it from.
+  async function target(id) {
+    const { items } = await load();
+    const item = items.find(entry => entry.id === id);
+    if (!item) throw fail('NOT_FOUND', `No Slack notification ${id}`);
+    if (!item.reply_context || !item.connection_id) {
+      throw fail('INVALID_ARGUMENT', 'This notification cannot be answered in Slack');
+    }
+    return item;
+  }
+
+  chariox.tools.register('reply', async ({ id, text, mode = 'thread' }) => {
+    const item = await target(id);
+    const { accepted, result } = await chariox.connections.action({
+      connectionId: item.connection_id,
+      action: 'notification.reply',
+      input: { text, mode },
+      context: item.reply_context,
+    });
+    return { posted: accepted, message_ts: result?.message_ts ?? null };
+  });
+
+  chariox.tools.register('react', async ({ id, name }) => {
+    const item = await target(id);
+    const { accepted } = await chariox.connections.action({
+      connectionId: item.connection_id,
+      action: 'slack.reaction.add',
+      input: { name },
+      context: item.reply_context,
+    });
+    return { reacted: accepted };
   });
 
   chariox.tools.register('clear_notifications', async () => {
