@@ -1,8 +1,6 @@
 //! Exact worker-receipt validation, reconciliation, and durable settlement decisions.
 
-use super::remote_prompt_projection_drain_runtime::{
-    same_remote_prompt_worker_binding,
-};
+use super::remote_prompt_projection_drain_runtime::same_remote_prompt_worker_binding;
 use super::remote_prompt_worker_submission_runtime::{
     persist_remote_prompt_reconciliation_pending, query_remote_prompt_worker_receipt,
     remote_prompt_reconciliation_pending_error,

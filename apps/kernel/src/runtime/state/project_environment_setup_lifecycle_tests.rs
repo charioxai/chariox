@@ -1696,7 +1696,10 @@ async fn run_persisted_definition_on_fresh_worker(
         .as_ref()
         .expect("fresh worker Ready requires validation");
     assert_eq!(validation.platform, target_platform);
-    assert_eq!(validation.commands.len(), definition.validation_commands.len());
+    assert_eq!(
+        validation.commands.len(),
+        definition.validation_commands.len()
+    );
     assert!(validation.passed());
     (ready, fresh_workspace)
 }
