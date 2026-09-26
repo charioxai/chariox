@@ -33,7 +33,7 @@ const expectedOwnership = Object.freeze({
   ],
 })
 
-function setupStatus(phase = 'ready') {
+function setupStatus(phase = 'ready', overrides = {}) {
   return {
     operation_id: 'setup-operation-1',
     project_id: targetPin.project_id,
@@ -42,6 +42,11 @@ function setupStatus(phase = 'ready') {
     worker_id: targetPin.target_machine_id,
     platform: targetPin.target_platform,
     phase,
+    attempt: 1,
+    progress_percent: ['ready', 'failed', 'cancelled'].includes(phase) ? 100 : 20,
+    created_at_ms: 1_000,
+    updated_at_ms: 1_000,
+    ...overrides,
   }
 }
 
@@ -62,6 +67,7 @@ function fakeHome(options = {}) {
   const destroyed = new Set()
   let ownershipSnapshots = 0
   let projectSessionReadsAfterDelete = 0
+  let statusReads = 0
   let sessionDeleted = false
   const project = {
     id: targetPin.project_id,
@@ -113,9 +119,15 @@ function fakeHome(options = {}) {
     async send(request) {
       const name = Object.keys(request)[0]
       calls.push(name)
-      if (name === 'GetProjectEnvironmentSetupStatus') return { ProjectEnvironmentSetupStatus: { status: setupStatus(options.operationPhase ?? 'ready') } }
+      if (name === 'GetProjectEnvironmentSetupStatus') {
+        const sequenceEntry = options.statusSequence?.[statusReads]
+        statusReads += 1
+        const phase = sequenceEntry?.phase ?? options.operationPhase ?? 'ready'
+        const overrides = sequenceEntry?.overrides ?? options.statusOverrides ?? {}
+        return { ProjectEnvironmentSetupStatus: { status: setupStatus(phase, overrides) } }
+      }
       if (name === 'CancelProjectEnvironmentSetup' && options.cancelHangs) return await new Promise(() => {})
-      if (name === 'CancelProjectEnvironmentSetup') return { ProjectEnvironmentSetupCancelled: { status: setupStatus('cancelled') } }
+      if (name === 'CancelProjectEnvironmentSetup') return { ProjectEnvironmentSetupCancelled: { status: setupStatus('cancelled', options.cancelStatusOverrides ?? {}) } }
       if (name === 'ListRemoteMachines') return { RemoteMachinesListed: { machines: [{ machine_id: targetPin.target_machine_id, trust_status: 'approved', online: true }] } }
       if (name === 'ListRemoteMachineKernels') {
         if (options.transportFailureAt === name) throw new Error('injected transport failure')
@@ -162,19 +174,40 @@ function fakeHome(options = {}) {
         const agentId = request.DestroyAgent.agent_id
         if (options.failDestroyAgent === agentId) return { Error: { code: 'injected_destroy_failure' } }
         destroyed.add(agentId)
-        return { AgentDestroyed: { agent: { id: agentId } } }
+        return { AgentDestroyed: { agent: {
+          id: options.wrongAgentAckFor === agentId ? 'foreign-agent' : agentId,
+          session_id: options.wrongAgentSessionAckFor === agentId ? 'foreign-session' : targetPin.session_id,
+        } } }
       }
       if (name === 'DeleteSession') {
         sessionDeleted = true
-        return { SessionDeleted: { session: { id: targetPin.session_id } } }
+        return { SessionDeleted: { session: {
+          id: options.wrongSessionDeleted ? 'foreign-session' : targetPin.session_id,
+          project_id: targetPin.project_id,
+          workspace_id: targetPin.workspace_id,
+          worktree_id: targetPin.worktree_id,
+          agents: options.sessionDeletedAgents ?? [],
+          ...(options.sessionDeletedOverrides ?? {}),
+        } } }
       }
       if (name === 'DeleteProject') {
         if (options.transportFailureAt === name) throw new Error('injected transport failure')
-        return { ProjectDeleted: { project: { id: targetPin.project_id } } }
+        return { ProjectDeleted: {
+          project: {
+            id: options.wrongProjectDeleted ? 'foreign-project' : targetPin.project_id,
+            owner_user_id: targetPin.project_owner_user_id,
+            workspace_id: targetPin.workspace_id,
+            ...(options.projectDeletedOverrides ?? {}),
+          },
+          sessions: options.projectDeletedSessions ?? [],
+        } }
       }
       throw new Error(`unexpected request ${name}`)
     },
-    async close() { calls.push('Close') },
+    async close() {
+      calls.push('Close')
+      if (options.closeHangs) return await new Promise(() => {})
+    },
   }
   return { client, calls }
 }
@@ -209,6 +242,51 @@ test('unsettled setup and Cancel timeout block every destructive context request
   assert.equal(calls.includes('DestroyAgent'), false)
   assert.equal(calls.includes('DeleteSession'), false)
   assert.equal(calls.includes('DeleteProject'), false)
+})
+
+test('terminal cleanup statuses must match every pinned operation binding', async (t) => {
+  const mismatches = [
+    ['operation_id', 'foreign-operation'],
+    ['project_id', 'foreign-project'],
+    ['session_id', 'foreign-session'],
+    ['agent_id', 'foreign-agent'],
+    ['worker_id', 'foreign-worker'],
+    ['platform', 'macos-aarch64'],
+  ]
+  for (const [field, value] of mismatches) {
+    await t.test(field, async () => {
+      const { result, calls } = await runCleanup({ statusOverrides: { [field]: value } })
+      assert.equal(result.operationsSettled, false)
+      assert.equal(result.complete, false)
+      assert.equal(calls.includes('CancelProjectEnvironmentSetup'), false)
+      assert.equal(calls.includes('DestroyAgent'), false)
+      assert.equal(calls.includes('DeleteSession'), false)
+    })
+  }
+})
+
+test('wrong status binding during cancellation polling remains incomplete', async () => {
+  const { result, calls } = await runCleanup({
+    statusSequence: [
+      { phase: 'preparing' },
+      { phase: 'cancelled', overrides: { project_id: 'foreign-project' } },
+    ],
+  })
+  assert.equal(result.operationsSettled, false)
+  assert.equal(calls.includes('CancelProjectEnvironmentSetup'), true)
+  assert.equal(calls.includes('DestroyAgent'), false)
+  assert.equal(calls.includes('DeleteSession'), false)
+})
+
+test('a wrong binding in the Cancel acknowledgment is not trusted as settlement', async () => {
+  const { result, calls } = await runCleanup({
+    operationPhase: 'preparing',
+    cancelStatusOverrides: { session_id: 'foreign-session' },
+  })
+  assert.equal(result.operationsSettled, false)
+  assert.equal(calls.includes('CancelProjectEnvironmentSetup'), true)
+  assert.equal(calls.includes('DestroyAgent'), false)
+  assert.equal(calls.includes('DeleteSession'), false)
 })
 
 test('wrong workspace ownership and a newly joined foreign agent refuse cleanup', async (t) => {
@@ -284,6 +362,68 @@ test('both exact DestroyAgent acknowledgments are required before DeleteSession'
   assert.ok(result.errors.includes(`agent_destroy_failed:${targetPin.launch_agent_id}`))
 })
 
+test('deletion acknowledgments must identify the pinned agent, session, and Project', async (t) => {
+  await t.test('DestroyAgent identifies the requested agent and session', async () => {
+    const { result, calls } = await runCleanup({ wrongAgentAckFor: targetPin.utility_agent_id })
+    assert.equal(result.complete, false)
+    assert.equal(result.deletedSessionId, null)
+    assert.equal(calls.includes('DeleteSession'), false)
+    assert.ok(result.errors.includes(`agent_destroy_failed:${targetPin.utility_agent_id}`))
+  })
+
+  await t.test('DestroyAgent rejects a mismatched session identity', async () => {
+    const { result, calls } = await runCleanup({ wrongAgentSessionAckFor: targetPin.utility_agent_id })
+    assert.equal(result.complete, false)
+    assert.equal(calls.includes('DeleteSession'), false)
+    assert.ok(result.errors.includes(`agent_destroy_failed:${targetPin.utility_agent_id}`))
+  })
+
+  await t.test('SessionDeleted identifies the pinned context', async () => {
+    const { result, calls } = await runCleanup({ wrongSessionDeleted: true })
+    assert.equal(result.complete, false)
+    assert.equal(result.deletedSessionId, null)
+    assert.equal(calls.includes('DeleteProject'), false)
+    assert.ok(result.errors.includes(`session_delete_failed:${targetPin.session_id}`))
+  })
+
+  await t.test('SessionDeleted rejects a mismatched workspace binding', async () => {
+    const { result, calls } = await runCleanup({ sessionDeletedOverrides: { workspace_id: '/foreign/workspace' } })
+    assert.equal(result.complete, false)
+    assert.equal(result.deletedSessionId, null)
+    assert.equal(calls.includes('DeleteProject'), false)
+    assert.ok(result.errors.includes(`session_delete_failed:${targetPin.session_id}`))
+  })
+
+  await t.test('SessionDeleted rejects an unpinned agent exposed by the serialized session', async () => {
+    const { result } = await runCleanup({ sessionDeletedAgents: [{ id: 'foreign-agent', session_id: targetPin.session_id }] })
+    assert.equal(result.complete, false)
+    assert.equal(result.deletedSessionId, null)
+  })
+
+  await t.test('ProjectDeleted identifies the pinned owner and workspace', async () => {
+    const { result, calls } = await runCleanup({ wrongProjectDeleted: true })
+    assert.equal(result.complete, false)
+    assert.equal(result.deletedSessionId, targetPin.session_id)
+    assert.equal(result.deletedProjectId, null)
+    assert.equal(calls.includes('DeleteProject'), true)
+    assert.ok(result.errors.includes(`project_delete_failed:${targetPin.project_id}`))
+  })
+
+  await t.test('ProjectDeleted rejects a changed owner', async () => {
+    const { result } = await runCleanup({ projectDeletedOverrides: { owner_user_id: 'foreign-owner' } })
+    assert.equal(result.complete, false)
+    assert.equal(result.deletedProjectId, null)
+  })
+
+  await t.test('ProjectDeleted rejects sessions outside the verified empty boundary', async () => {
+    const { result } = await runCleanup({
+      projectDeletedSessions: [{ id: 'foreign-session', project_id: targetPin.project_id }],
+    })
+    assert.equal(result.complete, false)
+    assert.equal(result.deletedProjectId, null)
+  })
+})
+
 test('a new Project session after session deletion blocks DeleteProject', async () => {
   const { result, calls } = await runCleanup({ additionalProjectSessionAfterDelete: true })
   assert.equal(result.deletedSessionId, targetPin.session_id)
@@ -311,6 +451,92 @@ test('successful cleanup follows settlement, fresh ownership checks, two agent A
     'ListRemoteMachines', 'ListRemoteMachineKernels', 'ListProjects', 'ListSessions', 'GetSessionState',
     'DeleteSession', 'ListProjects', 'ListSessions', 'DeleteProject', 'Close',
   ])
+})
+
+test('two operation settlements share one cleanup deadline', async () => {
+  const calls = []
+  const now = { value: 0 }
+  const operationIds = ['operation-one', 'operation-two']
+  const reads = new Map(operationIds.map((operationId) => [operationId, 0]))
+  const statusFor = (operationId, phase) => ({
+    operation_id: operationId,
+    project_id: targetPin.project_id,
+    session_id: targetPin.session_id,
+    agent_id: targetPin.utility_agent_id,
+    worker_id: targetPin.target_machine_id,
+    platform: targetPin.target_platform,
+    phase,
+    attempt: 1,
+    progress_percent: phase === 'ready' ? 100 : 20,
+    created_at_ms: 1_000,
+    updated_at_ms: 1_000,
+  })
+  const client = {
+    async send(request) {
+      const [name] = Object.keys(request)
+      calls.push(name)
+      if (name === 'GetProjectEnvironmentSetupStatus') {
+        const operationId = request[name].operationId
+        const read = reads.get(operationId) + 1
+        reads.set(operationId, read)
+        const phase = operationId === operationIds[0] && read >= 4 ? 'ready' : 'preparing'
+        return { ProjectEnvironmentSetupStatus: { status: statusFor(operationId, phase) } }
+      }
+      if (name === 'CancelProjectEnvironmentSetup') {
+        return { ProjectEnvironmentSetupCancelled: { status: statusFor(request[name].operationId, 'cancelled') } }
+      }
+      throw new Error(`unexpected request ${name}`)
+    },
+    async close() { calls.push('Close') },
+  }
+  const evidence = cleanupEvidence()
+  const result = await cleanupProjectEnvironmentSetupDrillContext({
+    createClient: async () => client,
+    pin: targetPin,
+    operationIds,
+    expectedOwnership,
+    evidence,
+    cleanupTimeoutMs: 1_000,
+    controlTimeoutMs: 100,
+    pollMs: 250,
+    nowMs: () => now.value,
+    delay: async (ms) => { now.value += ms },
+  })
+  assert.equal(now.value, 1_000)
+  assert.equal(reads.get(operationIds[0]), 4)
+  assert.equal(reads.get(operationIds[1]), 3)
+  assert.equal(result.operationsSettled, false)
+  assert.equal(result.complete, false)
+  assert.equal(calls.some((name) => name === 'ListRemoteMachines' || name === 'DestroyAgent' || name === 'DeleteSession'), false)
+})
+
+test('home-kernel connection establishment is bounded by the cleanup budget', async () => {
+  const evidence = cleanupEvidence()
+  const startedAtMs = Date.now()
+  const result = await cleanupProjectEnvironmentSetupDrillContext({
+    createClient: () => new Promise(() => {}),
+    pin: targetPin,
+    operationIds: ['setup-operation-1'],
+    expectedOwnership,
+    evidence,
+    cleanupTimeoutMs: 50,
+    controlTimeoutMs: 20,
+  })
+  assert.equal(result.operationsSettled, false)
+  assert.equal(result.complete, false)
+  assert.ok(Date.now() - startedAtMs < 250)
+  assert.ok(result.errors.includes('cleanup_transport_or_kernel_failure'))
+})
+
+test('a hanging home-kernel close is bounded and prevents complete cleanup evidence', async () => {
+  const startedAtMs = Date.now()
+  const { result, calls } = await runCleanup({ closeHangs: true, cleanupTimeoutMs: 250, controlTimeoutMs: 40 })
+  assert.equal(calls.at(-1), 'Close')
+  assert.equal(result.complete, false)
+  assert.equal(result.deletedSessionId, targetPin.session_id)
+  assert.equal(result.deletedProjectId, targetPin.project_id)
+  assert.ok(result.errors.includes('home_kernel_client_close_failed_or_timed_out'))
+  assert.ok(Date.now() - startedAtMs < 300)
 })
 
 test('transport failure records incomplete ownership evidence and prevents destructive cleanup', async () => {
