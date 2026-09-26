@@ -676,16 +676,18 @@ impl KernelRuntimeState {
 fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool {
     match error {
         DaemonError::NoActivePrompt { .. } => true,
-        DaemonError::LocalTransport { message, .. } => {
-            message.contains("no active prompt")
-                || message.contains("NoActivePrompt")
-                || message.contains("no_active_prompt")
-        }
-        DaemonError::RelayTransport { code, message, .. } => {
-            code == "no_active_prompt"
-                || message.contains("no active prompt")
-                || message.contains("NoActivePrompt")
-                || message.contains("no_active_prompt")
+        DaemonError::RelayTransport {
+            operation,
+            code,
+            message,
+            retryable: false,
+        } => {
+            *operation == "send relay peer request"
+                && code == "relay_request_failed"
+                && message
+                    .strip_prefix("session `")
+                    .and_then(|message| message.strip_suffix("` has no active prompt"))
+                    .is_some_and(|session_id| !session_id.is_empty())
         }
         _ => false,
     }
@@ -753,6 +755,59 @@ mod tests {
             Some(&attempted),
             &attempted,
         ));
+    }
+
+    #[test]
+    fn settled_remote_completion_accepts_only_exact_worker_no_active_prompt() {
+        assert!(remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::NoActivePrompt {
+                session_id: "worker-session".to_string(),
+            }
+        ));
+        assert!(remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::RelayTransport {
+                operation: "send relay peer request",
+                code: "relay_request_failed".to_string(),
+                message: "session `worker-session` has no active prompt".to_string(),
+                retryable: false,
+            }
+        ));
+        for error in [
+            DaemonError::LocalTransport {
+                operation: "cancel remote prompt",
+                message: "session `worker-session` has no active prompt".to_string(),
+            },
+            DaemonError::RelayTransport {
+                operation: "send relay peer request",
+                code: "relay_request_failed".to_string(),
+                message: "worker said there is no active prompt while another error occurred"
+                    .to_string(),
+                retryable: false,
+            },
+            DaemonError::RelayTransport {
+                operation: "send relay peer request",
+                code: "no_active_prompt".to_string(),
+                message: "session `worker-session` has no active prompt".to_string(),
+                retryable: false,
+            },
+            DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: "relay_request_failed".to_string(),
+                message: "session `worker-session` has no active prompt".to_string(),
+                retryable: false,
+            },
+            DaemonError::RelayTransport {
+                operation: "send relay peer request",
+                code: "relay_request_failed".to_string(),
+                message: "session `worker-session` has no active prompt".to_string(),
+                retryable: true,
+            },
+        ] {
+            assert!(
+                !remote_prompt_completion_should_treat_as_settled(&error),
+                "untyped remote errors must not prove the worker run settled: {error}"
+            );
+        }
     }
 }
 

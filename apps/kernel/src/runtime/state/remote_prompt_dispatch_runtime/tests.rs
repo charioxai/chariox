@@ -19,12 +19,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
-    async fn receive_claim_test_envelope(socket: &mut WebSocketStream<TcpStream>) -> RelayEnvelope {
+    async fn receive_claim_test_envelope(
+        socket: &mut WebSocketStream<TcpStream>,
+        stage: &'static str,
+    ) -> RelayEnvelope {
         let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
             .await
             .expect("temporary relay should receive a client envelope before timeout")
             .expect("temporary relay socket should remain open")
-            .expect("temporary relay frame should decode");
+            .unwrap_or_else(|error| panic!("{stage}: {error:?}"));
         serde_json::from_str(
             message
                 .to_text()
@@ -63,7 +66,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             .await
             .expect("temporary relay should upgrade discovery connection");
         let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
-            receive_claim_test_envelope(&mut discovery).await
+            receive_claim_test_envelope(&mut discovery, "successor discovery request").await
         else {
             panic!("expected relay metadata request");
         };
@@ -95,14 +98,14 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             .await
             .expect("temporary relay should upgrade peer connection");
         assert!(matches!(
-            receive_claim_test_envelope(&mut peer).await,
+            receive_claim_test_envelope(&mut peer, "successor peer registration").await,
             RelayEnvelope::DaemonRegister { .. }
         ));
         let RelayEnvelope::DaemonPeerRequest {
             request_id,
             encrypted_request,
             ..
-        } = receive_claim_test_envelope(&mut peer).await
+        } = receive_claim_test_envelope(&mut peer, "successor encrypted request").await
         else {
             panic!("expected leased prompt submission");
         };
@@ -188,7 +191,12 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             let mut socket = accept_async(stream)
                 .await
                 .expect("temporary relay should upgrade observation connection");
-            match receive_claim_test_envelope(&mut socket).await {
+            match receive_claim_test_envelope(
+                &mut socket,
+                "post-success observation frame",
+            )
+            .await
+            {
                 RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
                     let presence = serde_json::from_value(serde_json::json!({
                         "kernel_id": worker_id,
@@ -213,7 +221,11 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
                         request_id,
                         encrypted_request,
                         ..
-                    } = receive_claim_test_envelope(&mut socket).await
+                    } = receive_claim_test_envelope(
+                        &mut socket,
+                        "post-success registered peer request",
+                    )
+                    .await
                     else {
                         panic!("expected a fake worker peer request after registration");
                     };
@@ -1348,11 +1360,41 @@ mod receipt_reconciliation {
             )
             .await;
 
-            // A replay would issue a second public kernel relay request. It must
-            // not be sent when the read-only receipt conflicts with the prompt.
-            tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
-                .await
-                .is_ok()
+            // A conflict schedules a read-only receipt retry. Decrypt it so the fixture
+            // distinguishes reconciliation from a replayed SubmitLeasedPrompt.
+            let retry_request = receive_fake_worker_peer_request(
+                &listener,
+                &listener_worker_id,
+                &listener_worker_machine_id,
+                &listener_worker_public_key,
+                &listener_worker_private_key,
+            )
+            .await;
+            assert_eq!(retry_request.target_id, listener_worker_id);
+            assert!(matches!(
+                &retry_request.request,
+                RelayPeerRequest::GetLeasedPromptReceipt {
+                    leased_agent_id,
+                    home_prompt_id,
+                } if leased_agent_id == &listener_leased_agent_id
+                    && home_prompt_id == &listener_prompt_id
+            ));
+            send_fake_worker_peer_response(
+                retry_request,
+                &listener_worker_id,
+                &listener_worker_private_key,
+                &listener_home_public_key,
+                RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: "different-home-prompt".to_string(),
+                        worker_provider_run_id: "worker-run-conflicting-receipt".to_string(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                        target_home_prompt_id: None,
+                        execution_lease_id: None,
+                    }),
+                },
+            )
+            .await;
         });
 
         assert!(fixture
@@ -1365,12 +1407,7 @@ mod receipt_reconciliation {
             )
             .await
             .expect("conflicting receipt should leave recovery handled"));
-        assert!(
-            !server
-                .await
-                .expect("fake relay should finish conflict check"),
-            "conflicting receipt must not trigger a replay request"
-        );
+        server.await.expect("fake relay should verify read-only retry");
 
         let session = fixture
             .runtime
