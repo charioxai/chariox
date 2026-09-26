@@ -274,7 +274,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   if (includeWorkerService) {
     const path = "/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
     const source = join(rootfs, path)
-    await put(source, "[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker\n")
+    await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")))
     artifactSpecs.push(["chariox-disposable-worker-bootstrap.service", path, source, "file"])
   }
   if (builderKeys) {
