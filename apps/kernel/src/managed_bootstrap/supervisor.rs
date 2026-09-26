@@ -23,8 +23,7 @@ use super::state::BootstrapReceiptStatus;
 use super::state::{BootstrapConfig, BootstrapReceipt};
 use super::{
     jittered, managed_provider_topology, ManagedProviderTopology, PendingConfirmation,
-    MANAGED_PROVIDER_TOPOLOGY_ENV, PATH1_KERNEL_SLICE_BROKER_ENVS,
-    PATH1_SHARED_HOST_SELECTOR_ENVS,
+    MANAGED_PROVIDER_TOPOLOGY_ENV, PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS,
 };
 
 const MIN_RESTART_DELAY: Duration = Duration::from_secs(1);
@@ -657,7 +656,10 @@ pub(super) fn round_trip_path1_test_broker(peer: &mut UnixStream) -> io::Result<
     peer.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut reader = BufReader::new(peer.try_clone()?);
     let request = read_broker_frame(&mut reader)?.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::UnexpectedEof, "kernel closed before broker request")
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "kernel closed before broker request",
+        )
     })?;
     let mut response = (b"path1-kernel-ack".len() as u32).to_be_bytes().to_vec();
     response.extend_from_slice(b"path1-kernel-ack");
@@ -932,7 +934,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         assert!(path1.contains("socket=<unset>\n"));
         assert!(path1.contains("fd=<unset>\n"));
         assert!(path1.contains("required=1\n"));
-        assert!(path1.contains(&format!("slice_root={}\n", service_root.join("slices").display())));
+        assert!(path1.contains(&format!(
+            "slice_root={}\n",
+            service_root.join("slices").display()
+        )));
 
         #[cfg(target_os = "linux")]
         {
@@ -984,9 +989,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             )));
             assert!(path1_broker.contains("repository_root=/srv/managed workspaces\n"));
             assert!(path1_broker.contains("topology=path1\n"));
-            assert!(path1_broker.contains(
-                "path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-            ));
+            assert!(path1_broker
+                .contains("path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"));
             assert!(path1_broker.contains("slice_root=/var/lib/chariox-slice-share/slices\n"));
             assert!(path1_broker.contains("capability_root=<unset>\n"));
             assert!(path1_broker.contains("provider_isolation=<unset>\n"));
@@ -1399,7 +1403,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         assert!(socket_target.starts_with("socket:["));
 
         let duplicate = unsafe { libc::fcntl(inherited_fd, libc::F_DUPFD_CLOEXEC, 0) };
-        assert!(duplicate >= 0, "kernel should be able to duplicate the broker FD");
+        assert!(
+            duplicate >= 0,
+            "kernel should be able to duplicate the broker FD"
+        );
         let mut broker = unsafe { UnixStream::from_raw_fd(duplicate) };
         broker
             .write_all(&frame(b"path1-kernel-probe"))
@@ -1441,9 +1448,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "provider child inherited the kernel broker socket"
         );
 
-        let value = |name: &str| {
-            std::env::var(name).unwrap_or_else(|_| "<unset>".to_string())
-        };
+        let value = |name: &str| std::env::var(name).unwrap_or_else(|_| "<unset>".to_string());
         let observed = format!(
             "home={}\nchariox_home={}\nrepository_root={}\ntopology={}\npath={}\nslice_root={}\ncapability_root={}\nprovider_isolation={}\nprovider_isolation_active={}\nprovider_bwrap={}\nservice={}\npublication={}\nbroker_socket=<unset>\nbroker_fd_initial={}\nbroker_fd=<consumed>\nbroker_required=<unset>\nfd_cloexec=true\nbroker_round_trip=true\nprovider_fd_inherited=false\n",
             value("HOME"),

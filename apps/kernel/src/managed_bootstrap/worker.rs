@@ -24,12 +24,12 @@ use super::state::{
     read_bounded_json, remove_envelope, valid_digest, valid_identifier, valid_secret,
     validate_cloud_url, validate_managed_state_path,
 };
-#[cfg(test)]
-use super::{PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS};
 use super::{
     jittered, managed_provider_topology, normalized_api_url, persisted_profile,
     valid_managed_relay_url, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV,
 };
+#[cfg(test)]
+use super::{PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS};
 
 const MIN_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(60);
@@ -1259,14 +1259,10 @@ mod tests {
         let status = child.wait().expect("broker probe kernel should exit");
         assert!(status.success(), "broker probe kernel failed: {status}");
         let broker_observed = fs::read_to_string(&broker_record).expect("broker kernel boundary");
-        assert!(broker_observed.contains(&format!(
-            "home={}\n",
-            config.process_home.display()
-        )));
-        assert!(broker_observed.contains(&format!(
-            "chariox_home={}\n",
-            config.chariox_home.display()
-        )));
+        assert!(broker_observed.contains(&format!("home={}\n", config.process_home.display())));
+        assert!(
+            broker_observed.contains(&format!("chariox_home={}\n", config.chariox_home.display()))
+        );
         assert!(broker_observed.contains("repository_root=/srv/worker workspaces\n"));
         assert!(broker_observed.contains("topology=path1\n"));
         assert!(config.process_home.is_absolute());
