@@ -674,6 +674,73 @@ mod broker_proxy_tests {
     use std::io::Cursor;
     use std::sync::mpsc;
 
+    fn provider_fd_probe_script() -> &'static str {
+        concat!(
+            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-}" || exit 24; "#,
+            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_FD-}" || exit 25; "#,
+            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_REQUIRED-}" || exit 26; "#,
+            r#"test -z "${CHARIOX_SLICE_ROOT-}" || exit 27; "#,
+            r#"for entry in /proc/$$/fd/*; do
+                target=$(/usr/bin/readlink "$entry" 2>/dev/null || :)
+                [ "$target" = "$1" ] && exit 23
+            done; exit 0"#,
+        )
+    }
+
+    fn run_provider_fd_probe(
+        target: &str,
+        injected_env: Option<(&str, &str)>,
+        inherit_target_fd: bool,
+    ) -> ExitStatus {
+        let open_fd = if inherit_target_fd {
+            format!("exec 9<{};\n", shell_quote(target))
+        } else {
+            String::new()
+        };
+        let script = format!("{open_fd}{}", provider_fd_probe_script());
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .arg("provider-fd-probe")
+            .arg(target)
+            .env_clear();
+        if let Some((name, value)) = injected_env {
+            command.env(name, value);
+        }
+        command.status().expect("shell probe fixture should start")
+    }
+
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn provider_fd_probe_succeeds_without_leaks_and_rejects_injected_socket_or_env() {
+        let target = std::env::current_exe()
+            .expect("test executable path should be available")
+            .canonicalize()
+            .expect("probe target fixture should be canonical")
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(run_provider_fd_probe(&target, None, false).success());
+        assert_eq!(run_provider_fd_probe(&target, None, true).code(), Some(23));
+        for (name, expected_code) in [
+            (BROKER_SOCKET_ENV, 24),
+            (BROKER_FD_ENV, 25),
+            (BROKER_REQUIRED_ENV, 26),
+            ("CHARIOX_SLICE_ROOT", 27),
+        ] {
+            assert_eq!(
+                run_provider_fd_probe(&target, Some((name, "injected")), false).code(),
+                Some(expected_code),
+                "injected {name} must fail the provider boundary probe",
+            );
+        }
+    }
+
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
         match value {
             Some(value) => std::env::set_var(name, value),
@@ -1418,16 +1485,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         );
         drop(broker);
 
-        let provider_probe = concat!(
-            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-}" || exit 24; "#,
-            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_FD-}" || exit 25; "#,
-            r#"test -z "${CHARIOX_SLICE_DOCKER_BROKER_REQUIRED-}" || exit 26; "#,
-            r#"test -z "${CHARIOX_SLICE_ROOT-}" || exit 27; "#,
-            r#"for entry in /proc/$$/fd/*; do
-                target=$(/usr/bin/readlink "$entry" 2>/dev/null || :)
-                [ "$target" = "$1" ] && exit 23
-            done"#,
-        );
+        let provider_probe = provider_fd_probe_script();
         let provider_child = crate::provider::managed_isolated_utility_command(
             "/bin/sh",
             vec![
