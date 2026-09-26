@@ -44,10 +44,10 @@ command/state files abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/S
    allow the configured root, development project and unrelated siblings,
    reject the control directories and descendants, and reject a symlink alias
    to `backups` (`git_worktree_placement.rs:1141-1200`). Do not impose a blanket
-   slice-root ban. Root integrated this patch locally. Focused Rust execution
-   passed 14/15, including both new regressions, but an existing macOS fixture
-   expected `/var` instead of canonical `/private/var`. Its expectation-only
-   correction remains unexecuted. Placement publication, aggregate validation,
+   slice-root ban. Root integrated this patch locally and corrected an existing
+   macOS fixture to expect canonical `/private/var` instead of `/var`.
+   Focused Rust execution then passed 15/15, including both new regressions and
+   the corrected fixture. Placement publication, aggregate validation,
    approval, deployment and fresh-worker evidence remain pending.
 
 2. The provider PATH fix is published in root commit
@@ -82,8 +82,9 @@ command/state files abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/S
 
 ### Uninspected and live requirements
 
-- Finish Project persistence correction and rerun exact-head placement and
-  lifecycle tests. Published PATH source tests do not prove effective units.
+- Finish Project persistence correction, including remote pre-validation home
+  acknowledgment and fenced writes, and run exact-head lifecycle tests. The
+  15/15 placement and 17/17 PATH source tests do not prove effective units.
 - Inspect systemd/drop-ins, provider ancestry, resolved binaries, environment,
   mounts, permissions, `/home`, `/tmp` and actual slice-root behavior.
 - Exercise retry, policy relaunch, restart/reconnect, account selection,
