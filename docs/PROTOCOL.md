@@ -1860,7 +1860,9 @@ Workflow trigger and deployment direction:
   (poison) after 8 attempts; an update or start waits without spending one;
   unsettled occurrences expire after 7 days; payloads are dropped when
   settled. The dedupe window is 14 days from acceptance: a replay within it is
-  answered as a duplicate, and settled occurrences older than it are pruned.
+  answered as a duplicate, and settled occurrences older than it are pruned
+  (by the kernel's delivery pass, also for an idle or uninstalled App), so the
+  `delivered`, `failed` and `expired` counts cover about the last 14 days.
   `TestAppInboxRoute {installation_id, route_id, occurrence_id,
   payload}` accepts one occurrence as a source would (`AppInboxOccurrenceAccepted
   {installation_id, route_id, occurrence_id, duplicate}`). Event
