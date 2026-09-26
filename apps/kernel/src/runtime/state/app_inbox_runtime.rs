@@ -166,6 +166,16 @@ impl KernelRuntimeState {
                 });
                 continue;
             };
+            // Accepted under another generation: deliver only what the live
+            // one still declares with a matching schema.
+            if lease.catalog().generation() != item.accepted_generation
+                && !self.still_accepted(&item).await
+            {
+                records.push(AppInboxOperation::Undeliverable {
+                    sequence: item.sequence,
+                });
+                continue;
+            }
             let delivered = lease.deliver_event(&item, DELIVERY_TIMEOUT).await.is_ok();
             let update_pending = !delivered
                 && self
@@ -186,6 +196,20 @@ impl KernelRuntimeState {
             }
         })
         .await;
+    }
+
+    async fn still_accepted(&self, item: &InboxItem) -> bool {
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (item.owner_id.clone(), item.installation_id.clone());
+        let Ok(Ok((_, catalog))) = tokio::task::spawn_blocking(move || {
+            store.active_app_incoming_catalog(&owner, &installation)
+        })
+        .await
+        else {
+            // The release could not be read just now; delivery itself decides.
+            return true;
+        };
+        catalog.validate(&item.event_name, &item.payload).is_ok()
     }
 
     async fn inbox(

@@ -49,6 +49,10 @@ pub(crate) enum AppInboxOperation {
         sequence: i64,
         until_ms: u64,
     },
+    /// The live generation no longer accepts the occurrence as it was admitted.
+    Undeliverable {
+        sequence: i64,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -112,12 +116,9 @@ fn apply(
             installation,
             route_id,
         } => {
-            match app_inbox::route(connection, &route_id)? {
-                Some(route) if route.owner_id == owner && route.installation_id == installation => {
-                }
-                _ => return Err(InboxError::NotFound),
-            }
-            app_inbox::remove_route_in(connection, &owner, &route_id)?;
+            let tx = connection.transaction()?;
+            app_inbox::remove_route_in(&tx, &owner, &installation, &route_id)?;
+            tx.commit()?;
             Ok(AppInboxOutcome::Recorded(None))
         }
         AppInboxOperation::Routes {
@@ -126,7 +127,7 @@ fn apply(
         } => {
             let mut routes = Vec::new();
             for route in app_inbox::routes(connection, &owner, &installation)? {
-                let counts = app_inbox::counts(connection, &route.route_id)?;
+                let counts = app_inbox::counts(connection, &route)?;
                 routes.push((route, counts));
             }
             Ok(AppInboxOutcome::Routes(routes))
@@ -140,8 +141,7 @@ fn apply(
             generation,
             now_ms,
         } => {
-            let route = app_inbox::route(connection, &route_id)?
-                .filter(|route| route.owner_id == owner && route.installation_id == installation)
+            let route = app_inbox::route(connection, &owner, &installation, &route_id)?
                 .ok_or(InboxError::NotFound)?;
             let active = InstallationRegistry::new(connection)
                 .active_trust(&owner, &installation)
@@ -171,6 +171,10 @@ fn apply(
         AppInboxOperation::Failed { sequence, now_ms } => {
             app_inbox::failed_attempt_in(connection, sequence, now_ms)
                 .map(|state| AppInboxOutcome::Recorded(Some(state)))
+        }
+        AppInboxOperation::Undeliverable { sequence } => {
+            app_inbox::undeliverable_in(connection, sequence)
+                .map(|()| AppInboxOutcome::Recorded(Some(InboxState::Failed)))
         }
         AppInboxOperation::Postponed { sequence, until_ms } => {
             app_inbox::postpone_in(connection, sequence, until_ms)
