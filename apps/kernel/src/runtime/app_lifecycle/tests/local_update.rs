@@ -219,7 +219,12 @@ fn an_update_with_a_newer_data_schema_migrates_before_it_commits() {
     let status = store
         .first_app_install_status("alice", "migrating_update")
         .unwrap();
-    assert_eq!(status.phase, InstallPhase::Committed, "{:?}", status.failure);
+    assert_eq!(
+        status.phase,
+        InstallPhase::Committed,
+        "{:?}",
+        status.failure
+    );
     wait(|| {
         control
             .active_app_lease("alice", &id)
@@ -270,4 +275,129 @@ fn a_failed_migration_keeps_the_old_generation_and_restores_its_data() {
     assert_eq!(state_value(&store, "migrated"), None);
     control.lifecycle().shutdown_blocking().unwrap();
     assert!(all_reaped(&observations));
+}
+
+/// A kernel stop right after the update quiesced: the durable operation holds
+/// admission paused and a migration begun, and no worker runs. Returns the
+/// reopened store and a restarted lifecycle driven only by recovery.
+fn crash_after_quiesce(
+    scratch: &Scratch,
+    runtime: &tokio::runtime::Runtime,
+    request: &str,
+    fail_migration: bool,
+) -> (
+    DurableKernelStateStore,
+    AppControlService,
+    Arc<Mutex<Vec<Observation>>>,
+    String,
+    InstallOperation,
+) {
+    let store = scratch.store();
+    let (control, observations, id) = installed(&store, runtime);
+    let update = stage_update(&store, &id, request, "2.0.0", 1);
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+    store
+        .claim_first_app_install(
+            "alice",
+            request,
+            &format!("{:032x}", 7u128),
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    let paused = store.get_app_installation("alice", &id).unwrap();
+    assert_eq!(paused.pending_generation, Some(update.token.generation));
+    assert!(paused.admission_paused);
+    drop(control);
+    drop(store);
+
+    let store = scratch.store();
+    let (control, restarted) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    control
+        .lifecycle()
+        .0
+        .fixture
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .fail_migration = fail_migration;
+    wait(|| {
+        control
+            .lifecycle()
+            .schedule_recovery(runtime.handle().clone());
+        let status = store.first_app_install_status("alice", request).unwrap();
+        matches!(status.phase, InstallPhase::Committed | InstallPhase::Failed)
+    });
+    (store, control, restarted, id, update)
+}
+
+#[test]
+fn an_update_interrupted_after_quiesce_finishes_on_restart() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let (store, control, observations, id, update) =
+        crash_after_quiesce(&scratch, &runtime, "interrupted_update", false);
+    let status = store
+        .first_app_install_status("alice", "interrupted_update")
+        .unwrap();
+    assert_eq!(
+        status.phase,
+        InstallPhase::Committed,
+        "{:?}",
+        status.failure
+    );
+    wait(|| {
+        control
+            .active_app_lease("alice", &id)
+            .is_some_and(|lease| lease.catalog().generation() == update.token.generation)
+    });
+    let installation = store.get_app_installation("alice", &id).unwrap();
+    assert_eq!(installation.pending_generation, None);
+    assert!(!installation.admission_paused);
+    assert_eq!(installation.active.unwrap().release.schema_version, 1);
+    assert_eq!(state_value(&store, "migrated").as_deref(), Some("true"));
+    control.lifecycle().stop_blocking("alice", &id).unwrap();
+    assert!(all_reaped(&observations));
+    control.lifecycle().shutdown_blocking().unwrap();
+}
+
+#[test]
+fn an_update_interrupted_after_quiesce_that_fails_on_restart_keeps_the_old_generation() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let (store, control, observations, id, _) =
+        crash_after_quiesce(&scratch, &runtime, "interrupted_failure", true);
+    let status = store
+        .first_app_install_status("alice", "interrupted_failure")
+        .unwrap();
+    assert_eq!(status.phase, InstallPhase::Failed);
+    let installation = store.get_app_installation("alice", &id).unwrap();
+    assert_eq!(installation.generation, 1);
+    assert_eq!(installation.pending_generation, None);
+    assert!(!installation.admission_paused);
+    assert_eq!(installation.active.unwrap().release.schema_version, 0);
+    assert_eq!(state_value(&store, "migrated"), None);
+    // The old generation is usable again after the failed recovery.
+    control
+        .lifecycle()
+        .0
+        .fixture
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .fail_migration = false;
+    control
+        .lifecycle()
+        .start_on_demand_blocking("alice", &id, runtime.handle().clone())
+        .unwrap();
+    wait(|| {
+        control
+            .active_app_lease("alice", &id)
+            .is_some_and(|lease| lease.catalog().generation() == 1)
+    });
+    control.lifecycle().stop_blocking("alice", &id).unwrap();
+    assert!(all_reaped(&observations));
+    control.lifecycle().shutdown_blocking().unwrap();
 }
