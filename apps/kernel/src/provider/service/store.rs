@@ -217,6 +217,29 @@ impl ProviderProcessServiceStore {
         }
     }
 
+    /// Runs a synchronous admission commit only while the shared managed-kernel
+    /// gate is open. `None` means the gate is fenced or could not be restored;
+    /// callers can leave durable queued work pending and retry after release.
+    pub(crate) fn with_managed_admission_if_open<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, DaemonError>,
+    ) -> Result<Option<T>, DaemonError> {
+        let gate = self
+            .managed_admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match gate {
+            Some(gate) => {
+                let Ok(_admission) = gate.admission_guard() else {
+                    return Ok(None);
+                };
+                action().map(Some)
+            }
+            None => action().map(Some),
+        }
+    }
+
     pub fn read(&self) -> MutexGuard<'_, ProviderProcessService> {
         self.inner.lock().expect("provider service mutex poisoned")
     }

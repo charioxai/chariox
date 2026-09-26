@@ -77,11 +77,22 @@ impl<'a> KernelAgentService<'a> {
             if self.app.providers.get_run(&provider_run_id)?.state() == ProviderRunState::Starting {
                 return Ok(None);
             }
-            let (_session, next_candidate) = match self.activate_next_queued_prompt_for_mirror(
-                session_id,
-                &target_agent_id,
-                expected_next,
-            ) {
+            // Provider readiness may synchronously re-enter this queue path, so keep it
+            // outside the admission guard. Activation is the app-side admission commit:
+            // it is atomic with the shared durable fence, and any later reservation sees
+            // this prompt as activity. Release the guard before dispatch, whose output
+            // pump may perform provider control or settle older work.
+            let providers = self.app.providers.clone();
+            let Some(activation) = providers.with_managed_admission_if_open(|| {
+                self.activate_next_queued_prompt_for_mirror(
+                    session_id,
+                    &target_agent_id,
+                    expected_next,
+                )
+            })? else {
+                return Ok(None);
+            };
+            let (_session, next_candidate) = match activation {
                 Ok(activated) => activated,
                 Err(error) => {
                     // A replacement workflow provider can synchronously finish its launch
@@ -333,3 +344,7 @@ impl<'a> KernelAgentService<'a> {
         Ok((session, next))
     }
 }
+
+#[cfg(test)]
+#[path = "queue_quiescence_tests.rs"]
+mod quiescence_tests;
