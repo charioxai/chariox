@@ -561,8 +561,22 @@ parity defect.
 ### One Room environment
 
 A Room owns one shared browser and computer environment unless the user
-explicitly creates another environment. All Room users and agents may inspect
-and act in it according to kernel-owned permissions and interaction policy.
+explicitly creates another environment. Room membership implicitly grants its
+users and agents access to that shared browser and computer; there is no
+separate per-agent Browser or Computer capability grant. The home kernel still
+checks Room membership and authenticates a remote agent's active lease. Input
+ownership orders conflicting Actions, and vault-backed secrets keep their
+separate authorization rules.
+The home kernel is the kernel where the Room was created. It keeps Room and
+Environment authority regardless of where the browser or any agent executes.
+The physical Environment may run in a headed slice on the home machine or on
+another worker. Agents may run on the home kernel, in that slice, in a different
+slice, or on a remote worker kernel. Placement must not create another browser
+profile, Tab registry, or Room authority. A remote agent forwards its Browser
+and Computer requests to the home kernel, which admits and routes each Action
+to the Room's Environment host. A kernel that does not own the Room cannot
+access the Environment merely because it can reach the relay; the agent must
+belong to the Room through a valid home-owned lease.
 
 The environment contains:
 
@@ -1368,6 +1382,32 @@ third-party agent runtimes.
 | Client resizes | canonical viewport ownership prevents resize fights |
 | Permission prompt | one kernel interaction projected to every Chariox terminal |
 
+### Agent and Environment placement
+
+Exercise the public kernel-owned Browser and Computer tool path from an agent
+in the Room, then confirm in Web View that the Action changed the same
+Environment and stable Tab identity. Run the local rows with isolated local
+kernels and slices before the hosted rows. A same-worker pass does not stand in
+for a cross-worker pass. The browser remains in its Room-owned headed
+Environment even when an agent executes in another slice.
+
+| Environment placement | Agent placement | Required proof |
+| --- | --- | --- |
+| Home-machine headed slice | Home kernel | One browser and Computer view, no agent-owned duplicate |
+| Home-machine headed slice | Different slice | Agent tools reach the home Room's Environment without entering the browser slice's files or processes |
+| Home-machine headed slice | Remote worker kernel | Leased agent tools reach the same Tab and display through home admission and relay routing |
+| Remote headed slice | Home kernel | Home agent reaches the remote browser and Web View observes the same Tab |
+| Remote headed slice | Environment's worker | Same-worker agent still passes through home admission and has no parallel Room authority |
+| Remote headed slice | Different slice or remote worker | Cross-worker agent reaches the bound Environment and cannot substitute its own browser |
+
+For every row, verify Action attribution, input ownership and takeover,
+read/write ordering, reconnect without a second provider run, and denial of a
+foreign Room or forged lease. An agent in the Room must not need a separate
+Browser or Computer grant. A browser-only tool pass does not prove Computer
+display/input or Web View parity. Repeat the remote rows against a fresh
+managed Path-1 machine during hosted acceptance; local simulated relays are
+source/local evidence only.
+
 ### Security and isolation
 
 | Case | Required proof |
@@ -1383,7 +1423,7 @@ third-party agent runtimes.
 | Cloud inspection | Cloud remains bootstrap/control plane, not runtime proxy |
 | Cross-tenant concurrent use | no tab, stream, event, screenshot, or secret leakage |
 | Malicious page | pointer overlay, tool references, downloads, and clipboard remain bounded |
-| Capability grants | agent receives only granted browser, computer, vault, and file tools |
+| Room access and capability grants | Room agents receive Browser and Computer tools by membership; a foreign Room is denied; vault and file tools retain their separate grants |
 
 ### Resiliency and failure injection
 
