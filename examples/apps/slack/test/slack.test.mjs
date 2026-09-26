@@ -116,9 +116,16 @@ test('a reply goes back through the notification\'s own connection and context',
   assert.deepEqual(kernel.actions, [
     { connectionId: 'connection-1', action: 'notification.reply', input: { text: 'Deploying now', mode: 'thread' },
       context: mention('').reply_context },
-    { connectionId: 'connection-1', action: 'slack.reaction.add', input: { name: 'eyes' }, context: mention('').reply_context,
-      idempotencyKey: 'react:Ev1:eyes' },
+    { connectionId: 'connection-1', action: 'slack.reaction.add', input: { name: 'eyes' }, context: mention('').reply_context },
   ]);
+  // Without a request_id each call acts; a retry with one reuses its key.
+  kernel.actions.length = 0;
+  await kernel.tools.get('reply')({ id: 'Ev1', text: 'Again' });
+  await kernel.tools.get('reply')({ id: 'Ev1', text: 'Again', request_id: 'r1' });
+  await kernel.tools.get('reply')({ id: 'Ev1', text: 'Again', request_id: 'r1' });
+  await kernel.tools.get('react')({ id: 'Ev1', name: 'eyes', request_id: 'r2' });
+  assert.deepEqual(kernel.actions.map(action => action.idempotencyKey), [undefined, 'reply:r1', 'reply:r1', 'react:r2']);
+  await assert.rejects(kernel.tools.get('reply')({ id: 'Ev1', text: '   ' }), { code: 'INVALID_ARGUMENT' });
   await assert.rejects(kernel.tools.get('reply')({ id: 'missing', text: 'x' }), { code: 'NOT_FOUND' });
   await kernel.deliver('mentioned', 'Ev9', { ...mention('no context'), reply_context: null });
   await assert.rejects(kernel.tools.get('reply')({ id: 'Ev9', text: 'x' }), { code: 'INVALID_ARGUMENT' });

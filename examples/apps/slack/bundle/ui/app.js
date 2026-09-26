@@ -38,6 +38,8 @@ function replyForm(notification) {
   input.required = true
   input.maxLength = 4000
   input.placeholder = "Reply in thread"
+  // Editing the text makes it a new reply.
+  input.addEventListener("input", () => { delete form.dataset.requestId })
   input.setAttribute("aria-label", `Reply to ${LABELS[notification.kind] ?? "notification"} from ${notification.user || "Slack"}`)
   const send = document.createElement("button")
   send.type = "submit"
@@ -46,8 +48,16 @@ function replyForm(notification) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault()
     send.disabled = true
+    // One id per submitted reply: resending after an unclear failure posts
+    // it at most once.
+    const requestId = form.dataset.requestId ??= crypto.randomUUID()
     try {
-      await window.chariox.call("reply", { id: notification.id, text: input.value })
+      const { posted } = await window.chariox.call("reply", { id: notification.id, text: input.value, request_id: requestId })
+      if (!posted) {
+        say("Slack did not accept the reply.", true)
+        return
+      }
+      delete form.dataset.requestId
       input.value = ""
       say("Replied in Slack.")
     } catch (error) {
@@ -64,7 +74,10 @@ async function refresh() {
     const kind = $("kind").value
     const { notifications } = await window.chariox.call("list_notifications", kind ? { kind, limit: 50 } : { limit: 50 })
     const next = JSON.stringify(notifications)
-    if (next !== shown) {
+    // Never rebuild the list under a reply being written.
+    const drafting = [...list.querySelectorAll(".reply input")]
+      .some((input) => input.value || input === document.activeElement)
+    if (next !== shown && !drafting) {
       shown = next
       list.replaceChildren(...notifications.map(item))
     }

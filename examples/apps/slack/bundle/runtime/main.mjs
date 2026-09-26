@@ -156,27 +156,31 @@ export default function register(chariox) {
     return item;
   }
 
-  // Each reply is a new Slack message, so it carries no idempotency key.
-  chariox.tools.register('reply', async ({ id, text, mode = 'thread' }) => {
+  // Without a request_id every call acts; with one, a retry of the same
+  // request acts at most once (the generator keeps the first outcome).
+  const key = (tool, requestId) => (requestId ? { idempotencyKey: `${tool}:${requestId}` } : {});
+
+  chariox.tools.register('reply', async ({ id, text, mode = 'thread', request_id: requestId }) => {
+    if (!text.trim()) throw fail('INVALID_ARGUMENT', 'A reply needs some text');
     const item = await target(id);
     const { accepted, result } = await chariox.connections.action({
       connectionId: item.connection_id,
       action: 'notification.reply',
       input: { text, mode },
       context: item.reply_context,
+      ...key('reply', requestId),
     });
     return { posted: accepted, message_ts: result?.message_ts ?? null };
   });
 
-  chariox.tools.register('react', async ({ id, name }) => {
+  chariox.tools.register('react', async ({ id, name, request_id: requestId }) => {
     const item = await target(id);
     const { accepted } = await chariox.connections.action({
       connectionId: item.connection_id,
       action: 'slack.reaction.add',
       input: { name },
       context: item.reply_context,
-      // One reaction per notification and name: repeating it is not a new one.
-      idempotencyKey: `react:${id}:${name}`,
+      ...key('react', requestId),
     });
     return { reacted: accepted };
   });
