@@ -372,6 +372,17 @@ impl MountedStorage {
         Ok(())
     }
 
+    pub(super) fn has_snapshot(&self, generation: u64) -> Result<bool> {
+        match self
+            .root
+            .read_file(OsStr::new(&snapshot_name(generation)), false)
+        {
+            Ok(_) => Ok(true),
+            Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Rolling back to the committed `generation` after its successor failed:
     /// that generation's snapshot replaces the data image, so files written by
     /// the uncommitted successor are discarded along with its state.

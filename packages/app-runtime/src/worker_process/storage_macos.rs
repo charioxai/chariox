@@ -86,19 +86,32 @@ enum SnapshotStep {
     Take,
     Keep,
     Restore,
+    RestoreAndTake,
     Discard,
 }
 
 /// What `generation` starting on data `previous` last used does with the
-/// committed generation's snapshot: a staged generation takes it while the
-/// data is still the committed one's and otherwise keeps it; the committed
-/// generation restores it after an uncommitted one ran, else drops it.
-fn snapshot_step(previous: u64, generation: u64, committed: u64) -> SnapshotStep {
-    match (generation == committed, previous) {
-        (false, previous) if previous == committed => SnapshotStep::Take,
-        (false, _) => SnapshotStep::Keep,
-        (true, previous) if previous > committed => SnapshotStep::Restore,
-        (true, _) => SnapshotStep::Discard,
+/// committed generation's snapshot (`kept`: it exists). A staged generation
+/// starts on committed data: it takes the snapshot while the data is still the
+/// committed one's, keeps its own writes when it retries, and restores the
+/// snapshot (then takes it again) after another uncommitted generation, so no
+/// failed update's writes survive. The committed generation restores it after
+/// an uncommitted one ran, else drops it.
+fn snapshot_step(previous: u64, generation: u64, committed: u64, kept: bool) -> SnapshotStep {
+    if generation == committed {
+        return if previous > committed {
+            SnapshotStep::Restore
+        } else {
+            SnapshotStep::Discard
+        };
+    }
+    if previous == committed {
+        SnapshotStep::Take
+    } else if previous != generation && kept {
+        SnapshotStep::RestoreAndTake
+    } else {
+        // A retry, or storage staged before snapshots existed.
+        SnapshotStep::Keep
     }
 }
 
@@ -261,16 +274,22 @@ impl StorageRoot {
         // Recovery always detaches any prior mapping first. Reusing a remembered
         // /dev identifier or an existing mount without rediscovery is forbidden.
         storage.release_blocking()?;
-        // File-image snapshot of the committed generation's data. A staged
-        // update takes it while the data is still the committed generation's,
-        // and keeps it across further failed updates; the committed generation
-        // starting after an uncommitted one restores it; a committed start on
-        // its own data drops it.
-        match snapshot_step(storage.journal.generation, generation, committed) {
+        // File-image snapshot of the committed generation's data (see
+        // `snapshot_step`).
+        let kept = storage.has_snapshot(committed)?;
+        match snapshot_step(storage.journal.generation, generation, committed, kept) {
             SnapshotStep::Take => storage.snapshot_data(committed)?,
             // Without a snapshot (storage staged before snapshots existed) the
             // data stays as the uncommitted generation left it.
             SnapshotStep::Restore => storage.restore_data(committed)?,
+            SnapshotStep::RestoreAndTake => {
+                // Committed data again before the new clone, so a crash
+                // between the two takes it afresh.
+                storage.restore_data(committed)?;
+                storage.journal.generation = committed;
+                storage.journal.save(&storage.root)?;
+                storage.snapshot_data(committed)?;
+            }
             SnapshotStep::Discard => storage.discard_snapshots()?,
             SnapshotStep::Keep => {}
         }

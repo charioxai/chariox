@@ -231,10 +231,12 @@ fn hosted_storage_failed_updates_roll_back_to_the_committed_snapshot() {
     let mut storage = start(5, 5);
     save(&storage.paths()[0].join("todos"), b"committed by 5");
     storage.release_blocking().unwrap();
-    // Two failed updates in a row: 6, then 7 staged on the data 6 left.
+    // Two failed updates in a row: each starts on 5's data, not on 6's.
     for generation in [6, 7] {
         let mut storage = start(generation, 5);
         let data = &storage.paths()[0];
+        assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed by 5");
+        assert!(!data.join("only-6").exists());
         save(
             &data.join("todos"),
             format!("written by {generation}").as_bytes(),
@@ -243,6 +245,13 @@ fn hosted_storage_failed_updates_roll_back_to_the_committed_snapshot() {
         assert_eq!(snapshots(&storage), 1, "the committed snapshot is kept");
         storage.release_blocking().unwrap();
     }
+    // 7 retrying keeps its own writes.
+    let mut storage = start(7, 5);
+    assert_eq!(
+        fs::read(storage.paths()[0].join("todos")).unwrap(),
+        b"written by 7"
+    );
+    storage.release_blocking().unwrap();
     // 5 starts again on its own data; nothing 6 or 7 wrote survives.
     let mut storage = start(5, 5);
     let data = &storage.paths()[0];
