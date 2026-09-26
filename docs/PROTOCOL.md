@@ -1882,10 +1882,14 @@ Workflow trigger and deployment direction:
   a file an App offered with `files.export`. The offer is shown to the owner
   as a kernel prompt with subject `file_export:<operation>` and a Decline
   choice. The reply is `AppFileExport {operation_id, name, contents_base64}`,
-  released to the owner only. The owner may take it again until the offer
-  expires, so a failed or cancelled local save can be retried. The terminal chooses where to save it (a
-  browser download, or `/app file save OPERATION "PATH"`, which never
-  overwrites a file).
+  released to the owner only. The prompt closes after the first save, but the
+  owner may take the offer again until it ends, so a failed or cancelled local
+  save can be retried: a client keeps `operation_id` and tells the owner how
+  (both terminals show `/app file save OPERATION`). An offer ends when it
+  expires or when the App that made it is updated or uninstalled. The name is
+  a final name component with no control or invisible format characters. The
+  terminal chooses where to save it (a browser download, or
+  `/app file save OPERATION "PATH"`, which never overwrites a file).
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

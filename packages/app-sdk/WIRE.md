@@ -185,8 +185,10 @@ name}`, where `name` is the file name the owner chose. The SDK's
 most 512 KiB. It follows no links. The kernel offers it to the owner in the
 same kind of trusted prompt, and the reply is `{operationId}` at once. The
 owner saves it from their terminal, which chooses the location, or declines.
-The owner can take an offer again until it expires, which is 10 minutes after
-the App made it or when the App updates.
+The owner can take an offer again until it ends: 10 minutes after the App made
+it, or when the App is updated or uninstalled. A file name with control or
+invisible format characters (such as bidi overrides) is refused with
+`INVALID_ARGUMENT`.
 
 `validation.request`, `host.pick_file` and `outputs.request` return durable pending references when
 waiting for human input or model output. They must not retain a worker request
