@@ -12,6 +12,8 @@ pub(crate) mod app_file_grant_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_files_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_snapshot_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_log_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_broker;
