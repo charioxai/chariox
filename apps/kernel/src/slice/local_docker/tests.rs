@@ -1829,6 +1829,10 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
   case "$*" in
     *relay-peer-protocol-version*) printf '%s\n' "$EXPECTED_PROTOCOL" ;;
     *runtime-source-revision*) printf '%s\n' "$EXPECTED_REVISION" ;;
+    *io.chariox.selkies-version*runtime-image*) printf '0.0.0.dev0\n' ;;
+    *io.chariox.selkies-source-revision*runtime-image*) printf '%s\n' "$EXPECTED_SELKIES_REVISION" ;;
+    *io.chariox.selkies-source*runtime-image*) printf 'https://github.com/selkies-project/selkies/commit/%s\n' "$EXPECTED_SELKIES_REVISION" ;;
+    *io.chariox.selkies-license*runtime-image*) printf '%s\n' "$EXPECTED_SELKIES_LICENSE" ;;
     *'{{.Id}}'*) printf 'sha256:backup-image\n' ;;
   esac
   exit 0
@@ -1901,6 +1905,19 @@ exit 0
     }
     let path = std::env::join_paths(paths).expect("fake Docker PATH should join");
     let revision = format!("sha256:{}", "a".repeat(64));
+    let selkies_lock: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/selkies.lock.json"),
+        )
+        .expect("Selkies lock should be readable"),
+    )
+    .expect("Selkies lock should be valid JSON");
+    let selkies_revision = selkies_lock["selkies"]["revision"]
+        .as_str()
+        .expect("Selkies lock should include its pinned revision");
+    let selkies_license = selkies_lock["selkies"]["license"]
+        .as_str()
+        .expect("Selkies lock should include its license");
     let output = Command::new("bash")
         .arg(script)
         .arg("restore-state")
@@ -1915,6 +1932,8 @@ exit 0
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION.to_string(),
         )
         .env("EXPECTED_REVISION", &revision)
+        .env("EXPECTED_SELKIES_REVISION", selkies_revision)
+        .env("EXPECTED_SELKIES_LICENSE", selkies_license)
         .env("CHARIOX_SLICE_BUILD_CONTEXT_DIGEST", &revision)
         .env("CHARIOX_SLICE_NAME", "saved-slice")
         .env("CHARIOX_SLICE_HOME_VOLUME", "saved-slice-home")
@@ -1945,6 +1964,23 @@ exit 0
     let remove_volume = position("volume rm saved-slice-home");
     let create_volume = position("volume create saved-slice-home");
     let create_container = position("create --name saved-slice ");
+    for label in [
+        "io.chariox.selkies-version",
+        "io.chariox.selkies-source-revision",
+        "io.chariox.selkies-source",
+        "io.chariox.selkies-license",
+    ] {
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.contains(label) && call.ends_with(" backup-image")),
+            "restore must inspect the saved image's {label} capability label: {calls:?}"
+        );
+    }
+    assert!(
+        calls[create_container].ends_with(" runtime-image"),
+        "restore must reject the saved image's missing Selkies labels and use the authoritative runtime image: {calls:?}"
+    );
     let start_container = calls
         .iter()
         .position(|call| *call == "start saved-slice")
