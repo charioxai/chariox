@@ -121,6 +121,8 @@ pub struct InboxItem {
     pub occurrence_id: String,
     pub payload: Value,
     pub attempts: u32,
+    /// The generation whose incoming schema admitted the payload.
+    pub accepted_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,13 +135,12 @@ pub enum Accepted {
 pub fn initialize(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_inbox_routes (
-            route_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, installation_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL, installation_id TEXT NOT NULL, route_id TEXT NOT NULL,
             event_name TEXT NOT NULL, source_event_type TEXT NOT NULL,
             source_event_version INTEGER NOT NULL CHECK(source_event_version>0),
-            active INTEGER NOT NULL CHECK(active IN (0,1)), created_at_ms INTEGER NOT NULL
+            active INTEGER NOT NULL CHECK(active IN (0,1)), created_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(owner_id,installation_id,route_id)
          );
-         CREATE INDEX IF NOT EXISTS app_inbox_routes_installation
-            ON app_inbox_routes(owner_id,installation_id);
          CREATE TABLE IF NOT EXISTS app_inbox (
             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
             owner_id TEXT NOT NULL, installation_id TEXT NOT NULL, route_id TEXT NOT NULL,
@@ -149,7 +150,7 @@ pub fn initialize(connection: &Connection) -> Result<()> {
             state TEXT NOT NULL CHECK(state IN ('accepted','retryable','delivered','failed','expired')),
             attempts INTEGER NOT NULL CHECK(attempts>=0 AND attempts<=8),
             next_attempt_at_ms INTEGER NOT NULL,
-            UNIQUE(route_id,occurrence_id)
+            UNIQUE(owner_id,installation_id,route_id,occurrence_id)
          );
          CREATE INDEX IF NOT EXISTS app_inbox_due ON app_inbox(state,next_attempt_at_ms,sequence);",
     )?;
@@ -210,15 +211,25 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     Ok(())
 }
 
-/// Removing a route keeps its accepted occurrences; they settle as usual.
-pub fn remove_route_in(tx: &Connection, owner_id: &str, route_id: &str) -> Result<()> {
+/// Removing a route also drops its occurrences, delivered or not: a route
+/// created again under the same name starts empty.
+pub fn remove_route_in(
+    tx: &Connection,
+    owner_id: &str,
+    installation_id: &str,
+    route_id: &str,
+) -> Result<()> {
     let removed = tx.execute(
-        "DELETE FROM app_inbox_routes WHERE route_id=?1 AND owner_id=?2",
-        params![route_id, owner_id],
+        "DELETE FROM app_inbox_routes WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3",
+        params![owner_id, installation_id, route_id],
     )?;
     if removed == 0 {
         return Err(InboxError::NotFound);
     }
+    tx.execute(
+        "DELETE FROM app_inbox WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3",
+        params![owner_id, installation_id, route_id],
+    )?;
     Ok(())
 }
 
@@ -236,11 +247,19 @@ fn route_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxRoute> {
 const ROUTE_COLUMNS: &str = "route_id,owner_id,installation_id,event_name,source_event_type,\
     source_event_version,active";
 
-pub fn route(connection: &Connection, route_id: &str) -> Result<Option<InboxRoute>> {
+pub fn route(
+    connection: &Connection,
+    owner_id: &str,
+    installation_id: &str,
+    route_id: &str,
+) -> Result<Option<InboxRoute>> {
     Ok(connection
         .query_row(
-            &format!("SELECT {ROUTE_COLUMNS} FROM app_inbox_routes WHERE route_id=?1"),
-            [route_id],
+            &format!(
+                "SELECT {ROUTE_COLUMNS} FROM app_inbox_routes
+                 WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3"
+            ),
+            params![owner_id, installation_id, route_id],
             route_row,
         )
         .optional()?)
@@ -283,8 +302,14 @@ pub fn accept_in(
     let content_digest = format!("sha256:{:x}", Sha256::digest(&canonical));
     let existing: Option<(i64, String)> = tx
         .query_row(
-            "SELECT sequence,content_digest FROM app_inbox WHERE route_id=?1 AND occurrence_id=?2",
-            params![route.route_id, occurrence_id],
+            "SELECT sequence,content_digest FROM app_inbox WHERE owner_id=?1 AND installation_id=?2
+             AND route_id=?3 AND occurrence_id=?4",
+            params![
+                route.owner_id,
+                route.installation_id,
+                route.route_id,
+                occurrence_id
+            ],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
@@ -335,7 +360,7 @@ pub fn due(tx: &Connection, now_ms: u64, limit: usize) -> Result<Vec<InboxItem>>
     )?;
     let mut statement = tx.prepare(
         "SELECT sequence,owner_id,installation_id,route_id,event_name,occurrence_id,
-            payload_json,attempts
+            payload_json,attempts,accepted_generation
          FROM app_inbox WHERE state IN ('accepted','retryable') AND next_attempt_at_ms<=?1
          ORDER BY sequence LIMIT ?2",
     )?;
@@ -349,6 +374,7 @@ pub fn due(tx: &Connection, now_ms: u64, limit: usize) -> Result<Vec<InboxItem>>
             row.get::<_, String>(5)?,
             row.get::<_, Option<String>>(6)?,
             row.get::<_, u32>(7)?,
+            row.get::<_, i64>(8)? as u64,
         ))
     })?;
     rows.map(|row| {
@@ -361,6 +387,7 @@ pub fn due(tx: &Connection, now_ms: u64, limit: usize) -> Result<Vec<InboxItem>>
             occurrence_id,
             payload,
             attempts,
+            accepted_generation,
         ) = row?;
         let payload = serde_json::from_str(&payload.ok_or(InboxError::Corrupt)?)
             .map_err(|_| InboxError::Corrupt)?;
@@ -373,6 +400,7 @@ pub fn due(tx: &Connection, now_ms: u64, limit: usize) -> Result<Vec<InboxItem>>
             occurrence_id,
             payload,
             attempts,
+            accepted_generation,
         })
     })
     .collect()
@@ -424,6 +452,17 @@ pub fn failed_attempt_in(tx: &Connection, sequence: i64, now_ms: u64) -> Result<
     Ok(InboxState::Retryable)
 }
 
+/// An occurrence that can no longer be delivered as accepted (an update
+/// removed its event or changed its schema) fails at once, visibly.
+pub fn undeliverable_in(tx: &Connection, sequence: i64) -> Result<()> {
+    pending_update(
+        tx,
+        "UPDATE app_inbox SET state='failed',payload_json=NULL
+         WHERE sequence=?1 AND state IN ('accepted','retryable')",
+        params![sequence],
+    )
+}
+
 /// Wait without spending an attempt (the App is starting or updating).
 pub fn postpone_in(tx: &Connection, sequence: i64, until_ms: u64) -> Result<()> {
     pending_update(
@@ -446,16 +485,6 @@ pub fn state(connection: &Connection, sequence: i64) -> Result<InboxState> {
     InboxState::parse(&value)
 }
 
-/// Whether an installation has occurrences waiting, so it is not idled.
-pub fn has_pending(connection: &Connection, owner_id: &str, installation_id: &str) -> Result<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM app_inbox WHERE owner_id=?1 AND installation_id=?2
-         AND state IN ('accepted','retryable'))",
-        params![owner_id, installation_id],
-        |row| row.get(0),
-    )?)
-}
-
 /// Occurrence outcomes of one route, so poison and expiry stay visible.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InboxCounts {
@@ -465,13 +494,16 @@ pub struct InboxCounts {
     pub expired: u64,
 }
 
-pub fn counts(connection: &Connection, route_id: &str) -> Result<InboxCounts> {
-    let mut statement = connection
-        .prepare("SELECT state,count(*) FROM app_inbox WHERE route_id=?1 GROUP BY state")?;
+pub fn counts(connection: &Connection, route: &InboxRoute) -> Result<InboxCounts> {
+    let mut statement = connection.prepare(
+        "SELECT state,count(*) FROM app_inbox WHERE owner_id=?1 AND installation_id=?2
+         AND route_id=?3 GROUP BY state",
+    )?;
     let mut counts = InboxCounts::default();
-    for row in statement.query_map([route_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
-    })? {
+    for row in statement.query_map(
+        params![route.owner_id, route.installation_id, route.route_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)),
+    )? {
         let (state, count) = row?;
         match InboxState::parse(&state)? {
             InboxState::Accepted | InboxState::Retryable => counts.pending += count,
