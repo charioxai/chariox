@@ -364,6 +364,7 @@ function validateAfter(after, reviewed, before, rebuild) {
   }
   const newServices = identity.serviceInstances.map((item, index) => identityPair(item, `after service ${index}`, ["unit", "invocationId"]))
   uniqueStrings(newServices.map(({ unit }) => unit), "after service units")
+  uniqueStrings(newServices.map(({ invocationId }) => invocationId), "after service invocation ids")
   if (!newServices.some(({ unit }) => unit === "chariox-path1-managed-bootstrap.service")
     || newServices.some(({ unit }) => unit === "chariox-managed-bootstrap.service"
       || unit === "chariox-disposable-worker-bootstrap.service")) {
