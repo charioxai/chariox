@@ -178,6 +178,20 @@ fn settled_occurrences_are_pruned_after_the_dedupe_window() {
             ..Default::default()
         }
     );
+    // An installation that accepts nothing more is pruned by the delivery pass.
+    let idle = InboxRoute {
+        installation_id: "idle".into(),
+        ..route.clone()
+    };
+    let Accepted::New(settled) =
+        app_inbox::accept_in(&db, &idle, "occ-idle", &json!({"text":"c"}), 3, past).unwrap()
+    else {
+        panic!("first acceptance must be new");
+    };
+    app_inbox::delivered_in(&db, settled, 3).unwrap();
+    assert_eq!(app_inbox::counts(&db, &idle).unwrap().delivered, 1);
+    app_inbox::due(&db, past + app_inbox::DEDUPE_WINDOW_MS, 10).unwrap();
+    assert_eq!(app_inbox::counts(&db, &idle).unwrap().delivered, 0);
 }
 
 #[test]

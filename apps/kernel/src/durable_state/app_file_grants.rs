@@ -13,9 +13,10 @@ pub(crate) const GRANT_MS: u64 = 30 * 60 * 1000;
 /// The same bound as one private-file replacement.
 pub(crate) const MAX_FILE_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_FILES: usize = 8;
-/// All files of one answer together: one local request frame is 1 MiB, and
-/// base64 grows the bytes by a third.
-pub(crate) const MAX_TOTAL_BYTES: usize = 640 * 1024;
+/// All files of one answer together. The answer is sent as base64 (a third
+/// larger) and must fit the smallest transport: a relayed request's 768 KiB of
+/// ciphertext, not only the 1 MiB local frame.
+pub(crate) const MAX_TOTAL_BYTES: usize = 512 * 1024;
 const MAX_NAME_BYTES: usize = 255;
 /// Unfinished picks per installation.
 const MAX_OPEN: i64 = 4;

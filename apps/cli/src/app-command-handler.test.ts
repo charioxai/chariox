@@ -63,6 +63,7 @@ test("/app file save writes an offered file to a new path and never replaces one
   const { join } = await import("node:path")
   const { tmpdir } = await import("node:os")
   const dir = await mkdtemp(join(tmpdir(), "chariox-save-"))
+  const notices: string[] = []
   try {
     const deps = {
       currentAppSessionId: () => "session-1",
@@ -70,12 +71,14 @@ test("/app file save writes an offered file to a new path and never replaces one
         assert.deepEqual(request, { SaveAppFileExport: { session_id: "session-1", operation_id: "file-export-1" } })
         return { AppFileExport: { operation_id: "file-export-1", name: "plan.md", contents_base64: Buffer.from("# Plan").toString("base64") } }
       },
-      appendNotice: () => {},
+      appendNotice: (message: string) => notices.push(message),
       flashFooter: (message: string) => assert.fail(message),
     }
     const path = join(dir, "plan.md")
     await handleAppSlashCommand(deps, { kind: "app", raw: `/app file save file-export-1 "${path}"`, args: ["file", "save", "file-export-1", path] })
     assert.equal(await readFile(path, "utf8"), "# Plan")
+    // The prompt is gone, so the notice says how to save the offer again.
+    assert.match(notices[0] ?? "", /\/app file save file-export-1 "PATH"/)
     const existing = join(dir, "existing.md")
     await writeFile(existing, "keep")
     await assert.rejects(handleAppSlashCommand(deps, { kind: "app", raw: `/app file save file-export-1 "${existing}"`, args: ["file", "save", "file-export-1", existing] }))
