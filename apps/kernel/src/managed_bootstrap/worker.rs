@@ -528,7 +528,7 @@ fn spawn_kernel(
     }
     // `release` was verified during `prepare`; user profile data contributes
     // only the validated provider PATH to the kernel child.
-    let provider_path = super::provider_path::resolve_login_path(&config.process_home);
+    let provider_path = super::provider_path::resolve_worker_login_path(&config.process_home);
     let home_caller = serde_json::to_string(&receipt.home_caller.lease_binding())
         .map_err(|error| worker_error(format!("encode home caller: {error}")))?;
     let mut command = Command::new(&release.kernel_binary);
@@ -1279,9 +1279,16 @@ mod tests {
         );
         assert!(status.success(), "broker probe kernel failed: {status}");
         let broker_observed = fs::read_to_string(&marker).expect("broker probe environment");
-        assert!(broker_observed.contains(
-            "path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-        ));
+        assert!(broker_observed.contains(&format!(
+            "home={}\n",
+            config.process_home.display()
+        )));
+        assert!(config.process_home.is_absolute());
+        assert!(broker_observed.contains(&format!(
+            "path={}:{}\n",
+            config.process_home.join(".local/bin").display(),
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )));
         assert!(broker_observed.contains("broker_socket=<unset>\n"));
         let handed_off_fd = broker_observed
             .lines()

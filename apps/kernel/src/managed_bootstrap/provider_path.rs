@@ -27,20 +27,47 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Resolve the user's login PATH in a short-lived, isolated Bash process.
 /// Only the validated PATH string crosses back into the bootstrap process.
 pub(super) fn resolve_login_path(home: &Path) -> OsString {
+    resolve_login_path_with_fallback(home, false)
+}
+
+/// A disposable worker keeps its local provider tools available if its login
+/// profile cannot be probed, while still excluding every profile-supplied path.
+pub(super) fn resolve_worker_login_path(home: &Path) -> OsString {
+    resolve_login_path_with_fallback(home, true)
+}
+
+fn resolve_login_path_with_fallback(home: &Path, include_home_local_bin: bool) -> OsString {
     match probe_login_path(home) {
         Ok(path) => path,
         Err(reason) => {
+            let fallback_path = fallback_path(home, include_home_local_bin);
             crate::logging::warn_with_fields(
                 "managed_bootstrap.provider_path_probe_failed",
-                "managed provider login PATH probe failed; using the bootstrap PATH",
+                "managed provider login PATH probe failed; using a safe fallback PATH",
                 serde_json::json!({
                     "reason": reason,
-                    "fallback_path": BOOTSTRAP_PATH,
+                    "fallback_path": fallback_path.as_str(),
                 }),
             );
-            OsString::from(BOOTSTRAP_PATH)
+            OsString::from(fallback_path)
         }
     }
+}
+
+fn fallback_path(home: &Path, include_home_local_bin: bool) -> String {
+    if include_home_local_bin {
+        let local_bin = home.join(".local/bin");
+        if let Some(local_bin) = local_bin
+            .to_str()
+            .filter(|component| {
+                is_safe_path_component(component)
+                    && component.len() + 1 + BOOTSTRAP_PATH.len() <= MAX_PROVIDER_PATH_BYTES
+            })
+        {
+            return format!("{local_bin}:{BOOTSTRAP_PATH}");
+        }
+    }
+    BOOTSTRAP_PATH.to_string()
 }
 
 #[cfg(unix)]
@@ -170,16 +197,19 @@ fn parse_login_path(output: &[u8]) -> Result<String, &'static str> {
     let path = std::str::from_utf8(framed).map_err(|_| "login profile PATH is not UTF-8")?;
     let safe_components = path
         .split(':')
-        .filter(|component| {
-            !component.is_empty()
-                && Path::new(component).is_absolute()
-                && !component.bytes().any(|byte| byte.is_ascii_control())
-        })
+        .filter(|component| is_safe_path_component(component))
         .collect::<Vec<_>>();
     if safe_components.is_empty() {
         return Err("login profile returned no safe PATH entries");
     }
     Ok(safe_components.join(":"))
+}
+
+fn is_safe_path_component(component: &str) -> bool {
+    !component.is_empty()
+        && !component.contains(':')
+        && Path::new(component).is_absolute()
+        && !component.bytes().any(|byte| byte.is_ascii_control())
 }
 
 #[cfg(unix)]
@@ -292,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn login_path_probe_times_out_and_kills_background_stdout_writer() {
+    fn worker_login_path_probe_timeout_uses_home_bin_and_kills_background_stdout_writer() {
         let home = TestHome::new();
         fs::write(
             home.0.join(".profile"),
@@ -305,9 +335,10 @@ mod tests {
         )
         .expect("login profile should be written");
 
+        let expected_path = format!("{}:{BOOTSTRAP_PATH}", home.0.join(".local/bin").display());
         let started = Instant::now();
-        let path = resolve_login_path(&home.0);
-        assert_eq!(path, OsString::from(BOOTSTRAP_PATH));
+        let path = resolve_worker_login_path(&home.0);
+        assert_eq!(path, OsString::from(&expected_path));
         let elapsed = started.elapsed();
         assert!(elapsed >= PROBE_TIMEOUT);
         assert!(elapsed < PROBE_TIMEOUT + Duration::from_secs(3));
@@ -335,6 +366,25 @@ mod tests {
 
         let path = resolve_login_path(&home.0);
         assert_eq!(path, OsString::from(BOOTSTRAP_PATH));
+    }
+
+    #[test]
+    fn worker_fallback_only_adds_an_absolute_safe_home_bin() {
+        let home = Path::new("/srv/worker home");
+        assert_eq!(
+            fallback_path(home, true),
+            format!("{}:{BOOTSTRAP_PATH}", home.join(".local/bin").display())
+        );
+        assert_eq!(fallback_path(Path::new("relative/home"), true), BOOTSTRAP_PATH);
+        assert_eq!(
+            fallback_path(Path::new("/srv/worker:home"), true),
+            BOOTSTRAP_PATH
+        );
+        assert_eq!(
+            fallback_path(Path::new("/srv/worker\nhome"), true),
+            BOOTSTRAP_PATH
+        );
+        assert_eq!(fallback_path(home, false), BOOTSTRAP_PATH);
     }
 
     #[test]

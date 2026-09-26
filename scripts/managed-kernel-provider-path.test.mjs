@@ -57,7 +57,10 @@ test("Path-1 provider PATH is resolved after verification without importing prof
   const workerLaunchSource = workerSource.slice(workerLaunchStart, workerLaunchEnd)
   const verifiedPathLaunch = /release: &VerifiedRelease,[\s\S]*?resolve_login_path\(\s*&config\.process_home\s*,?\s*\)[\s\S]*?\.env\("PATH",\s*provider_path\)/
   assert.match(supervisorLaunchSource, verifiedPathLaunch)
-  assert.match(workerLaunchSource, verifiedPathLaunch)
+  assert.match(
+    workerLaunchSource,
+    /release: &VerifiedRelease,[\s\S]*?resolve_worker_login_path\(\s*&config\.process_home\s*,?\s*\)[\s\S]*?\.env\("PATH",\s*provider_path\)/,
+  )
   assert.ok(
     supervisorLaunchSource.indexOf("resolve_login_path") <
       supervisorLaunchSource.indexOf("prepare_kernel_local_auth_file(config)"),
@@ -69,7 +72,19 @@ test("Path-1 provider PATH is resolved after verification without importing prof
   )
   assert.match(
     providerPathSource,
-    /Err\(reason\) => \{\s*crate::logging::warn_with_fields\(\s*"managed_bootstrap\.provider_path_probe_failed"[\s\S]*?"fallback_path": BOOTSTRAP_PATH,[\s\S]*?OsString::from\(BOOTSTRAP_PATH\)/,
+    /pub\(super\) fn resolve_login_path\(home: &Path\) -> OsString \{\s*resolve_login_path_with_fallback\(home, false\)/,
+  )
+  assert.match(
+    providerPathSource,
+    /pub\(super\) fn resolve_worker_login_path\(home: &Path\) -> OsString \{\s*resolve_login_path_with_fallback\(home, true\)/,
+  )
+  assert.match(
+    providerPathSource,
+    /fn fallback_path\(home: &Path, include_home_local_bin: bool\)[\s\S]*?home\.join\("\.local\/bin"\)[\s\S]*?is_safe_path_component\(component\)[\s\S]*?format!\("\{local_bin\}:\{BOOTSTRAP_PATH\}"\)[\s\S]*?BOOTSTRAP_PATH\.to_string\(\)/,
+  )
+  assert.match(
+    providerPathSource,
+    /Err\(reason\) => \{\s*let fallback_path = fallback_path\(home, include_home_local_bin\);[\s\S]*?crate::logging::warn_with_fields\(\s*"managed_bootstrap\.provider_path_probe_failed"[\s\S]*?"fallback_path": fallback_path\.as_str\(\),[\s\S]*?OsString::from\(fallback_path\)/,
   )
 
   const fixtureHome = await mkdtemp(join(tmpdir(), "chariox-provider-path-security-"))
