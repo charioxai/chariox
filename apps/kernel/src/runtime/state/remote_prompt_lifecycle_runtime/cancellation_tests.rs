@@ -466,6 +466,18 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("home attachment should be created");
+    app.provider_account_profile_registry()
+        .update_observation(
+            agent.owner_user_id(),
+            agent.provider(),
+            agent.provider_account_profile(),
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("selected provider account should satisfy queued advancement preflight");
     app.agents
         .bind_remote_execution(
             agent.id(),
