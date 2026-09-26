@@ -575,7 +575,7 @@ export function formatRoomTabOutline(title: string, accessibility: RoomEnvironme
   const lines = accessibility.nodes.map((node) => {
     const level = node.parent_ref === undefined ? 0 : (depth.get(node.parent_ref) ?? -1) + 1
     depth.set(node.element_ref, level)
-    const states = [node.focused ? "focused" : "", node.disabled ? "disabled" : ""].filter(Boolean)
+    const states = [...(node.states ?? []), node.focused ? "focused" : "", node.disabled ? "disabled" : ""].filter(Boolean)
     return [
       `${"  ".repeat(level)}${node.role}`,
       node.name ? ` ${JSON.stringify(node.name)}` : "",

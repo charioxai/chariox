@@ -167,8 +167,28 @@ function compactAccessibilityNodes(rawNodes, options) {
       ignored: node?.ignored === true,
       disabled: properties.get("disabled") === true,
       focused: properties.get("focused") === true,
+      states: announcedStates(properties),
     }];
   });
+}
+
+// The control states a screen reader announces, named as the kernel expects.
+function announcedStates(properties) {
+  const tristate = (name, on, off) => {
+    const value = properties.get(name);
+    if (value === undefined) return [];
+    if (value === "mixed") return ["mixed"];
+    return [value === true || value === "true" ? on : off];
+  };
+  const invalid = properties.get("invalid");
+  return [
+    ...tristate("checked", "checked", "not checked"),
+    ...tristate("pressed", "pressed", "not pressed"),
+    ...(properties.has("expanded") ? [properties.get("expanded") === true ? "expanded" : "collapsed"] : []),
+    ...(properties.get("selected") === true ? ["selected"] : []),
+    ...(properties.get("required") === true ? ["required"] : []),
+    ...(invalid !== undefined && invalid !== false && invalid !== "false" ? ["invalid"] : []),
+  ];
 }
 
 function compactDomSnapshot(rawSnapshot, options) {

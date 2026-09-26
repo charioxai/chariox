@@ -45,7 +45,24 @@ pub(crate) struct BrowserControllerAccessibilityNode {
     pub(crate) ignored: bool,
     pub(crate) disabled: bool,
     pub(crate) focused: bool,
+    /// What a reader announces about the control, from `ANNOUNCED_STATES`.
+    #[serde(default)]
+    pub(crate) states: Vec<String>,
 }
+
+/// The control states a screen reader announces, as the controller names them.
+pub(crate) const ANNOUNCED_STATES: [&str; 10] = [
+    "checked",
+    "not checked",
+    "mixed",
+    "pressed",
+    "not pressed",
+    "expanded",
+    "collapsed",
+    "selected",
+    "required",
+    "invalid",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerDomNode {
@@ -107,6 +124,7 @@ pub(crate) struct RoomBrowserAccessibilityNode {
     pub(crate) ignored: bool,
     pub(crate) disabled: bool,
     pub(crate) focused: bool,
+    pub(crate) states: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,6 +196,7 @@ impl BrowserControllerStructuredSnapshot {
                     ignored: node.ignored,
                     disabled: node.disabled,
                     focused: node.focused,
+                    states: node.states,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -292,6 +311,17 @@ fn validate_accessibility_nodes(
         }
         for value in [&node.role, &node.name, &node.description, &node.value] {
             validate_bounded_string(value)?;
+        }
+        if node.states.len() > ANNOUNCED_STATES.len()
+            || node
+                .states
+                .iter()
+                .any(|state| !ANNOUNCED_STATES.contains(&state.as_str()))
+        {
+            return Err(format!(
+                "browser controller accessibility snapshot gave {} an unknown state",
+                node.node_ref
+            ));
         }
     }
     Ok(())

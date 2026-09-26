@@ -59,6 +59,7 @@ test("/room read prints the focused Tab as an indented outline", async () => {
           { element_ref: "e1", role: "RootWebArea", name: "Docs" },
           { element_ref: "e2", parent_ref: "e1", role: "textbox", name: "Title", value: "Plan", focused: true },
           { element_ref: "e3", parent_ref: "e1", role: "button", name: "Save", disabled: true },
+          { element_ref: "e4", parent_ref: "e1", role: "checkbox", name: "Published", states: ["checked"] },
         ],
       } } } as TResponse
     },
@@ -72,6 +73,7 @@ test("/room read prints the focused Tab as an indented outline", async () => {
     'RootWebArea "Docs"',
     '  textbox "Title" = "Plan" [focused]',
     '  button "Save" [disabled]',
+    '  checkbox "Published" [checked]',
   ].join("\n")])
 })
 

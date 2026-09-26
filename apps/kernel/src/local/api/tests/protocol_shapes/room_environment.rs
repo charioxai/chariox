@@ -1429,6 +1429,7 @@ fn room_environment_tab_accessibility_shape_is_versioned() {
                     description: String::new(),
                     disabled: false,
                     focused: false,
+                    states: Vec::new(),
                 },
                 RoomEnvironmentAccessibilityNode {
                     element_ref: "e2".to_string(),
@@ -1439,6 +1440,7 @@ fn room_environment_tab_accessibility_shape_is_versioned() {
                     description: String::new(),
                     disabled: false,
                     focused: true,
+                    states: vec!["required".to_string()],
                 },
             ],
             truncated: false,
@@ -1452,7 +1454,7 @@ fn room_environment_tab_accessibility_shape_is_versioned() {
             "nodes": [
                 { "element_ref": "e1", "role": "RootWebArea", "name": "Todo" },
                 { "element_ref": "e2", "parent_ref": "e1", "role": "textbox",
-                  "name": "New todo", "value": "milk", "focused": true }
+                  "name": "New todo", "value": "milk", "focused": true, "states": ["required"] }
             ],
             "truncated": false
         } }

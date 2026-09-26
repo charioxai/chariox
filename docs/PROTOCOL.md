@@ -1898,7 +1898,11 @@ Workflow trigger and deployment direction:
   {session_id, tab_id, document_revision, nodes, truncated}` for any Room
   member. `nodes` is the Tab's accessibility tree in document order
   (`element_ref`, `parent_ref`, `role`, `name`, and when set `value`,
-  `description`, `disabled`, `focused`), bounded to 2000. It holds what a
+  `description`, `disabled`, `focused`, and `states`: what a reader announces
+  about the control, among `checked`, `not checked`, `mixed`, `pressed`,
+  `not pressed`, `expanded`, `collapsed`, `selected`, `required`, `invalid`),
+  bounded to 2000. The Room browser controller's snapshot nodes gain the same
+  `states` (absent from older controllers). It holds what a
   reader announces: ignored nodes, inline text boxes, unnamed layout wrappers
   and text its parent's name already says (an aria-labelled button's text)
   are left out, and their children hang from the nearest kept ancestor.

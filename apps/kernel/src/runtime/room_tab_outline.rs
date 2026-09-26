@@ -77,6 +77,7 @@ pub(crate) fn outline(
             description: node.description.clone(),
             disabled: node.disabled,
             focused: node.focused,
+            states: node.states.clone(),
         });
     }
     (outline, truncated)
@@ -103,6 +104,7 @@ mod tests {
             ignored: false,
             disabled: false,
             focused: false,
+            states: Vec::new(),
         }
     }
 

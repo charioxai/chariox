@@ -44,6 +44,11 @@ pub struct RoomEnvironmentAccessibilityNode {
     pub disabled: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub focused: bool,
+    /// What a reader announces about the control: `checked`, `not checked`,
+    /// `mixed`, `pressed`, `not pressed`, `expanded`, `collapsed`, `selected`,
+    /// `required`, `invalid`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

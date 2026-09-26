@@ -219,6 +219,8 @@ export type RoomEnvironmentAccessibilityNode = {
   description?: string
   disabled?: boolean
   focused?: boolean
+  /** checked, not checked, mixed, pressed, not pressed, expanded, collapsed, selected, required, invalid */
+  states?: string[]
 }
 
 export type RoomEnvironmentTabAccessibility = {

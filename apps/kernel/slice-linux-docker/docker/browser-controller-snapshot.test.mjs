@@ -58,3 +58,24 @@ test("snapshot rejects excessive frame count before reading accessibility trees"
   await assert.rejects(capture(connection, { maxFrames: 1 }), { code: "snapshot_frame_limit" });
   assert.deepEqual(connection.requestedFrames, []);
 });
+
+test("snapshot carries the control states a screen reader announces", async () => {
+  const connection = {
+    async send(method, params) {
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "root", loaderId: "page-1" } } };
+      if (method === "DOMSnapshot.captureSnapshot") return { documents: [], strings: [] };
+      const property = (name, value) => ({ name, value: { value } });
+      return { nodes: [
+        { nodeId: "1", backendDOMNodeId: 1, role: { value: "checkbox" }, properties: [property("checked", "true"), property("required", true)] },
+        { nodeId: "2", backendDOMNodeId: 2, role: { value: "checkbox" }, properties: [property("checked", "false")] },
+        { nodeId: "3", backendDOMNodeId: 3, role: { value: "button" }, properties: [property("pressed", "mixed"), property("expanded", false)] },
+        { nodeId: "4", backendDOMNodeId: 4, role: { value: "textbox" }, properties: [property("invalid", "false"), property("focused", true)] },
+        { nodeId: "5", backendDOMNodeId: 5, role: { value: "option" }, properties: [property("selected", true), property("invalid", "true")] },
+      ] };
+    },
+  };
+  const snapshot = await capture(connection);
+  assert.deepEqual(snapshot.accessibility_nodes.map((node) => node.states), [
+    ["checked", "required"], ["not checked"], ["mixed", "collapsed"], [], ["selected", "invalid"],
+  ]);
+});
