@@ -242,29 +242,72 @@ test("out-of-line cfg(test) module ends before a following production managed br
     const path = "apps/kernel/src/runtime/state.rs";
     fixture.addFile(path, [
       "#[cfg(test)]",
-      "mod managed_state_tests;",
+      "mod managed_state_tests",
+      ";",
       "",
       "impl ManagedState {",
       "    fn resolve(&self, is_managed: bool) {",
       "        if is_managed {",
-      "            let selector = std::env::var(\"CHARIOX_MANAGED_AFTER_OUT_OF_LINE_TEST\");",
+      "            let selector = std::env::var(\"CHARIOX_MANAGED_AFTER_SPLIT_MODULE\");",
+      "        }",
+      "    }",
+      "}",
+      "",
+      "#[cfg(test)]",
+      "pub(crate) mod commented_state_tests /* { ; */ // { ;",
+      ";",
+      "impl CommentedManagedState {",
+      "    fn resolve(&self, is_managed: bool) {",
+      "        if is_managed {",
+      "            let selector = std::env::var(\"CHARIOX_MANAGED_AFTER_COMMENTED_MODULE\");",
+      "        }",
+      "    }",
+      "}",
+      "",
+      "#[cfg(test)]",
+      "mod inline_state_tests {",
+      "    const INLINE_TERMINATORS: &str = \"} ; {\";",
+      "}",
+      "impl InlineManagedState {",
+      "    fn resolve(&self, is_managed: bool) {",
+      "        if is_managed {",
+      "            let selector = std::env::var(\"CHARIOX_MANAGED_AFTER_INLINE_TEST\");",
+      "        }",
+      "    }",
+      "}",
+    ].join("\n") + "\n");
+
+    const lifetimePath = "apps/kernel/src/runtime/lifetimes.rs";
+    fixture.addFile(lifetimePath, [
+      "#[cfg(test)]",
+      "mod lifetime_tests",
+      ";",
+      "impl<'state> LifetimeManagedState<'state> {",
+      "    fn resolve(&'state self, is_managed: bool) {",
+      "        if is_managed {",
+      "            let selector = std::env::var(\"CHARIOX_MANAGED_AFTER_LIFETIME_MODULE\");",
       "        }",
       "    }",
       "}",
     ].join("\n") + "\n");
 
     const report = collect(fixture);
-    const productionCandidates = report.entries.filter((entry) => entry.path === path
-      && ["managed_only_branch", "managed_env_selector"].includes(entry.category));
-    assert.deepEqual(
-      productionCandidates.map(({ category }) => category).sort(),
-      ["managed_env_selector", "managed_only_branch", "managed_only_branch"],
-      "the production branch and selector must remain inventory candidates",
-    );
-    for (const candidate of productionCandidates) {
-      assert.equal(candidate.sourceRoleHints.testRegion, "none_detected");
-      assert.equal(candidate.semanticDisposition.status, "unreviewed");
-      assert.equal(candidate.semanticDisposition.gateEffect, "fail_closed");
+    for (const [sourcePath, branchCount] of [[path, 3], [lifetimePath, 1]]) {
+      const productionCandidates = report.entries.filter((entry) => entry.path === sourcePath
+        && ["managed_only_branch", "managed_env_selector"].includes(entry.category));
+      assert.deepEqual(
+        productionCandidates.map(({ category }) => category).sort(),
+        [
+          ...Array(branchCount).fill("managed_env_selector"),
+          ...Array(branchCount * 2).fill("managed_only_branch"),
+        ].sort(),
+        "production branches and selectors after the out-of-line declaration must remain candidates",
+      );
+      for (const candidate of productionCandidates) {
+        assert.equal(candidate.sourceRoleHints.testRegion, "none_detected");
+        assert.equal(candidate.semanticDisposition.status, "unreviewed");
+        assert.equal(candidate.semanticDisposition.gateEffect, "fail_closed");
+      }
     }
     assert.equal(report.status, "fail", "module syntax and source-role hints must not approve findings");
   });

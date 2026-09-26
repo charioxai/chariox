@@ -594,11 +594,18 @@ function rustBlockEnd(codeLines, startLine) {
 }
 
 function rustTestDeclarationEnd(codeLines, declarationLine) {
-  const declaration = codeLines[declarationLine].trim();
-  if (/^(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*;\s*$/.test(declaration)) {
-    return declarationLine;
+  if (!/\bmod\s+[A-Za-z_][A-Za-z0-9_]*\b/.test(codeLines[declarationLine])) {
+    return rustBlockEnd(codeLines, declarationLine);
   }
-  return rustBlockEnd(codeLines, declarationLine);
+  // This input has comments and literals masked. A semicolon that arrives
+  // before any body brace terminates an out-of-line module declaration.
+  for (let lineIndex = declarationLine; lineIndex < codeLines.length; lineIndex += 1) {
+    for (const character of codeLines[lineIndex]) {
+      if (character === ";") return lineIndex;
+      if (character === "{") return rustBlockEnd(codeLines, declarationLine);
+    }
+  }
+  return declarationLine;
 }
 
 function findRustTestRanges(text, path) {
