@@ -284,6 +284,7 @@ fn with_migrations(
         let (stem, extension) = name.rsplit_once('.').ok_or_else(migration_gap)?;
         if !matches!(extension, "js" | "mjs" | "cjs")
             || stem.len() != 3
+            || !stem.bytes().all(|byte| byte.is_ascii_digit())
             || stem.parse::<u32>().ok() != Some(to)
         {
             return Err(migration_gap());

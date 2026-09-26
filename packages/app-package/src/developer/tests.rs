@@ -248,12 +248,20 @@ fn scaffold_never_overwrites_existing_empty_populated_or_linked_destinations() {
 fn numbered_migration_files_become_the_packed_chain_and_gaps_are_refused() {
     let scratch = Scratch::new();
     let keys_dir = scratch.0.join("keys");
-    disk::DirBuilder::new().mode(0o700).create(&keys_dir).unwrap();
+    disk::DirBuilder::new()
+        .mode(0o700)
+        .create(&keys_dir)
+        .unwrap();
     let key = keys_dir.join("signing.key");
     let public = scratch.0.join("public.json");
     super::keygen("com.example", "Developer", &key, &public).unwrap();
     let project = scratch.0.join("app");
-    let args = |values: &[&str]| values.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
+    let args = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>()
+    };
     super::run_cli(&args(&[
         "create",
         project.to_str().unwrap(),
@@ -295,4 +303,29 @@ fn numbered_migration_files_become_the_packed_chain_and_gaps_are_refused() {
     disk::write(migrations.join("004.js"), "export default async () => {}").unwrap();
     let refused = pack("gap.cxapp").unwrap_err();
     assert_eq!(refused.code, ErrorCode::UnexpectedEntry);
+    disk::remove_file(migrations.join("004.js")).unwrap();
+    // Only three plain digits count: "+03" parses as 3 but is refused, as is
+    // a file under migrations/ that is not a numbered step.
+    for stray in ["+03.js", "setup.js"] {
+        disk::write(migrations.join(stray), "export default async () => {}").unwrap();
+        assert_eq!(
+            pack("stray.cxapp").unwrap_err().code,
+            ErrorCode::UnexpectedEntry,
+            "{stray}"
+        );
+        disk::remove_file(migrations.join(stray)).unwrap();
+    }
+    // A manifest that declares its own chain is packed as written.
+    let mut declared = manifest.clone();
+    declared.migrations = Some(chain.clone());
+    let report = super::pack_directory(
+        &project.join("bundle"),
+        &declared,
+        &key,
+        &scratch.0.join("declared.cxapp"),
+        500,
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(report.manifest.migrations, Some(chain));
 }
