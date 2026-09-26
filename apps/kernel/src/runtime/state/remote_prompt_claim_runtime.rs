@@ -16,6 +16,9 @@ pub(super) struct RemotePromptAgentClaim {
     released: bool,
 }
 
+pub(super) type RemotePromptDispatchFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+
 impl RemotePromptAgentClaim {
     pub(super) fn try_acquire(
         claims: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
@@ -801,8 +804,16 @@ impl KernelRuntimeState {
         Ok(Some(dispatch))
     }
 
-    pub(super) async fn run_remote_prompt_dispatch_with_claim(
-        &self,
+    pub(super) fn run_remote_prompt_dispatch_with_claim(
+        self,
+        claim: RemotePromptAgentClaim,
+        dispatch: Option<crate::app::KernelRemotePromptDispatch>,
+    ) -> RemotePromptDispatchFuture {
+        Box::pin(self.run_remote_prompt_dispatch_with_claim_inner(claim, dispatch))
+    }
+
+    async fn run_remote_prompt_dispatch_with_claim_inner(
+        self,
         mut claim: RemotePromptAgentClaim,
         mut dispatch: Option<crate::app::KernelRemotePromptDispatch>,
     ) {
