@@ -1,4 +1,6 @@
-use super::super::remote_prompt_claim_runtime::RemotePromptAgentClaim;
+use super::super::remote_prompt_claim_runtime::{
+    RemotePromptAgentClaim, RemotePromptProjectionDrainClaim,
+};
 use super::super::remote_prompt_projection_drain_runtime::{
     completed_receipt_projection_matches, remote_prompt_projection_error_should_refresh_binding,
     RemotePromptRunBindingRecovery,
@@ -3137,17 +3139,27 @@ mod projection_drain {
     #[test]
     fn remote_prompt_projection_drain_claims_coalesce_restart_before_release() {
         let claims = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
-        let mut first =
-            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1")
-                .expect("first drain should claim the agent");
+        let mut first = RemotePromptProjectionDrainClaim::try_acquire(
+            Arc::clone(&claims),
+            "session-1",
+            "agent-1",
+        )
+        .expect("first drain should claim the agent");
 
-        let other_agent =
-            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-2", "agent-2")
-                .expect("a different agent must remain independently dispatchable");
+        let other_agent = RemotePromptProjectionDrainClaim::try_acquire(
+            Arc::clone(&claims),
+            "session-2",
+            "agent-2",
+        )
+        .expect("a different agent must remain independently dispatchable");
 
         assert!(
-            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1",)
-                .is_none(),
+            RemotePromptProjectionDrainClaim::try_acquire(
+                Arc::clone(&claims),
+                "session-1",
+                "agent-1",
+            )
+            .is_none(),
             "a duplicate drain must not start while the first owner is alive"
         );
         assert!(
@@ -3160,7 +3172,12 @@ mod projection_drain {
         );
 
         assert!(
-            RemotePromptAgentClaim::try_acquire(claims, "session-1", "agent-1",).is_some(),
+            RemotePromptProjectionDrainClaim::try_acquire(
+                claims,
+                "session-1",
+                "agent-1",
+            )
+            .is_some(),
             "an atomically released claim must allow reconnect recovery to start a new drain"
         );
         drop(other_agent);
