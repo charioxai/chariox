@@ -891,7 +891,7 @@ impl KernelRuntimeState {
     }
 
 
-    fn spawn_remote_prompt_receipt_reconciliation(
+    pub(super) fn spawn_remote_prompt_receipt_reconciliation(
         &self,
         dispatch: crate::app::KernelRemotePromptDispatch,
     ) {

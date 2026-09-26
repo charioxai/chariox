@@ -1,7 +1,7 @@
 //! Exact worker-receipt validation, reconciliation, and durable settlement decisions.
 
 use super::remote_prompt_projection_drain_runtime::{
-    same_remote_prompt_worker_binding, REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
+    same_remote_prompt_worker_binding,
 };
 use super::remote_prompt_worker_submission_runtime::{
     persist_remote_prompt_reconciliation_pending, query_remote_prompt_worker_receipt,
@@ -387,7 +387,7 @@ impl KernelRuntimeState {
         remote_prompt_reconciliation_pending_error(dispatch, &detail)
     }
 
-    fn report_remote_prompt_reconciliation_pending(
+    pub(super) fn report_remote_prompt_reconciliation_pending(
         &self,
         dispatch: &crate::app::KernelRemotePromptDispatch,
         detail: &str,
