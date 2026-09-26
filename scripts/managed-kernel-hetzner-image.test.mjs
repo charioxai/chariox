@@ -35,6 +35,7 @@ const managedServiceUrl = new URL("../deploy/managed-kernel/chariox-managed-boot
 const path1ManagedServiceUrl = new URL("../deploy/managed-kernel/chariox-path1-managed-bootstrap.service", import.meta.url)
 const workerServiceUrl = new URL("../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", import.meta.url)
 const workerKernelSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/worker.rs", import.meta.url)
+const workerSupervisorSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/supervisor.rs", import.meta.url)
 const rootlessServiceUrl = new URL("../deploy/managed-kernel/chariox-rootless-docker.service", import.meta.url)
 const brokerServiceUrl = new URL("../deploy/managed-kernel/chariox-slice-broker.service", import.meta.url)
 const installerUrl = new URL("../deploy/managed-kernel/install-image.sh", import.meta.url)
@@ -427,8 +428,30 @@ test("managed slice image locks every network and compiler input", async () => {
   const toolchainPackage = JSON.parse(await readFile(sliceToolchainPackageUrl, "utf8"))
   const toolchainLock = JSON.parse(await readFile(sliceToolchainLockUrl, "utf8"))
 
-  for (const base of dockerfile.match(/^FROM\s+\S+/gm) ?? []) {
-    assert.match(base, /@sha256:[a-f0-9]{64}$/)
+  const fromStages = [...dockerfile.matchAll(/^FROM\s+(\S+)(?:\s+AS\s+(\S+))?\s*$/gim)]
+  assert.ok(fromStages.length > 0, "the slice image must declare base stages")
+  const scratchStages = fromStages.filter(([, image]) => image.toLowerCase() === "scratch")
+  assert.deepEqual(
+    scratchStages.map(([, image, stage]) => [image, stage]),
+    [["scratch", "managed-release-artifacts"]],
+    "only the exact runtime-artifact export stage may use scratch",
+  )
+  const scratchStageStart = dockerfile.indexOf("FROM scratch AS managed-release-artifacts")
+  const scratchStageEnd = dockerfile.indexOf("\nFROM ", scratchStageStart + 1)
+  assert.ok(scratchStageStart >= 0 && scratchStageEnd > scratchStageStart)
+  assert.deepEqual(
+    dockerfile.slice(scratchStageStart, scratchStageEnd).trim().split("\n"),
+    [
+      "FROM scratch AS managed-release-artifacts",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+    ],
+    "scratch may export only the three managed runtime binaries",
+  )
+  for (const [, image] of fromStages) {
+    if (image.toLowerCase() === "scratch") continue
+    assert.match(image, /@sha256:[a-f0-9]{64}$/, `${image} must be digest-pinned`)
   }
   assert.match(dockerfile, /snapshot\.debian\.org\/archive\/debian\/20260701T000000Z/)
   assert.match(dockerfile, /COPY Cargo\.toml Cargo\.lock \.\//)
@@ -475,6 +498,7 @@ test("managed Docker authority and publication access remain narrowly separated"
   const managed = await readFile(managedServiceUrl, "utf8")
   const worker = await readFile(workerServiceUrl, "utf8")
   const workerKernel = await readFile(workerKernelSourceUrl, "utf8")
+  const workerSupervisor = await readFile(workerSupervisorSourceUrl, "utf8")
   const providerLaunchProbe = await readFile(providerLaunchProbeUrl, "utf8")
   const rootless = await readFile(rootlessServiceUrl, "utf8")
   const broker = await readFile(brokerServiceUrl, "utf8")
@@ -526,8 +550,45 @@ test("managed Docker authority and publication access remain narrowly separated"
   // The supervisor needs this endpoint to claim the one-shot broker. Its
   // child kernel receives only the scoped lease FD, never the socket path.
   assert.match(worker, /^Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=\/var\/lib\/chariox-slice-share\/\.broker-private\/control\/control\.sock$/m)
-  assert.match(workerKernel, /for name in PATH1_SHARED_HOST_SELECTOR_ENVS\s*\{\s*command\.env_remove\(name\);/)
-  assert.match(workerKernel, /super::supervisor::spawn_with_broker_lease\(&mut command\)/)
+  assert.match(
+    workerKernel,
+    /super::supervisor::spawn_with_broker_lease\(&mut command,\s*topology\)/,
+    "worker kernel launch must delegate to the supervisor broker boundary",
+  )
+  const brokerSpawnStart = workerSupervisor.indexOf("pub(super) fn spawn_with_broker_lease(")
+  const brokerSpawnEnd = workerSupervisor.indexOf("\n#[cfg(all(test, unix))]", brokerSpawnStart)
+  assert.ok(brokerSpawnStart >= 0 && brokerSpawnEnd > brokerSpawnStart)
+  const brokerSpawn = workerSupervisor.slice(brokerSpawnStart, brokerSpawnEnd)
+  const path1BoundaryStart = brokerSpawn.indexOf("if topology == ManagedProviderTopology::Path1 {")
+  const path1BoundaryEnd = brokerSpawn.indexOf("\n\n    #[cfg(unix)]", path1BoundaryStart)
+  assert.ok(path1BoundaryStart >= 0 && path1BoundaryEnd > path1BoundaryStart)
+  const path1Boundary = brokerSpawn.slice(path1BoundaryStart, path1BoundaryEnd)
+  assert.match(
+    path1Boundary,
+    /for name in PATH1_SHARED_HOST_SELECTOR_ENVS\s*\{\s*command\.env_remove\(name\);\s*\}/,
+  )
+  assert.match(
+    path1Boundary,
+    /for name in PATH1_KERNEL_SLICE_BROKER_ENVS\s*\{\s*command\.env_remove\(name\);\s*\}/,
+  )
+  assert.match(
+    path1Boundary,
+    /path1_managed_slice_root_from_broker_socket\(\)\s*\{\s*command\.env\("CHARIOX_SLICE_ROOT", slice_root\);/,
+  )
+  assert.match(
+    workerSupervisor,
+    /fn path1_managed_slice_root_from_broker_socket\(\)\s*-> Option<std::path::PathBuf>\s*\{\s*broker_share_root_from_socket\(\)\.map\(\|share_root\| share_root\.join\("slices"\)\)\s*\}/,
+  )
+  assert.match(
+    brokerSpawn,
+    /command\s*\.env_remove\(BROKER_SOCKET_ENV\)\s*\.env_remove\(BROKER_REQUIRED_ENV\)\s*\.env\(BROKER_FD_ENV, fd\.to_string\(\)\)/,
+    "the supervisor must pass an active lease by FD and omit the socket path",
+  )
+  assert.match(
+    brokerSpawn,
+    /command\s*\.env_remove\(BROKER_SOCKET_ENV\)\s*\.env_remove\(BROKER_FD_ENV\)\s*\.env\(BROKER_REQUIRED_ENV, "1"\)/,
+    "a missing lease must fail closed with the required-broker marker",
+  )
   for (const sharedHostSelector of [
     "CHARIOX_CAPABILITY_ISOLATION_ROOT=",
     "CHARIOX_MANAGED_PROVIDER_ISOLATION=",
