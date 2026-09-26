@@ -59,6 +59,20 @@ test("open intercepts every request, installs the bridge, and navigates to the A
   assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
 });
 
+test("opening an installation again shows its one App Tab with the current assets", async () => {
+  const { tabs, connection, result } = await opened();
+  connection.sent.length = 0;
+  const again = await tabs.open({ origin_label: "todo-1", installation_id: "inst-1",
+    entry: "v2.html", assets: [asset("v2.html", "<p>v2</p>")] });
+  assert.deepEqual(again, result);
+  assert.deepEqual(connection.sent.map((m) => m.method), ["Target.activateTarget", "Browser.getWindowForTarget",
+    "Browser.getWindowBounds", "Page.reload"]);
+  assert.deepEqual((await tabs.takeCalls()).open_targets, ["t1"]);
+  await connection.emit({ method: "Fetch.requestPaused", sessionId: "s1",
+    params: { requestId: "r", request: { url: "https://todo-1.app.chariox.internal/", method: "GET" } } });
+  assert.equal(Buffer.from(connection.sent.at(-1).params.body, "base64").toString(), "<p>v2</p>");
+});
+
 test("rejects unsafe asset paths and missing entries", async () => {
   const { browser } = fakeBrowser();
   const tabs = new AppTabs(browser);

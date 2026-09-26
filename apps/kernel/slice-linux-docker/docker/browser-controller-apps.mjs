@@ -107,6 +107,18 @@ export class AppTabs {
     const app = { installation: params.installation_id, origin, entry, assets: assets(params.assets, entry) };
     const connection = await this.browser.ensureConnection();
     this.listen(connection);
+    // One shared App Tab per Room and installation: opening it again (another
+    // terminal, or a kernel that restarted) shows that Tab with the current
+    // assets instead of a second one.
+    const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin);
+    if (shown) {
+      const [sessionId, open] = shown;
+      Object.assign(open, { entry, assets: app.assets });
+      await connection.send("Target.activateTarget", { targetId: open.targetId });
+      await this.fullscreen(connection, open.targetId).catch(() => false);
+      await connection.send("Page.reload", { ignoreCache: true }, sessionId);
+      return { target_id: open.targetId, origin };
+    }
     // Each App view gets its own fullscreen window: its page then covers the
     // desktop exactly, so page and stream coordinates agree (see panels).
     const { targetId } = await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });

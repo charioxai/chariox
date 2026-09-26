@@ -1765,7 +1765,9 @@ Workflow trigger and deployment direction:
 - protocol 346 adds `OpenAppView {session_id, installation_id}`, which returns
   `AppViewOpened {installation_id, target_id, origin}`. The view is a managed
   Tab in the session's Room browser, so people and agents share one DOM and
-  profile. The kernel re-verifies the active release and serves only its signed
+  profile. There is one such Tab per Room and installation: opening it again
+  (from another terminal, or after a kernel restart) returns the same
+  `target_id`, shows that Tab and reloads it with the current assets. The kernel re-verifies the active release and serves only its signed
   `ui/` files on a per-owner, per-installation `https://<label>.app.chariox.internal`
   origin through browser request interception. All other requests from the Tab
   are blocked, a strict CSP applies, and popups are closed. The room-controller
