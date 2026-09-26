@@ -82,3 +82,16 @@ export type AppAutomationSummary = {
   scheduled: boolean
   status: "active" | "paused" | "broken" | "disabled"
 }
+
+/** Protocol 353: one inbox route of an installation, with occurrence outcomes. */
+export interface AppInboxRouteSummary {
+  route_id: string
+  event_name: string
+  source_event_type: string
+  source_event_version: number
+  active: boolean
+  pending: number
+  delivered: number
+  failed: number
+  expired: number
+}
