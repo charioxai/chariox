@@ -93,15 +93,45 @@ impl KernelRuntimeState {
         else {
             return Ok(Some(cancellation_intent));
         };
-        self.send_remote_agent_prompt_cancellation_with_claim(
-            session_id,
-            target_agent_id,
-            attachment_id,
-            &active_prompt,
-            cancellation_intent,
-            &mut cancellation_claim,
-        )
-        .await
+        let cancellation = self
+            .send_remote_agent_prompt_cancellation_with_claim(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                &active_prompt,
+                cancellation_intent,
+                &mut cancellation_claim,
+            )
+            .await;
+        if cancellation_claim.release_or_restart() {
+            let state = self.clone();
+            let session_id = session_id.to_string();
+            let target_agent_id = target_agent_id.to_string();
+            tokio::spawn(async move {
+                let dispatch = match state
+                    .remote_prompt_dispatch_after_claim_restart(&session_id, &target_agent_id)
+                    .await
+                {
+                    Ok(dispatch) => dispatch,
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "remote prompt claim restart could not prepare the current prompt",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "agent_id": target_agent_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        None
+                    }
+                };
+                state
+                    .run_remote_prompt_dispatch_with_claim(cancellation_claim, dispatch)
+                    .await;
+            });
+        }
+        cancellation
     }
 
     pub(super) async fn resume_remote_prompt_cancellation_with_claim(
@@ -648,6 +678,12 @@ fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool
         DaemonError::NoActivePrompt { .. } => true,
         DaemonError::LocalTransport { message, .. } => {
             message.contains("no active prompt")
+                || message.contains("NoActivePrompt")
+                || message.contains("no_active_prompt")
+        }
+        DaemonError::RelayTransport { code, message, .. } => {
+            code == "no_active_prompt"
+                || message.contains("no active prompt")
                 || message.contains("NoActivePrompt")
                 || message.contains("no_active_prompt")
         }

@@ -11,6 +11,7 @@ const RELAY_URL: &str = "ws://127.0.0.1:41327";
 const WORKER_ID: &str = "worker-kernel-cancel-ack";
 const LEASED_AGENT_ID: &str = "leased-agent-cancel-ack";
 const WORKER_RUN_ID: &str = "worker-run-after-submit-ack";
+const SUCCESSOR_WORKER_RUN_ID: &str = "worker-run-after-settled-cancel";
 
 async fn owned_runtime_state(app: &Arc<Mutex<crate::app::DaemonApp>>) -> KernelRuntimeState {
     let (
@@ -370,6 +371,260 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     assert!(
         app_lock_available,
         "home DaemonApp lock must remain available while the temporary relay response is pending"
+    );
+}
+
+#[tokio::test]
+async fn direct_settled_cancel_dispatches_queued_successor_once() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(RELAY_URL.to_string());
+    config.relay_token = Some("cancel-successor-test-token".to_string());
+    config.relay_request_timeout_ms = 2_000;
+    let home_public_key = config.relay_public_key.clone();
+    let worker_config = crate::config::DaemonConfig::for_tests();
+    let worker_private_key = worker_config.relay_private_key.clone();
+
+    let mut app = crate::app::DaemonApp::bootstrap(config).expect("home app should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "cancel-successor-workspace",
+            "cancel-successor-worktree",
+        ))
+        .expect("home session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "cancel-successor-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("home attachment should be created");
+    app.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: WORKER_ID.to_string(),
+                worker_machine_id: "worker-machine-cancel-successor".to_string(),
+                execution_lease_id: "worker-lease-cancel-successor".to_string(),
+                leased_agent_id: LEASED_AGENT_ID.to_string(),
+                active_worker_provider_run_id: Some(WORKER_RUN_ID.to_string()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .expect("home agent should bind to the fake worker");
+    let crate::session::PromptSubmissionOutcome::Started { prompt: active_prompt } = app
+        .prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "home-prompt-to-cancel-successor",
+                attachment.id(),
+                agent.id(),
+                "already settled prompt",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .expect("active remote prompt should be admitted")
+    else {
+        panic!("remote prompt should become active immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        active_prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(WORKER_RUN_ID.to_string()),
+        None,
+    )
+    .expect("home prompt should persist the worker ACK");
+    let crate::session::PromptSubmissionOutcome::Queued {
+        prompt: successor_prompt,
+    } = app
+        .prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "home-prompt-cancel-successor",
+                attachment.id(),
+                agent.id(),
+                "queued successor",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .expect("successor prompt should queue behind the active prompt")
+    else {
+        panic!("successor prompt should remain queued");
+    };
+
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let home_prompt_id = active_prompt.id().to_string();
+    let successor_prompt_id = successor_prompt.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let relay_state = Arc::clone(&runtime.owned.relay_state);
+    let (outgoing_tx, mut peer_requests, _event_rx) =
+        crate::transport::relay_client::RelayOutgoingSender::channel(8);
+    {
+        let mut relay = relay_state.write().await;
+        relay.test_set_connected_sender(outgoing_tx, RELAY_URL);
+        relay.remember_peer_public_key(WORKER_ID, worker_config.relay_public_key.clone());
+    }
+
+    let cancel_runtime = runtime.clone();
+    let cancel_session_id = session_id.clone();
+    let cancel_agent_id = agent_id.clone();
+    let cancel_attachment_id = attachment_id.clone();
+    let cancellation = tokio::spawn(async move {
+        cancel_runtime
+            .cancel_remote_agent_prompt_if_remote(
+                &cancel_session_id,
+                &cancel_agent_id,
+                &cancel_attachment_id,
+            )
+            .await
+    });
+    let (cancel_request_id, target_id, cancel_request) =
+        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    assert_eq!(target_id, WORKER_ID);
+    assert!(matches!(
+        cancel_request,
+        RelayPeerRequest::CancelLeasedPrompt {
+            leased_agent_id,
+            home_prompt_id: request_prompt_id,
+            worker_provider_run_id,
+        } if leased_agent_id == LEASED_AGENT_ID
+            && request_prompt_id == home_prompt_id
+            && worker_provider_run_id == WORKER_RUN_ID
+    ));
+
+    // The worker maps its typed NoActivePrompt result to the existing relay error envelope.
+    crate::transport::relay_client::resolve_pending_peer_error_for_test(
+        &relay_state,
+        cancel_request_id,
+        WORKER_ID.to_string(),
+        chariox_relay::protocol::RelayError {
+            code: "relay_request_failed".to_string(),
+            message: "session `worker-session` has no active prompt".to_string(),
+            retryable: false,
+        },
+    )
+    .await;
+    let cancellation = tokio::time::timeout(std::time::Duration::from_secs(2), cancellation)
+        .await
+        .expect("direct cancellation should finish after the settled worker response")
+        .expect("cancellation task should join")
+        .expect("settled cancellation should finalize")
+        .expect("direct remote cancellation should be handled");
+    assert_eq!(
+        cancellation.cancellation.prompt.id(),
+        home_prompt_id,
+        "settling the worker run must preserve the exact cancelled home prompt"
+    );
+
+    let mut submit_count = 0;
+    loop {
+        let (request_id, target_id, request) =
+            next_peer_request(&mut peer_requests, &worker_private_key).await;
+        assert_eq!(target_id, WORKER_ID);
+        match request {
+            RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+                leased_agent_id, ..
+            } => {
+                assert_eq!(leased_agent_id, LEASED_AGENT_ID);
+                acknowledge_peer_request(
+                    &relay_state,
+                    request_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated {
+                        leased_agent_id: LEASED_AGENT_ID.to_string(),
+                    },
+                )
+                .await;
+            }
+            RelayPeerRequest::SubmitLeasedPrompt {
+                leased_agent_id,
+                home_prompt_id: request_prompt_id,
+                ..
+            } => {
+                assert_eq!(leased_agent_id, LEASED_AGENT_ID);
+                assert_eq!(
+                    request_prompt_id, successor_prompt_id,
+                    "the current queued successor should own the one dispatch"
+                );
+                submit_count += 1;
+                assert_eq!(submit_count, 1, "successor dispatch must be claimed once");
+                acknowledge_peer_request(
+                    &relay_state,
+                    request_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    RelayPeerResponse::LeasedPromptSubmitted {
+                        provider_run_id: SUCCESSOR_WORKER_RUN_ID.to_string(),
+                        outcome: crate::session::PromptSubmissionOutcome::Started {
+                            prompt: crate::session::PromptQueueItem::new(
+                                "worker-local-cancel-successor",
+                                "worker-attachment-cancel-successor",
+                                LEASED_AGENT_ID,
+                                "queued successor",
+                                crate::session::PromptStatus::Running,
+                            ),
+                        },
+                    },
+                )
+                .await;
+                break;
+            }
+            other => panic!("unexpected worker request during successor dispatch: {other:?}"),
+        }
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("home session should remain available");
+            if runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_some_and(|prompt| {
+                    prompt.id() == successor_prompt_id
+                        && prompt.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the successor ACK should bind to the queued home prompt");
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .expect("home agent should remain available")
+            .remote_execution()
+            .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
+        Some(SUCCESSOR_WORKER_RUN_ID),
+        "the successor ACK should stay bound to its exact worker run"
+    );
+    assert_eq!(submit_count, 1);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), peer_requests.recv())
+            .await
+            .is_err(),
+        "settled cancellation should neither replay nor submit the successor twice"
     );
 }
 

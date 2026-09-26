@@ -717,7 +717,7 @@ impl KernelRuntimeState {
     }
 
 
-    async fn remote_prompt_dispatch_after_claim_restart(
+    pub(super) async fn remote_prompt_dispatch_after_claim_restart(
         &self,
         session_id: &str,
         agent_id: &str,
