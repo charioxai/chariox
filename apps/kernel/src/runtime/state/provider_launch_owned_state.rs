@@ -310,10 +310,12 @@ impl KernelRuntimeOwnedState {
                 &config,
                 &request.owner_user_id,
             );
-        crate::provider::provider_account_credential_uses_vault(
+        crate::provider::launch_uses_vault_credential(
+            &self.provider_account_profiles,
             &account_owner_user_id,
             &request.provider,
             &request.account_profile,
+            request.client_interface,
         )
     }
 }
@@ -526,6 +528,43 @@ mod tests {
             launch.provider_credential_env.is_empty(),
             "no Chariox-vault token is needed"
         );
+        // A setup token left in the vault from before is not read either, so
+        // the launch asks for no vault unlock; the native Claude TUI still may.
+        let credential_id = crate::provider::provider_account_credential_id(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        );
+        crate::credential::CharioxCredentialRegistry::user()
+            .expect("credential registry should resolve")
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .expect("vault credential should register");
+        let profiles = app.lock().await.provider_account_profile_registry();
+        let uses_vault = |client_interface| {
+            crate::provider::launch_uses_vault_credential(
+                &profiles,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+                client_interface,
+            )
+            .expect("vault use should resolve")
+        };
+        assert!(!uses_vault(
+            crate::provider::ProviderClientInterface::Chariox
+        ));
+        assert!(uses_vault(
+            crate::provider::ProviderClientInterface::NativeTui
+        ));
+        drop(app);
 
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);

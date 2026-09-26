@@ -112,6 +112,25 @@ fn claude_login_runs_agents(
     }
 }
 
+/// Whether a launch reads the account's Chariox-vault credential, by the same
+/// rule as `resolve_provider_account_credentials_for_launch`: never when the
+/// account's own Claude login runs the agent, so it needs no vault unlock.
+pub(crate) fn launch_uses_vault_credential(
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    client_interface: crate::provider::ProviderClientInterface,
+) -> Result<bool, DaemonError> {
+    if crate::provider::canonical_provider_family(provider) == Some("claude")
+        && client_interface != crate::provider::ProviderClientInterface::NativeTui
+        && claude_login_runs_agents(profiles, owner_user_id, profile_id)?
+    {
+        return Ok(false);
+    }
+    provider_account_credential_uses_vault(owner_user_id, provider, profile_id)
+}
+
 /// Whether a Chariox-held launch credential is registered for the account.
 /// Reads only the registry; no secret is resolved.
 pub(crate) fn provider_account_credential_registered(
