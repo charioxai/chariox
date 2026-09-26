@@ -1453,7 +1453,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "home={}\nchariox_home={}\nrepository_root={}\ntopology={}\npath={}\nslice_root={}\ncapability_root={}\nprovider_isolation={}\nprovider_isolation_active={}\nprovider_bwrap={}\nservice={}\npublication={}\nbroker_socket=<unset>\nbroker_fd_initial={}\nbroker_fd=<consumed>\nbroker_required=<unset>\nfd_cloexec=true\nbroker_round_trip=true\nprovider_fd_inherited=false\n",
             value("HOME"),
             value("CHARIOX_HOME"),
-            value(super::MANAGED_REPOSITORY_ROOT_ENV),
+            value(super::super::MANAGED_REPOSITORY_ROOT_ENV),
             value(super::MANAGED_PROVIDER_TOPOLOGY_ENV),
             value("PATH"),
             value("CHARIOX_SLICE_ROOT"),
