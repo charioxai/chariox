@@ -195,6 +195,7 @@ impl AppSnapshotBroker {
             });
             write_private(&staging.join("state.json"), &state)?;
             write_private(&staging.join("manifest.json"), &manifest)?;
+            sync_dir(&staging)?;
             std::fs::rename(&staging, root.join(&id)).map_err(storage)?;
             sync_dir(&root)?;
             Ok(json!({
@@ -207,7 +208,7 @@ impl AppSnapshotBroker {
         if result.is_err() {
             let _ = std::fs::remove_dir_all(&staging);
         } else {
-            prune(&root);
+            prune(&root, &id);
         }
         result
     }
@@ -275,7 +276,8 @@ fn sync_dir(path: &Path) -> Result<(), RemoteError> {
 
 /// Keeps the newest `RETAINED` snapshots (ids sort by time) and drops copies
 /// a crash left unfinished; the caller holds the installation's snapshot lock.
-fn prune(root: &Path) {
+/// `new` is never dropped, even when a clock step sorts it first.
+fn prune(root: &Path, new: &str) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -284,12 +286,12 @@ fn prune(root: &Path) {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with(".tmp-") {
             let _ = std::fs::remove_dir_all(entry.path());
-        } else {
+        } else if name != new {
             kept.push((name, entry.path()));
         }
     }
     kept.sort();
-    let excess = kept.len().saturating_sub(RETAINED);
+    let excess = (kept.len() + 1).saturating_sub(RETAINED);
     for (_, path) in kept.into_iter().take(excess) {
         let _ = std::fs::remove_dir_all(path);
     }
@@ -314,5 +316,26 @@ fn error(code: &str, retryable: bool) -> RemoteError {
         code: code.into(),
         message: code.to_ascii_lowercase().replace('_', " "),
         retryable: Some(retryable),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn prune_keeps_the_new_snapshot_even_when_it_sorts_first() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-prune-{:016x}", rand::random::<u64>()));
+        for name in ["snapshot-2", "snapshot-3", "snapshot-1", ".tmp-snapshot-4"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        // A clock step backward: the new snapshot has the oldest name.
+        super::prune(&root, "snapshot-1");
+        let mut left = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        left.sort();
+        assert_eq!(left, ["snapshot-1", "snapshot-3"]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

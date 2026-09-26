@@ -136,10 +136,10 @@ pub(crate) fn restore_in(
 
 /// A migrating worker starting (again): whatever an interrupted run wrote is
 /// dropped, and the migration restarts from the snapshot at the active
-/// release's schema. The snapshot stays for a later abort.
-pub(super) fn rewind(tx: &Connection, scope: StateScope<'_>) -> Result<()> {
+/// release's schema, which it returns. The snapshot stays for a later abort.
+pub(super) fn rewind(tx: &Connection, scope: StateScope<'_>) -> Result<Option<u32>> {
     if admit(tx, scope)?.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     let from = load_installation(tx, scope.installation)?
         .active
@@ -149,7 +149,7 @@ pub(super) fn rewind(tx: &Connection, scope: StateScope<'_>) -> Result<()> {
         "UPDATE app_state_migrations SET migrated=?3 WHERE installation_id=?1 AND generation=?2",
         params![scope.installation, scope.generation as i64, from],
     )?;
-    Ok(())
+    Ok(Some(from))
 }
 
 /// Replaces the installation's values and head with the snapshot's; false

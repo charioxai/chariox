@@ -118,7 +118,7 @@ pub(super) fn register(
         .app_migration_from(installation, binding.token().generation)
         .map_err(|_| LifecycleError::Preparation)?;
     if migrate_from.is_some() {
-        context
+        let crate::durable_state::app_state::AppStateOutcome::Rewound(from) = context
             .store
             .execute_app_state(
                 binding.owner_id(),
@@ -126,11 +126,11 @@ pub(super) fn register(
                 crate::durable_state::app_state::AppStateOperation::MigrationRewind,
                 budget.fork(|| false),
             )
-            .map_err(|_| LifecycleError::Preparation)?;
-        migrate_from = context
-            .store
-            .app_migration_from(installation, binding.token().generation)
-            .map_err(|_| LifecycleError::Preparation)?;
+            .map_err(|_| LifecycleError::Preparation)?
+        else {
+            return Err(LifecycleError::Preparation);
+        };
+        migrate_from = from;
     }
     let prepared = spawn(context, binding, &verified, release, migrate_from)?;
     let process = prepared.process;
