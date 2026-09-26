@@ -56,11 +56,14 @@ try {
 
   const reserved = await evaluate(view.target_id, `window.chariox.panel.reserve({ x: 880, y: 0, width: 400, height: 800 })`)
   assert.deepEqual(reserved, { reserved: true })
-  const marked = await roomApps((apps) => apps.find((app) => app.panel))
+  // The App may reserve its own panel on load; wait for the drill's rect.
+  const marked = await roomApps((apps) => apps.find((app) => app.panel?.x === 880 && app.panel?.width === 400))
   assert.deepEqual({ ...marked.panel, agent_id: undefined }, { x: 880, y: 0, width: 400, height: 800, agent_id: undefined })
   assert.equal(marked.installation_id, options.installation)
   assert.equal(marked.panel.agent_id, view.bound_agent_id ?? null)
   assert.deepEqual(await evaluate(view.target_id, `window.chariox.panel.release()`), { released: true })
+  await roomApps((apps) => apps.every((app) => !app.panel))
+  evidence.steps.push({ step: "panel", marked })
 
   const tabId = await roomAppTab()
   const read = await client.send({ GetRoomEnvironmentTabAccessibility: { session_id: options.session, tab_id: tabId } })
@@ -91,8 +94,6 @@ try {
   assert.ok(reloadedAt > loadedAt, "reopening did not load the App again")
   const title = await roomTabTitle()
   evidence.steps.push({ step: "reopen", target_id: again.target_id, loaded_at: loadedAt, reloaded_at: reloadedAt, title })
-  await roomApps((apps) => apps.every((app) => !app.panel))
-  evidence.steps.push({ step: "panel", marked })
 
   // Room commands run while the page makes calls back to back.
   let calling = true
