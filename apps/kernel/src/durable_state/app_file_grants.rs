@@ -13,6 +13,9 @@ pub(crate) const GRANT_MS: u64 = 30 * 60 * 1000;
 /// The same bound as one private-file replacement.
 pub(crate) const MAX_FILE_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_FILES: usize = 8;
+/// All files of one answer together: one local request frame is 1 MiB, and
+/// base64 grows the bytes by a third.
+pub(crate) const MAX_TOTAL_BYTES: usize = 640 * 1024;
 const MAX_NAME_BYTES: usize = 255;
 /// Unfinished picks per installation.
 const MAX_OPEN: i64 = 4;
@@ -82,17 +85,37 @@ pub(crate) enum FileGrantCommand {
     Expire {
         now_ms: u64,
     },
-    /// Marks a grant imported, once, for exactly this installation.
+    /// Takes an unexpired grant of this installation's current generation for
+    /// one import: no concurrent import can take it too.
+    Claim {
+        owner: String,
+        installation: String,
+        generation: u64,
+        grant_id: String,
+        now_ms: u64,
+    },
+    /// The claimed import was published: the bytes are dropped.
     Imported {
+        owner: String,
+        installation: String,
+        grant_id: String,
+    },
+    /// The claimed import failed before publishing: the grant can be used again.
+    Release {
         owner: String,
         installation: String,
         grant_id: String,
     },
 }
 
+enum FileGrantReply {
+    Pick(Option<FilePick>),
+    Claimed(GrantedFile),
+}
+
 pub(super) struct FileGrantRequest {
     command: FileGrantCommand,
-    response: mpsc::Sender<Result<Option<FilePick>, &'static str>>,
+    response: mpsc::Sender<Result<FileGrantReply, &'static str>>,
 }
 impl std::fmt::Debug for FileGrantRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -176,10 +199,10 @@ fn accepted(pick: &FilePick, name: &str) -> bool {
 }
 
 impl DurableKernelStateStore {
-    pub(crate) fn app_file_grant(
+    fn send_app_file_grant(
         &self,
         command: FileGrantCommand,
-    ) -> Result<Option<FilePick>, &'static str> {
+    ) -> Result<FileGrantReply, &'static str> {
         let (response, receiver) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AppFileGrant(Box::new(
@@ -187,6 +210,27 @@ impl DurableKernelStateStore {
             )))
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         receiver.recv().map_err(|_| "STORAGE_UNAVAILABLE")?
+    }
+
+    pub(crate) fn app_file_grant(
+        &self,
+        command: FileGrantCommand,
+    ) -> Result<Option<FilePick>, &'static str> {
+        match self.send_app_file_grant(command)? {
+            FileGrantReply::Pick(pick) => Ok(pick),
+            FileGrantReply::Claimed(_) => Err("STORAGE_UNAVAILABLE"),
+        }
+    }
+
+    /// `FileGrantCommand::Claim`: the grant's bytes, now reserved for one import.
+    pub(crate) fn claim_app_file_grant(
+        &self,
+        command: FileGrantCommand,
+    ) -> Result<GrantedFile, &'static str> {
+        match self.send_app_file_grant(command)? {
+            FileGrantReply::Claimed(file) => Ok(file),
+            FileGrantReply::Pick(_) => Err("STORAGE_UNAVAILABLE"),
+        }
     }
 
     /// Owner- and installation-scoped read for `host.pick_file_status`.
@@ -202,33 +246,6 @@ impl DurableKernelStateStore {
         Ok(load(&connection, operation_id)
             .map_err(|_| "STORAGE_UNAVAILABLE")?
             .filter(|pick| pick.owner == owner && pick.installation == installation))
-    }
-
-    /// An unimported, unexpired grant of this installation; reading spends nothing.
-    pub(crate) fn app_file_grant_contents(
-        &self,
-        owner: &str,
-        installation: &str,
-        grant_id: &str,
-        now_ms: u64,
-    ) -> Result<Option<GrantedFile>, &'static str> {
-        let connection = self
-            .lock_connection("durable_state.app_file_grant")
-            .map_err(|_| "STORAGE_UNAVAILABLE")?;
-        connection
-            .query_row(
-                "SELECT name, contents FROM app_file_grants WHERE grant_id=?1 AND owner_id=?2
-                 AND installation_id=?3 AND imported=0 AND contents IS NOT NULL AND expires_ms>?4",
-                params![grant_id, owner, installation, now_ms as i64],
-                |row| {
-                    Ok(GrantedFile {
-                        name: row.get(0)?,
-                        contents: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|_| "STORAGE_UNAVAILABLE")
     }
 
     /// The oldest pending pick of each installation, oldest first.
@@ -268,7 +285,7 @@ pub(super) fn execute(connection: &mut Connection, request: FileGrantRequest) {
 fn apply(
     connection: &mut Connection,
     command: FileGrantCommand,
-) -> Result<Option<FilePick>, &'static str> {
+) -> Result<FileGrantReply, &'static str> {
     let storage = |_| "STORAGE_UNAVAILABLE";
     let transaction = connection.transaction().map_err(storage)?;
     let result = match command {
@@ -318,6 +335,7 @@ fn apply(
             }
             if files.is_empty()
                 || files.len() > MAX_FILES
+                || files.iter().map(|file| file.contents.len()).sum::<usize>() > MAX_TOTAL_BYTES
                 || (!pick.multiple && files.len() > 1)
                 || files.iter().any(|file| {
                     !valid_name(&file.name)
@@ -414,26 +432,77 @@ fn apply(
                 .map_err(storage)?;
             None
         }
+        FileGrantCommand::Claim {
+            owner,
+            installation,
+            generation,
+            grant_id,
+            now_ms,
+        } => {
+            let file = transaction
+                .query_row(
+                    "SELECT g.name, g.contents FROM app_file_grants g
+                     JOIN app_file_picks p ON p.operation_id=g.operation_id
+                     WHERE g.grant_id=?1 AND g.owner_id=?2 AND g.installation_id=?3
+                       AND g.imported=0 AND g.contents IS NOT NULL AND g.expires_ms>?4
+                       AND p.state='granted' AND p.generation=?5",
+                    params![
+                        grant_id,
+                        owner,
+                        installation,
+                        now_ms as i64,
+                        generation as i64
+                    ],
+                    |row| {
+                        Ok(GrantedFile {
+                            name: row.get(0)?,
+                            contents: row.get(1)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(storage)?
+                .ok_or("NOT_FOUND")?;
+            transaction
+                .execute(
+                    "UPDATE app_file_grants SET imported=1 WHERE grant_id=?1",
+                    params![grant_id],
+                )
+                .map_err(storage)?;
+            transaction.commit().map_err(storage)?;
+            return Ok(FileGrantReply::Claimed(file));
+        }
         FileGrantCommand::Imported {
             owner,
             installation,
             grant_id,
         } => {
-            let changed = transaction
+            transaction
                 .execute(
-                    "UPDATE app_file_grants SET imported=1, contents=NULL WHERE grant_id=?1
-                     AND owner_id=?2 AND installation_id=?3 AND imported=0",
+                    "UPDATE app_file_grants SET contents=NULL WHERE grant_id=?1
+                     AND owner_id=?2 AND installation_id=?3 AND imported=1",
                     params![grant_id, owner, installation],
                 )
                 .map_err(storage)?;
-            if changed != 1 {
-                return Err("NOT_FOUND");
-            }
+            None
+        }
+        FileGrantCommand::Release {
+            owner,
+            installation,
+            grant_id,
+        } => {
+            transaction
+                .execute(
+                    "UPDATE app_file_grants SET imported=0 WHERE grant_id=?1
+                     AND owner_id=?2 AND installation_id=?3 AND imported=1 AND contents IS NOT NULL",
+                    params![grant_id, owner, installation],
+                )
+                .map_err(storage)?;
             None
         }
     };
     transaction.commit().map_err(storage)?;
-    Ok(result)
+    Ok(FileGrantReply::Pick(result))
 }
 
 #[cfg(test)]
