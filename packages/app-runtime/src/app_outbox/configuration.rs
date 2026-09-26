@@ -115,6 +115,59 @@ impl AppOutbox {
         Self::configuration_in(tx, catalog, trusted_owner, automation_id)
     }
 
+    /// In the transaction that commits a new generation (whose catalog this
+    /// is): automations whose event is gone, or whose signed version or payload
+    /// schema changed, become `broken` with a new revision instead of failing
+    /// every emission. The owner re-adds them against the new schema. Events it
+    /// had accepted but not yet delivered fail with it (their payloads no
+    /// longer match what the App emits); each broken automation is returned
+    /// with that count so the caller can tell the owner. A row already broken,
+    /// or at the last revision, is left as it is.
+    pub fn break_changed_in(
+        tx: &Transaction<'_>,
+        catalog: &EventCatalog,
+        trusted_owner: &str,
+    ) -> Result<Vec<(String, u64)>> {
+        let mut statement = tx.prepare(
+            "SELECT automation_id,event_name,event_version,schema_digest FROM app_automations
+             WHERE owner_id=?1 AND installation_id=?2 AND status IN ('active','paused')
+               AND revision<9223372036854775807",
+        )?;
+        let changed = statement
+            .query_map(params![trusted_owner, catalog.installation_id()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|(_, name, version, digest)| {
+                catalog.event_version(name) != Some(*version)
+                    || catalog.schema_digest(name) != Some(digest.as_str())
+            })
+            .map(|(id, ..)| id)
+            .collect::<Vec<_>>();
+        let mut broken = Vec::with_capacity(changed.len());
+        for id in changed {
+            tx.execute(
+                "UPDATE app_automations SET status='broken',revision=revision+1
+                 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",
+                params![trusted_owner, catalog.installation_id(), id],
+            )?;
+            let undelivered: u64 = tx.query_row(
+                "SELECT COUNT(*) FROM app_outbox WHERE owner_id=?1 AND installation_id=?2
+                 AND automation_id=?3 AND state IN ('accepted','retryable')",
+                params![trusted_owner, catalog.installation_id(), id],
+                |row| row.get::<_, i64>(0).map(|count| count as u64),
+            )?;
+            broken.push((id, undelivered));
+        }
+        Ok(broken)
+    }
+
     /// Revoking a binding needs no still-existing workflow target. Active is
     /// intentionally rejected: reactivation must repeat configure_in and the
     /// kernel's current workflow authorization/target checks.

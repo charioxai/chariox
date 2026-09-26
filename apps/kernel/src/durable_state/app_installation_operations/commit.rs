@@ -33,6 +33,28 @@ pub(super) fn commit(
             time as u64,
         )
         .map_err(|_| InstallOperationError::Stale)?;
+    // An update that changes a routed event's schema breaks that automation
+    // visibly, in the same commit; the App's log tells the owner which one and
+    // how many accepted events it will not deliver.
+    let broken = chariox_app_runtime::app_outbox::AppOutbox::break_changed_in(
+        &tx,
+        health.catalog(),
+        &admission.owner,
+    )
+    .map_err(|_| InstallOperationError::Storage)?;
+    for (automation, undelivered) in broken {
+        sql(tx.execute(
+            "INSERT INTO app_logs(owner_id, installation_id, at_ms, level, message, fields_json)
+             VALUES (?1, ?2, ?3, 'warn', ?4, ?5)",
+            params![
+                admission.owner,
+                health.catalog().installation_id(),
+                time,
+                format!("Automation {automation} stopped: this update changed its event's schema, so {undelivered} accepted events will not be delivered. Add the automation again for the new schema."),
+                serde_json::json!({ "automation_id": automation, "undelivered": undelivered }).to_string(),
+            ],
+        ))?;
+    }
     let committed = proofs(&tx, admission, health)?;
     sql(tx.execute("UPDATE app_installation_operations SET phase='committed',updated_ms=?1 WHERE owner_id=?2 AND request_id=?3",
         params![time,admission.owner,admission.request_id]))?;
