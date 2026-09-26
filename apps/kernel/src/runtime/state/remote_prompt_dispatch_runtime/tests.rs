@@ -106,8 +106,17 @@ fn claim_test_successor_state_tags(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .contains_key(&(session_id.to_string(), agent_id.to_string()));
+    let dispatch_stages = active
+        .as_ref()
+        .filter(|prompt| prompt.prompt() == successor_prompt)
+        .map(|prompt| {
+            super::super::remote_prompt_dispatch_execution_runtime::remote_prompt_dispatch_test_stages(
+                prompt.id(),
+            )
+        })
+        .unwrap_or_default();
     format!(
-            "successor_active={successor_active},successor_queued={successor_queued},active_cancelling={cancelling},active_dispatching={},active_delivered={},reconciliation_pending={},recovery_claim_held={recovery_claim_held},projection_claim_held={projection_claim_held}",
+            "successor_active={successor_active},successor_queued={successor_queued},active_cancelling={cancelling},active_dispatching={},active_delivered={},reconciliation_pending={},recovery_claim_held={recovery_claim_held},projection_claim_held={projection_claim_held},dispatch_stages=[{dispatch_stages}]",
             phase == Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
             phase == Some(crate::session::DurablePromptDeliveryPhase::Delivered),
             active.as_ref().is_some_and(|prompt| prompt.durable_delivery_reconciliation_pending()),
