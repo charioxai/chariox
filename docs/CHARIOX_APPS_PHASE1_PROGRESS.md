@@ -1542,13 +1542,13 @@ Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS s
 | P1.03 | Implemented (macOS live, Linux in CI) | #431 | Todo and Documents run on the macOS launcher; native probe | Production installer provisioning on Linux |
 | P1.04 | Partial | foundation, #444 (effects) | Live state, files and HTTP broker | `files.snapshot`, external grants |
 | P1.05 | Implemented | foundation, #447 | Live App tools used by the focus agent | — |
-| P1.06 | Partial | #433 (wakes), outbox foundation, #460 (inbox) | Outbox forwarding to workflows; kernel wakes. Live inbox: route, dedupe and conflict, schema refusal, `events.deliver` creates a Todo, and delivery waits for a user-stopped worker | Event generator subscriptions and AEDS acceptance for inbox routes (with P1.11) |
+| P1.06 | Partial | #433 (wakes), outbox foundation, #460 (inbox), Cloud #223 | Outbox forwarding to workflows; kernel wakes. Live inbox: route, dedupe and conflict, schema refusal, `events.deliver` creates a Todo, delivery waits for a user-stopped worker and starts a dormant one; `/app inbox` from the web terminal | Event generator subscriptions and AEDS acceptance for inbox routes (with P1.11) |
 | P1.07 | Implemented | #436 | Live drill (`live-app-view-drill.mjs`): view calls, `UNKNOWN_TOOL`, 20 calls overlapping Room commands with no busy refusals | Accessibility projection to terminals |
 | P1.08 | Implemented | #439, #442, #446 | `/app` commands, logs, dev loop | TUI browser viewer parity drill |
 | P1.09 | Implemented | #457, Cloud #221 and #222 | Live: bind Apps in Extensions; Freeform trigger or deploy creates a visible one-node workflow with `origin` | Guided trigger setup beyond opening the endpoint inspector |
 | P1.10 | Partial | #445, #455, #458 | Live local updates (Todo 1.0.1 to 1.0.3); kernel tests for migration commit and restore; wakes wait through an update | File-image snapshots, `files.snapshot`, packing migrations, recovery drills, schema-changed automations after an update |
 | P1.11 | Not started | — | — | Needs live Slack credentials and the private AEGS/AEDS services |
-| P1.12 | Implemented | #438 | Live CRUD, reminders, view | Overdue recovery drill after sleep |
+| P1.12 | Implemented | #438, #460 | Live CRUD, reminders, view. Overdue recovery: a Todo fell due while the kernel was stopped; after restart its wake was delivered and the reminder recorded. Inbox requests create Todos | — |
 | P1.13 | Implemented | #441 | Live create and edit of documents, versions | External file grants |
 | P1.14 | Partial | #456 (App windows fullscreen) | App view page coordinates equal desktop coordinates | Renderer sandbox, live Google persistence (needs credentials), viewport for non-App Tabs |
 | P1.15 | Partial | #443, #444 | Live validation prompts and exact-effect receipts | Production step-up authentication |
