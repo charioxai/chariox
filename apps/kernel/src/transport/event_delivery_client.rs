@@ -394,11 +394,19 @@ async fn connect_once(
             }
             _ = reconciliation.tick() => {
                 // A failed read skips this round; the last claims stay.
-                let Ok(next) = runtime_state.event_delivery_resumes(
+                let next = match runtime_state.event_delivery_resumes(
                     &config.kernel_id,
                     &config.environment_id,
-                ) else {
-                    continue;
+                ) {
+                    Ok(next) => next,
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.event_delivery",
+                            "event route reconciliation skipped",
+                            serde_json::json!({"error": error}),
+                        );
+                        continue;
+                    }
                 };
                 environments = next;
                 let next_signature =

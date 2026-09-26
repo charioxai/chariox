@@ -252,6 +252,16 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     if count as usize >= MAX_ROUTES {
         return Err(InboxError::Limit);
     }
+    if route.source.is_some() {
+        let generator_fed: i64 = tx.query_row(
+            "SELECT count(*) FROM app_inbox_routes WHERE generator_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        if generator_fed as usize >= MAX_GENERATOR_ROUTES {
+            return Err(InboxError::Limit);
+        }
+    }
     let source = route.source.as_ref();
     tx.execute(
         "INSERT INTO app_inbox_routes(route_id,owner_id,installation_id,event_name,

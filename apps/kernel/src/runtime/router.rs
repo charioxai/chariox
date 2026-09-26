@@ -56,6 +56,9 @@ pub(crate) struct CommandRouter {
     workflow_runtime: WorkflowRuntime,
     aegs_management_http_client: crate::runtime::event_catalog_control::AegsManagementHttpClient,
     event_connection_lanes: event_connection_lifecycle::EventConnectionOperationLanes,
+    /// Held from an event route's interest check until it is stored, so two
+    /// routes (App or workflow) cannot both claim one interest.
+    event_interest_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
