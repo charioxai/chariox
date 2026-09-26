@@ -1553,7 +1553,7 @@ Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS s
 | P1.14 | Partial | #456 (App windows fullscreen) | App view page coordinates equal desktop coordinates | Renderer sandbox, live Google persistence (needs credentials), viewport for non-App Tabs |
 | P1.15 | Partial | #443, #444 | Live validation prompts and exact-effect receipts | Production step-up authentication |
 | P1.16 | Implemented | #447, #452 | Live: opening a view binds the focus agent | — |
-| P1.17 | Implemented | #456, Cloud #220 | Live: Todo reserves a panel; the web terminal draws the focus agent's transcript over it, outside the App | TUI browser viewer; accessibility isolation drill |
+| P1.17 | Implemented | #456, Cloud #220, #470 | Live: Todo reserves a panel; the web terminal draws the focus agent's transcript over it, outside the App. Isolation drill: the focus agent replied with a unique marker shown in the panel; no Room Tab's accessibility tree (`GetRoomEnvironmentTabAccessibility`, 6 Tabs) contains it or any transcript text, and a capture of the slice desktop shows the reserved panel area empty | TUI browser viewer |
 | P1.18 | Phase 2 | #430 | — | — |
 | P1.19 | Partial (App-created assets are Phase 2) | #447, #456, #457, Cloud #220 | Live single-App acceptance (Todo, web terminal): foreground binding; a Claude agent creates a Todo through the one prompt area; a second agent resumes it from App-owned state; closing and reopening the view keeps App state and kernel history, and the App DOM never contains the conversation | The same drill from the TUI (its viewer is the Cloud web view) |
 
