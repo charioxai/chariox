@@ -50,6 +50,11 @@ RUN mkdir -p /opt/chariox-runtime-bin \
       && install -m 0755 "target/$profile_dir/chariox-relay" /opt/chariox-runtime-bin/chariox-relay; \
     fi
 
+FROM scratch AS managed-release-artifacts
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay
+
 FROM node:26-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS selkies-build
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
   && rm -rf /var/lib/apt/lists/*
