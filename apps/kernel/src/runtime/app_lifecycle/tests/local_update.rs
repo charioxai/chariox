@@ -404,3 +404,85 @@ fn an_update_interrupted_after_quiesce_that_fails_on_restart_keeps_the_old_gener
     assert!(all_reaped(&observations));
     control.lifecycle().shutdown_blocking().unwrap();
 }
+
+#[test]
+fn an_update_breaks_only_automations_whose_event_schema_changed_and_logs_why() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    let (control, observations, id) = installed(&store, &runtime);
+    let digest = control
+        .active_app_lease("alice", &id)
+        .unwrap()
+        .catalog()
+        .schema_digest("changed")
+        .unwrap()
+        .to_owned();
+    // One automation matches the event the update still signs; the other was
+    // configured against a schema the update no longer has, with one accepted
+    // event it has not delivered.
+    let db = rusqlite::Connection::open(store.path()).unwrap();
+    for (automation, schema) in [("same", digest.as_str()), ("stale", &"0".repeat(64))] {
+        db.execute(
+            "INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,
+               event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,scheduled)
+             VALUES('alice',?1,?2,1,'changed',1,?3,'session','publication','endpoint','queue','active',0)",
+            rusqlite::params![id, automation, schema],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,
+           occurrence_id,occurred_at_ms,event_name,schema_digest,content_digest,automation_revision,
+           accepted_generation,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms)
+         VALUES('alice',?1,'receipt','stale',1,'occurrence',1,'changed',?2,?2,1,1,1,9007199254740991,
+           'accepted',1,0,0)",
+        rusqlite::params![id, "0".repeat(64)],
+    )
+    .unwrap();
+    stage_update(&store, &id, "schema_update", "1.1.0", 0);
+    control
+        .lifecycle()
+        .start_first_blocking("alice", "schema_update", runtime.handle().clone())
+        .unwrap();
+    wait(|| {
+        store
+            .first_app_install_status("alice", "schema_update")
+            .unwrap()
+            .phase
+            == InstallPhase::Committed
+    });
+    let status = |automation: &str| -> (String, i64) {
+        db.query_row(
+            "SELECT status,revision FROM app_automations WHERE automation_id=?1",
+            [automation],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(status("same"), ("active".into(), 1));
+    assert_eq!(status("stale"), ("broken".into(), 2));
+    let (level, fields): (String, String) = db
+        .query_row(
+            "SELECT level,fields_json FROM app_logs WHERE installation_id=?1 AND message LIKE 'Automation stale stopped:%'",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(level, "warn");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&fields).unwrap(),
+        serde_json::json!({"automation_id": "stale", "undelivered": 1})
+    );
+    let logged: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM app_logs WHERE message LIKE 'Automation same %'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(logged, 0);
+    control.lifecycle().stop_blocking("alice", &id).unwrap();
+    assert!(all_reaped(&observations));
+    control.lifecycle().shutdown_blocking().unwrap();
+}
