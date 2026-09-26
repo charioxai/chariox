@@ -44,8 +44,33 @@ test("Path-1 provider PATH is resolved after verification without importing prof
   assert.match(providerPathSource, /MAX_PROBE_OUTPUT_BYTES/)
   assert.match(providerPathSource, /MAX_PROVIDER_PATH_BYTES/)
   assert.match(providerPathSource, /parse_login_path\(&output\)/)
-  assert.match(supervisorSource, /release: &VerifiedRelease[\s\S]*?resolve_login_path\(&config\.process_home\)[\s\S]*?\.env\("PATH", provider_path\)/)
-  assert.match(workerSource, /release: &VerifiedRelease[\s\S]*?resolve_login_path\(&config\.process_home\)[\s\S]*?\.env\("PATH", provider_path\)/)
+  const supervisorLaunchStart = supervisorSource.indexOf("fn spawn_kernel_with_handoff(")
+  const supervisorLaunchEnd = supervisorSource.indexOf("\nfn configured_managed_slice_boundary(", supervisorLaunchStart)
+  assert.ok(supervisorLaunchStart >= 0 && supervisorLaunchEnd > supervisorLaunchStart)
+  const supervisorLaunchSource = supervisorSource.slice(supervisorLaunchStart, supervisorLaunchEnd)
+  const workerLaunchStart = workerSource.indexOf("fn spawn_kernel(")
+  const workerLaunchEnd = workerSource.indexOf(
+    '\n#[cfg(target_os = "linux")]\nfn prepare_disposable_worker_provider_home',
+    workerLaunchStart,
+  )
+  assert.ok(workerLaunchStart >= 0 && workerLaunchEnd > workerLaunchStart)
+  const workerLaunchSource = workerSource.slice(workerLaunchStart, workerLaunchEnd)
+  const verifiedPathLaunch = /release: &VerifiedRelease,[\s\S]*?resolve_login_path\(\s*&config\.process_home\s*,?\s*\)[\s\S]*?\.env\("PATH",\s*provider_path\)/
+  assert.match(supervisorLaunchSource, verifiedPathLaunch)
+  assert.match(workerLaunchSource, verifiedPathLaunch)
+  assert.ok(
+    supervisorLaunchSource.indexOf("resolve_login_path") <
+      supervisorLaunchSource.indexOf("prepare_kernel_local_auth_file(config)"),
+    "resolve the provider PATH before preparing local-auth credentials",
+  )
+  assert.match(
+    providerPathSource,
+    /const BOOTSTRAP_PATH: &str = "\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin";/,
+  )
+  assert.match(
+    providerPathSource,
+    /Err\(reason\) => \{\s*crate::logging::warn_with_fields\(\s*"managed_bootstrap\.provider_path_probe_failed"[\s\S]*?"fallback_path": BOOTSTRAP_PATH,[\s\S]*?OsString::from\(BOOTSTRAP_PATH\)/,
+  )
 
   const fixtureHome = await mkdtemp(join(tmpdir(), "chariox-provider-path-security-"))
   context.after(() => rm(fixtureHome, { recursive: true, force: true }))
