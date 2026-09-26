@@ -316,7 +316,12 @@ fn hmac_signature(
     let mut mac = Hmac::<Sha256>::new_from_slice(credential.as_bytes())
         .map_err(|_| quiescence_error("could not initialize quiescence request signature"))?;
     mac.update(&canonical);
-    Ok(format!("sha256:{}", hex::encode(mac.finalize().into_bytes())))
+    let digest = mac.finalize().into_bytes();
+    let signature = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("sha256:{signature}"))
 }
 
 fn validate_result_sequence(sequence: u64) -> Result<(), DaemonError> {

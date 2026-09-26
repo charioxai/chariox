@@ -88,15 +88,15 @@ impl KernelRuntimeState {
         &self,
         mut sequence: u64,
         observation: super::ManagedActivityObservation,
-    ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
+    ) -> Result<(u64, super::ManagedActivityObservation, u64), crate::error::DaemonError> {
         loop {
             let latest_sequence = self.managed_activity_change_sequence();
             if latest_sequence != sequence {
-                let (latest_sequence, latest_observation) =
-                    self.managed_activity_report_snapshot()?;
+                let (latest_sequence, latest_observation, local_transition_sequence) =
+                    self.managed_activity_report_snapshot_with_transition()?;
                 sequence = latest_sequence;
                 if latest_observation != observation {
-                    return Ok((sequence, latest_observation));
+                    return Ok((sequence, latest_observation, local_transition_sequence));
                 }
             }
             self.owned
@@ -161,7 +161,7 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
-    fn managed_running_agent_count_unlocked(&self) -> u8 {
+    pub(super) fn managed_running_agent_count_unlocked(&self) -> u8 {
         let active_turn_count = self.active_turns.snapshot().len();
         let sessions = self
             .session_store
@@ -407,8 +407,8 @@ mod tests {
         runtime
             .ensure_managed_activity_tracking("kernel-projection-churn")
             .expect("managed activity tracking should activate");
-        let (sequence, observation) = runtime
-            .managed_activity_report_snapshot()
+        let (sequence, observation, initial_transition_sequence) = runtime
+            .managed_activity_report_snapshot_with_transition()
             .expect("initial activity should be durable");
         assert_eq!(observation.running_agent_count, 0);
 
@@ -432,11 +432,13 @@ mod tests {
             ));
         runtime.record_managed_activity_transition_for_test();
         runtime.owned.runtime_projection_changes.record_change();
-        let (_, latest) = tokio::time::timeout(std::time::Duration::from_secs(1), wait)
-            .await
-            .expect("real activity transition should wake")
-            .expect("activity transition should remain readable");
+        let (_, latest, latest_transition_sequence) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+                .await
+                .expect("real activity transition should wake")
+                .expect("activity transition should remain readable");
         assert_eq!(latest.running_agent_count, 1);
+        assert!(latest_transition_sequence > initial_transition_sequence);
     }
 
     #[tokio::test]
@@ -448,8 +450,8 @@ mod tests {
         runtime
             .ensure_managed_activity_tracking("kernel-rapid-wait")
             .expect("managed activity tracking should activate");
-        let (sequence, initial_idle) = runtime
-            .managed_activity_report_snapshot()
+        let (sequence, initial_idle, initial_transition_sequence) = runtime
+            .managed_activity_report_snapshot_with_transition()
             .expect("initial idle activity should be durable");
 
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -465,7 +467,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(2));
         runtime.clear_prompt_activity_for_managed_activity_test("provider-run-1");
 
-        let (_, later_idle) = tokio::time::timeout(
+        let (_, later_idle, later_transition_sequence) = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             runtime.wait_for_managed_activity_transition_after(sequence, initial_idle),
         )
@@ -474,6 +476,7 @@ mod tests {
         .expect("later idle observation should remain readable");
         assert_eq!(later_idle.running_agent_count, 0);
         assert!(later_idle.changed_at_ms > initial_idle.changed_at_ms);
+        assert!(later_transition_sequence > initial_transition_sequence);
     }
 
     #[tokio::test]
