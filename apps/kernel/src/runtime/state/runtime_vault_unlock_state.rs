@@ -90,10 +90,12 @@ impl KernelRuntimeState {
             &request.provider,
             &request.account_profile,
         )?;
-        if !crate::provider::provider_account_credential_uses_vault(
+        if !crate::provider::launch_uses_vault_credential(
+            &self.owned.provider_account_profiles,
             &account_owner_user_id,
             &request.provider,
             &profile.profile_id,
+            request.client_interface,
         )? {
             return Ok(VaultUnlockGuard::not_required());
         }
