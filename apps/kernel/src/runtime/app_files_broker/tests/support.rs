@@ -109,6 +109,9 @@ impl Fixture {
         result.wait_event("worker.fixture.ready_ack");
         result
     }
+    pub(super) fn data(&self) -> PrivateData {
+        self.data.as_ref().unwrap().clone()
+    }
     pub(super) fn service(&self) -> AppFilesBroker {
         AppFilesBroker::new(
             self.store.clone(),
@@ -158,10 +161,13 @@ pub(super) struct TestPeer {
 }
 impl TestPeer {
     pub(super) fn start(service: AppFilesBroker) -> Self {
+        Self::start_with(Arc::new(Delegate(service)))
+    }
+    pub(super) fn start_with(broker: Arc<dyn Broker>) -> Self {
         let (host, worker) = tokio::io::duplex(64 * 1024);
         let (peer, _events, task) = WorkerPeer::start(
             Channel::new(host, "1".into(), Sender::Worker).unwrap(),
-            Arc::new(Delegate(service)),
+            broker,
             PeerLimits::default(),
         )
         .unwrap();

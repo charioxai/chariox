@@ -347,6 +347,25 @@ pub struct AppInboxRouteSummary {
     pub expired: u64,
 }
 
+/// Protocol 354: the owner's answer to an App's file request (`host.pick_file`):
+/// the chosen files' names and bytes. Only the final name component is kept;
+/// no host path reaches the App.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAppFileRequest {
+    /// The answering session. The prompt closes in the session that shows it.
+    pub session_id: String,
+    pub operation_id: String,
+    pub files: Vec<AppFileContents>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppFileContents {
+    pub name: String,
+    pub contents_base64: String,
+}
+
 /// Protocol 347: stops the worker and deactivates the installation at the
 /// caller's expected generation. App data and user workflows are retained.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

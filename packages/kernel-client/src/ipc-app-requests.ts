@@ -127,3 +127,9 @@ export function listAppInboxRoutesRequest(installationId: string) {
 export function testAppInboxRouteRequest(installationId: string, routeId: string, occurrenceId: string, payload: unknown) {
   return { TestAppInboxRoute: { installation_id: installationId, route_id: routeId, occurrence_id: occurrenceId, payload } }
 }
+
+/** Protocol 354: the owner answers an App's file request with the chosen files' names and bytes. */
+export function grantAppFileRequest(sessionId: string, operationId: string, files: { name: string; contentsBase64: string }[]) {
+  return { GrantAppFile: { session_id: sessionId, operation_id: operationId,
+    files: files.map(file => ({ name: file.name, contents_base64: file.contentsBase64 })) } }
+}

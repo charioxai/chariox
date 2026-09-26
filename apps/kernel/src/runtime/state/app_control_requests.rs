@@ -18,6 +18,12 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<LocalDaemonResponse> {
+        if let LocalDaemonRequest::GrantAppFile(request) = request {
+            return Some(match crate::runtime::app_control::owner(command) {
+                Ok(owner) => self.grant_app_file(owner, request.clone()).await,
+                Err(code) => failed(code),
+            });
+        }
         let installation = match request {
             LocalDaemonRequest::GetAppWorker(request) => &request.installation_id,
             LocalDaemonRequest::ControlAppWorker(request) => &request.installation_id,

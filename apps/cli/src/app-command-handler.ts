@@ -1,3 +1,6 @@
+import { readFile, stat } from "node:fs/promises"
+import { basename } from "node:path"
+import { grantAppFileRequest } from "@chariox/kernel-client/ipc-requests"
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 import type { AppDevLoop } from "./app-dev-loop.js"
@@ -49,6 +52,35 @@ export async function handleAppSlashCommand(
     const usage = 'usage: /app dev "DIRECTORY" [--key PRIVATE] | /app dev stop'
     if (!args[0] || args[0].startsWith("--") || !(args.length === 1 || (args.length === 3 && args[1] === "--key" && args[2]))) throw new Error(usage)
     await loop.start(args[0], args[2] ? { key: args[2] } : {})
+    return
+  }
+  if (command.args[0] === "file") {
+    // Tokenization preserves quoted local paths; only each file's name and
+    // bytes are sent, never its path.
+    const [, action, operation, ...paths] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
+    if (action !== "grant" || !operation || paths.length === 0 || paths.length > 8) {
+      throw new Error('usage: /app file grant OPERATION "FILE" ["FILE"...]')
+    }
+    const session = deps.currentAppSessionId?.()
+    if (!session) throw new Error("Attach to the session showing the file request")
+    const files = []
+    let total = 0
+    for (const path of paths) {
+      const size = (await stat(path)).size
+      if (size > 512 * 1024) throw new Error(`${basename(path)} is larger than 512 KiB`)
+      total += size
+      if (total > 512 * 1024) throw new Error("The chosen files are larger than 512 KiB together")
+      files.push({ name: basename(path), contentsBase64: (await readFile(path)).toString("base64") })
+    }
+    const response = await deps.sendAppRequest(grantAppFileRequest(session, operation, files))
+    const granted = response.AppFileGranted as { files?: number } | undefined
+    if (!granted) {
+      const code = (response.AppRequestFailed as { code?: string } | undefined)?.code
+      throw new Error(code === "not_found" ? "No such file request for you" : code === "conflict"
+        ? "That file request was already answered or expired" : code === "invalid_request"
+          ? "The App does not accept these files" : "Sharing the files failed")
+    }
+    deps.appendNotice(`Shared ${granted.files} file${granted.files === 1 ? "" : "s"} with the App.`)
     return
   }
   if (["install", "update", "operation", "cancel"].includes(command.args[0] ?? "")) {

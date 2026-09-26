@@ -29,3 +29,31 @@ test("App slash handler shows denials in footer without a success notice", async
   }, { kind: "app", raw: "/app list", args: ["list"] })
   assert.deepEqual(flashes, [{ message: "This connection is not authorized to access Apps.", tone: "error" }])
 })
+
+test("/app file grant sends the chosen files' names and bytes, never their paths", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
+  const { join } = await import("node:path")
+  const { tmpdir } = await import("node:os")
+  const dir = await mkdtemp(join(tmpdir(), "chariox-grant-"))
+  try {
+    const path = join(dir, "my notes.md")
+    await writeFile(path, "# Notes")
+    const requests: unknown[] = []
+    const notices: string[] = []
+    await handleAppSlashCommand({
+      currentAppSessionId: () => "session-1",
+      sendAppRequest: async (request) => {
+        requests.push(request)
+        return { AppFileGranted: { operation_id: "file-pick-1", files: 1 } }
+      },
+      appendNotice: message => { notices.push(message) },
+      flashFooter: message => assert.fail(message),
+    }, { kind: "app", raw: `/app file grant file-pick-1 "${path}"`, args: ["file", "grant", "file-pick-1", path] })
+    assert.deepEqual(requests, [{ GrantAppFile: { session_id: "session-1", operation_id: "file-pick-1",
+      files: [{ name: "my notes.md", contents_base64: Buffer.from("# Notes").toString("base64") }] } }])
+    assert.equal(JSON.stringify(requests).includes(dir), false)
+    assert.deepEqual(notices, ["Shared 1 file with the App."])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

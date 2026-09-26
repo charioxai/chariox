@@ -6,6 +6,7 @@ use support::*;
 
 mod authority;
 mod cancellation;
+mod file_grants;
 mod outcomes;
 mod support;
 

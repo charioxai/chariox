@@ -194,7 +194,22 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       notify: (request, options) => call('host.notify', record(request, 'notification'), options),
       openLink: (url, options) => call('host.open_link', { url }, options),
       writeClipboard: (text, options) => call('host.clipboard_write', { text }, options),
-      pickFile: (request, options) => call('host.pick_file', record(request, 'file picker request'), options),
+      // The owner answers in a trusted kernel prompt, which can take minutes:
+      // the kernel returns a pending reference and this waits by polling it,
+      // holding no worker request slot meanwhile.
+      pickFile: async (request, options = {}) => {
+        let pick = await call('host.pick_file', record(request, 'file picker request'), options);
+        for (let delay = 250; pick?.state === 'pending'; delay = Math.min(delay * 2, 2000)) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          if (options.signal?.aborted) throw new AppError('CANCELLED', 'File request cancelled');
+          // A busy kernel is not an answer: keep waiting for the owner.
+          pick = await call('host.pick_file_status', { operationId: pick.operationId }, options)
+            .catch(error => { if (error?.retryable) return pick; throw error; });
+        }
+        if (pick?.state === 'granted') return { grantIds: pick.grantIds };
+        if (pick?.state === 'declined') throw new AppError('DECLINED', 'The owner declined to share a file');
+        throw new AppError('EXPIRED', 'The file request expired unanswered');
+      },
     }),
     validation: Object.freeze({
       request: (request, options) => call('validation.request', record(request, 'human validation request'), options),

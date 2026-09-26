@@ -202,3 +202,29 @@ fn app_upload_chunk_payload_is_bounded_before_clone_and_absent_from_audit_and_de
         Err(AppRequestErrorCode::LimitExceeded)
     ));
 }
+
+#[test]
+fn a_shown_prompt_remembers_its_session_until_it_ends() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-app-control-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir(&path).unwrap();
+    let store =
+        crate::durable_state::DurableKernelStateStore::open_owned(path.join("kernel.sqlite"))
+            .unwrap();
+    let control = AppControlService::new(store);
+    assert!(control.begin_validation_prompt("op", "alice"));
+    assert!(!control.begin_validation_prompt("op", "alice"));
+    assert_eq!(control.validation_prompt_session("op"), None);
+    control.show_validation_prompt("op", "session-a");
+    assert_eq!(
+        control.validation_prompt_session("op").as_deref(),
+        Some("session-a")
+    );
+    control.end_validation_prompt("op");
+    assert_eq!(control.validation_prompt_session("op"), None);
+    control.show_validation_prompt("op", "session-b");
+    assert_eq!(control.validation_prompt_session("op"), None);
+    std::fs::remove_dir_all(path).unwrap();
+}

@@ -136,7 +136,8 @@ export interface AppSdk {
   readonly files: {
     atomicReplace(path: string, contents: string | Uint8Array, options?: CallOptions): Promise<{ bytesWritten: number }>;
     snapshot(request: { name: string; consistency: 'quiescent' | 'crash_consistent' }, options?: CallOptions): Promise<{ snapshotId: string }>;
-    import(grantId: string, destination: string, options?: CallOptions): Promise<{ bytesWritten: number }>;
+    /** Copies a granted file into private data, once per grant. */
+    import(grantId: string, destination: string, options?: CallOptions): Promise<{ bytesWritten: number; name: string }>;
     export(path: string, options?: CallOptions): Promise<{ operationId: string }>;
   };
   readonly http: {
@@ -161,6 +162,11 @@ export interface AppSdk {
     notify(request: { title: string; body?: string }, options?: CallOptions): Promise<{ notificationId: string }>;
     openLink(url: string, options?: CallOptions): Promise<null>;
     writeClipboard(text: string, options?: CallOptions): Promise<null>;
+    /**
+     * Asks the owner to share files (requires `externalFiles: ["user_selected"]`).
+     * Resolves once they choose, with grants to pass to `files.import`; rejects
+     * with `DECLINED` or `EXPIRED`. `accept` lists file name suffixes such as `.md`.
+     */
     pickFile(request: { multiple?: boolean; accept?: string[] }, options?: CallOptions): Promise<{ grantIds: string[] }>;
   };
   readonly validation: {
