@@ -43,16 +43,21 @@ pub(super) fn commit(
     )
     .map_err(|_| InstallOperationError::Storage)?;
     for (automation, undelivered) in broken {
-        sql(tx.execute(
-            "INSERT INTO app_logs(owner_id, installation_id, at_ms, level, message, fields_json)
-             VALUES (?1, ?2, ?3, 'warn', ?4, ?5)",
-            params![
-                admission.owner,
-                health.catalog().installation_id(),
-                time,
-                format!("Automation {automation} stopped: this update changed its event's schema, so {undelivered} accepted events will not be delivered. Add the automation again for the new schema."),
-                serde_json::json!({ "automation_id": automation, "undelivered": undelivered }).to_string(),
-            ],
+        let lost = match undelivered {
+            0 => String::new(),
+            1 => ", so 1 accepted event will not be delivered".into(),
+            count => format!(", so {count} accepted events will not be delivered"),
+        };
+        let mut fields = serde_json::Map::new();
+        fields.insert("automation_id".into(), automation.clone().into());
+        fields.insert("undelivered".into(), undelivered.into());
+        sql(crate::durable_state::app_logs::append_kernel_notice_in(
+            &tx,
+            &admission.owner,
+            health.catalog().installation_id(),
+            time as u64,
+            &format!("Automation {automation} stopped: this update changed its event's schema{lost}. Add the automation again for the new schema."),
+            fields,
         ))?;
     }
     let committed = proofs(&tx, admission, health)?;

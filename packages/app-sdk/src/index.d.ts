@@ -161,6 +161,7 @@ export interface AppSdk {
     request(request: HttpRequest, options?: CallOptions): Promise<HttpResponse>;
   };
   readonly log: {
+    /** `fields` may not use the key `kernel`, which marks the kernel's own notices in `app logs`. */
     write(level: 'debug' | 'info' | 'warn' | 'error', message: string, fields?: Record<string, Json>, options?: CallOptions): Promise<null>;
   };
   readonly host: {
