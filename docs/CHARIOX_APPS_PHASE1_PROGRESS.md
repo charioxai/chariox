@@ -1555,7 +1555,7 @@ Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS s
 | P1.16 | Implemented | #447, #452 | Live: opening a view binds the focus agent | — |
 | P1.17 | Implemented | #456, Cloud #220 | Live: Todo reserves a panel; the web terminal draws the focus agent's transcript over it, outside the App | TUI browser viewer; accessibility isolation drill |
 | P1.18 | Phase 2 | #430 | — | — |
-| P1.19 | Partial (App-created assets are Phase 2) | — | — | Same-App acceptance through every terminal |
+| P1.19 | Partial (App-created assets are Phase 2) | #447, #456, #457, Cloud #220 | Live single-App acceptance (Todo, web terminal): foreground binding; a Claude agent creates a Todo through the one prompt area; a second agent resumes it from App-owned state; closing and reopening the view keeps App state and kernel history, and the App DOM never contains the conversation | The same drill from the TUI (its viewer is the Cloud web view) |
 
 Known test failures that none of these PRs caused:
 - `recovery_arms_a_fresh_nonce_without_reusing_a_prior_human_wait` fails because a stopped kernel's approval stays pending; #437 fixes this.
