@@ -219,7 +219,7 @@ impl StorageRoot {
         }
         let digest = Sha256::digest(format!("{owner}\0{installation}").as_bytes());
         let name = format!("installation-{digest:x}");
-        self.check_capacity(&name, capacities)?;
+        self.check_capacity(&name, capacities, generation, committed)?;
         let dir = Dir::open_or_create_private_child(&self.path, OsStr::new(&name))?;
         if !dir.try_lock()? {
             return Err(Error::Busy);
@@ -257,6 +257,7 @@ impl StorageRoot {
                     journal::image("tmp", capacities[1], FileIdentity::of(&tmp?.0)?),
                 ],
                 restoring: None,
+                restoring_generation: None,
             }
         };
         journal.save(&dir)?;
@@ -283,11 +284,9 @@ impl StorageRoot {
             // data stays as the uncommitted generation left it.
             SnapshotStep::Restore => storage.restore_data(committed)?,
             SnapshotStep::RestoreAndTake => {
-                // Committed data again before the new clone, so a crash
-                // between the two takes it afresh.
+                // The restore records committed data again before the new
+                // clone, so a crash between the two takes it afresh.
                 storage.restore_data(committed)?;
-                storage.journal.generation = committed;
-                storage.journal.save(&storage.root)?;
                 storage.snapshot_data(committed)?;
             }
             SnapshotStep::Discard => storage.discard_snapshots()?,
@@ -302,7 +301,16 @@ impl StorageRoot {
         Ok(storage)
     }
 
-    fn check_capacity(&self, selected: &str, capacities: [u64; 2]) -> Result<()> {
+    /// Admission counts the selected installation's data snapshots as they
+    /// will be after this start's snapshot step: one a staged start takes is
+    /// admitted with it, and one a committed start removes frees its room.
+    fn check_capacity(
+        &self,
+        selected: &str,
+        capacities: [u64; 2],
+        generation: u64,
+        committed: u64,
+    ) -> Result<()> {
         let mut total = 0_u64;
         let mut unallocated = 0_u64;
         let entries = self.dir.entries(MAX_INSTALLATIONS)?;
@@ -337,17 +345,25 @@ impl StorageRoot {
                 }
                 // A kept data snapshot grows toward a full data image as the
                 // staged generation rewrites blocks: it is reserved like one.
-                for name in dir.entries(16)? {
-                    if !volume::is_snapshot(&name) {
-                        continue;
+                let reserved_snapshot = journal.images[0].reserved();
+                let planned = (value == selected).then(|| {
+                    let kept = dir
+                        .read_file(OsStr::new(&volume::snapshot_name(committed)), false)
+                        .is_ok();
+                    snapshot_step(journal.generation, generation, committed, kept)
+                });
+                let mut present = Vec::new();
+                if matches!(planned, None | Some(SnapshotStep::Keep)) {
+                    for name in dir.entries(16)? {
+                        if volume::is_snapshot(&name) {
+                            present.push(dir.read_file(&name, false)?.metadata()?.blocks() * 512);
+                        }
                     }
-                    let reserved = journal.images[0].reserved();
-                    let allocated = dir.read_file(&name, false)?.metadata()?.blocks() * 512;
-                    total = total.checked_add(reserved).ok_or(Error::Capacity)?;
-                    unallocated = unallocated
-                        .checked_add(reserved.saturating_sub(allocated))
-                        .ok_or(Error::Capacity)?;
                 }
+                let (reserved, free) = snapshot_reservation(planned, &present, reserved_snapshot)
+                    .ok_or(Error::Capacity)?;
+                total = total.checked_add(reserved).ok_or(Error::Capacity)?;
+                unallocated = unallocated.checked_add(free).ok_or(Error::Capacity)?;
             } else if value != selected {
                 return Err(Error::RecoveryRequired);
             }
@@ -370,6 +386,30 @@ impl StorageRoot {
         let stat = unsafe { stat.assume_init() };
         let available = stat.f_bavail.saturating_mul(stat.f_bsize as u64);
         require_capacity(total, unallocated, available)
+    }
+}
+
+/// What an installation's data snapshots reserve (in total, and still
+/// unallocated) once `planned` ran, from the allocation of each present one.
+/// Each is reserved like a full data image.
+fn snapshot_reservation(
+    planned: Option<SnapshotStep>,
+    present: &[u64],
+    image: u64,
+) -> Option<(u64, u64)> {
+    match planned {
+        Some(SnapshotStep::Restore | SnapshotStep::Discard) => Some((0, 0)),
+        Some(SnapshotStep::Take | SnapshotStep::RestoreAndTake) => Some((image, image)),
+        Some(SnapshotStep::Keep) | None => {
+            present
+                .iter()
+                .try_fold((0_u64, 0_u64), |(total, free), allocated| {
+                    Some((
+                        total.checked_add(image)?,
+                        free.checked_add(image.saturating_sub(*allocated))?,
+                    ))
+                })
+        }
     }
 }
 

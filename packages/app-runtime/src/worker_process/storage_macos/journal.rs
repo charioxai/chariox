@@ -38,6 +38,10 @@ pub(super) struct Journal {
     /// rename, so recovery can finish a restore interrupted after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restoring: Option<FileIdentity>,
+    /// The generation whose data that snapshot holds; recovery records it
+    /// with a restore whose rename landed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restoring_generation: Option<u64>,
 }
 impl Journal {
     pub fn validate(&self) -> Result<()> {

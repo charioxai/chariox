@@ -62,6 +62,7 @@ fn record(dir: &Dir) -> Journal {
             journal::image("tmp", 64 * 1024 * 1024, FileIdentity::of(&tmp.0).unwrap()),
         ],
         restoring: None,
+        restoring_generation: None,
     }
 }
 
@@ -227,6 +228,36 @@ fn accounting_reserves_full_unallocated_image_capacity_and_host_headroom() {
         require_capacity(reserved, reserved, 0),
         Err(Error::Capacity)
     );
+}
+
+#[test]
+fn a_snapshot_is_admitted_with_the_start_that_takes_it() {
+    use SnapshotStep::*;
+    let image = 580;
+    // A staged start's new snapshot counts before it exists.
+    assert_eq!(
+        snapshot_reservation(Some(Take), &[], image),
+        Some((image, image))
+    );
+    assert_eq!(
+        snapshot_reservation(Some(RestoreAndTake), &[100], image),
+        Some((image, image))
+    );
+    // A committed start that restores or drops it frees its room.
+    assert_eq!(
+        snapshot_reservation(Some(Restore), &[image], image),
+        Some((0, 0))
+    );
+    assert_eq!(
+        snapshot_reservation(Some(Discard), &[image], image),
+        Some((0, 0))
+    );
+    // Otherwise each present one is reserved as a full data image.
+    assert_eq!(
+        snapshot_reservation(None, &[100, 0], image),
+        Some((2 * image, image - 100 + image))
+    );
+    assert_eq!(snapshot_reservation(Some(Keep), &[], image), Some((0, 0)));
 }
 
 #[test]

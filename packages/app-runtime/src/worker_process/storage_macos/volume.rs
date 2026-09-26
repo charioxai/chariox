@@ -334,7 +334,7 @@ pub(super) fn create_arguments(
 
 /// The data image as it was before a staged update first mounted, kept until
 /// that update commits or is rolled back.
-fn snapshot_name(generation: u64) -> String {
+pub(super) fn snapshot_name(generation: u64) -> String {
     format!("data-snapshot-{generation}.dmg")
 }
 
@@ -400,6 +400,7 @@ impl MountedStorage {
         // Durable intent first: a crash after the rename is finished by
         // `settle_restore` instead of failing the data image's identity check.
         self.journal.restoring = Some(identity.clone());
+        self.journal.restoring_generation = Some(generation);
         self.journal.save(&self.root)?;
         let from = crate::private_fs::cstring(OsStr::new(&name))?;
         let to = crate::private_fs::cstring(OsStr::new(&self.journal.images[0].image))?;
@@ -408,8 +409,12 @@ impl MountedStorage {
             return Err(Error::Io);
         }
         self.root.sync()?;
+        // One save records the data as `generation`'s again: a crash after it
+        // never leaves a failed generation's name on committed data.
         self.journal.images[0].identity = Some(identity);
+        self.journal.generation = generation;
         self.journal.restoring = None;
+        self.journal.restoring_generation = None;
         self.journal.save(&self.root)?;
         self.discard_snapshots()
     }
@@ -425,12 +430,16 @@ impl MountedStorage {
         match self.root.read_file(data, false) {
             Ok(file) if FileIdentity::of(&file)? == snapshot => {
                 self.journal.images[0].identity = Some(snapshot);
+                if let Some(generation) = self.journal.restoring_generation {
+                    self.journal.generation = generation;
+                }
             }
             Ok(_) => {}
             Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
         self.journal.restoring = None;
+        self.journal.restoring_generation = None;
         self.journal.save(&self.root)
     }
 
