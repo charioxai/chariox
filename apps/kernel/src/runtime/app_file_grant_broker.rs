@@ -221,6 +221,11 @@ impl AppFileGrantBroker {
             .next()
             .unwrap_or_default()
             .to_owned();
+        // The name is shown in the owner's trusted prompt and suggested as
+        // the saved file's name: nothing may reorder or hide what it reads.
+        if !displayable(&name) {
+            return Err(error("INVALID_ARGUMENT", false));
+        }
         let contents = self
             .data
             .read_file(&request.path, MAX_FILE_BYTES)
@@ -289,6 +294,42 @@ impl AppFileGrantBroker {
             admission,
             data,
             user_selected,
+        }
+    }
+}
+
+/// No control or invisible format characters (bidi overrides, zero-width
+/// characters, byte order marks), which could make a name read differently.
+fn displayable(name: &str) -> bool {
+    !name.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '\u{00ad}'
+                    | '\u{061c}'
+                    | '\u{180e}'
+                    | '\u{200b}'..='\u{200f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2060}'..='\u{206f}'
+                    | '\u{feff}'
+                    | '\u{fff9}'..='\u{fffb}'
+            )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn offered_names_cannot_hide_or_reorder_text() {
+        assert!(super::displayable("Plan (v2).md"));
+        assert!(super::displayable("résumé 計画.md"));
+        for name in [
+            "invoice\u{202e}fdp.exe",
+            "a\u{200b}b.md",
+            "\u{feff}x.md",
+            "a\nb.md",
+        ] {
+            assert!(!super::displayable(name), "{name:?}");
         }
     }
 }
