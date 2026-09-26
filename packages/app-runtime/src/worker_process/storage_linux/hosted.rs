@@ -46,7 +46,17 @@ impl Context {
         Self { cgroup, leaf }
     }
     fn lease(&self, installation: &str, generation: u64) -> Lease {
-        Lease::acquire("hosted-owner", installation, generation, &self.leaf).unwrap()
+        self.staged(installation, generation, generation)
+    }
+    fn staged(&self, installation: &str, generation: u64, committed: u64) -> Lease {
+        Lease::acquire(
+            "hosted-owner",
+            installation,
+            generation,
+            committed,
+            &self.leaf,
+        )
+        .unwrap()
     }
 }
 impl Drop for Context {
@@ -116,6 +126,44 @@ fn hosted_private_capacity_persistence_tmp_reset_and_noexec() {
     assert!(!lease.temporary_path().join("sentinel").exists());
     lease.release().unwrap();
     println!("private ext4 data ENOSPC at {data_written}/{DATA_BYTES}; tmp at {tmp_written}/{TMP_BYTES}; noexec and remount persistence passed");
+}
+#[test]
+#[ignore = "requires dedicated hosted Linux root helper and fixed ext4 volumes"]
+fn hosted_failed_update_restores_the_committed_data_snapshot() {
+    let context = Context::open("44444444444444444444444444444444");
+    let mut lease = context.lease("rollback", 1);
+    fs::write(lease.data_path().join("todos"), b"committed").unwrap();
+    lease.release().unwrap();
+    // A staged update starts on a snapshot of the committed data and writes.
+    let mut staged = context.staged("rollback", 2, 1);
+    assert_eq!(
+        fs::read(staged.data_path().join("todos")).unwrap(),
+        b"committed"
+    );
+    fs::write(staged.data_path().join("todos"), b"migrated").unwrap();
+    fs::write(staged.data_path().join("staged-only"), b"written by 2").unwrap();
+    staged.release().unwrap();
+    // The update failed: the committed generation starts on its own data.
+    let mut restored = context.lease("rollback", 1);
+    assert_eq!(
+        fs::read(restored.data_path().join("todos")).unwrap(),
+        b"committed"
+    );
+    assert!(!restored.data_path().join("staged-only").exists());
+    restored.release().unwrap();
+    // An update that commits keeps what it wrote.
+    let mut staged = context.staged("rollback", 2, 1);
+    fs::write(staged.data_path().join("todos"), b"migrated").unwrap();
+    staged.release().unwrap();
+    let mut committed = context.lease("rollback", 2);
+    assert_eq!(
+        fs::read(committed.data_path().join("todos")).unwrap(),
+        b"migrated"
+    );
+    committed.release().unwrap();
+    println!(
+        "failed update restored the committed data snapshot; a committed update kept its writes"
+    );
 }
 #[test]
 #[ignore = "requires dedicated hosted Linux root helper and owned process cancellation"]

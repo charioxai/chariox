@@ -37,6 +37,7 @@ enum Operation<'a> {
         installation: &'a str,
         generation: u64,
         cgroup_leaf: &'a str,
+        committed_generation: u64,
     },
     Release {
         lease: &'a str,
@@ -49,10 +50,13 @@ enum Operation<'a> {
     },
 }
 impl Lease {
+    /// `committed_generation` is the installation's committed generation: a
+    /// newer, staged generation starts on a copy the helper can roll back to.
     pub fn acquire(
         owner: &str,
         installation: &str,
         generation: u64,
+        committed_generation: u64,
         cgroup_leaf: &str,
     ) -> Result<Self> {
         let uid = unsafe { libc::geteuid() };
@@ -64,6 +68,7 @@ impl Lease {
             installation: installation.into(),
             generation,
             cgroup_leaf: cgroup_leaf.into(),
+            committed_generation: Some(committed_generation),
         };
         request.validate()?;
         let name = model::installation_name(owner, installation)?;
@@ -88,6 +93,7 @@ impl Lease {
                 installation,
                 generation,
                 cgroup_leaf,
+                committed_generation,
             },
         )?;
         let reply: Reply = wire::receive(&stream, 150)?;

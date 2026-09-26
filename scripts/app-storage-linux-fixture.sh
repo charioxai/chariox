@@ -8,7 +8,7 @@ storage_repo="$(realpath -e "$1")" storage_scratch="$(realpath -e "$2")"
 storage_tests="$(realpath -e "$3")" storage_helper="$(realpath -e "$4")"
 [[ "$storage_scratch" == /home/runner/work/_temp/chariox-storage.* || "$storage_scratch" == /home/runner/work/_temp/*/chariox-storage.* ]]
 [[ "$storage_tests" == "$storage_scratch/build/"* && "$storage_helper" == "$storage_scratch/build/"* ]]
-for storage_path in /etc/chariox /var/lib/chariox-app-storage /usr/libexec/chariox-app-storage /etc/systemd/system/chariox-managed-bootstrap.service; do
+for storage_path in /etc/chariox /home/chariox /var/lib/chariox-app-storage /usr/libexec/chariox-app-storage /etc/systemd/system/chariox-managed-bootstrap.service; do
   [[ ! -e "$storage_path" && ! -L "$storage_path" ]]
 done
 [[ "$(stat -f -c %T /sys/fs/cgroup)" == cgroup2fs ]]
@@ -19,7 +19,7 @@ useradd --system --gid chariox --home-dir /var/lib/chariox/home --shell /usr/sbi
 storage_uid="$(id -u chariox)" storage_gid="$(id -g chariox)"
 install -d -o root -g root -m 755 /etc/chariox /usr/libexec /etc/systemd/system/chariox-managed-bootstrap.service.d /etc/systemd/system/chariox-app-storage.service.d
 install -d -o root -g root -m 711 /var/lib/chariox-app-storage
-install -d -o chariox -g chariox -m 700 /var/lib/chariox /var/lib/chariox/home
+install -d -o chariox -g chariox -m 700 /var/lib/chariox /var/lib/chariox/home /home/chariox
 install -d -o root -g chariox-slice -m 710 /var/lib/chariox-slice-share
 install -o root -g root -m 555 "$storage_helper" /usr/libexec/chariox-app-storage
 install -o root -g root -m 555 "$storage_tests" /usr/libexec/chariox-app-storage-tests
@@ -91,6 +91,9 @@ run_test() {
     /usr/libexec/chariox-app-storage-tests "$storage_filter" --ignored --nocapture --test-threads=1
 }
 run_test chariox-storage-actual hosted_private_capacity_persistence_tmp_reset_and_noexec
+run_test chariox-storage-actual hosted_failed_update_restores_the_committed_data_snapshot
+# The committed start dropped the snapshot; no copy outlives the update.
+if find /var/lib/chariox-app-storage -name data-snapshot.ext4 | grep . ; then exit 1; fi
 run_test chariox-storage-actual hosted_readonly_code_views_match_verified_roots_in_kernel_namespace
 run_test chariox-storage-actual hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_domain
 run_test chariox-storage-crash hosted_crash_fixture_holds_lease_until_owner_is_killed > "$storage_scratch/evidence/crash-holder.log" 2>&1 &

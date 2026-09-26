@@ -58,14 +58,23 @@ impl PreparedWorker {
     /// after spawn. Paths, bootstrap source and limits are not caller arguments.
     /// `migrate_from` is the data schema of a staged worker that first runs
     /// its release's migration steps from there (the kernel's open migration).
+    /// `committed_generation` is the installation's committed generation: a
+    /// newer, staged worker starts on data the helper can roll back to.
     #[cfg(target_os = "linux")]
     pub fn prepare_linux(
         runtime: crate::runtime_enrollment::EnrolledRuntime,
         release: crate::release_store::VerifiedReleaseLease,
         binding: &crate::installation::StageTrustBinding,
         migrate_from: Option<u32>,
+        committed_generation: u64,
     ) -> Result<Self, WorkerError> {
-        platform_linux::prepare(runtime, release, binding, migrate_from)
+        platform_linux::prepare(
+            runtime,
+            release,
+            binding,
+            migrate_from,
+            committed_generation,
+        )
     }
 }
 

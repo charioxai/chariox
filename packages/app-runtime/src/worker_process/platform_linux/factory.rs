@@ -20,6 +20,7 @@ pub(in crate::worker_process) fn prepare(
     release: VerifiedReleaseLease,
     binding: &StageTrustBinding,
     migrate_from: Option<u32>,
+    committed_generation: u64,
 ) -> Result<PreparedWorker> {
     if release.package_digest() != binding.package_digest() {
         return Err(WorkerError::Identity);
@@ -48,9 +49,14 @@ pub(in crate::worker_process) fn prepare(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(WorkerError::Preparation)?;
-    let mut storage =
-        storage_linux::Lease::acquire(binding.owner_id(), installation, generation, leaf_name)
-            .map_err(|_| WorkerError::Preparation)?;
+    let mut storage = storage_linux::Lease::acquire(
+        binding.owner_id(),
+        installation,
+        generation,
+        committed_generation,
+        leaf_name,
+    )
+    .map_err(|_| WorkerError::Preparation)?;
     storage
         .attach_code(&release, &runtime)
         .map_err(|_| WorkerError::Preparation)?;

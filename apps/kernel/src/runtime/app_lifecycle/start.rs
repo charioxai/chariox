@@ -213,11 +213,19 @@ fn spawn(
         let _ = (context, verified);
         let runtime = chariox_app_runtime::runtime_enrollment::EnrolledRuntime::open_installed()
             .map_err(|_| LifecycleError::Preparation)?;
+        // A staged update starts on a data snapshot; the committed generation
+        // starting again after it fails restores that snapshot.
+        let committed = context
+            .store
+            .get_app_installation(binding.owner_id(), &binding.token().installation_id)
+            .map(|installation| installation.generation)
+            .map_err(|_| LifecycleError::Preparation)?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_linux(
             runtime,
             release,
             binding,
             migrate_from,
+            committed,
         )
         .map_err(|_| LifecycleError::Preparation)?;
         if context.control.stopped() {

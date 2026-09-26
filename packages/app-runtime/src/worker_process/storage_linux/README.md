@@ -55,6 +55,16 @@ posix_fallocate reservation. The helper admits at most64 installation roots,
 promised byte not yet backed by actual allocation, including failed creations
 and temporary images that need recreation. These are private initial policies.
 
+A kernel acquire also names the installation's committed generation. A staged
+(newer, uncommitted) generation first copies the data image to
+`data-snapshot.ext4` (reflinked where the host supports it) and counts it as a
+second promised data reservation. When the update fails and the committed
+generation starts again, the copy replaces the data image, so no write of the
+failed update survives; a committed start deletes the copy. The journal names
+the copy's inode only once it is complete; recovery drops an incomplete copy,
+records a restore whose rename landed, and removes a copy the journal no longer
+names.
+
 Every image creation, formatting transition, deletion intent and mount lease is
 journaled and fsynced. Loop association is atomic via LOOP_CONFIGURE with fixed
 size/AUTOCLEAR; recovery scans by backing dev/inode rather than trusting a stale

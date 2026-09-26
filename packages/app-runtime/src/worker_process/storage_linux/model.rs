@@ -85,6 +85,11 @@ pub(super) enum Request {
         installation: String,
         generation: u64,
         cgroup_leaf: String,
+        /// The installation's committed generation. With it the helper keeps
+        /// a data snapshot across a staged update and restores it when the
+        /// update fails; without it data is never snapshotted.
+        #[serde(default)]
+        committed_generation: Option<u64>,
     },
     Release {
         lease: String,
@@ -104,10 +109,15 @@ impl Request {
                 installation,
                 generation,
                 cgroup_leaf,
+                committed_generation,
             } => {
                 identifier(owner)?;
                 identifier(installation)?;
-                if *generation == 0 || *generation > i64::MAX as u64 {
+                if [Some(*generation), *committed_generation]
+                    .into_iter()
+                    .flatten()
+                    .any(|value| value == 0 || value > i64::MAX as u64)
+                {
                     return Err(Error::Invalid);
                 }
                 hex(cgroup_leaf.strip_prefix("app-").ok_or(Error::Invalid)?, 32)
@@ -194,7 +204,19 @@ pub(super) struct Journal {
     pub images: [Image; 2],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<super::code_model::Record>,
+    /// A copy of the data image as `generation` left it, kept while a newer
+    /// generation is staged. `inode` is absent until the copy is complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Snapshot>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Snapshot {
+    pub generation: u64,
+    pub inode: Option<Identity>,
+}
+/// The data snapshot's image name beside `data.ext4`.
+pub(super) const SNAPSHOT_IMAGE: &str = "data-snapshot.ext4";
 impl Journal {
     pub fn validate(&self, uid: u32, name: &str) -> Result<()> {
         if self.schema != "chariox.app-storage-linux.v1"
@@ -239,6 +261,14 @@ impl Journal {
         }
         if let Some(code) = &self.code {
             code.validate()?;
+        }
+        if let Some(snapshot) = &self.snapshot {
+            if snapshot.generation == 0
+                || snapshot.generation > i64::MAX as u64
+                || snapshot.inode.as_ref().is_some_and(|id| id.inode == 0)
+            {
+                return Err(Error::Identity);
+            }
         }
         Ok(())
     }
@@ -296,6 +326,16 @@ mod tests {
             .unwrap()
             .validate()
             .unwrap();
+        let committed = request.replacen('{', "{\"committed_generation\":1,", 1);
+        serde_json::from_str::<Request>(&committed)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let zero = request.replacen('{', "{\"committed_generation\":0,", 1);
+        assert!(serde_json::from_str::<Request>(&zero)
+            .unwrap()
+            .validate()
+            .is_err());
         for field in ["uid", "path", "device", "quota", "command"] {
             let injected = request.replacen('{', &format!("{{\"{field}\":1,"), 1);
             assert!(
@@ -312,7 +352,8 @@ mod tests {
                 owner: "owner".into(),
                 installation: "app".into(),
                 generation: 1,
-                cgroup_leaf: leaf.into()
+                cgroup_leaf: leaf.into(),
+                committed_generation: None,
             }
             .validate()
             .is_err());
