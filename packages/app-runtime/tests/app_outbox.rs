@@ -29,11 +29,11 @@ mod invocations;
 #[path = "app_outbox/limits.rs"]
 mod limits;
 
+static NEXT_DATABASE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 struct Database(PathBuf);
 impl Database {
     fn new() -> Self {
-        // Parallel tests can read the same clock value: count as well.
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        // Parallel tests can observe the same timestamp; the counter keeps names unique.
         let path = std::env::temp_dir().join(format!(
             "chariox-app-outbox-{}-{}-{}",
             std::process::id(),
@@ -41,7 +41,7 @@ impl Database {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            NEXT_DATABASE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
         Self(path)

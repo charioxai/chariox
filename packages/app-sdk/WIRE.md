@@ -149,7 +149,7 @@ schema version that state transactions use. A manifest that declares
 
 Other typed methods use the names and parameter shapes documented in
 `src/index.d.ts` and `src/index.js`: `state.*`, `files.*`, `events.*`, `http.request`,
-`log.write`, `host.*`, `validation.*`, and `outputs.*`. Unsupported operations
+`log.write`, `host.*`, and `validation.*`. Unsupported operations
 return a typed error. The supervisor owns capability checks and rejects unknown
 or undeclared effect routes; it never dispatches arbitrary kernel method names.
 
@@ -194,11 +194,10 @@ owner saves it from their terminal, which chooses the location, or declines.
 The owner can take an offer again until it expires, which is 10 minutes after
 the App made it or when the App updates.
 
-`validation.request`, `host.pick_file` and `outputs.request` return durable pending references when
-waiting for human input or model output. They must not retain a worker request
-slot for the duration of that wait. App-specific meaning stays in App handlers
-and validators; the kernel performs generic authorization, correlation, schema
-and delivery checks.
+`validation.request` and `host.pick_file` return durable pending references when waiting for human
+input. They must not retain a worker request
+slot for the duration of that wait. App-specific meaning stays in App handlers;
+the kernel performs generic authorization, correlation and schema checks.
 
 The shared JSON vectors in `test/wire-vectors.json` contain `generation` and
 `cases` with `name`, `sender`, `valid` and `message`. Both implementations run this

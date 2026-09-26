@@ -235,7 +235,6 @@ async fn immediate_receipt_then_real_pump_owner_decision_declines_without_activa
         let Step::Waiting { challenge, .. } = &state.entries.values().next().unwrap().step else {
             panic!("waiting")
         };
-        assert_eq!(challenge.review()["informationSetConsent"], "not_granted");
         challenge.interaction_id().to_owned()
     };
     assert!(f
