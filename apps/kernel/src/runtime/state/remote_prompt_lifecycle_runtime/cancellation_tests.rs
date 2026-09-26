@@ -88,11 +88,12 @@ async fn owned_runtime_state(app: &Arc<Mutex<crate::app::DaemonApp>>) -> KernelR
 async fn next_peer_request(
     receiver: &mut mpsc::Receiver<RelayEnvelope>,
     worker_private_key: &str,
+    stage: &'static str,
 ) -> (String, String, RelayPeerRequest) {
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
         .await
-        .expect("fake relay should receive the peer request")
-        .expect("fake relay request channel should remain open");
+        .unwrap_or_else(|_| panic!("{stage}: fake relay did not receive the peer request"))
+        .unwrap_or_else(|| panic!("{stage}: fake relay request channel closed"));
     let RelayEnvelope::DaemonPeerRequest {
         request_id,
         target,
@@ -481,7 +482,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
     let cancel_session_id = session_id.clone();
     let cancel_agent_id = agent_id.clone();
     let cancel_attachment_id = attachment_id.clone();
-    let cancellation = tokio::spawn(async move {
+    let mut cancellation = tokio::spawn(async move {
         cancel_runtime
             .cancel_remote_agent_prompt_if_remote(
                 &cancel_session_id,
@@ -490,8 +491,24 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
             )
             .await
     });
-    let (cancel_request_id, target_id, cancel_request) =
-        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    let (cancel_request_id, target_id, cancel_request) = tokio::select! {
+        result = &mut cancellation => {
+            let outcome = match result {
+                Ok(Ok(Some(_))) => "handled without sending",
+                Ok(Ok(None)) => "not handled",
+                Ok(Err(_)) => "returned error",
+                Err(_) => "task failed",
+            };
+            panic!(
+                "initial direct cancellation completed before CancelLeasedPrompt: {outcome}"
+            );
+        },
+        request = next_peer_request(
+            &mut peer_requests,
+            &worker_private_key,
+            "initial direct cancellation request",
+        ) => request,
+    };
     assert_eq!(target_id, WORKER_ID);
     assert!(matches!(
         cancel_request,
@@ -530,8 +547,12 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
 
     let mut submit_count = 0;
     loop {
-        let (request_id, target_id, request) =
-            next_peer_request(&mut peer_requests, &worker_private_key).await;
+        let (request_id, target_id, request) = next_peer_request(
+            &mut peer_requests,
+            &worker_private_key,
+            "queued successor dispatch request",
+        )
+        .await;
         assert_eq!(target_id, WORKER_ID);
         match request {
             RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
@@ -776,8 +797,12 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
             .await
     });
     let submit_request_id = loop {
-        let (request_id, target_id, request) =
-            next_peer_request(&mut peer_requests, &worker_private_key).await;
+        let (request_id, target_id, request) = next_peer_request(
+            &mut peer_requests,
+            &worker_private_key,
+            "initial remote submission request",
+        )
+        .await;
         assert_eq!(target_id, WORKER_ID);
         match request {
             RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
@@ -878,8 +903,12 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
             )
             .await
     });
-    let (receipt_request_id, target_id, request) =
-        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    let (receipt_request_id, target_id, request) = next_peer_request(
+        &mut peer_requests,
+        &worker_private_key,
+        "first stale-attempt receipt query",
+    )
+    .await;
     assert_eq!(target_id, WORKER_ID);
     assert!(matches!(
         request,
@@ -909,10 +938,6 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         .await
         .expect("first receipt recovery should join")
         .expect("unmatched receipt should keep recovery held"));
-    assert!(
-        peer_requests.try_recv().is_err(),
-        "a receipt for another prompt/run must not trigger cancellation or prompt replay"
-    );
     let held_prompt = runtime
         .owned
         .prompt_state_owner
@@ -946,19 +971,14 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         "an unrelated receipt must not bind a provider run"
     );
 
-    let receipt_recovery_runtime = runtime.clone();
-    let receipt_recovery = tokio::spawn(async move {
-        receipt_recovery_runtime
-            .recover_remote_prompt_after_kernel_restart(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
-                None,
-            )
-            .await
-    });
-    let (receipt_request_id, target_id, request) =
-        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    // The mismatched receipt above scheduled the production read-only retry under its
+    // per-agent claim. Consume that retry instead of starting a competing recovery call.
+    let (receipt_request_id, target_id, request) = next_peer_request(
+        &mut peer_requests,
+        &worker_private_key,
+        "scheduled read-only receipt retry",
+    )
+    .await;
     assert_eq!(target_id, WORKER_ID);
     assert!(matches!(
         request,
@@ -985,8 +1005,12 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
     )
     .await;
 
-    let (cancel_request_id, target_id, request) =
-        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    let (cancel_request_id, target_id, request) = next_peer_request(
+        &mut peer_requests,
+        &worker_private_key,
+        "run-bound cancellation after exact receipt",
+    )
+    .await;
     assert_eq!(target_id, WORKER_ID);
     let RelayPeerRequest::CancelLeasedPrompt {
         leased_agent_id,
@@ -1024,13 +1048,13 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         },
     )
     .await;
-    assert!(receipt_recovery
-        .await
-        .expect("receipt recovery should join")
-        .expect("the exact worker receipt should resume cancellation"));
 
-    let (drain_request_id, target_id, request) =
-        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    let (drain_request_id, target_id, request) = next_peer_request(
+        &mut peer_requests,
+        &worker_private_key,
+        "authoritative cancellation projection drain",
+    )
+    .await;
     assert_eq!(target_id, WORKER_ID);
     assert!(matches!(
         request,

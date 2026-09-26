@@ -339,7 +339,11 @@ where
         RelayPeerResponse::LeasedPromptReceiptQueried { receipt } => {
             if let Some(receipt) = receipt.as_ref() {
                 if receipt.home_prompt_id != dispatch.prompt_id
-                    || receipt.worker_provider_run_id.trim().is_empty()
+                    || (matches!(
+                        receipt.phase,
+                        crate::transport::relay_peer::LeasedPromptReceiptPhase::Active
+                            | crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed
+                    ) && receipt.worker_provider_run_id.trim().is_empty())
                 {
                     return Err(DaemonError::LocalTransport {
                         operation: "query leased prompt receipt",
