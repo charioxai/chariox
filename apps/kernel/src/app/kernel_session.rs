@@ -85,10 +85,45 @@ impl<'a> KernelSessionService<'a> {
         Self { app }
     }
 
+    /// A session created without a provider starts with an agent of the
+    /// owner's own provider account, never the `default` placeholder: a signed
+    /// in default account first (Claude, Codex, then OpenCode), then any
+    /// registered default account.
+    fn first_agent_provider(&self, owner_user_id: &str, requested: &str) -> String {
+        if requested != "default" {
+            return requested.to_owned();
+        }
+        let profiles = self
+            .app
+            .provider_account_profile_registry()
+            .list(owner_user_id, None)
+            .unwrap_or_default();
+        let rank = |provider: &str| {
+            ["claude", "codex", "opencode"]
+                .iter()
+                .position(|candidate| *candidate == provider)
+                .unwrap_or(usize::MAX)
+        };
+        profiles
+            .iter()
+            .filter(|profile| profile.is_default)
+            .min_by_key(|profile| {
+                (
+                    profile.auth_state
+                        != crate::account_profile::ProviderAccountAuthState::Authenticated,
+                    rank(&profile.provider),
+                )
+            })
+            .map_or_else(|| requested.to_owned(), |profile| profile.provider.clone())
+    }
+
     pub(crate) fn create_session(
         &mut self,
-        request: CreateSessionRequest,
+        mut request: CreateSessionRequest,
     ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
+        let mut defaults = request.agent_defaults.take().unwrap_or_default();
+        defaults.provider = self.first_agent_provider(&request.owner_user_id, &defaults.provider);
+        request.agent_defaults = Some(defaults);
         let session =
             SessionStateOwner::new(self.app.session_state_store()).create_session(request)?;
         let defaults = session.agent_defaults();

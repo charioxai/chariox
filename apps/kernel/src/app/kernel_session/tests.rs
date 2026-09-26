@@ -169,3 +169,54 @@ fn install_test_skill(workspace: &std::path::Path, name: &str) {
 mod bootstrap;
 mod workflow_code_apply;
 mod workflow_code_preflight;
+
+#[test]
+fn a_session_without_a_provider_starts_with_the_owners_signed_in_account_not_a_placeholder() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let registry = app.provider_account_profile_registry();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let codex = match registry
+        .list(owner, Some("codex"))
+        .unwrap()
+        .into_iter()
+        .find(|profile| profile.is_default)
+    {
+        Some(profile) => profile,
+        None => {
+            let created = registry
+                .create_managed(owner, "codex", "Codex")
+                .expect("a Codex account should register");
+            registry
+                .set_default(owner, "codex", &created.profile_id)
+                .expect("the Codex account should become the default");
+            created
+        }
+    };
+    registry
+        .update_observation(
+            owner,
+            "codex",
+            &codex.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("the Codex login should record");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let signed_in_claude = registry
+        .list(owner, Some("claude"))
+        .unwrap()
+        .into_iter()
+        .any(|profile| {
+            profile.is_default
+                && profile.auth_state
+                    == crate::account_profile::ProviderAccountAuthState::Authenticated
+        });
+    let expected = if signed_in_claude { "claude" } else { "codex" };
+    assert_eq!(agent.provider(), expected);
+    assert_eq!(session.agent_defaults().provider, expected);
+}
