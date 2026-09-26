@@ -96,6 +96,30 @@ This capture alone cannot close MP-07 or MP-10. Host, provider, relay, signed
 release and cleanup observations plus the ordinary-kernel comparison are still
 required. Focused fixture tests are not an executed Cloud or VM capture.
 
+### Host and Cloud capture correlation
+
+The Cloud capture retains the old release digest/source and the old identity
+report timestamp. An old baseline observed after the rebuild request is invalid.
+Compare the retained before/after host captures with that exact operation:
+
+```sh
+node apps/cli/scripts/path1-host-cloud-correlation.mjs \
+  --before /Users/miguel/.codex/evidence/browser-computer-use/<campaign>/host-before.json \
+  --after /Users/miguel/.codex/evidence/browser-computer-use/<campaign>/host-after.json \
+  --cloud /Users/miguel/.codex/evidence/browser-computer-use/<campaign>/cloud-reimage.json \
+  --output /Users/miguel/.codex/evidence/browser-computer-use/<campaign>/host-cloud-correlation.json
+```
+
+Inputs must be distinct bounded regular files. The new mode-0600 external
+output binds their exact byte hashes and checks operation generation, capture
+timing, host boot/machine/source identities, dedicated Path-1 service selection,
+service invocation rotation and boot-bound process identities. It does not
+declare signature verification, old-state absence or MP-10 acceptance.
+Device/inode numbers can recur on rebuilt filesystems; matching or different
+numbers alone do not establish residue-free retirement. Independent signed
+release, provider, relay and complete residue/cleanup evidence still belong in
+the full campaign. This command does not provision, rebuild or modify services.
+
 ### Remaining live observations
 
 - Deployed Cloud API, database migration, provisioning, and Web behavior on a
