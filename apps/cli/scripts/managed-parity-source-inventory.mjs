@@ -593,6 +593,14 @@ function rustBlockEnd(codeLines, startLine) {
   return codeLines.length - 1;
 }
 
+function rustTestDeclarationEnd(codeLines, declarationLine) {
+  const declaration = codeLines[declarationLine].trim();
+  if (/^(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*;\s*$/.test(declaration)) {
+    return declarationLine;
+  }
+  return rustBlockEnd(codeLines, declarationLine);
+}
+
 function findRustTestRanges(text, path) {
   const lines = stripComments(text, "rust").split(/\r?\n/);
   const codeLines = maskRustLiterals(stripComments(text, "rust")).split(/\r?\n/);
@@ -609,7 +617,7 @@ function findRustTestRanges(text, path) {
     }
     if (declaration >= lines.length || declaration > index + 12) continue;
     if (!/\b(?:mod|fn)\s+[A-Za-z_][A-Za-z0-9_]*\b/.test(lines[declaration])) continue;
-    ranges.push({ start: index, end: rustBlockEnd(codeLines, declaration), kind: "cfg_test" });
+    ranges.push({ start: index, end: rustTestDeclarationEnd(codeLines, declaration), kind: "cfg_test" });
   }
   return ranges;
 }

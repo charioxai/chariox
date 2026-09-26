@@ -237,6 +237,39 @@ test("production and test sources are scanned while this inventory tool is exclu
   });
 });
 
+test("out-of-line cfg(test) module ends before a following production managed branch", () => {
+  withFixture({}, (fixture) => {
+    const path = "apps/kernel/src/runtime/state.rs";
+    fixture.addFile(path, [
+      "#[cfg(test)]",
+      "mod managed_state_tests;",
+      "",
+      "impl ManagedState {",
+      "    fn resolve(&self, is_managed: bool) {",
+      "        if is_managed {",
+      "            let selector = std::env::var(\"CHARIOX_MANAGED_AFTER_OUT_OF_LINE_TEST\");",
+      "        }",
+      "    }",
+      "}",
+    ].join("\n") + "\n");
+
+    const report = collect(fixture);
+    const productionCandidates = report.entries.filter((entry) => entry.path === path
+      && ["managed_only_branch", "managed_env_selector"].includes(entry.category));
+    assert.deepEqual(
+      productionCandidates.map(({ category }) => category).sort(),
+      ["managed_env_selector", "managed_only_branch", "managed_only_branch"],
+      "the production branch and selector must remain inventory candidates",
+    );
+    for (const candidate of productionCandidates) {
+      assert.equal(candidate.sourceRoleHints.testRegion, "none_detected");
+      assert.equal(candidate.semanticDisposition.status, "unreviewed");
+      assert.equal(candidate.semanticDisposition.gateEffect, "fail_closed");
+    }
+    assert.equal(report.status, "fail", "module syntax and source-role hints must not approve findings");
+  });
+});
+
 test("default CLI follows current HEAD without treating it as reviewed", () => {
   const options = parseArgs([]);
   assert.equal(options.sourceRef, DEFAULT_SOURCE_REF);
