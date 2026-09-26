@@ -71,6 +71,31 @@ impl KernelRuntimeOwnedState {
                 ))
             }
         }
+        // A kernel decision nobody waits for any more (the component that
+        // asked was replaced, or its operation was abandoned) does not block
+        // its subject: the new request supersedes it.
+        if kernel_operation_owner.is_some() {
+            let mut pending = self.pending_interactions.write();
+            let superseded = session
+                .active_interactions()
+                .iter()
+                .filter(|existing| {
+                    existing.kernel_operation_id().is_some()
+                        && existing.subject() == interaction.subject()
+                        && pending.get(existing.id()).is_none_or(|entry| {
+                            entry.kernel_operation_owner.as_deref() == kernel_operation_owner
+                                && entry.responder.lock().map_or(true, |responder| {
+                                    responder.as_ref().is_none_or(|sender| sender.is_closed())
+                                })
+                        })
+                })
+                .map(|existing| existing.id().to_owned())
+                .collect::<Vec<_>>();
+            for id in superseded {
+                session.remove_active_interaction(&id);
+                pending.remove(&id);
+            }
+        }
         if session
             .active_interactions()
             .iter()
