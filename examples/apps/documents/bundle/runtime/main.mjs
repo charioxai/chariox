@@ -211,7 +211,9 @@ export default function register(chariox) {
     const name = `${doc.title.replace(/[^\p{L}\p{N} ._-]/gu, '_').trim().slice(0, 120) || 'document'}.${KINDS[doc.kind]}`;
     await mkdir(join(chariox.paths.data, 'exports'), { recursive: true });
     await chariox.files.atomicReplace(`exports/${name}`, await read(doc));
-    await chariox.files.export(`exports/${name}`);
+    // The kernel keeps its own copy of the offered bytes.
+    try { await chariox.files.export(`exports/${name}`); }
+    finally { await rm(join(chariox.paths.data, 'exports', name), { force: true }); }
     return { offered: name };
   });
 

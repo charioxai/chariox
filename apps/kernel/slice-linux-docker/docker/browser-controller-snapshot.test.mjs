@@ -45,6 +45,9 @@ test("accessibility node budget is shared across frames", async () => {
   const snapshot = await capture(connection, { maxNodes: 2 });
   assert.equal(snapshot.accessibility_nodes.length, 2);
   assert.deepEqual(connection.requestedFrames, ["root"]);
+  // The cut is reported even though dropped nodes could leave fewer than the bound.
+  assert.equal(snapshot.accessibility_truncated, true);
+  assert.equal((await capture(fixture(), {})).accessibility_truncated, false);
 });
 
 test("snapshot rejects a child document navigation even when the top document stays unchanged", async () => {

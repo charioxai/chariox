@@ -56,14 +56,25 @@ promised byte not yet backed by actual allocation, including failed creations
 and temporary images that need recreation. These are private initial policies.
 
 A kernel acquire also names the installation's committed generation. A staged
-(newer, uncommitted) generation first copies the data image to
-`data-snapshot.ext4` (reflinked where the host supports it) and counts it as a
-second promised data reservation. When the update fails and the committed
-generation starts again, the copy replaces the data image, so no write of the
-failed update survives; a committed start deletes the copy. The journal names
-the copy's inode only once it is complete; recovery drops an incomplete copy,
-records a restore whose rename landed, and removes a copy the journal no longer
-names.
+(uncommitted) generation must start on committed data. When the committed
+generation ran last, the data image is copied to `data-snapshot.ext4`, which
+counts as a second promised data reservation. On the managed ext4 root this is
+a full 512 MiB copy inside the acquire. The same staged generation retrying
+keeps its own writes. Another staged generation after a failed one first
+renames the copy back over the data image and then copies it again. When the
+committed generation starts after a failed update, the copy replaces the data
+image. Either way, no write of a failed update survives. A committed start
+deletes the copy. The journal names the copy's inode only once it is complete.
+Recovery drops an incomplete copy, records a restore whose rename landed, and
+removes a copy the journal no longer names.
+
+The helper and the kernel ship in one managed image release, and the helper's
+unit starts before the kernel's bootstrap unit. The acquire's
+`committed_generation` and the journal's `snapshot` are strict fields: a helper
+from an older release refuses both. After a release switch, restart the helper
+before the kernel. Rolling the helper back past this change fails for any
+installation whose journal still names a snapshot, until a newer helper
+settles it.
 
 Every image creation, formatting transition, deletion intent and mount lease is
 journaled and fsynced. Loop association is atomic via LOOP_CONFIGURE with fixed

@@ -202,7 +202,9 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
         for (let delay = 250; pick?.state === 'pending'; delay = Math.min(delay * 2, 2000)) {
           await new Promise(resolve => setTimeout(resolve, delay));
           if (options.signal?.aborted) throw new AppError('CANCELLED', 'File request cancelled');
-          pick = await call('host.pick_file_status', { operationId: pick.operationId }, options);
+          // A busy kernel is not an answer: keep waiting for the owner.
+          pick = await call('host.pick_file_status', { operationId: pick.operationId }, options)
+            .catch(error => { if (error?.retryable) return pick; throw error; });
         }
         if (pick?.state === 'granted') return { grantIds: pick.grantIds };
         if (pick?.state === 'declined') throw new AppError('DECLINED', 'The owner declined to share a file');

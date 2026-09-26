@@ -36,8 +36,9 @@ pub(crate) struct AppControlService {
     wake_pump: super::app_wake_pump::AppWakePump,
     views: super::app_views::AppViews,
     validation_pump: super::app_wake_pump::AppWakePump,
-    /// Live approvals: operation → owner.
-    validation_prompts: Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
+    /// Shown prompts: operation → (owner, the session showing it once known).
+    validation_prompts:
+        Arc<std::sync::Mutex<std::collections::BTreeMap<String, (String, Option<String>)>>>,
     publishers: super::app_publisher_control::AppPublisherControl,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     workers: workers::ActiveWorkers,
@@ -144,12 +145,34 @@ impl AppControlService {
             .unwrap_or_else(|e| e.into_inner());
         if prompts.contains_key(operation_id)
             || prompts.len() >= TOTAL
-            || prompts.values().filter(|live| *live == owner).count() >= PER_OWNER
+            || prompts.values().filter(|(live, _)| live == owner).count() >= PER_OWNER
         {
             return false;
         }
-        prompts.insert(operation_id.to_owned(), owner.to_owned());
+        prompts.insert(operation_id.to_owned(), (owner.to_owned(), None));
         true
+    }
+
+    /// Records which session shows the prompt, so an answer from any other
+    /// session closes it there.
+    pub(crate) fn show_validation_prompt(&self, operation_id: &str, session: &str) {
+        if let Some(prompt) = self
+            .validation_prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(operation_id)
+        {
+            prompt.1 = Some(session.to_owned());
+        }
+    }
+
+    pub(crate) fn validation_prompt_session(&self, operation_id: &str) -> Option<String> {
+        self.validation_prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(operation_id)?
+            .1
+            .clone()
     }
 
     pub(crate) fn end_validation_prompt(&self, operation_id: &str) {
