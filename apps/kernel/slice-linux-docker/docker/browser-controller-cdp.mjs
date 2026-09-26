@@ -71,9 +71,11 @@ export class BrowserCdpClient {
     this.fileSystem = fileSystem;
     this.eventJournal = eventJournal;
     this.connection = null;
+    this.connectionOpening = null;
     this.unsubscribeFromConnection = null;
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
+    this.targetSessionOpening = new Map();
     this.targetsBySession = new Map();
     this.targetsByFrame = new BrowserFrameTargets();
     this.frameSessions = new BrowserFrameSessions(this.targetsByFrame, (id) => this.targetsBySession.get(id));
@@ -254,12 +256,24 @@ export class BrowserCdpClient {
   }
 
   async ensureConnection() {
+    if (this.connectionOpening) return this.connectionOpening;
     if (this.connection?.isOpen()) {
       return this.connection;
     }
+    const opening = this.openConnection();
+    this.connectionOpening = opening;
+    try {
+      return await opening;
+    } finally {
+      if (this.connectionOpening === opening) this.connectionOpening = null;
+    }
+  }
+
+  async openConnection() {
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
     this.sessionsByTarget.clear();
+    this.targetSessionOpening.clear();
     this.targetsBySession.clear();
     this.targetsByFrame.clear();
     this.frameSessions.clear();
@@ -750,10 +764,22 @@ export class BrowserCdpClient {
   }
 
   async ensureTargetSession(connection, targetId) {
-    let sessionId = this.sessionsByTarget.get(targetId);
+    const pending = this.targetSessionOpening.get(targetId);
+    if (pending) return pending;
+    const sessionId = this.sessionsByTarget.get(targetId);
     if (sessionId) {
       return sessionId;
     }
+    const opening = this.attachTargetSession(connection, targetId);
+    this.targetSessionOpening.set(targetId, opening);
+    try {
+      return await opening;
+    } finally {
+      if (this.targetSessionOpening.get(targetId) === opening) this.targetSessionOpening.delete(targetId);
+    }
+  }
+
+  async attachTargetSession(connection, targetId) {
     const attached = await connection.send("Target.attachToTarget", {
       targetId,
       flatten: true,
@@ -764,7 +790,10 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} did not return a session`,
       );
     }
-    sessionId = attached.sessionId;
+    const sessionId = attached.sessionId;
+    if (this.connection !== connection || !connection.isOpen()) {
+      throw new BrowserControllerError("browser_connection_changed", "browser connection changed while attaching a target");
+    }
     this.sessionsByTarget.set(targetId, sessionId);
     this.targetsBySession.set(sessionId, targetId);
     try {
@@ -776,10 +805,15 @@ export class BrowserCdpClient {
         connection.send("Inspector.enable", {}, sessionId),
         this.frameSessions.start(connection, sessionId),
       ]);
+      if (this.connection !== connection || !connection.isOpen()) {
+        throw new BrowserControllerError("browser_connection_changed", "browser connection changed while initializing a target");
+      }
     } catch (error) {
-      this.sessionsByTarget.delete(targetId);
-      this.targetsBySession.delete(sessionId);
-      await this.frameSessions.removeTarget(targetId);
+      if (this.connection === connection && this.sessionsByTarget.get(targetId) === sessionId) {
+        this.sessionsByTarget.delete(targetId);
+        this.targetsBySession.delete(sessionId);
+        await this.frameSessions.removeTarget(targetId);
+      }
       await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
       throw error;
     }

@@ -179,6 +179,8 @@ export class BrowserControllerStdioServer {
   async run() {
     const actions = new Map();
     const pendingRequestIds = new Set();
+    const reads = new Set();
+    let readFailure;
     let pending = Promise.resolve();
     let queued = 0;
     const lines = readline.createInterface({
@@ -249,7 +251,7 @@ export class BrowserControllerStdioServer {
       if (action) actions.set(request.id, action);
       pendingRequestIds.add(request.id);
       queued += 1;
-      pending = pending.then(async () => {
+      const execute = async () => {
         try {
           const response = await handleBrowserControllerRequest(request, {
             processId: this.processId,
@@ -265,13 +267,26 @@ export class BrowserControllerStdioServer {
           stopAction?.();
           queued -= 1;
         }
-      });
+      };
+      // Read-only snapshots share the preceding write barrier. Every other
+      // operation drains those reads before it runs, including import/close.
+      if (request.method === "browser.snapshot") {
+        const read = pending.then(execute);
+        reads.add(read);
+        read.then(
+          () => reads.delete(read),
+          error => { reads.delete(read); readFailure ??= error; },
+        );
+      } else {
+        pending = Promise.all([pending, ...reads]).then(execute);
+      }
       if (request.method === "shutdown") {
         lines.close();
         break;
       }
     }
-    await pending;
+    await Promise.all([pending, ...reads]);
+    if (readFailure) throw readFailure;
   }
 
   write(response) {
