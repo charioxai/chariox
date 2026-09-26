@@ -389,6 +389,24 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
                 "allow", "Install", "allow", None,
             )],
         ));
+        // A vault prompt's responder also lives only in the kernel process;
+        // other interactions are left alone.
+        for id in ["vault-unlock-agent-1-1", "provider-notice-1"] {
+            session.add_active_interaction(RuntimeInteraction::new(
+                id,
+                "agent-1",
+                crate::session::RuntimeInteractionKind::Choice,
+                crate::session::RuntimeInteractionLevel::Critical,
+                None,
+                "Unlock",
+                vec![RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+        }
         sessions.restore_session(session);
     }
     // This fixture's store has not swept yet, so its first pass is unthrottled
@@ -397,5 +415,8 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
         .state
         .owned
         .sweep_kernel_operation_interactions(false);
-    assert_eq!(fixture.active_ids(), vec![fixture.id("live")]);
+    assert_eq!(
+        fixture.active_ids(),
+        vec![fixture.id("live"), "provider-notice-1".to_string()]
+    );
 }
