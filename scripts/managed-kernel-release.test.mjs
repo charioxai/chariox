@@ -200,7 +200,7 @@ async function treeDigest(root) {
   return `sha256:${hash.digest("hex")}`
 }
 
-async function makeFixture(root, variant = "") {
+async function makeFixture(root, variant = "", { dockerfileContents } = {}) {
   const kernel = join(root, "chariox-kernel")
   const supervisor = join(root, "chariox-managed-bootstrap")
   const relay = join(root, "chariox-relay")
@@ -222,7 +222,7 @@ async function makeFixture(root, variant = "") {
     ["adapters/rust/Cargo.toml", "[package]\nname = \"adapter-fixture\"\n"],
     ["apps/aegs-dummy/Cargo.toml", "[package]\nname = \"aegs-fixture\"\n"],
     ["apps/kernel/Cargo.toml", "[package]\nname = \"kernel-fixture\"\n"],
-    ["apps/kernel/slice-linux-docker/docker/Dockerfile", "FROM fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"],
+    ["apps/kernel/slice-linux-docker/docker/Dockerfile", dockerfileContents ?? "FROM fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"],
     [
       "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
       await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")),
@@ -915,72 +915,70 @@ test("managed kernel builder rejects malformed explicit builder names", () => {
 test("managed kernel builder archives the exact commit and emits a signed binary attestation", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-builder-"))
   context.after(() => rm(root, { recursive: true, force: true }))
-  const fixture = await makeFixture(root)
+  const dockerfileContents = await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"))
+  const dockerfileText = dockerfileContents.toString("utf8")
+  const artifactTargetStart = dockerfileText.indexOf("FROM scratch AS managed-release-artifacts")
+  const artifactTargetEnd = dockerfileText.indexOf("\nFROM ", artifactTargetStart + 1)
+  assert.notEqual(artifactTargetStart, -1)
+  assert.notEqual(artifactTargetEnd, -1)
+  assert.deepEqual(dockerfileText.slice(artifactTargetStart, artifactTargetEnd).trim().split("\n"), [
+    "FROM scratch AS managed-release-artifacts",
+    "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
+    "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
+    "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+  ])
+  const fixture = await makeFixture(root, "", { dockerfileContents })
   const bin = join(root, "builder-bin")
   const trace = join(root, "builder-trace")
-  const extractionState = join(root, "builder-extraction-state")
   const output = join(root, "builder-output")
+  const temp = join(root, "builder-temp")
+  await mkdir(temp)
   await mkdir(bin)
   await writeHarnessCommand(join(bin, "docker"), `#!/bin/sh
 set -eu
 [ -z "\${RUSTC_WRAPPER:-}" ]
 [ -z "\${CARGO:-}" ]
 [ -z "\${RUSTFLAGS:-}" ]
-case "$1" in
-  build)
-    case " $* " in *" --pull --platform linux/amd64 --target rust-builder "*) ;; *) exit 31 ;; esac
-    case " $* " in *" --tag chariox-managed-builder:"*"-"*"-"*) ;; *) exit 31 ;; esac
-    for source do :; done
+case "$1 $2" in
+  "buildx build")
+    case " $* " in *" --pull --platform linux/amd64 --target managed-release-artifacts "*) ;; *) exit 31 ;; esac
+    case " $* " in *" --output type=local,dest="*) ;; *) exit 31 ;; esac
+    case " $* " in *" --load "*|*" --tag "*) exit 31 ;; esac
+    source=
+    for argument do source=$argument; done
     dockerfile=
+    destination=
     previous=
     for argument do
       if [ "$previous" = "--file" ]; then dockerfile=$argument; fi
+      if [ "$previous" = "--output" ]; then
+        case "$argument" in type=local,dest=*) destination=\${argument#type=local,dest=} ;; *) exit 31 ;; esac
+      fi
       previous=$argument
     done
     [ -f "$dockerfile" ]
     [ "$dockerfile" = "$source/apps/kernel/slice-linux-docker/docker/Dockerfile" ]
     [ ! -e "$source/.git" ]
     [ ! -e "$source/working-tree-only" ]
+    grep -F 'FROM scratch AS managed-release-artifacts' "$dockerfile" >/dev/null
+    ! grep -F 'working tree drift' "$dockerfile" >/dev/null
     printf '%s\n' "$*" >> '${trace}'
+    case " $* " in *" --builder fail-builder "*) exit 39 ;; esac
+    [ -n "$destination" ]
+    [ ! -e "$destination" ]
+    mkdir "$destination"
+    printf 'kernel from archived commit\n' > "$destination/chariox-kernel"
+    printf 'supervisor from archived commit\n' > "$destination/chariox-managed-bootstrap"
+    printf 'relay from archived commit\n' > "$destination/chariox-relay"
     ;;
-  run)
-    case " $* " in *" --rm --pull=never --platform linux/amd64 --entrypoint cat sha256:"*) ;; *) exit 32 ;; esac
-    previous=
-    image=
-    for argument do
-      if [ "$previous" = "cat" ]; then image=$argument; fi
-      previous=$argument
-      source_path=$argument
-    done
-    [ "$image" = "sha256:1111111111111111111111111111111111111111111111111111111111111111" ]
-    case "$source_path" in
-      *chariox-kernel)
-        printf 'tag replaced after first immutable read\n' > '${extractionState}'
-        printf 'kernel from archived commit\n'
-        ;;
-      *chariox-managed-bootstrap)
-        [ -f '${extractionState}' ]
-        printf 'supervisor from archived commit\n'
-        ;;
-      *chariox-relay)
-        [ -f '${extractionState}' ]
-        printf 'relay from archived commit\n'
-        ;;
-      *) exit 32 ;;
-    esac
-    ;;
-  image)
-    case "$2" in
-      inspect) printf '%s\n' 'sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
-      rm) ;;
-      *) exit 33 ;;
-    esac
-    ;;
-  rm) ;;
   *) exit 33 ;;
 esac
 `)
   await writeFile(join(fixture.sourceRepository, "working-tree-only"), "must not enter the build\n")
+  await writeFile(
+    join(fixture.sourceRepository, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
+    Buffer.concat([dockerfileContents, Buffer.from("# working tree drift\n")]),
+  )
   await writeFile(join(fixture.sourceRepository, ".git/info/attributes"), "* export-ignore\n")
   const runBuilder = (destination, builderName) => spawnSync(
     process.execPath,
@@ -997,6 +995,7 @@ esac
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
+        TMPDIR: temp,
         RUSTC_WRAPPER: "/tmp/hostile-rustc-wrapper",
         CARGO: "/tmp/hostile-cargo",
         RUSTFLAGS: "-C link-arg=/tmp/hostile",
@@ -1006,19 +1005,35 @@ esac
   )
   const result = runBuilder(output)
   assert.equal(result.status, 0, result.stderr)
-  const defaultBuildArguments = await readFile(trace, "utf8")
-  assert.match(defaultBuildArguments, /--pull --platform linux\/amd64 --target rust-builder/)
-  assert.match(defaultBuildArguments, /--file .*\/apps\/kernel\/slice-linux-docker\/docker\/Dockerfile/)
-  assert.doesNotMatch(defaultBuildArguments, /--builder|--load/)
+  const defaultBuildArguments = (await readFile(trace, "utf8")).trim().split("\n")[0].split(" ")
+  assert.deepEqual(defaultBuildArguments.slice(0, 2), ["buildx", "build"])
+  assert.equal(defaultBuildArguments.includes("--builder"), false)
+  assert.equal(defaultBuildArguments.includes("--load"), false)
+  assert.equal(defaultBuildArguments.includes("--tag"), false)
+  assert.equal(defaultBuildArguments[defaultBuildArguments.indexOf("--target") + 1], "managed-release-artifacts")
+  assert.match(defaultBuildArguments[defaultBuildArguments.indexOf("--output") + 1], /^type=local,dest=/)
+  assert.deepEqual((await readdir(output)).sort(), [
+    "build-attestation.json", "build-attestation.sig", "builder-public-key",
+    "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
+  ])
+  const artifactContents = new Map([
+    ["chariox-kernel", "kernel from archived commit\n"],
+    ["chariox-managed-bootstrap", "supervisor from archived commit\n"],
+    ["chariox-relay", "relay from archived commit\n"],
+  ])
+  for (const [name, contents] of artifactContents) {
+    assert.equal(await readFile(join(output, name), "utf8"), contents)
+    assert.equal((await lstat(join(output, name))).mode & 0o777, 0o755)
+  }
   const attestationBytes = await readFile(join(output, "build-attestation.json"))
   const attestation = JSON.parse(attestationBytes)
   assert.equal(attestation.sourceCommit, fixture.sourceCommit)
   assert.equal(attestation.sourceTree, fixture.sourceTree)
   assert.equal(attestation.target, "x86_64-unknown-linux-gnu")
-  assert.deepEqual(
-    attestation.artifacts.map((artifact) => artifact.name),
-    ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"],
-  )
+  assert.deepEqual(attestation.artifacts, [...artifactContents].map(([name, contents]) => ({
+    name,
+    sha256: `sha256:${createHash("sha256").update(contents).digest("hex")}`,
+  })))
   const signature = Buffer.from(await readFile(join(output, "build-attestation.sig"), "utf8"), "base64")
   assert.equal(verify(null, attestationBytes, fixture.publicKey, signature), true)
   assert.equal(
@@ -1031,10 +1046,18 @@ esac
   assert.equal(namedBuilderResult.status, 0, namedBuilderResult.stderr)
   const buildInvocations = (await readFile(trace, "utf8")).trim().split("\n")
   assert.equal(buildInvocations.length, 2)
-  assert.match(
-    buildInvocations[1],
-    /--builder capped-release-builder --load --pull --platform linux\/amd64 --target rust-builder/,
-  )
+  assert.match(buildInvocations[1], /^buildx build --builder capped-release-builder /)
+  assert.match(buildInvocations[1], /--target managed-release-artifacts/)
+  assert.match(buildInvocations[1], /--output type=local,dest=/)
+  assert.doesNotMatch(buildInvocations[1], /--load|--tag|\brun\b|image inspect/)
+
+  const failedOutput = join(root, "builder-output-failure")
+  const failed = runBuilder(failedOutput, "fail-builder")
+  assert.equal(failed.status, 1)
+  assert.match(failed.stderr, /artifact export failed with status 39/)
+  assert.equal(await lstat(failedOutput).then(() => true, () => false), false)
+  assert.equal((await readdir(root)).some((name) => name.startsWith(".new-builder-output-failure-")), false)
+  assert.deepEqual(await readdir(temp), [])
 })
 
 test("managed kernel release requires a matching trusted builder attestation", async (context) => {
