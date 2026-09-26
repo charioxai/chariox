@@ -95,19 +95,17 @@ impl KernelRuntimeState {
         occurrence_id: &str,
         payload: Value,
     ) -> Result<bool, AppRequestErrorCode> {
-        let AppInboxOutcome::Routes(routes) = self
-            .inbox(AppInboxOperation::Routes {
+        let AppInboxOutcome::Route(route) = self
+            .inbox(AppInboxOperation::Route {
                 owner: owner.to_owned(),
                 installation: installation.to_owned(),
+                route_id: route_id.to_owned(),
             })
             .await?
         else {
             return Err(AppRequestErrorCode::StorageUnavailable);
         };
-        let (route, _) = routes
-            .into_iter()
-            .find(|(route, _)| route.route_id == route_id)
-            .ok_or(AppRequestErrorCode::NotFound)?;
+        let route = route.ok_or(AppRequestErrorCode::NotFound)?;
         let (generation, catalog) = self.incoming_catalog(owner, installation).await?;
         catalog
             .validate(&route.event_name, &payload)
