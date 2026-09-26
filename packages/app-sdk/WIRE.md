@@ -186,8 +186,8 @@ name}`, where `name` is the file name the owner chose. The SDK's
 most 512 KiB. It follows no links. The kernel offers it to the owner in the
 same kind of trusted prompt, and the reply is `{operationId}` at once. The
 owner saves it from their terminal, which chooses the location, or declines.
-An offer is released once, and expires unanswered after 10 minutes or when the
-App updates.
+The owner can take an offer again until it expires, which is 10 minutes after
+the App made it or when the App updates.
 
 `validation.request`, `host.pick_file` and `outputs.request` return durable pending references when
 waiting for human input or model output. They must not retain a worker request

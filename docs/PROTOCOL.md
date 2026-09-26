@@ -1879,7 +1879,8 @@ Workflow trigger and deployment direction:
   a file an App offered with `files.export`. The offer is shown to the owner
   as a kernel prompt with subject `file_export:<operation>` and a Decline
   choice. The reply is `AppFileExport {operation_id, name, contents_base64}`,
-  released once to the owner only. The terminal chooses where to save it (a
+  released to the owner only. The owner may take it again until the offer
+  expires, so a failed or cancelled local save can be retried. The terminal chooses where to save it (a
   browser download, or `/app file save OPERATION "PATH"`, which never
   overwrites a file).
 - serving either a live source trigger or a deployed package MUST validate
