@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { cleanupProjectEnvironmentSetupDrillContext } from './project-environment-setup-drill-cleanup.mjs'
+import { cleanupProjectEnvironmentSetupDrillContext as cleanupWithRequestBuilders } from './project-environment-setup-drill-cleanup.mjs'
 
 const targetPin = Object.freeze({
   project_id: 'project-drill',
@@ -32,6 +32,23 @@ const expectedOwnership = Object.freeze({
     { agentId: targetPin.launch_agent_id, executionLeaseId: 'lease-launch', leasedAgentId: 'leased-launch' },
   ],
 })
+
+const requestBuilders = {
+  cancelProjectEnvironmentSetupRequest: (operationId, sessionId) => ({ CancelProjectEnvironmentSetup: { operationId, sessionId } }),
+  deleteProjectRequest: (projectId) => ({ DeleteProject: { project_id: projectId } }),
+  deleteSessionRequest: (sessionRef, workspaceId) => ({ DeleteSession: { session_ref: sessionRef, workspace_id: workspaceId } }),
+  destroyAgentRequest: (sessionId, agentId) => ({ DestroyAgent: { session_id: sessionId, agent_id: agentId } }),
+  getProjectEnvironmentSetupStatusRequest: (operationId) => ({ GetProjectEnvironmentSetupStatus: { operationId } }),
+  getSessionStateRequest: (sessionId) => ({ GetSessionState: { session_id: sessionId } }),
+  listProjectsRequest: (includeArchived = false) => ({ ListProjects: { include_archived: includeArchived } }),
+  listRemoteMachineKernelsRequest: (machineRef) => ({ ListRemoteMachineKernels: { machine_ref: machineRef } }),
+  listRemoteMachinesRequest: () => ({ ListRemoteMachines: null }),
+  listSessionsRequest: () => ({ ListSessions: null }),
+}
+
+function cleanupProjectEnvironmentSetupDrillContext(options) {
+  return cleanupWithRequestBuilders({ ...options, requestBuilders })
+}
 
 function setupStatus(phase = 'ready', overrides = {}) {
   return {

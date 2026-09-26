@@ -10,6 +10,7 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
   operationIds,
   expectedOwnership,
   evidence,
+  requestBuilders,
   cleanupTimeoutMs = PROJECT_ENVIRONMENT_SETUP_DRILL_CLEANUP_TIMEOUT_MS,
   controlTimeoutMs = 10_000,
   pollMs = 500,
@@ -28,6 +29,7 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
   if (!Array.isArray(operationIds) || operationIds.length > 2 || new Set(operationIds).size !== operationIds.length) {
     throw new Error('Project setup cleanup accepts at most two distinct drill operation identities')
   }
+  requireRequestBuilders(requestBuilders)
   const startedAtMs = nowMs()
   const deadline = startedAtMs + cleanupTimeoutMs
   const budget = { deadline, controlTimeoutMs, nowMs }
@@ -43,13 +45,15 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
     client = await createClientWithinBudget(createClient, budget)
     for (const operationId of operationIds) {
       try {
-        let status = await readSetupStatus(client, pin, operationId, budget)
+        let status = await readSetupStatus(client, pin, operationId, budget, requestBuilders)
         if (!TERMINAL_PHASES.has(status.phase)) {
           let cancelResponse = null
           try {
-            cancelResponse = await sendWithTimeout(client, {
-              CancelProjectEnvironmentSetup: { operationId, sessionId: pin.session_id },
-            }, budget, 'cancel Project setup for cleanup')
+            cancelResponse = await sendWithTimeout(client,
+              requestBuilders.cancelProjectEnvironmentSetupRequest(operationId, pin.session_id),
+              budget,
+              'cancel Project setup for cleanup',
+            )
           } catch {
             // Status polling remains authoritative if cancellation is unavailable.
           }
@@ -61,6 +65,7 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
             budget,
             pollMs,
             delay,
+            requestBuilders,
           })
         }
         if (!TERMINAL_PHASES.has(status?.phase)) throw new Error('setup operation did not settle')
@@ -77,6 +82,7 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
     } else {
       mayDestroyAgents = await checkOwnership(client, pin, expectedOwnership, evidence, cleanupErrors, {
         budget,
+        requestBuilders,
         boundary: 'before_agent_destruction',
         agentPresence: 'exact',
         projectSessions: 'only_pinned',
@@ -87,9 +93,11 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
     if (mayDestroyAgents) {
       for (const agentId of [pin.utility_agent_id, pin.launch_agent_id]) {
         try {
-          const response = await sendWithTimeout(client, {
-            DestroyAgent: { session_id: pin.session_id, agent_id: agentId },
-          }, budget, 'destroy drill-owned remote agent')
+          const response = await sendWithTimeout(client,
+            requestBuilders.destroyAgentRequest(pin.session_id, agentId),
+            budget,
+            'destroy drill-owned remote agent',
+          )
           assertAgentDestroyed(response, pin.session_id, agentId)
           acknowledgedAgentIds.push(agentId)
           evidence.destroyedAgentIds.push(agentId)
@@ -104,6 +112,7 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
       } else {
         const mayDeleteSession = await checkOwnership(client, pin, expectedOwnership, evidence, cleanupErrors, {
           budget,
+          requestBuilders,
           boundary: 'before_session_deletion',
           agentPresence: 'pinned_subset',
           projectSessions: 'only_pinned',
@@ -116,9 +125,11 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
           // This last fresh snapshot narrows, but cannot eliminate, the join race.
           try {
             assertSessionDeleted(
-              await sendWithTimeout(client, {
-                DeleteSession: { session_ref: pin.session_id, workspace_id: pin.workspace_id },
-              }, budget, 'delete drill-owned session'),
+              await sendWithTimeout(client,
+                requestBuilders.deleteSessionRequest(pin.session_id, pin.workspace_id),
+                budget,
+                'delete drill-owned session',
+              ),
               pin,
             )
             evidence.deletedSessionId = pin.session_id
@@ -128,11 +139,11 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
           }
 
           if (evidence.deletedSessionId === pin.session_id) {
-            const mayDeleteProject = await checkProjectCleanupBoundary(client, pin, evidence, cleanupErrors, budget)
+            const mayDeleteProject = await checkProjectCleanupBoundary(client, pin, evidence, cleanupErrors, budget, requestBuilders)
             if (mayDeleteProject) {
               try {
                 assertProjectDeleted(
-                  await sendWithTimeout(client, { DeleteProject: { project_id: pin.project_id } }, budget, 'delete drill-owned Project'),
+                  await sendWithTimeout(client, requestBuilders.deleteProjectRequest(pin.project_id), budget, 'delete drill-owned Project'),
                   pin,
                 )
                 evidence.deletedProjectId = pin.project_id
@@ -175,13 +186,14 @@ export async function cleanupProjectEnvironmentSetupDrillContext({
 
 async function checkOwnership(client, pin, expectedOwnership, evidence, cleanupErrors, {
   budget,
+  requestBuilders,
   boundary,
   agentPresence,
   projectSessions,
 }) {
   let snapshot
   try {
-    snapshot = await readOwnershipSnapshot(client, pin, budget)
+    snapshot = await readOwnershipSnapshot(client, pin, budget, requestBuilders)
   } catch {
     evidence.ownershipChecks.push({ boundary, verified: false, failures: ['home_kernel_snapshot_failed'] })
     cleanupErrors.push(`ownership_check_failed:${boundary}`)
@@ -197,16 +209,12 @@ async function checkOwnership(client, pin, expectedOwnership, evidence, cleanupE
   return true
 }
 
-async function readOwnershipSnapshot(client, pin, budget) {
-  const machines = requireVariant(await sendWithTimeout(client, { ListRemoteMachines: null }, budget, 'refresh enrolled machines'), 'RemoteMachinesListed').machines ?? []
-  const kernels = requireVariant(await sendWithTimeout(client, {
-    ListRemoteMachineKernels: { machine_ref: pin.target_machine_id },
-  }, budget, 'refresh target kernels'), 'RemoteMachineKernelsListed').kernels ?? []
-  const projects = requireVariant(await sendWithTimeout(client, { ListProjects: { include_archived: false } }, budget, 'refresh Project ownership'), 'ProjectsListed').projects ?? []
-  const sessions = requireVariant(await sendWithTimeout(client, { ListSessions: null }, budget, 'refresh Project sessions'), 'SessionsListed').sessions ?? []
-  const state = requireVariant(await sendWithTimeout(client, {
-    GetSessionState: { session_id: pin.session_id },
-  }, budget, 'refresh pinned session ownership'), 'SessionState', 'SessionStateLoaded')
+async function readOwnershipSnapshot(client, pin, budget, requestBuilders) {
+  const machines = requireVariant(await sendWithTimeout(client, requestBuilders.listRemoteMachinesRequest(), budget, 'refresh enrolled machines'), 'RemoteMachinesListed').machines ?? []
+  const kernels = requireVariant(await sendWithTimeout(client, requestBuilders.listRemoteMachineKernelsRequest(pin.target_machine_id), budget, 'refresh target kernels'), 'RemoteMachineKernelsListed').kernels ?? []
+  const projects = requireVariant(await sendWithTimeout(client, requestBuilders.listProjectsRequest(false), budget, 'refresh Project ownership'), 'ProjectsListed').projects ?? []
+  const sessions = requireVariant(await sendWithTimeout(client, requestBuilders.listSessionsRequest(), budget, 'refresh Project sessions'), 'SessionsListed').sessions ?? []
+  const state = requireVariant(await sendWithTimeout(client, requestBuilders.getSessionStateRequest(pin.session_id), budget, 'refresh pinned session ownership'), 'SessionState', 'SessionStateLoaded')
   return { machines, kernels, projects, sessions, session: state.session }
 }
 
@@ -316,12 +324,12 @@ function inspectOwnershipSnapshot(snapshot, pin, expectedOwnership, { boundary, 
   return { boundary, verified: failures.length === 0, observed, failures }
 }
 
-async function checkProjectCleanupBoundary(client, pin, evidence, cleanupErrors, budget) {
+async function checkProjectCleanupBoundary(client, pin, evidence, cleanupErrors, budget, requestBuilders) {
   let projects
   let sessions
   try {
-    projects = requireVariant(await sendWithTimeout(client, { ListProjects: { include_archived: false } }, budget, 'recheck Project ownership before deletion'), 'ProjectsListed').projects ?? []
-    sessions = requireVariant(await sendWithTimeout(client, { ListSessions: null }, budget, 'recheck Project sessions before deletion'), 'SessionsListed').sessions ?? []
+    projects = requireVariant(await sendWithTimeout(client, requestBuilders.listProjectsRequest(false), budget, 'recheck Project ownership before deletion'), 'ProjectsListed').projects ?? []
+    sessions = requireVariant(await sendWithTimeout(client, requestBuilders.listSessionsRequest(), budget, 'recheck Project sessions before deletion'), 'SessionsListed').sessions ?? []
   } catch {
     evidence.ownershipChecks.push({ boundary: 'before_project_deletion', verified: false, failures: ['home_kernel_snapshot_failed'] })
     cleanupErrors.push('ownership_check_failed:before_project_deletion')
@@ -360,18 +368,20 @@ function projectOwnsWorkspace(project, workspaceId) {
   return project.workspace_id === workspaceId || (project.workspace_ids ?? []).includes(workspaceId)
 }
 
-async function readSetupStatus(client, pin, operationId, budget) {
-  const response = await sendWithTimeout(client, {
-    GetProjectEnvironmentSetupStatus: { operationId },
-  }, budget, 'read Project setup status for cleanup')
+async function readSetupStatus(client, pin, operationId, budget, requestBuilders) {
+  const response = await sendWithTimeout(client,
+    requestBuilders.getProjectEnvironmentSetupStatusRequest(operationId),
+    budget,
+    'read Project setup status for cleanup',
+  )
   const status = getSetupStatusFromResponse(response)
   return assertBoundSetupStatus(status, setupStatusBinding(pin, operationId))
 }
 
-async function waitForTerminalSetup(client, operationId, { pin, budget, pollMs, delay }) {
+async function waitForTerminalSetup(client, operationId, { pin, budget, pollMs, delay, requestBuilders }) {
   let last = null
   while (budget.nowMs() < budget.deadline) {
-    last = await readSetupStatus(client, pin, operationId, budget)
+    last = await readSetupStatus(client, pin, operationId, budget, requestBuilders)
     if (TERMINAL_PHASES.has(last?.phase)) return last
     const remaining = budget.deadline - budget.nowMs()
     if (remaining <= 0) break
@@ -385,6 +395,24 @@ function requireVariant(response, ...variants) {
     if (response?.[variant] != null) return response[variant]
   }
   throw new Error(`home kernel returned none of the expected response variants: ${variants.join(', ')}`)
+}
+
+function requireRequestBuilders(requestBuilders) {
+  const required = [
+    'cancelProjectEnvironmentSetupRequest',
+    'deleteProjectRequest',
+    'deleteSessionRequest',
+    'destroyAgentRequest',
+    'getProjectEnvironmentSetupStatusRequest',
+    'getSessionStateRequest',
+    'listProjectsRequest',
+    'listRemoteMachineKernelsRequest',
+    'listRemoteMachinesRequest',
+    'listSessionsRequest',
+  ]
+  for (const name of required) {
+    if (typeof requestBuilders?.[name] !== 'function') throw new Error(`kernel-client request builder ${name} is required`)
+  }
 }
 
 function setupStatusBinding(pin, operationId) {

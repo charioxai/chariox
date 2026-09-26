@@ -150,7 +150,7 @@ export function setupDrillOperationId(runId, branch) {
   return `project-setup-live-${branch}-${runId}`
 }
 
-export function startSetupRequest(pin, operationId, branch, validationCommands = PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS) {
+export function startSetupParameters(pin, operationId, branch, validationCommands = PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS) {
   const payload = {
     operationId,
     projectId: pin.project_id,
@@ -160,7 +160,7 @@ export function startSetupRequest(pin, operationId, branch, validationCommands =
     targetPlatform: pin.target_platform,
   }
   if (branch === 'cold') payload.validationCommands = [...validationCommands]
-  return { StartProjectEnvironmentSetup: payload }
+  return payload
 }
 
 export function assertProjectEnvironmentSetupDrillPreflight({ pin, machines, kernels, projects, sessions, session }) {
@@ -267,6 +267,7 @@ export async function runBoundedProjectEnvironmentSetupOperation({
   createClient,
   pin,
   request,
+  requestBuilders,
   timeoutMs = PROJECT_ENVIRONMENT_SETUP_DRILL_OPERATION_TIMEOUT_MS,
   pollMs = PROJECT_ENVIRONMENT_SETUP_DRILL_POLL_MS,
   controlTimeoutMs = PROJECT_ENVIRONMENT_SETUP_DRILL_CONTROL_TIMEOUT_MS,
@@ -278,6 +279,8 @@ export async function runBoundedProjectEnvironmentSetupOperation({
 }) {
   const startPayload = request.StartProjectEnvironmentSetup
   assert.ok(startPayload?.operationId, 'setup operation request is missing operationId')
+  assert.ok(typeof requestBuilders?.getProjectEnvironmentSetupStatusRequest === 'function', 'setup status request builder is required')
+  assert.ok(typeof requestBuilders?.retryProjectEnvironmentSetupRequest === 'function', 'setup retry request builder is required')
   assert.ok(timeoutMs > 0 && timeoutMs <= PROJECT_ENVIRONMENT_SETUP_DRILL_OPERATION_TIMEOUT_MS, 'setup timeout must fit the fixed 15 minute bound')
   assert.ok(pollMs >= 250 && pollMs <= 5_000, 'setup poll interval is outside the bounded range')
   const deadline = nowMs() + timeoutMs
@@ -322,7 +325,7 @@ export async function runBoundedProjectEnvironmentSetupOperation({
 
     await closeClient(client)
     client = await createClient()
-    const recovered = await getSetupStatus(client, startPayload.operationId, controlTimeoutMs)
+    const recovered = await getSetupStatus(client, startPayload.operationId, controlTimeoutMs, requestBuilders)
     assertBoundSetupStatus(recovered, expected, expectedAttempt)
     assert.equal(recovered.attempt, latest.attempt, 'reconnect changed the setup attempt')
     recoveredAttempt = recovered.attempt
@@ -335,9 +338,11 @@ export async function runBoundedProjectEnvironmentSetupOperation({
       if (latest.phase === 'failed') {
         if (latest.retryable && allowOneRetry && retries < PROJECT_ENVIRONMENT_SETUP_DRILL_MAX_RETRIES) {
           const priorAttempt = latest.attempt
-          const response = await sendWithin(client, {
-            RetryProjectEnvironmentSetup: { operationId: startPayload.operationId, sessionId: pin.session_id },
-          }, controlTimeoutMs, 'retry Project setup')
+          const response = await sendWithin(client,
+            requestBuilders.retryProjectEnvironmentSetupRequest(startPayload.operationId, pin.session_id),
+            controlTimeoutMs,
+            'retry Project setup',
+          )
           const retried = setupStatusFromResponse(response, ['ProjectEnvironmentSetupRetried', 'ProjectEnvironmentSetupStatus'])
           assertBoundSetupStatus(retried, expected, priorAttempt + 1)
           assert.equal(retried.attempt, priorAttempt + 1, 'retry did not create exactly one new attempt')
@@ -354,7 +359,7 @@ export async function runBoundedProjectEnvironmentSetupOperation({
       }
       if (nowMs() >= deadline) throw setupFailure('setup_operation_timeout')
       await delay(Math.min(pollMs, Math.max(1, deadline - nowMs())))
-      const next = await getSetupStatus(client, startPayload.operationId, controlTimeoutMs)
+      const next = await getSetupStatus(client, startPayload.operationId, controlTimeoutMs, requestBuilders)
       onCandidate(next, 'poll')
       latest = next
     }
@@ -447,8 +452,8 @@ export function setupFailure(code) {
   return error
 }
 
-async function getSetupStatus(client, operationId, timeoutMs) {
-  const response = await sendWithin(client, { GetProjectEnvironmentSetupStatus: { operationId } }, timeoutMs, 'get Project setup status')
+async function getSetupStatus(client, operationId, timeoutMs, requestBuilders) {
+  const response = await sendWithin(client, requestBuilders.getProjectEnvironmentSetupStatusRequest(operationId), timeoutMs, 'get Project setup status')
   return getSetupStatusFromResponse(response)
 }
 

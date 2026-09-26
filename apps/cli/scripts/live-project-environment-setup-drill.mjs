@@ -19,7 +19,7 @@ import {
   runBoundedProjectEnvironmentSetupOperation,
   safeSetupStatusEvidence,
   setupDrillOperationId,
-  startSetupRequest,
+  startSetupParameters,
   validateProjectEnvironmentSetupDrillPin,
   validateSetupDrillConfirmations,
 } from './lib/project-environment-setup-drill.mjs'
@@ -232,7 +232,7 @@ async function readProject(createClient, projectId) {
 
 async function assertProjectSetupReadyAgain(createClient, operationId, expected, commands) {
   return await withClient(createClient, async (client) => {
-    const response = await sendWithTimeout(client, { GetProjectEnvironmentSetupStatus: { operationId } }, 'recheck Ready setup status')
+    const response = await sendWithTimeout(client, requests.getProjectEnvironmentSetupStatusRequest(operationId), 'recheck Ready setup status')
     const status = getSetupStatusFromResponse(response)
     assertReadySetupValidation(status, { expected, commands })
     return status
@@ -376,7 +376,6 @@ async function main() {
   }
 
   const operationIds = []
-  let mutationMayHaveStarted = false
   let passed = false
   let failureCode = null
   try {
@@ -393,12 +392,15 @@ async function main() {
       retries: 0,
     }
     evidence.setupOperations.push(coldEvidence)
+    const coldRequest = requests.startProjectEnvironmentSetupRequest(
+      startSetupParameters(input.pin, coldOperationId, 'cold', validationCommands),
+    )
     operationIds.push(coldOperationId)
-    mutationMayHaveStarted = true
     const coldResult = await runBoundedProjectEnvironmentSetupOperation({
       createClient,
       pin: input.pin,
-      request: startSetupRequest(input.pin, coldOperationId, 'cold', validationCommands),
+      request: coldRequest,
+      requestBuilders: requests,
       allowOneRetry: parsed.allowOneRetry,
       onStatus: makeStatusRecorder(coldEvidence),
     })
@@ -429,17 +431,20 @@ async function main() {
       retries: 0,
     }
     evidence.setupOperations.push(storedEvidence)
-    operationIds.push(storedOperationId)
     const storedProject = await readProject(createClient, input.pin.project_id)
     const storedBeforeStart = assertStoredDefinition(storedProject, input.pin.target_platform, validationCommands)
     const storedValidationCommands = storedProject.environment_definition.validation_commands
     assert.deepEqual(storedBeforeStart.validationCommandDigests, generatedDefinition.validationCommandDigests, 'stored definition command identity changed after cold setup')
     storedEvidence.persistedDefinition = storedBeforeStart
-    mutationMayHaveStarted = true
+    const storedRequest = requests.startProjectEnvironmentSetupRequest(
+      startSetupParameters(input.pin, storedOperationId, 'stored'),
+    )
+    operationIds.push(storedOperationId)
     const storedResult = await runBoundedProjectEnvironmentSetupOperation({
       createClient,
       pin: input.pin,
-      request: startSetupRequest(input.pin, storedOperationId, 'stored'),
+      request: storedRequest,
+      requestBuilders: requests,
       idempotentStartReplay: true,
       allowOneRetry: parsed.allowOneRetry,
       onStatus: makeStatusRecorder(storedEvidence),
@@ -468,7 +473,7 @@ async function main() {
     failureCode = typeof error?.code === 'string' ? error.code : 'live_setup_drill_failed'
     evidence.failureCode = failureCode
   } finally {
-    if (mutationMayHaveStarted) {
+    if (operationIds.length > 0) {
       try {
         await cleanupProjectEnvironmentSetupDrillContext({
           createClient,
@@ -476,6 +481,7 @@ async function main() {
           operationIds,
           expectedOwnership: evidence.preflight,
           evidence: evidence.cleanup,
+          requestBuilders: requests,
         })
       } catch {
         evidence.cleanup.errors.push('cleanup_transport_or_kernel_failure')
