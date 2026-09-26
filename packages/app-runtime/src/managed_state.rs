@@ -173,8 +173,12 @@ impl<'a> ManagedStateStore<'a> {
     }
 
     /// A migrating worker starts: an interrupted run's writes are dropped
-    /// and the migration restarts from its snapshot.
-    pub fn migration_rewind_in(transaction: &Transaction<'_>, scope: StateScope<'_>) -> Result<()> {
+    /// and the migration restarts from its snapshot, at the returned schema;
+    /// None when no migration is open.
+    pub fn migration_rewind_in(
+        transaction: &Transaction<'_>,
+        scope: StateScope<'_>,
+    ) -> Result<Option<u32>> {
         migration::rewind(transaction, scope)
     }
 

@@ -306,3 +306,44 @@ fn data_is_never_migrated_down() {
         )))
     ));
 }
+
+fn rewind(connection: &mut Connection, generation: u64) -> Option<u32> {
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let scope = StateScope::new(OWNER, INSTALLATION, generation).unwrap();
+    let from = ManagedStateStore::migration_rewind_in(&tx, scope).unwrap();
+    tx.commit().unwrap();
+    from
+}
+
+#[test]
+fn a_rewind_after_a_recorded_step_restarts_every_step_from_the_snapshot() {
+    let mut db = Database::new("rewind");
+    let (update, trust) = updating(&mut db, 2);
+    let generation = update.generation;
+    // A run recorded step 1, then wrote at schema 2 before it was stopped.
+    write(&mut db.1, generation, 1, "todos", json!([{"title":"milk"}])).unwrap();
+    step(&mut db.1, generation, 1).unwrap();
+    write(&mut db.1, generation, 2, "todos", json!({"items":"partial"})).unwrap();
+    // The restarted worker runs from the active schema over the snapshot.
+    assert_eq!(rewind(&mut db.1, generation), Some(0));
+    assert_eq!(
+        ManagedStateStore::migration_from(&db.1, INSTALLATION, generation).unwrap(),
+        Some(0)
+    );
+    assert_eq!(read(&mut db.1, generation, "todos"), Some(json!(["milk"])));
+    assert!(matches!(
+        write(&mut db.1, generation, 2, "todos", json!([])),
+        Err(StateError::SchemaMismatch)
+    ));
+    assert!(matches!(step(&mut db.1, generation, 2), Err(StateError::SchemaMismatch)));
+    write(&mut db.1, generation, 1, "todos", json!([{"title":"milk"}])).unwrap();
+    step(&mut db.1, generation, 1).unwrap();
+    write(&mut db.1, generation, 2, "todos", json!({"items":[{"title":"milk"}]})).unwrap();
+    step(&mut db.1, generation, 2).unwrap();
+    commit(&mut db.1, &update, &trust).unwrap();
+    assert_eq!(schema(&mut db.1), 2);
+    // Nothing is open any more.
+    assert_eq!(rewind(&mut db.1, generation), None);
+}
