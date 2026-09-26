@@ -195,10 +195,12 @@ impl Store {
         );
         prepared
     }
-    /// Runs on detached images before `generation` starts. A staged (newer,
-    /// uncommitted) generation first copies the data it starts from; the
-    /// committed generation starting again after it restores that copy, so a
-    /// failed update leaves no writes behind; a committed start drops it.
+    /// Runs on detached images before `generation` starts, on the committed
+    /// generation's data snapshot. A staged (uncommitted) generation takes it
+    /// while the data is still the committed generation's, and keeps it when
+    /// staged on another uncommitted generation, so any number of failed
+    /// updates roll back to committed data. The committed generation starting
+    /// after an uncommitted one restores it; a committed start drops it.
     fn snapshot(
         &self,
         directory: &Dir,
@@ -207,23 +209,23 @@ impl Store {
         committed: u64,
     ) -> Result<()> {
         let previous = journal.generation;
-        let data = journal.images[0]
-            .inode
+        let kept = journal
+            .snapshot
             .clone()
-            .filter(|_| journal.images[0].formatted);
-        if generation > previous && generation != committed {
-            let Some(data) = data else { return Ok(()) };
-            if journal
-                .snapshot
-                .as_ref()
-                .is_some_and(|kept| kept.generation == previous)
-            {
+            .filter(|kept| kept.generation == committed);
+        if generation != committed {
+            let data = journal.images[0]
+                .inode
+                .clone()
+                .filter(|_| journal.images[0].formatted);
+            if kept.is_some() || previous != committed {
                 return Ok(());
             }
+            let Some(data) = data else { return Ok(()) };
             discard_snapshot(directory, journal)?;
             self.capacity_with(false, DATA_BYTES)?;
             journal.snapshot = Some(Snapshot {
-                generation: previous,
+                generation: committed,
                 inode: None,
             });
             files::save_journal(directory, journal)?;
@@ -234,19 +236,18 @@ impl Store {
             files::copy_image(&source, &copy, DATA_BYTES)?;
             directory.sync()?;
             journal.snapshot = Some(Snapshot {
-                generation: previous,
+                generation: committed,
                 inode: Some(files::identity(&copy)?),
             });
             files::save_journal(directory, journal)
-        } else if generation < previous && generation == committed {
+        } else if previous > committed {
+            // Without a snapshot (staged before snapshots existed) the data
+            // stays as the uncommitted generation left it.
             let Some(Snapshot {
                 inode: Some(kept), ..
-            }) = journal
-                .snapshot
-                .clone()
-                .filter(|kept| kept.generation == generation)
+            }) = kept
             else {
-                return Ok(());
+                return discard_snapshot(directory, journal);
             };
             let copy = files::open_image(directory, SNAPSHOT_IMAGE)?.ok_or(Error::Identity)?;
             files::require(directory, SNAPSHOT_IMAGE, &copy, &kept)?;
@@ -255,10 +256,8 @@ impl Store {
             journal.images[0].inode = Some(kept);
             journal.snapshot = None;
             files::save_journal(directory, journal)
-        } else if generation == committed {
-            discard_snapshot(directory, journal)
         } else {
-            Ok(())
+            discard_snapshot(directory, journal)
         }
     }
     pub fn retry_pending(&mut self) {
