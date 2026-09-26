@@ -19,214 +19,209 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
-    async fn receive_claim_test_envelope(socket: &mut WebSocketStream<TcpStream>) -> RelayEnvelope {
-        let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
-            .await
-            .expect("temporary relay should receive a client envelope before timeout")
-            .expect("temporary relay socket should remain open")
-            .expect("temporary relay frame should decode");
-        serde_json::from_str(
-            message
-                .to_text()
-                .expect("temporary relay envelope should be text"),
-        )
-        .expect("temporary relay envelope should deserialize")
-    }
+async fn receive_claim_test_envelope(socket: &mut WebSocketStream<TcpStream>) -> RelayEnvelope {
+    let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+        .await
+        .expect("temporary relay should receive a client envelope before timeout")
+        .expect("temporary relay socket should remain open")
+        .expect("temporary relay frame should decode");
+    serde_json::from_str(
+        message
+            .to_text()
+            .expect("temporary relay envelope should be text"),
+    )
+    .expect("temporary relay envelope should deserialize")
+}
 
-    async fn send_claim_test_envelope(
-        socket: &mut WebSocketStream<TcpStream>,
-        envelope: RelayEnvelope,
-    ) {
-        socket
-            .send(Message::Text(
-                serde_json::to_string(&envelope)
-                    .expect("temporary relay envelope should serialize")
-                    .into(),
-            ))
-            .await
-            .expect("temporary relay envelope should send");
-    }
+async fn send_claim_test_envelope(
+    socket: &mut WebSocketStream<TcpStream>,
+    envelope: RelayEnvelope,
+) {
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&envelope)
+                .expect("temporary relay envelope should serialize")
+                .into(),
+        ))
+        .await
+        .expect("temporary relay envelope should send");
+}
 
-    async fn accept_claim_test_prompt(
-        listener: &TcpListener,
-        worker_id: &str,
-        machine_id: &str,
-        worker_public_key: &str,
-        worker_private_key: &str,
-    ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
-        let (stream, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
-                .await
-                .expect("temporary relay should accept discovery connection before timeout")
-                .expect("temporary relay listener should remain open");
-        let mut discovery = accept_async(stream)
-            .await
-            .expect("temporary relay should upgrade discovery connection");
-        let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
-            receive_claim_test_envelope(&mut discovery).await
-        else {
-            panic!("expected relay metadata request");
-        };
-        let presence = serde_json::from_value(serde_json::json!({
-            "kernel_id": worker_id,
-            "machine_id": machine_id,
-            "public_key": worker_public_key,
-        }))
-        .expect("fake worker presence should deserialize");
-        send_claim_test_envelope(
-            &mut discovery,
-            RelayEnvelope::ClientMetadataResponse {
-                request_id,
-                machines: None,
-                kernels: None,
-                kernel: Some(presence),
-                error: None,
-            },
-        )
-        .await;
-        drop(discovery);
-
-        let (stream, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
-                .await
-                .expect("temporary relay should accept peer connection before timeout")
-                .expect("temporary relay listener should remain open");
-        let mut peer = accept_async(stream)
-            .await
-            .expect("temporary relay should upgrade peer connection");
-        assert!(matches!(
-            receive_claim_test_envelope(&mut peer).await,
-            RelayEnvelope::DaemonRegister { .. }
-        ));
-        let RelayEnvelope::DaemonPeerRequest {
+async fn accept_claim_test_prompt(
+    listener: &TcpListener,
+    worker_id: &str,
+    machine_id: &str,
+    worker_public_key: &str,
+    worker_private_key: &str,
+) -> (WebSocketStream<TcpStream>, String, String, String, String) {
+    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+        .await
+        .expect("temporary relay should accept discovery connection before timeout")
+        .expect("temporary relay listener should remain open");
+    let mut discovery = accept_async(stream)
+        .await
+        .expect("temporary relay should upgrade discovery connection");
+    let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
+        receive_claim_test_envelope(&mut discovery).await
+    else {
+        panic!("expected relay metadata request");
+    };
+    let presence = serde_json::from_value(serde_json::json!({
+        "kernel_id": worker_id,
+        "machine_id": machine_id,
+        "public_key": worker_public_key,
+    }))
+    .expect("fake worker presence should deserialize");
+    send_claim_test_envelope(
+        &mut discovery,
+        RelayEnvelope::ClientMetadataResponse {
             request_id,
-            encrypted_request,
-            ..
-        } = receive_claim_test_envelope(&mut peer).await
-        else {
-            panic!("expected leased prompt submission");
-        };
-        let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
-            worker_private_key,
-            &encrypted_request,
-        )
-        .expect("fake worker should decrypt the prompt submission");
-        let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
-            leased_agent_id,
-            prompt,
-            git_context: Some(git_context),
-            ..
-        } = serde_json::from_slice(&decrypted.plaintext)
-            .expect("fake worker request should decode")
-        else {
-            panic!("expected SubmitLeasedPrompt with home turn context");
-        };
-        (
-            peer,
+            machines: None,
+            kernels: None,
+            kernel: Some(presence),
+            error: None,
+        },
+    )
+    .await;
+    drop(discovery);
+
+    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+        .await
+        .expect("temporary relay should accept peer connection before timeout")
+        .expect("temporary relay listener should remain open");
+    let mut peer = accept_async(stream)
+        .await
+        .expect("temporary relay should upgrade peer connection");
+    assert!(matches!(
+        receive_claim_test_envelope(&mut peer).await,
+        RelayEnvelope::DaemonRegister { .. }
+    ));
+    let RelayEnvelope::DaemonPeerRequest {
+        request_id,
+        encrypted_request,
+        ..
+    } = receive_claim_test_envelope(&mut peer).await
+    else {
+        panic!("expected leased prompt submission");
+    };
+    let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        worker_private_key,
+        &encrypted_request,
+    )
+    .expect("fake worker should decrypt the prompt submission");
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id,
+        prompt,
+        git_context: Some(git_context),
+        ..
+    } = serde_json::from_slice(&decrypted.plaintext).expect("fake worker request should decode")
+    else {
+        panic!("expected SubmitLeasedPrompt with home turn context");
+    };
+    (
+        peer,
+        request_id,
+        decrypted.sender_public_key,
+        git_context.home_prompt_id,
+        format!("{leased_agent_id}\n{prompt}"),
+    )
+}
+
+async fn acknowledge_claim_test_prompt(
+    peer: &mut WebSocketStream<TcpStream>,
+    request_id: String,
+    sender_public_key: &str,
+    worker_id: &str,
+    worker_private_key: &str,
+    prompt_id: &str,
+    leased_agent_id: &str,
+    prompt: &str,
+    run_id: &str,
+) {
+    let response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+        provider_run_id: run_id.to_string(),
+        outcome: crate::session::PromptSubmissionOutcome::Started {
+            prompt: crate::session::PromptQueueItem::new(
+                format!("worker-{prompt_id}"),
+                "worker-attachment",
+                leased_agent_id,
+                prompt,
+                crate::session::PromptStatus::Running,
+            ),
+        },
+    };
+    let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        worker_private_key,
+        sender_public_key,
+        &serde_json::to_vec(&response).expect("fake worker response should encode"),
+    )
+    .expect("fake worker should encrypt the response");
+    send_claim_test_envelope(
+        peer,
+        RelayEnvelope::DaemonPeerResponse {
             request_id,
-            decrypted.sender_public_key,
-            git_context.home_prompt_id,
-            format!("{leased_agent_id}\n{prompt}"),
-        )
-    }
+            from_daemon_id: worker_id.to_string(),
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+    )
+    .await;
+}
 
-    async fn acknowledge_claim_test_prompt(
-        peer: &mut WebSocketStream<TcpStream>,
-        request_id: String,
-        sender_public_key: &str,
-        worker_id: &str,
-        worker_private_key: &str,
-        prompt_id: &str,
-        leased_agent_id: &str,
-        prompt: &str,
-        run_id: &str,
-    ) {
-        let response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
-            provider_run_id: run_id.to_string(),
-            outcome: crate::session::PromptSubmissionOutcome::Started {
-                prompt: crate::session::PromptQueueItem::new(
-                    format!("worker-{prompt_id}"),
-                    "worker-attachment",
-                    leased_agent_id,
-                    prompt,
-                    crate::session::PromptStatus::Running,
-                ),
-            },
+async fn assert_no_duplicate_claim_submission(
+    listener: &TcpListener,
+    worker_id: &str,
+    machine_id: &str,
+    worker_public_key: &str,
+    worker_private_key: &str,
+) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Ok(Ok((stream, _))) = tokio::time::timeout(remaining, listener.accept()).await else {
+            return;
         };
-        let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
-            worker_private_key,
-            sender_public_key,
-            &serde_json::to_vec(&response).expect("fake worker response should encode"),
-        )
-        .expect("fake worker should encrypt the response");
-        send_claim_test_envelope(
-            peer,
-            RelayEnvelope::DaemonPeerResponse {
-                request_id,
-                from_daemon_id: worker_id.to_string(),
-                encrypted_response: Some(encrypted_response),
-                error: None,
-            },
-        )
-        .await;
-    }
-
-    async fn assert_no_duplicate_claim_submission(
-        listener: &TcpListener,
-        worker_id: &str,
-        machine_id: &str,
-        worker_public_key: &str,
-        worker_private_key: &str,
-    ) {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let Ok(Ok((stream, _))) = tokio::time::timeout(remaining, listener.accept()).await
-            else {
-                return;
-            };
-            let mut socket = accept_async(stream)
-                .await
-                .expect("temporary relay should upgrade observation connection");
-            match receive_claim_test_envelope(&mut socket).await {
-                RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
-                    let presence = serde_json::from_value(serde_json::json!({
-                        "kernel_id": worker_id,
-                        "machine_id": machine_id,
-                        "public_key": worker_public_key,
-                    }))
-                    .expect("fake worker presence should deserialize");
-                    send_claim_test_envelope(
-                        &mut socket,
-                        RelayEnvelope::ClientMetadataResponse {
-                            request_id,
-                            machines: None,
-                            kernels: None,
-                            kernel: Some(presence),
-                            error: None,
-                        },
-                    )
-                    .await;
-                }
-                RelayEnvelope::DaemonRegister { .. } => {
-                    let RelayEnvelope::DaemonPeerRequest {
+        let mut socket = accept_async(stream)
+            .await
+            .expect("temporary relay should upgrade observation connection");
+        match receive_claim_test_envelope(&mut socket).await {
+            RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
+                let presence = serde_json::from_value(serde_json::json!({
+                    "kernel_id": worker_id,
+                    "machine_id": machine_id,
+                    "public_key": worker_public_key,
+                }))
+                .expect("fake worker presence should deserialize");
+                send_claim_test_envelope(
+                    &mut socket,
+                    RelayEnvelope::ClientMetadataResponse {
                         request_id,
-                        encrypted_request,
-                        ..
-                    } = receive_claim_test_envelope(&mut socket).await
-                    else {
-                        panic!("expected a fake worker peer request after registration");
-                    };
-                    let decrypted =
-                        crate::transport::relay_crypto::decrypt_payload_for_private_key(
-                            worker_private_key,
-                            &encrypted_request,
-                        )
-                        .expect("fake worker should decrypt the observed request");
-                    let request: crate::transport::relay_peer::RelayPeerRequest =
-                        serde_json::from_slice(&decrypted.plaintext)
-                            .expect("observed worker request should decode");
-                    match request {
+                        machines: None,
+                        kernels: None,
+                        kernel: Some(presence),
+                        error: None,
+                    },
+                )
+                .await;
+            }
+            RelayEnvelope::DaemonRegister { .. } => {
+                let RelayEnvelope::DaemonPeerRequest {
+                    request_id,
+                    encrypted_request,
+                    ..
+                } = receive_claim_test_envelope(&mut socket).await
+                else {
+                    panic!("expected a fake worker peer request after registration");
+                };
+                let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+                    worker_private_key,
+                    &encrypted_request,
+                )
+                .expect("fake worker should decrypt the observed request");
+                let request: crate::transport::relay_peer::RelayPeerRequest =
+                    serde_json::from_slice(&decrypted.plaintext)
+                        .expect("observed worker request should decode");
+                match request {
                         crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
                             ..
                         } => panic!("the same active successor must not be submitted twice"),
@@ -257,298 +252,295 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
                         }
                         other => panic!("unexpected observed worker request: {other:?}"),
                     }
-                }
-                other => panic!("unexpected fake relay observation envelope: {other:?}"),
             }
+            other => panic!("unexpected fake relay observation envelope: {other:?}"),
         }
     }
+}
 
-    struct FakeRelayPeerRequest {
-        socket: WebSocketStream<TcpStream>,
-        request_id: String,
-        target_id: String,
-        request: RelayPeerRequest,
-    }
+struct FakeRelayPeerRequest {
+    socket: WebSocketStream<TcpStream>,
+    request_id: String,
+    target_id: String,
+    request: RelayPeerRequest,
+}
 
-    async fn receive_fake_relay_envelope(socket: &mut WebSocketStream<TcpStream>) -> RelayEnvelope {
-        let message = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
-            .await
-            .expect("fake relay frame should arrive before timeout")
-            .expect("fake relay socket should remain open")
-            .expect("fake relay frame should decode");
-        serde_json::from_str(
-            message
-                .to_text()
-                .expect("fake relay envelope should be text"),
-        )
-        .expect("fake relay envelope should deserialize")
-    }
+async fn receive_fake_relay_envelope(socket: &mut WebSocketStream<TcpStream>) -> RelayEnvelope {
+    let message = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
+        .await
+        .expect("fake relay frame should arrive before timeout")
+        .expect("fake relay socket should remain open")
+        .expect("fake relay frame should decode");
+    serde_json::from_str(
+        message
+            .to_text()
+            .expect("fake relay envelope should be text"),
+    )
+    .expect("fake relay envelope should deserialize")
+}
 
-    async fn send_fake_relay_envelope(
-        socket: &mut WebSocketStream<TcpStream>,
-        envelope: RelayEnvelope,
-    ) {
-        socket
-            .send(Message::Text(
-                serde_json::to_string(&envelope)
-                    .expect("fake relay envelope should serialize")
-                    .into(),
-            ))
-            .await
-            .expect("fake relay envelope should send");
-    }
+async fn send_fake_relay_envelope(
+    socket: &mut WebSocketStream<TcpStream>,
+    envelope: RelayEnvelope,
+) {
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&envelope)
+                .expect("fake relay envelope should serialize")
+                .into(),
+        ))
+        .await
+        .expect("fake relay envelope should send");
+}
 
-    async fn receive_fake_worker_peer_request(
-        listener: &TcpListener,
-        worker_id: &str,
-        worker_machine_id: &str,
-        worker_public_key: &str,
-        worker_private_key: &str,
-    ) -> FakeRelayPeerRequest {
-        let (stream, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
-                .await
-                .expect("fake relay should accept metadata connection")
-                .expect("fake relay metadata listener should accept");
-        let mut discovery = accept_async(stream)
-            .await
-            .expect("fake relay should upgrade metadata connection");
-        let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
-            receive_fake_relay_envelope(&mut discovery).await
-        else {
-            panic!("expected public kernel metadata request");
-        };
-        let presence = serde_json::from_value(serde_json::json!({
-            "kernel_id": worker_id,
-            "machine_id": worker_machine_id,
-            "public_key": worker_public_key,
-        }))
-        .expect("fake worker presence should deserialize");
-        send_fake_relay_envelope(
-            &mut discovery,
-            RelayEnvelope::ClientMetadataResponse {
-                request_id,
-                machines: None,
-                kernels: None,
-                kernel: Some(presence),
-                error: None,
-            },
-        )
-        .await;
-        drop(discovery);
-
-        let (stream, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
-                .await
-                .expect("fake relay should accept temporary peer connection")
-                .expect("fake relay peer listener should accept");
-        let mut socket = accept_async(stream)
-            .await
-            .expect("fake relay should upgrade peer connection");
-        assert!(matches!(
-            receive_fake_relay_envelope(&mut socket).await,
-            RelayEnvelope::DaemonRegister { .. }
-        ));
-        let RelayEnvelope::DaemonPeerRequest {
+async fn receive_fake_worker_peer_request(
+    listener: &TcpListener,
+    worker_id: &str,
+    worker_machine_id: &str,
+    worker_public_key: &str,
+    worker_private_key: &str,
+) -> FakeRelayPeerRequest {
+    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+        .await
+        .expect("fake relay should accept metadata connection")
+        .expect("fake relay metadata listener should accept");
+    let mut discovery = accept_async(stream)
+        .await
+        .expect("fake relay should upgrade metadata connection");
+    let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
+        receive_fake_relay_envelope(&mut discovery).await
+    else {
+        panic!("expected public kernel metadata request");
+    };
+    let presence = serde_json::from_value(serde_json::json!({
+        "kernel_id": worker_id,
+        "machine_id": worker_machine_id,
+        "public_key": worker_public_key,
+    }))
+    .expect("fake worker presence should deserialize");
+    send_fake_relay_envelope(
+        &mut discovery,
+        RelayEnvelope::ClientMetadataResponse {
             request_id,
-            target,
-            encrypted_request,
-        } = receive_fake_relay_envelope(&mut socket).await
-        else {
-            panic!("expected a public kernel peer request");
-        };
-        let target_id = target
-            .daemon_id
-            .or(target.daemon_alias)
-            .expect("kernel peer request should identify its target");
-        let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
-            worker_private_key,
-            &encrypted_request,
-        )
-        .expect("fake worker should decrypt the public kernel request");
-        let request = serde_json::from_slice(&decrypted.plaintext)
-            .expect("fake worker request should deserialize");
-        FakeRelayPeerRequest {
-            socket,
-            request_id,
-            target_id,
-            request,
-        }
+            machines: None,
+            kernels: None,
+            kernel: Some(presence),
+            error: None,
+        },
+    )
+    .await;
+    drop(discovery);
+
+    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+        .await
+        .expect("fake relay should accept temporary peer connection")
+        .expect("fake relay peer listener should accept");
+    let mut socket = accept_async(stream)
+        .await
+        .expect("fake relay should upgrade peer connection");
+    assert!(matches!(
+        receive_fake_relay_envelope(&mut socket).await,
+        RelayEnvelope::DaemonRegister { .. }
+    ));
+    let RelayEnvelope::DaemonPeerRequest {
+        request_id,
+        target,
+        encrypted_request,
+    } = receive_fake_relay_envelope(&mut socket).await
+    else {
+        panic!("expected a public kernel peer request");
+    };
+    let target_id = target
+        .daemon_id
+        .or(target.daemon_alias)
+        .expect("kernel peer request should identify its target");
+    let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        worker_private_key,
+        &encrypted_request,
+    )
+    .expect("fake worker should decrypt the public kernel request");
+    let request = serde_json::from_slice(&decrypted.plaintext)
+        .expect("fake worker request should deserialize");
+    FakeRelayPeerRequest {
+        socket,
+        request_id,
+        target_id,
+        request,
     }
+}
 
-    async fn send_fake_worker_peer_response(
-        request: FakeRelayPeerRequest,
-        worker_id: &str,
-        worker_private_key: &str,
-        home_public_key: &str,
-        response: RelayPeerResponse,
-    ) {
-        let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
-            worker_private_key,
-            home_public_key,
-            &serde_json::to_vec(&response).expect("fake worker response should serialize"),
-        )
-        .expect("fake worker should encrypt its public kernel response");
-        let mut socket = request.socket;
-        send_fake_relay_envelope(
-            &mut socket,
-            RelayEnvelope::DaemonPeerResponse {
-                request_id: request.request_id,
-                from_daemon_id: worker_id.to_string(),
-                encrypted_response: Some(encrypted_response),
-                error: None,
-            },
-        )
-        .await;
-    }
+async fn send_fake_worker_peer_response(
+    request: FakeRelayPeerRequest,
+    worker_id: &str,
+    worker_private_key: &str,
+    home_public_key: &str,
+    response: RelayPeerResponse,
+) {
+    let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        worker_private_key,
+        home_public_key,
+        &serde_json::to_vec(&response).expect("fake worker response should serialize"),
+    )
+    .expect("fake worker should encrypt its public kernel response");
+    let mut socket = request.socket;
+    send_fake_relay_envelope(
+        &mut socket,
+        RelayEnvelope::DaemonPeerResponse {
+            request_id: request.request_id,
+            from_daemon_id: worker_id.to_string(),
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+    )
+    .await;
+}
 
-    struct ReceiptReconciliationFixture {
-        app: Arc<Mutex<DaemonApp>>,
-        runtime: KernelRuntimeState,
-        session_id: String,
-        agent_id: String,
-        dispatch: crate::app::KernelRemotePromptDispatch,
-        successor_prompt: crate::session::PromptQueueItem,
-        successor_prompt_id: String,
-        home_public_key: String,
-        worker_id: String,
-        worker_machine_id: String,
-        worker_public_key: String,
-        worker_private_key: String,
-        leased_agent_id: String,
-    }
+struct ReceiptReconciliationFixture {
+    app: Arc<Mutex<DaemonApp>>,
+    runtime: KernelRuntimeState,
+    session_id: String,
+    agent_id: String,
+    dispatch: crate::app::KernelRemotePromptDispatch,
+    successor_prompt: crate::session::PromptQueueItem,
+    successor_prompt_id: String,
+    home_public_key: String,
+    worker_id: String,
+    worker_machine_id: String,
+    worker_public_key: String,
+    worker_private_key: String,
+    leased_agent_id: String,
+}
 
-    async fn make_receipt_reconciliation_fixture(
-        relay_url: &str,
-        suffix: &str,
-    ) -> ReceiptReconciliationFixture {
-        let mut home_config = crate::config::DaemonConfig::for_tests();
-        home_config.relay_url = Some(relay_url.to_string());
-        home_config.relay_token = Some(format!("receipt-home-token-{suffix}"));
-        home_config.relay_request_timeout_ms = 3_000;
-        let home_public_key = home_config.relay_public_key.clone();
-        let worker_config = crate::config::DaemonConfig::for_tests();
-        let worker_public_key = worker_config.relay_public_key.clone();
-        let worker_private_key = worker_config.relay_private_key.clone();
-        let worker_id = format!("worker-receipt-{suffix}");
-        let worker_machine_id = format!("machine-receipt-{suffix}");
-        let leased_agent_id = format!("leased-agent-receipt-{suffix}");
+async fn make_receipt_reconciliation_fixture(
+    relay_url: &str,
+    suffix: &str,
+) -> ReceiptReconciliationFixture {
+    let mut home_config = crate::config::DaemonConfig::for_tests();
+    home_config.relay_url = Some(relay_url.to_string());
+    home_config.relay_token = Some(format!("receipt-home-token-{suffix}"));
+    home_config.relay_request_timeout_ms = 3_000;
+    let home_public_key = home_config.relay_public_key.clone();
+    let worker_config = crate::config::DaemonConfig::for_tests();
+    let worker_public_key = worker_config.relay_public_key.clone();
+    let worker_private_key = worker_config.relay_private_key.clone();
+    let worker_id = format!("worker-receipt-{suffix}");
+    let worker_machine_id = format!("machine-receipt-{suffix}");
+    let leased_agent_id = format!("leased-agent-receipt-{suffix}");
 
-        let mut app = DaemonApp::bootstrap(home_config).expect("home app should bootstrap");
-        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                format!("workspace-receipt-{suffix}"),
-                format!("worktree-receipt-{suffix}"),
-            ))
-            .expect("home session should be created");
-        let attachment = crate::app::KernelSessionService::new(&mut app)
-            .attach(crate::attachment::AttachRequest::new(
-                session.id(),
-                format!("receipt-client-{suffix}"),
-                crate::attachment::ClientCapabilityLevel::FullTerminal,
-            ))
-            .expect("home attachment should be created");
-        app.agents
-            .bind_remote_execution(
-                agent.id(),
-                crate::agent::RemoteAgentBinding {
-                    worker_kernel_id: worker_id.clone(),
-                    worker_machine_id: worker_machine_id.clone(),
-                    execution_lease_id: format!("lease-receipt-{suffix}"),
-                    leased_agent_id: leased_agent_id.clone(),
-                    active_worker_provider_run_id: None,
-                    relay_url: None,
-                    relay_token: None,
-                    relay_peer_protocol_version: Some(
-                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-                    ),
-                },
-            )
-            .expect("home agent should bind to fake worker");
-        let session_id = session.id().to_string();
-        let agent_id = agent.id().to_string();
-        let attachment_id = attachment.id().to_string();
-        let requested_prompt_id = format!("uncertain-prompt-{suffix}");
-        let started = app
-            .prompt_owner_submit_prepared_prompt(
-                &session_id,
-                crate::session::PromptQueueItem::new(
-                    &requested_prompt_id,
-                    &attachment_id,
-                    &agent_id,
-                    "exact prompt whose worker admission is uncertain",
-                    crate::session::PromptStatus::Queued,
+    let mut app = DaemonApp::bootstrap(home_config).expect("home app should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            format!("workspace-receipt-{suffix}"),
+            format!("worktree-receipt-{suffix}"),
+        ))
+        .expect("home session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            format!("receipt-client-{suffix}"),
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("home attachment should be created");
+    app.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: worker_id.clone(),
+                worker_machine_id: worker_machine_id.clone(),
+                execution_lease_id: format!("lease-receipt-{suffix}"),
+                leased_agent_id: leased_agent_id.clone(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
-                false,
-            )
-            .expect("uncertain home prompt should start");
-        let crate::session::PromptSubmissionOutcome::Started {
-            prompt: active_prompt,
-        } = started
-        else {
-            panic!("uncertain home prompt should be active");
-        };
-        let prompt_id = active_prompt.id().to_string();
-        app.mark_active_prompt_delivery(
+            },
+        )
+        .expect("home agent should bind to fake worker");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let requested_prompt_id = format!("uncertain-prompt-{suffix}");
+    let started = app
+        .prompt_owner_submit_prepared_prompt(
             &session_id,
-            &agent_id,
-            &prompt_id,
-            crate::session::DurablePromptDeliveryPhase::Dispatching,
-            None,
-            None,
+            crate::session::PromptQueueItem::new(
+                &requested_prompt_id,
+                &attachment_id,
+                &agent_id,
+                "exact prompt whose worker admission is uncertain",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
         )
-        .expect("home prompt should persist its uncertain Dispatching phase");
+        .expect("uncertain home prompt should start");
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: active_prompt,
+    } = started
+    else {
+        panic!("uncertain home prompt should be active");
+    };
+    let prompt_id = active_prompt.id().to_string();
+    app.mark_active_prompt_delivery(
+        &session_id,
+        &agent_id,
+        &prompt_id,
+        crate::session::DurablePromptDeliveryPhase::Dispatching,
+        None,
+        None,
+    )
+    .expect("home prompt should persist its uncertain Dispatching phase");
 
-        let queued = app
-            .prompt_owner_submit_prepared_prompt(
-                &session_id,
-                crate::session::PromptQueueItem::new(
-                    format!("successor-input-{suffix}"),
-                    &attachment_id,
-                    &agent_id,
-                    "one successor must remain ordered behind the uncertain prompt",
-                    crate::session::PromptStatus::Queued,
-                ),
-                true,
-            )
-            .expect("successor should queue");
-        let crate::session::PromptSubmissionOutcome::Queued {
-            prompt: successor_prompt,
-        } = queued
-        else {
-            panic!("successor should remain queued behind Dispatching prompt");
-        };
-        let successor_prompt_id = successor_prompt.id().to_string();
+    let queued = app
+        .prompt_owner_submit_prepared_prompt(
+            &session_id,
+            crate::session::PromptQueueItem::new(
+                format!("successor-input-{suffix}"),
+                &attachment_id,
+                &agent_id,
+                "one successor must remain ordered behind the uncertain prompt",
+                crate::session::PromptStatus::Queued,
+            ),
+            true,
+        )
+        .expect("successor should queue");
+    let crate::session::PromptSubmissionOutcome::Queued {
+        prompt: successor_prompt,
+    } = queued
+    else {
+        panic!("successor should remain queued behind Dispatching prompt");
+    };
+    let successor_prompt_id = successor_prompt.id().to_string();
 
-        let app = Arc::new(Mutex::new(app));
-        let runtime = owned_runtime_state(&app).await;
-        let agent_instance = runtime
-            .owned
-            .agent_store
-            .get_agent(&agent_id)
-            .expect("home agent should remain available");
-        let dispatch = runtime
-            .remote_prompt_recovery_dispatch(&agent_instance)
-            .expect("recovery dispatch should reconstruct")
-            .expect("uncertain prompt should remain active");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let agent_instance = runtime
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .expect("home agent should remain available");
+    let dispatch = runtime
+        .remote_prompt_recovery_dispatch(&agent_instance)
+        .expect("recovery dispatch should reconstruct")
+        .expect("uncertain prompt should remain active");
 
-        ReceiptReconciliationFixture {
-            app,
-            runtime,
-            session_id,
-            agent_id,
-            dispatch,
-            successor_prompt,
-            successor_prompt_id,
-            home_public_key,
-            worker_id,
-            worker_machine_id,
-            worker_public_key,
-            worker_private_key,
-            leased_agent_id,
-        }
+    ReceiptReconciliationFixture {
+        app,
+        runtime,
+        session_id,
+        agent_id,
+        dispatch,
+        successor_prompt,
+        successor_prompt_id,
+        home_public_key,
+        worker_id,
+        worker_machine_id,
+        worker_public_key,
+        worker_private_key,
+        leased_agent_id,
     }
-
+}
 
 mod receipt_reconciliation {
     use super::*;
@@ -858,7 +850,10 @@ mod receipt_reconciliation {
             .state_parts(&session, &fixture.agent_id);
         let active = active.expect("successor should be active after cancellation drain");
         assert_eq!(active.prompt(), fixture.successor_prompt.prompt());
-        assert!(queued.is_empty(), "the queued successor should advance exactly once");
+        assert!(
+            queued.is_empty(),
+            "the queued successor should advance exactly once"
+        );
         assert_eq!(
             active.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Delivered),
@@ -2016,272 +2011,269 @@ mod receipt_reconciliation {
             message.contains(&dispatch.prompt_id) && message.contains("exact worker receipt")
         }));
     }
-
-
 }
 
-    fn completed_worker_projection(
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: &str,
-        home_prompt_id: &str,
-    ) -> crate::transport::relay_peer::RelayPeerEvent {
-        crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-            home_session_id: session_id.to_string(),
-            home_agent_id: agent_id.to_string(),
-            provider_run_id: provider_run_id.to_string(),
-            provider_run: None,
-            prompts: Vec::new(),
-            output_chunks: Vec::new(),
-            notices: Vec::new(),
-            completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                message_id: "assistant-completed".to_string(),
-                completed_at_ms: crate::session::unix_epoch_ms(),
-                home_prompt_id: Some(home_prompt_id.to_string()),
-                provider_termination: None,
-            }],
-        }
+fn completed_worker_projection(
+    session_id: &str,
+    agent_id: &str,
+    provider_run_id: &str,
+    home_prompt_id: &str,
+) -> crate::transport::relay_peer::RelayPeerEvent {
+    crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+        home_session_id: session_id.to_string(),
+        home_agent_id: agent_id.to_string(),
+        provider_run_id: provider_run_id.to_string(),
+        provider_run: None,
+        prompts: Vec::new(),
+        output_chunks: Vec::new(),
+        notices: Vec::new(),
+        completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+            message_id: "assistant-completed".to_string(),
+            completed_at_ms: crate::session::unix_epoch_ms(),
+            home_prompt_id: Some(home_prompt_id.to_string()),
+            provider_termination: None,
+        }],
     }
+}
 
-    fn actual_worker_output_then_completion(
-        home_session_id: &str,
-        home_agent_id: &str,
-        home_prompt_id: &str,
-    ) -> (
-        crate::agent::RemoteAgentBinding,
-        String,
-        crate::transport::relay_peer::RelayPeerEvent,
-        crate::transport::relay_peer::RelayPeerEvent,
-    ) {
-        let mut config = crate::config::DaemonConfig::for_tests();
-        config.accept_remote_leases = true;
-        let mut worker = DaemonApp::bootstrap(config).expect("worker bootstrap should succeed");
-        let lease = crate::app::RemoteLeaseRuntime::new(&mut worker)
-            .create_execution_lease(
-                "home-kernel-live-recovery",
-                home_session_id,
-                home_agent_id,
-                false,
-                "owner-live-recovery",
-            )
-            .expect("worker lease should be created");
-        let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut worker)
-            .create_leased_agent(
-                &lease.id,
-                "managed-dev-stub",
-                "default",
-                Some("default".to_string()),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .expect("worker leased agent should be created");
-        let (provider_run_id, outcome) = crate::app::RemoteLeaseRuntime::new(&mut worker)
-            .submit_leased_prompt_with_workflow_context(
-                &leased_agent.id,
-                "remote prompt\n",
-                Vec::new(),
-                None,
-                Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                    home_session_id: home_session_id.to_string(),
-                    home_agent_id: home_agent_id.to_string(),
-                    home_prompt_id: home_prompt_id.to_string(),
-                    home_turn_id: home_prompt_id.to_string(),
-                    source_attachment_id: None,
-                    workspace_live_sync_mode: None,
-                    prompt_origin: Some(crate::session::PromptOrigin::Chariox),
-                    external_provider: None,
-                    external_provider_session_id: None,
-                    external_provider_turn_id: None,
-                    prompt_summary: "remote prompt".to_string(),
-                }),
-                Vec::new(),
-                None,
-                crate::extension::RemoteExtensionManifest::default(),
-            )
-            .expect("worker prompt should submit");
-        assert!(matches!(
-            outcome,
-            crate::session::PromptSubmissionOutcome::Started { .. }
-        ));
-        crate::app::RemoteLeaseRuntime::new(&mut worker)
-            .set_leased_agent_provider_for_test(&leased_agent.id, "codex");
-        let launch_request = crate::provider::LaunchProviderRequest::new(
-            &leased_agent.backing_session_id,
-            "codex",
-            "codex",
+fn actual_worker_output_then_completion(
+    home_session_id: &str,
+    home_agent_id: &str,
+    home_prompt_id: &str,
+) -> (
+    crate::agent::RemoteAgentBinding,
+    String,
+    crate::transport::relay_peer::RelayPeerEvent,
+    crate::transport::relay_peer::RelayPeerEvent,
+) {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut worker = DaemonApp::bootstrap(config).expect("worker bootstrap should succeed");
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_execution_lease(
+            "home-kernel-live-recovery",
+            home_session_id,
+            home_agent_id,
+            false,
+            "owner-live-recovery",
+        )
+        .expect("worker lease should be created");
+    let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
             "default",
-            "gpt-5.4",
+            Some("default".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
-        .with_agent_id(&leased_agent.backing_agent_id)
-        .with_client_interface(crate::provider::ProviderClientInterface::Chariox);
-        let mut running_provider = crate::provider::RuntimeProviderRun::new(
+        .expect("worker leased agent should be created");
+    let (provider_run_id, outcome) = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "remote prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: home_session_id.to_string(),
+                home_agent_id: home_agent_id.to_string(),
+                home_prompt_id: home_prompt_id.to_string(),
+                home_turn_id: home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "remote prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("worker prompt should submit");
+    assert!(matches!(
+        outcome,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .set_leased_agent_provider_for_test(&leased_agent.id, "codex");
+    let launch_request = crate::provider::LaunchProviderRequest::new(
+        &leased_agent.backing_session_id,
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.4",
+    )
+    .with_agent_id(&leased_agent.backing_agent_id)
+    .with_client_interface(crate::provider::ProviderClientInterface::Chariox);
+    let mut running_provider = crate::provider::RuntimeProviderRun::new(
+        &provider_run_id,
+        &launch_request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "codex:codex:gpt-5.4".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    running_provider.mark_running();
+    worker.providers_mut().insert_run_for_test(running_provider);
+    worker.fan_out_output_for_agent(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("assistant-output".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"LIVE_RECOVERY_OUTPUT_ONCE",
+    );
+    worker.record_notice_for_agent(
+        &leased_agent.backing_session_id,
+        Some(&provider_run_id),
+        Some(&leased_agent.backing_agent_id),
+        vec![leased_agent.backing_attachment_id.clone()],
+        "LIVE_RECOVERY_NOTICE_ONCE",
+    );
+    let output_event = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
             &provider_run_id,
-            &launch_request,
-            crate::provider::ProviderLaunchResult {
-                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-                process_label: "codex:codex:gpt-5.4".to_string(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: Vec::new(),
-                pty_env: std::collections::BTreeMap::new(),
-                pty_env_remove: Vec::new(),
-                working_directory: None,
-                structured_endpoint: None,
-            },
-        );
-        running_provider.mark_running();
-        worker.providers_mut().insert_run_for_test(running_provider);
-        worker.fan_out_output_for_agent(
-            &leased_agent.backing_session_id,
+            false,
+            true,
+        )
+        .expect("worker output drain should succeed")
+        .expect("worker output should project")
+        .1;
+    if let Some((_, duplicate_event)) = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
             &provider_run_id,
-            Some(&leased_agent.backing_agent_id),
-            crate::terminal::TerminalOutputKind::ProviderOutput,
-            Some("assistant-output".to_string()),
-            vec![leased_agent.backing_attachment_id.clone()],
-            b"LIVE_RECOVERY_OUTPUT_ONCE",
-        );
-        worker.record_notice_for_agent(
+            false,
+            true,
+        )
+        .expect("worker duplicate drain should succeed")
+    {
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            output_chunks,
+            notices,
+            ..
+        } = duplicate_event;
+        assert!(output_chunks.is_empty(), "worker output must not repeat");
+        assert!(notices.is_empty(), "worker notice must not repeat");
+    }
+    worker
+        .complete_active_prompt(
             &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
             Some(&provider_run_id),
-            Some(&leased_agent.backing_agent_id),
-            vec![leased_agent.backing_attachment_id.clone()],
-            "LIVE_RECOVERY_NOTICE_ONCE",
-        );
-        let output_event = crate::app::RemoteLeaseRuntime::new(&mut worker)
-            .drain_leased_runtime_projection_with_recovery(
-                &leased_agent.id,
-                &provider_run_id,
-                false,
-                true,
-            )
-            .expect("worker output drain should succeed")
-            .expect("worker output should project")
-            .1;
-        if let Some((_, duplicate_event)) = crate::app::RemoteLeaseRuntime::new(&mut worker)
-            .drain_leased_runtime_projection_with_recovery(
-                &leased_agent.id,
-                &provider_run_id,
-                false,
-                true,
-            )
-            .expect("worker duplicate drain should succeed")
-        {
-            let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-                output_chunks,
-                notices,
-                ..
-            } = duplicate_event;
-            assert!(output_chunks.is_empty(), "worker output must not repeat");
-            assert!(notices.is_empty(), "worker notice must not repeat");
-        }
-        worker
-            .complete_active_prompt(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-                Some(&provider_run_id),
-            )
-            .expect("worker prompt should settle");
-        let completion_event = crate::app::RemoteLeaseRuntime::new(&mut worker)
-            .drain_leased_runtime_projection_with_recovery(
-                &leased_agent.id,
-                &provider_run_id,
-                false,
-                true,
-            )
-            .expect("worker completion drain should succeed")
-            .expect("worker completion should project")
-            .1;
-        let binding = crate::agent::RemoteAgentBinding {
-            worker_kernel_id: "worker-kernel-live-recovery".to_string(),
-            worker_machine_id: "worker-machine-live-recovery".to_string(),
-            execution_lease_id: lease.id,
-            leased_agent_id: leased_agent.id,
-            active_worker_provider_run_id: None,
-            relay_url: None,
-            relay_token: None,
-            relay_peer_protocol_version: Some(
-                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-            ),
-        };
-        (binding, provider_run_id, output_event, completion_event)
-    }
-
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
-        let (
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            session_projection,
-            provider_run_projection,
-            operational_history_store,
-            durable_state_store,
-            prompt_state_owner,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            terminal_stream,
-            workflow_design_events,
-            metaagent_events,
-            workspace_coordinator,
-        ) = {
-            let app_locked = app.lock().await;
-            (
-                app_locked.config_projection_store(),
-                app_locked.session_state_store(),
-                app_locked.agents().clone(),
-                app_locked.attachments().clone(),
-                app_locked.providers().clone(),
-                app_locked.provider_process_tracking_store(),
-                app_locked.slices(),
-                app_locked.session_state_projection_store(),
-                app_locked.provider_run_projection_store(),
-                app_locked.operational_history_store(),
-                app_locked.durable_state_store(),
-                app_locked.prompt_state_owner(),
-                app_locked.active_turn_store(),
-                app_locked.prompt_activity_store(),
-                app_locked.prompt_workspace_claim_store(),
-                app_locked.structured_output_record_store(),
-                app_locked.terminal_stream_store(),
-                app_locked.workflow_design_event_store(),
-                app_locked.metaagent_event_store(),
-                app_locked.workspace_coordinator(),
-            )
-        };
-        KernelRuntimeState::new_with_owned_state(
-            Arc::clone(app),
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            session_projection,
-            provider_run_projection,
-            operational_history_store,
-            durable_state_store,
-            prompt_state_owner,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            terminal_stream,
-            workflow_design_events,
-            metaagent_events,
-            workspace_coordinator,
         )
-    }
+        .expect("worker prompt should settle");
+    let completion_event = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
+            &provider_run_id,
+            false,
+            true,
+        )
+        .expect("worker completion drain should succeed")
+        .expect("worker completion should project")
+        .1;
+    let binding = crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel-live-recovery".to_string(),
+        worker_machine_id: "worker-machine-live-recovery".to_string(),
+        execution_lease_id: lease.id,
+        leased_agent_id: leased_agent.id,
+        active_worker_provider_run_id: None,
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    };
+    (binding, provider_run_id, output_event, completion_event)
+}
 
+async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+    let (
+        config_projection,
+        session_store,
+        agent_store,
+        attachment_store,
+        provider_store,
+        provider_process_tracking,
+        slice_store,
+        session_projection,
+        provider_run_projection,
+        operational_history_store,
+        durable_state_store,
+        prompt_state_owner,
+        active_turns,
+        prompt_activity,
+        prompt_workspace_claims,
+        structured_output_records,
+        terminal_stream,
+        workflow_design_events,
+        metaagent_events,
+        workspace_coordinator,
+    ) = {
+        let app_locked = app.lock().await;
+        (
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.slices(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.operational_history_store(),
+            app_locked.durable_state_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.active_turn_store(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.structured_output_record_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workflow_design_event_store(),
+            app_locked.metaagent_event_store(),
+            app_locked.workspace_coordinator(),
+        )
+    };
+    KernelRuntimeState::new_with_owned_state(
+        Arc::clone(app),
+        config_projection,
+        session_store,
+        agent_store,
+        attachment_store,
+        provider_store,
+        provider_process_tracking,
+        slice_store,
+        session_projection,
+        provider_run_projection,
+        operational_history_store,
+        durable_state_store,
+        prompt_state_owner,
+        active_turns,
+        prompt_activity,
+        prompt_workspace_claims,
+        structured_output_records,
+        terminal_stream,
+        workflow_design_events,
+        metaagent_events,
+        workspace_coordinator,
+    )
+}
 
 mod projection_drain {
     use super::*;
@@ -3014,7 +3006,6 @@ mod projection_drain {
         ));
     }
 
-
     #[test]
     fn remote_prompt_projection_drain_claims_coalesce_restart_before_release() {
         let claims = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
@@ -3069,8 +3060,8 @@ mod projection_drain {
 }
 
 mod dispatch_settlement {
-    use super::*;
     use super::super::super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
+    use super::*;
 
     #[tokio::test]
     async fn remote_prompt_dispatch_success_refreshes_session_projection() {
@@ -4204,6 +4195,4 @@ mod dispatch_settlement {
         )
         .await;
     }
-
-
 }

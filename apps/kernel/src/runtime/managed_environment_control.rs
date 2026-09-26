@@ -715,10 +715,8 @@ mod tests {
     fn managed_environment_details_project_activity_and_exact_operation_history() {
         let mut environment = environment_json();
         environment["runningAgentCount"] = serde_json::json!(0);
-        environment["lastActivityReportedAt"] =
-            serde_json::json!("2026-09-26T05:00:02.000Z");
-        environment["lastActivityChangedAt"] =
-            serde_json::json!("2026-09-26T04:59:00.000Z");
+        environment["lastActivityReportedAt"] = serde_json::json!("2026-09-26T05:00:02.000Z");
+        environment["lastActivityChangedAt"] = serde_json::json!("2026-09-26T04:59:00.000Z");
         environment["autoStopWarningAt"] = serde_json::Value::Null;
         environment["autoStopDeadlineAt"] = serde_json::json!("2026-09-26T05:14:00.000Z");
         let mut operation = operation_json();
@@ -750,8 +748,14 @@ mod tests {
             details.operations.into_iter().map(Into::into).collect();
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].operation_id, "operation-1");
-        assert_eq!(operations[0].kind, crate::local::ManagedEnvironmentOperationKind::Stop);
-        assert_eq!(operations[0].status, crate::local::ManagedEnvironmentOperationStatus::Succeeded);
+        assert_eq!(
+            operations[0].kind,
+            crate::local::ManagedEnvironmentOperationKind::Stop
+        );
+        assert_eq!(
+            operations[0].status,
+            crate::local::ManagedEnvironmentOperationStatus::Succeeded
+        );
         assert_eq!(operations[0].desired_revision, 7);
         assert_eq!(
             operations[0].completed_at.as_deref(),
@@ -774,10 +778,9 @@ mod tests {
                 .expect("environment object")
                 .remove(field);
         }
-        let legacy: cloud_contract::EnvironmentDetailsResponse = serde_json::from_value(
-            serde_json::json!({ "environment": legacy_environment }),
-        )
-        .expect("legacy Cloud details response");
+        let legacy: cloud_contract::EnvironmentDetailsResponse =
+            serde_json::from_value(serde_json::json!({ "environment": legacy_environment }))
+                .expect("legacy Cloud details response");
         let summary: crate::local::ManagedEnvironmentSummary = legacy.environment.into();
         assert_eq!(summary.running_agent_count, None);
         assert_eq!(summary.last_activity_changed_at, None);
@@ -804,12 +807,14 @@ mod tests {
 
         let mut invalid_count = environment_json();
         invalid_count["runningAgentCount"] = serde_json::json!(2);
-        assert!(serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_count).is_err());
-        let mut invalid_timestamp = environment_json();
-        invalid_timestamp["lastActivityChangedAt"] =
-            serde_json::json!("2026-09-26T04:59:00Z");
         assert!(
-            serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_timestamp).is_err()
+            serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_count).is_err()
+        );
+        let mut invalid_timestamp = environment_json();
+        invalid_timestamp["lastActivityChangedAt"] = serde_json::json!("2026-09-26T04:59:00Z");
+        assert!(
+            serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_timestamp)
+                .is_err()
         );
     }
 

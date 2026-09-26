@@ -3212,9 +3212,15 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     assert_eq!(original_before_replay.project_id, project_id);
     assert_eq!(original_before_replay.session_id, session_id);
     assert_eq!(original_before_replay.agent_id, agent_id);
-    assert_eq!(original_before_replay.worker_id, config_worker.host_machine_id);
+    assert_eq!(
+        original_before_replay.worker_id,
+        config_worker.host_machine_id
+    );
     assert_eq!(original_before_replay.platform, target_platform);
-    assert_eq!(original_before_replay.phase, ProjectEnvironmentSetupPhase::Ready);
+    assert_eq!(
+        original_before_replay.phase,
+        ProjectEnvironmentSetupPhase::Ready
+    );
     assert_eq!(original_before_replay.attempt, 1);
     let original_validation_before_replay = original_before_replay
         .validation
@@ -4367,10 +4373,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             }
         }
     };
-    assert_eq!(
-        recovered_status.operation_id,
-        stale_attempt_operation_id
-    );
+    assert_eq!(recovered_status.operation_id, stale_attempt_operation_id);
     assert_eq!(
         recovered_status.attempt, 2,
         "stale worker attempt-one status must never be returned after home Retry"
@@ -4967,7 +4970,10 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
             "public Get should reconcile authenticated attempt two before the final poll: get={other:?}, cancel={cancellation_result:?}"
         ),
     };
-    assert_eq!(recovery_get_status.operation_id, "setup-stale-binding-cancel");
+    assert_eq!(
+        recovery_get_status.operation_id,
+        "setup-stale-binding-cancel"
+    );
     assert_eq!(recovery_get_status.attempt, 2);
     let cancellation_status = match &cancellation_result {
         Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status }) => status,
@@ -4975,7 +4981,10 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
             "public Cancel should return the worker's authenticated terminal status before the final poll: get={recovery_get_result:?}, cancel={other:?}"
         ),
     };
-    assert_eq!(cancellation_status.operation_id, "setup-stale-binding-cancel");
+    assert_eq!(
+        cancellation_status.operation_id,
+        "setup-stale-binding-cancel"
+    );
     assert_eq!(cancellation_status.attempt, 2);
     assert_eq!(
         cancellation_status.phase,

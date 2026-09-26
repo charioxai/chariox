@@ -162,8 +162,7 @@ impl KernelRuntimeState {
                     );
                 }
             }
-            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
-            | None => {
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching) | None => {
                 // The worker may own a run, but there is no durable ACK binding it yet.
                 // Keep the exact prompt held for receipt recovery without sending by guess.
             }

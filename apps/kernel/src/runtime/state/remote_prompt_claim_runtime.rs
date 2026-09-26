@@ -716,7 +716,6 @@ impl KernelRuntimeState {
         }
     }
 
-
     async fn remote_prompt_dispatch_after_claim_restart(
         &self,
         session_id: &str,
@@ -809,11 +808,7 @@ impl KernelRuntimeState {
         let (session_id, agent_id) = claim.key.clone();
         loop {
             let cancellation_pending = match self
-                .resume_remote_prompt_cancellation_with_claim(
-                    &session_id,
-                    &agent_id,
-                    &mut claim,
-                )
+                .resume_remote_prompt_cancellation_with_claim(&session_id, &agent_id, &mut claim)
                 .await
             {
                 Ok(pending) => pending,
@@ -848,10 +843,8 @@ impl KernelRuntimeState {
                     let mut pending_dispatch = dispatch.take();
                     if pending_dispatch.is_none() {
                         if let Ok(agent) = self.owned.agent_store.get_agent(&agent_id) {
-                            pending_dispatch = self
-                                .remote_prompt_recovery_dispatch(&agent)
-                                .ok()
-                                .flatten();
+                            pending_dispatch =
+                                self.remote_prompt_recovery_dispatch(&agent).ok().flatten();
                         }
                     }
                     if let Some(pending_dispatch) = pending_dispatch {
@@ -889,7 +882,6 @@ impl KernelRuntimeState {
             };
         }
     }
-
 
     fn spawn_remote_prompt_receipt_reconciliation(
         &self,
@@ -977,8 +969,6 @@ impl KernelRuntimeState {
             }
         }
     }
-
-
 }
 
 fn remote_prompt_recovery_delay(attempt: u32) -> std::time::Duration {

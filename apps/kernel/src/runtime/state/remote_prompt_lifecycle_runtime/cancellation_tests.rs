@@ -767,21 +767,23 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         &worker_private_key,
         &home_public_key,
         RelayPeerResponse::LeasedRuntimeProjectionDrained {
-            event: Some(crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-                home_session_id: session_id.clone(),
-                home_agent_id: agent_id.clone(),
-                provider_run_id: WORKER_RUN_ID.to_string(),
-                provider_run: None,
-                prompts: Vec::new(),
-                output_chunks: Vec::new(),
-                notices: Vec::new(),
-                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                    message_id: "cancel-ack-completion".to_string(),
-                    completed_at_ms: 1,
-                    home_prompt_id: Some(prompt_id.clone()),
-                    provider_termination: None,
-                }],
-            }),
+            event: Some(
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session_id.clone(),
+                    home_agent_id: agent_id.clone(),
+                    provider_run_id: WORKER_RUN_ID.to_string(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: Vec::new(),
+                    completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "cancel-ack-completion".to_string(),
+                        completed_at_ms: 1,
+                        home_prompt_id: Some(prompt_id.clone()),
+                        provider_termination: None,
+                    }],
+                },
+            ),
         },
     )
     .await;

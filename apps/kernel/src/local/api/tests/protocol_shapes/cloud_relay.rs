@@ -8,14 +8,13 @@ use crate::local::{
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
 
-    let token_request = LocalDaemonRequest::IssueCloudRelayClientToken(
-        IssueCloudRelayClientTokenRequest {
+    let token_request =
+        LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {
             target_daemon_alias: "home-kernel".to_string(),
             client_id: "terminal-1".to_string(),
             session_id: Some("session-1".to_string()),
             public_key_thumbprint: Some("cli-thumbprint".to_string()),
-        },
-    );
+        });
     assert_eq!(
         serde_json::to_value(token_request).expect("client token request shape"),
         serde_json::json!({
@@ -28,15 +27,14 @@ fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
         })
     );
 
-    let join_request = LocalDaemonRequest::JoinTerminalPairingLink(
-        JoinTerminalPairingLinkRequest {
+    let join_request =
+        LocalDaemonRequest::JoinTerminalPairingLink(JoinTerminalPairingLinkRequest {
             pairing_link: "chariox-terminal-pair-v1.fixture".to_string(),
             terminal_id: Some("terminal-1".to_string()),
             terminal_type: Some(TerminalType::Cli),
             alias: None,
             public_key_thumbprint: Some("cli-thumbprint".to_string()),
-        },
-    );
+        });
     assert_eq!(
         serde_json::to_value(join_request).expect("terminal join request shape"),
         serde_json::json!({

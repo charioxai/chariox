@@ -105,7 +105,8 @@ pub(super) async fn handle_daemon_request(
     };
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
-            if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key) {
+            if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key)
+            {
                 return RelayRequestOutcome {
                     encrypted_response: None,
                     error: Some(error),
@@ -314,9 +315,8 @@ fn validate_cli_relay_sender_key(
         // Legacy pairing and unbound client-token requests retain non-viewer behavior.
         return Ok(());
     };
-    let sender_thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(
-        encrypted_sender_public_key,
-    );
+    let sender_thumbprint =
+        crate::runtime::terminal_pairings::public_key_thumbprint(encrypted_sender_public_key);
     if claimed_thumbprint == sender_thumbprint {
         return Ok(());
     }
@@ -334,7 +334,8 @@ mod cli_relay_sender_tests {
     #[test]
     fn terminal_pairing_join_requires_proof_of_the_claimed_cli_key() {
         let sender_public_key = "Y2xpLXB1YmxpYy1rZXk=";
-        let thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
+        let thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
         let request = LocalDaemonRequest::JoinTerminalPairingLink(
             crate::local::JoinTerminalPairingLinkRequest {
                 pairing_link: "chariox-terminal-pair-v1.test".to_string(),
@@ -352,7 +353,8 @@ mod cli_relay_sender_tests {
     #[test]
     fn key_bound_client_token_request_requires_the_encrypted_cli_key() {
         let sender_public_key = "Y2xpLXB1YmxpYy1rZXk=";
-        let thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
+        let thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
         let request = LocalDaemonRequest::IssueCloudRelayClientToken(
             crate::local::IssueCloudRelayClientTokenRequest {
                 target_daemon_alias: "home".to_string(),

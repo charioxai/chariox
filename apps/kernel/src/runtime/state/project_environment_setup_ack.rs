@@ -894,7 +894,10 @@ mod tests {
             .unwrap();
         assert!(!cancel_requested);
         assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Failed);
-        assert_eq!(status.failure_code.as_deref(), Some("worker_setup_ack_rejected"));
+        assert_eq!(
+            status.failure_code.as_deref(),
+            Some("worker_setup_ack_rejected")
+        );
         assert_eq!(
             status.failure_message.as_deref(),
             Some("the leased worker rejected the home definition persistence acknowledgment")
@@ -948,7 +951,10 @@ mod tests {
             .expect("a delayed same-attempt Start reply is a stale observation");
         assert_eq!(reconciled, observed);
         assert_eq!(reconciled.phase, ProjectEnvironmentSetupPhase::Preparing);
-        assert!(!committed, "a stale Start reply cannot run the commit callback");
+        assert!(
+            !committed,
+            "a stale Start reply cannot run the commit callback"
+        );
 
         let mut wrong_attempt = start_reply.clone();
         wrong_attempt.attempt = 2;

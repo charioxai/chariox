@@ -408,9 +408,8 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         Some(&serde_json::json!("/srv/chariox/repos"))
     );
     assert_eq!(
-        snapshot.pointer(
-            "/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityChangedAt"
-        ),
+        snapshot
+            .pointer("/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityChangedAt"),
         Some(&serde_json::json!("2026-08-21T00:00:00.000Z"))
     );
     assert_eq!(

@@ -1045,8 +1045,7 @@ impl ProjectEnvironmentSetupStore {
             )
             && definition.as_ref().is_some_and(|definition| {
                 entry.execution.definition.as_ref() == Some(definition)
-                    && entry.status.definition_digest.as_ref()
-                        == status.definition_digest.as_ref()
+                    && entry.status.definition_digest.as_ref() == status.definition_digest.as_ref()
             })
         {
             return Ok(entry.status.clone());

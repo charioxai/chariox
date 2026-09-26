@@ -313,13 +313,12 @@ pub(crate) fn require_cloud_relay_token_key_binding(
     relay_token: &str,
     expected_thumbprint: &str,
 ) -> Result<(), DaemonError> {
-    let actual_thumbprint = relay_token_payload(relay_token)
-        .and_then(|claims| {
-            claims
-                .get("public_key_thumbprint")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        });
+    let actual_thumbprint = relay_token_payload(relay_token).and_then(|claims| {
+        claims
+            .get("public_key_thumbprint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
     if actual_thumbprint.as_deref() == Some(expected_thumbprint) {
         return Ok(());
     }

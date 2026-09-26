@@ -408,7 +408,6 @@ impl KernelRuntimeState {
         }
     }
 
-
     pub(super) async fn project_remote_runtime_projection_event(
         &self,
         event: crate::transport::relay_peer::RelayPeerEvent,
