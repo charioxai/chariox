@@ -1,6 +1,8 @@
 //! App file exports: an App offers one of its private files; only its owner
 //! can take it, through a trusted kernel prompt, by saving it from a terminal.
-//! The offered bytes are a copy made when the App asked, released once.
+//! The offered bytes are a copy made when the App asked. The owner may take it
+//! again until the offer expires (a failed or cancelled local save is not the
+//! end of it); then the bytes are dropped.
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::mpsc;
@@ -30,7 +32,7 @@ pub(crate) enum FileExportCommand {
         export: FileExport,
         contents: Vec<u8>,
     },
-    /// The owner takes the bytes, once.
+    /// The owner takes the bytes (again, until the offer expires).
     Save {
         owner: String,
         operation_id: String,
@@ -194,7 +196,8 @@ fn apply(
             else {
                 return Err("NOT_FOUND");
             };
-            if export.state != "pending" || export.expires_ms <= now_ms {
+            if !matches!(export.state.as_str(), "pending" | "saved") || export.expires_ms <= now_ms
+            {
                 return Err("CONFLICT");
             }
             let contents: Vec<u8> = transaction
@@ -206,7 +209,7 @@ fn apply(
                 .map_err(storage)?;
             transaction
                 .execute(
-                    "UPDATE app_file_exports SET state='saved', contents=NULL, updated_ms=?2
+                    "UPDATE app_file_exports SET state='saved', updated_ms=?2
                      WHERE operation_id=?1",
                     params![operation_id, now_ms as i64],
                 )
@@ -239,6 +242,12 @@ fn apply(
                          AND i.owner_id=app_file_exports.owner_id
                          AND i.generation=app_file_exports.generation
                          AND i.active_json IS NOT NULL))",
+                    params![now_ms as i64],
+                )
+                .map_err(storage)?;
+            transaction
+                .execute(
+                    "UPDATE app_file_exports SET contents=NULL WHERE state='saved' AND expires_ms<=?1",
                     params![now_ms as i64],
                 )
                 .map_err(storage)?;
@@ -314,7 +323,12 @@ mod tests {
             (name.as_str(), contents.as_slice()),
             ("plan.md", b"# Plan".as_slice())
         );
-        assert!(matches!(save("alice", 11), Err("CONFLICT")));
+        // A failed or cancelled local save can take it again until it expires.
+        assert!(matches!(
+            save("alice", 11),
+            Ok(FileExportReply::Saved { .. })
+        ));
+        assert!(matches!(save("alice", 1_000), Err("CONFLICT")));
 
         offer(&store, "declined", 1_000);
         store

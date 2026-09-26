@@ -92,44 +92,49 @@ fn only_the_owner_grants_accepted_files_once_and_each_grant_imports_once() {
         Err("CONFLICT")
     );
     let grant = &granted.grants[0];
-    // Another installation cannot read or import it.
-    assert_eq!(
-        fixture
-            .1
-            .app_file_grant_contents("alice", "other", grant, 12),
-        Ok(None)
-    );
-    let file = fixture
-        .1
-        .app_file_grant_contents("alice", "docs", grant, 12)
-        .unwrap()
-        .unwrap();
+    let claim = |installation: &str, generation: u64, now_ms: u64| {
+        fixture.1.claim_app_file_grant(FileGrantCommand::Claim {
+            owner: "alice".into(),
+            installation: installation.into(),
+            generation,
+            grant_id: grant.clone(),
+            now_ms,
+        })
+    };
+    let settle = |release: bool| {
+        let (owner, installation, grant_id) =
+            ("alice".to_owned(), "docs".to_owned(), grant.clone());
+        fixture.1.app_file_grant(if release {
+            FileGrantCommand::Release {
+                owner,
+                installation,
+                grant_id,
+            }
+        } else {
+            FileGrantCommand::Imported {
+                owner,
+                installation,
+                grant_id,
+            }
+        })
+    };
+    // Another installation, or another generation, cannot take it.
+    assert_eq!(claim("other", 3, 12), Err("NOT_FOUND"));
+    assert_eq!(claim("docs", 4, 12), Err("NOT_FOUND"));
+    let file = claim("docs", 3, 12).unwrap();
     assert_eq!(
         (file.name.as_str(), file.contents.as_slice()),
         ("Notes.MD", b"# Notes.MD".as_slice())
     );
-    fixture
-        .1
-        .app_file_grant(FileGrantCommand::Imported {
-            owner: "alice".into(),
-            installation: "docs".into(),
-            grant_id: grant.clone(),
-        })
-        .unwrap();
-    assert_eq!(
-        fixture
-            .1
-            .app_file_grant_contents("alice", "docs", grant, 13),
-        Ok(None)
-    );
-    assert_eq!(
-        fixture.1.app_file_grant(FileGrantCommand::Imported {
-            owner: "alice".into(),
-            installation: "docs".into(),
-            grant_id: grant.clone(),
-        }),
-        Err("NOT_FOUND")
-    );
+    // A concurrent import cannot claim it too; a failed one gives it back.
+    assert_eq!(claim("docs", 3, 12), Err("NOT_FOUND"));
+    settle(true).unwrap();
+    claim("docs", 3, 13).unwrap();
+    settle(false).unwrap();
+    assert_eq!(claim("docs", 3, 14), Err("NOT_FOUND"));
+    // Released after publishing, the dropped bytes stay dropped.
+    settle(true).unwrap();
+    assert_eq!(claim("docs", 3, 15), Err("NOT_FOUND"));
 }
 
 #[test]
@@ -169,10 +174,14 @@ fn declined_expired_and_stale_picks_release_nothing() {
         })
         .unwrap();
     assert_eq!(
-        fixture
-            .1
-            .app_file_grant_contents("alice", "docs", &grant, 10),
-        Ok(None)
+        fixture.1.claim_app_file_grant(FileGrantCommand::Claim {
+            owner: "alice".into(),
+            installation: "docs".into(),
+            generation: 3,
+            grant_id: grant.clone(),
+            now_ms: 10,
+        }),
+        Err("NOT_FOUND")
     );
     assert_eq!(
         fixture
@@ -221,4 +230,23 @@ fn open_picks_are_bounded_per_installation() {
         Err("LIMIT_EXCEEDED")
     );
     assert_eq!(fixture.1.pending_app_file_picks(8).unwrap().len(), 1);
+}
+
+#[test]
+fn one_answer_stays_within_a_local_request_frame() {
+    let fixture = Fixture::new();
+    fixture.pick("big", true, 1_000);
+    let file = |name: &str| GrantedFile {
+        name: name.into(),
+        contents: vec![b'x'; 400 * 1024],
+    };
+    assert_eq!(
+        fixture.1.app_file_grant(FileGrantCommand::Grant {
+            owner: "alice".into(),
+            operation_id: "big".into(),
+            files: vec![file("a.md"), file("b.md")],
+            now_ms: 10,
+        }),
+        Err("INVALID_ARGUMENT")
+    );
 }

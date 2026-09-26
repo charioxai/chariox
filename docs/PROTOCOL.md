@@ -1870,8 +1870,8 @@ Workflow trigger and deployment direction:
   subject `file_pick:<operation>`) in their most recent session. Its only
   choice is Decline. The owner answers from a terminal with `GrantAppFile
   {session_id, operation_id, files: [{name, contents_base64}]}` (at most 8
-  files of 512 KiB each, final name components only, matching the App's
-  accepted suffixes), which answers `AppFileGranted {operation_id, files}` and
+  files of 512 KiB each and 640 KiB together, final name components only,
+  matching the App's accepted suffixes), which answers `AppFileGranted {operation_id, files}` and
   closes the prompt. Only the owner can answer; App code, views and agents
   cannot. Grants are private copies that the App imports once with
   `files.import`. They expire after 30 minutes, or when the App updates.
@@ -1879,7 +1879,8 @@ Workflow trigger and deployment direction:
   a file an App offered with `files.export`. The offer is shown to the owner
   as a kernel prompt with subject `file_export:<operation>` and a Decline
   choice. The reply is `AppFileExport {operation_id, name, contents_base64}`,
-  released once to the owner only. The terminal chooses where to save it (a
+  released to the owner only. The owner may take it again until the offer
+  expires, so a failed or cancelled local save can be retried. The terminal chooses where to save it (a
   browser download, or `/app file save OPERATION "PATH"`, which never
   overwrites a file).
 - protocol 356: App view reconnection. A call from an open App view built for

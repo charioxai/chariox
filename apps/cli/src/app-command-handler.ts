@@ -1,4 +1,4 @@
-import { readFile, stat, writeFile } from "node:fs/promises"
+import { open, readFile, rm, stat } from "node:fs/promises"
 import { basename } from "node:path"
 import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-client/ipc-requests"
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
@@ -61,15 +61,24 @@ export async function handleAppSlashCommand(
     const session = deps.currentAppSessionId?.()
     if (action === "save" && operation && paths.length === 1 && paths[0]) {
       if (!session) throw new Error("Attach to the session showing the file offer")
-      const response = await deps.sendAppRequest(saveAppFileExportRequest(session, operation))
-      const offered = response.AppFileExport as { name?: string; contents_base64?: string } | undefined
-      if (!offered?.contents_base64 && offered?.contents_base64 !== "") {
-        const code = (response.AppRequestFailed as { code?: string } | undefined)?.code
-        throw new Error(code === "conflict" ? "That file offer was already answered or expired" : "No such file offer for you")
+      // Create the destination first (never replacing a file), so a bad path
+      // fails before the offer is taken.
+      const output = await open(paths[0], "wx")
+      try {
+        const response = await deps.sendAppRequest(saveAppFileExportRequest(session, operation))
+        const offered = response.AppFileExport as { name?: string; contents_base64?: string } | undefined
+        if (typeof offered?.contents_base64 !== "string") {
+          const code = (response.AppRequestFailed as { code?: string } | undefined)?.code
+          throw new Error(code === "conflict" ? "That file offer was declined or expired" : "No such file offer for you")
+        }
+        await output.writeFile(Buffer.from(offered.contents_base64, "base64"))
+        await output.close()
+        deps.appendNotice(`Saved ${offered.name ?? "the file"} to ${paths[0]}.`)
+      } catch (error) {
+        await output.close().catch(() => {})
+        await rm(paths[0], { force: true })
+        throw error
       }
-      // Never replaces an existing file.
-      await writeFile(paths[0], Buffer.from(offered.contents_base64, "base64"), { flag: "wx" })
-      deps.appendNotice(`Saved ${offered.name ?? "the file"} to ${paths[0]}.`)
       return
     }
     if (action !== "grant" || !operation || paths.length === 0 || paths.length > 8) {
@@ -77,8 +86,12 @@ export async function handleAppSlashCommand(
     }
     if (!session) throw new Error("Attach to the session showing the file request")
     const files = []
+    let total = 0
     for (const path of paths) {
-      if ((await stat(path)).size > 512 * 1024) throw new Error(`${basename(path)} is larger than 512 KiB`)
+      const size = (await stat(path)).size
+      if (size > 512 * 1024) throw new Error(`${basename(path)} is larger than 512 KiB`)
+      total += size
+      if (total > 640 * 1024) throw new Error("The chosen files are larger than 640 KiB together")
       files.push({ name: basename(path), contentsBase64: (await readFile(path)).toString("base64") })
     }
     const response = await deps.sendAppRequest(grantAppFileRequest(session, operation, files))

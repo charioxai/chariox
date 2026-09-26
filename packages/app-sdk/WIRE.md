@@ -177,7 +177,8 @@ approved canonical parameters as the whole JSON body. Any other request to a pro
 `CAPABILITY_REQUIRED`) replies `{operationId, state: "pending", grantIds: [],
 expiresAtMs}` at once. `accept` holds up to 16 file name suffixes such as `.md`.
 The kernel shows the owner a trusted prompt, like a validation. The owner
-either declines or chooses files (at most 8, each up to 512 KiB) in their
+either declines or chooses files (at most 8, each up to 512 KiB, 640 KiB
+together) in their
 terminal. The chosen bytes become grants; the App never learns a host path.
 `host.pick_file_status {operationId}` returns the same shape. The state is
 `pending`, `granted` (with `grantIds`), `declined` or `expired`: unanswered
@@ -190,8 +191,8 @@ name}`, where `name` is the file name the owner chose. The SDK's
 most 512 KiB. It follows no links. The kernel offers it to the owner in the
 same kind of trusted prompt, and the reply is `{operationId}` at once. The
 owner saves it from their terminal, which chooses the location, or declines.
-An offer is released once, and expires unanswered after 10 minutes or when the
-App updates.
+The owner can take an offer again until it expires, which is 10 minutes after
+the App made it or when the App updates.
 
 `validation.request`, `host.pick_file` and `outputs.request` return durable pending references when
 waiting for human input or model output. They must not retain a worker request
