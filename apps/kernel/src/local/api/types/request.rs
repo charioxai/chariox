@@ -66,6 +66,7 @@ pub enum LocalDaemonRequest {
     CancelBrowserImport(CancelBrowserImportRequest),
     GetRoomEnvironmentSlice(GetRoomEnvironmentSliceRequest),
     GetRoomEnvironmentResourceInventory(GetRoomEnvironmentResourceInventoryRequest),
+    GetRoomEnvironmentTabAccessibility(GetRoomEnvironmentTabAccessibilityRequest),
     BindRoomEnvironmentSlice(BindRoomEnvironmentSliceRequest),
     CaptureRoomEnvironmentScreenshot(CaptureRoomEnvironmentScreenshotRequest),
     ReadRoomEnvironmentScreenshotChunk(ReadRoomEnvironmentScreenshotChunkRequest),

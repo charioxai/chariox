@@ -63,6 +63,7 @@ pub enum LocalDaemonResponse {
     BrowserImportConsent { request_id: String, status: BrowserImportConsentStatus, },
     RoomEnvironmentSlice { binding: Option<RoomEnvironmentSliceBinding>, },
     RoomEnvironmentResourceInventory { inventory: RoomEnvironmentResourceInventory, },
+    RoomEnvironmentTabAccessibility { accessibility: RoomEnvironmentTabAccessibility, },
     RoomEnvironmentScreenshotCaptured { artifact: RoomEnvironmentScreenshotArtifact, },
     RoomEnvironmentScreenshotChunk { chunk: RoomEnvironmentScreenshotChunk, },
     RoomEnvironmentEvents { replay: crate::session::EnvironmentReplay, },

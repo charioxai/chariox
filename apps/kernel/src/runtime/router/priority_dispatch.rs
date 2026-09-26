@@ -143,6 +143,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetRoomEnvironmentState(_)
             | LocalDaemonRequest::GetRoomEnvironmentSlice(_)
             | LocalDaemonRequest::GetRoomEnvironmentResourceInventory(_)
+            | LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_)
             | LocalDaemonRequest::GetRoomEnvironmentEvents(_)
             | LocalDaemonRequest::ListRoomEnvironmentActionHistory(_)
             | LocalDaemonRequest::ListAgents(_)) => {

@@ -1902,6 +1902,26 @@ Workflow trigger and deployment direction:
   window and panel). An App can keep drafts across the reload in its own web
   storage. After a restart, the kernel polls every Room bound to a slice once,
   so leftover views reconnect instead of hanging.
+- protocol 357: Tab accessibility outline. `GetRoomEnvironmentTabAccessibility
+  {session_id, tab_id}` returns `RoomEnvironmentTabAccessibility
+  {session_id, tab_id, document_revision, nodes, truncated}` for any Room
+  member. `nodes` is the Tab's accessibility tree in document order
+  (`element_ref`, `parent_ref`, `role`, `name`, and when set `value`,
+  `description`, `disabled`, `focused`, and `states`: what a reader announces
+  about the control, among `checked`, `not checked`, `mixed`, `pressed`,
+  `not pressed`, `expanded`, `collapsed`, `selected`, `required`, `invalid`),
+  bounded to 2000 (`truncated` is also set when the controller cut its
+  snapshot at its own 5000-node bound, which cuts the deepest nodes first).
+  The Room browser controller's snapshot nodes gain the same `states`, and
+  the snapshot gains `accessibility_truncated` for that cut (both absent from
+  older controllers, whose full 5000-node snapshot counts as cut). It holds what a reader announces: ignored nodes,
+  inline text boxes, unnamed layout wrappers and text its parent's name
+  already says (an aria-labelled button's text) are left out, and their
+  children hang from the nearest kept ancestor. Nodes are in document order
+  (depth first over the Tab's accessibility tree), so each follows its parent
+  and hoisted text keeps its place. Terminals present it so App views and
+  other pages can be read with a screen reader or keyboard; it grants no
+  input.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -210,6 +210,31 @@ export type RoomEnvironmentResourceInventoryResponse = {
   RoomEnvironmentResourceInventory: { inventory: RoomEnvironmentResourceInventory }
 }
 
+export type RoomEnvironmentAccessibilityNode = {
+  element_ref: string
+  parent_ref?: string
+  role: string
+  name: string
+  value?: string
+  description?: string
+  disabled?: boolean
+  focused?: boolean
+  /** checked, not checked, mixed, pressed, not pressed, expanded, collapsed, selected, required, invalid */
+  states?: string[]
+}
+
+export type RoomEnvironmentTabAccessibility = {
+  session_id: string
+  tab_id: string
+  document_revision: number
+  nodes: RoomEnvironmentAccessibilityNode[]
+  truncated: boolean
+}
+
+export type RoomEnvironmentTabAccessibilityResponse = {
+  RoomEnvironmentTabAccessibility: { accessibility: RoomEnvironmentTabAccessibility }
+}
+
 export type RoomEnvironmentScreenshotArtifact = {
   artifact_id: string
   sha256: string

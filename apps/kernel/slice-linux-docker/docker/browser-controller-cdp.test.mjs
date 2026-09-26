@@ -379,6 +379,7 @@ test("structured snapshots bind compact accessibility and DOM nodes to one docum
       ignored: false,
       disabled: false,
       focused: true,
+      states: [],
     },
     {
       node_ref: "backend:104",
@@ -391,6 +392,7 @@ test("structured snapshots bind compact accessibility and DOM nodes to one docum
       ignored: false,
       disabled: false,
       focused: false,
+      states: [],
     },
   ]);
   assert.deepEqual(

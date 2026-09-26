@@ -53,7 +53,8 @@ export async function captureBrowserSnapshot({
     target_id: targetId,
     document_id: documentId,
     snapshot_revision: snapshotRevision,
-    accessibility_nodes: accessibility,
+    accessibility_nodes: accessibility.nodes,
+    accessibility_truncated: accessibility.truncated,
     ...compactedDom,
   };
 }
@@ -105,26 +106,34 @@ function snapshotFrames(frameTree, maxFrames) {
   return frames;
 }
 
+// Reports whether it cut the tree at the node bound, since dropped and
+// duplicate nodes can leave fewer nodes than the bound after a cut.
 async function captureFrameAccessibility(connection, sessionId, frames, options) {
   const nodes = [];
   const seen = new Set();
+  let truncated = false;
   for (const frame of frames) {
-    if (nodes.length >= options.maxNodes) break;
+    if (nodes.length >= options.maxNodes) {
+      truncated = true;
+      break;
+    }
     const tree = await connection.send(
       "Accessibility.getFullAXTree",
       frame.id ? { frameId: frame.id } : {},
       sessionId,
     );
+    const remaining = options.maxNodes - nodes.length;
+    if (Array.isArray(tree?.nodes) && tree.nodes.length > remaining) truncated = true;
     // AX node IDs belong to each frame's tree. Resolve their relationships
     // before joining frames through the shared backend DOM references.
-    for (const node of compactAccessibilityNodes(tree?.nodes, { ...options, maxNodes: options.maxNodes - nodes.length })) {
+    for (const node of compactAccessibilityNodes(tree?.nodes, { ...options, maxNodes: remaining })) {
       if (!seen.has(node.node_ref)) {
         seen.add(node.node_ref);
         nodes.push(node);
       }
     }
   }
-  return nodes;
+  return { nodes, truncated };
 }
 
 function compactAccessibilityNodes(rawNodes, options) {
@@ -167,8 +176,28 @@ function compactAccessibilityNodes(rawNodes, options) {
       ignored: node?.ignored === true,
       disabled: properties.get("disabled") === true,
       focused: properties.get("focused") === true,
+      states: announcedStates(properties),
     }];
   });
+}
+
+// The control states a screen reader announces, named as the kernel expects.
+function announcedStates(properties) {
+  const tristate = (name, on, off) => {
+    const value = properties.get(name);
+    if (value === undefined) return [];
+    if (value === "mixed") return ["mixed"];
+    return [value === true || value === "true" ? on : off];
+  };
+  const invalid = properties.get("invalid");
+  return [
+    ...tristate("checked", "checked", "not checked"),
+    ...tristate("pressed", "pressed", "not pressed"),
+    ...(properties.has("expanded") ? [properties.get("expanded") === true ? "expanded" : "collapsed"] : []),
+    ...(properties.get("selected") === true ? ["selected"] : []),
+    ...(properties.get("required") === true ? ["required"] : []),
+    ...(invalid !== undefined && invalid !== false && invalid !== "false" ? ["invalid"] : []),
+  ];
 }
 
 function compactDomSnapshot(rawSnapshot, options) {
