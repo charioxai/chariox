@@ -284,9 +284,46 @@ test("cleanup sends stop and delete requests only for ledger-owned resources", a
   assert.deepEqual(sent.filter((item) => item.id).map((item) => item.id), [
     "owned-room",
     "owned-room",
-    "owned-room",
     "owned-slice",
     "owned-slice",
   ])
   assert.ok(!sent.some((item) => item.id === "foreign-room" || item.id === "foreign-slice"))
+})
+
+test("cleanup deletes an owned Room without a prior end request", async () => {
+  const manifest = ownedManifest()
+  manifest.setup.ownership.rooms[0].environmentStartAttempted = false
+  const current = inventories()
+  current.sessions[0].status = "Created"
+  current.slices[0].status = "unhealthy"
+  const sent = []
+  const request = (kind, id = null, workspaceId = null) => ({ kind, id, workspaceId })
+  const requests = {
+    listSessionsRequest: () => request("list-sessions"),
+    listSlicesRequest: () => request("list-slices"),
+    endSessionRequest: (id) => request("end-session", id),
+    deleteSessionRequest: (id, workspaceId) => request("delete-session", id, workspaceId),
+    stopSliceRequest: (id) => request("stop-slice", id),
+    deleteSliceRequest: (id) => request("delete-slice", id),
+  }
+  const client = {
+    async send(message) {
+      sent.push(message)
+      if (message.kind === "list-sessions") return { SessionsListed: { sessions: current.sessions } }
+      if (message.kind === "list-slices") return { SlicesListed: { slices: current.slices } }
+      if (message.kind === "end-session") throw new Error("ended Room cannot be ended twice")
+      if (message.kind === "delete-session") return { SessionDeleted: { session: { id: message.id } } }
+      if (message.kind === "stop-slice") return { SliceStopped: { slice: { id: message.id } } }
+      if (message.kind === "delete-slice") return { SliceDeleted: { slice: { id: message.id } } }
+      throw new Error("unexpected request " + message.kind)
+    },
+  }
+  assert.deepEqual(await cleanupOwnedPlacement({ client, requests, manifest }), {
+    roomIds: ["owned-room"],
+    sliceIds: ["owned-slice"],
+    pendingCreateCount: 0,
+  })
+  assert.deepEqual(sent.filter((item) => item.id).map((item) => item.kind), [
+    "delete-session", "stop-slice", "delete-slice",
+  ])
 })

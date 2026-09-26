@@ -236,7 +236,8 @@ export async function cleanupOwnedPlacement({ client, requests, manifest, timeou
         "RoomEnvironmentUpdated")
       assert.equal(response.environment?.session_id, room.id, "Room Environment stop returned another Room")
     }
-    responseVariant(await send(requests.endSessionRequest(room.id)), "SessionEnded")
+    // DeleteSession ends a live Room itself. Ending it first makes its ref
+    // unresolvable to the current kernel's deletion path.
     const deleted = responseVariant(await send(
       requests.deleteSessionRequest(room.id, room.workspaceId)), "SessionDeleted").session
     assert.equal(deleted?.id, room.id, "Room deletion returned another session")
