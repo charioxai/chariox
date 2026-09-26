@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-const MAX_SNAPSHOT_NODES: usize = 5_000;
+pub(crate) const MAX_SNAPSHOT_NODES: usize = 5_000;
 const MAX_SNAPSHOT_STRING_BYTES: usize = 2_048;
 const MAX_NODE_ATTRIBUTES: usize = 32;
 
