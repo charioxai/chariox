@@ -488,7 +488,7 @@ fn action_dispatch_error(message: String) -> DaemonError {
 #[cfg(test)]
 pub(crate) mod computer_input_reconcile_test_support {
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use tokio::sync::Mutex as AsyncMutex;
@@ -596,17 +596,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         }
     }
 
-    static SCREEN_TOOL_ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
-
     pub(crate) struct ScreenToolEnvironment {
-        _lock: MutexGuard<'static, ()>,
+        _lock: crate::env_lock::EnvGuard,
         previous: Option<std::ffi::OsString>,
     }
 
     pub(crate) fn install_screen_tool(path: &Path) -> ScreenToolEnvironment {
-        let lock = SCREEN_TOOL_ENVIRONMENT_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lock = crate::env_lock::lock();
         let previous = std::env::var_os("CHARIOX_SLICE_SCREEN_TOOL");
         std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", path);
         ScreenToolEnvironment {
