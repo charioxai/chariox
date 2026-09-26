@@ -1,0 +1,351 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import test from 'node:test'
+import {
+  PROJECT_ENVIRONMENT_SETUP_DRILL_PIN_SCHEMA,
+  PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS,
+  assertProjectEnvironmentSetupDrillPreflight,
+  assertReadySetupValidation,
+  assertStoredDefinition,
+  assertLoopbackHomeKernelUrl,
+  commandDigest,
+  parseProjectEnvironmentSetupDrillArgs,
+  projectEnvironmentSetupDrillValidationCommands,
+  runBoundedProjectEnvironmentSetupOperation,
+  setupDrillOperationId,
+  startSetupRequest,
+  validateProjectEnvironmentSetupDrillPin,
+  validateSetupDrillConfirmations,
+} from './project-environment-setup-drill.mjs'
+
+const NOW = Date.parse('2026-09-26T12:00:00.000Z')
+
+function pin(overrides = {}) {
+  return {
+    schema: PROJECT_ENVIRONMENT_SETUP_DRILL_PIN_SCHEMA,
+    reviewed_at: '2026-09-25T12:00:00.000Z',
+    reviewed_by: 'kernel-release-owner',
+    review_reference: 'MP08-disposable-worker-review',
+    disposable_target: true,
+    target_setup_approved: true,
+    drill_owned_context: true,
+    project_id: 'project-drill',
+    project_owner_user_id: 'user-drill',
+    session_id: 'session-drill',
+    workspace_id: '/external/chariox-workspace',
+    worktree_id: '/external/chariox-worktree',
+    target_machine_id: 'machine-drill',
+    target_kernel_id: 'kernel-drill',
+    target_platform: 'linux-x86_64',
+    utility_agent_id: 'agent-utility',
+    utility_provider: 'codex',
+    utility_account_profile: 'default',
+    utility_provider_run_id: 'worker-run-utility',
+    launch_agent_id: 'agent-launch',
+    launch_provider: 'codex',
+    launch_account_profile: 'default',
+    launch_model: 'gpt-5.6-codex',
+    launch_effort: 'low',
+    ...overrides,
+  }
+}
+
+function remoteExecution(activeRunId = null) {
+  return {
+    worker_kernel_id: 'kernel-drill',
+    worker_machine_id: 'machine-drill',
+    execution_lease_id: 'execution-lease-1',
+    leased_agent_id: 'leased-agent-1',
+    active_worker_provider_run_id: activeRunId,
+  }
+}
+
+function preflightSnapshot(overrides = {}) {
+  const targetPin = pin()
+  return {
+    pin: targetPin,
+    machines: [{ machine_id: targetPin.target_machine_id, trust_status: 'approved', online: true }],
+    kernels: [{
+      kernel_id: targetPin.target_kernel_id,
+      machine_id: targetPin.target_machine_id,
+      accepting_remote_leases: true,
+      available_providers: ['codex'],
+    }],
+    projects: [{
+      id: targetPin.project_id,
+      owner_user_id: targetPin.project_owner_user_id,
+      status: 'active',
+      workspace_id: targetPin.workspace_id,
+      environment_definition: null,
+    }],
+    sessions: [{ id: targetPin.session_id, project_id: targetPin.project_id }],
+    session: {
+      id: targetPin.session_id,
+      project_id: targetPin.project_id,
+      workspace_id: targetPin.workspace_id,
+      worktree_id: targetPin.worktree_id,
+      status: 'Active',
+      agents: [
+        {
+          id: targetPin.utility_agent_id,
+          provider: targetPin.utility_provider,
+          account_profile: targetPin.utility_account_profile,
+          worktree_id: targetPin.worktree_id,
+          remote_execution: remoteExecution(targetPin.utility_provider_run_id),
+          is_processing: false,
+        },
+        {
+          id: targetPin.launch_agent_id,
+          provider: targetPin.launch_provider,
+          account_profile: targetPin.launch_account_profile,
+          worktree_id: targetPin.worktree_id,
+          remote_execution: remoteExecution(),
+          is_processing: false,
+        },
+      ],
+    },
+    ...overrides,
+  }
+}
+
+function setupStatus(overrides = {}) {
+  return {
+    operation_id: 'project-setup-live-stored-123e4567-e89b-42d3-a456-426614174000',
+    project_id: 'project-drill',
+    session_id: 'session-drill',
+    agent_id: 'agent-utility',
+    worker_id: 'machine-drill',
+    platform: 'linux-x86_64',
+    phase: 'requested',
+    attempt: 1,
+    progress_percent: 0,
+    definition_digest: null,
+    validation: null,
+    message: null,
+    failure_code: null,
+    failure_message: null,
+    retryable: false,
+    created_at_ms: 1_000,
+    updated_at_ms: 1_000,
+    ...overrides,
+  }
+}
+
+function readyStatus(overrides = {}) {
+  const status = setupStatus({ phase: 'ready', progress_percent: 100, definition_digest: 'sha256:definition', updated_at_ms: 2_000 })
+  status.validation = {
+    worker_id: status.worker_id,
+    platform: status.platform,
+    commands: ['rustc --version'].map((command) => ({
+      command_digest: commandDigest(command),
+      exit_code: 0,
+      stdout_bytes: 10,
+      stderr_bytes: 0,
+    })),
+  }
+  return { ...status, ...overrides }
+}
+
+test('reviewed target pin and exact destructive confirmations fail closed', () => {
+  const targetPin = pin()
+  assert.equal(validateProjectEnvironmentSetupDrillPin(targetPin, { nowMs: NOW }), targetPin)
+  assert.equal(assertLoopbackHomeKernelUrl('ws://127.0.0.1:43120/kernel'), 'ws://127.0.0.1:43120/kernel')
+  assert.throws(() => assertLoopbackHomeKernelUrl('ws://worker.example:43120/kernel'), /numeric loopback/)
+  assert.throws(() => validateProjectEnvironmentSetupDrillPin(pin({ disposable_target: false }), { nowMs: NOW }), /disposable/)
+  assert.throws(() => validateProjectEnvironmentSetupDrillPin(pin({ target_setup_approved: false }), { nowMs: NOW }), /setup mutations/)
+  assert.throws(() => validateProjectEnvironmentSetupDrillPin(pin({ launch_provider: 'dev-stub' }), { nowMs: NOW }), /official provider/)
+  assert.throws(() => validateProjectEnvironmentSetupDrillPin(pin({ reviewed_at: '2026-08-01T12:00:00.000Z' }), { nowMs: NOW }), /older than 30 days/)
+  const confirmations = {
+    '--confirm-pin-sha256': 'sha256:reviewed-pin',
+    '--confirm-target': targetPin.target_machine_id,
+    '--confirm-delete-session': targetPin.session_id,
+    '--confirm-delete-project': targetPin.project_id,
+  }
+  assert.doesNotThrow(() => validateSetupDrillConfirmations(confirmations, targetPin, 'sha256:reviewed-pin'))
+  assert.throws(() => validateSetupDrillConfirmations(confirmations, targetPin, 'sha256:changed-pin'), /pin digest confirmation/)
+  assert.throws(() => validateSetupDrillConfirmations({ ...confirmations, '--confirm-target': 'another-machine' }, targetPin, 'sha256:reviewed-pin'), /does not match/)
+})
+
+test('CLI requires the reviewed pin, external paths, and provider launch consent', () => {
+  const required = [
+    '--home-kernel', 'ws://127.0.0.1:43120/kernel',
+    '--target-pin', '/external/target.json',
+    '--scratch-dir', '/external/scratch',
+    '--evidence-dir', '/external/evidence',
+    '--confirm-pin-sha256', 'sha256:reviewed-pin',
+    '--confirm-target', 'machine-drill',
+    '--confirm-delete-session', 'session-drill',
+    '--confirm-delete-project', 'project-drill',
+    '--allow-target-setup',
+    '--allow-provider-launch',
+  ]
+  assert.equal(parseProjectEnvironmentSetupDrillArgs(required).allowProviderLaunch, true)
+  assert.equal(parseProjectEnvironmentSetupDrillArgs(required).allowTargetSetup, true)
+  assert.equal(parseProjectEnvironmentSetupDrillArgs([...required, '--allow-one-retry']).allowOneRetry, true)
+  assert.throws(() => parseProjectEnvironmentSetupDrillArgs(required.slice(0, -1)), /allow-provider-launch/)
+  assert.throws(() => parseProjectEnvironmentSetupDrillArgs([...required, '--timeout-ms', '999999999']), /unknown option/)
+})
+
+test('target preflight binds approved machine, kernel, project, session, leases, and dormant launch agent', () => {
+  const result = assertProjectEnvironmentSetupDrillPreflight(preflightSnapshot())
+  assert.equal(result.machineId, 'machine-drill')
+  assert.equal(result.utilityProviderRunId, 'worker-run-utility')
+  assert.equal(result.workerLeases.length, 2)
+  assert.throws(() => assertProjectEnvironmentSetupDrillPreflight(preflightSnapshot({
+    machines: [{ machine_id: 'machine-drill', trust_status: 'pending', online: true }],
+  })), /not approved/)
+  assert.throws(() => assertProjectEnvironmentSetupDrillPreflight(preflightSnapshot({
+    sessions: [{ id: 'session-drill', project_id: 'project-drill' }, { id: 'other', project_id: 'project-drill' }],
+  })), /shared with another session/)
+  assert.throws(() => assertProjectEnvironmentSetupDrillPreflight(preflightSnapshot({
+    session: {
+      ...preflightSnapshot().session,
+      agents: preflightSnapshot().session.agents.map((agent) => agent.id === 'agent-launch'
+        ? { ...agent, remote_execution: remoteExecution('already-running') }
+        : agent),
+    },
+  })), /already has a provider run before Ready/)
+})
+
+test('cold request omits a definition and stored request omits both definition and validation override', () => {
+  const targetPin = pin()
+  const runId = '123e4567-e89b-42d3-a456-426614174000'
+  const coldId = setupDrillOperationId(runId, 'cold')
+  const storedId = setupDrillOperationId(runId, 'stored')
+  const cold = startSetupRequest(targetPin, coldId, 'cold')
+  const stored = startSetupRequest(targetPin, storedId, 'stored')
+  assert.equal('definition' in cold.StartProjectEnvironmentSetup, false)
+  assert.deepEqual(cold.StartProjectEnvironmentSetup.validationCommands, PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS)
+  assert.equal('definition' in stored.StartProjectEnvironmentSetup, false)
+  assert.equal('validationCommands' in stored.StartProjectEnvironmentSetup, false)
+})
+
+test('Cargo validation is run-id scoped, bounded, and only removes its own marked target directory', () => {
+  const runId = '123e4567-e89b-42d3-a456-426614174000'
+  const commands = projectEnvironmentSetupDrillValidationCommands(runId)
+  const build = commands.at(-1)
+  assert.match(build, new RegExp(`chariox-project-environment-setup-${runId}`))
+  assert.match(build, /\.chariox-project-setup-owner/)
+  assert.match(build, /trap cleanup_build_dir EXIT/)
+  assert.match(build, /CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo check --workspace --locked --jobs 2/)
+  assert.ok(build.length < 8_192)
+  assert.throws(() => projectEnvironmentSetupDrillValidationCommands('../../other'), /UUID/)
+  const syntax = spawnSync('/bin/sh', ['-n', '-c', build], { encoding: 'utf8' })
+  assert.equal(syntax.status, 0, syntax.stderr)
+})
+
+test('preflight accepts a utility-generated definition that retains required bounded checks', () => {
+  const definition = {
+    origin: 'utility_generated',
+    source: 'commands',
+    target_platform: 'linux-x86_64',
+    validation_commands: [...PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS],
+  }
+  assert.equal(assertStoredDefinition({ environment_definition: definition }, 'linux-x86_64').origin, 'utility_generated')
+  const expanded = { ...definition, validation_commands: [...definition.validation_commands, 'cargo test --workspace --locked --jobs 2'] }
+  assert.equal(assertStoredDefinition({ environment_definition: expanded }, 'linux-x86_64').validationCommandCount, definition.validation_commands.length + 1)
+  assert.throws(() => assertStoredDefinition({ environment_definition: { ...definition, origin: 'user_authored' } }, 'linux-x86_64'), /did not originate/)
+  assert.throws(() => assertStoredDefinition({ environment_definition: { ...definition, target_platform: 'macos-aarch64' } }, 'linux-x86_64'), /platform changed/)
+  assert.throws(() => assertStoredDefinition({ environment_definition: { ...definition, validation_commands: ['cargo check --workspace --locked --jobs 2'] } }, 'linux-x86_64'), /omitted the required validation command/)
+})
+
+test('Ready requires every requested bounded target validation command to pass on the pinned worker', () => {
+  const commands = ['rustc --version']
+  const expected = {
+    operation_id: setupStatus().operation_id,
+    project_id: 'project-drill',
+    session_id: 'session-drill',
+    agent_id: 'agent-utility',
+    worker_id: 'machine-drill',
+    platform: 'linux-x86_64',
+  }
+  assert.equal(assertReadySetupValidation(readyStatus(), { expected, commands }).phase, 'ready')
+  assert.throws(() => assertReadySetupValidation(readyStatus({
+    validation: {
+      worker_id: 'machine-drill',
+      platform: 'linux-x86_64',
+      commands: [{ command_digest: commandDigest(commands[0]), exit_code: 1, stdout_bytes: 0, stderr_bytes: 15 }],
+    },
+  }), { expected, commands }), /failed/)
+  assert.throws(() => assertReadySetupValidation(readyStatus({ platform: 'another-platform' }), { expected, commands }), /platform changed/)
+})
+
+test('stored setup replays the same operation idempotently, reconnects, and recovers the same attempt', async () => {
+  const targetPin = pin()
+  const operationId = setupStatus().operation_id
+  const request = startSetupRequest(targetPin, operationId, 'stored')
+  const requests = []
+  let clientNumber = 0
+  const clientFactory = async () => {
+    const number = clientNumber++
+    return {
+      async send(frame) {
+        requests.push({ client: number, frame })
+        if ('StartProjectEnvironmentSetup' in frame) return { ProjectEnvironmentSetupStarted: { status: setupStatus() } }
+        if ('GetProjectEnvironmentSetupStatus' in frame) {
+          const gets = requests.filter((entry) => entry.client === number && 'GetProjectEnvironmentSetupStatus' in entry.frame).length
+          return { ProjectEnvironmentSetupStatus: { status: gets === 1 ? setupStatus({ phase: 'preparing', progress_percent: 20 }) : readyStatus() } }
+        }
+        throw new Error('unexpected request')
+      },
+      async close() {},
+    }
+  }
+  const statusSources = []
+  const result = await runBoundedProjectEnvironmentSetupOperation({
+    createClient: clientFactory,
+    pin: targetPin,
+    request,
+    idempotentStartReplay: true,
+    pollMs: 250,
+    delay: async () => {},
+    onStatus: (_status, source) => statusSources.push(source),
+  })
+  assert.equal(result.status.phase, 'ready')
+  assert.equal(result.status.attempt, 1)
+  assert.equal(result.replayedAttempt, 1)
+  assert.equal(result.recoveredAttempt, 1)
+  assert.equal(clientNumber, 2)
+  assert.deepEqual(statusSources, ['start', 'idempotent_start_replay', 'reconnect', 'poll'])
+  assert.equal(requests.filter((entry) => 'StartProjectEnvironmentSetup' in entry.frame).length, 2)
+  assert.equal(requests.filter((entry) => 'GetProjectEnvironmentSetupStatus' in entry.frame).length, 2)
+  assert.equal(requests.every((entry) => entry.frame.GetProjectEnvironmentSetupStatus?.operationId === operationId || 'StartProjectEnvironmentSetup' in entry.frame), true)
+})
+
+test('one explicitly permitted service-authorized retry advances exactly one attempt', async () => {
+  const targetPin = pin()
+  const firstFailed = setupStatus({ phase: 'failed', failure_code: 'transient_worker_failure', retryable: true, updated_at_ms: 1_500 })
+  const retryRequested = setupStatus({ attempt: 2, phase: 'requested', progress_percent: 0, retryable: false, updated_at_ms: 2_000 })
+  const ready = readyStatus({ attempt: 2, updated_at_ms: 3_000 })
+  let gotAfterReconnect = false
+  const sent = []
+  const factory = async () => ({
+    async send(request) {
+      sent.push(request)
+      if ('StartProjectEnvironmentSetup' in request) return { ProjectEnvironmentSetupStarted: { status: firstFailed } }
+      if ('RetryProjectEnvironmentSetup' in request) return { ProjectEnvironmentSetupRetried: { status: retryRequested } }
+      if ('GetProjectEnvironmentSetupStatus' in request) {
+        if (!gotAfterReconnect) {
+          gotAfterReconnect = true
+          return { ProjectEnvironmentSetupStatus: { status: firstFailed } }
+        }
+        return { ProjectEnvironmentSetupStatus: { status: ready } }
+      }
+      throw new Error('unexpected request')
+    },
+    async close() {},
+  })
+  const result = await runBoundedProjectEnvironmentSetupOperation({
+    createClient: factory,
+    pin: targetPin,
+    request: startSetupRequest(targetPin, firstFailed.operation_id, 'stored'),
+    allowOneRetry: true,
+    idempotentStartReplay: false,
+    pollMs: 250,
+    delay: async () => {},
+  })
+  assert.equal(result.retries, 1)
+  assert.deepEqual(result.attemptHistory, [1, 2])
+  assert.equal(result.status.attempt, 2)
+  assert.equal(sent.filter((request) => 'RetryProjectEnvironmentSetup' in request).length, 1)
+})
