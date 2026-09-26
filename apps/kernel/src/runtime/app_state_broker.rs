@@ -80,7 +80,8 @@ impl AppStorageBroker {
         .map_err(|_| errors::unavailable())?
         .map_err(errors::state)?;
         Ok(match result {
-            AppStateOutcome::Value(None) => Value::Null,
+            // The SDK has no rewind; only the lifecycle issues one.
+            AppStateOutcome::Value(None) | AppStateOutcome::Rewound(_) => Value::Null,
             AppStateOutcome::Value(Some(record)) => {
                 json!({"value":record.value,"version":record.version})
             }
