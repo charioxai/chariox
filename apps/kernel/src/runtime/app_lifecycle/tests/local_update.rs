@@ -323,6 +323,9 @@ fn crash_after_quiesce(
         .unwrap()
         .fail_migration = fail_migration;
     wait(|| {
+        // Each pass runs now instead of waiting out the 5 s recovery interval,
+        // so the drill's time goes to the recovery itself.
+        control.lifecycle().0.maintenance.lock().unwrap().next = Instant::now();
         control
             .lifecycle()
             .schedule_recovery(runtime.handle().clone());

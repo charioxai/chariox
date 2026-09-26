@@ -22,6 +22,12 @@ pub(crate) enum AppInboxOperation {
         owner: String,
         installation: String,
     },
+    /// One route, without counting occurrences.
+    Route {
+        owner: String,
+        installation: String,
+        route_id: String,
+    },
     /// The payload was validated against the incoming schema of `generation`,
     /// which must still be the active one.
     Accept {
@@ -58,6 +64,7 @@ pub(crate) enum AppInboxOperation {
 #[derive(Debug, PartialEq)]
 pub(crate) enum AppInboxOutcome {
     Routes(Vec<(InboxRoute, InboxCounts)>),
+    Route(Option<InboxRoute>),
     Accepted(Accepted),
     Due(Vec<InboxItem>),
     Recorded(Option<InboxState>),
@@ -132,6 +139,16 @@ fn apply(
             }
             Ok(AppInboxOutcome::Routes(routes))
         }
+        AppInboxOperation::Route {
+            owner,
+            installation,
+            route_id,
+        } => Ok(AppInboxOutcome::Route(app_inbox::route(
+            connection,
+            &owner,
+            &installation,
+            &route_id,
+        )?)),
         AppInboxOperation::Accept {
             owner,
             installation,
