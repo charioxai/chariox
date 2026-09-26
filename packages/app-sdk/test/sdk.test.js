@@ -290,12 +290,16 @@ test('pickFile waits on a pending kernel reference and resolves with grants, or 
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(transport.sent[1].method, 'host.pick_file_status');
   assert.deepEqual(transport.sent[1].params, { operationId: 'file-pick-1' });
-  transport.receive(response(transport.sent[1].id, { operationId: 'file-pick-1', state: 'granted', grantIds: ['grant-1'], expiresAtMs: 2 }));
+  // A retryable refusal (a busy kernel) keeps polling instead of failing.
+  transport.receive(envelope({ kind: 'response', id: transport.sent[1].id, error: { code: 'APP_BUSY', message: 'busy', retryable: true } }));
+  await new Promise(resolve => setTimeout(resolve, 600));
+  assert.equal(transport.sent[2].method, 'host.pick_file_status');
+  transport.receive(response(transport.sent[2].id, { operationId: 'file-pick-1', state: 'granted', grantIds: ['grant-1'], expiresAtMs: 2 }));
   assert.deepEqual(await picked, { grantIds: ['grant-1'] });
 
   const declined = sdk.host.pickFile({});
   await flush();
-  transport.receive(response(transport.sent[2].id, { operationId: 'file-pick-2', state: 'declined', grantIds: [], expiresAtMs: 1 }));
+  transport.receive(response(transport.sent[3].id, { operationId: 'file-pick-2', state: 'declined', grantIds: [], expiresAtMs: 1 }));
   await assert.rejects(declined, { code: 'DECLINED' });
   sdk.close();
 });

@@ -69,11 +69,13 @@ export async function handleAppSlashCommand(
         const offered = response.AppFileExport as { name?: string; contents_base64?: string } | undefined
         if (typeof offered?.contents_base64 !== "string") {
           const code = (response.AppRequestFailed as { code?: string } | undefined)?.code
-          throw new Error(code === "conflict" ? "That file offer was declined or expired" : "No such file offer for you")
+          throw new Error(code === "conflict" ? "That file offer was declined or has ended"
+            : code === "not_found" ? "No such file offer for you" : "Saving the file failed")
         }
         await output.writeFile(Buffer.from(offered.contents_base64, "base64"))
         await output.close()
-        deps.appendNotice(`Saved ${offered.name ?? "the file"} to ${paths[0]}.`)
+        // The prompt closes now; the offer can still be taken until it ends.
+        deps.appendNotice(`Saved ${offered.name ?? "the file"} to ${paths[0]}. To save it again before the offer ends: /app file save ${operation} "PATH"`)
       } catch (error) {
         await output.close().catch(() => {})
         await rm(paths[0], { force: true })
@@ -91,7 +93,7 @@ export async function handleAppSlashCommand(
       const size = (await stat(path)).size
       if (size > 512 * 1024) throw new Error(`${basename(path)} is larger than 512 KiB`)
       total += size
-      if (total > 640 * 1024) throw new Error("The chosen files are larger than 640 KiB together")
+      if (total > 512 * 1024) throw new Error("The chosen files are larger than 512 KiB together")
       files.push({ name: basename(path), contentsBase64: (await readFile(path)).toString("base64") })
     }
     const response = await deps.sendAppRequest(grantAppFileRequest(session, operation, files))
