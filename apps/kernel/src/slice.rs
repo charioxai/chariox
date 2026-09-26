@@ -1,4 +1,5 @@
 mod display;
+mod disk_quota_policy;
 mod local_docker;
 mod model;
 mod ports;
@@ -919,6 +920,8 @@ mod tests {
             allow_provider_sandbox_compatibility: false,
             memory_mb: None,
             cpus: None,
+            disk_layer_mb: None,
+            disk_home_mb: None,
             screen_width: 1280,
             screen_height: 800,
             saved_home_archive: None,

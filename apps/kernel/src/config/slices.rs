@@ -49,6 +49,10 @@ pub struct UserLinuxSliceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpus: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_layer_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_home_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_width: Option<u32>,
@@ -66,6 +70,8 @@ impl Default for UserLinuxSliceConfig {
             allow_provider_sandbox_compatibility: Some(false),
             memory_mb: Some(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
             cpus: None,
+            disk_layer_mb: None,
+            disk_home_mb: None,
             idle_timeout_minutes: Some(30),
             screen_width: Some(1280),
             screen_height: Some(800),
@@ -91,6 +97,8 @@ impl UserLinuxSliceConfig {
         if let Some(cpus) = &self.cpus {
             validate_non_empty("slices.linux.cpus", cpus)?;
         }
+        validate_optional_nonzero("slices.linux.disk_layer_mb", self.disk_layer_mb)?;
+        validate_optional_nonzero("slices.linux.disk_home_mb", self.disk_home_mb)?;
         Ok(())
     }
 }

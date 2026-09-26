@@ -95,6 +95,8 @@ pub struct LocalDockerSliceOptions {
     pub allow_provider_sandbox_compatibility: bool,
     pub memory_mb: Option<u32>,
     pub cpus: Option<String>,
+    pub disk_layer_mb: Option<u32>,
+    pub disk_home_mb: Option<u32>,
     pub screen_width: u32,
     pub screen_height: u32,
 }
@@ -139,6 +141,8 @@ impl LocalDockerSliceOptions {
                     .unwrap_or(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
             ),
             cpus: linux.cpus.clone(),
+            disk_layer_mb: linux.disk_layer_mb,
+            disk_home_mb: linux.disk_home_mb,
             screen_width: linux.screen_width.unwrap_or(1280),
             screen_height: linux.screen_height.unwrap_or(800),
         }
@@ -183,6 +187,18 @@ pub fn run_local_docker_slice_action(
                 record.os
             ),
         });
+    }
+    if matches!(
+        action,
+        LocalDockerSliceAction::Provision
+            | LocalDockerSliceAction::RestoreState
+            | LocalDockerSliceAction::Recover
+    ) {
+        let limits = super::disk_quota_policy::SliceDiskQuotaLimits::from_megabytes(
+            options.disk_layer_mb,
+            options.disk_home_mb,
+        )?;
+        super::disk_quota_policy::require_verified_quotas(limits.as_ref(), None)?;
     }
     let _memory_admission = if matches!(
         action,
