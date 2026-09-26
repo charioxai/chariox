@@ -1,10 +1,10 @@
 // MP-07/MP-10: correlate independently captured host and Cloud identities.
 // This is campaign assembly validation, not signature, residue or parity proof.
 import { createHash } from "node:crypto"
-import { lstat, readFile, realpath, writeFile } from "node:fs/promises"
+import { lstat, readFile, realpath } from "node:fs/promises"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import { resolveCaptureOutput } from "./path1-cloud-reimage-capture.mjs"
+import { validateCaptureOutput, writeCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/
 const SOURCE = /^[a-f0-9]{40}$/
@@ -122,15 +122,15 @@ async function main() {
     requireValue(allowed.has(args[index]) && !flags.has(args[index]) && args[index + 1], "invalid correlation arguments")
     flags.set(args[index], args[index + 1])
   }
-  const output = await resolveCaptureOutput(flags.get("--output"))
+  const output = await validateCaptureOutput(flags.get("--output"))
   const inputs = {}
   for (const kind of ["before", "after", "cloud"]) inputs[kind] = await readCorrelationCapture(flags.get(`--${kind}`))
   const paths = Object.values(inputs).map(input => input.evidence.path)
   requireValue(new Set([...paths, output]).size === 4, "capture inputs and output must be distinct")
   const correlation = correlatePath1HostCloud(Object.fromEntries(Object.entries(inputs).map(([kind, input]) => [kind, input.capture])))
-  await writeFile(output, `${JSON.stringify({ ...correlation,
+  await writeCaptureOutput(output, { ...correlation,
     evidence: Object.fromEntries(Object.entries(inputs).map(([kind, input]) => [kind, input.evidence])),
-  }, null, 2)}\n`, { flag: "wx", mode: 0o600 })
+  })
   process.stdout.write("Correlated host and Cloud identities. Full MP-10 evidence remains required.\n")
 }
 

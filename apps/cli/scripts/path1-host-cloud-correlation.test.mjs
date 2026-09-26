@@ -1,13 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { execFile as execFileCallback } from "node:child_process"
 import { promisify } from "node:util"
-import { fileURLToPath } from "node:url"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { correlatePath1HostCloud, readCorrelationCapture } from "./path1-host-cloud-correlation.mjs"
+import { offlineCorrelationScript } from "./path1-offline-correlation-test-fixture.mjs"
 
 function fixture() {
   const release = digit => ({ digest: `sha256:${digit.repeat(64)}`, sourceCommit: digit.repeat(40), sourceTree: digit.repeat(40) })
@@ -89,7 +89,7 @@ test("capture files bind exact retained bytes and reject symlink and oversized i
 })
 
 test("CLI writes a private external correlation and never overwrites evidence", async t => {
-  const root = await mkdtemp(join(tmpdir(), "chariox-path1-correlation-cli-"))
+  const root = await realpath(await mkdtemp(join(tmpdir(), "chariox-path1-correlation-cli-")))
   t.after(() => rm(root, { recursive: true, force: true }))
   const input = fixture()
   const instant = Date.now()
@@ -109,7 +109,7 @@ test("CLI writes a private external correlation and never overwrites evidence", 
   const output = join(root, "correlation.json")
   args.push("--output", output)
   const execFile = promisify(execFileCallback)
-  const script = fileURLToPath(new URL("./path1-host-cloud-correlation.mjs", import.meta.url))
+  const script = await offlineCorrelationScript(root, "path1-host-cloud-correlation.mjs")
   const result = await execFile(process.execPath, [script, ...args], { timeout: 5000 })
   assert.match(result.stdout, /Full MP-10 evidence remains required/)
   const bytes = await readFile(output)

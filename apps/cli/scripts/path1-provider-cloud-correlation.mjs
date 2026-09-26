@@ -1,5 +1,9 @@
 // Correlate allowlisted Path-1 provider observations with a finalized Cloud capture.
 // This is a pure evidence join, not an MP acceptance verdict.
+import { lstat, realpath } from "node:fs/promises"
+import { isAbsolute, join, parse, resolve, sep } from "node:path"
+import { pathToFileURL } from "node:url"
+import { validateCaptureOutput, writeCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
 
 export const PROVIDER_CLOUD_CORRELATION_SCHEMA = "chariox.path1-provider-cloud-correlation/v1"
 
@@ -208,4 +212,104 @@ export function correlatePath1ProviderCloud({ before, after, cloud }) {
       reason: "hetzner_captures_do_not_expose_project_identity",
     },
   }
+}
+
+const CAPTURE_KINDS = ["before", "after", "cloud"]
+const MAX_CAPTURE_BYTES = 1024 * 1024
+
+function parseArguments(argv) {
+  const allowed = new Set(["--before", "--after", "--cloud", "--output"])
+  requireValue(argv.length === allowed.size * 2, "supply --before --after --cloud --output once each")
+  const flags = new Map()
+  for (let index = 0; index < argv.length; index += 2) {
+    const flag = argv[index]
+    const value = argv[index + 1]
+    requireValue(allowed.has(flag) && !flags.has(flag)
+      && typeof value === "string" && value.length > 0 && !value.startsWith("--"),
+    "invalid correlation arguments")
+    flags.set(flag, value)
+  }
+  requireValue([...allowed].every(flag => flags.has(flag)), "correlation arguments are incomplete")
+  return flags
+}
+
+async function inspectPath(file) {
+  const absolute = resolve(file)
+  const root = parse(absolute).root
+  let current = root
+  let leaf
+  const components = absolute.slice(root.length).split(sep).filter(Boolean)
+  for (let index = 0; index < components.length; index += 1) {
+    current = join(current, components[index])
+    let metadata
+    try {
+      metadata = await lstat(current)
+    } catch {
+      throw new Error("evidence path is unavailable")
+    }
+    requireValue(!metadata.isSymbolicLink(), "evidence paths cannot contain symlinks")
+    if (index < components.length - 1) {
+      requireValue(metadata.isDirectory(), "evidence path parent is not a directory")
+    } else {
+      leaf = metadata
+    }
+  }
+  return { absolute, leaf }
+}
+
+function sameFile(left, right) {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+async function readInputs(flags, readCapture) {
+  const inspected = {}
+  for (const kind of CAPTURE_KINDS) {
+    const result = await inspectPath(flags.get(`--${kind}`))
+    requireValue(result.leaf?.isFile() && result.leaf.size <= MAX_CAPTURE_BYTES,
+      "capture input must be a bounded regular file")
+    inspected[kind] = { ...result, canonical: await realpath(result.absolute) }
+  }
+  const paths = CAPTURE_KINDS.map(kind => inspected[kind].canonical)
+  const identities = CAPTURE_KINDS.map(kind => inspected[kind].leaf)
+  requireValue(new Set(paths).size === CAPTURE_KINDS.length
+    && identities.every((identity, index) => identities.slice(index + 1).every(other => !sameFile(identity, other))),
+  "capture inputs must be distinct files")
+
+  const inputs = {}
+  for (const kind of CAPTURE_KINDS) {
+    const input = await readCapture(flags.get(`--${kind}`))
+    requireValue(input.evidence.path === inspected[kind].canonical,
+      "capture input changed while it was being read")
+    inputs[kind] = input
+  }
+  return inputs
+}
+
+async function main() {
+  const flags = parseArguments(process.argv.slice(2))
+  const { readCorrelationCapture } = await import("./path1-host-cloud-correlation.mjs")
+  const outputInput = flags.get("--output")
+  requireValue(isAbsolute(outputInput), "output must be an absolute external evidence path")
+  const requestedInputs = CAPTURE_KINDS.map(kind => resolve(flags.get(`--${kind}`)))
+  const requestedOutput = resolve(outputInput)
+  requireValue(!requestedInputs.includes(requestedOutput), "capture inputs and output must be distinct")
+  const output = await validateCaptureOutput(outputInput)
+  requireValue(output === requestedOutput, "output path cannot be aliased")
+
+  const inputs = await readInputs(flags, readCorrelationCapture)
+  requireValue(!Object.values(inputs).some(input => input.evidence.path === output),
+    "capture inputs and output must be distinct")
+  const correlation = correlatePath1ProviderCloud(Object.fromEntries(
+    Object.entries(inputs).map(([kind, input]) => [kind, input.capture]),
+  ))
+  const evidence = Object.fromEntries(Object.entries(inputs).map(([kind, input]) => [kind, input.evidence]))
+  await writeCaptureOutput(output, { ...correlation, evidence })
+  process.stdout.write("Provider and Cloud evidence correlated; no acceptance verdict.\n")
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch(() => {
+    process.stderr.write("Path-1 provider and Cloud correlation failed; no acceptance verdict.\n")
+    process.exitCode = 1
+  })
 }
