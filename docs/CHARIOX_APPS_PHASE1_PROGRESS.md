@@ -1531,7 +1531,7 @@ one error in the unfinished publisher-file WIP carried into this merge.
 
 ## Implementation status (2026-09-26)
 
-Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS stack is #433 → #434 → #435 → #436 → #438 → #439 → #441 → #442 → #443 → #444 → #445 → #446 → #447 → #455 → #456 → #457 → #458 → #459 → #460 → #461 → #462 → #463 → #464 → #470 → #471 → #473 → #474. Side fixes #467, #468, #472. Side PRs are #430, #431, #437, #440, #448, #452. Web work is in chariox-cloud #218 → #220 → #221 → #222.
+Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS stack is #433 → #434 → #435 → #436 → #438 → #439 → #441 → #442 → #443 → #444 → #445 → #446 → #447 → #455 → #456 → #457 → #458 → #459 → #460 → #461 → #462 → #463 → #464 → #470 → #471 → #473 → #474. Side fixes #467, #468, #472, #476. Side PRs are #430, #431, #437, #440, #448, #452. Web work is in chariox-cloud #218 → #220 → #221 → #222.
 
 "Live" means the scenario was driven on the local isolated stack: macOS kernel, local relay and Docker slice, with the web terminal in a browser. It does not mean the released-terminal matrix row passes.
 
