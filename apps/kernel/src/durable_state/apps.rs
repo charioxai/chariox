@@ -248,8 +248,18 @@ fn apply(
             .uninstall(&installation_id, expected_generation, now_ms)
             .map(AppRegistryOutcome::Installation),
     }?;
+    // The uninstall is committed; a failed cleanup is retried by the next
+    // stage of this installation, so it does not fail the uninstall.
     if uninstall {
-        super::app_connections::forget_inactive(connection, owner_id, &installation_id)?;
+        if let Err(error) =
+            super::app_connections::forget_inactive(connection, owner_id, &installation_id)
+        {
+            crate::logging::warn_with_fields(
+                "daemon.apps",
+                "connection grants of an uninstalled App were not removed",
+                serde_json::json!({"installation_id": installation_id, "error": error.to_string()}),
+            );
+        }
     }
     Ok(outcome)
 }

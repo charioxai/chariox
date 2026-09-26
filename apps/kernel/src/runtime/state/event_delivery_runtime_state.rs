@@ -200,6 +200,20 @@ impl KernelRuntimeState {
             .map(|claim| claim.binding_id))
     }
 
+    /// The active App route that receives `event_interest_key` (App routes
+    /// live in the kernel's default environment).
+    pub(crate) fn app_route_claiming(
+        &self,
+        event_interest_key: &str,
+    ) -> Result<Option<String>, String> {
+        Ok(self
+            .app_event_routes()?
+            .iter()
+            .filter_map(app_route_subscription)
+            .find(|claim| claim.active && claim.event_interest_key == event_interest_key)
+            .map(|claim| claim.binding_id))
+    }
+
     pub(crate) fn apply_event_route_conflicts(
         &self,
         conflicts: &[chariox_event_protocol::EventRouteConflict],
