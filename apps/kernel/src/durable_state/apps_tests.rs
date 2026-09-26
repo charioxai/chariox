@@ -353,3 +353,102 @@ fn failed_app_transaction_keeps_ordinary_writes_and_leaves_no_initial_identity()
     ));
     assert_eq!(after.recv().unwrap().unwrap(), 2);
 }
+
+#[test]
+fn inbox_accepts_only_for_the_active_generation_and_settles_undeliverable_occurrences() {
+    use super::app_inbox::{AppInboxOperation, AppInboxOutcome};
+    use chariox_app_runtime::app_inbox::{Accepted, InboxError, InboxRoute, InboxState};
+    let database = Database::new();
+    let store = database.open();
+    let token = staged_token(
+        store
+            .mutate_app_installation("owner", create("todo"))
+            .unwrap(),
+    );
+    for mutation in [
+        AppRegistryMutation::Decide {
+            token: token.clone(),
+            decision: approval(),
+            now_ms: 2,
+        },
+        AppRegistryMutation::Quiesce {
+            token: token.clone(),
+            now_ms: 3,
+        },
+        AppRegistryMutation::MarkPrepared {
+            token: token.clone(),
+            now_ms: 4,
+        },
+        AppRegistryMutation::Commit {
+            token: token.clone(),
+            now_ms: 5,
+        },
+    ] {
+        store.mutate_app_installation("owner", mutation).unwrap();
+    }
+    // The trust binding a signed install records for its active generation.
+    rusqlite::Connection::open(database.0.join("kernel.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO app_installation_stage_trust(installation_id,generation,base_generation,
+             owner_id,package_digest,publisher_id,key_id,trust_revision,public_key_fingerprint)
+             VALUES('todo',?1,?2,'owner',?3,'publisher','key',1,?4)",
+            rusqlite::params![
+                token.generation as i64,
+                token.base_generation as i64,
+                release().package_digest,
+                format!("sha256:{:064x}", 5)
+            ],
+        )
+        .unwrap();
+    store
+        .app_inbox(AppInboxOperation::CreateRoute {
+            route: InboxRoute {
+                route_id: "slack".into(),
+                owner_id: "owner".into(),
+                installation_id: "todo".into(),
+                event_name: "todo_requested".into(),
+                source_event_type: "slack.message".into(),
+                source_event_version: 1,
+                active: true,
+            },
+            now_ms: 10,
+        })
+        .unwrap();
+    let accept = |route: &str, occurrence: &str, generation: u64| {
+        store.app_inbox(AppInboxOperation::Accept {
+            owner: "owner".into(),
+            installation: "todo".into(),
+            route_id: route.into(),
+            occurrence_id: occurrence.into(),
+            payload: serde_json::json!({ "title": "x" }),
+            generation,
+            now_ms: 20,
+        })
+    };
+    // Validated against another generation than the active one: refused.
+    let stale = accept("slack", "occ", token.generation + 1);
+    assert!(matches!(stale, Err(InboxError::Conflict)), "{stale:?}");
+    assert!(matches!(
+        accept("missing", "occ", token.generation),
+        Err(InboxError::NotFound)
+    ));
+    let Ok(AppInboxOutcome::Accepted(Accepted::New(sequence))) =
+        accept("slack", "occ", token.generation)
+    else {
+        panic!("the active generation's occurrence must be accepted");
+    };
+    // A delivery the App can no longer take (its generation moved on) ends
+    // failed rather than retrying.
+    assert!(matches!(
+        store.app_inbox(AppInboxOperation::Undeliverable { sequence }),
+        Ok(AppInboxOutcome::Recorded(Some(InboxState::Failed)))
+    ));
+    let Ok(AppInboxOutcome::Routes(routes)) = store.app_inbox(AppInboxOperation::Routes {
+        owner: "owner".into(),
+        installation: "todo".into(),
+    }) else {
+        panic!("routes must list");
+    };
+    assert_eq!((routes[0].1.pending, routes[0].1.failed), (0, 1));
+}
