@@ -5,7 +5,9 @@ use super::{
     cgroup::{self, Bound},
     files, formatter,
     loop_device::Device,
-    model::{self, Enrollment, Image, Journal, Owner, Request, Role},
+    model::{
+        self, Enrollment, Identity, Image, Journal, Owner, Request, Role, Snapshot, SNAPSHOT_IMAGE,
+    },
     mount, Error, Result, DATA_BYTES, HOST_RESERVE_BYTES, MAX_INSTALLATIONS, MAX_RESERVED_BYTES,
     ROOT, TMP_BYTES,
 };
@@ -75,6 +77,7 @@ impl Store {
             installation,
             generation,
             cgroup_leaf,
+            committed_generation,
         } = request
         else {
             return Err(Error::Invalid);
@@ -143,10 +146,14 @@ impl Store {
                 pending_recovery: true,
                 images: images.try_into().map_err(|_| Error::Identity)?,
                 code: None,
+                snapshot: None,
             }
         };
         if journal.gid != principal.gid {
             return Err(Error::Identity);
+        }
+        if let Some(committed) = committed_generation {
+            self.snapshot(&directory, &mut journal, generation, committed)?;
         }
         journal.generation = generation;
         journal.lease = random_hex()?;
@@ -189,6 +196,60 @@ impl Store {
             },
         );
         prepared
+    }
+    /// Runs on detached images before `generation` starts, on the committed
+    /// generation's data snapshot (see `snapshot_step`).
+    fn snapshot(
+        &self,
+        directory: &Dir,
+        journal: &mut Journal,
+        generation: u64,
+        committed: u64,
+    ) -> Result<()> {
+        let kept = journal
+            .snapshot
+            .clone()
+            .and_then(|kept| kept.inode.filter(|_| kept.generation == committed));
+        match snapshot_step(journal.generation, generation, committed, kept.is_some()) {
+            SnapshotStep::Keep => Ok(()),
+            SnapshotStep::Take => self.take_snapshot(directory, journal, committed),
+            SnapshotStep::Restore => restore_snapshot(directory, journal, kept),
+            SnapshotStep::RestoreAndTake => {
+                // The data is the committed generation's again before the
+                // new copy, so a crash between the two takes it afresh.
+                restore_snapshot(directory, journal, kept)?;
+                journal.generation = committed;
+                files::save_journal(directory, journal)?;
+                self.take_snapshot(directory, journal, committed)
+            }
+            SnapshotStep::Discard => discard_snapshot(directory, journal),
+        }
+    }
+    fn take_snapshot(&self, directory: &Dir, journal: &mut Journal, committed: u64) -> Result<()> {
+        let Some(data) = journal.images[0]
+            .inode
+            .clone()
+            .filter(|_| journal.images[0].formatted)
+        else {
+            return Ok(());
+        };
+        discard_snapshot(directory, journal)?;
+        self.capacity_with(false, DATA_BYTES)?;
+        journal.snapshot = Some(Snapshot {
+            generation: committed,
+            inode: None,
+        });
+        files::save_journal(directory, journal)?;
+        let source = files::open_image(directory, Role::Data.image())?.ok_or(Error::Identity)?;
+        files::require(directory, Role::Data.image(), &source, &data)?;
+        let copy = files::create_image(directory, SNAPSHOT_IMAGE, DATA_BYTES)?;
+        files::copy_image(&source, &copy, DATA_BYTES)?;
+        directory.sync()?;
+        journal.snapshot = Some(Snapshot {
+            generation: committed,
+            inode: Some(files::identity(&copy)?),
+        });
+        files::save_journal(directory, journal)
     }
     pub fn retry_pending(&mut self) {
         if let Some(lease) = self.recovering.pop_front() {
@@ -330,7 +391,12 @@ impl Store {
         self.capacity(false)
     }
     fn capacity(&self, new: bool) -> Result<()> {
+        self.capacity_with(new, 0)
+    }
+    /// `extra` is a data snapshot about to be created.
+    fn capacity_with(&self, new: bool, extra: u64) -> Result<()> {
         let mut count = usize::from(new);
+        let mut snapshots = extra;
         let mut allocated = 0u64;
         for user in self.root.entries(16)? {
             let user = self.root.child(&user)?;
@@ -338,11 +404,18 @@ impl Store {
                 count += 1;
                 let directory = user.child(&name)?;
                 files::root_owned(&directory.0, true)?;
-                for role in [Role::Data, Role::Tmp] {
-                    if let Some(file) = files::open_image(&directory, role.image())? {
+                for (image, capacity) in [
+                    (Role::Data.image(), DATA_BYTES),
+                    (Role::Tmp.image(), TMP_BYTES),
+                    (SNAPSHOT_IMAGE, DATA_BYTES),
+                ] {
+                    if let Some(file) = files::open_image(&directory, image)? {
                         let metadata = file.metadata()?;
-                        if metadata.len() > role.capacity() {
+                        if metadata.len() > capacity {
                             return Err(Error::Identity);
+                        }
+                        if image == SNAPSHOT_IMAGE {
+                            snapshots = snapshots.checked_add(DATA_BYTES).ok_or(Error::Capacity)?;
                         }
                         allocated = allocated
                             .checked_add(
@@ -350,7 +423,7 @@ impl Store {
                                     .blocks()
                                     .saturating_mul(512)
                                     .min(metadata.len())
-                                    .min(role.capacity()),
+                                    .min(capacity),
                             )
                             .ok_or(Error::Capacity)?;
                     }
@@ -359,6 +432,7 @@ impl Store {
         }
         let promised = (count as u64)
             .checked_mul(DATA_BYTES + TMP_BYTES)
+            .and_then(|images| images.checked_add(snapshots))
             .ok_or(Error::Capacity)?;
         if count > MAX_INSTALLATIONS || promised > MAX_RESERVED_BYTES {
             return Err(Error::Capacity);
@@ -379,6 +453,7 @@ impl Drop for Store {
 
 fn cleanup(directory: &Dir, path: &Path, journal: &mut Journal, owner: &Owner) -> Result<()> {
     code::cleanup(directory, path, journal)?;
+    settle_snapshot(directory, journal)?;
     for index in 0..2 {
         let image = &journal.images[index];
         let file = files::open_image(directory, image.role.image())?;
@@ -440,6 +515,121 @@ fn cleanup(directory: &Dir, path: &Path, journal: &mut Journal, owner: &Owner) -
     journal.pending_recovery = false;
     files::save_journal(directory, journal)
 }
+/// Finishes whatever an interrupted snapshot step left: an incomplete copy is
+/// dropped, a restore whose rename landed is recorded, and a copy that the
+/// journal no longer names is removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotStep {
+    Take,
+    Keep,
+    Restore,
+    RestoreAndTake,
+    Discard,
+}
+
+/// What happens to the committed generation's data snapshot before
+/// `generation` starts, after `previous` ran; `kept` is a complete copy of it.
+/// A staged (uncommitted) generation starts on committed data: it takes the
+/// copy when the committed generation ran last, keeps it when retrying itself,
+/// and restores it (then copies again) after another uncommitted generation,
+/// so no failed update's writes survive. The committed generation starting
+/// after an uncommitted one restores it; any other committed start drops it.
+fn snapshot_step(previous: u64, generation: u64, committed: u64, kept: bool) -> SnapshotStep {
+    if generation == committed {
+        return if previous > committed && kept {
+            SnapshotStep::Restore
+        } else {
+            SnapshotStep::Discard
+        };
+    }
+    match (previous == committed, previous == generation, kept) {
+        (true, _, true) | (false, true, _) => SnapshotStep::Keep,
+        (true, _, false) => SnapshotStep::Take,
+        // Staged before snapshots existed: there is nothing to restore.
+        (false, false, false) => SnapshotStep::Keep,
+        (false, false, true) => SnapshotStep::RestoreAndTake,
+    }
+}
+
+/// Renames the copy over the data image. The journal still names the copy,
+/// so a crash after the rename is settled by `settle_snapshot`.
+fn restore_snapshot(directory: &Dir, journal: &mut Journal, kept: Option<Identity>) -> Result<()> {
+    let kept = kept.ok_or(Error::Identity)?;
+    let copy = files::open_image(directory, SNAPSHOT_IMAGE)?.ok_or(Error::Identity)?;
+    files::require(directory, SNAPSHOT_IMAGE, &copy, &kept)?;
+    drop(copy);
+    files::replace(directory, SNAPSHOT_IMAGE, Role::Data.image())?;
+    journal.images[0].inode = Some(kept);
+    journal.snapshot = None;
+    files::save_journal(directory, journal)
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettleStep {
+    /// A complete copy is still there: it must be the journaled one.
+    Verify,
+    /// The restore rename landed before the journal was saved.
+    Adopt,
+    /// An incomplete or unnamed copy: remove it and forget it.
+    Remove,
+}
+
+/// Recovery of an interrupted snapshot step, from the journal and whether the
+/// copy's file is present.
+fn settle_step(snapshot: Option<&Snapshot>, copy_present: bool) -> SettleStep {
+    match (snapshot.and_then(|kept| kept.inode.as_ref()), copy_present) {
+        (Some(_), true) => SettleStep::Verify,
+        (Some(_), false) => SettleStep::Adopt,
+        (None, _) => SettleStep::Remove,
+    }
+}
+
+fn settle_snapshot(directory: &Dir, journal: &mut Journal) -> Result<()> {
+    let copy = files::open_image(directory, SNAPSHOT_IMAGE)?;
+    let kept = journal
+        .snapshot
+        .as_ref()
+        .and_then(|kept| kept.inode.clone());
+    match (
+        settle_step(journal.snapshot.as_ref(), copy.is_some()),
+        kept,
+        copy,
+    ) {
+        (SettleStep::Verify, Some(kept), Some(copy)) => {
+            files::require(directory, SNAPSHOT_IMAGE, &copy, &kept)
+        }
+        (SettleStep::Adopt, Some(kept), None) => {
+            let data = files::open_image(directory, Role::Data.image())?.ok_or(Error::Identity)?;
+            files::require(directory, Role::Data.image(), &data, &kept)?;
+            journal.images[0].inode = Some(kept);
+            journal.snapshot = None;
+            files::save_journal(directory, journal)
+        }
+        (_, _, copy) => {
+            if let Some(copy) = copy {
+                drop(copy);
+                directory.remove_file(OsStr::new(SNAPSHOT_IMAGE))?;
+                directory.sync()?;
+            }
+            if journal.snapshot.take().is_some() {
+                files::save_journal(directory, journal)?;
+            }
+            Ok(())
+        }
+    }
+}
+/// The journal forgets the copy first; a leftover file is then unnamed and
+/// removed by `settle_snapshot` on the next recovery.
+fn discard_snapshot(directory: &Dir, journal: &mut Journal) -> Result<()> {
+    if journal.snapshot.take().is_some() {
+        files::save_journal(directory, journal)?;
+    }
+    if let Some(copy) = files::open_image(directory, SNAPSHOT_IMAGE)? {
+        drop(copy);
+        directory.remove_file(OsStr::new(SNAPSHOT_IMAGE))?;
+        directory.sync()?;
+    }
+    Ok(())
+}
 fn random() -> Result<[u8; 16]> {
     let mut bytes = [0u8; 16];
     let mut done = 0;
@@ -491,6 +681,58 @@ fn reserve(free: u64, promised: u64, allocated: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_snapshot_step_keeps_every_failed_update_off_committed_data() {
+        use SnapshotStep::*;
+        // (previous, starting, committed, complete copy kept) → step
+        for (previous, generation, committed, kept, step) in [
+            // Staged on committed data: take a copy (or keep one already taken).
+            (1, 2, 1, false, Take),
+            (1, 2, 1, true, Keep),
+            // The same staged generation retries on its own writes.
+            (2, 2, 1, true, Keep),
+            // Another staged generation after a failed one: committed data first.
+            (2, 3, 1, true, RestoreAndTake),
+            // Staged before snapshots existed: nothing to restore.
+            (2, 3, 1, false, Keep),
+            // The committed generation after a failed update rolls back.
+            (2, 1, 1, true, Restore),
+            (2, 1, 1, false, Discard),
+            // A committed start after itself, or once an update committed.
+            (1, 1, 1, true, Discard),
+            (2, 2, 2, true, Discard),
+        ] {
+            assert_eq!(
+                snapshot_step(previous, generation, committed, kept),
+                step,
+                "{previous} -> {generation} (committed {committed}, kept {kept})"
+            );
+        }
+    }
+    #[test]
+    fn recovery_settles_each_interrupted_snapshot_state() {
+        let identity = Identity {
+            device: 1,
+            inode: 2,
+        };
+        let complete = Snapshot {
+            generation: 1,
+            inode: Some(identity.clone()),
+        };
+        let incomplete = Snapshot {
+            generation: 1,
+            inode: None,
+        };
+        // A complete copy that is still present.
+        assert_eq!(settle_step(Some(&complete), true), SettleStep::Verify);
+        // A restore rename that landed before the journal was saved.
+        assert_eq!(settle_step(Some(&complete), false), SettleStep::Adopt);
+        // An incomplete copy, present or not yet created.
+        assert_eq!(settle_step(Some(&incomplete), true), SettleStep::Remove);
+        assert_eq!(settle_step(Some(&incomplete), false), SettleStep::Remove);
+        // A copy the journal already forgot (an unnamed leftover).
+        assert_eq!(settle_step(None, true), SettleStep::Remove);
+    }
     #[test]
     fn existing_directories_do_not_fabricate_disk_reservations() {
         let promised = DATA_BYTES + TMP_BYTES;

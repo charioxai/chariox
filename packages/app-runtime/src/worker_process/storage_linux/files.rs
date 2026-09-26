@@ -194,6 +194,64 @@ pub(super) fn create_image(parent: &Dir, name: &str, capacity: u64) -> Result<Fi
     Ok(file)
 }
 
+/// Copies a detached image into a preallocated one of the same capacity and
+/// fsyncs the copy. On the managed ext4 root this is a full copy inside the
+/// acquire, not a reflink.
+pub(super) fn copy_image(source: &File, destination: &File, capacity: u64) -> Result<()> {
+    if source.metadata()?.len() != capacity || destination.metadata()?.len() != capacity {
+        return Err(Error::Identity);
+    }
+    let (mut from, mut to) = (0 as libc::loff_t, 0 as libc::loff_t);
+    while (from as u64) < capacity {
+        let count = unsafe {
+            libc::copy_file_range(
+                source.as_raw_fd(),
+                &mut from,
+                destination.as_raw_fd(),
+                &mut to,
+                (capacity - from as u64) as usize,
+                0,
+            )
+        };
+        if count < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        // Zero is an early end of the source, which sets no errno.
+        if count == 0 {
+            return Err(Error::Identity);
+        }
+        if count < 0 {
+            return Err(
+                if [libc::ENOSPC, libc::EDQUOT].contains(&crate::private_fs::errno()) {
+                    Error::Capacity
+                } else {
+                    Error::Io
+                },
+            );
+        }
+    }
+    destination.sync_all()?;
+    Ok(())
+}
+
+/// Atomically replaces `to` with `from` in one directory, then fsyncs it.
+pub(super) fn replace(parent: &Dir, from: &str, to: &str) -> Result<()> {
+    let (from, to) = (component(from)?, component(to)?);
+    if unsafe {
+        libc::renameat(
+            parent.0.as_raw_fd(),
+            from.as_ptr(),
+            parent.0.as_raw_fd(),
+            to.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(Error::Io);
+    }
+    parent.sync()?;
+    Ok(())
+}
+
 pub(super) fn read_journal(parent: &Dir) -> Result<Option<Journal>> {
     let file = match parent.read_file(OsStr::new("journal.json"), false) {
         Ok(file) => file,

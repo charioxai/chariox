@@ -46,7 +46,17 @@ impl Context {
         Self { cgroup, leaf }
     }
     fn lease(&self, installation: &str, generation: u64) -> Lease {
-        Lease::acquire("hosted-owner", installation, generation, &self.leaf).unwrap()
+        self.staged(installation, generation, generation)
+    }
+    fn staged(&self, installation: &str, generation: u64, committed: u64) -> Lease {
+        Lease::acquire(
+            "hosted-owner",
+            installation,
+            generation,
+            committed,
+            &self.leaf,
+        )
+        .unwrap()
     }
 }
 impl Drop for Context {
@@ -116,6 +126,50 @@ fn hosted_private_capacity_persistence_tmp_reset_and_noexec() {
     assert!(!lease.temporary_path().join("sentinel").exists());
     lease.release().unwrap();
     println!("private ext4 data ENOSPC at {data_written}/{DATA_BYTES}; tmp at {tmp_written}/{TMP_BYTES}; noexec and remount persistence passed");
+}
+#[test]
+#[ignore = "requires dedicated hosted Linux root helper and fixed ext4 volumes"]
+fn hosted_failed_update_restores_the_committed_data_snapshot() {
+    let context = Context::open("44444444444444444444444444444444");
+    let mut lease = context.lease("rollback", 1);
+    fs::write(lease.data_path().join("todos"), b"committed").unwrap();
+    lease.release().unwrap();
+    // Two failed updates in a row: each starts on the committed data, and
+    // neither sees what the other wrote.
+    for generation in [2, 3] {
+        let mut staged = context.staged("rollback", generation, 1);
+        let data = staged.data_path();
+        assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed");
+        assert!(!data.join("only-2").exists());
+        fs::write(data.join("todos"), format!("written by {generation}")).unwrap();
+        fs::write(data.join(format!("only-{generation}")), b"uncommitted").unwrap();
+        staged.release().unwrap();
+    }
+    // The same staged generation retrying keeps its own writes.
+    let mut retry = context.staged("rollback", 3, 1);
+    assert_eq!(
+        fs::read(retry.data_path().join("todos")).unwrap(),
+        b"written by 3"
+    );
+    retry.release().unwrap();
+    // The committed generation starts again on its own data.
+    let mut restored = context.lease("rollback", 1);
+    let data = restored.data_path();
+    assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed");
+    assert!(!data.join("only-2").exists() && !data.join("only-3").exists());
+    restored.release().unwrap();
+    // An update that commits keeps what it wrote.
+    let mut staged = context.staged("rollback", 4, 1);
+    fs::write(staged.data_path().join("todos"), b"migrated").unwrap();
+    staged.release().unwrap();
+    let mut committed = context.lease("rollback", 4);
+    assert_eq!(
+        fs::read(committed.data_path().join("todos")).unwrap(),
+        b"migrated"
+    );
+    assert!(!committed.data_path().join("only-2").exists());
+    committed.release().unwrap();
+    println!("each failed update started on and rolled back to committed data; a retry kept its writes; a committed update kept its own");
 }
 #[test]
 #[ignore = "requires dedicated hosted Linux root helper and owned process cancellation"]
