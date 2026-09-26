@@ -194,8 +194,9 @@ pub(super) fn create_image(parent: &Dir, name: &str, capacity: u64) -> Result<Fi
     Ok(file)
 }
 
-/// Copies a detached image into a preallocated one of the same capacity
-/// (reflinked where the host filesystem supports it) and fsyncs the copy.
+/// Copies a detached image into a preallocated one of the same capacity and
+/// fsyncs the copy. On the managed ext4 root this is a full copy inside the
+/// acquire, not a reflink.
 pub(super) fn copy_image(source: &File, destination: &File, capacity: u64) -> Result<()> {
     if source.metadata()?.len() != capacity || destination.metadata()?.len() != capacity {
         return Err(Error::Identity);
@@ -215,7 +216,11 @@ pub(super) fn copy_image(source: &File, destination: &File, capacity: u64) -> Re
         if count < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
             continue;
         }
-        if count <= 0 {
+        // Zero is an early end of the source, which sets no errno.
+        if count == 0 {
+            return Err(Error::Identity);
+        }
+        if count < 0 {
             return Err(
                 if [libc::ENOSPC, libc::EDQUOT].contains(&crate::private_fs::errno()) {
                     Error::Capacity

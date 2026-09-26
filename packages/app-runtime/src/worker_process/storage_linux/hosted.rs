@@ -134,18 +134,24 @@ fn hosted_failed_update_restores_the_committed_data_snapshot() {
     let mut lease = context.lease("rollback", 1);
     fs::write(lease.data_path().join("todos"), b"committed").unwrap();
     lease.release().unwrap();
-    // Two failed updates in a row: 2 starts on the committed data, 3 on the
-    // data 2 left; both write.
+    // Two failed updates in a row: each starts on the committed data, and
+    // neither sees what the other wrote.
     for generation in [2, 3] {
         let mut staged = context.staged("rollback", generation, 1);
         let data = staged.data_path();
-        if generation == 2 {
-            assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed");
-        }
+        assert_eq!(fs::read(data.join("todos")).unwrap(), b"committed");
+        assert!(!data.join("only-2").exists());
         fs::write(data.join("todos"), format!("written by {generation}")).unwrap();
         fs::write(data.join(format!("only-{generation}")), b"uncommitted").unwrap();
         staged.release().unwrap();
     }
+    // The same staged generation retrying keeps its own writes.
+    let mut retry = context.staged("rollback", 3, 1);
+    assert_eq!(
+        fs::read(retry.data_path().join("todos")).unwrap(),
+        b"written by 3"
+    );
+    retry.release().unwrap();
     // The committed generation starts again on its own data.
     let mut restored = context.lease("rollback", 1);
     let data = restored.data_path();
@@ -161,8 +167,9 @@ fn hosted_failed_update_restores_the_committed_data_snapshot() {
         fs::read(committed.data_path().join("todos")).unwrap(),
         b"migrated"
     );
+    assert!(!committed.data_path().join("only-2").exists());
     committed.release().unwrap();
-    println!("two failed updates restored the committed data snapshot; a committed update kept its writes");
+    println!("each failed update started on and rolled back to committed data; a retry kept its writes; a committed update kept its own");
 }
 #[test]
 #[ignore = "requires dedicated hosted Linux root helper and owned process cancellation"]
