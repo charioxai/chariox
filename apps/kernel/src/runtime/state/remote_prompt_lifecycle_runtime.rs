@@ -681,12 +681,15 @@ fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool
             message,
             retryable: false,
         } => {
-            *operation == "send relay peer request"
-                && code == "relay_request_failed"
-                && message
-                    .strip_prefix("session `")
-                    .and_then(|message| message.strip_suffix("` has no active prompt"))
-                    .is_some_and(|session_id| !session_id.is_empty())
+            matches!(
+                *operation,
+                "read relay peer response" | "read temporary relay peer response"
+            ) && (code == "no_active_prompt"
+                || (code == "relay_request_failed"
+                    && message
+                        .strip_prefix("session `")
+                        .and_then(|message| message.strip_suffix("` has no active prompt"))
+                        .is_some_and(|session_id| !session_id.is_empty())))
         }
         _ => false,
     }
@@ -765,9 +768,19 @@ mod tests {
         ));
         assert!(remote_prompt_completion_should_treat_as_settled(
             &DaemonError::RelayTransport {
-                operation: "send relay peer request",
+                // map_relay_error falls back to relay_request_failed and the typed
+                // NoActivePrompt display string for this worker response.
+                operation: "read relay peer response",
                 code: "relay_request_failed".to_string(),
                 message: "session `worker-session` has no active prompt".to_string(),
+                retryable: false,
+            }
+        ));
+        assert!(remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: "no_active_prompt".to_string(),
+                message: "worker reports no active prompt".to_string(),
                 retryable: false,
             }
         ));
@@ -777,15 +790,28 @@ mod tests {
                 message: "session `worker-session` has no active prompt".to_string(),
             },
             DaemonError::RelayTransport {
-                operation: "send relay peer request",
+                operation: "read relay peer response",
                 code: "relay_request_failed".to_string(),
                 message: "worker said there is no active prompt while another error occurred"
                     .to_string(),
                 retryable: false,
             },
             DaemonError::RelayTransport {
-                operation: "send relay peer request",
-                code: "no_active_prompt".to_string(),
+                operation: "read relay peer response",
+                code: "unauthorized".to_string(),
+                message: "request denied: no_active_prompt was mentioned".to_string(),
+                retryable: false,
+            },
+            DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: "relay_request_failed".to_string(),
+                message: "timed out waiting for worker: session `worker-session` has no active prompt"
+                    .to_string(),
+                retryable: false,
+            },
+            DaemonError::RelayTransport {
+                operation: "write relay peer request",
+                code: "relay_request_failed".to_string(),
                 message: "session `worker-session` has no active prompt".to_string(),
                 retryable: false,
             },
@@ -793,12 +819,12 @@ mod tests {
                 operation: "read relay peer response",
                 code: "relay_request_failed".to_string(),
                 message: "session `worker-session` has no active prompt".to_string(),
-                retryable: false,
+                retryable: true,
             },
             DaemonError::RelayTransport {
-                operation: "send relay peer request",
-                code: "relay_request_failed".to_string(),
-                message: "session `worker-session` has no active prompt".to_string(),
+                operation: "read relay peer response",
+                code: "no_active_prompt".to_string(),
+                message: "worker reports no active prompt".to_string(),
                 retryable: true,
             },
         ] {
