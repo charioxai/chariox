@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{
@@ -512,11 +514,12 @@ impl KernelRuntimeState {
 mod observation_tests {
     use super::*;
     use std::sync::Arc;
+    use std::task::Poll;
     use tokio::sync::Mutex;
 
     use crate::session::{
-        EnvironmentActionOutcome, EnvironmentActionState, EnvironmentActionTerminal,
-        EnvironmentTabObservation,
+        EnvironmentActionCancellationReason, EnvironmentActionOutcome, EnvironmentActionState,
+        EnvironmentActionTerminal, EnvironmentTabObservation,
     };
 
     #[test]
@@ -604,6 +607,56 @@ mod observation_tests {
         let serialized_history = serde_json::to_string(&history).unwrap();
         assert!(!serialized_history.contains("sensitive-query"));
         assert!(!serialized_history.contains("sensitive-result"));
+    }
+
+    #[tokio::test]
+    async fn dropping_pending_browser_snapshot_cancels_observation_action() {
+        let (_test_root, runtime, session_id, agent_id) = runtime_with_room();
+        let environment = runtime
+            .room_environment_snapshot(&session_id)
+            .expect("Room should exist");
+        let tab = environment.tabs.first().expect("test tab should exist");
+        let action_id = begin_controller_browser_observation(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &environment,
+            tab,
+            "browser_status",
+        )
+        .expect("status observation should be admitted");
+        let observation = Some(ControllerBrowserObservationGuard::new(
+            &runtime,
+            &session_id,
+            action_id.clone(),
+            "browser_status",
+        ));
+        let mut pending_capture = Box::pin(await_controller_browser_observation(
+            observation,
+            std::future::pending::<Result<(), DaemonError>>(),
+        ));
+        std::future::poll_fn(|context| {
+            assert!(pending_capture.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(pending_capture);
+        let history = runtime
+            .room_environment_action_history(&session_id, None, 8)
+            .expect("Room Action history should be readable")
+            .actions;
+        let cancelled = history
+            .iter()
+            .find(|action| action.action_id == action_id)
+            .expect("cancelled observation should remain in Action history");
+        assert_eq!(cancelled.state, EnvironmentActionState::Cancelled);
+        assert_eq!(
+            cancelled.outcome,
+            Some(EnvironmentActionOutcome::Cancelled {
+                reason: EnvironmentActionCancellationReason::ControllerCancellation
+            })
+        );
+        assert!(cancelled.finished_at_ms.unwrap() >= cancelled.started_at_ms.unwrap());
     }
 
     struct TestRoot(std::path::PathBuf);
@@ -753,7 +806,7 @@ pub(super) async fn run_controller_browser_status_tool(
     slice_id: &str,
     agent_id: &str,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let capture = capture_controller_browser_status(
+    let mut capture = capture_controller_browser_status(
         state,
         session_id,
         slice_id,
@@ -761,30 +814,95 @@ pub(super) async fn run_controller_browser_status_tool(
         Some("browser_status"),
     )
     .await?;
-    finish_captured_browser_observation(
-        state,
-        session_id,
-        &capture,
-        EnvironmentActionTerminal::Completed,
-        "browser_status",
-    )?;
+    finish_captured_browser_observation(&mut capture, EnvironmentActionTerminal::Completed)?;
     Ok(capture.result)
 }
 
-struct ControllerBrowserStatusCapture {
+struct ControllerBrowserStatusCapture<'a> {
     result: crate::transport::runtime_tools::RuntimeToolResult,
     structured_snapshot:
         Option<crate::runtime::browser_controller_snapshot::RoomBrowserStructuredSnapshot>,
-    observation_action_id: Option<String>,
+    observation: Option<ControllerBrowserObservationGuard<'a>>,
 }
 
-async fn capture_controller_browser_status(
-    state: &KernelRuntimeState,
-    session_id: &str,
+struct ControllerBrowserObservationGuard<'a> {
+    state: &'a KernelRuntimeState,
+    session_id: &'a str,
+    action_id: Option<String>,
+    kind: &'static str,
+}
+
+impl<'a> ControllerBrowserObservationGuard<'a> {
+    fn new(
+        state: &'a KernelRuntimeState,
+        session_id: &'a str,
+        action_id: String,
+        kind: &'static str,
+    ) -> Self {
+        Self {
+            state,
+            session_id,
+            action_id: Some(action_id),
+            kind,
+        }
+    }
+
+    fn finish(&mut self, terminal: EnvironmentActionTerminal) -> Result<(), DaemonError> {
+        let Some(action_id) = self.action_id.as_deref() else {
+            return Ok(());
+        };
+        finish_controller_browser_observation(
+            self.state,
+            self.session_id,
+            action_id,
+            self.kind,
+            terminal,
+        )?;
+        self.action_id = None;
+        Ok(())
+    }
+}
+
+impl Drop for ControllerBrowserObservationGuard<'_> {
+    fn drop(&mut self) {
+        let Some(action_id) = self.action_id.take() else {
+            return;
+        };
+        let _ = finish_controller_browser_observation(
+            self.state,
+            self.session_id,
+            &action_id,
+            self.kind,
+            EnvironmentActionTerminal::Cancelled,
+        );
+    }
+}
+
+async fn await_controller_browser_observation<'a, T, F>(
+    mut observation: Option<ControllerBrowserObservationGuard<'a>>,
+    capture: F,
+) -> Result<(T, Option<ControllerBrowserObservationGuard<'a>>), DaemonError>
+where
+    F: Future<Output = Result<T, DaemonError>>,
+{
+    match capture.await {
+        Ok(capture) => Ok((capture, observation)),
+        Err(error) => {
+            if let Some(observation) = observation.as_mut() {
+                observation.finish(EnvironmentActionTerminal::Failed)?;
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn capture_controller_browser_status<'a>(
+    state: &'a KernelRuntimeState,
+    session_id: &'a str,
     slice_id: &str,
     agent_id: &str,
     observation_kind: Option<&'static str>,
-) -> Result<ControllerBrowserStatusCapture, DaemonError> {
+) -> Result<ControllerBrowserStatusCapture<'a>, DaemonError> {
     let operation = observation_kind
         .map(browser_observation_operation)
         .unwrap_or("runtime_tool_slice_browser_status");
@@ -793,15 +911,20 @@ async fn capture_controller_browser_status(
         .focused_tab_id
         .as_deref()
         .and_then(|focused_id| environment.tabs.iter().find(|tab| tab.tab_id == focused_id));
-    let observation_action_id = match (observation_kind, focused) {
-        (Some(kind), Some(tab)) => Some(begin_controller_browser_observation(
+    let observation = match (observation_kind, focused) {
+        (Some(kind), Some(tab)) => Some(ControllerBrowserObservationGuard::new(
             state,
             session_id,
-            agent_id,
-            &environment,
-            tab,
+            begin_controller_browser_observation(
+                state,
+                session_id,
+                agent_id,
+                &environment,
+                tab,
+                kind,
+            )?,
             kind,
-        )?),
+        )),
         _ => None,
     };
     let capture = async {
@@ -845,29 +968,13 @@ async fn capture_controller_browser_status(
             crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
             structured_snapshot,
         ))
-    }
-    .await;
-    let (result, structured_snapshot) = match capture {
-        Ok(capture) => capture,
-        Err(error) => {
-            if let (Some(action_id), Some(kind)) =
-                (observation_action_id.as_deref(), observation_kind)
-            {
-                finish_controller_browser_observation(
-                    state,
-                    session_id,
-                    action_id,
-                    kind,
-                    EnvironmentActionTerminal::Failed,
-                )?;
-            }
-            return Err(error);
-        }
     };
+    let ((result, structured_snapshot), observation) =
+        await_controller_browser_observation(observation, capture).await?;
     Ok(ControllerBrowserStatusCapture {
         result,
         structured_snapshot,
-        observation_action_id,
+        observation,
     })
 }
 
@@ -916,14 +1023,11 @@ fn begin_controller_browser_observation(
 }
 
 fn finish_captured_browser_observation(
-    state: &KernelRuntimeState,
-    session_id: &str,
-    capture: &ControllerBrowserStatusCapture,
+    capture: &mut ControllerBrowserStatusCapture<'_>,
     terminal: EnvironmentActionTerminal,
-    kind: &'static str,
 ) -> Result<(), DaemonError> {
-    if let Some(action_id) = capture.observation_action_id.as_deref() {
-        finish_controller_browser_observation(state, session_id, action_id, kind, terminal)?;
+    if let Some(observation) = capture.observation.as_mut() {
+        observation.finish(terminal)?;
     }
     Ok(())
 }
@@ -1010,7 +1114,7 @@ pub(super) async fn run_controller_browser_find_tool(
     query: &str,
     kind: &str,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let capture = capture_controller_browser_status(
+    let mut capture = capture_controller_browser_status(
         state,
         session_id,
         slice_id,
@@ -1049,22 +1153,13 @@ pub(super) async fn run_controller_browser_find_tool(
     match result {
         Ok(result) => {
             finish_captured_browser_observation(
-                state,
-                session_id,
-                &capture,
+                &mut capture,
                 EnvironmentActionTerminal::Completed,
-                "browser_find",
             )?;
             Ok(result)
         }
         Err(error) => {
-            finish_captured_browser_observation(
-                state,
-                session_id,
-                &capture,
-                EnvironmentActionTerminal::Failed,
-                "browser_find",
-            )?;
+            finish_captured_browser_observation(&mut capture, EnvironmentActionTerminal::Failed)?;
             Err(error)
         }
     }

@@ -33,6 +33,7 @@ use crate::session::CanonicalViewport;
 mod cancellation;
 mod configuration_cancellation;
 mod lifecycle_cancellation;
+mod pending_responses;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
 mod import_cancellation_tests;
@@ -314,9 +315,11 @@ impl BrowserControllerProcessStdioBackend {
             "browser controller did not expose stderr".to_string()
         })?;
         let (responses_tx, responses) = mpsc::channel();
+        let snapshot_responses = pending_responses::PendingResponses::default();
+        let reader_snapshots = snapshot_responses.clone();
         if let Err(error) = std::thread::Builder::new()
             .name("chariox-browser-controller-reader".to_string())
-            .spawn(move || read_controller_responses(stdout, responses_tx))
+            .spawn(move || read_controller_responses(stdout, responses_tx, reader_snapshots))
         {
             kill_child(&mut child);
             return Err(format!(
@@ -336,6 +339,7 @@ impl BrowserControllerProcessStdioBackend {
             child,
             stdin,
             responses,
+            snapshot_responses,
         });
         Ok(())
     }
@@ -533,6 +537,35 @@ impl BrowserControllerProcessStdioBackend {
             ));
         }
         Ok(health)
+    }
+
+    fn begin_snapshot_read(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<pending_responses::PendingResponse<BrowserControllerRpcResponse>, String> {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        let process = self
+            .process
+            .as_mut()
+            .ok_or_else(|| "browser controller is not running".to_string())?;
+        let pending = process.snapshot_responses.register(request_id)?;
+        serde_json::to_writer(
+            &mut process.stdin,
+            &BrowserControllerRpcRequest {
+                id: request_id,
+                method: "browser.snapshot",
+                params: &serde_json::json!({ "target_id": target_id, "document_id": document_id }),
+            },
+        )
+        .map_err(|error| format!("failed to encode browser controller snapshot: {error}"))?;
+        process
+            .stdin
+            .write_all(b"\n")
+            .and_then(|()| process.stdin.flush())
+            .map_err(|error| format!("failed to send browser controller snapshot: {error}"))?;
+        Ok(pending)
     }
 
     fn take_exited_process(&mut self) -> Result<Option<u32>, String> {
@@ -1040,6 +1073,7 @@ struct BrowserControllerChild {
     child: Child,
     stdin: ChildStdin,
     responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
+    snapshot_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
 }
 
 #[derive(Deserialize)]
@@ -1136,6 +1170,7 @@ struct BrowserControllerRpcError {
 fn read_controller_responses(
     stdout: ChildStdout,
     responses: mpsc::Sender<Result<BrowserControllerRpcResponse, String>>,
+    snapshots: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
 ) {
     for line in BufReader::new(stdout).lines() {
         let response = line
@@ -1144,10 +1179,27 @@ fn read_controller_responses(
                 serde_json::from_str::<BrowserControllerRpcResponse>(&line)
                     .map_err(|error| format!("browser controller returned invalid JSON: {error}"))
             });
+        let response = match response {
+            Ok(response) => {
+                if let Some(id) = response.id {
+                    match snapshots.route(id, response) {
+                        Some(response) => Ok(response),
+                        None => continue,
+                    }
+                } else {
+                    Ok(response)
+                }
+            }
+            Err(error) => {
+                snapshots.fail_all(&error);
+                Err(error)
+            }
+        };
         if responses.send(response).is_err() {
-            return;
+            break;
         }
     }
+    snapshots.fail_all("browser controller exited during snapshot");
 }
 
 fn terminate_child(child: &mut Child, timeout: Duration) {
@@ -1531,12 +1583,42 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership
-            .capture_browser_snapshot(session_id, target_id, document_id)
-            .map(Some)
+        let (pending, timeout) = {
+            let mut ownership = ownership
+                .lock()
+                .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+            ownership.require_lease(session_id)?;
+            let supervisor = &mut ownership.supervisor;
+            // A health RPC is a controller barrier. While snapshots are in
+            // flight, inspect process liveness without queuing that barrier.
+            // Recovery still requires reconciliation before fresh references.
+            let reads_pending = supervisor
+                .backend
+                .process
+                .as_ref()
+                .map(|process| process.snapshot_responses.is_empty().map(|empty| !empty))
+                .transpose()?
+                .unwrap_or(false);
+            let exited = supervisor.backend.take_exited_process()?.is_some();
+            if !reads_pending || exited {
+                supervisor.ensure_started_without_transparent_restart()?;
+            } else if supervisor.recovery_pending
+                || supervisor.snapshot.state != BrowserControllerProcessState::Ready
+            {
+                return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string());
+            }
+            let pending = supervisor
+                .backend
+                .begin_snapshot_read(target_id, document_id)?;
+            (pending, supervisor.backend.timeout)
+        };
+        // Keep the Room lease check and stdin dispatch atomic, but never hold
+        // ownership while waiting for a snapshot response.
+        let snapshot = pending
+            .wait(timeout)?
+            .into_result::<BrowserControllerStructuredSnapshot>("browser.snapshot")?;
+        snapshot.validate(target_id, document_id)?;
+        Ok(Some(snapshot))
     }
 
     pub(crate) fn perform_browser_action(
@@ -2501,6 +2583,75 @@ mod tests {
                 .expect("resource inventory response shape parses");
             assert!(snapshot.validate(&viewport).is_err());
         }
+    }
+
+    #[test]
+    fn room_snapshot_reads_overlap_and_match_out_of_order_responses() {
+        // Neither snapshot can finish until the controller receives both.
+        // Reply in reverse order to catch a shared response receiver as well
+        // as an ownership lock held across the first RPC.
+        let tool = TestTool::new(
+            r#"#!/bin/sh
+set -eu
+first_id=
+snapshot() {
+  printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"%s","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[],"dom_nodes":[]}}\n' "$1" "$2"
+}
+while IFS= read -r request; do
+  id=${request#*:}
+  id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.snapshot"'*)
+      if [ -z "$first_id" ]; then
+        first_id=$id
+        touch "$1"
+      else
+        snapshot "$id" target-second
+        snapshot "$first_id" target-first
+      fi ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+  esac
+done
+"#,
+        );
+        let started = tool.root.join("first-snapshot-started");
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            vec![started.display().to_string()],
+            Duration::from_secs(3),
+        );
+        store.acquire("room-1").expect("acquire controller");
+        let first_store = store.clone();
+        let first = std::thread::spawn(move || {
+            first_store.capture_browser_snapshot("room-1", "target-first", "loader-a")
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !started.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(started.exists(), "first snapshot must reach the controller");
+        let second_store = store.clone();
+        let second = std::thread::spawn(move || {
+            second_store.capture_browser_snapshot("room-1", "target-second", "loader-a")
+        });
+        let first = first.join().expect("first reader joins");
+        let second = second.join().expect("second reader joins");
+        store.release("room-1").expect("release controller");
+        assert_eq!(
+            first
+                .expect("first snapshot must overlap")
+                .unwrap()
+                .target_id,
+            "target-first"
+        );
+        assert_eq!(
+            second
+                .expect("second response must match")
+                .unwrap()
+                .target_id,
+            "target-second"
+        );
     }
 
     #[test]
