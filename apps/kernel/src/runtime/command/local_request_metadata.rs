@@ -123,6 +123,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("environment.resource_inventory.get", Normal)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => {
+            LocalRequestMetadata::new("environment.tab.accessibility.get", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
             LocalRequestMetadata::new("environment.screenshot.capture", Normal)
                 .session(&request.session_id)
@@ -584,6 +588,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetRoomEnvironmentSlice(_) => "environment.slice.get",
         LocalDaemonRequest::GetRoomEnvironmentResourceInventory(_) => {
             "environment.resource_inventory.get"
+        }
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_) => {
+            "environment.tab.accessibility.get"
         }
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",

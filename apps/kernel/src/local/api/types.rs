@@ -126,4 +126,6 @@ pub use workspace::*;
 /// App offered with `files.export` (`AppFileExport`).
 /// Version 356 reconnects App views: the room-controller `app_view` command
 /// gains `reload`, which serves an open view the current generation's assets.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 356;
+/// Version 357 adds `GetRoomEnvironmentTabAccessibility`: a Room Tab's
+/// accessibility outline for terminals (`RoomEnvironmentTabAccessibility`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 357;

@@ -19,6 +19,44 @@ pub struct GetRoomEnvironmentSliceRequest {
     pub session_id: String,
 }
 
+/// Protocol 357: the accessibility outline of one Room Tab, for terminals to
+/// present App views (and any page) to screen readers and keyboard users.
+/// Room members may read it; it carries no input authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetRoomEnvironmentTabAccessibilityRequest {
+    pub session_id: String,
+    pub tab_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoomEnvironmentAccessibilityNode {
+    pub element_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_ref: Option<String>,
+    pub role: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub value: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub focused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoomEnvironmentTabAccessibility {
+    pub session_id: String,
+    pub tab_id: String,
+    pub document_revision: u64,
+    /// Nodes in document order; ignored nodes are omitted.
+    pub nodes: Vec<RoomEnvironmentAccessibilityNode>,
+    /// More nodes existed than the bound.
+    pub truncated: bool,
+}
+
 /// Read the home-owned browser/profile identities for a Room-bound worker
 /// environment. The slice id is part of the request so a stale worker or
 /// unrelated slice cannot be projected as this Room's inventory.

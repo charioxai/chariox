@@ -29,7 +29,7 @@ fn signed_activity_contract(resource_key: &'static str) -> (String, String) {
 
 #[test]
 fn managed_activity_http_signed_contract_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 356);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 357);
 
     let (managed, managed_signature) = signed_activity_contract("environmentId");
     assert_eq!(

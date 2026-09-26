@@ -110,6 +110,9 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetRoomEnvironmentResourceInventory(_) => {
             "environment.resource_inventory.get"
         }
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_) => {
+            "environment.tab.accessibility.get"
+        }
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",

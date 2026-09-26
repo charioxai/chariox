@@ -174,6 +174,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetRoomEnvironmentResourceInventory(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

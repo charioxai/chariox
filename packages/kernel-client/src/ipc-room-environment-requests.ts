@@ -32,6 +32,10 @@ export function getRoomEnvironmentResourceInventoryRequest(sessionId: string, sl
   }
 }
 
+export function getRoomEnvironmentTabAccessibilityRequest(sessionId: string, tabId: string) {
+  return { GetRoomEnvironmentTabAccessibility: { session_id: sessionId, tab_id: tabId } }
+}
+
 export function captureRoomEnvironmentScreenshotRequest(
   sessionId: string,
   attachmentId: string,
