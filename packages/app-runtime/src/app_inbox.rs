@@ -207,7 +207,8 @@ fn initialize_tables(connection: &Connection) -> Result<()> {
             UNIQUE(owner_id,installation_id,route_id,occurrence_id)
          );
          CREATE INDEX IF NOT EXISTS app_inbox_due ON app_inbox(state,next_attempt_at_ms,sequence);
-         CREATE INDEX IF NOT EXISTS app_inbox_installation_state ON app_inbox(owner_id,installation_id,state,accepted_at_ms);",
+         CREATE INDEX IF NOT EXISTS app_inbox_installation_state ON app_inbox(owner_id,installation_id,state,accepted_at_ms);
+         CREATE INDEX IF NOT EXISTS app_inbox_settled ON app_inbox(state,accepted_at_ms);",
     )?;
     Ok(())
 }
