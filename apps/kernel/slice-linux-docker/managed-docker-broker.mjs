@@ -27,6 +27,7 @@ import { createServer } from "node:net"
 import { createInterface } from "node:readline"
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
+import { requestSliceDiskQuota, sliceDiskQuotaIdentityFromEnvironment } from "./slice-disk-quota-client.mjs"
 
 const MAX_FRAME_BYTES = 12 * 1024 * 1024
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -140,6 +141,8 @@ const ALLOWED_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_MACHINE_ALIAS",
   "CHARIOX_SLICE_DOCKER_MEMORY",
   "CHARIOX_SLICE_DOCKER_CPUS",
+  "CHARIOX_SLICE_DISK_LAYER_MB",
+  "CHARIOX_SLICE_DISK_HOME_MB",
   "CHARIOX_SLICE_RELAY_TOKEN",
   "CHARIOX_SLICE_RELAY_URL",
   "CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT",
@@ -552,6 +555,16 @@ function validateProvisioner(action, environment, files) {
   if (environment.CHARIOX_SLICE_DOCKER_CPUS && !/^[1-9][0-9]*(?:\.[0-9]{1,3})?$/.test(environment.CHARIOX_SLICE_DOCKER_CPUS)) {
     fail("CHARIOX_SLICE_DOCKER_CPUS is invalid")
   }
+  const diskLayerMb = environment.CHARIOX_SLICE_DISK_LAYER_MB
+  const diskHomeMb = environment.CHARIOX_SLICE_DISK_HOME_MB
+  if ((diskLayerMb === undefined) !== (diskHomeMb === undefined)) {
+    fail("writable-layer and persistent-home disk limits must be configured together")
+  }
+  for (const [name, value] of [["CHARIOX_SLICE_DISK_LAYER_MB", diskLayerMb], ["CHARIOX_SLICE_DISK_HOME_MB", diskHomeMb]]) {
+    if (value !== undefined && (!/^[1-9][0-9]{0,9}$/.test(value) || Number(value) > 4_294_967_295)) {
+      fail(`${name} must be a positive u32 integer`)
+    }
+  }
   for (const name of [
     "CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP",
     "CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY",
@@ -786,7 +799,13 @@ function managedHomeArchiveCoordinates(path) {
 function inspectManagedHomeArchive(path) {
   const { candidate, relative } = managedHomeArchiveCoordinates(path)
   const archive = pinnedSharedPath(candidate, "managed saved home archive", "file")
+  let directory
   try {
+    directory = pinnedSharedPath(dirname(candidate), "managed saved home archive generation", "directory")
+    const entries = readdirSync(directory.path).sort()
+    if (entries.length !== 2 || entries[0] !== "home.tar.zst" || entries[1] !== "metadata.json") {
+      fail("managed saved home archive generation contains unexpected files")
+    }
     const metadataPath = join(dirname(candidate), "metadata.json")
     const metadataFile = pinnedSharedPath(metadataPath, "managed saved home archive metadata", "file")
     try {
@@ -815,23 +834,25 @@ function inspectManagedHomeArchive(path) {
       if (digestResult.status !== 0 || !digestResult.stdout.startsWith(`${metadata.sha256} `)) {
         fail("managed saved home archive digest does not match")
       }
-      return { archive, metadata }
+      return { archive, directory, metadata }
     } finally {
       closeSync(metadataFile.fd)
     }
   } catch (error) {
     closeSync(archive.fd)
+    if (directory) closeSync(directory.fd)
     throw error
   }
 }
 
 function verifyManagedHomeArchive(path) {
-  return inspectManagedHomeArchive(path).archive
+  return inspectManagedHomeArchive(path)
 }
 
 function verifyHomeArchive(request) {
-  const { archive, metadata } = inspectManagedHomeArchive(request.path)
+  const { archive, directory, metadata } = inspectManagedHomeArchive(request.path)
   closeSync(archive.fd)
+  closeSync(directory.fd)
   return {
     path: request.path,
     sizeBytes: metadata.sizeBytes,
@@ -1252,6 +1273,37 @@ function inspectContainerMounts(container) {
     .map((mount) => ({ destination: mount.Destination, rw: mount.RW === true, source: mount.Source }))
 }
 
+function diskQuotaMarkerPresent(container) {
+  const inspectedContainer = spawnSync(
+    "/usr/bin/docker",
+    ["container", "inspect", "--format", "{{json .Config.Labels}}", container],
+    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
+  )
+  if (inspectedContainer.status === 0) {
+    let labels
+    try { labels = JSON.parse(inspectedContainer.stdout) } catch { fail("slice disk quota labels are malformed") }
+    if (labels["io.chariox.slice.disk-quota"] !== undefined) {
+      if (labels["io.chariox.slice.disk-quota"] !== "xfs-project-v1") fail("slice disk quota marker is unsupported")
+      return true
+    }
+  }
+  const volume = `${container}-home`
+  const inspectedVolume = spawnSync(
+    "/usr/bin/docker",
+    ["volume", "inspect", "--format", "{{json .Labels}}", volume],
+    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
+  )
+  if (inspectedVolume.status === 0) {
+    let labels
+    try { labels = JSON.parse(inspectedVolume.stdout) } catch { fail("slice home-volume quota labels are malformed") }
+    if (labels["io.chariox.slice.disk-quota"] !== undefined) {
+      if (labels["io.chariox.slice.disk-quota"] !== "xfs-project-v1") fail("slice home-volume disk quota marker is unsupported")
+      return true
+    }
+  }
+  return false
+}
+
 function requireExactContainerMounts(container, expected, stop) {
   const actual = inspectContainerMounts(container)
   if (!actual) return false
@@ -1364,8 +1416,14 @@ function prepareProvisioner(request) {
         const pinned = name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE"
           ? verifyManagedHomeArchive(value)
           : pinnedSharedPath(value, name, "file")
-        descriptors.push(pinned.fd)
-        environment[name] = pinned.path
+        if (name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE") {
+          descriptors.push(pinned.archive.fd, pinned.directory.fd)
+          environment[name] = pinned.archive.path
+          environment.CHARIOX_SLICE_BROKER_SAVED_HOME_ARCHIVE_DIR = pinned.directory.path
+        } else {
+          descriptors.push(pinned.fd)
+          environment[name] = pinned.path
+        }
       }
     }
     const mountCount = provisionsContainer
@@ -1428,8 +1486,27 @@ function spawnBounded(command, args, options) {
   return spawnSync(command, args, { ...options, timeout: 20 * 60_000, killSignal: "SIGKILL" })
 }
 
-function execute(request) {
+function provisionerQuotaRequest(environment) {
+  const identity = sliceDiskQuotaIdentityFromEnvironment(environment)
+  const layerMb = environment.CHARIOX_SLICE_DISK_LAYER_MB
+  const homeMb = environment.CHARIOX_SLICE_DISK_HOME_MB
+  if ((layerMb === undefined) !== (homeMb === undefined)) {
+    fail("writable-layer and persistent-home disk limits must be configured together")
+  }
+  return {
+    identity,
+    limits: layerMb === undefined
+      ? undefined
+      : {
+        writableLayerBytes: Number(layerMb) * 1024 * 1024,
+        persistentHomeBytes: Number(homeMb) * 1024 * 1024,
+      },
+  }
+}
+
+async function execute(request) {
   validateRequest(request)
+  let releaseDiskQuota = false
   if (request.kind === "home_archive_capture") {
     const captured = captureHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(captured)).toString("base64"), stderrBase64: "" }
@@ -1453,6 +1530,54 @@ function execute(request) {
       fail("managed slice start has no broker-owned stable mount record")
     }
   }
+  if (request.kind === "docker" && ["start", "unpause"].includes(request.args[0])) {
+    await requestSliceDiskQuota({
+      protocolVersion: 1,
+      operation: "ensure_before_start",
+      containerName: request.args[1],
+    })
+  }
+  let boundedLimits
+  if (request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
+    const quota = provisionerQuotaRequest(request.environment)
+    if (quota.limits) {
+      await requestSliceDiskQuota({
+        protocolVersion: 1,
+        operation: "reserve",
+        identity: quota.identity,
+        limits: quota.limits,
+      })
+      boundedLimits = quota.limits
+    } else {
+      if (diskQuotaMarkerPresent(quota.identity.containerName)) {
+        fail("configured disk quota caps are missing for a slice with an existing reservation")
+      }
+      try {
+        const status = await requestSliceDiskQuota({
+          protocolVersion: 1,
+          operation: "status",
+          identity: quota.identity,
+        })
+        if (status.bounded) fail("configured disk quota caps are missing for a slice with an existing reservation")
+      } catch (error) {
+        if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) throw error
+      }
+    }
+  }
+  if (request.kind === "provisioner" && request.action === "destroy") {
+    const quota = provisionerQuotaRequest(request.environment)
+    releaseDiskQuota = diskQuotaMarkerPresent(quota.identity.containerName)
+    try {
+      const status = await requestSliceDiskQuota({
+        protocolVersion: 1,
+        operation: "status",
+        identity: quota.identity,
+      })
+      releaseDiskQuota ||= status.bounded
+    } catch (error) {
+      if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) releaseDiskQuota = true
+    }
+  }
   const prepared = request.kind === "docker" ? prepareDocker(request.args) : prepareProvisioner(request)
   try {
     const command = request.kind === "docker" ? "/usr/bin/docker" : PROVISIONER
@@ -1474,6 +1599,14 @@ function execute(request) {
     }
     if (request.kind === "provisioner" && request.action === "destroy" && result.status === 0) {
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
+      if (releaseDiskQuota) {
+        const quota = provisionerQuotaRequest(request.environment)
+        await requestSliceDiskQuota({
+          protocolVersion: 1,
+          operation: "release",
+          identity: quota.identity,
+        })
+      }
     }
     if (request.kind === "provisioner" && new Set(["provision", "restore-state"]).has(request.action)) {
       if (result.status === 0) {
@@ -1484,11 +1617,21 @@ function execute(request) {
         removePersistentHandles((record) => prepared.newHandles.has(record.handle))
       }
     }
-    return {
+    const response = {
       status: result.status ?? 125,
       stdoutBase64: (result.stdout ?? Buffer.alloc(0)).toString("base64"),
       stderrBase64: (result.stderr ?? Buffer.from(result.error?.message ?? "")).toString("base64"),
     }
+    if (result.status === 0 && boundedLimits) {
+      const quota = provisionerQuotaRequest(request.environment)
+      const verified = await requestSliceDiskQuota({
+        protocolVersion: 1,
+        operation: "verify",
+        identity: quota.identity,
+      })
+      response.diskQuotaEvidence = verified.evidence
+    }
+    return response
   } finally {
     cleanupPrepared(prepared)
   }
@@ -1532,7 +1675,7 @@ if (process.argv[2] === "--validate-request") {
     let response
     try {
       if (Buffer.byteLength(line) > MAX_FRAME_BYTES) fail("broker request is too large")
-      response = execute(JSON.parse(line))
+      response = await execute(JSON.parse(line))
     } catch (error) {
       response = errorResponse(error)
     }
@@ -1565,6 +1708,7 @@ if (process.argv[2] === "--validate-request") {
     server.close()
     rmSync(SOCKET_PATH, { force: true })
     let buffered = Buffer.alloc(0)
+    let processing = Promise.resolve()
     socket.on("data", (chunk) => {
       buffered = Buffer.concat([buffered, chunk])
       while (buffered.length >= 4) {
@@ -1578,15 +1722,24 @@ if (process.argv[2] === "--validate-request") {
         const remainder = Buffer.from(buffered.subarray(4 + payloadLength))
         buffered.fill(0)
         buffered = remainder
-        let response
+        let parsed
         try {
-          response = execute(JSON.parse(payload.toString("utf8")))
+          parsed = JSON.parse(payload.toString("utf8"))
         } catch (error) {
-          response = errorResponse(error)
-        } finally {
           payload.fill(0)
+          socket.write(serializeResponse(errorResponse(error)))
+          continue
         }
-        socket.write(serializeResponse(response))
+        payload.fill(0)
+        processing = processing.then(async () => {
+          let response
+          try {
+            response = await execute(parsed)
+          } catch (error) {
+            response = errorResponse(error)
+          }
+          socket.write(serializeResponse(response))
+        })
       }
     })
   })

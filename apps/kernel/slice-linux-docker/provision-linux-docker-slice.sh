@@ -60,10 +60,13 @@ SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
+SLICE_DISK_LAYER_MB="${CHARIOX_SLICE_DISK_LAYER_MB:-}"
+SLICE_DISK_HOME_MB="${CHARIOX_SLICE_DISK_HOME_MB:-}"
 SLICE_DOCKER_PIDS_LIMIT="${CHARIOX_SLICE_DOCKER_PIDS_LIMIT:-1024}"
 SLICE_DOCKER_NOFILE_LIMIT="${CHARIOX_SLICE_DOCKER_NOFILE_LIMIT:-8192}"
 SLICE_HOME_VOLUME="${CHARIOX_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
+SLICE_SAVED_HOME_ARCHIVE_DIR="${CHARIOX_SLICE_BROKER_SAVED_HOME_ARCHIVE_DIR:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
 SLICE_WORKSPACE_SOURCE="${CHARIOX_SLICE_WORKSPACE_SOURCE:-$SLICE_WORKSPACE}"
 SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
@@ -120,6 +123,27 @@ log() {
 fail() {
   printf '[slice-linux] error: %s\n' "$*" >&2
   exit 1
+}
+
+disk_quota_enabled() {
+  [[ -n "$SLICE_DISK_LAYER_MB" && -n "$SLICE_DISK_HOME_MB" ]]
+}
+
+apply_home_disk_quota() {
+  disk_quota_enabled || return 0
+  /usr/bin/node "$SCRIPT_DIR/slice-disk-quota-client.mjs" apply_home \
+    || fail "failed to apply and verify the persistent-home hard quota before restore or start"
+}
+
+apply_layer_disk_quota() {
+  disk_quota_enabled || return 0
+  /usr/bin/node "$SCRIPT_DIR/slice-disk-quota-client.mjs" apply_layer \
+    || fail "failed to apply and verify the writable-layer hard quota before start"
+}
+
+apply_both_disk_quotas() {
+  apply_home_disk_quota
+  apply_layer_disk_quota
 }
 
 if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
@@ -269,23 +293,29 @@ saved_home_volume_label() {
 restore_saved_home_volume() {
   [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
   [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
-  local helper status=0 cleanup_status=0
+  local helper status=0 cleanup_status=0 archive_in_container=/tmp/home.tar.zst
+  local -a archive_mount=()
+  if [[ -n "$SLICE_SAVED_HOME_ARCHIVE_DIR" ]]; then
+    archive_mount=(-v "$SLICE_SAVED_HOME_ARCHIVE_DIR:/restore:ro")
+    archive_in_container=/restore/home.tar.zst
+  fi
   helper="${SLICE_NAME}-home-restore-$$"
   log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
   if run_with_timeout 60 docker create --name "$helper" --user root \
     -v "$SLICE_HOME_VOLUME:/home-dst" \
+    "${archive_mount[@]}" \
     "$SLICE_IMAGE" \
     sleep infinity >/dev/null; then :; else status=$?; fi
   if (( status == 0 )); then
     if run_with_timeout 60 docker start "$helper" >/dev/null; then :; else status=$?; fi
   fi
-  if (( status == 0 )); then
+  if (( status == 0 )) && [[ -z "$SLICE_SAVED_HOME_ARCHIVE_DIR" ]]; then
     if run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"; then :; else status=$?; fi
   fi
   if (( status == 0 )); then
     if run_with_timeout 120 docker exec -u root "$helper" \
-      bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"; then :; else status=$?; fi
+      bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf '$archive_in_container'; chown -R slice:slice /home-dst"; then :; else status=$?; fi
   fi
   if run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1; then :; else cleanup_status=$?; fi
   if (( status != 0 )); then return "$status"; fi
@@ -295,8 +325,17 @@ restore_saved_home_volume() {
 
 prepare_home_volume() {
   local inspect_output
+  local -a quota_labels=(
+    --label "io.chariox.slice.id=$SLICE_ID"
+    --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
+    --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
+  )
+  if disk_quota_enabled; then
+    quota_labels+=(--label "io.chariox.slice.disk-quota=xfs-project-v1")
+  fi
   if inspect_output="$(run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
     log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
+    apply_home_disk_quota
     return 0
   fi
   if ! volume_inspect_reports_not_found "$inspect_output"; then
@@ -304,8 +343,9 @@ prepare_home_volume() {
   fi
 
   if [[ -z "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
-    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null \
+    run_with_timeout 30 docker volume create "${quota_labels[@]}" "$SLICE_HOME_VOLUME" >/dev/null \
       || fail "failed to create home volume $SLICE_HOME_VOLUME"
+    apply_home_disk_quota
     return 0
   fi
   [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] \
@@ -314,7 +354,7 @@ prepare_home_volume() {
   archive_identity="$(saved_home_archive_identity)" \
     || fail "could not calculate the saved slice home archive identity"
   initialization_token="$(printf '%s\0%s\0%s\0%s' "$SLICE_NAME" "$SLICE_HOME_VOLUME" "$archive_identity" "$$" | hash_stdin)"
-  run_with_timeout 30 docker volume create \
+  run_with_timeout 30 docker volume create "${quota_labels[@]}" \
     --label "io.chariox.saved-home.archive-sha256=$archive_identity" \
     --label "io.chariox.saved-home.initialization-token=$initialization_token" \
     "$SLICE_HOME_VOLUME" >/dev/null \
@@ -326,6 +366,7 @@ prepare_home_volume() {
   if [[ "$created_archive_label" != "$archive_identity" || "$created_token_label" != "$initialization_token" ]]; then
     fail "home volume $SLICE_HOME_VOLUME was not proven newly-created for this saved archive; refusing to overwrite it"
   fi
+  apply_home_disk_quota
   if restore_saved_home_volume; then
     return 0
   fi
@@ -837,6 +878,9 @@ ensure_container() {
     local docker_create_args=(
       --name "$SLICE_NAME"
       --hostname "$SLICE_HOSTNAME"
+      --label "io.chariox.slice.id=$SLICE_ID"
+      --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
+      --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
       --ulimit core=0:0
       --ulimit "nofile=$SLICE_DOCKER_NOFILE_LIMIT:$SLICE_DOCKER_NOFILE_LIMIT"
       --pids-limit "$SLICE_DOCKER_PIDS_LIMIT"
@@ -857,6 +901,9 @@ ensure_container() {
       -v "$SLICE_WORKSPACE_SOURCE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
       --add-host "host.docker.internal:host-gateway"
     )
+    if disk_quota_enabled; then
+      docker_create_args+=(--label "io.chariox.slice.disk-quota=xfs-project-v1")
+    fi
     if [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]]; then
       # The worker kernel launches providers through an inner bubblewrap user,
       # PID, and mount namespace. Docker's default seccomp, AppArmor, and
@@ -920,7 +967,9 @@ ensure_container() {
     created_container=1
   fi
 
+  apply_layer_disk_quota
   if ! container_running; then
+    apply_both_disk_quotas
     log "starting container $SLICE_NAME"
     local start_status=0
     if run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null; then
@@ -956,6 +1005,7 @@ ensure_container() {
 
 recover_existing_container() {
   container_exists || fail "slice container $SLICE_NAME does not exist; cannot recover failed state save"
+  apply_both_disk_quotas
   apply_container_process_limit
   verify_container_nofile_limit
   local paused
@@ -1519,6 +1569,12 @@ destroy_container() {
 
 main() {
   local action="${1:-provision}"
+  if [[ -n "$SLICE_DISK_LAYER_MB" || -n "$SLICE_DISK_HOME_MB" ]]; then
+    [[ "$SLICE_DISK_LAYER_MB" =~ ^[1-9][0-9]{0,9}$ && "$SLICE_DISK_HOME_MB" =~ ^[1-9][0-9]{0,9}$ ]] \
+      || fail "CHARIOX_SLICE_DISK_LAYER_MB and CHARIOX_SLICE_DISK_HOME_MB must both be positive integers"
+    (( SLICE_DISK_LAYER_MB <= 4294967295 && SLICE_DISK_HOME_MB <= 4294967295 )) \
+      || fail "disk quota limits must fit u32 MiB values"
+  fi
   case "$action" in
     -h|--help|help|status|stop|destroy) ;;
     *)

@@ -38,7 +38,7 @@ function tokenResponse(thumbprint = "bootstrap-thumbprint") {
 }
 
 test("CLI token and terminal join requests bind the actual bootstrap thumbprint", async () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 349)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 350)
   const requests: unknown[] = []
   const client = fakeClient(async (request) => {
     requests.push(request)

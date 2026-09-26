@@ -106,4 +106,5 @@ pub use workspace::*;
 /// Version 347 requires home persistence acknowledgment before leased setup validation.
 /// Version 348 projects owner-authorized managed activity and operation history.
 /// Version 349 binds CLI relay and display requests to a persisted terminal key.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 349;
+/// Version 350 exposes paired writable-layer and persistent-home slice caps in user config.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 350;

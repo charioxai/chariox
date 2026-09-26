@@ -26,6 +26,7 @@ mod room_controller;
 mod room_environment;
 mod room_environment_placement;
 mod slice_display;
+mod slice_disk_quota;
 mod slice_logs;
 mod workflow_code;
 mod workspace_history_external;

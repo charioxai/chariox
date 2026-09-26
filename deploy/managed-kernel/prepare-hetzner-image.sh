@@ -118,6 +118,7 @@ apt-get install -y --no-install-recommends \
   uidmap \
   unzip \
   util-linux \
+  xfsprogs \
   zstd
 
 systemctl disable --now docker.service docker.socket >/dev/null 2>&1 || true
@@ -272,6 +273,11 @@ configure_subid_range /etc/subgid --add-subgids
 [ "$(stat -c %d /var/lib/chariox-slice-share/.broker-private/output)" = \
   "$(stat -c %d /var/lib/chariox-slice-share)" ] \
   || fail "broker output staging is not on the managed share filesystem"
+rootless_docker_config=/var/lib/chariox-docker/home/.config/docker/daemon.json
+remove_seeded_rootless_quota_config=0
+if [ ! -e "$rootless_docker_config" ] && [ ! -L "$rootless_docker_config" ]; then
+  remove_seeded_rootless_quota_config=1
+fi
 systemctl start chariox-rootless-docker.service
 rootless_docker_ready=0
 for _attempt in $(seq 1 30); do
@@ -311,7 +317,20 @@ if runuser -u chariox -- env DOCKER_HOST=unix:///run/chariox-docker/docker.sock 
   fail "managed kernel user can access the rootless Docker daemon"
 fi
 systemctl stop chariox-rootless-docker.service
+systemctl stop chariox-slice-disk-quota-allocator.service
+if systemctl is-active --quiet chariox-slice-disk-quota-allocator.service; then
+  fail "slice disk quota allocator remained active while freezing the image"
+fi
 rm -rf /var/lib/chariox-docker/data /var/lib/chariox-docker/home/.docker
+if [ "$remove_seeded_rootless_quota_config" -eq 1 ] \
+  && [ -f "$rootless_docker_config" ] \
+  && cmp -s "$rootless_docker_config" - <<'EOF'
+{"features":{"containerd-snapshotter":false},"storage-driver":"overlay2"}
+EOF
+then
+  rm -f -- "$rootless_docker_config"
+  rmdir /var/lib/chariox-docker/home/.config/docker /var/lib/chariox-docker/home/.config 2>/dev/null || true
+fi
 install -d -o chariox-docker -g chariox-docker -m 0700 /var/lib/chariox-docker/home
 systemctl is-enabled --quiet chariox-rootless-docker.service \
   || fail "rootless Docker service was not enabled"

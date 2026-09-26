@@ -8,14 +8,16 @@ pub(super) struct SliceDiskQuotaLimits {
     pub(super) persistent_home_bytes: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct WritableLayerQuotaEvidence {
     pub(super) backend_supports_hard_quota: bool,
     pub(super) effective_limit_bytes: Option<u64>,
     pub(super) used_bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PersistentHomeQuotaEvidence {
     pub(super) backend_supports_hard_quota: bool,
     pub(super) is_persistent: bool,
@@ -23,7 +25,8 @@ pub(super) struct PersistentHomeQuotaEvidence {
     pub(super) used_bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct SliceDiskQuotaEvidence {
     pub(super) writable_layer: WritableLayerQuotaEvidence,
     pub(super) persistent_home: PersistentHomeQuotaEvidence,

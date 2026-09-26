@@ -1,0 +1,37 @@
+[Unit]
+Description=Chariox managed slice XFS project quota allocator
+After=local-fs.target
+Before=chariox-rootless-docker.service chariox-managed-bootstrap.service chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service
+RequiresMountsFor=/var/lib/chariox-docker/data
+
+[Service]
+Type=simple
+User=root
+Group=chariox-docker
+Environment=PATH=/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
+ExecStartPre=/usr/bin/test -x /usr/sbin/xfs_quota
+ExecStart=/usr/bin/node /usr/lib/chariox/current/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-disk-quota-service.mjs
+Restart=on-failure
+RestartSec=2s
+RuntimeDirectory=chariox-slice-disk-quota
+RuntimeDirectoryMode=0750
+StateDirectory=chariox-slice-disk-quota
+StateDirectoryMode=0700
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=CAP_SYS_ADMIN
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/chariox-docker/data /var/lib/chariox-slice-disk-quota /run/chariox-slice-disk-quota
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target
