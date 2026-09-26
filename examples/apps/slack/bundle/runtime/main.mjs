@@ -15,8 +15,11 @@ const KEEP = 100;
 // One state value holds every kept notification and is capped at 256 KiB;
 // the oldest are dropped to stay under this budget.
 const MAX_VALUE_BYTES = 200 * 1024;
-// A larger reply context is not kept; that notification cannot be answered.
+// A reply context is kept only while small and flat (the Slack generator's
+// is a few ids); otherwise that notification cannot be answered. The state
+// value's node and depth limits then hold too.
 const MAX_CONTEXT_BYTES = 4 * 1024;
+const MAX_CONTEXT_FIELDS = 16;
 // Without a configured (active) automation the kernel refuses the
 // occurrence; the notification is still kept.
 const OPTIONAL_OCCURRENCE = new Set(['NOT_FOUND', 'AUTOMATION_INACTIVE', 'OCCURRENCE_TOO_OLD']);
@@ -62,6 +65,13 @@ export default function register(chariox) {
     return /[\uD800-\uDBFF]$/.test(head) ? head.slice(0, -1) : head;
   };
 
+  function replyContext(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const fields = Object.values(value);
+    const flat = fields.every(field => field === null || ['string', 'number', 'boolean'].includes(typeof field));
+    return flat && fields.length <= MAX_CONTEXT_FIELDS && bytes(value) <= MAX_CONTEXT_BYTES ? value : null;
+  }
+
   // What a person reads, from the Slack payload the generator forwarded.
   function notification(kind, occurrenceId, payload) {
     const event = payload.metadata?.event ?? {};
@@ -78,7 +88,7 @@ export default function register(chariox) {
       occurred_at: payload.occurred_at,
       // Opaque to the App: the generator binds it to the connection, so a
       // later reply goes to the same conversation.
-      reply_context: bytes(payload.reply_context ?? null) <= MAX_CONTEXT_BYTES ? payload.reply_context ?? null : null,
+      reply_context: replyContext(payload.reply_context),
     };
   }
 
