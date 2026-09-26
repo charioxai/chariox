@@ -71,6 +71,44 @@ pub(crate) fn provider_account_authority_owner_user_id(
     }
 }
 
+/// The provider a new agent gets when none was chosen (`default` is only a
+/// placeholder, not a provider): the owner's signed-in default account
+/// (Claude, Codex, then OpenCode). With nothing signed in no provider can run
+/// new work, and the placeholder stays. The owner is mapped to the account
+/// authority, so an owner's Cloud clients find the home kernel's accounts.
+pub(crate) fn resolve_placeholder_provider(
+    config: &crate::config::DaemonConfig,
+    profiles: &ProviderAccountProfileRegistry,
+    runtime_owner_user_id: &str,
+    provider: &str,
+) -> String {
+    if !provider.trim().is_empty() && provider != "default" {
+        return provider.to_owned();
+    }
+    let owner = provider_account_authority_owner_user_id(config, runtime_owner_user_id);
+    let accounts = profiles.list(&owner, None).unwrap_or_else(|error| {
+        crate::logging::warn_with_fields(
+            "daemon.account_profile",
+            "provider accounts unreadable; the new agent keeps the default placeholder",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+        Vec::new()
+    });
+    let rank = |provider: &str| {
+        ["claude", "codex", "opencode"]
+            .iter()
+            .position(|candidate| *candidate == provider)
+            .unwrap_or(usize::MAX)
+    };
+    accounts
+        .iter()
+        .filter(|account| {
+            account.is_default && account.auth_state == ProviderAccountAuthState::Authenticated
+        })
+        .min_by_key(|account| rank(&account.provider))
+        .map_or_else(|| provider.to_owned(), |account| account.provider.clone())
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAccountMaterializationFile {
     pub relative_path: String,

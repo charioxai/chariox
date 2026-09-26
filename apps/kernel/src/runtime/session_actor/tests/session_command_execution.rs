@@ -500,6 +500,30 @@ async fn create_session_uses_owned_runtime_state_without_app_lock() {
         terminal_stream,
     );
 
+    // The owner's Claude account is signed in: a session created with no
+    // provider starts with it (the runtime create path web and TUI use).
+    {
+        let registry = app.lock().await.provider_account_profile_registry();
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let claude = registry
+            .list(owner, Some("claude"))
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.is_default)
+            .expect("bootstrap registers a default Claude account");
+        registry
+            .update_observation(
+                owner,
+                "claude",
+                &claude.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("the Claude login should record");
+    }
     let request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
         "owned-workspace",
         "owned-worktree",
@@ -521,6 +545,8 @@ async fn create_session_uses_owned_runtime_state_without_app_lock() {
     assert_eq!(session.alias(), Some("owned-workspace-1"));
     assert_eq!(agent.session_id(), session.id());
     assert_eq!(session.focused_agent_id(), Some(agent.id()));
+    assert_eq!(agent.provider(), "claude");
+    assert_eq!(session.agent_defaults().provider, "claude");
     drop(locked_app);
     let durable_events = durable_state_store
         .load_events_after(0)
