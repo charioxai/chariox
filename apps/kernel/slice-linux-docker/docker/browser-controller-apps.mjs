@@ -36,9 +36,12 @@ const BRIDGE_SOURCE = `(() => {
   if (typeof call !== "function") return;
   delete globalThis.${BINDING};
   const pending = new Map();
+  // Ids are unique per document: a reopened Tab loads a new one, and an
+  // answer still in flight for the old document must not match a new call.
+  const documentNonce = crypto.randomUUID();
   let next = 0;
   const request = (method, params) => new Promise((resolve, reject) => {
-    const id = String(++next);
+    const id = documentNonce + ":" + ++next;
     pending.set(id, { resolve, reject });
     call(JSON.stringify({ id, method, params }));
   });
@@ -107,6 +110,20 @@ export class AppTabs {
     const app = { installation: params.installation_id, origin, entry, assets: assets(params.assets, entry) };
     const connection = await this.browser.ensureConnection();
     this.listen(connection);
+    // One shared App Tab per Room and installation: opening it again (another
+    // terminal, or a kernel that restarted) shows that Tab with the current
+    // assets instead of a second one.
+    const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin);
+    if (shown) {
+      const [sessionId, open] = shown;
+      Object.assign(open, { entry, assets: app.assets });
+      await connection.send("Target.activateTarget", { targetId: open.targetId });
+      await this.fullscreen(connection, open.targetId).catch(() => false);
+      // Navigate (not reload): it returns once the document commits, so the
+      // Room projects the Tab's URL rather than the empty one of a reload.
+      await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+      return { target_id: open.targetId, origin };
+    }
     // Each App view gets its own fullscreen window: its page then covers the
     // desktop exactly, so page and stream coordinates agree (see panels).
     const { targetId } = await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });

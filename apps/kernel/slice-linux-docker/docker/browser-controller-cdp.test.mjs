@@ -97,6 +97,15 @@ test("persistent browser connection returns page identities, focus, and applied 
   );
 });
 
+test("a Tab that closes while it is inspected drops out instead of failing the reconcile", async () => {
+  const connection = new FakeConnection();
+  connection.vanishOnInspect = { "session-a": "target-a" };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const reconciled = await browser.reconcile(viewport);
+  assert.deepEqual(reconciled.tabs.map((tab) => tab.target_id), ["target-b"]);
+  assert.equal(reconciled.focused_target_id, "target-b");
+});
+
 test("viewport validation happens before opening a browser connection", async () => {
   let connected = false;
   const browser = new BrowserCdpClient({
@@ -976,6 +985,12 @@ class FakeConnection {
 
   async send(method, params = {}, sessionId) {
     this.calls.push({ method, params, sessionId });
+    if (method === "Emulation.setDeviceMetricsOverride" && this.vanishOnInspect?.[sessionId]) {
+      const targetId = this.vanishOnInspect[sessionId];
+      delete this.vanishOnInspect[sessionId];
+      this.closedTargetIds.add(targetId);
+      throw new Error(`Emulation.setDeviceMetricsOverride: Session with given id not found.`);
+    }
     if (method === "Target.setDiscoverTargets" && this.failDiscovery) {
       throw new Error("discovery failed");
     }

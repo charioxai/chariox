@@ -7,7 +7,8 @@
 // Protocol 351: the page reserves a private conversation panel and the Room
 // snapshot marks the App Tab with it, in desktop pixels, for the focus agent.
 // Protocol 357: the App Tab's accessibility outline lists every node after its
-// parent.
+// parent. Opening the App again shows the same, single App Tab, navigated to a
+// new document whose title the Room shows once the view calls.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
 // installed, running App:
@@ -55,11 +56,14 @@ try {
 
   const reserved = await evaluate(view.target_id, `window.chariox.panel.reserve({ x: 880, y: 0, width: 400, height: 800 })`)
   assert.deepEqual(reserved, { reserved: true })
-  const marked = await roomApps((apps) => apps.find((app) => app.panel))
+  // The App may reserve its own panel on load; wait for the drill's rect.
+  const marked = await roomApps((apps) => apps.find((app) => app.panel?.x === 880 && app.panel?.width === 400))
   assert.deepEqual({ ...marked.panel, agent_id: undefined }, { x: 880, y: 0, width: 400, height: 800, agent_id: undefined })
   assert.equal(marked.installation_id, options.installation)
   assert.equal(marked.panel.agent_id, view.bound_agent_id ?? null)
   assert.deepEqual(await evaluate(view.target_id, `window.chariox.panel.release()`), { released: true })
+  await roomApps((apps) => apps.every((app) => !app.panel))
+  evidence.steps.push({ step: "panel", marked })
 
   const tabId = await roomAppTab()
   const read = await client.send({ GetRoomEnvironmentTabAccessibility: { session_id: options.session, tab_id: tabId } })
@@ -73,8 +77,23 @@ try {
     listed.add(node.element_ref)
   }
   evidence.steps.push({ step: "outline", tab_id: tabId, nodes: outline.nodes.length, truncated: outline.truncated })
-  await roomApps((apps) => apps.every((app) => !app.panel))
-  evidence.steps.push({ step: "panel", marked })
+
+  const loadedAt = await evaluate(view.target_id, "performance.timeOrigin")
+  const again = (await client.send({
+    OpenAppView: { session_id: options.session, installation_id: options.installation },
+  })).AppViewOpened
+  assert.equal(again?.target_id, view.target_id, "opening the App again showed another Tab")
+  assert.equal(await roomApps((apps) => apps.length), 1, "the Room holds more than one Tab of this App")
+  // The same Tab navigated to a new document, and once the view called, the
+  // Room shows its title again, not a blank page.
+  let reloadedAt = loadedAt
+  for (let attempt = 0; attempt < 40 && reloadedAt === loadedAt; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    reloadedAt = await evaluate(view.target_id, "performance.timeOrigin").catch(() => loadedAt)
+  }
+  assert.ok(reloadedAt > loadedAt, "reopening did not load the App again")
+  const title = await roomTabTitle()
+  evidence.steps.push({ step: "reopen", target_id: again.target_id, loaded_at: loadedAt, reloaded_at: reloadedAt, title })
 
   // Room commands run while the page makes calls back to back.
   let calling = true
@@ -134,6 +153,19 @@ async function roomApps(ready) {
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw new Error("the Room never showed the expected App Tabs")
+}
+
+// Waits until the Room shows this App Tab with a real title (projected after
+// the view's first call), and returns it.
+async function roomTabTitle() {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const state = await client.send({ GetRoomEnvironmentState: { session_id: options.session } })
+    const tab = (state.RoomEnvironmentState?.environment?.tabs ?? [])
+      .find((candidate) => candidate.app?.installation_id === options.installation)
+    if (tab?.title && tab.title !== "about:blank" && tab.url) return tab.title
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error("the Room never showed the App Tab's title")
 }
 
 // The Room Tab id of this installation's App view.

@@ -31,6 +31,8 @@ struct SessionViews {
     /// transient Room failure, or a view the host does not own), with when:
     /// answered unbound until the cooldown passes.
     unreloadable: HashMap<String, std::time::Instant>,
+    /// Tabs that called since they were (re)opened: their document loaded.
+    called: std::collections::HashSet<String>,
 }
 
 #[derive(Clone, Default)]
@@ -50,10 +52,30 @@ impl AppViews {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.entry(session.to_owned()).or_default();
         views.registrations += 1;
+        views.called.remove(target);
         views
             .tabs
             .insert(target.to_owned(), (binding, views.registrations));
         !std::mem::replace(&mut views.pumping, true)
+    }
+
+    /// True for a Tab's first call since it was (re)opened: its document has
+    /// loaded, so the Room can project its real title and URL.
+    pub(crate) fn first_call(&self, session: &str, target: &str) -> bool {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions
+            .entry(session.to_owned())
+            .or_default()
+            .called
+            .insert(target.to_owned())
+    }
+
+    /// The Room could not be projected again after this Tab's first call.
+    pub(crate) fn forget_call(&self, session: &str, target: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.called.remove(target);
+        }
     }
 
     /// True once per session and kernel: App Tabs outlive a kernel restart in
@@ -262,6 +284,23 @@ mod tests {
         views.forget_installation("user", "a");
         assert_eq!(views.binding("s", "t5"), None);
         assert_eq!(views.binding("s", "t6"), Some(binding("b")));
+    }
+
+    #[test]
+    fn a_views_first_call_after_it_opens_asks_for_the_room_again() {
+        let views = AppViews::default();
+        views.register("s", "t1", binding("a"));
+        assert!(views.first_call("s", "t1"));
+        assert!(!views.first_call("s", "t1"));
+        // Reopening loads a new document: its first call counts again.
+        views.register("s", "t1", binding("a"));
+        assert!(views.first_call("s", "t1"));
+        // A failed re-projection is retried on the Tab's next call.
+        views.forget_call("s", "t1");
+        assert!(views.first_call("s", "t1"));
+        // Two Tabs in one batch are each marked.
+        assert!(views.first_call("s", "t2"));
+        assert!(!views.first_call("s", "t2"));
     }
 
     #[test]

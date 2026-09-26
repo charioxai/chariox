@@ -1914,14 +1914,21 @@ Workflow trigger and deployment direction:
   snapshot at its own 5000-node bound, which cuts the deepest nodes first).
   The Room browser controller's snapshot nodes gain the same `states`, and
   the snapshot gains `accessibility_truncated` for that cut (both absent from
-  older controllers, whose full 5000-node snapshot counts as cut). It holds what a reader announces: ignored nodes,
-  inline text boxes, unnamed layout wrappers and text its parent's name
-  already says (an aria-labelled button's text) are left out, and their
-  children hang from the nearest kept ancestor. Nodes are in document order
-  (depth first over the Tab's accessibility tree), so each follows its parent
-  and hoisted text keeps its place. Terminals present it so App views and
-  other pages can be read with a screen reader or keyboard; it grants no
-  input.
+  older controllers, whose full 5000-node snapshot counts as cut). It holds
+  what a reader announces: ignored nodes, inline text boxes, unnamed layout
+  wrappers and text its parent's name already says (an aria-labelled button's
+  text) are left out, and their children hang from the nearest kept ancestor.
+  Nodes are in document order (depth first over the Tab's accessibility
+  tree), so each follows its parent and hoisted text keeps its place.
+  Terminals present it so App views and other pages can be read with a screen
+  reader or keyboard; it grants no input.
+- One App Tab (no shape change, with this release's kernel and controller):
+  a Room holds one Tab per installation. `OpenAppView` again (from another
+  terminal, or after a kernel restart) returns the same `target_id`, shows
+  that Tab and navigates it again with the current assets. A view's first
+  call after it loads re-projects the Room, so the Tab shows the App's title
+  and URL. Bridge call ids are unique per document, so an answer meant for
+  the previous document never resolves a call in the new one.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

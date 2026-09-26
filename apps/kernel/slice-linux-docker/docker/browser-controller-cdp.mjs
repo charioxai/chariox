@@ -47,6 +47,11 @@ export class BrowserControllerError extends Error {
   }
 }
 
+/** A CDP failure because the target or its session no longer exists. */
+function targetGone(error) {
+  return /Session with given id not found|No target with given id|Target closed/.test(String(error?.message ?? error));
+}
+
 export class BrowserCdpClient {
   constructor({
     debuggerEndpoint = DEFAULT_DEBUGGER_ENDPOINT,
@@ -105,21 +110,22 @@ export class BrowserCdpClient {
         [...pages, ...writerTargets].map((target) => target.targetId),
       );
       for (const targetId of this.sessionsByTarget.keys()) {
-        if (!persistentTargetIds.has(targetId)) {
-          const sessionId = this.sessionsByTarget.get(targetId);
-          this.targetsBySession.delete(sessionId);
-          this.networkRequestsBySession.delete(sessionId);
-          this.sessionsByTarget.delete(targetId);
-          this.documentIdsByTarget.delete(targetId);
-          this.snapshotStateByTarget.delete(targetId);
-          this.dialogDefaults.delete(targetId);
-          this.targetsByFrame.removeTarget(targetId);
-          await this.frameSessions.removeTarget(targetId);
-        }
+        if (!persistentTargetIds.has(targetId)) await this.forgetTarget(targetId);
       }
-      const inspected = await Promise.all(
-        pages.map((target) => this.inspectPage(connection, target, viewport)),
-      );
+      // A Tab can close while it is inspected (App Tabs are swept when the
+      // browser connection is re-established): it drops out of this
+      // reconcile; a live Tab whose session went stale is attached again.
+      const inspected = (await Promise.all(pages.map(async (target) => {
+        try {
+          return await this.inspectPage(connection, target, viewport);
+        } catch (error) {
+          if (!targetGone(error)) throw error;
+          await this.forgetTarget(target.targetId);
+          const { targetInfos: now = [] } = await connection.send("Target.getTargets");
+          if (!now.some((candidate) => candidate.targetId === target.targetId)) return null;
+          return await this.inspectPage(connection, target, viewport);
+        }
+      }))).filter(Boolean);
       await Promise.all(
         writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
       );
@@ -304,6 +310,18 @@ export class BrowserCdpClient {
       await connection.close().catch(() => {});
       throw error;
     }
+  }
+
+  async forgetTarget(targetId) {
+    const sessionId = this.sessionsByTarget.get(targetId);
+    this.targetsBySession.delete(sessionId);
+    this.networkRequestsBySession.delete(sessionId);
+    this.sessionsByTarget.delete(targetId);
+    this.documentIdsByTarget.delete(targetId);
+    this.snapshotStateByTarget.delete(targetId);
+    this.dialogDefaults.delete(targetId);
+    this.targetsByFrame.removeTarget(targetId);
+    await this.frameSessions.removeTarget(targetId);
   }
 
   async inspectPage(connection, target, viewport) {

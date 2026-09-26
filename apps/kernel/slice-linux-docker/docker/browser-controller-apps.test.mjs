@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import vm from "node:vm";
 
 import { APP_CSP, AppTabs, appOrigin } from "./browser-controller-apps.mjs";
 
@@ -10,6 +11,7 @@ function fakeConnection(targets = []) {
     sent,
     targets,
     windowState: "normal",
+    created: 0,
     subscribe(fn) { listener = fn; return () => { listener = null; }; },
     async send(method, params, sessionId) {
       sent.push({ method, params, sessionId });
@@ -17,7 +19,7 @@ function fakeConnection(targets = []) {
       if (method === "Browser.getWindowForTarget") return { windowId: 1 };
       if (method === "Browser.getWindowBounds") return { bounds: { windowState: this.windowState } };
       if (method === "Browser.setWindowBounds") this.windowState = params.bounds.windowState;
-      return method === "Target.createTarget" ? { targetId: "t1" } : {};
+      return method === "Target.createTarget" ? { targetId: `t${++this.created}` } : {};
     },
     async emit(message) { listener?.(message); await new Promise((r) => setImmediate(r)); },
   };
@@ -27,7 +29,8 @@ function fakeBrowser() {
   const browser = {
     connection: fakeConnection(),
     ensureConnection: async () => browser.connection,
-    ensureTargetSession: async () => "s1",
+    // t1 keeps session s1, as the other tests expect; later targets get their own.
+    ensureTargetSession: async (_connection, targetId) => (targetId === "t1" ? "s1" : `s-${targetId}`),
   };
   return { connection: browser.connection, browser };
 }
@@ -57,6 +60,49 @@ test("open intercepts every request, installs the bridge, and navigates to the A
   assert.equal(connection.sent[0].params.newWindow, true);
   assert.equal(connection.windowState, "fullscreen");
   assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
+});
+
+test("opening an installation again shows its one App Tab with the current assets", async () => {
+  const { tabs, connection, result } = await opened();
+  connection.sent.length = 0;
+  const again = await tabs.open({ origin_label: "todo-1", installation_id: "inst-1",
+    entry: "v2.html", assets: [asset("v2.html", "<p>v2</p>")] });
+  assert.deepEqual(again, result);
+  assert.deepEqual(connection.sent.map((m) => m.method), ["Target.activateTarget", "Browser.getWindowForTarget",
+    "Browser.getWindowBounds", "Page.navigate"]);
+  assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
+  assert.deepEqual((await tabs.takeCalls()).open_targets, ["t1"]);
+  await connection.emit({ method: "Fetch.requestPaused", sessionId: "s1",
+    params: { requestId: "r", request: { url: "https://todo-1.app.chariox.internal/", method: "GET" } } });
+  assert.equal(Buffer.from(connection.sent.at(-1).params.body, "base64").toString(), "<p>v2</p>");
+});
+
+test("another installation or origin gets its own window, and a closed Tab a new one", async () => {
+  const { tabs, connection } = await opened();
+  const other = await tabs.open({ origin_label: "docs-1", installation_id: "inst-2", assets: [asset("index.html", "d")] });
+  assert.equal(other.target_id, "t2");
+  assert.deepEqual((await tabs.takeCalls()).open_targets, ["t1", "t2"]);
+  // The first Tab is closed in the browser; opening its App again makes a new one.
+  await connection.emit({ method: "Target.detachedFromTarget", params: { sessionId: "s1", targetId: "t1" } });
+  connection.sent.length = 0;
+  const reopened = await tabs.open({ origin_label: "todo-1", installation_id: "inst-1", assets: [asset("index.html", "x")] });
+  assert.equal(reopened.target_id, "t3");
+  assert.equal(connection.sent[0].method, "Target.createTarget");
+});
+
+test("bridge call ids differ between documents, so a late answer cannot match a new call", async () => {
+  const { connection } = await opened();
+  const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
+  const firstIds = () => {
+    const sent = [];
+    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
+    vm.runInContext(bridge, context);
+    vm.runInContext("chariox.call('list_todos')", context);
+    return sent[0];
+  };
+  const [a, b] = [firstIds(), firstIds()];
+  assert.match(a, /^[0-9a-f-]{36}:1$/);
+  assert.notEqual(a, b);
 });
 
 test("rejects unsafe asset paths and missing entries", async () => {
