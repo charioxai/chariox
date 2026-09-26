@@ -85,6 +85,8 @@ pub(crate) enum AppStateOutcome {
     },
     Receipt(Receipt),
     Wakes(Vec<Wake>),
+    /// The schema a rewound migration restarts from.
+    Rewound(Option<u32>),
 }
 
 pub(super) struct AppStateRequest {
@@ -251,8 +253,7 @@ fn apply(
             AppStateOutcome::Value(None)
         }
         AppStateOperation::MigrationRewind => {
-            ManagedStateStore::migration_rewind_in(&transaction, scope)?;
-            AppStateOutcome::Value(None)
+            AppStateOutcome::Rewound(ManagedStateStore::migration_rewind_in(&transaction, scope)?)
         }
         event => AppStateOutcome::Receipt(events::apply(&mut transaction, catalog, owner, event)?),
     };
