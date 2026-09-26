@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 import {
   combineBrowserComputerAbortSignals,
   runManagedBrowserComputerParityLive,
@@ -330,7 +331,7 @@ test("live M0 binds released kernel-client source modules before managed telemet
   )
   const daemonProtocol = releasedSourceConstant(typesSource, "LOCAL_DAEMON_PROTOCOL_VERSION")
   assert.equal(telemetryProtocol, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
-  assert.equal(daemonProtocol, 344, "kernel-types.ts is authoritative for the current daemon protocol")
+  assert.equal(daemonProtocol, LOCAL_DAEMON_PROTOCOL_VERSION, "kernel-types.ts source and built package protocol must match")
   assert.match(controlSource, /return \{ GetKernelResourceTelemetry: null \}/)
 
   const requestApi = {
