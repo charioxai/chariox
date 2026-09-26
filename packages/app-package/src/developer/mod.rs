@@ -13,9 +13,9 @@ use std::{collections::BTreeMap, path::Path};
 use serde::Serialize;
 
 use crate::{
-    archive, json, Capabilities, ErrorCode, Limits, Manifest, PackageError, Publisher, Result,
-    Runtime, RuntimeEngine, Ui, VerificationPolicy, APP_CONTRACT_VERSION, APP_SCHEMA,
-    RESOURCE_POLICY, SUPPORTED_SDK_VERSION,
+    archive, json, Capabilities, ErrorCode, Limits, Manifest, Migration, Migrations, PackageError,
+    Publisher, Result, Runtime, RuntimeEngine, Ui, VerificationPolicy, APP_CONTRACT_VERSION,
+    APP_SCHEMA, RESOURCE_POLICY, SUPPORTED_SDK_VERSION,
 };
 
 pub use cli::{run_cli, usage};
@@ -236,6 +236,7 @@ pub fn pack_directory(
         ));
     }
     let files = read_bundle_open(&bundle, limits, Some(fs::identity(&signing.file)?))?;
+    let manifest = &with_migrations(manifest, &files, limits)?;
     let bytes = crate::pack(manifest, &files, &signing.key, limits)?;
     let mut policy = VerificationPolicy::new(
         kernel_protocol,
@@ -258,6 +259,57 @@ pub fn pack_directory(
     fs::outside_bundle(&bundle, &destination.directory)?;
     destination.prepare(&bytes)?.publish()?;
     Ok(report)
+}
+
+/// A bundle's `migrations/001.js`, `002.js`, … (or `.mjs`/`.cjs`) become the
+/// manifest's linear chain from schema 0, so developers never write it by
+/// hand. A manifest that declares its migrations is used as written.
+fn with_migrations(
+    manifest: &Manifest,
+    files: &BTreeMap<String, Vec<u8>>,
+    limits: &Limits,
+) -> Result<Manifest> {
+    let mut manifest = manifest.clone();
+    if manifest.migrations.is_some() {
+        return Ok(manifest);
+    }
+    let mut steps = Vec::new();
+    for (index, entry) in files
+        .keys()
+        .filter(|path| path.starts_with("migrations/"))
+        .enumerate()
+    {
+        let to = u32::try_from(index + 1).map_err(|_| migration_gap())?;
+        let name = &entry["migrations/".len()..];
+        let (stem, extension) = name.rsplit_once('.').ok_or_else(migration_gap)?;
+        if !matches!(extension, "js" | "mjs" | "cjs")
+            || stem.len() != 3
+            || stem.parse::<u32>().ok() != Some(to)
+        {
+            return Err(migration_gap());
+        }
+        steps.push(Migration {
+            from: to - 1,
+            to,
+            entry: entry.clone(),
+        });
+    }
+    if !steps.is_empty() {
+        manifest.migrations = Some(Migrations {
+            directory: "migrations".to_owned(),
+            target_version: steps.len() as u32,
+            steps,
+        });
+        manifest.validate(limits)?;
+    }
+    Ok(manifest)
+}
+
+fn migration_gap() -> PackageError {
+    PackageError::new(
+        ErrorCode::UnexpectedEntry,
+        "migrations/ must hold only 001.js, 002.js, … (or .mjs/.cjs) with no gaps",
+    )
 }
 
 pub fn validate_archive(
