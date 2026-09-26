@@ -71,6 +71,33 @@ remain formally open until that fresh-machine evidence is reviewed.
 
 ## Uninspected scope
 
+### Read-only Cloud receipt capture
+
+The normal home-kernel receipt read requires protocol 345. After the selected
+Cloud reimage operation has finalized, capture its binding with the reviewed
+local home kernel, using non-secret identifiers and a new external output file:
+
+```sh
+node apps/cli/scripts/path1-cloud-reimage-capture.mjs \
+  --kernel ws://127.0.0.1:<port> \
+  --environment <environment-id> --operation <operation-id> \
+  --generation <new-generation> --release sha256:<reviewed-release-digest> \
+  --commit <reviewed-40-character-commit> --tree <reviewed-40-character-tree> \
+  --output /Users/miguel/.codex/evidence/browser-computer-use/<campaign>/cloud-reimage.json
+```
+
+Build `@chariox/kernel-client` first. The output parent must already exist and
+must resolve outside the repository. The command never starts or authorizes
+reimage. It rejects pending receipts, wrong operation/generation/release
+bindings, unchanged identities and incomplete retirement observations. It
+retains only allowlisted data in a mode-0600 file and refuses overwrite.
+Cloud's receipt digest is retained, not independently recomputed or verified.
+This capture alone cannot close MP-07 or MP-10. Host, provider, relay, signed
+release and cleanup observations plus the ordinary-kernel comparison are still
+required. Focused fixture tests are not an executed Cloud or VM capture.
+
+### Remaining live observations
+
 - Deployed Cloud API, database migration, provisioning, and Web behavior on a
   newly rebuilt worker; the Cloud MP-06 source path is inventoried above but
   has not been exercised end to end on that machine.

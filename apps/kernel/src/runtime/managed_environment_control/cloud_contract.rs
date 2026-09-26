@@ -57,7 +57,7 @@ pub(super) struct ReimageResult {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ReimageReceipt {
+pub(super) struct ReimageReceipt {
     receipt_id: String,
     environment_id: String,
     operation_id: String,

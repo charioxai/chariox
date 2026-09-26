@@ -200,6 +200,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_) => {
             LocalRequestMetadata::new("managed_environment.reimage.preflight", Normal)
         }
+        LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_) => {
+            LocalRequestMetadata::new("managed_environment.reimage.receipt", Normal)
+        }
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_) => {
             LocalRequestMetadata::new("managed_environment.context_transfer.prepare", Interactive)
         }
@@ -925,6 +928,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
         | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
         | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
         | LocalDaemonRequest::CreateManagedEnvironment(_)

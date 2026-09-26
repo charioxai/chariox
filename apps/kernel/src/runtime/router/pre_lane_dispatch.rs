@@ -11,9 +11,7 @@ use crate::runtime::event_catalog_control::{
     validate_event_connection_scopes, validate_registered_event_connection,
     workflow_event_binding_contract, WorkflowEventBindingContract,
 };
-use crate::runtime::managed_bootstrap_observation_control::{
-    execute_managed_bootstrap_observation_request,
-};
+use crate::runtime::managed_bootstrap_observation_control::execute_managed_bootstrap_observation_request;
 use crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request;
 use crate::runtime::managed_context_target_control::execute_managed_context_target_request;
 use crate::runtime::managed_environment_control::execute_managed_environment_control_request;
@@ -119,6 +117,7 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
             | LocalDaemonRequest::GetManagedEnvironment(_)
             | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
+            | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::CreateManagedEnvironment(_)

@@ -243,6 +243,12 @@ export function getManagedEnvironmentReimagePreflightRequest(environmentId: stri
   return { GetManagedEnvironmentReimagePreflight: { environmentId } } as const
 }
 
+export const managedEnvironmentReimageReceiptMinimumProtocolVersion = 345
+
+export function getManagedEnvironmentReimageReceiptRequest(environmentId: string) {
+  return { GetManagedEnvironmentReimageReceipt: { environmentId } } as const
+}
+
 export function prepareManagedEnvironmentContextTransferRequest(environmentId: string) {
   return { PrepareManagedEnvironmentContextTransfer: { environmentId } } as const
 }

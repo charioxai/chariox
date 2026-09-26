@@ -13,7 +13,7 @@ use crate::runtime::cloud_api_client::{
 mod cloud_contract;
 use cloud_contract::{
     EnvironmentDetailsResponse, EnvironmentResult, EnvironmentsResponse, OptionsResponse,
-    ReimageResult,
+    ReimageReceipt, ReimageResult,
 };
 
 pub(crate) async fn execute_managed_environment_control_request(
@@ -103,6 +103,26 @@ pub(crate) async fn execute_managed_environment_control_request(
                 ));
             }
             Ok(LocalDaemonResponse::ManagedEnvironmentReimagePreflight { preflight })
+        }
+        LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(request) => {
+            let path = format!(
+                "/managed-environments/{}/reimage/receipt?{account_query}",
+                cloud_url_component(&request.environment_id),
+            );
+            let receipt: crate::local::ManagedEnvironmentReimageReceipt =
+                get_cloud_json_authenticated::<ReimageReceipt>(
+                    cloud.api_url.clone(),
+                    path,
+                    token.to_string(),
+                )
+                .await?
+                .into();
+            if receipt.environment_id != request.environment_id {
+                return Err(control_error(
+                    "Cloud returned reimage receipt for another managed environment",
+                ));
+            }
+            Ok(LocalDaemonResponse::ManagedEnvironmentReimageReceipt { receipt })
         }
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(request) => {
             let path = format!(
@@ -938,6 +958,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_environment_reimage_receipt_is_read_only_owner_bound_and_environment_bound() {
+        let server = ManagedEnvironmentCloudFixture::start_with_preflight_environment(
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            "environment / one",
+        );
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            account_id: "account / one".to_string(),
+            user_id: "owner-1".to_string(),
+            cloud_session_token: Some("session-secret".to_string()),
+            api_url: server.url(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            config.account_profile_registry_path(),
+        )
+        .expect("provider account registry");
+        let store =
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            );
+        let request =
+            LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
+                environment_id: "environment / one".to_string(),
+            });
+        let denied = execute_managed_environment_control_request(
+            config.clone(),
+            profiles.clone(),
+            store.clone(),
+            "other-user",
+            request.clone(),
+        )
+        .await
+        .expect_err("receipt requires the Cloud owner");
+        assert!(denied.to_string().contains("belongs to another Cloud user"));
+        let mut missing_session = config.clone();
+        missing_session
+            .cloud_relay
+            .as_mut()
+            .unwrap()
+            .cloud_session_token = None;
+        let denied = execute_managed_environment_control_request(
+            missing_session,
+            profiles.clone(),
+            store.clone(),
+            "owner-1",
+            request.clone(),
+        )
+        .await
+        .expect_err("receipt requires the Cloud session");
+        assert!(denied.to_string().contains("Cloud session is unavailable"));
+        assert!(server.requests().is_empty());
+        let response = execute_managed_environment_control_request(
+            config.clone(),
+            profiles.clone(),
+            store.clone(),
+            "owner-1",
+            request,
+        )
+        .await
+        .expect("read receipt");
+        let LocalDaemonResponse::ManagedEnvironmentReimageReceipt { receipt } = response else {
+            panic!("unexpected receipt response");
+        };
+        assert_eq!(receipt.environment_id, "environment / one");
+        assert_eq!(receipt.receipt_id, "receipt-reimage-1");
+        assert!(!receipt.fresh_equivalent, "pending is not fresh-equivalent");
+        let denied = execute_managed_environment_control_request(
+            config,
+            profiles,
+            store,
+            "owner-1",
+            LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
+                environment_id: "environment-other".to_string(),
+            }),
+        )
+        .await
+        .expect_err("wrong environment receipt must fail");
+        assert!(denied
+            .to_string()
+            .contains("receipt for another managed environment"));
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /managed-environments/environment%20%2F%20one/reimage/receipt?accountId=account%20%2F%20one HTTP/1.1"));
+        assert!(requests.iter().all(|request| request.starts_with("GET ")));
+    }
+
+    #[tokio::test]
     async fn managed_environment_control_uses_authenticated_cloud_profile_for_all_operations() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
@@ -1457,6 +1565,11 @@ mod tests {
         }
         if request.contains("/reimage/preflight?") {
             return reimage_preflight_json(preflight_environment_id);
+        }
+        if request.contains("/reimage/receipt?") {
+            let mut receipt = reimage_receipt_json();
+            receipt["environmentId"] = serde_json::json!(preflight_environment_id);
+            return receipt;
         }
         if request.contains("/reimage HTTP/1.1") {
             return serde_json::json!({

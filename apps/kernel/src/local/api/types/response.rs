@@ -154,6 +154,7 @@ pub enum LocalDaemonResponse {
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
     ManagedEnvironment { environment: ManagedEnvironmentSummary, },
     ManagedEnvironmentReimagePreflight { preflight: ManagedEnvironmentReimagePreflight, },
+    ManagedEnvironmentReimageReceipt { receipt: ManagedEnvironmentReimageReceipt, },
     ManagedEnvironmentContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
     ManagedEnvironmentCreated { result: ManagedEnvironmentResult, },
     ManagedEnvironmentLifecycleRequested { result: ManagedEnvironmentResult, },

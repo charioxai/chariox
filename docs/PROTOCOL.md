@@ -1676,6 +1676,20 @@ Workflow trigger and deployment direction:
   still validate the current binding at home. Stop and input release do not
   remove the Environment binding. Live validation must cover updates to an
   already-running agent, not only an Environment bound before agent launch.
+- protocol 345 adds owner-authenticated, read-only
+  `GetManagedEnvironmentReimageReceipt` and `ManagedEnvironmentReimageReceipt`.
+  The home kernel reads Cloud's existing receipt route using its authenticated
+  Cloud session and rejects a response for a different environment. This request
+  does not admit a rebuild, authorize context transfer, or introduce another
+  runtime authority. Clients using this request require protocol 345; existing
+  web/native minimum versions remain unchanged. The request/response snapshot
+  and managed-control drill cover owner/session admission, URL escaping,
+  environment binding, and incomplete versus finalized receipt projection.
+  `apps/cli/scripts/path1-cloud-reimage-capture.mjs` uses this shared request
+  against the reviewed local home kernel. It checks the selected operation,
+  generation and release binding and retains only allowlisted receipt fields
+  in a new external mode-0600 file. It is not the full fresh-equivalent rebuild
+  gate and does not independently verify Cloud's receipt digest.
 - relay peer protocol 60 adds durable queued-steer receipts and the
   `ReconcileLeasedPromptSteerReceipt` operation. It carries the exact queued
   home prompt, target active home prompt, worker provider run, and execution

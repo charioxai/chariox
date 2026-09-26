@@ -1,0 +1,100 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { capturePath1CloudReimage, resolveCaptureOutput } from "./path1-cloud-reimage-capture.mjs"
+
+function fixture() {
+  const binding = {
+    environmentId: "environment-1", operationId: "operation-1", generation: 2,
+    releaseDigest: `sha256:${"a".repeat(64)}`, sourceCommit: "b".repeat(40), sourceTree: "c".repeat(40),
+  }
+  const release = { runtimeReleaseDigest: binding.releaseDigest, runtimeSourceCommit: binding.sourceCommit, runtimeSourceTree: binding.sourceTree }
+  const receipt = {
+    ...binding, previousGeneration: 1, status: "fresh_equivalent", freshEquivalent: true,
+    receiptId: "receipt-1", receiptDigest: `sha256:${"d".repeat(64)}`,
+    runtimeReleaseDigest: binding.releaseDigest, sourceEvidence: release,
+    runtimeEvidence: {
+      oldKernelIdentityBaseline: { source: "cloud_retained_old_kernel_identity", environmentId: "environment-1", generation: 1,
+        machineId: "old-MachineId", kernelId: "old-KernelId", linuxBootId: "11111111-1111-1111-1111-111111111111", osMachineId: "1".repeat(32) },
+      freshnessEvidence: { ...release, linuxBootId: "22222222-2222-2222-2222-222222222222", osMachineId: "2".repeat(32) },
+    },
+    providerServerId: "1234", providerImageId: "5678", resourceObservation: { rebuildActionId: "88" },
+    cleanupState: { oldGenerationRetired: true, newGenerationEnrolled: true },
+    residueChecks: Object.fromEntries(["oldServicesAbsent", "oldProcessesAbsent", "oldStateAbsent",
+      "cloudOldMachineRevoked", "cloudOldCredentialsRevoked", "cloudOldTargetsRevoked",
+      "cloudOldHeartbeatsAbsent", "cloudOldRelayRealmDisabled", "cloudOldGenerationRetired"].map((key) => [key, true])),
+    requestedAt: "2026-09-26T05:00:00.000Z", completedAt: "2026-09-26T05:01:00.000Z",
+  }
+  for (const kind of ["MachineId", "KernelId", "RelayRealmId", "RelayTargetId", "BootstrapGrantId"]) {
+    receipt[`old${kind}`] = `old-${kind}`
+    receipt[`new${kind}`] = `new-${kind}`
+  }
+  const requests = []
+  return { binding, receipt, requests, now: () => new Date("2026-09-26T05:02:00.000Z"),
+    client: { async send(request) { requests.push(request); return { ManagedEnvironmentReimageReceipt: { receipt } } } } }
+}
+
+test("captures the exact finalized Cloud operation through one read-only kernel request", async () => {
+  const input = fixture()
+  input.receipt.failureMessage = "DO-NOT-RETAIN-SECRET"
+  input.receipt.runtimeEvidence.extraProviderOutput = "DO-NOT-RETAIN-SECRET"
+  const capture = await capturePath1CloudReimage(input)
+  assert.deepEqual(input.requests, [{ GetManagedEnvironmentReimageReceipt: { environmentId: "environment-1" } }])
+  assert.equal(capture.minimumProtocolVersion, 345)
+  assert.equal(capture.rebuildActionId, "88")
+  assert.equal(capture.release.sourceCommit, input.binding.sourceCommit)
+  assert.ok(!JSON.stringify(capture).includes("DO-NOT-RETAIN-SECRET"))
+  assert.equal(capture.status, undefined, "a capture is not a full acceptance verdict")
+})
+
+for (const [name, mutate, message] of [
+  ["wrong operation", (r) => { r.operationId = "operation-other" }, /selected reimage/],
+  ["wrong environment", (r) => { r.environmentId = "environment-other" }, /selected reimage/],
+  ["wrong generation", (r) => { r.generation = 3 }, /selected reimage/],
+  ["pending receipt", (r) => { r.status = "pending" }, /not finalized/],
+  ["unbound release", (r) => { r.sourceEvidence.runtimeSourceCommit = "e".repeat(40) }, /reviewed release/],
+  ["unchanged boot", (r) => { r.runtimeEvidence.freshnessEvidence.linuxBootId = r.runtimeEvidence.oldKernelIdentityBaseline.linuxBootId }, /rotated host/],
+  ["wrong retained environment", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.environmentId = "another-environment" }, /rotated host/],
+  ["wrong retained generation", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.generation = 2 }, /rotated host/],
+  ["wrong retained machine", (r) => { r.runtimeEvidence.oldKernelIdentityBaseline.machineId = "another-machine" }, /rotated host/],
+  ["unchanged control identity", (r) => { r.newMachineId = r.oldMachineId }, /rotated control/],
+  ["missing rebuild", (r) => { delete r.resourceObservation.rebuildActionId }, /provider rebuild/],
+  ["incomplete retirement", (r) => { r.residueChecks.cloudOldHeartbeatsAbsent = false }, /retirement/],
+  ["future completion", (r) => { r.completedAt = "2026-09-27T05:00:00.000Z" }, /completion times/],
+]) {
+  test(`rejects ${name}`, async () => {
+    const input = fixture()
+    mutate(input.receipt)
+    await assert.rejects(capturePath1CloudReimage(input), message)
+  })
+}
+
+test("invalid binding never sends a kernel request", async () => {
+  const input = fixture()
+  delete input.binding.environmentId
+  await assert.rejects(capturePath1CloudReimage(input), /invalid reviewed/)
+  assert.deepEqual(input.requests, [])
+})
+
+test("a hung read has a bounded timeout", async () => {
+  const input = fixture()
+  input.client.send = () => new Promise(() => {})
+  await assert.rejects(capturePath1CloudReimage({ ...input, timeoutMs: 20 }), /timed out/)
+})
+
+test("output resolution rejects symlinked repository parents before any capture", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-cloud-capture-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const repo = join(root, "repo")
+  const evidence = join(root, "evidence")
+  await mkdir(repo)
+  await mkdir(evidence)
+  await symlink(repo, join(evidence, "repository-alias"))
+  await assert.rejects(resolveCaptureOutput(join(repo, "receipt.json"), repo), /outside the repository/)
+  await assert.rejects(resolveCaptureOutput(join(evidence, "repository-alias", "receipt.json"), repo), /outside the repository/)
+  await assert.rejects(resolveCaptureOutput("receipt.json", repo), /absolute external/)
+  assert.equal(await resolveCaptureOutput(join(evidence, "receipt.json"), repo),
+    join(await realpath(evidence), "receipt.json"))
+})

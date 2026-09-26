@@ -4,10 +4,12 @@ import test from "node:test"
 import {
   createManagedEnvironmentRequest,
   getManagedEnvironmentReimagePreflightRequest,
+  getManagedEnvironmentReimageReceiptRequest,
   getManagedEnvironmentRequest,
   listManagedEnvironmentCatalogRequest,
   managedEnvironmentCreateMinimumProtocolVersion,
   managedEnvironmentReimagePreflightMinimumProtocolVersion,
+  managedEnvironmentReimageReceiptMinimumProtocolVersion,
   observeManagedEnvironmentPreReimageRequest,
   prepareManagedEnvironmentContextTransferRequest,
   prepareManagedEnvironmentGitCredentialEnrollmentRequest,
@@ -26,6 +28,10 @@ test("managed environment requests use the shared local daemon shape", () => {
   assert.deepEqual(getManagedEnvironmentReimagePreflightRequest("environment-1"), {
     GetManagedEnvironmentReimagePreflight: { environmentId: "environment-1" },
   })
+  assert.deepEqual(getManagedEnvironmentReimageReceiptRequest("environment-1"), {
+    GetManagedEnvironmentReimageReceipt: { environmentId: "environment-1" },
+  })
+  assert.equal(managedEnvironmentReimageReceiptMinimumProtocolVersion, 345)
   assert.deepEqual(prepareManagedEnvironmentContextTransferRequest("environment-1"), {
     PrepareManagedEnvironmentContextTransfer: { environmentId: "environment-1" },
   })
@@ -213,7 +219,7 @@ test("managed environment requests use the shared local daemon shape", () => {
 })
 
 test("managed environment reimage preflight exposes only retained identity and desired release", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 344)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 345)
   assert.equal(managedEnvironmentReimagePreflightMinimumProtocolVersion, 341)
   assert.equal(managedEnvironmentCreateMinimumProtocolVersion, 342)
   const preflight: ManagedEnvironmentReimagePreflight = {
