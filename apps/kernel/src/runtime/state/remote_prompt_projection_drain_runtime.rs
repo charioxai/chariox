@@ -1,6 +1,6 @@
 //! Remote worker projection drains and run-binding recovery.
 
-use super::remote_prompt_claim_runtime::RemotePromptAgentClaim;
+use super::remote_prompt_claim_runtime::RemotePromptProjectionDrainClaim;
 use super::remote_prompt_worker_submission_runtime::{
     remote_prompt_error_should_refresh_binding, remote_prompt_error_should_retry_transport,
     remote_prompt_transport_retry_delay,
@@ -117,7 +117,7 @@ impl KernelRuntimeState {
         session_id: String,
         agent_id: String,
     ) {
-        let Some(mut claim) = RemotePromptAgentClaim::try_acquire(
+        let Some(mut claim) = RemotePromptProjectionDrainClaim::try_acquire(
             Arc::clone(&self.owned.remote_prompt_projection_drains),
             &session_id,
             &agent_id,

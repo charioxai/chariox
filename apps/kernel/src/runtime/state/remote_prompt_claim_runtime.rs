@@ -18,6 +18,72 @@ pub(super) struct RemotePromptRecoveryClaimEntry {
 pub(super) type RemotePromptRecoveryClaimStore =
     Arc<std::sync::Mutex<BTreeMap<(String, String), RemotePromptRecoveryClaimEntry>>>;
 
+// Projection drains retain their generation-only domain; recovery claims also own dispatch intent.
+pub(super) type RemotePromptProjectionDrainClaimStore =
+    Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>;
+
+pub(super) struct RemotePromptProjectionDrainClaim {
+    key: (String, String),
+    claims: RemotePromptProjectionDrainClaimStore,
+    seen_generation: u64,
+    released: bool,
+}
+
+impl RemotePromptProjectionDrainClaim {
+    pub(super) fn try_acquire(
+        claims: RemotePromptProjectionDrainClaimStore,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<Self> {
+        let key = (session_id.to_string(), agent_id.to_string());
+        let mut claims_guard = claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(generation) = claims_guard.get_mut(&key) {
+            *generation = generation.saturating_add(1);
+            return None;
+        }
+        claims_guard.insert(key.clone(), 0);
+        drop(claims_guard);
+        Some(Self {
+            key,
+            claims,
+            seen_generation: 0,
+            released: false,
+        })
+    }
+
+    pub(super) fn release_or_restart(&mut self) -> bool {
+        let mut claims = self
+            .claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(generation) = claims.get(&self.key).copied() else {
+            self.released = true;
+            return false;
+        };
+        if generation != self.seen_generation {
+            self.seen_generation = generation;
+            return true;
+        }
+        claims.remove(&self.key);
+        self.released = true;
+        false
+    }
+}
+
+impl Drop for RemotePromptProjectionDrainClaim {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        self.claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
+}
+
 pub(super) struct RemotePromptAgentClaim {
     key: (String, String),
     claims: RemotePromptRecoveryClaimStore,
@@ -151,6 +217,126 @@ impl Drop for RemotePromptAgentClaim {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RemotePromptAgentClaim, RemotePromptRecoveryClaimStore};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn recovery_claim_store() -> RemotePromptRecoveryClaimStore {
+        Arc::new(std::sync::Mutex::new(BTreeMap::new()))
+    }
+
+    fn dispatch(prompt_id: &str) -> crate::app::KernelRemotePromptDispatch {
+        crate::app::KernelRemotePromptDispatch {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            prompt_id: prompt_id.to_string(),
+            worker_kernel_id: "worker-1".to_string(),
+            leased_agent_id: "lease-1".to_string(),
+            relay_url: None,
+            relay_token: None,
+            source_attachment_id: "attachment-1".to_string(),
+            prompt: prompt_id.to_string(),
+            hidden_system_context: String::new(),
+            attachments: Vec::new(),
+            workspace_live_sync_mode: None,
+            prompt_origin: crate::session::PromptOrigin::Chariox,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            workflow_context: None,
+        }
+    }
+
+    #[test]
+    fn deferred_dispatches_deduplicate_and_handoff_fifo() {
+        let claims = recovery_claim_store();
+        let active = dispatch("active");
+        let mut owner = RemotePromptAgentClaim::try_acquire_or_defer_dispatch(
+            Arc::clone(&claims),
+            &active,
+        )
+        .expect("first dispatch should own the recovery claim");
+
+        assert!(
+            RemotePromptAgentClaim::try_acquire_or_defer_dispatch(
+                Arc::clone(&claims),
+                &active,
+            )
+            .is_none(),
+            "duplicate active intent must not acquire the held claim"
+        );
+        let first_successor = dispatch("successor-1");
+        assert!(RemotePromptAgentClaim::try_acquire_or_defer_dispatch(
+            Arc::clone(&claims),
+            &first_successor,
+        )
+        .is_none());
+        assert!(
+            RemotePromptAgentClaim::try_acquire_or_defer_dispatch(
+                Arc::clone(&claims),
+                &first_successor,
+            )
+            .is_none(),
+            "duplicate queued intent must not create another queue entry"
+        );
+        let second_successor = dispatch("successor-2");
+        assert!(RemotePromptAgentClaim::try_acquire_or_defer_dispatch(
+            Arc::clone(&claims),
+            &second_successor,
+        )
+        .is_none());
+
+        assert!(owner.release_or_restart(), "deferred work must wake its owner");
+        assert_eq!(
+            owner.take_pending_dispatch().map(|dispatch| dispatch.prompt_id),
+            Some("successor-1".to_string()),
+            "successors must be handed off in FIFO order"
+        );
+        assert_eq!(
+            owner.take_pending_dispatch().map(|dispatch| dispatch.prompt_id),
+            Some("successor-2".to_string())
+        );
+        assert!(owner.take_pending_dispatch().is_none());
+        assert!(
+            !owner.release_or_restart(),
+            "the owner must release after the queue drains and generation is observed"
+        );
+        assert!(!claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&("session-1".to_string(), "agent-1".to_string())));
+    }
+
+    #[test]
+    fn empty_recovery_claim_restarts_for_generation_then_releases() {
+        let claims = recovery_claim_store();
+        let mut owner = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&claims),
+            "session-1",
+            "agent-1",
+        )
+        .expect("first caller should acquire the recovery claim");
+
+        assert!(RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&claims),
+            "session-1",
+            "agent-1",
+        )
+        .is_none());
+        assert!(owner.release_or_restart(), "new generation must wake the owner");
+        assert!(
+            !owner.release_or_restart(),
+            "an empty claim must release after its generation is observed"
+        );
+        assert!(!claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&("session-1".to_string(), "agent-1".to_string())));
     }
 }
 
