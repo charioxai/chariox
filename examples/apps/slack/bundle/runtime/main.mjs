@@ -15,6 +15,11 @@ const SCHEMA = 0;
 // with `/app automation add <installation> notifications notification …`.
 const AUTOMATION = 'notifications';
 const KEEP = 100;
+// One state value holds every kept notification and is capped at 256 KiB;
+// the oldest are dropped to stay under this budget.
+const MAX_VALUE_BYTES = 200 * 1024;
+// A larger reply context is not kept; that notification cannot be answered.
+const MAX_CONTEXT_BYTES = 4 * 1024;
 // Without a configured (active) automation the kernel refuses the
 // occurrence; the notification is still kept.
 const OPTIONAL_OCCURRENCE = new Set(['NOT_FOUND', 'AUTOMATION_INACTIVE', 'OCCURRENCE_TOO_OLD']);
@@ -36,11 +41,13 @@ export default function register(chariox) {
       const next = [...items];
       const result = mutate(next);
       if (result === undefined) return null;
+      const kept = next.slice(0, KEEP);
+      while (kept.length > 1 && bytes({ items: kept }) > MAX_VALUE_BYTES) kept.pop();
       try {
         await chariox.state.transaction({
           schemaVersion: SCHEMA,
           checks: [{ key: KEY, version }],
-          writes: [{ key: KEY, value: { items: next.slice(0, KEEP) } }],
+          writes: [{ key: KEY, value: { items: kept } }],
           ...extra(result),
         });
         return result;
@@ -50,6 +57,13 @@ export default function register(chariox) {
     }
     throw fail('CONFLICT', 'Notifications changed too often; try again');
   }
+
+  const bytes = value => Buffer.byteLength(JSON.stringify(value) ?? '');
+  // Cut at a code point, never inside a surrogate pair.
+  const cut = (text, units) => {
+    const head = text.slice(0, units);
+    return /[\uD800-\uDBFF]$/.test(head) ? head.slice(0, -1) : head;
+  };
 
   // What a person reads, from the Slack payload the generator forwarded.
   function notification(kind, occurrenceId, payload) {
@@ -61,13 +75,13 @@ export default function register(chariox) {
     return {
       id: occurrenceId,
       kind,
-      text: text.slice(0, 4000),
+      text: cut(text, 4000),
       channel: String(event.channel ?? item.channel ?? payload.reply_context?.channel_id ?? '').slice(0, 64),
       user: String(event.user ?? '').slice(0, 64),
       occurred_at: payload.occurred_at,
       // Opaque to the App: the generator binds it to the connection, so a
       // later reply goes to the same conversation.
-      reply_context: payload.reply_context ?? null,
+      reply_context: bytes(payload.reply_context ?? null) <= MAX_CONTEXT_BYTES ? payload.reply_context ?? null : null,
       connection_id: payload.source?.connection_id ?? null,
     };
   }
