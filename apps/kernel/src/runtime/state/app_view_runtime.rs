@@ -250,12 +250,7 @@ impl KernelRuntimeState {
 
     async fn answer_app_view_call(self, session_id: String, call: BrowserAppViewCall) {
         let views = self.app_control().views().clone();
-        let unbound = || {
-            view_error(
-                "APP_VIEW_UNBOUND",
-                "This view is not bound to an App",
-            )
-        };
+        let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
         let outcome = match views.binding(&session_id, &call.target_id) {
             Some(binding) if binding.installation == call.installation_id => {
                 match self
@@ -263,7 +258,10 @@ impl KernelRuntimeState {
                     .await
                 {
                     // Built for an older generation: reload it with the current one.
-                    Err(error) if error.code == "APP_VIEW_STALE" => {
+                    Err(error)
+                        if error.code == "APP_VIEW_STALE"
+                            && views.reloadable(&session_id, &call.target_id) =>
+                    {
                         self.reconnect_app_view(
                             &session_id,
                             &call.target_id,
@@ -278,10 +276,18 @@ impl KernelRuntimeState {
             // A view left open across a kernel restart. Only the session host's
             // own active installation is reconnected; an uninstalled App, or a
             // Tab bound to another installation, stays unbound.
-            None => match self.session_host(&session_id) {
+            None => match self
+                .session_host(&session_id)
+                .filter(|_| views.reloadable(&session_id, &call.target_id))
+            {
                 Some(owner) => {
-                    self.reconnect_app_view(&session_id, &call.target_id, &owner, &call.installation_id)
-                        .await
+                    self.reconnect_app_view(
+                        &session_id,
+                        &call.target_id,
+                        &owner,
+                        &call.installation_id,
+                    )
+                    .await
                 }
                 None => Err(unbound()),
             },
@@ -374,7 +380,11 @@ impl KernelRuntimeState {
         }
         for session in self.owned.session_store.read().list_sessions() {
             let session_id = session.id().to_owned();
-            if self.owned.slice_store.environment_slice(&session_id).is_some()
+            if self
+                .owned
+                .slice_store
+                .environment_slice(&session_id)
+                .is_some()
                 && views.begin_pumping(&session_id)
             {
                 let state = self.clone();

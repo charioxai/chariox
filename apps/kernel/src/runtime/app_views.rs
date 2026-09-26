@@ -27,6 +27,9 @@ struct SessionViews {
     pumping: bool,
     /// The App Tab markers the Room last showed, by target.
     published: BTreeMap<String, EnvironmentTabApp>,
+    /// Tabs whose reconnection failed (for example a Room controller without
+    /// reload): answered unbound without trying again.
+    unreloadable: std::collections::HashSet<String>,
 }
 
 #[derive(Clone, Default)]
@@ -64,11 +67,20 @@ impl AppViews {
         !std::mem::replace(&mut views.pumping, true)
     }
 
+    /// A failed reconnection: the Tab stays unbound and is not retried.
     pub(crate) fn unbind(&self, session: &str, target: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
             views.tabs.remove(target);
+            views.unreloadable.insert(target.to_owned());
         }
+    }
+
+    pub(crate) fn reloadable(&self, session: &str, target: &str) -> bool {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions
+            .get(session)
+            .is_none_or(|views| !views.unreloadable.contains(target))
     }
 
     pub(crate) fn set_foreground(&self, session: &str, owner: &str, installation: &str) {
@@ -107,6 +119,9 @@ impl AppViews {
             views.tabs.retain(|target, (_, registered)| {
                 *registered > up_to || open_targets.contains(target)
             });
+            views
+                .unreloadable
+                .retain(|target| open_targets.contains(target));
         }
     }
 
@@ -279,7 +294,9 @@ mod reconnect_tests {
         };
         views.register("s", "t1", binding.clone());
         assert_eq!(views.binding("s", "t1"), Some(binding));
+        assert!(views.reloadable("s", "t1"));
         views.unbind("s", "t1");
         assert_eq!(views.binding("s", "t1"), None);
+        assert!(!views.reloadable("s", "t1"));
     }
 }
