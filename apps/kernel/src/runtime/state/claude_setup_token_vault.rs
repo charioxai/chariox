@@ -1,6 +1,6 @@
 use zeroize::Zeroizing;
 
-use super::runtime_vault_unlock_state::expand_vault_path;
+use super::runtime_vault_unlock_state::{expand_vault_path, vault_unlock_request_lock};
 use super::{ClaudeSetupTokenVaultPrompt, KernelRuntimeState};
 use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy, DaemonConfig};
 use crate::error::DaemonError;
@@ -10,6 +10,8 @@ use crate::secret::VaultUnlockLease;
 pub(in crate::runtime) enum ClaudeSetupTokenStoreOutcome {
     Stored,
     VaultPassphraseRequired(ClaudeSetupTokenVaultPrompt),
+    /// The passphrase did not unlock the vault; nothing was stored.
+    VaultUnlockFailed(String),
 }
 
 impl KernelRuntimeState {
@@ -25,6 +27,10 @@ impl KernelRuntimeState {
         passphrase: Option<Zeroizing<String>>,
     ) -> Result<ClaudeSetupTokenStoreOutcome, DaemonError> {
         let config = self.owned.config_projection.snapshot();
+        // Launches unlock and relock the same vault; serialize with them so
+        // this operation-scoped unlock never relocks in the middle of one.
+        let vault_path = expand_vault_path(&config.user_config.credential_vault.path);
+        let _unlock_request = vault_unlock_request_lock(&vault_path).lock_owned().await;
         let owner_user_id = owner_user_id.to_string();
         let account_profile = account_profile.to_string();
         tokio::task::spawn_blocking(move || {
@@ -67,7 +73,7 @@ fn store_claude_setup_token(
                 ));
             };
             let keep_unlocked = vault.unlock_policy == CredentialVaultUnlockPolicy::KernelInit;
-            crate::secret::unlock_chariox_encrypted_vault(
+            if let Err(error) = crate::secret::unlock_chariox_encrypted_vault(
                 &path,
                 passphrase,
                 if keep_unlocked {
@@ -75,7 +81,11 @@ fn store_claude_setup_token(
                 } else {
                     VaultUnlockLease::Operation
                 },
-            )?;
+            ) {
+                return Ok(ClaudeSetupTokenStoreOutcome::VaultUnlockFailed(
+                    error.to_string(),
+                ));
+            }
             if !keep_unlocked {
                 lock_after_store = Some(path);
             }
@@ -171,9 +181,10 @@ mod tests {
                 ClaudeSetupTokenVaultPrompt::Unlock
             )
         );
-        assert!(
-            store_claude_setup_token(&config, "local", "work", TOKEN, Some("wrong-pass")).is_err()
-        );
+        assert!(matches!(
+            store_claude_setup_token(&config, "local", "work", TOKEN, Some("wrong-pass")).unwrap(),
+            ClaudeSetupTokenStoreOutcome::VaultUnlockFailed(_)
+        ));
 
         crate::secret::unlock_chariox_encrypted_vault(
             &vault_path,

@@ -5,7 +5,7 @@ use base64::Engine as _;
 
 use zeroize::Zeroizing;
 
-use super::ClaudeSetupTokenCapture;
+use super::claude_setup_token_capture::{ClaudeSetupTokenScreen, SetupTokenScan};
 use crate::error::DaemonError;
 use crate::local::{ProviderLoginProcessState, ProviderLoginStatus};
 use crate::provider::ProviderLoginStart;
@@ -30,37 +30,97 @@ pub(in crate::runtime) enum ProviderAuthProcessOperation {
 pub(in crate::runtime) enum ClaudeSetupTokenVaultPrompt {
     Unlock,
     Create,
+    /// A new vault passphrase was entered once and must be repeated.
+    ConfirmCreate,
 }
 
-/// Per-login state of a `claude setup-token` workflow. The capture is shared
-/// by record clones so reading a record never copies the token.
-#[derive(Clone, Default)]
+/// Secret-bearing state of one `claude setup-token` login. It is shared by
+/// record clones so reading a record never copies the screen or the token.
+#[derive(Default)]
+struct ClaudeSetupTokenSecrets {
+    screen: Option<ClaudeSetupTokenScreen>,
+    screen_text: String,
+    notes: String,
+    token: Option<Zeroizing<String>>,
+    new_vault_passphrase: Option<Zeroizing<String>>,
+}
+
+impl ClaudeSetupTokenSecrets {
+    fn projection(&self) -> Vec<u8> {
+        format!("{}{}", self.screen_text, self.notes).into_bytes()
+    }
+}
+
+#[derive(Clone)]
 pub(in crate::runtime) struct ClaudeSetupTokenLogin {
-    capture: Arc<Mutex<ClaudeSetupTokenCapture>>,
+    secrets: Arc<Mutex<ClaudeSetupTokenSecrets>>,
+    /// Serializes PTY draining, rendering, input, cancel, and completion so
+    /// concurrent status polls cannot interleave output or race the store.
+    serial: Arc<tokio::sync::Mutex<()>>,
     pub vault_prompt: Option<ClaudeSetupTokenVaultPrompt>,
 }
 
+impl Default for ClaudeSetupTokenLogin {
+    fn default() -> Self {
+        Self {
+            secrets: Arc::new(Mutex::new(ClaudeSetupTokenSecrets {
+                screen: Some(ClaudeSetupTokenScreen::default()),
+                ..ClaudeSetupTokenSecrets::default()
+            })),
+            serial: Arc::new(tokio::sync::Mutex::new(())),
+            vault_prompt: None,
+        }
+    }
+}
+
 impl ClaudeSetupTokenLogin {
-    fn filter(&self, chunk: &[u8], finished: bool) -> Vec<u8> {
-        self.capture
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .filter(chunk, finished)
+    pub async fn serialize(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.serial).lock_owned().await
+    }
+
+    fn secrets(&self) -> std::sync::MutexGuard<'_, ClaudeSetupTokenSecrets> {
+        self.secrets.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn process(&self, bytes: &[u8]) -> Vec<u8> {
+        let mut secrets = self.secrets();
+        if let Some(screen) = secrets.screen.as_mut() {
+            screen.process(bytes);
+            secrets.screen_text = screen.redacted_text();
+        }
+        secrets.projection()
+    }
+
+    fn note(&self, note: &str) -> Vec<u8> {
+        let mut secrets = self.secrets();
+        secrets.notes.push('\n');
+        secrets.notes.push_str(note);
+        secrets.projection()
+    }
+
+    fn capture(&self, exited: bool) -> SetupTokenScan {
+        let mut secrets = self.secrets();
+        let scan = secrets
+            .screen
+            .as_ref()
+            .map_or(SetupTokenScan::Pending, |screen| screen.scan(exited));
+        if let SetupTokenScan::Found(token) = &scan {
+            secrets.token = Some(token.clone());
+        }
+        scan
     }
 
     fn token(&self) -> Option<Zeroizing<String>> {
-        self.capture
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .token()
-            .cloned()
+        self.secrets().token.clone()
     }
 
-    fn discard_token(&self) {
-        self.capture
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .discard_token();
+    /// Drops the rendered screen, which still holds the token, together with
+    /// every captured secret. The redacted projection is kept.
+    fn discard_secrets(&self) {
+        let mut secrets = self.secrets();
+        secrets.screen = None;
+        secrets.token = None;
+        secrets.new_vault_passphrase = None;
     }
 }
 
@@ -103,7 +163,7 @@ impl ProviderLoginProcessRecord {
         self.updated_at_ms = now_ms;
         if state != ProviderLoginProcessState::Running {
             if let Some(login) = self.setup_token.as_mut() {
-                login.discard_token();
+                login.discard_secrets();
                 login.vault_prompt = None;
             }
         }
@@ -185,6 +245,15 @@ impl ProviderLoginProcessRecord {
                 "Create Chariox Vault",
                 "Choose a Chariox Vault passphrase. The vault is created with it and stores the Claude setup token.",
             ),
+            ClaudeSetupTokenVaultPrompt::ConfirmCreate => (
+                "Confirm Chariox Vault passphrase",
+                "Enter the new Chariox Vault passphrase again.",
+            ),
+        };
+        let label = if prompt == ClaudeSetupTokenVaultPrompt::ConfirmCreate {
+            "Confirm vault passphrase"
+        } else {
+            "Vault passphrase"
         };
         crate::session::RuntimeInteraction::new(
             &self.login_id,
@@ -204,7 +273,7 @@ impl ProviderLoginProcessRecord {
             )],
             Some(crate::session::RuntimeInteractionCustomChoice::secret(
                 "passphrase",
-                "Vault passphrase",
+                label,
                 Some("Passphrase".to_string()),
                 Some(1),
                 Some(512),
@@ -350,36 +419,50 @@ impl ProviderLoginProcessStore {
     ) -> Result<ProviderLoginStatus, DaemonError> {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
-        for chunk in chunks {
-            let chunk = match record.setup_token.as_ref() {
-                Some(login) => login.filter(&chunk, false),
-                None => chunk,
-            };
-            record.append_projected_output(&chunk);
+        if let Some(login) = record.setup_token.clone() {
+            let mut projection = None;
+            for chunk in chunks {
+                projection = Some(login.process(&chunk));
+            }
+            if let Some(projection) = projection {
+                record.output.clear();
+                record.append_projected_output(&projection);
+            }
+        } else {
+            for chunk in chunks {
+                record.append_projected_output(&chunk);
+            }
         }
         record.updated_at_ms = now_ms;
         Ok(record.status())
     }
 
-    /// Releases output withheld by the setup-token filter once the provider
-    /// process has exited; any token in it is projected only as a marker.
-    pub fn finish_setup_token_output(
+    /// Adds a kernel message below the rendered `claude setup-token` screen.
+    pub fn append_setup_token_note(
         &self,
         owner_user_id: &str,
         login_id: &str,
+        note: &str,
         now_ms: u64,
     ) -> Result<ProviderLoginStatus, DaemonError> {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
-        if let Some(remaining) = record
-            .setup_token
-            .as_ref()
-            .map(|login| login.filter(&[], true))
-        {
-            record.append_projected_output(&remaining);
-        }
+        let projection = setup_token_login(record)?.note(note);
+        record.output.clear();
+        record.append_projected_output(&projection);
         record.updated_at_ms = now_ms;
         Ok(record.status())
+    }
+
+    pub fn capture_setup_token(
+        &self,
+        owner_user_id: &str,
+        login_id: &str,
+        exited: bool,
+    ) -> Result<SetupTokenScan, DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
+        Ok(setup_token_login(record)?.capture(exited))
     }
 
     pub fn setup_token_secret(
@@ -389,10 +472,7 @@ impl ProviderLoginProcessStore {
     ) -> Result<Option<Zeroizing<String>>, DaemonError> {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
-        Ok(record
-            .setup_token
-            .as_ref()
-            .and_then(ClaudeSetupTokenLogin::token))
+        Ok(setup_token_login(record)?.token())
     }
 
     pub fn await_vault_passphrase(
@@ -400,25 +480,57 @@ impl ProviderLoginProcessStore {
         owner_user_id: &str,
         login_id: &str,
         prompt: ClaudeSetupTokenVaultPrompt,
+        note: &str,
         now_ms: u64,
     ) -> Result<ProviderLoginStatus, DaemonError> {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
-        let login = record
+        let login = setup_token_login(record)?;
+        let projection = login.note(note);
+        record
             .setup_token
             .as_mut()
-            .ok_or_else(|| login_error("provider login is not a Claude setup-token login"))?;
-        login.vault_prompt = Some(prompt);
-        record.append_projected_output(match prompt {
-            ClaudeSetupTokenVaultPrompt::Unlock => {
-                b"\nEnter your Chariox Vault passphrase to store the token.\n".as_slice()
-            }
-            ClaudeSetupTokenVaultPrompt::Create => {
-                b"\nChoose a Chariox Vault passphrase. The vault is created with it and stores the token.\n".as_slice()
-            }
-        });
+            .expect("setup-token login was checked")
+            .vault_prompt = Some(prompt);
+        record.output.clear();
+        record.append_projected_output(&projection);
         record.updated_at_ms = now_ms;
         Ok(record.status())
+    }
+
+    /// Keeps the first entry of a new vault passphrase until it is confirmed.
+    pub fn exchange_new_vault_passphrase(
+        &self,
+        owner_user_id: &str,
+        login_id: &str,
+        entered: Option<Zeroizing<String>>,
+    ) -> Result<Option<Zeroizing<String>>, DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
+        let login = setup_token_login(record)?;
+        let mut secrets = login.secrets();
+        Ok(std::mem::replace(
+            &mut secrets.new_vault_passphrase,
+            entered,
+        ))
+    }
+
+    /// Ends a workflow only if it is still running, so a cancel or timeout
+    /// that won the race is never overwritten by a late completion.
+    pub fn finish_if_running(
+        &self,
+        owner_user_id: &str,
+        login_id: &str,
+        state: ProviderLoginProcessState,
+        now_ms: u64,
+    ) -> Result<Option<ProviderLoginStatus>, DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
+        if record.state != ProviderLoginProcessState::Running {
+            return Ok(None);
+        }
+        record.set_state(state, now_ms);
+        Ok(Some(record.status()))
     }
 
     pub fn set_state(
@@ -444,6 +556,15 @@ fn owned_record_mut<'a>(
         .get_mut(login_id)
         .filter(|record| record.owner_user_id == owner_user_id)
         .ok_or_else(|| login_error("provider login was not found"))
+}
+
+fn setup_token_login(
+    record: &ProviderLoginProcessRecord,
+) -> Result<ClaudeSetupTokenLogin, DaemonError> {
+    record
+        .setup_token
+        .clone()
+        .ok_or_else(|| login_error("provider login is not a Claude setup-token login"))
 }
 
 fn login_error(message: impl Into<String>) -> DaemonError {
@@ -634,42 +755,53 @@ mod tests {
 
     #[test]
     fn setup_token_never_reaches_the_projected_login_status() {
-        const TOKEN: &str =
-            "sk-ant-oat01-TESTONLYzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-9";
+        const TOKEN: &str = "sk-ant-oat01-TESTONLYzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-9";
         let store = ProviderLoginProcessStore::default();
         let mut login = record("owner-a", "login-a");
         login.setup_token = Some(ClaudeSetupTokenLogin::default());
         store.insert(login).unwrap();
 
         let (head, tail) = TOKEN.split_at(20);
-        let printed = [
-            b"Your OAuth token (valid for 1 year):\r\n\x1b[1m".to_vec(),
-            head.as_bytes().to_vec(),
-        ];
         let mut statuses = vec![store
-            .append_output("owner-a", "login-a", printed, 2)
+            .append_output(
+                "owner-a",
+                "login-a",
+                [
+                    b"\x1b[2GYour\x1b[7GOAuth\x1b[13Gtoken:\r\r\n\x1b[1m".to_vec(),
+                    head.as_bytes().to_vec(),
+                ],
+                2,
+            )
             .unwrap()];
+        assert_eq!(
+            store
+                .capture_setup_token("owner-a", "login-a", false)
+                .unwrap(),
+            SetupTokenScan::Pending
+        );
         statuses.push(
             store
                 .append_output(
                     "owner-a",
                     "login-a",
-                    [format!("{tail}\x1b[22m\r\nStore this token securely.").into_bytes()],
+                    [format!("\x1b[33m{tail}\x1b[22m\r\r\n\x1b[2GStore\x1b[8Gthis").into_bytes()],
                     3,
                 )
                 .unwrap(),
         );
-        statuses.push(
+        assert!(matches!(
             store
-                .finish_setup_token_output("owner-a", "login-a", 4)
+                .capture_setup_token("owner-a", "login-a", false)
                 .unwrap(),
-        );
+            SetupTokenScan::Found(_)
+        ));
         statuses.push(
             store
                 .await_vault_passphrase(
                     "owner-a",
                     "login-a",
                     ClaudeSetupTokenVaultPrompt::Unlock,
+                    "Enter your Chariox Vault passphrase.",
                     5,
                 )
                 .unwrap(),
@@ -682,6 +814,7 @@ mod tests {
             let output = String::from_utf8_lossy(&output);
             assert!(!output.contains("sk-ant"), "{output}");
             assert!(!output.contains("TESTONLY"), "{output}");
+            assert!(!output.contains('\x1b'), "{output}");
             let wire =
                 serde_json::to_string(&crate::local::LocalDaemonResponse::ProviderLoginStatus {
                     login: status.clone(),
@@ -691,11 +824,12 @@ mod tests {
             assert!(!wire.contains(&base64::engine::general_purpose::STANDARD.encode(TOKEN)));
         }
         let output = base64::engine::general_purpose::STANDARD
-            .decode(&statuses[3].terminal_output_base64)
+            .decode(&statuses[2].terminal_output_base64)
             .unwrap();
-        let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("[setup token captured; hidden]"));
-        assert!(output.contains("Store this token securely."));
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            " Your OAuth token:\n[setup token captured; hidden]\n Store this\nEnter your Chariox Vault passphrase."
+        );
         assert_eq!(
             store
                 .setup_token_secret("owner-a", "login-a")
@@ -705,7 +839,7 @@ mod tests {
             Some(TOKEN)
         );
 
-        let interaction = statuses[3].interaction.as_ref().expect("vault prompt");
+        let interaction = statuses[2].interaction.as_ref().expect("vault prompt");
         assert_eq!(interaction.title(), Some("Unlock Chariox Vault"));
         assert_eq!(
             interaction
@@ -731,6 +865,25 @@ mod tests {
             .setup_token_secret("owner-a", "login-a")
             .unwrap()
             .is_none());
+        assert_eq!(
+            store
+                .capture_setup_token("owner-a", "login-a", true)
+                .unwrap(),
+            SetupTokenScan::Pending,
+            "a cancelled login keeps no screen that still holds the token"
+        );
+        assert_eq!(
+            store
+                .finish_if_running(
+                    "owner-a",
+                    "login-a",
+                    ProviderLoginProcessState::Succeeded,
+                    7
+                )
+                .unwrap(),
+            None,
+            "a late completion cannot overwrite the cancel"
+        );
     }
 
     #[test]

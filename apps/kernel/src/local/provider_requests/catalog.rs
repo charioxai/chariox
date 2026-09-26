@@ -310,22 +310,19 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            let natively_authenticated = status.auth_state == "authenticated";
-            let status = if natively_authenticated {
-                status
-            } else {
-                claude_status_with_setup_token(
-                    status,
-                    crate::provider::provider_account_credential_registered(
-                        owner_user_id,
-                        provider,
-                        &profile.profile_id,
-                    )?,
-                )
-            };
-            // The usage probe sees only the profile environment, so an account
-            // authenticated solely by its vault setup token keeps its last usage.
-            let usage = if natively_authenticated {
+            if status.auth_state != "authenticated"
+                && crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )?
+            {
+                // Launches use the profile's vault setup token, which was
+                // verified with Claude when it was stored. Reading it back
+                // needs the vault, so keep that observation and its time.
+                return Ok(profile);
+            }
+            let usage = if status.auth_state == "authenticated" {
                 let executable = resolve_claude_executable()?;
                 crate::provider::probe_claude_account_usage(
                     &executable,
@@ -898,21 +895,6 @@ fn claude_version() -> Result<String, DaemonError> {
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Every Claude launch injects the profile's registered Chariox-vault setup
-/// token, so that token authenticates the account even when its native config
-/// directory is signed out.
-fn claude_status_with_setup_token(
-    mut status: ProviderAuthStatus,
-    setup_token_registered: bool,
-) -> ProviderAuthStatus {
-    if setup_token_registered && status.auth_state != "authenticated" {
-        status.auth_state = "authenticated".to_string();
-        status.identity_summary = None;
-        status.login_hint = None;
-    }
-    status
 }
 
 fn claude_auth_status_from_value(
@@ -1559,20 +1541,6 @@ exit 2
 
         assert_eq!(status.identity_summary.as_deref(), Some("dev@example.test"));
         assert_eq!(status.plan.as_deref(), Some("pro"));
-    }
-
-    #[test]
-    fn a_registered_setup_token_authenticates_a_signed_out_claude_profile() {
-        let signed_out =
-            || claude_auth_status_from_value("claude", "work", &json!({ "loggedIn": false }), None);
-
-        let unchanged = claude_status_with_setup_token(signed_out(), false);
-        assert_eq!(unchanged.auth_state, "not_logged_in");
-
-        let via_token = claude_status_with_setup_token(signed_out(), true);
-        assert_eq!(via_token.auth_state, "authenticated");
-        assert!(via_token.identity_summary.is_none());
-        assert!(via_token.login_hint.is_none());
     }
 
     #[test]

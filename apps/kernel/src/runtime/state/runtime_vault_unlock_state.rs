@@ -662,7 +662,9 @@ fn apply_vault_manage_choice(
     }
 }
 
-fn vault_unlock_request_lock(path: &std::path::Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+pub(super) fn vault_unlock_request_lock(
+    path: &std::path::Path,
+) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<
             std::collections::BTreeMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>,

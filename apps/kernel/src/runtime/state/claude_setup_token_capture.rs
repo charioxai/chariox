@@ -1,159 +1,229 @@
 use zeroize::Zeroizing;
 
-/// Every Anthropic credential printed by `claude setup-token` starts with this
-/// prefix. Any occurrence is withheld from projected output, captured or not.
-const TOKEN_PREFIX: &[u8] = b"sk-ant-";
-const MIN_CAPTURED_TOKEN_BYTES: usize = 40;
-/// A token run longer than this is treated as complete even before a
-/// terminator arrives, so a hostile stream cannot grow the withheld buffer.
-const MAX_WITHHELD_BYTES: usize = 4 * 1024;
-pub(super) const REDACTED_TOKEN_MARKER: &[u8] = b"[setup token captured; hidden]";
+/// The PTY `claude setup-token` runs in. Ink wraps at the terminal width, so
+/// the sign-in URL and the token each stay on one row at this width.
+pub(in crate::runtime) const CLAUDE_SETUP_TOKEN_ROWS: u16 = 40;
+pub(in crate::runtime) const CLAUDE_SETUP_TOKEN_COLUMNS: u16 = 1_000;
 
-/// Filters `claude setup-token` PTY output before it is recorded. Tokens are
-/// captured into zeroizing memory and replaced by a marker; a possible token
-/// split across PTY chunks is withheld until the next chunk resolves it.
-#[derive(Default)]
-pub(in crate::runtime) struct ClaudeSetupTokenCapture {
-    withheld: Zeroizing<Vec<u8>>,
-    token: Option<Zeroizing<String>>,
+/// Any credential-shaped run on screen is hidden, captured or not.
+const CREDENTIAL_PREFIX: &str = "sk-ant-";
+/// Only a Claude Code OAuth token is ever captured for storage.
+const SETUP_TOKEN_PREFIX: &str = "sk-ant-oat01-";
+const MIN_SETUP_TOKEN_BODY_CHARS: usize = 80;
+pub(super) const REDACTED_TOKEN_MARKER: &str = "[setup token captured; hidden]";
+
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::runtime) enum SetupTokenScan {
+    /// No complete token is on screen yet.
+    Pending,
+    Found(Zeroizing<String>),
+    /// More than one distinct token-shaped value; refuse to guess.
+    Ambiguous,
 }
 
-impl ClaudeSetupTokenCapture {
-    pub fn filter(&mut self, input: &[u8], finished: bool) -> Vec<u8> {
-        let mut buffer = Zeroizing::new(std::mem::take(&mut *self.withheld));
-        buffer.extend_from_slice(input);
-        let mut output = Vec::with_capacity(buffer.len());
-        let mut cursor = 0;
-        while let Some(offset) = find(&buffer[cursor..], TOKEN_PREFIX) {
-            let start = cursor + offset;
-            output.extend_from_slice(&buffer[cursor..start]);
-            let mut end = start + TOKEN_PREFIX.len();
-            while end < buffer.len() && is_token_byte(buffer[end]) {
-                end += 1;
-            }
-            if end == buffer.len() && !finished && end - start < MAX_WITHHELD_BYTES {
-                self.withheld.extend_from_slice(&buffer[start..]);
-                return output;
-            }
-            if end - start >= MIN_CAPTURED_TOKEN_BYTES {
-                if let Ok(token) = std::str::from_utf8(&buffer[start..end]) {
-                    self.token = Some(Zeroizing::new(token.to_string()));
-                }
-            }
-            output.extend_from_slice(REDACTED_TOKEN_MARKER);
-            cursor = end;
+/// Renders `claude setup-token` PTY output through a terminal emulator. Ink
+/// positions text with cursor movement, so neither redaction nor capture can
+/// work on raw bytes; both operate on the rendered screen, and only redacted
+/// screen text is ever projected.
+pub(in crate::runtime) struct ClaudeSetupTokenScreen {
+    parser: vt100::Parser,
+}
+
+impl Default for ClaudeSetupTokenScreen {
+    fn default() -> Self {
+        Self {
+            parser: vt100::Parser::new(CLAUDE_SETUP_TOKEN_ROWS, CLAUDE_SETUP_TOKEN_COLUMNS, 0),
         }
-        let keep = if finished {
-            0
-        } else {
-            partial_prefix_suffix_len(&buffer[cursor..])
-        };
-        let split = buffer.len() - keep;
-        output.extend_from_slice(&buffer[cursor..split]);
-        self.withheld.extend_from_slice(&buffer[split..]);
-        output
-    }
-
-    pub fn token(&self) -> Option<&Zeroizing<String>> {
-        self.token.as_ref()
-    }
-
-    pub fn discard_token(&mut self) {
-        self.token = None;
     }
 }
 
-fn is_token_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+impl ClaudeSetupTokenScreen {
+    pub fn process(&mut self, bytes: &[u8]) {
+        self.parser.process(bytes);
+    }
+
+    pub fn redacted_text(&self) -> String {
+        let rows = self.rows();
+        let mut text = rows
+            .iter()
+            .map(|row| redact_credentials(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        text.truncate(text.trim_end().len());
+        text
+    }
+
+    /// A token counts only once it is followed by more output (on its row or
+    /// a later one) or the provider process exited, so a token still being
+    /// printed is never captured truncated.
+    pub fn scan(&self, exited: bool) -> SetupTokenScan {
+        let rows = self.rows();
+        let mut found: Option<Zeroizing<String>> = None;
+        for (index, row) in rows.iter().enumerate() {
+            let mut rest = row.as_str();
+            while let Some(offset) = rest.find(SETUP_TOKEN_PREFIX) {
+                let candidate = &rest[offset..];
+                let end = SETUP_TOKEN_PREFIX.len()
+                    + candidate[SETUP_TOKEN_PREFIX.len()..]
+                        .find(|character: char| !is_token_char(character))
+                        .unwrap_or(candidate.len() - SETUP_TOKEN_PREFIX.len());
+                let terminated = end < candidate.len()
+                    || exited
+                    || rows[index + 1..].iter().any(|later| !later.is_empty());
+                if !terminated {
+                    return SetupTokenScan::Pending;
+                }
+                if end - SETUP_TOKEN_PREFIX.len() >= MIN_SETUP_TOKEN_BODY_CHARS {
+                    let token = &candidate[..end];
+                    match found.as_ref() {
+                        Some(existing) if existing.as_str() != token => {
+                            return SetupTokenScan::Ambiguous;
+                        }
+                        Some(_) => {}
+                        None => found = Some(Zeroizing::new(token.to_string())),
+                    }
+                }
+                rest = &candidate[end..];
+            }
+        }
+        found.map_or(SetupTokenScan::Pending, SetupTokenScan::Found)
+    }
+
+    fn rows(&self) -> Vec<Zeroizing<String>> {
+        self.parser
+            .screen()
+            .rows(0, CLAUDE_SETUP_TOKEN_COLUMNS)
+            .map(|row| Zeroizing::new(row.trim_end().to_string()))
+            .collect()
+    }
 }
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+fn is_token_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
 }
 
-/// Length of the longest proper prefix of `sk-ant-` that ends `bytes`.
-fn partial_prefix_suffix_len(bytes: &[u8]) -> usize {
-    (1..TOKEN_PREFIX.len())
-        .rev()
-        .find(|len| bytes.ends_with(&TOKEN_PREFIX[..*len]))
-        .unwrap_or(0)
+fn redact_credentials(row: &str) -> String {
+    let mut redacted = String::with_capacity(row.len());
+    let mut rest = row;
+    while let Some(offset) = rest.find(CREDENTIAL_PREFIX) {
+        redacted.push_str(&rest[..offset]);
+        redacted.push_str(REDACTED_TOKEN_MARKER);
+        let after = &rest[offset + CREDENTIAL_PREFIX.len()..];
+        rest = &after[after
+            .find(|character: char| !is_token_char(character))
+            .unwrap_or(after.len())..];
+    }
+    redacted.push_str(rest);
+    redacted
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const TOKEN: &str =
-        "sk-ant-oat01-TESTONLYaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbb-cccc";
+    /// First half of a real Claude Code 2.1.281 `setup-token` session in a
+    /// 40x1000 PTY, up to the code prompt. OAuth state values are replaced.
+    const RECORDED_START: &[u8] = include_bytes!("testdata/claude-setup-token-2.1.281-start.pty");
+    const TOKEN: &str = "sk-ant-oat01-TESTONLYaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbb-cccc-dd";
 
-    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-        find(haystack, needle).is_some()
+    /// The token half of the session in the style Ink uses: column moves
+    /// instead of spaces, styled spans, and a style change inside the token.
+    fn recorded_finish() -> Vec<u8> {
+        let (head, tail) = TOKEN.split_at(31);
+        format!(
+            "\x1b[2G\x1b[32m\u{2713}\x1b[39m\x1b[4GLong-lived\x1b[15Gauthentication\x1b[30Gtoken\x1b[36Gcreated\x1b[44Gsuccessfully!\r\r\n\r\r\n\
+             \x1b[2GYour\x1b[7GOAuth\x1b[13Gtoken\x1b[19G(valid\x1b[26Gfor\x1b[30G1\x1b[32Gyear):\r\r\n\r\r\n\
+             \x1b[2G\x1b[33m{head}\x1b[1m{tail}\x1b[22m\x1b[39m\r\r\n\r\r\n\
+             \x1b[2GStore\x1b[8Gthis\x1b[13Gtoken\x1b[19Gsecurely.\r\r\n"
+        )
+        .into_bytes()
+    }
+
+    fn session() -> Vec<u8> {
+        let mut bytes = RECORDED_START.to_vec();
+        bytes.extend(recorded_finish());
+        bytes
     }
 
     #[test]
-    fn captures_and_redacts_a_token_printed_in_one_chunk() {
-        let mut capture = ClaudeSetupTokenCapture::default();
-        let output = capture.filter(
-            format!("Your OAuth token (valid for 1 year):\r\n\x1b[1m{TOKEN}\x1b[22m\r\nStore this token securely.\r\n").as_bytes(),
-            false,
-        );
+    fn recorded_session_renders_readable_text_and_its_authorization_url() {
+        let mut screen = ClaudeSetupTokenScreen::default();
+        screen.process(RECORDED_START);
+        let text = screen.redacted_text();
 
-        assert!(!contains(&output, b"sk-ant-"));
-        assert!(contains(&output, REDACTED_TOKEN_MARKER));
-        assert!(contains(&output, b"Store this token securely."));
-        assert_eq!(capture.token().map(|token| token.as_str()), Some(TOKEN));
+        assert!(text.contains("Welcome to Claude Code v2.1.281"), "{text}");
+        assert!(text.contains("Paste code here if prompted >"), "{text}");
+        assert!(text.contains("https://claude.com/cai/oauth/authorize?code=true"));
+        assert!(!text.contains('\x1b'));
+        assert_eq!(screen.scan(false), SetupTokenScan::Pending);
     }
 
     #[test]
-    fn a_token_split_across_every_byte_boundary_never_leaks() {
-        let stream = format!("token:\r\n{TOKEN}\r\ndone\r\n");
-        for split in 0..stream.len() {
-            let mut capture = ClaudeSetupTokenCapture::default();
-            let mut output = capture.filter(&stream.as_bytes()[..split], false);
-            output.extend(capture.filter(&stream.as_bytes()[split..], false));
-            output.extend(capture.filter(&[], true));
-
-            let text = String::from_utf8_lossy(&output);
-            assert!(!text.contains("sk-ant"), "split {split} leaked: {text}");
-            assert!(!text.contains("TESTONLY"), "split {split} leaked: {text}");
-            assert_eq!(
-                text, "token:\r\n[setup token captured; hidden]\r\ndone\r\n",
-                "split {split}"
+    fn recorded_session_captures_the_token_at_every_chunk_boundary_without_projecting_it() {
+        let bytes = session();
+        let token_start = RECORDED_START.len();
+        for split in (token_start..bytes.len())
+            .step_by(7)
+            .chain([bytes.len() - 1])
+        {
+            let mut screen = ClaudeSetupTokenScreen::default();
+            screen.process(&bytes[..split]);
+            let partial = screen.redacted_text();
+            assert!(!partial.contains("TESTONLY"), "split {split}: {partial}");
+            if let SetupTokenScan::Found(token) = screen.scan(false) {
+                assert_eq!(
+                    token.as_str(),
+                    TOKEN,
+                    "split {split} captured a truncated token"
+                );
+            }
+            screen.process(&bytes[split..]);
+            let text = screen.redacted_text();
+            assert!(!text.contains("TESTONLY"), "split {split}: {text}");
+            assert!(
+                text.contains(REDACTED_TOKEN_MARKER),
+                "split {split}: {text}"
             );
-            assert_eq!(capture.token().map(|token| token.as_str()), Some(TOKEN));
+            assert!(text.contains("Store this token securely."));
+            assert_eq!(
+                screen.scan(false),
+                SetupTokenScan::Found(Zeroizing::new(TOKEN.to_string()))
+            );
         }
     }
 
     #[test]
-    fn a_token_at_the_end_of_the_stream_is_released_only_redacted() {
-        let mut capture = ClaudeSetupTokenCapture::default();
-        let pending = capture.filter(format!("token: {TOKEN}").as_bytes(), false);
-        assert_eq!(pending, b"token: ");
+    fn a_token_on_the_last_row_is_captured_only_after_the_provider_exits() {
+        let mut screen = ClaudeSetupTokenScreen::default();
+        screen.process(format!("token:\r\n{TOKEN}").as_bytes());
 
-        let finished = capture.filter(&[], true);
-        assert_eq!(finished, REDACTED_TOKEN_MARKER);
-        assert_eq!(capture.token().map(|token| token.as_str()), Some(TOKEN));
-    }
-
-    #[test]
-    fn short_prefix_matches_are_redacted_without_being_captured() {
-        let mut capture = ClaudeSetupTokenCapture::default();
-        let output = capture.filter(b"example sk-ant-xyz here", true);
-
-        assert_eq!(output, b"example [setup token captured; hidden] here");
-        assert!(capture.token().is_none());
-    }
-
-    #[test]
-    fn ordinary_output_passes_through_except_a_possible_prefix_tail() {
-        let mut capture = ClaudeSetupTokenCapture::default();
+        assert_eq!(screen.scan(false), SetupTokenScan::Pending);
         assert_eq!(
-            capture.filter(b"Paste code here if prompted > sk", false),
-            b"Paste code here if prompted > "
+            screen.scan(true),
+            SetupTokenScan::Found(Zeroizing::new(TOKEN.to_string()))
         );
-        assert_eq!(capture.filter(b"y is blue", false), b"sky is blue");
-        assert!(capture.token().is_none());
+        assert!(!screen.redacted_text().contains("TESTONLY"));
+    }
+
+    #[test]
+    fn only_complete_oauth_tokens_are_captured_but_every_credential_is_hidden() {
+        let mut screen = ClaudeSetupTokenScreen::default();
+        screen.process(
+            b"short sk-ant-oat01-abc\r\napi sk-ant-api03-TESTONLYxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\r\ndone\r\n",
+        );
+
+        assert_eq!(screen.scan(true), SetupTokenScan::Pending);
+        let text = screen.redacted_text();
+        assert!(!text.contains("sk-ant"), "{text}");
+        assert!(text.contains("short [setup token captured; hidden]"));
+    }
+
+    #[test]
+    fn two_distinct_tokens_are_refused() {
+        let other = TOKEN.replace("bbbb", "zzzz");
+        let mut screen = ClaudeSetupTokenScreen::default();
+        screen.process(format!("{TOKEN}\r\n{other}\r\ndone\r\n").as_bytes());
+
+        assert_eq!(screen.scan(true), SetupTokenScan::Ambiguous);
     }
 }
