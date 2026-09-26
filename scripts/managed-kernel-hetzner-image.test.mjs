@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { once } from "node:events"
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
@@ -56,6 +56,33 @@ const sliceProvisionerUrl = new URL(
   "../apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
   import.meta.url,
 )
+
+test("managed image installer rejects omitted topology before staging", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-installer-topology-"))
+  try {
+    const fakeId = join(scratch, "id")
+    await writeFile(fakeId, "#!/bin/sh\nprintf '0\\n'\n")
+    await chmod(fakeId, 0o700)
+
+    const result = spawnSync(
+      fileURLToPath(installerUrl),
+      ["/nonexistent/managed-rootfs", "sha256:invalid", "/nonexistent/trusted-key"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${scratch}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+          TMPDIR: scratch,
+        },
+      },
+    )
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /usage: install-image\.sh .*<path1\|shared_host>/)
+    assert.deepEqual(await readdir(scratch), ["id"])
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
 
 test("Hetzner image preparation is pinned, guarded, and leaves no runtime identity", async () => {
   const script = await readFile(scriptUrl, "utf8")

@@ -5,15 +5,15 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "install-image.sh must run as root" >&2
   exit 1
 fi
-if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
-  echo "usage: install-image.sh <managed-kernel-rootfs> <expected-release-digest> <trusted-public-key> [path1|shared_host]" >&2
+if [ "$#" -ne 4 ]; then
+  echo "usage: install-image.sh <managed-kernel-rootfs> <expected-release-digest> <trusted-public-key> <path1|shared_host>" >&2
   exit 1
 fi
 
 image_root=$1
 expected_release_digest=$2
 trusted_public_key=$3
-managed_provider_topology=${4:-shared_host}
+managed_provider_topology=$4
 case "$managed_provider_topology" in
   path1)
     selected_bootstrap_service=chariox-path1-managed-bootstrap.service
