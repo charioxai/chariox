@@ -164,7 +164,7 @@ struct KernelRuntimeOwnedState {
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     remote_prompt_projection_drains:
         Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
-    remote_prompt_recoveries: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
+    remote_prompt_recoveries: remote_prompt_claim_runtime::RemotePromptRecoveryClaimStore,
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,

@@ -44,10 +44,9 @@ impl KernelRuntimeState {
         // dispatch is already refreshing that same binding. Both paths submit
         // the active prompt, so serialize them per agent to prevent one browser
         // prompt from starting on two freshly-created worker agents.
-        let Some(claim) = RemotePromptAgentClaim::try_acquire(
+        let Some(claim) = RemotePromptAgentClaim::try_acquire_or_defer_dispatch(
             Arc::clone(&self.owned.remote_prompt_recoveries),
-            &dispatch.session_id,
-            &dispatch.agent_id,
+            &dispatch,
         ) else {
             return;
         };

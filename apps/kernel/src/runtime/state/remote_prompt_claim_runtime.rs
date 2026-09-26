@@ -8,9 +8,19 @@ use super::remote_prompt_worker_submission_runtime::{
 use super::*;
 
 // Duplicate starts advance the generation so release and restart are one atomic decision.
+#[derive(Default)]
+pub(super) struct RemotePromptRecoveryClaimEntry {
+    generation: u64,
+    active_prompt_id: Option<String>,
+    pending_dispatches: std::collections::VecDeque<crate::app::KernelRemotePromptDispatch>,
+}
+
+pub(super) type RemotePromptRecoveryClaimStore =
+    Arc<std::sync::Mutex<BTreeMap<(String, String), RemotePromptRecoveryClaimEntry>>>;
+
 pub(super) struct RemotePromptAgentClaim {
     key: (String, String),
-    claims: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
+    claims: RemotePromptRecoveryClaimStore,
     seen_generation: u64,
     cancellation_sends: BTreeSet<(String, String)>,
     released: bool,
@@ -21,7 +31,7 @@ pub(super) type RemotePromptDispatchFuture =
 
 impl RemotePromptAgentClaim {
     pub(super) fn try_acquire(
-        claims: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
+        claims: RemotePromptRecoveryClaimStore,
         session_id: &str,
         agent_id: &str,
     ) -> Option<Self> {
@@ -29,11 +39,11 @@ impl RemotePromptAgentClaim {
         let mut claims_guard = claims
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(generation) = claims_guard.get_mut(&key) {
-            *generation = generation.saturating_add(1);
+        if let Some(entry) = claims_guard.get_mut(&key) {
+            entry.generation = entry.generation.saturating_add(1);
             return None;
         }
-        claims_guard.insert(key.clone(), 0);
+        claims_guard.insert(key.clone(), RemotePromptRecoveryClaimEntry::default());
         drop(claims_guard);
         Some(Self {
             key,
@@ -42,6 +52,65 @@ impl RemotePromptAgentClaim {
             cancellation_sends: BTreeSet::new(),
             released: false,
         })
+    }
+
+    // A successor admitted during recovery already has durable Dispatching state. Keep the exact
+    // intent with the claim owner instead of asking restart reconstruction to replay it.
+    pub(super) fn try_acquire_or_defer_dispatch(
+        claims: RemotePromptRecoveryClaimStore,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+    ) -> Option<Self> {
+        let key = (dispatch.session_id.clone(), dispatch.agent_id.clone());
+        let mut claims_guard = claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = claims_guard.get_mut(&key) {
+            entry.generation = entry.generation.saturating_add(1);
+            if entry.active_prompt_id.as_deref() != Some(dispatch.prompt_id.as_str())
+                && !entry
+                    .pending_dispatches
+                    .iter()
+                    .any(|pending| pending.prompt_id == dispatch.prompt_id)
+            {
+                entry.pending_dispatches.push_back(dispatch.clone());
+            }
+            return None;
+        }
+        let mut entry = RemotePromptRecoveryClaimEntry::default();
+        entry.active_prompt_id = Some(dispatch.prompt_id.clone());
+        claims_guard.insert(key.clone(), entry);
+        drop(claims_guard);
+        Some(Self {
+            key,
+            claims,
+            seen_generation: 0,
+            cancellation_sends: BTreeSet::new(),
+            released: false,
+        })
+    }
+
+    pub(super) fn mark_active_prompt(&self, prompt_id: &str) {
+        if let Some(entry) = self
+            .claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&self.key)
+        {
+            entry.active_prompt_id = Some(prompt_id.to_string());
+        }
+    }
+
+    pub(super) fn take_pending_dispatch(
+        &self,
+    ) -> Option<crate::app::KernelRemotePromptDispatch> {
+        let mut claims = self
+            .claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = claims.get_mut(&self.key)?;
+        let dispatch = entry.pending_dispatches.pop_front()?;
+        entry.active_prompt_id = Some(dispatch.prompt_id.clone());
+        Some(dispatch)
     }
 
     pub(super) fn cancellation_was_sent(&self, prompt_id: &str, provider_run_id: &str) -> bool {
@@ -59,12 +128,12 @@ impl RemotePromptAgentClaim {
             .claims
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(generation) = claims.get(&self.key).copied() else {
+        let Some(entry) = claims.get_mut(&self.key) else {
             self.released = true;
             return false;
         };
-        if generation != self.seen_generation {
-            self.seen_generation = generation;
+        if entry.generation != self.seen_generation || !entry.pending_dispatches.is_empty() {
+            self.seen_generation = entry.generation;
             return true;
         }
         claims.remove(&self.key);
@@ -294,6 +363,15 @@ impl KernelRuntimeState {
         ) else {
             return;
         };
+        if let Ok(session) = self.owned.session_store.get_session(&session_id) {
+            if let Some(prompt) = self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+            {
+                claim.mark_active_prompt(prompt.id());
+            }
+        }
         let state = self.clone();
         tokio::spawn(async move {
             if let Err(error) = state
@@ -818,6 +896,9 @@ impl KernelRuntimeState {
         mut dispatch: Option<crate::app::KernelRemotePromptDispatch>,
     ) {
         let (session_id, agent_id) = claim.key.clone();
+        if let Some(dispatch) = dispatch.as_ref() {
+            claim.mark_active_prompt(&dispatch.prompt_id);
+        }
         loop {
             let cancellation_pending = match self
                 .resume_remote_prompt_cancellation_with_claim(
@@ -873,6 +954,7 @@ impl KernelRuntimeState {
                 dispatch = None;
             }
             if let Some(dispatch) = dispatch.take() {
+                claim.mark_active_prompt(&dispatch.prompt_id);
                 if let Some(pending) = self.dispatch_remote_prompt_once(dispatch).await {
                     self.retry_remote_prompt_receipt_with_claim(&pending).await;
                 }
@@ -880,24 +962,31 @@ impl KernelRuntimeState {
             if !claim.release_or_restart() {
                 return;
             }
-            dispatch = match self
-                .remote_prompt_dispatch_after_claim_restart(&session_id, &agent_id)
-                .await
-            {
-                Ok(dispatch) => dispatch,
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.remote_prompt_dispatch",
-                        "remote prompt claim restart could not prepare the current prompt",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "agent_id": agent_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                    None
+            dispatch = if let Some(dispatch) = claim.take_pending_dispatch() {
+                Some(dispatch)
+            } else {
+                match self
+                    .remote_prompt_dispatch_after_claim_restart(&session_id, &agent_id)
+                    .await
+                {
+                    Ok(dispatch) => dispatch,
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "remote prompt claim restart could not prepare the current prompt",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "agent_id": agent_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        None
+                    }
                 }
             };
+            if let Some(dispatch) = dispatch.as_ref() {
+                claim.mark_active_prompt(&dispatch.prompt_id);
+            }
         }
     }
 
@@ -913,6 +1002,7 @@ impl KernelRuntimeState {
         ) else {
             return;
         };
+        claim.mark_active_prompt(&dispatch.prompt_id);
         let state = self.clone();
         tokio::spawn(async move {
             state
