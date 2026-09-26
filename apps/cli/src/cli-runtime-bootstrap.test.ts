@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
-import type { LocalIpcClient } from "./ipc.js"
+import { LocalIpcClient } from "./ipc.js"
 import type { BootstrapState, CliOptions } from "./cli-types.js"
 import type { CharioxPreferences } from "./preferences.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
@@ -67,11 +67,10 @@ test("bootstrapCliRuntime attaches and resizes attached sessions", async () => {
 
 test("bootstrapCliRuntime deletes a requested session without attaching", async () => {
   const calls: string[] = []
-  const client = {
-    close: async () => {
-      calls.push("close")
-    },
-  } as LocalIpcClient
+  const client = fakeClient()
+  client.close = async () => {
+    calls.push("close")
+  }
   const options = cliOptions({
     deleteSessionRef: "old-session",
     workspace: "/workspace",
@@ -109,26 +108,25 @@ test("terminal pairing bootstrap replaces the legacy token with one bound to the
   const capturedRequests: unknown[] = []
   const createOptions: Array<{ relayAuthToken?: string; relayIdentity?: unknown }> = []
   let closedInitialClient = false
-  const initialClient = {
-    async send<TResponse>(request: unknown) {
-      capturedRequests.push(request)
-      return {
-        TerminalPairingLinkJoined: {
-          terminal: { terminal_id: "terminal-1", terminal_type: "cli", paired_at_ms: 1, revoked: false },
-          pairing: {
-            intent: "client",
-            subject_id: "terminal-1",
-            relay_url: "wss://relay.example",
-            target_daemon_id: "home-1",
-            public_key_thumbprint: identity.publicKeyThumbprint,
-            paired_at_ms: 1,
-          },
-          relay_token: boundRelayToken,
+  const initialClient = fakeClient()
+  initialClient.send = async <TResponse>(request: unknown) => {
+    capturedRequests.push(request)
+    return {
+      TerminalPairingLinkJoined: {
+        terminal: { terminal_id: "terminal-1", terminal_type: "cli", paired_at_ms: 1, revoked: false },
+        pairing: {
+          intent: "client",
+          subject_id: "terminal-1",
+          relay_url: "wss://relay.example",
+          target_daemon_id: "home-1",
+          public_key_thumbprint: identity.publicKeyThumbprint,
+          paired_at_ms: 1,
         },
-      } as TResponse
-    },
-    close: async () => { closedInitialClient = true },
-  } as LocalIpcClient
+        relay_token: boundRelayToken,
+      },
+    } as TResponse
+  }
+  initialClient.close = async () => { closedInitialClient = true }
   const attachedClient = fakeClient()
   const options = cliOptions({
     clientId: "terminal-1",
@@ -169,24 +167,23 @@ test("terminal pairing closes bootstrap transport and rejects a legacy unbound t
   const identity = createCliRelayIdentityStore(`${root}/relay/cli-identity-v1.json`).getOrCreate()
   let closeCount = 0
   let createCount = 0
-  const initialClient = {
-    async send<TResponse>() {
-      return {
-        TerminalPairingLinkJoined: {
-          terminal: { terminal_id: "terminal-1", terminal_type: "cli", paired_at_ms: 1, revoked: false },
-          pairing: {
-            intent: "client",
-            subject_id: "terminal-1",
-            relay_url: "wss://relay.example",
-            target_daemon_id: "home-1",
-            public_key_thumbprint: identity.publicKeyThumbprint,
-            paired_at_ms: 1,
-          },
+  const initialClient = fakeClient()
+  initialClient.send = async <TResponse>() => {
+    return {
+      TerminalPairingLinkJoined: {
+        terminal: { terminal_id: "terminal-1", terminal_type: "cli", paired_at_ms: 1, revoked: false },
+        pairing: {
+          intent: "client",
+          subject_id: "terminal-1",
+          relay_url: "wss://relay.example",
+          target_daemon_id: "home-1",
+          public_key_thumbprint: identity.publicKeyThumbprint,
+          paired_at_ms: 1,
         },
-      } as TResponse
-    },
-    close: async () => { closeCount += 1 },
-  } as LocalIpcClient
+      },
+    } as TResponse
+  }
+  initialClient.close = async () => { closeCount += 1 }
   const deps = createDeps({
     parseArgs: () => cliOptions({
       clientId: "terminal-1",
@@ -261,7 +258,7 @@ function cliOptions(overrides: Partial<CliOptions> = {}): CliOptions {
 }
 
 function fakeClient(): LocalIpcClient {
-  return {} as LocalIpcClient
+  return new LocalIpcClient("/unused-kernel.sock")
 }
 
 function attachedBootstrap(

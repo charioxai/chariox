@@ -328,7 +328,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       sessionId: () => deps.sessionState().id,
       focusedAgentId: deps.focusedAgentId,
       send: deps.sendRoomEnvironmentRequest,
-      isRelayConnection: deps.isRelayConnection,
+      ...(deps.isRelayConnection ? { isRelayConnection: deps.isRelayConnection } : {}),
       ...(deps.createViewerPublicKey ? { createViewerPublicKey: deps.createViewerPublicKey } : {}),
       ...(deps.reconnectRoomEventStream
         ? { reconnectEventStream: deps.reconnectRoomEventStream }

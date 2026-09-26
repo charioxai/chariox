@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { SliceRecord } from "@chariox/kernel-client/kernel-types"
+import type { SliceDisplayEndpoint, SliceRecord } from "@chariox/kernel-client/kernel-types"
 
 import {
   evaluateSliceViewerAvailability,
@@ -29,7 +29,7 @@ test("headless SliceRecord cannot be made available by a serialized endpoint res
     "slice_id":"slice-headless","kind":"selkies","url":"wss://relay.example/display/ephemeral",
     "access":"tunnel","expires_at_ms":60000,"capabilities":["view","websocket"],
     "stream_protocol":"chariox-display-v1","stream_id":"stream-1","peer_public_key":"worker-key"
-  }}}`) as { SliceDisplayEndpoint: { endpoint: { slice_id: string; kind: "selkies" } } }
+  }}}`) as { SliceDisplayEndpoint: { endpoint: SliceDisplayEndpoint } }
 
   const availability = evaluateSliceViewerAvailability(slice, { endpoint: response.SliceDisplayEndpoint.endpoint })
 
@@ -58,7 +58,7 @@ test("a public headed endpoint response is available only for the matching runni
     "slice_id":"slice-headed","kind":"selkies","url":"wss://relay.example/display/display-2/stream",
     "access":"tunnel","expires_at_ms":60000,"capabilities":["view","websocket","h264","encrypted"],
     "stream_protocol":"chariox-display-v1","stream_id":"display-2","peer_public_key":"worker-key"
-  }}}`) as { SliceDisplayEndpoint: { endpoint: { slice_id: string; kind: "selkies" } } }
+  }}}`) as { SliceDisplayEndpoint: { endpoint: SliceDisplayEndpoint } }
 
   const availability = evaluateSliceViewerAvailability(slice, { endpoint: response.SliceDisplayEndpoint.endpoint })
 

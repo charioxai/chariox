@@ -16,6 +16,7 @@ import { scopedSliceViewerTarget } from "@chariox/kernel-client/slice-screen-vie
 import {
   evaluateSliceViewerAvailability,
   validateRoomBoundSliceIdentity,
+  type SliceViewerAvailability,
 } from "./slice-viewer-availability.js"
 import {
   formatSliceProviderAuthActionResult,
@@ -1044,9 +1045,7 @@ async function openSliceScreen(
       })
     } catch (error) {
       const availability = evaluateSliceViewerAvailability(slice, { error })
-      deps.flashFooter(availability.state === "check_required"
-        ? `could not check display endpoint for slice ${slice.id}`
-        : availability.message, "error")
+      deps.flashFooter(sliceDisplayEndpointFailureMessage(availability, slice.id), "error")
       return
     }
     const availability = evaluateSliceViewerAvailability(slice, { endpoint })
@@ -1074,9 +1073,7 @@ async function openSliceScreen(
     endpoint = await deps.getSliceDisplayEndpoint(resolvedRef)
   } catch (error) {
     const availability = evaluateSliceViewerAvailability(slice, { error })
-    deps.flashFooter(availability.state === "check_required"
-      ? `could not check display endpoint for slice ${slice.id}`
-      : availability.message, "error")
+    deps.flashFooter(sliceDisplayEndpointFailureMessage(availability, slice.id), "error")
     return
   }
   const availability = evaluateSliceViewerAvailability(slice, { endpoint })
@@ -1089,6 +1086,21 @@ async function openSliceScreen(
   deps.appendNotice(endpoint.url)
   const opened = await deps.openExternalUrl?.(endpoint.url)
   deps.flashFooter(`${opened ? "opened" : "screen"} ${endpoint.url}`, "info")
+}
+
+function sliceDisplayEndpointFailureMessage(
+  availability: SliceViewerAvailability,
+  sliceId: string,
+): string {
+  switch (availability.state) {
+    case "unavailable":
+    case "error":
+      return availability.message
+    case "check_required":
+      return `could not check display endpoint for slice ${sliceId}`
+    case "available":
+      throw new Error(`slice ${sliceId} display endpoint request failed after reporting an available display`)
+  }
 }
 
 async function importSliceAuth(

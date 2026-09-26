@@ -4,7 +4,7 @@ import test from "node:test"
 import type { RoomEnvironmentAction, RoomEnvironmentSnapshot } from "@chariox/kernel-client/kernel-types"
 
 import { parseSlashCommand } from "./commands.js"
-import { handleRoomSlashCommand } from "./room-command-handler.js"
+import { handleRoomSlashCommand, type RoomCommandHandlerDeps } from "./room-command-handler.js"
 
 test("/room status reads and renders the attached Room environment", async () => {
   const requests: unknown[] = []
@@ -548,7 +548,7 @@ test("repeated /room status does not register disposable Selkies streams", async
     }),
   }
 
-  const deps = {
+  const deps: RoomCommandHandlerDeps = {
     isAttached: () => true,
     sessionId: () => "session-1",
     send: async <TResponse>(request: unknown) => {

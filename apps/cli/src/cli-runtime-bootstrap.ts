@@ -384,8 +384,9 @@ function relayClientOptions(
     return undefined
   }
   const relayOptions: RelayClientOptions = {}
-  if (relayAuthTokenOverride ?? options.relayToken) {
-    relayOptions.relayAuthToken = relayAuthTokenOverride ?? options.relayToken
+  const relayAuthToken = relayAuthTokenOverride ?? options.relayToken
+  if (relayAuthToken) {
+    relayOptions.relayAuthToken = relayAuthToken
   }
   if (options.targetDaemonId !== undefined) {
     relayOptions.targetDaemonId = options.targetDaemonId
