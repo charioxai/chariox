@@ -63,14 +63,8 @@ fn pre_reimage_observation_binding_requires_exact_confirmed_generation_and_curre
         ..PersistedCloudRelayProfile::default()
     });
 
-    validate_pre_reimage_observation_binding(
-        &config,
-        &registration,
-        &receipt,
-        "environment-1",
-        4,
-    )
-    .expect("exact current managed generation");
+    validate_pre_reimage_observation_binding(&config, &registration, &receipt, "environment-1", 4)
+        .expect("exact current managed generation");
     assert!(validate_pre_reimage_observation_binding(
         &config,
         &registration,
@@ -1436,7 +1430,9 @@ fn path1_release_evidence_requires_the_external_builder_key() {
     std::env::remove_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV);
     assert!(super::authoritative_managed_release_evidence_from_env().is_err());
 
-    let packaged_key = fixture.release_root.join("usr/lib/chariox/builder-public-key");
+    let packaged_key = fixture
+        .release_root
+        .join("usr/lib/chariox/builder-public-key");
     let external_key = fixture.root.join("etc/chariox/trusted-builder-public-key");
     fs::create_dir_all(external_key.parent().expect("external key parent"))
         .expect("create external key directory");
@@ -1462,7 +1458,9 @@ fn path1_release_evidence_requires_the_external_builder_key() {
     std::env::set_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV, &packaged_key);
     let image_key = super::authoritative_managed_release_evidence_from_env()
         .expect_err("key inside release image must fail");
-    assert!(image_key.to_string().contains("outside the managed release image"));
+    assert!(image_key
+        .to_string()
+        .contains("outside the managed release image"));
 
     for (name, value) in previous {
         restore_env(name, value);

@@ -50,7 +50,11 @@ fn authorize_observation_caller(
             "managed pre-reimage observation belongs to another Cloud user",
         ));
     }
-    if profile.machine_credential.as_deref().is_none_or(str::is_empty) {
+    if profile
+        .machine_credential
+        .as_deref()
+        .is_none_or(str::is_empty)
+    {
         return Err(observation_error(
             "managed pre-reimage observation requires a machine credential",
         ));

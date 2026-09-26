@@ -12,18 +12,18 @@ pub mod app_inbox;
 pub mod app_outbox;
 pub mod installation;
 pub mod managed_state;
-pub mod publisher_trust;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod package_upload;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod private_fs;
+pub mod publisher_trust;
 #[cfg(unix)]
 pub mod release_store;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub mod runtime_enrollment;
 pub mod wire;
-pub mod worker_peer;
-pub mod worker_readiness;
 mod wire_json;
+pub mod worker_peer;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub mod worker_process;
+pub mod worker_readiness;

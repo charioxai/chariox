@@ -158,6 +158,11 @@ impl KernelRuntimeOwnedState {
                 self.durable_state_store
                     .persist_workflow_runtime_transition(&before, "workflow_queue_admitted")?;
                 let prepared = Arc::new(sessions.prepare_durable_workflow_queue_run(session)?);
+                // Only held or disabled work remains: nothing to start and no
+                // state change, so no queue-start commit (or event) is written.
+                if prepared.next().is_none() && prepared.after() == prepared.before() {
+                    return Ok(None);
+                }
                 self.durable_state_store
                     .commit_workflow_queue_start(prepared.clone())
                     .map_err(|error| DaemonError::LocalTransport {
