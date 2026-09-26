@@ -543,6 +543,7 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     "Wants=network-online.target chariox-rootless-docker.service",
     "After=network-online.target chariox-rootless-docker.service",
     "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
+    "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
   ]) {
     assert.ok(path1Unit.includes(required), `Path-1 unit is missing ${required}`)
@@ -590,6 +591,8 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     "Wants=network-online.target chariox-rootless-docker.service",
     "After=network-online.target chariox-rootless-docker.service",
     "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
+    "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker",
   ]) {
     assert.ok(workerUnit.includes(required), `Path-1 worker unit is missing ${required}`)
   }

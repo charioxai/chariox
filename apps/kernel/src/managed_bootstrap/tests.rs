@@ -844,6 +844,7 @@ fn disposable_worker_systemd_unit_runs_path1_without_provider_isolation() {
         "Environment=CHARIOX_HOME=/home/chariox/.chariox",
         "Environment=CHARIOX_MANAGED_PROVIDER_HOME=/var/lib/chariox/provider-home",
         "Environment=CHARIOX_MANAGED_VAULT_PATH=/home/chariox/.chariox/vault/vault.json",
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker",
         // Managed-machine automatic shutdown triggers stay on the Path-1 unit.
         "Conflicts=chariox-managed-bootstrap.service",

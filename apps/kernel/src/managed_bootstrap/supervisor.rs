@@ -206,6 +206,15 @@ fn spawn_kernel_with_handoff(
             )
         }
     };
+    // `release` is verified before this launch path is reached. Resolve the
+    // ordinary provider PATH before preparing launch credentials.
+    let provider_path = if topology == ManagedProviderTopology::Path1 {
+        Some(super::provider_path::resolve_login_path(
+            &config.process_home,
+        ))
+    } else {
+        None
+    };
     let provider_home = prepare_managed_provider_home(config)?;
     let local_auth_path = prepare_kernel_local_auth_file(config)?;
     let mut command = Command::new(&release.kernel_binary);
@@ -234,6 +243,13 @@ fn spawn_kernel_with_handoff(
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if let Some(provider_path) = provider_path {
+        command
+            .env("PATH", provider_path)
+            .env_remove("LD_PRELOAD")
+            .env_remove("BASH_ENV")
+            .env_remove("ENV");
+    }
     if let Some(isolation_root) = isolation_root {
         command
             .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
@@ -693,6 +709,7 @@ mod broker_proxy_tests {
   printf 'chariox_home=%s\n' "${CHARIOX_HOME-}"
   printf 'repository_root=%s\n' "${CHARIOX_MANAGED_REPOSITORY_ROOT-}"
   printf 'cwd=%s\n' "$(pwd)"
+  printf 'path=%s\n' "${PATH-<unset>}"
   printf 'topology=%s\n' "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-<unset>}"
   printf 'capability_root=%s\n' "${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}"
   printf 'provider_isolation=%s\n' "${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}"
@@ -842,6 +859,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         // A Path-1 launch ignores shared-host isolation selectors. Without an
         // accepted broker lease it strips the socket and requires the broker,
         // so slice operations cannot fall back to a Docker CLI.
+        std::fs::write(home.join(".profile"), "export PATH='relative:/usr/bin:'\n")
+            .expect("Path-1 login profile should be written");
         std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
         std::env::set_var(
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
@@ -876,6 +895,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             home.join(".chariox").display()
         )));
         assert!(path1.contains(&format!("cwd={}\n", canonical_home.display())));
+        assert!(path1.contains("path=/usr/bin\n"));
         assert!(path1.contains("repository_root=/srv/managed workspaces\n"));
         assert!(path1.contains("topology=path1\n"));
         assert!(path1.contains("capability_root=<unset>\n"));
@@ -905,6 +925,16 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         );
         std::env::remove_var(BROKER_FD_ENV);
         std::env::remove_var(BROKER_REQUIRED_ENV);
+        std::fs::write(
+            home.join(".profile"),
+            concat!(
+                "/bin/sh -c 'i=0; while [ \"$i\" -lt 1000 ]; do ",
+                "printf x || :; printf x >> \"$HOME/writer-heartbeat\"; ",
+                "/bin/sleep 0.02; i=$((i + 1)); done' &\n",
+                "export PATH='/profile/never'\n",
+            ),
+        )
+        .expect("timeout login profile should be written");
         let (mut child, path1_fd) =
             spawn_kernel_with_handoff(&config, &release, ManagedProviderTopology::Path1)
                 .expect("Path-1 kernel should receive its broker FD");
@@ -912,6 +942,9 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let path1_fd = path1_fd.expect("Path-1 broker lease should hand off an FD");
         let path1_broker =
             std::fs::read_to_string(&path1_record).expect("Path-1 broker env record should exist");
+        assert!(path1_broker.contains(
+            "path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+        ));
         assert!(path1_broker.contains("service=<unset>\n"));
         assert!(path1_broker.contains("publication=<unset>\n"));
         assert!(path1_broker.contains("socket=<unset>\n"));
@@ -1176,6 +1209,11 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
             process_home.display()
         );
+        std::fs::write(
+            process_home.join(".profile"),
+            format!("export PATH='{path_value}'\n"),
+        )
+        .expect("test login profile should set the provider PATH");
         let mut environment_names = PATH1_SHARED_HOST_SELECTOR_ENVS.to_vec();
         environment_names.extend([
             "HOME",
