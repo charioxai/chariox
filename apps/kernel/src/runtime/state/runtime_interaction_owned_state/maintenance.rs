@@ -38,11 +38,12 @@ impl KernelRuntimeOwnedState {
         self.remove_orphaned_kernel_operation_interactions(shutdown);
     }
 
-    /// A kernel-operation decision persisted in a session outlives its
-    /// responder when the kernel stops without its shutdown sweep. Nothing can
-    /// answer it after a restart, and its subject would block a retry of the
-    /// same operation, so it is dropped from the session. Hidden sessions are
-    /// scanned too: decisions can be registered in them.
+    /// A kernel-operation decision or vault prompt persisted in a session
+    /// outlives its responder when the kernel stops without its shutdown sweep.
+    /// Nothing can answer it after a restart (an answer is "not pending"), yet
+    /// every terminal keeps showing it and a decision's subject would block a
+    /// retry, so it is dropped from the session. Hidden sessions are scanned
+    /// too: decisions can be registered in them.
     fn remove_orphaned_kernel_operation_interactions(&self, shutdown: bool) {
         if !self.orphan_sweep_due(shutdown) {
             return;
@@ -60,7 +61,7 @@ impl KernelRuntimeOwnedState {
                         .active_interactions()
                         .iter()
                         .filter(|interaction| {
-                            interaction.kernel_operation_id().is_some()
+                            waits_in_memory(interaction)
                                 && !pending.get(interaction.id()).is_some_and(|value| {
                                     value.session_id == session.id()
                                         && value.belongs_to(&self.session_store)
@@ -115,4 +116,10 @@ impl KernelRuntimeOwnedState {
             }
         }
     }
+}
+
+/// Answered only through a responder held by this kernel process: kernel
+/// operation decisions and vault unlock prompts (`vault-unlock-…`).
+fn waits_in_memory(interaction: &crate::session::RuntimeInteraction) -> bool {
+    interaction.kernel_operation_id().is_some() || interaction.id().starts_with("vault-unlock-")
 }
