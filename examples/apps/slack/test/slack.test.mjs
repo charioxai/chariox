@@ -113,7 +113,8 @@ test('a reply goes back through the notification\'s own connection and context',
   assert.deepEqual(kernel.actions, [
     { connectionId: 'connection-1', action: 'notification.reply', input: { text: 'Deploying now', mode: 'thread' },
       context: mention('').reply_context },
-    { connectionId: 'connection-1', action: 'slack.reaction.add', input: { name: 'eyes' }, context: mention('').reply_context },
+    { connectionId: 'connection-1', action: 'slack.reaction.add', input: { name: 'eyes' }, context: mention('').reply_context,
+      idempotencyKey: 'react:Ev1:eyes' },
   ]);
   await assert.rejects(kernel.tools.get('reply')({ id: 'missing', text: 'x' }), { code: 'NOT_FOUND' });
   await kernel.deliver('mentioned', 'Ev9', { ...mention('no context'), reply_context: null });

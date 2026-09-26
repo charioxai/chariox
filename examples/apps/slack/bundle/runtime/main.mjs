@@ -132,6 +132,7 @@ export default function register(chariox) {
     return item;
   }
 
+  // Each reply is a new Slack message, so it carries no idempotency key.
   chariox.tools.register('reply', async ({ id, text, mode = 'thread' }) => {
     const item = await target(id);
     const { accepted, result } = await chariox.connections.action({
@@ -150,6 +151,8 @@ export default function register(chariox) {
       action: 'slack.reaction.add',
       input: { name },
       context: item.reply_context,
+      // One reaction per notification and name: repeating it is not a new one.
+      idempotencyKey: `react:${id}:${name}`,
     });
     return { reacted: accepted };
   });
