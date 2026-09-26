@@ -39,7 +39,7 @@ function fakeKernel({ automation = true } = {}) {
   };
   register(chariox);
   const deliver = (name, id, payload) => incoming.get(name)({ occurrenceId: id, payload });
-  return { tools, occurrences, deliver, incoming };
+  return { tools, occurrences, deliver, incoming, state };
 }
 
 // As the Slack event generator forwards an app_mention through AEDS.
@@ -112,9 +112,12 @@ test('long multibyte messages stay under the state value cap, newest first, and 
   assert.equal(notifications[0].id, 'Ev99');
   assert.equal(notifications[0].text, '漢'.repeat(3999));
   assert.equal(kernel.occurrences.length, 100, 'every event was still forwarded');
-  // A reply context too large to keep leaves the notification unanswerable.
+  // A reply context too large or not flat is not kept; that notification
+  // cannot be answered, while a normal one keeps its context.
   await kernel.deliver('mentioned', 'EvBig', { ...mention('big'), reply_context: { blob: 'x'.repeat(5000) } });
-  const [big] = (await kernel.tools.get('list_notifications')({ limit: 1 })).notifications;
-  assert.equal(big.id, 'EvBig');
-  assert.ok(!big.reply_context && !big.can_reply);
+  await kernel.deliver('mentioned', 'EvDeep', { ...mention('deep'), reply_context: { nested: { a: 1 } } });
+  const stored = id => kernel.state.get('notifications').value.items.find(item => item.id === id);
+  assert.equal(stored('EvBig').reply_context, null);
+  assert.equal(stored('EvDeep').reply_context, null);
+  assert.deepEqual(stored('Ev99').reply_context, mention('').reply_context);
 });
