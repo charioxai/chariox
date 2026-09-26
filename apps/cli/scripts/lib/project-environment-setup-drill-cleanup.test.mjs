@@ -94,7 +94,7 @@ function fakeHome(options = {}) {
     environment_definition: { origin: 'utility_generated' },
     ...(options.projectOverrides ?? {}),
   }
-  const agents = [
+  const defaultAgents = [
     {
       id: targetPin.utility_agent_id,
       provider: targetPin.utility_provider,
@@ -122,6 +122,14 @@ function fakeHome(options = {}) {
       },
     },
   ]
+  const agents = defaultAgents.map((agent) => {
+    const override = options.agentOverrides?.[agent.id] ?? {}
+    return {
+      ...agent,
+      ...override,
+      remote_execution: { ...agent.remote_execution, ...(override.remote_execution ?? {}) },
+    }
+  })
   const session = {
     id: targetPin.session_id,
     project_id: targetPin.project_id,
@@ -145,7 +153,12 @@ function fakeHome(options = {}) {
       }
       if (name === 'CancelProjectEnvironmentSetup' && options.cancelHangs) return await new Promise(() => {})
       if (name === 'CancelProjectEnvironmentSetup') return { ProjectEnvironmentSetupCancelled: { status: setupStatus('cancelled', options.cancelStatusOverrides ?? {}) } }
-      if (name === 'ListRemoteMachines') return { RemoteMachinesListed: { machines: [{ machine_id: targetPin.target_machine_id, trust_status: 'approved', online: true }] } }
+      if (name === 'ListRemoteMachines') return { RemoteMachinesListed: { machines: [{
+        machine_id: targetPin.target_machine_id,
+        trust_status: 'approved',
+        online: true,
+        ...(options.machineOverrides ?? {}),
+      }] } }
       if (name === 'ListRemoteMachineKernels') {
         if (options.transportFailureAt === name) throw new Error('injected transport failure')
         return { RemoteMachineKernelsListed: { kernels: [{
@@ -153,6 +166,7 @@ function fakeHome(options = {}) {
           machine_id: targetPin.target_machine_id,
           accepting_remote_leases: true,
           available_providers: ['codex', 'opencode'],
+          ...(options.kernelOverrides ?? {}),
         }] } }
       }
       if (name === 'ListProjects') return { ProjectsListed: { projects: [project] } }
@@ -364,6 +378,62 @@ test('changed Project owner and session bindings refuse cleanup', async (t) => {
       const { result, calls } = await runCleanup(entry.options)
       assert.equal(result.complete, false)
       assert.ok(result.ownershipChecks[0].failures.includes(entry.failure))
+      assert.equal(calls.includes('DestroyAgent'), false)
+      assert.equal(calls.includes('DeleteSession'), false)
+    })
+  }
+})
+
+test('same-owner lease refresh is accepted for cleanup', async () => {
+  const { result, calls } = await runCleanup({
+    agentOverrides: {
+      [targetPin.launch_agent_id]: {
+        remote_execution: {
+          execution_lease_id: 'lease-launch-refreshed',
+          leased_agent_id: 'leased-launch-refreshed',
+        },
+      },
+    },
+  })
+  assert.equal(result.ownershipChecks[0].verified, true)
+  assert.equal(result.complete, true)
+  assert.deepEqual(result.destroyedAgentIds, [targetPin.utility_agent_id, targetPin.launch_agent_id])
+  assert.equal(calls.includes('DeleteSession'), true)
+})
+
+test('offline worker health does not block home-kernel cleanup', async () => {
+  const { result, calls } = await runCleanup({
+    machineOverrides: { online: false },
+    kernelOverrides: { accepting_remote_leases: false, available_providers: [] },
+  })
+  assert.equal(result.ownershipChecks[0].verified, true)
+  assert.equal(result.complete, true)
+  assert.equal(calls.includes('DestroyAgent'), true)
+  assert.equal(calls.includes('DeleteSession'), true)
+  assert.equal(calls.includes('DeleteProject'), true)
+})
+
+test('changed remote owner bindings and provider profile still refuse cleanup', async (t) => {
+  const cases = [
+    {
+      name: 'worker machine',
+      override: { remote_execution: { worker_machine_id: 'foreign-machine' } },
+    },
+    {
+      name: 'worker kernel',
+      override: { remote_execution: { worker_kernel_id: 'foreign-kernel' } },
+    },
+    { name: 'provider', override: { provider: 'claude' } },
+    { name: 'provider profile', override: { account_profile: 'foreign-profile' } },
+    { name: 'worktree', override: { worktree_id: '/foreign/worktree' } },
+  ]
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const { result, calls } = await runCleanup({
+        agentOverrides: { [targetPin.launch_agent_id]: entry.override },
+      })
+      assert.equal(result.complete, false)
+      assert.ok(result.ownershipChecks[0].failures.includes('pinned_launch_agent_binding_changed'))
       assert.equal(calls.includes('DestroyAgent'), false)
       assert.equal(calls.includes('DeleteSession'), false)
     })

@@ -254,19 +254,12 @@ function inspectOwnershipSnapshot(snapshot, pin, expectedOwnership, { boundary, 
   }
   const failures = []
   if (!machine) failures.push('target_machine_missing')
-  else {
-    if (machine.trust_status !== 'approved') failures.push('target_machine_not_approved')
-    if (machine.online !== true) failures.push('target_machine_offline')
-  }
+  else if (machine.trust_status !== 'approved') failures.push('target_machine_not_approved')
   if (!kernel) failures.push('target_kernel_missing')
   else {
     if (kernel.machine_id !== pin.target_machine_id) failures.push('target_kernel_machine_changed')
-    if (kernel.accepting_remote_leases !== true) failures.push('target_kernel_not_accepting_leases')
-    const providers = new Set(kernel.available_providers ?? [])
-    if (!providers.has(providerCapability(pin.utility_provider)) || !providers.has(providerCapability(pin.launch_provider))) {
-      failures.push('target_kernel_provider_capabilities_changed')
-    }
   }
+  // These mutations are sent to the home kernel. Worker liveness and lease capacity are launch/preflight health, not ownership.
   if (!project) failures.push('pinned_project_missing')
   else {
     if (project.status !== 'active') failures.push('pinned_project_not_active')
@@ -303,12 +296,11 @@ function inspectOwnershipSnapshot(snapshot, pin, expectedOwnership, { boundary, 
     const role = agentId === pin.utility_agent_id ? 'utility' : 'launch'
     const lease = expectedOwnership?.workerLeases?.find((entry) => entry.agentId === agentId)
     const remote = agent?.remote_execution
+    // Lease identifiers are generation-scoped and may rotate during the normal single binding refresh.
     if (!agent || !lease || agent.worktree_id !== pin.worktree_id
       || !remote
       || remote.worker_machine_id !== pin.target_machine_id
       || remote.worker_kernel_id !== pin.target_kernel_id
-      || remote.execution_lease_id !== lease.executionLeaseId
-      || remote.leased_agent_id !== lease.leasedAgentId
       || (role === 'utility' && (agent.provider !== pin.utility_provider || agent.account_profile !== pin.utility_account_profile))
       || (role === 'launch' && (providerCapability(agent.provider) !== providerCapability(pin.launch_provider)
         || agent.account_profile !== pin.launch_account_profile))) {
