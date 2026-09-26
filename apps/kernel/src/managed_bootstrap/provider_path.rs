@@ -26,8 +26,25 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Resolve the user's login PATH in a short-lived, isolated Bash process.
 /// Only the validated PATH string crosses back into the bootstrap process.
+pub(super) fn resolve_login_path(home: &Path) -> OsString {
+    match probe_login_path(home) {
+        Ok(path) => path,
+        Err(reason) => {
+            crate::logging::warn_with_fields(
+                "managed_bootstrap.provider_path_probe_failed",
+                "managed provider login PATH probe failed; using the bootstrap PATH",
+                serde_json::json!({
+                    "reason": reason,
+                    "fallback_path": BOOTSTRAP_PATH,
+                }),
+            );
+            OsString::from(BOOTSTRAP_PATH)
+        }
+    }
+}
+
 #[cfg(unix)]
-pub(super) fn resolve_login_path(home: &Path) -> Result<OsString, &'static str> {
+fn probe_login_path(home: &Path) -> Result<OsString, &'static str> {
     let mut command = Command::new("/bin/bash");
     command
         .arg("--login")
@@ -132,11 +149,11 @@ pub(super) fn resolve_login_path(home: &Path) -> Result<OsString, &'static str> 
 }
 
 #[cfg(not(unix))]
-pub(super) fn resolve_login_path(_home: &Path) -> Result<OsString, &'static str> {
+fn probe_login_path(_home: &Path) -> Result<OsString, &'static str> {
     Err("login PATH probing requires a Unix platform")
 }
 
-fn parse_login_path(output: &[u8]) -> Result<&str, &'static str> {
+fn parse_login_path(output: &[u8]) -> Result<String, &'static str> {
     let marker_start = output
         .windows(PATH_PROBE_MARKER.len())
         .rposition(|window| window == PATH_PROBE_MARKER)
@@ -151,14 +168,18 @@ fn parse_login_path(output: &[u8]) -> Result<&str, &'static str> {
         return Err("login profile returned an invalid PATH");
     }
     let path = std::str::from_utf8(framed).map_err(|_| "login profile PATH is not UTF-8")?;
-    if path.bytes().any(|byte| byte.is_ascii_control())
-        || path
-            .split(':')
-            .any(|component| component.is_empty() || !Path::new(component).is_absolute())
-    {
-        return Err("login profile returned an unsafe PATH");
+    let safe_components = path
+        .split(':')
+        .filter(|component| {
+            !component.is_empty()
+                && Path::new(component).is_absolute()
+                && !component.bytes().any(|byte| byte.is_ascii_control())
+        })
+        .collect::<Vec<_>>();
+    if safe_components.is_empty() {
+        return Err("login profile returned no safe PATH entries");
     }
-    Ok(path)
+    Ok(safe_components.join(":"))
 }
 
 #[cfg(unix)]
@@ -213,10 +234,7 @@ mod tests {
         let home = TestHome::new();
         let local_bin = home.0.join(".local/bin");
         fs::create_dir_all(&local_bin).expect("provider bin should be created");
-        let expected_path = format!(
-            "{}:{BOOTSTRAP_PATH}",
-            local_bin.display()
-        );
+        let expected_path = format!("{}:{BOOTSTRAP_PATH}", local_bin.display());
         fs::write(
             home.0.join(".profile"),
             format!(
@@ -255,7 +273,7 @@ mod tests {
             "LD_PRELOAD",
         ]
         .map(|name| (name, std::env::var_os(name)));
-        let path = resolve_login_path(&home.0).expect("login PATH should be resolved");
+        let path = resolve_login_path(&home.0);
         assert_eq!(path, OsString::from(&expected_path));
         for (name, expected) in supervisor_env {
             assert_eq!(std::env::var_os(name), expected, "supervisor env {name} changed");
@@ -282,14 +300,14 @@ mod tests {
                 "/bin/sh -c 'i=0; while [ \"$i\" -lt 1000 ]; do ",
                 "printf x || :; printf x >> \"$HOME/writer-heartbeat\"; ",
                 "/bin/sleep 0.02; i=$((i + 1)); done' &\n",
+                "export PATH='/profile/never'\n",
             ),
         )
         .expect("login profile should be written");
 
         let started = Instant::now();
-        let error = resolve_login_path(&home.0)
-            .expect_err("inherited stdout should hit the deadline");
-        assert_eq!(error, "login PATH probe timed out");
+        let path = resolve_login_path(&home.0);
+        assert_eq!(path, OsString::from(BOOTSTRAP_PATH));
         let elapsed = started.elapsed();
         assert!(elapsed >= PROBE_TIMEOUT);
         assert!(elapsed < PROBE_TIMEOUT + Duration::from_secs(3));
@@ -304,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn login_path_probe_rejects_oversized_output() {
+    fn login_path_probe_uses_bootstrap_path_for_oversized_output() {
         let home = TestHome::new();
         fs::write(
             home.0.join(".profile"),
@@ -315,17 +333,36 @@ mod tests {
         )
         .expect("login profile should be written");
 
-        let error = resolve_login_path(&home.0).expect_err("oversized output should be rejected");
-        assert_eq!(error, "login PATH probe output exceeded its limit");
+        let path = resolve_login_path(&home.0);
+        assert_eq!(path, OsString::from(BOOTSTRAP_PATH));
+    }
+
+    #[test]
+    fn login_path_probe_uses_bootstrap_path_when_profile_exits() {
+        let home = TestHome::new();
+        fs::write(home.0.join(".profile"), "exit 23\n")
+            .expect("failing login profile should be written");
+
+        assert_eq!(
+            resolve_login_path(&home.0),
+            OsString::from(BOOTSTRAP_PATH)
+        );
     }
 
     #[test]
     fn login_path_accepts_profile_output_before_the_probe_frame() {
-        assert!(parse_login_path(b"\0CHARIOX_PROVIDER_PATH_V1\0relative:/bin\0").is_err());
-        assert!(parse_login_path(b"\0CHARIOX_PROVIDER_PATH_V1\0/bin::/usr/bin\0").is_err());
+        assert_eq!(
+            parse_login_path(b"\0CHARIOX_PROVIDER_PATH_V1\0relative:/bin::/usr/bin:\0"),
+            Ok("/bin:/usr/bin".to_string())
+        );
+        assert!(parse_login_path(b"\0CHARIOX_PROVIDER_PATH_V1\0relative::\0").is_err());
+        assert_eq!(
+            parse_login_path(b"\0CHARIOX_PROVIDER_PATH_V1\0/bin:/bad\nentry:/usr/bin\0"),
+            Ok("/bin:/usr/bin".to_string())
+        );
         assert_eq!(
             parse_login_path(b"profile output\n\0CHARIOX_PROVIDER_PATH_V1\0/bin\0"),
-            Ok("/bin")
+            Ok("/bin".to_string())
         );
         assert!(parse_login_path(b"profile output without a probe frame").is_err());
     }
