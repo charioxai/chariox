@@ -141,6 +141,11 @@ step. Before `worker.ready` is accepted, the kernel admits only `state.get`,
 the staged generation, and requires each transaction's `schemaVersion` to equal
 the current step's `to` (the SDK always sends it). Every other method is denied.
 Any failed step ends the worker with exit code 136 before App runtime code loads.
+A developer writes steps as `migrations/001.js`, `002.js` and so on (`.mjs`
+and `.cjs` are also accepted), with no gaps. `chariox app pack` then signs
+them as the manifest's chain from schema 0, and the last number is the data
+schema version that state transactions use. A manifest that declares
+`migrations` itself is packed as written.
 
 Other typed methods use the names and parameter shapes documented in
 `src/index.d.ts` and `src/index.js`: `state.*`, `files.*`, `events.*`, `http.request`,
