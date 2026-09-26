@@ -1,5 +1,11 @@
 import { performance } from 'node:perf_hooks'
-import { assertBoundSetupStatus, getSetupStatusFromResponse, providerCapability } from './project-environment-setup-drill.mjs'
+import {
+  assertBoundSetupStatus,
+  getSetupStatusFromResponse,
+  providerCapability,
+  requireVariant,
+  setupStatusBinding,
+} from './project-environment-setup-drill.mjs'
 
 const TERMINAL_PHASES = new Set(['ready', 'failed', 'cancelled'])
 export const PROJECT_ENVIRONMENT_SETUP_DRILL_CLEANUP_TIMEOUT_MS = 60_000
@@ -382,13 +388,6 @@ async function waitForTerminalSetup(client, operationId, { pin, budget, pollMs, 
   return last
 }
 
-function requireVariant(response, ...variants) {
-  for (const variant of variants) {
-    if (response?.[variant] != null) return response[variant]
-  }
-  throw new Error(`home kernel returned none of the expected response variants: ${variants.join(', ')}`)
-}
-
 function requireRequestBuilders(requestBuilders) {
   const required = [
     'cancelProjectEnvironmentSetupRequest',
@@ -404,17 +403,6 @@ function requireRequestBuilders(requestBuilders) {
   ]
   for (const name of required) {
     if (typeof requestBuilders?.[name] !== 'function') throw new Error(`kernel-client request builder ${name} is required`)
-  }
-}
-
-function setupStatusBinding(pin, operationId) {
-  return {
-    operation_id: operationId,
-    project_id: pin.project_id,
-    session_id: pin.session_id,
-    agent_id: pin.utility_agent_id,
-    worker_id: pin.target_machine_id,
-    platform: pin.target_platform,
   }
 }
 

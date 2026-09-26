@@ -11,8 +11,10 @@ import {
   commandDigest,
   parseProjectEnvironmentSetupDrillArgs,
   projectEnvironmentSetupDrillValidationCommands,
+  requireVariant,
   runBoundedProjectEnvironmentSetupOperation as runBoundedProjectEnvironmentSetupOperationWithBuilders,
   setupDrillOperationId,
+  setupStatusBinding,
   startSetupParameters,
   validateProjectEnvironmentSetupDrillPin,
   validateSetupDrillConfirmations,
@@ -177,6 +179,20 @@ test('reviewed target pin and exact destructive confirmations fail closed', () =
   assert.doesNotThrow(() => validateSetupDrillConfirmations(confirmations, targetPin, 'sha256:reviewed-pin'))
   assert.throws(() => validateSetupDrillConfirmations(confirmations, targetPin, 'sha256:changed-pin'), /pin digest confirmation/)
   assert.throws(() => validateSetupDrillConfirmations({ ...confirmations, '--confirm-target': 'another-machine' }, targetPin, 'sha256:reviewed-pin'), /does not match/)
+})
+
+test('shared setup helpers bind the reviewed identity and select the first present response variant', () => {
+  const targetPin = pin()
+  assert.deepEqual(setupStatusBinding(targetPin, 'operation-drill'), {
+    operation_id: 'operation-drill',
+    project_id: targetPin.project_id,
+    session_id: targetPin.session_id,
+    agent_id: targetPin.utility_agent_id,
+    worker_id: targetPin.target_machine_id,
+    platform: targetPin.target_platform,
+  })
+  assert.deepEqual(requireVariant({ Missing: null, Found: { value: 1 }, Later: { value: 2 } }, 'Missing', 'Found', 'Later'), { value: 1 })
+  assert.throws(() => requireVariant({ Missing: null }, 'Missing'), /none of the expected response variants: Missing/)
 })
 
 test('CLI requires the reviewed pin, external paths, and provider launch consent', () => {

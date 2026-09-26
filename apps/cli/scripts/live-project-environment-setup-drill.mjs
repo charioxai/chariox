@@ -16,9 +16,11 @@ import {
   parseProjectEnvironmentSetupDrillArgs,
   projectEnvironmentSetupDrillValidationCommands,
   providerCapability,
+  requireVariant,
   runBoundedProjectEnvironmentSetupOperation,
   safeSetupStatusEvidence,
   setupDrillOperationId,
+  setupStatusBinding,
   startSetupParameters,
   validateProjectEnvironmentSetupDrillPin,
   validateSetupDrillConfirmations,
@@ -54,13 +56,6 @@ function printHelp() {
     `Each setup operation is limited to 15 minutes; target validation has kernel-enforced 120 second command and 300 second aggregate bounds.`,
     `Rust workspace Cargo check uses at most 2 build jobs and a unique target directory removed by a worker shell trap.`,
   ].join('\n'))
-}
-
-function requireVariant(response, ...variants) {
-  for (const variant of variants) {
-    if (response?.[variant] != null) return response[variant]
-  }
-  throw new Error(`home kernel returned none of the expected response variants: ${variants.join(', ')}`)
 }
 
 async function sendWithTimeout(client, request, label, timeoutMs = PROJECT_ENVIRONMENT_SETUP_DRILL_CONTROL_TIMEOUT_MS) {
@@ -411,7 +406,7 @@ async function main() {
     const generatedProject = await readProject(createClient, input.pin.project_id)
     const generatedDefinition = assertStoredDefinition(generatedProject, input.pin.target_platform, validationCommands)
     const coldValidationCommands = generatedProject.environment_definition.validation_commands
-    const coldExpected = setupBinding(input.pin, coldOperationId)
+    const coldExpected = setupStatusBinding(input.pin, coldOperationId)
     const coldReady = assertReadySetupValidation(coldResult.status, {
       expected: coldExpected,
       commands: coldValidationCommands,
@@ -454,7 +449,7 @@ async function main() {
     storedEvidence.idempotentStartReplayAttempt = storedResult.replayedAttempt
     storedEvidence.reconnectRecoveredAttempt = storedResult.recoveredAttempt
     const storedReady = assertReadySetupValidation(storedResult.status, {
-      expected: setupBinding(input.pin, storedOperationId),
+      expected: setupStatusBinding(input.pin, storedOperationId),
       commands: storedValidationCommands,
     })
     storedEvidence.readyObservedAtMs = Date.now()
@@ -463,7 +458,7 @@ async function main() {
     evidence.storedDefinitionReuseProven = true
 
     const currentColdReady = await assertProjectSetupReadyAgain(createClient, coldOperationId, coldExpected, coldValidationCommands)
-    const currentStoredReady = await assertProjectSetupReadyAgain(createClient, storedOperationId, setupBinding(input.pin, storedOperationId), storedValidationCommands)
+    const currentStoredReady = await assertProjectSetupReadyAgain(createClient, storedOperationId, setupStatusBinding(input.pin, storedOperationId), storedValidationCommands)
     const readyStatuses = [currentColdReady, currentStoredReady]
     evidence.providerLaunch.attempted = true
     await launchOfficialProvider(createClient, input.pin, readyStatuses, evidence.providerLaunch)
@@ -509,17 +504,6 @@ async function main() {
     return
   }
   console.log(JSON.stringify({ outcome: evidence.outcome, evidencePath, target: evidence.target, setupOperations: evidence.setupOperations.map(({ operationId, attempts, retries, readyDefinitionDigest }) => ({ operationId, attempts, retries, readyDefinitionDigest })), providerRunId: evidence.providerLaunch.providerRunId, cleanup: evidence.cleanup }, null, 2))
-}
-
-function setupBinding(pin, operationId) {
-  return {
-    operation_id: operationId,
-    project_id: pin.project_id,
-    session_id: pin.session_id,
-    agent_id: pin.utility_agent_id,
-    worker_id: pin.target_machine_id,
-    platform: pin.target_platform,
-  }
 }
 
 function sha256(bytes) {
