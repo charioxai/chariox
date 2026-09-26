@@ -805,8 +805,9 @@ mod tests {
             DaemonError::RelayTransport {
                 operation: "read relay peer response",
                 code: "relay_request_failed".to_string(),
-                message: "timed out waiting for worker: session `worker-session` has no active prompt"
-                    .to_string(),
+                message:
+                    "timed out waiting for worker: session `worker-session` has no active prompt"
+                        .to_string(),
                 retryable: false,
             },
             DaemonError::RelayTransport {
