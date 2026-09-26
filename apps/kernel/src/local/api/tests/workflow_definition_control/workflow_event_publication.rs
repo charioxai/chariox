@@ -1321,3 +1321,146 @@ fn reduced_connection_scopes_block_binding_reactivation_and_transfer() {
     };
     assert!(target_bindings.is_empty());
 }
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[test]
+fn app_inbox_routes_are_checked_with_the_generator_before_they_are_stored() {
+    let server = ReadyConnectionServer::start();
+    let target = server.target();
+    let mut config = crate::DaemonConfig::for_tests();
+    config.event_registry_url = Some(target.url.clone());
+    config
+        .event_generator_management_targets
+        .insert("dev.chariox.dummy".to_string(), target);
+    let harness = LocalRouterTestHarness::with_config(config);
+    let graph = create_publication_test_graph(&harness, "app-route-interest");
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                expected_workflow_revision: None,
+                operation_key: Some("publish-app-route-interest".to_string()),
+                queue_ref: Some("default".to_string()),
+                alias: Some("app-route-interest".to_string()),
+                kind: Some("event_based".to_string()),
+                route: None,
+                methods: Vec::new(),
+                transport: None,
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: None,
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    harness
+        .runtime_state()
+        .event_connection_registry()
+        .upsert(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: "dev.chariox.dummy".to_string(),
+                connection_id: "connection-local".to_string(),
+                status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                metadata: serde_json::json!({"account": "local"}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+    harness
+        .runtime_state()
+        .event_connection_registry()
+        .apply_inspection(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            chariox_event_protocol::AegsConnectionInspection {
+                generator_id: "dev.chariox.dummy".to_string(),
+                connection_id: "connection-local".to_string(),
+                lifecycle_state: chariox_event_protocol::AegsConnectionLifecycleState::Connected,
+                scopes: vec![chariox_event_protocol::AegsConnectionScope {
+                    id: "events:read".to_string(),
+                    label: "Read events".to_string(),
+                    granted: true,
+                    required: true,
+                }],
+                resources: Vec::new(),
+                last_successful_health_check_at_ms: Some(1),
+                last_accepted_event_at_ms: None,
+                problem_code: None,
+                problem_message: None,
+                recovery_action: None,
+                test_event_supported: false,
+            },
+        )
+        .unwrap();
+    // A workflow binding in the kernel's default environment takes the
+    // interest first.
+    harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
+            CreateWorkflowEventBindingRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                generator_id: "dev.chariox.dummy".to_string(),
+                generator_version: "1.0.0".to_string(),
+                manifest_digest: crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
+                    .to_string(),
+                connection_id: "connection-local".to_string(),
+                connection_scope: "tenant:local".to_string(),
+                event_type: "dummy.test".to_string(),
+                event_type_version: 1,
+                filter: serde_json::json!({"channel": "taken"}),
+                environment_id: None,
+                queue_ref: Some("default".to_string()),
+                reply_mode: None,
+                action_ids: Vec::new(),
+            },
+        ))
+        .expect("the workflow binding is created");
+    let route = |event_type: &str, channel: &str| {
+        harness.dispatch(LocalDaemonRequest::CreateAppInboxRoute(
+            crate::local::CreateAppInboxRouteRequest {
+                installation_id: "app_missing".to_string(),
+                route_id: "route".to_string(),
+                event_name: "received".to_string(),
+                source_event_type: event_type.to_string(),
+                source_event_version: 1,
+                connection: Some(crate::local::AppInboxConnection {
+                    generator_id: "dev.chariox.dummy".to_string(),
+                    connection_id: "connection-local".to_string(),
+                    connection_scope: "tenant:local".to_string(),
+                    filter: serde_json::json!({"channel": channel}),
+                }),
+            },
+        ))
+    };
+    let message = |result: Result<LocalDaemonResponse, DaemonError>| match result {
+        Err(error) => error.to_string(),
+        Ok(response) => format!("{response:?}"),
+    };
+    let undeclared = message(route("dummy.unknown", "free"));
+    assert!(undeclared.contains("is not declared"), "{undeclared}");
+    let taken = message(route("dummy.test", "taken"));
+    assert!(taken.contains("already receives these events"), "{taken}");
+    // Past every generator check, the App lane answers: nothing is installed.
+    let free = message(route("dummy.test", "free"));
+    assert!(free.contains("AppRequestFailed"), "{free}");
+    // The connection lost the event's required scope.
+    server.scopes_reduced.store(true, Ordering::Relaxed);
+    harness
+        .dispatch(LocalDaemonRequest::RefreshEventConnection(
+            RefreshEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+            },
+        ))
+        .ok();
+    let unscoped = message(route("dummy.test", "free"));
+    assert!(!unscoped.contains("AppRequestFailed"), "{unscoped}");
+}
