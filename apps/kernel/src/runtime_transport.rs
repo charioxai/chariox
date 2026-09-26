@@ -678,11 +678,19 @@ where
             crate::transport::mcp_server::run_mcp_http_server_on_listener(mcp_router, mcp_listener)
                 .await;
     });
+    let (quiescence_shutdown_tx, quiescence_shutdown_rx) = tokio::sync::watch::channel(false);
+    let quiescence_task = router
+        .runtime_state()
+        .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
     let _restart_recovery_task = router.runtime_state().spawn_durable_restart_recovery();
 
     loop {
         tokio::select! {
             _ = &mut shutdown => {
+                let _ = quiescence_shutdown_tx.send(true);
+                if let Some(task) = quiescence_task {
+                    task.abort();
+                }
                 drop(_restart_recovery_task);
                 pump_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {

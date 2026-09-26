@@ -446,6 +446,19 @@ impl KernelRuntimeOwnedState {
                 released_workflow_claim,
             );
         }
+        let _admission = match self.begin_managed_activity_admission() {
+            Ok(admission) => admission,
+            Err(_) => {
+                return self.finalize_local_completion_without_queued_advance(
+                    session_id,
+                    agent_id,
+                    completed,
+                    &provider_run_id,
+                    released_workflow_claim,
+                );
+            }
+        };
+        let activity_mutation = self.begin_managed_activity_mutation();
         let acquired_next_workflow_claim =
             match self.ensure_workflow_prompt_workspace_claim(session_id, next_queued_prompt) {
                 Ok(acquired) => acquired,
@@ -469,6 +482,7 @@ impl KernelRuntimeOwnedState {
                 self.session_store.reserve_prompt_id(),
             )?
         else {
+            drop(activity_mutation);
             if acquired_next_workflow_claim == Some(true) {
                 self.release_workflow_node_workspace_claim(
                     session_id,
@@ -498,6 +512,10 @@ impl KernelRuntimeOwnedState {
                 dispatch: None,
             }));
         };
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        activity_mutation.record();
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),
@@ -519,9 +537,6 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
-        let (active_prompt, queued_prompts) =
-            self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)

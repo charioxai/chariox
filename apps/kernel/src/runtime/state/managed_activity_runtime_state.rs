@@ -52,6 +52,13 @@ impl KernelRuntimeState {
     pub(crate) fn managed_activity_report_snapshot(
         &self,
     ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
+        self.managed_activity_report_snapshot_with_transition()
+            .map(|(sequence, observation, _)| (sequence, observation))
+    }
+
+    pub(crate) fn managed_activity_report_snapshot_with_transition(
+        &self,
+    ) -> Result<(u64, super::ManagedActivityObservation, u64), crate::error::DaemonError> {
         let _mutation = self
             .owned
             .managed_activity_mutation_lock
@@ -63,10 +70,12 @@ impl KernelRuntimeState {
             match self
                 .owned
                 .managed_activity_transitions
-                .current_observation(running_agent_count)
+                .current_observation_with_sequence(running_agent_count)
             {
-                Ok(observation) if sequence == self.managed_activity_change_sequence() => {
-                    return Ok((sequence, observation));
+                Ok((transition_sequence, observation))
+                    if sequence == self.managed_activity_change_sequence() =>
+                {
+                    return Ok((sequence, observation, transition_sequence));
                 }
                 Ok(_) => {}
                 Err(_) if sequence != self.managed_activity_change_sequence() => {}
@@ -197,6 +206,15 @@ impl KernelRuntimeOwnedState {
             state: self,
             _guard: guard,
         }
+    }
+
+    pub(super) fn begin_managed_activity_admission(
+        &self,
+    ) -> Result<Option<super::ManagedKernelAdmissionGuard<'_>>, crate::error::DaemonError> {
+        self.managed_kernel_quiescence
+            .as_ref()
+            .map(|gate| gate.admission_guard())
+            .transpose()
     }
 
     fn record_managed_activity_transition_unlocked(&self) {

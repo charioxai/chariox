@@ -19,6 +19,7 @@ impl KernelRuntimeOwnedState {
         interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::PendingInteractionResolution>,
     ) -> Result<(), DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "register runtime interaction requested",

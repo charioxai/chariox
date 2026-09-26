@@ -146,6 +146,11 @@ impl KernelRuntimeOwnedState {
         ) {
             return Ok(None);
         }
+        let _admission = match self.begin_managed_activity_admission() {
+            Ok(admission) => admission,
+            Err(_) => return Ok(None),
+        };
+        let activity_mutation = self.begin_managed_activity_mutation();
         let started = if let Some(claim) = profile_transition {
             claim.finish_and_activate_next(
                 &session,
@@ -167,10 +172,11 @@ impl KernelRuntimeOwnedState {
         };
         let _ =
             self.record_started_user_prompt(session_id, started.source_attachment_id(), &started)?;
-        self.persist_prompt_session_state(&self.session_store.get_session(session_id)?, agent_id)?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        activity_mutation.record();
+        self.persist_prompt_session_state(&self.session_store.get_session(session_id)?, agent_id)?;
         let remote_dispatch = crate::app::KernelRemotePromptDispatch {
             session_id: session_id.to_string(),
             agent_id: agent_id.to_string(),
@@ -267,6 +273,7 @@ impl KernelRuntimeOwnedState {
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
+        let _admission = self.begin_managed_activity_admission()?;
         let outcome = self
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(
@@ -448,22 +455,39 @@ impl KernelRuntimeOwnedState {
             settled_at_ms,
         );
         let started_next = if let Some(expected_next) = next_queued_prompt {
-            let active = self
-                .prompt_state_owner
-                .activate_next_queued_prompt_with_prompt_id(
-                    &session,
-                    agent_id,
-                    Some(expected_next.id()),
-                    self.session_store.reserve_prompt_id(),
-                )?;
-            if let Some(active_prompt) = active.as_ref() {
-                let _ = self.record_started_user_prompt(
-                    session_id,
-                    active_prompt.source_attachment_id(),
-                    active_prompt,
-                )?;
+            match self.begin_managed_activity_admission() {
+                Err(_) => None,
+                Ok(_admission) => {
+                    let activity_mutation = self.begin_managed_activity_mutation();
+                    let active = self
+                        .prompt_state_owner
+                        .activate_next_queued_prompt_with_prompt_id(
+                            &session,
+                            agent_id,
+                            Some(expected_next.id()),
+                            self.session_store.reserve_prompt_id(),
+                        )?;
+                    if active.is_some() {
+                        let (active_prompt, queued_prompts) =
+                            self.prompt_state_owner.state_parts(&session, agent_id);
+                        self.mirror_prompt_owner_agent_state(
+                            session_id,
+                            agent_id,
+                            active_prompt,
+                            queued_prompts,
+                        )?;
+                        activity_mutation.record();
+                    }
+                    if let Some(active_prompt) = active.as_ref() {
+                        let _ = self.record_started_user_prompt(
+                            session_id,
+                            active_prompt.source_attachment_id(),
+                            active_prompt,
+                        )?;
+                    }
+                    active
+                }
             }
-            active
         } else {
             None
         };

@@ -18,6 +18,7 @@ use super::{
 #[derive(Clone)]
 pub struct ProviderProcessServiceStore {
     inner: Arc<Mutex<ProviderProcessService>>,
+    managed_admission_gate: Arc<Mutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
 }
 
 #[cfg(test)]
@@ -187,6 +188,32 @@ impl ProviderProcessServiceStore {
     pub fn new(service: ProviderProcessService) -> Self {
         Self {
             inner: Arc::new(Mutex::new(service)),
+            managed_admission_gate: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn set_managed_kernel_admission_gate(
+        &self,
+        gate: Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>,
+    ) {
+        *self
+            .managed_admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = gate;
+    }
+
+    fn with_managed_admission<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let gate = self
+            .managed_admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match gate {
+            Some(gate) => gate.with_open_admission(action),
+            None => action(),
         }
     }
 
@@ -239,14 +266,14 @@ impl ProviderProcessServiceStore {
         &self,
         request: LaunchProviderRequest,
     ) -> Result<ProviderRunStartedOutcome, DaemonError> {
-        self.write().start_run_provider_only(request)
+        self.with_managed_admission(|| self.write().start_run_provider_only(request))
     }
 
     pub(crate) fn launch_run_detached(
         &self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write().launch_run_detached(request)
+        self.with_managed_admission(|| self.write().launch_run_detached(request))
     }
 
     pub(crate) fn park_run_provider_only(
@@ -262,11 +289,11 @@ impl ProviderProcessServiceStore {
         session_id: &str,
         run_id: &str,
     ) -> Result<ProviderRunResumedOutcome, DaemonError> {
-        self.write().resume_run_provider_only(session_id, run_id)
+        self.with_managed_admission(|| self.write().resume_run_provider_only(session_id, run_id))
     }
 
     pub fn resume_run_detached(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write().resume_run_detached(run_id)
+        self.with_managed_admission(|| self.write().resume_run_detached(run_id))
     }
 
     pub(crate) fn terminate_run_provider_only(

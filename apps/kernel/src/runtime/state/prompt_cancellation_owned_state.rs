@@ -129,65 +129,80 @@ impl KernelRuntimeOwnedState {
                 let provider_run =
                     self.ensure_provider_run_in_session(session_id, provider_run_id)?;
                 if provider_run.state() == crate::provider::ProviderRunState::Running {
-                    let acquired_workflow_claim = match self
-                        .ensure_workflow_prompt_workspace_claim(session_id, next_prompt)
-                    {
-                        Ok(acquired) => acquired,
-                        Err(DaemonError::WorkspaceClaimConflict { .. }) => None,
-                        Err(error) => return Err(error),
-                    };
-                    if next_prompt.workflow_run_id().is_some() && acquired_workflow_claim.is_none()
-                    {
-                        return Ok(OwnedPromptCancellation {
-                            cancellation: crate::session::PromptCancellation {
-                                prompt,
-                                started_next: None,
-                            },
-                            released_claim,
-                            dispatch: None,
-                        });
+                    if let Ok(_admission) = self.begin_managed_activity_admission() {
+                        let acquired_workflow_claim = match self
+                            .ensure_workflow_prompt_workspace_claim(session_id, next_prompt)
+                        {
+                            Ok(acquired) => acquired,
+                            Err(DaemonError::WorkspaceClaimConflict { .. }) => None,
+                            Err(error) => return Err(error),
+                        };
+                        if next_prompt.workflow_run_id().is_some()
+                            && acquired_workflow_claim.is_none()
+                        {
+                            return Ok(OwnedPromptCancellation {
+                                cancellation: crate::session::PromptCancellation {
+                                    prompt,
+                                    started_next: None,
+                                },
+                                released_claim,
+                                dispatch: None,
+                            });
+                        }
+                        let activity_mutation = self.begin_managed_activity_mutation();
+                        let started_next = self
+                            .prompt_state_owner
+                            .activate_next_queued_prompt_with_prompt_id(
+                                &self.session_store.get_session(session_id)?,
+                                agent_id,
+                                Some(next_prompt.id()),
+                                self.session_store.reserve_prompt_id(),
+                            )?;
+                        if let Some(started_next) = started_next.as_ref() {
+                            let (active_prompt, queued_prompts) =
+                                self.prompt_state_owner.state_parts(&session, agent_id);
+                            self.mirror_prompt_owner_agent_state(
+                                session_id,
+                                agent_id,
+                                active_prompt,
+                                queued_prompts,
+                            )?;
+                            activity_mutation.record();
+                            let source_attachment_id = self.promoted_prompt_source_attachment_id(
+                                session_id,
+                                started_next.source_attachment_id(),
+                            )?;
+                            let prompt_sent_at_ms = self.record_started_user_prompt(
+                                session_id,
+                                &source_attachment_id,
+                                started_next,
+                            )?;
+                            self.echo_promoted_queued_prompt_to_attachments(
+                                session_id,
+                                provider_run_id,
+                                started_next.id(),
+                                &source_attachment_id,
+                                started_next.prompt(),
+                                started_next.attachments(),
+                            );
+                            self.capture_git_turn_snapshot_for_started_prompt(
+                                &session,
+                                agent_id,
+                                &provider_run,
+                                started_next,
+                                Some(prompt_sent_at_ms),
+                            );
+                        } else if acquired_workflow_claim == Some(true) {
+                            self.release_workflow_node_workspace_claim(
+                                session_id,
+                                next_prompt.workflow_run_id().unwrap_or_default(),
+                                next_prompt.workflow_node_run_id().unwrap_or_default(),
+                            );
+                        }
+                        started_next
+                    } else {
+                        None
                     }
-                    let started_next = self
-                        .prompt_state_owner
-                        .activate_next_queued_prompt_with_prompt_id(
-                            &self.session_store.get_session(session_id)?,
-                            agent_id,
-                            Some(next_prompt.id()),
-                            self.session_store.reserve_prompt_id(),
-                        )?;
-                    if let Some(started_next) = started_next.as_ref() {
-                        let source_attachment_id = self.promoted_prompt_source_attachment_id(
-                            session_id,
-                            started_next.source_attachment_id(),
-                        )?;
-                        let prompt_sent_at_ms = self.record_started_user_prompt(
-                            session_id,
-                            &source_attachment_id,
-                            started_next,
-                        )?;
-                        self.echo_promoted_queued_prompt_to_attachments(
-                            session_id,
-                            provider_run_id,
-                            started_next.id(),
-                            &source_attachment_id,
-                            started_next.prompt(),
-                            started_next.attachments(),
-                        );
-                        self.capture_git_turn_snapshot_for_started_prompt(
-                            &session,
-                            agent_id,
-                            &provider_run,
-                            started_next,
-                            Some(prompt_sent_at_ms),
-                        );
-                    } else if acquired_workflow_claim == Some(true) {
-                        self.release_workflow_node_workspace_claim(
-                            session_id,
-                            next_prompt.workflow_run_id().unwrap_or_default(),
-                            next_prompt.workflow_node_run_id().unwrap_or_default(),
-                        );
-                    }
-                    started_next
                 } else {
                     None
                 }
