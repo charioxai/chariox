@@ -373,26 +373,46 @@ impl BrowserControllerProcessStore {
     ) -> Result<crate::transport::room_browser_controller::RoomBrowserControllerResult, String>
     {
         let fingerprint = action_fingerprint(target_id, document_id, node_ref, action, timeout_ms)?;
-        self.perform_cancellable_operation(
-            session_id,
-            execution_id,
-            fingerprint,
-            Response::Action { result: None },
-            |ownership| {
-                ownership
-                    .perform_browser_action(
-                        session_id,
-                        target_id,
-                        document_id,
-                        node_ref,
-                        action,
-                        timeout_ms,
-                    )
-                    .map(|result| Response::Action {
-                        result: Some(result),
-                    })
-            },
-        )
+        let Some(ownership) = &self.ownership else {
+            return Ok(Response::Action { result: None });
+        };
+        let active = match self
+            .executions
+            .register(session_id, execution_id, fingerprint, false)?
+        {
+            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Wait(record) => return record.wait(),
+            ExecutionAdmission::Start(active) => active,
+        };
+        let result = (|| {
+            let pending = ownership
+                .lock()
+                .map_err(|_| "browser controller supervisor lock poisoned")?
+                .begin_action(
+                    session_id,
+                    target_id,
+                    document_id,
+                    node_ref,
+                    action,
+                    timeout_ms,
+                    &active.signal,
+                )?;
+            let result = pending
+                .wait(&active.signal)?
+                .into_result::<BrowserControllerActionResult>("browser.action")?;
+            result.validate(target_id, document_id, action.kind())?;
+            Ok(Response::Action {
+                result: Some(result),
+            })
+        })();
+        let outcome = if active.signal.stopped.load(Ordering::Acquire) && active.signal.accepted() {
+            Ok(Response::ActionCancelled {
+                controller_fenced: active.signal.fenced(),
+            })
+        } else {
+            result
+        };
+        active.finish(outcome)
     }
 
     pub(crate) fn perform_cancellable_browser_upload(

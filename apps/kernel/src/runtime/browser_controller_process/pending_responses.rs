@@ -81,6 +81,12 @@ pub(super) struct PendingResponse<T> {
 }
 
 impl<T> PendingResponse<T> {
+    pub(super) fn poll(
+        &self,
+        timeout: Duration,
+    ) -> Result<Result<T, String>, mpsc::RecvTimeoutError> {
+        self.receiver.recv_timeout(timeout)
+    }
     pub(super) fn wait(&self, timeout: Duration) -> Result<T, String> {
         self.receiver
             .recv_timeout(timeout)

@@ -33,8 +33,11 @@ use crate::session::CanonicalViewport;
 mod cancellation;
 mod configuration_cancellation;
 mod lifecycle_cancellation;
+mod pending_action;
 mod pending_responses;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
+#[cfg(test)]
+mod action_concurrency_tests;
 #[cfg(test)]
 mod import_cancellation_tests;
 #[cfg(test)]
@@ -336,8 +339,8 @@ impl BrowserControllerProcessStdioBackend {
                 }
             });
         self.process = Some(BrowserControllerChild {
-            child,
-            stdin,
+            child: Arc::new(Mutex::new(child)),
+            stdin: Arc::new(Mutex::new(stdin)),
             responses,
             snapshot_responses,
         });
@@ -399,8 +402,12 @@ impl BrowserControllerProcessStdioBackend {
             .process
             .as_mut()
             .ok_or_else(|| "browser controller is not running".to_string())?;
+        let mut stdin = process
+            .stdin
+            .lock()
+            .map_err(|_| "controller stdin lock poisoned")?;
         serde_json::to_writer(
-            &mut process.stdin,
+            &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
                 method,
@@ -408,11 +415,11 @@ impl BrowserControllerProcessStdioBackend {
             },
         )
         .map_err(|error| format!("failed to encode browser controller request: {error}"))?;
-        process
-            .stdin
+        stdin
             .write_all(b"\n")
-            .and_then(|()| process.stdin.flush())
+            .and_then(|()| stdin.flush())
             .map_err(|error| format!("failed to send browser controller `{method}`: {error}"))?;
+        drop(stdin);
         let started = Instant::now();
         let mut cancellation_sent = false;
         let mut cancellation_request_id = None;
@@ -426,17 +433,20 @@ impl BrowserControllerProcessStdioBackend {
             {
                 let cancel_id = self.next_request_id;
                 self.next_request_id = self.next_request_id.saturating_add(1);
+                let mut stdin = process
+                    .stdin
+                    .lock()
+                    .map_err(|_| "controller stdin lock poisoned")?;
                 serde_json::to_writer(
-                    &mut process.stdin,
+                    &mut *stdin,
                     &serde_json::json!({
                         "id":cancel_id,"method":"browser.cancel","params":{"request_id":request_id}
                     }),
                 )
                 .map_err(|error| error.to_string())?;
-                process
-                    .stdin
+                stdin
                     .write_all(b"\n")
-                    .and_then(|()| process.stdin.flush())
+                    .and_then(|()| stdin.flush())
                     .map_err(|error| error.to_string())?;
                 cancellation_sent = true;
                 cancellation_request_id = Some(cancel_id);
@@ -447,7 +457,12 @@ impl BrowserControllerProcessStdioBackend {
                     // A timeout is not proof that physical input stopped. Kill
                     // and reap the only process capable of sending more input
                     // before confirming cancellation to the home kernel.
-                    kill_child(&mut process.child);
+                    kill_child(
+                        &mut process
+                            .child
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner()),
+                    );
                     signal.confirm_fence();
                     return Ok(BrowserControllerRpcResponse {
                         id: Some(request_id),
@@ -525,7 +540,13 @@ impl BrowserControllerProcessStdioBackend {
         let process_id = self
             .process
             .as_ref()
-            .map(|process| process.child.id())
+            .map(|process| {
+                process
+                    .child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .id()
+            })
             .ok_or_else(|| "browser controller is not running".to_string())?;
         let response = self.request("health", serde_json::json!({}))?;
         let health = response.into_result::<BrowserControllerCommandHealth>("health")?;
@@ -551,8 +572,12 @@ impl BrowserControllerProcessStdioBackend {
             .as_mut()
             .ok_or_else(|| "browser controller is not running".to_string())?;
         let pending = process.snapshot_responses.register(request_id)?;
+        let mut stdin = process
+            .stdin
+            .lock()
+            .map_err(|_| "controller stdin lock poisoned")?;
         serde_json::to_writer(
-            &mut process.stdin,
+            &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
                 method: "browser.snapshot",
@@ -560,10 +585,9 @@ impl BrowserControllerProcessStdioBackend {
             },
         )
         .map_err(|error| format!("failed to encode browser controller snapshot: {error}"))?;
-        process
-            .stdin
+        stdin
             .write_all(b"\n")
-            .and_then(|()| process.stdin.flush())
+            .and_then(|()| stdin.flush())
             .map_err(|error| format!("failed to send browser controller snapshot: {error}"))?;
         Ok(pending)
     }
@@ -572,11 +596,15 @@ impl BrowserControllerProcessStdioBackend {
         let Some(process) = self.process.as_mut() else {
             return Ok(None);
         };
-        let process_id = process.child.id();
-        let status = process
+        let mut child = process
             .child
+            .lock()
+            .map_err(|_| "controller child lock poisoned")?;
+        let process_id = child.id();
+        let status = child
             .try_wait()
             .map_err(|error| format!("failed to inspect browser controller: {error}"))?;
+        drop(child);
         if status.is_some() {
             self.process.take();
             return Ok(Some(process_id));
@@ -663,7 +691,12 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             Ok(health) => Ok(health),
             Err(error) => {
                 if let Some(mut process) = self.process.take() {
-                    kill_child(&mut process.child);
+                    kill_child(
+                        &mut process
+                            .child
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner()),
+                    );
                 }
                 Err(error)
             }
@@ -677,9 +710,20 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         let shutdown_requested = self.request("shutdown", serde_json::json!({})).is_ok();
         if let Some(mut process) = self.process.take() {
             if shutdown_requested {
-                terminate_child(&mut process.child, self.timeout);
+                terminate_child(
+                    &mut process
+                        .child
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()),
+                    self.timeout,
+                );
             } else {
-                kill_child(&mut process.child);
+                kill_child(
+                    &mut process
+                        .child
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()),
+                );
             }
         }
         Ok(())
@@ -1070,8 +1114,8 @@ impl Drop for BrowserControllerProcessStdioBackend {
 }
 
 struct BrowserControllerChild {
-    child: Child,
-    stdin: ChildStdin,
+    child: Arc<Mutex<Child>>,
+    stdin: Arc<Mutex<ChildStdin>>,
     responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
     snapshot_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
 }
