@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 // Capture only a current, scoped relay registration observation through the home kernel.
+import { realpathSync } from "node:fs"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { validateCaptureOutput, writeCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
@@ -10,6 +11,7 @@ export const PATH1_FRESH_RELAY_MINIMUM_PROTOCOL_VERSION = 346
 
 const REQUEST_VARIANT = "QueryFreshRemoteMachineKernels"
 const RESPONSE_VARIANT = "FreshRemoteMachineKernelsObserved"
+const MINIMUM_PROTOCOL_ERROR = "home kernel requires local daemon protocol 346 or newer"
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 30_000
 const MAX_KERNELS = 256
@@ -126,7 +128,7 @@ export async function capturePath1FreshRelayObservation({
     const unsupportedVariant = message.toLowerCase().includes("unknown variant") && message.includes(REQUEST_VARIANT)
     if (unsupportedVariant
       || message.includes(`requires kernel protocol ${PATH1_FRESH_RELAY_MINIMUM_PROTOCOL_VERSION} or newer`)) {
-      throw new Error(`home kernel requires local daemon protocol ${PATH1_FRESH_RELAY_MINIMUM_PROTOCOL_VERSION} or newer`)
+      throw new Error(MINIMUM_PROTOCOL_ERROR)
     }
     if (message === "fresh relay query timed out") throw error
     throw new Error("fresh relay observation request failed")
@@ -184,9 +186,12 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(() => {
-    process.stderr.write("Path-1 fresh relay capture failed; no MP-10 acceptance verdict.\n")
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href) {
+  main().catch((error) => {
+    const message = error instanceof Error && error.message === MINIMUM_PROTOCOL_ERROR
+      ? "Home kernel requires local daemon protocol 346 or newer.\n"
+      : "Path-1 fresh relay capture failed; no MP-10 acceptance verdict.\n"
+    process.stderr.write(message)
     process.exitCode = 1
   })
 }
