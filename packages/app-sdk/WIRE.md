@@ -145,9 +145,10 @@ runs one such action through the generator's reviewed action endpoint and
 replies `{accepted, result, idempotencyKey}`. `context` is a `reply_context` a
 generator-fed occurrence carried; the generator binds it to the connection.
 The App never holds the provider credential. A connection that was not granted
-is `CONNECTION_NOT_GRANTED`; an undeclared action is `CAPABILITY_REQUIRED`. The
-same call without an `idempotencyKey` reuses its derived key, so a retry is
-performed once.
+is `CONNECTION_NOT_GRANTED`; an undeclared action is `CAPABILITY_REQUIRED`.
+Calls with the same `idempotencyKey` are performed once, so an App passes one to
+retry safely; without it every call is a new action. `CONNECTION_ACTION_FAILED`
+is retryable unless the generator refused the action itself.
 
 ## Worker-to-supervisor requests
 

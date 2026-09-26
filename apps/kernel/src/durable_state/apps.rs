@@ -183,6 +183,14 @@ fn apply(
     mutation: AppRegistryMutation,
 ) -> Result<AppRegistryOutcome, InstallationError> {
     validate_owner(owner_id)?;
+    let installation_id = mutation.installation_id().to_owned();
+    if matches!(
+        &mutation,
+        AppRegistryMutation::CreateAndStage { .. } | AppRegistryMutation::Stage { .. }
+    ) {
+        super::app_connections::forget_inactive(connection, owner_id, &installation_id)?;
+    }
+    let uninstall = matches!(&mutation, AppRegistryMutation::Uninstall { .. });
     let mut registry = InstallationRegistry::new(connection);
     // The single writer also serializes this ownership check and the mutation.
     // Installation owner identity is immutable; no second writer is admitted.
@@ -193,7 +201,7 @@ fn apply(
             if matches!(&mutation, AppRegistryMutation::CreateAndStage { .. }) => {}
         Err(error) => return Err(error),
     }
-    match mutation {
+    let outcome = match mutation {
         AppRegistryMutation::CreateAndStage {
             installation_id,
             release,
@@ -239,7 +247,11 @@ fn apply(
         } => registry
             .uninstall(&installation_id, expected_generation, now_ms)
             .map(AppRegistryOutcome::Installation),
+    }?;
+    if uninstall {
+        super::app_connections::forget_inactive(connection, owner_id, &installation_id)?;
     }
+    Ok(outcome)
 }
 
 fn owned_installation(

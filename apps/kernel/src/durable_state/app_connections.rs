@@ -92,6 +92,22 @@ impl DurableKernelStateStore {
     }
 }
 
+/// Grants end with the installation's active release: an uninstalled App, or
+/// one installed again under the same id, starts with none.
+pub(super) fn forget_inactive(
+    connection: &Connection,
+    owner: &str,
+    installation: &str,
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "DELETE FROM app_connection_grants WHERE owner_id=?1 AND installation_id=?2
+           AND NOT EXISTS (SELECT 1 FROM app_installations
+                           WHERE installation_id=?2 AND active_json IS NOT NULL)",
+        params![owner, installation],
+    )?;
+    Ok(())
+}
+
 pub(super) fn execute(connection: &mut Connection, request: ConnectionGrantRequest) {
     let result = apply(connection, request.command);
     let _ = request.response.send(result);
@@ -206,6 +222,27 @@ mod tests {
         };
         revoke("connection-1").unwrap();
         assert_eq!(revoke("connection-1"), Err("NOT_FOUND"));
+        // Grants end with the active release.
+        let connection = rusqlite::Connection::open(store.path()).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
+                 VALUES('slack','dev.chariox.slack','alice',1,1,'{}')",
+            )
+            .unwrap();
+        forget_inactive(&connection, "alice", "slack").unwrap();
+        assert!(!store
+            .app_connection_grants("alice", "slack")
+            .unwrap()
+            .is_empty());
+        connection
+            .execute_batch("UPDATE app_installations SET active_json=NULL")
+            .unwrap();
+        forget_inactive(&connection, "alice", "slack").unwrap();
+        assert!(store
+            .app_connection_grants("alice", "slack")
+            .unwrap()
+            .is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 }

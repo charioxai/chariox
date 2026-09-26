@@ -16,7 +16,18 @@ impl KernelRuntimeState {
         installation: String,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
-        let access = self.app_connection_access(&owner, &installation).await?;
+        // Only a grant needs the active release's manifest; an owner can
+        // still list and revoke after an uninstall or while the release
+        // cannot be verified.
+        let access = match &request {
+            LocalDaemonRequest::GrantAppConnection(_) => {
+                self.app_connection_access(&owner, &installation).await?
+            }
+            _ => self
+                .app_connection_access(&owner, &installation)
+                .await
+                .unwrap_or_default(),
+        };
         let command = match request {
             LocalDaemonRequest::GrantAppConnection(request) => {
                 if !access
