@@ -215,11 +215,9 @@ impl Store {
             SnapshotStep::Take => self.take_snapshot(directory, journal, committed),
             SnapshotStep::Restore => restore_snapshot(directory, journal, kept),
             SnapshotStep::RestoreAndTake => {
-                // The data is the committed generation's again before the
-                // new copy, so a crash between the two takes it afresh.
+                // The restore records the data as the committed generation's
+                // again, so a crash before the new copy takes it afresh.
                 restore_snapshot(directory, journal, kept)?;
-                journal.generation = committed;
-                files::save_journal(directory, journal)?;
                 self.take_snapshot(directory, journal, committed)
             }
             SnapshotStep::Discard => discard_snapshot(directory, journal),
@@ -515,9 +513,6 @@ fn cleanup(directory: &Dir, path: &Path, journal: &mut Journal, owner: &Owner) -
     journal.pending_recovery = false;
     files::save_journal(directory, journal)
 }
-/// Finishes whatever an interrupted snapshot step left: an incomplete copy is
-/// dropped, a restore whose rename landed is recorded, and a copy that the
-/// journal no longer names is removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SnapshotStep {
     Take,
@@ -545,21 +540,26 @@ fn snapshot_step(previous: u64, generation: u64, committed: u64, kept: bool) -> 
     match (previous == committed, previous == generation, kept) {
         (true, _, true) | (false, true, _) => SnapshotStep::Keep,
         (true, _, false) => SnapshotStep::Take,
-        // Staged before snapshots existed: there is nothing to restore.
+        // Staged before snapshots existed: there is nothing to restore. A
+        // restore records the committed generation with the data it renames,
+        // so no interrupted restore reaches this arm.
         (false, false, false) => SnapshotStep::Keep,
         (false, false, true) => SnapshotStep::RestoreAndTake,
     }
 }
 
-/// Renames the copy over the data image. The journal still names the copy,
+/// Renames the copy over the data image and records, in one save, that the
+/// data is the copied generation's again. The journal still names the copy,
 /// so a crash after the rename is settled by `settle_snapshot`.
 fn restore_snapshot(directory: &Dir, journal: &mut Journal, kept: Option<Identity>) -> Result<()> {
     let kept = kept.ok_or(Error::Identity)?;
+    let generation = journal.snapshot.as_ref().ok_or(Error::Identity)?.generation;
     let copy = files::open_image(directory, SNAPSHOT_IMAGE)?.ok_or(Error::Identity)?;
     files::require(directory, SNAPSHOT_IMAGE, &copy, &kept)?;
     drop(copy);
     files::replace(directory, SNAPSHOT_IMAGE, Role::Data.image())?;
     journal.images[0].inode = Some(kept);
+    journal.generation = generation;
     journal.snapshot = None;
     files::save_journal(directory, journal)
 }
@@ -583,6 +583,9 @@ fn settle_step(snapshot: Option<&Snapshot>, copy_present: bool) -> SettleStep {
     }
 }
 
+/// Finishes whatever an interrupted snapshot step left: an incomplete copy is
+/// dropped, a restore whose rename landed is recorded, and a copy that the
+/// journal no longer names is removed.
 fn settle_snapshot(directory: &Dir, journal: &mut Journal) -> Result<()> {
     let copy = files::open_image(directory, SNAPSHOT_IMAGE)?;
     let kept = journal
@@ -600,8 +603,12 @@ fn settle_snapshot(directory: &Dir, journal: &mut Journal) -> Result<()> {
         (SettleStep::Adopt, Some(kept), None) => {
             let data = files::open_image(directory, Role::Data.image())?.ok_or(Error::Identity)?;
             files::require(directory, Role::Data.image(), &data, &kept)?;
+            // The rename landed: the data is the copied generation's.
             journal.images[0].inode = Some(kept);
-            journal.snapshot = None;
+            journal.generation = journal
+                .snapshot
+                .take()
+                .map_or(journal.generation, |kept| kept.generation);
             files::save_journal(directory, journal)
         }
         (_, _, copy) => {
