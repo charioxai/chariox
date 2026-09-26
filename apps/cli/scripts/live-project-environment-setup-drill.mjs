@@ -23,12 +23,12 @@ import {
   validateProjectEnvironmentSetupDrillPin,
   validateSetupDrillConfirmations,
 } from './lib/project-environment-setup-drill.mjs'
+import { cleanupProjectEnvironmentSetupDrillContext } from './lib/project-environment-setup-drill-cleanup.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const PROVIDER_RUN_TIMEOUT_MS = 90_000
-const CLEANUP_TIMEOUT_MS = 60_000
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const { LocalIpcClient } = await import(pathToFileURL(path.join(repoRoot, 'packages/kernel-client/dist/ipc.js')).href)
@@ -307,111 +307,6 @@ async function launchOfficialProvider(createClient, pin, readyStatuses, evidence
   evidence.startedAtMs = lastRun.started_at_ms ?? null
 }
 
-async function cleanupDrillContext(createClient, pin, operationIds, evidence) {
-  const startedAtMs = Date.now()
-  const cleanupErrors = []
-  let operationsSettled = true
-  const client = await createClient()
-  try {
-    for (const operationId of operationIds) {
-      try {
-        let status = await readSetupStatus(client, operationId)
-        if (!['ready', 'failed', 'cancelled'].includes(status.phase)) {
-          await sendWithTimeout(client, requests.cancelProjectEnvironmentSetupRequest(operationId, pin.session_id), 'cancel Project setup for cleanup').catch(() => {})
-          status = await waitForTerminalSetup(client, operationId, Date.now() + CLEANUP_TIMEOUT_MS)
-        }
-        if (!['ready', 'failed', 'cancelled'].includes(status.phase)) throw new Error('setup operation did not settle')
-      } catch {
-        operationsSettled = false
-        cleanupErrors.push(`operation_not_confirmed_terminal:${operationId}`)
-      }
-    }
-
-    evidence.operationsSettled = operationsSettled
-    if (!operationsSettled) {
-      evidence.blockedDeletion = true
-      evidence.errors = cleanupErrors
-      evidence.durationMs = Date.now() - startedAtMs
-      return evidence
-    }
-
-    for (const agentId of [pin.utility_agent_id, pin.launch_agent_id]) {
-      try {
-        const response = await sendWithTimeout(client, { DestroyAgent: { session_id: pin.session_id, agent_id: agentId } }, 'destroy drill-owned remote agent')
-        requireVariant(response, 'AgentDestroyed')
-        evidence.destroyedAgentIds.push(agentId)
-      } catch {
-        cleanupErrors.push(`agent_destroy_failed:${agentId}`)
-      }
-    }
-
-    if (evidence.destroyedAgentIds.length !== 2) {
-      evidence.blockedDeletion = true
-      evidence.errors = cleanupErrors
-      evidence.durationMs = Date.now() - startedAtMs
-      return evidence
-    }
-
-    try {
-      requireVariant(
-        await sendWithTimeout(client, requests.deleteSessionRequest(pin.session_id, pin.workspace_id), 'delete drill-owned session'),
-        'SessionDeleted',
-      )
-      evidence.deletedSessionId = pin.session_id
-    } catch {
-      cleanupErrors.push(`session_delete_failed:${pin.session_id}`)
-      evidence.blockedDeletion = true
-      evidence.errors = cleanupErrors
-      evidence.durationMs = Date.now() - startedAtMs
-      return evidence
-    }
-
-    try {
-      const sessions = requireVariant(
-        await sendWithTimeout(client, requests.listSessionsRequest(), 'verify Project cleanup boundary'),
-        'SessionsListed',
-      ).sessions ?? []
-      assert.equal(sessions.some((session) => session.project_id === pin.project_id), false, 'Project acquired another session during the drill; project deletion refused')
-      requireVariant(
-        await sendWithTimeout(client, requests.deleteProjectRequest(pin.project_id), 'delete drill-owned Project'),
-        'ProjectDeleted',
-      )
-      evidence.deletedProjectId = pin.project_id
-    } catch {
-      cleanupErrors.push(`project_delete_failed:${pin.project_id}`)
-    }
-  } finally {
-    await client.close().catch(() => {})
-  }
-  evidence.errors = cleanupErrors
-  evidence.complete = evidence.destroyedAgentIds.length === 2
-    && evidence.deletedSessionId === pin.session_id
-    && evidence.deletedProjectId === pin.project_id
-    && operationsSettled
-    && cleanupErrors.length === 0
-  evidence.durationMs = Date.now() - startedAtMs
-  evidence.limitations = [
-    'The public home-kernel API exposes no delete operation for retained setup status records.',
-    'The worker machine, enrollment, and materialized worktree are retained for root-owned post-campaign disposition; this drill never provisions or deletes infrastructure.',
-  ]
-  return evidence
-}
-
-async function readSetupStatus(client, operationId) {
-  const response = await sendWithTimeout(client, { GetProjectEnvironmentSetupStatus: { operationId } }, 'read setup status for cleanup')
-  return getSetupStatusFromResponse(response)
-}
-
-async function waitForTerminalSetup(client, operationId, deadline) {
-  let last = null
-  while (Date.now() < deadline) {
-    last = await readSetupStatus(client, operationId)
-    if (['ready', 'failed', 'cancelled'].includes(last.phase)) return last
-    await sleep(500)
-  }
-  return last
-}
-
 async function main() {
   const parsed = parseProjectEnvironmentSetupDrillArgs(process.argv.slice(2))
   if (parsed.help) {
@@ -575,7 +470,13 @@ async function main() {
   } finally {
     if (mutationMayHaveStarted) {
       try {
-        await cleanupDrillContext(createClient, input.pin, operationIds, evidence.cleanup)
+        await cleanupProjectEnvironmentSetupDrillContext({
+          createClient,
+          pin: input.pin,
+          operationIds,
+          expectedOwnership: evidence.preflight,
+          evidence: evidence.cleanup,
+        })
       } catch {
         evidence.cleanup.errors.push('cleanup_transport_or_kernel_failure')
         evidence.cleanup.blockedDeletion = true

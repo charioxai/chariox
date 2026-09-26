@@ -349,3 +349,117 @@ test('one explicitly permitted service-authorized retry advances exactly one att
   assert.equal(result.status.attempt, 2)
   assert.equal(sent.filter((request) => 'RetryProjectEnvironmentSetup' in request).length, 1)
 })
+
+test('setup operation rejects a different operation identity on reconnect', async () => {
+  let reconnect = false
+  const factory = async () => ({
+    async send(request) {
+      if ('StartProjectEnvironmentSetup' in request) return { ProjectEnvironmentSetupStarted: { status: setupStatus() } }
+      if ('GetProjectEnvironmentSetupStatus' in request) {
+        reconnect = true
+        return { ProjectEnvironmentSetupStatus: { status: setupStatus({ operation_id: 'another-operation' }) } }
+      }
+      throw new Error('unexpected request')
+    },
+    async close() {},
+  })
+  await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
+    createClient: factory,
+    pin: pin(),
+    request: startSetupRequest(pin(), setupStatus().operation_id, 'stored'),
+    delay: async () => {},
+  }), /operation_id changed from the reviewed binding/)
+  assert.equal(reconnect, true)
+})
+
+test('setup operation rejects attempt drift on reconnect', async () => {
+  const factory = async () => ({
+    async send(request) {
+      if ('StartProjectEnvironmentSetup' in request) return { ProjectEnvironmentSetupStarted: { status: setupStatus() } }
+      if ('GetProjectEnvironmentSetupStatus' in request) {
+        return { ProjectEnvironmentSetupStatus: { status: setupStatus({ attempt: 2 }) } }
+      }
+      throw new Error('unexpected request')
+    },
+    async close() {},
+  })
+  await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
+    createClient: factory,
+    pin: pin(),
+    request: startSetupRequest(pin(), setupStatus().operation_id, 'stored'),
+    delay: async () => {},
+  }), /attempt changed unexpectedly/)
+})
+
+test('setup operation times out at its injected deadline', async () => {
+  let now = 0
+  const factory = async () => ({
+    async send(request) {
+      if ('StartProjectEnvironmentSetup' in request) return { ProjectEnvironmentSetupStarted: { status: setupStatus() } }
+      if ('GetProjectEnvironmentSetupStatus' in request) {
+        return { ProjectEnvironmentSetupStatus: { status: setupStatus({ phase: 'preparing', progress_percent: 20 }) } }
+      }
+      throw new Error('unexpected request')
+    },
+    async close() {},
+  })
+  await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
+    createClient: factory,
+    pin: pin(),
+    request: startSetupRequest(pin(), setupStatus().operation_id, 'stored'),
+    timeoutMs: 250,
+    pollMs: 250,
+    nowMs: () => now,
+    delay: async (ms) => { now += ms },
+  }), (error) => error.code === 'setup_operation_timeout')
+})
+
+test('setup operation does not retry a nonretryable failure', async () => {
+  const failed = setupStatus({ phase: 'failed', failure_code: 'invalid_definition', retryable: false, updated_at_ms: 1_500 })
+  const factory = async () => ({
+    async send(request) {
+      if ('StartProjectEnvironmentSetup' in request) return { ProjectEnvironmentSetupStarted: { status: failed } }
+      if ('GetProjectEnvironmentSetupStatus' in request) return { ProjectEnvironmentSetupStatus: { status: failed } }
+      throw new Error('unexpected request')
+    },
+    async close() {},
+  })
+  await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
+    createClient: factory,
+    pin: pin(),
+    request: startSetupRequest(pin(), failed.operation_id, 'stored'),
+    allowOneRetry: true,
+    delay: async () => {},
+  }), (error) => error.code === 'setup_failed_non_retryable')
+})
+
+test('setup operation enforces the one-retry ceiling even when attempt two also fails retryably', async () => {
+  const failedFirst = setupStatus({ phase: 'failed', failure_code: 'transient_one', retryable: true, updated_at_ms: 1_500 })
+  const retryRequested = setupStatus({ attempt: 2, phase: 'requested', progress_percent: 0, retryable: false, updated_at_ms: 2_000 })
+  const failedSecond = setupStatus({ attempt: 2, phase: 'failed', failure_code: 'transient_two', retryable: true, updated_at_ms: 2_500 })
+  const retries = []
+  let statusReads = 0
+  const factory = async () => ({
+    async send(request) {
+      if ('StartProjectEnvironmentSetup' in request) return { ProjectEnvironmentSetupStarted: { status: failedFirst } }
+      if ('RetryProjectEnvironmentSetup' in request) {
+        retries.push(request)
+        return { ProjectEnvironmentSetupRetried: { status: retryRequested } }
+      }
+      if ('GetProjectEnvironmentSetupStatus' in request) {
+        statusReads += 1
+        return { ProjectEnvironmentSetupStatus: { status: statusReads === 1 ? failedFirst : failedSecond } }
+      }
+      throw new Error('unexpected request')
+    },
+    async close() {},
+  })
+  await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
+    createClient: factory,
+    pin: pin(),
+    request: startSetupRequest(pin(), failedFirst.operation_id, 'stored'),
+    allowOneRetry: true,
+    delay: async () => {},
+  }), (error) => error.code === 'retryable_setup_failure_without_retry_authorization')
+  assert.equal(retries.length, 1)
+})
