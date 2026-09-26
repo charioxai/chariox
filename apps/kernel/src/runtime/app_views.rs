@@ -158,6 +158,7 @@ impl AppViews {
             views
                 .unreloadable
                 .retain(|target, _| open_targets.contains(target));
+            views.called.retain(|target| open_targets.contains(target));
         }
     }
 
@@ -234,6 +235,34 @@ impl AppViews {
         if let Some(views) = sessions.get_mut(session) {
             views.tabs.clear();
             views.open_tabs = 0;
+        }
+    }
+}
+
+/// Projects the Room again after a view's first call. Another Room command
+/// may hold the slice briefly, so a busy refusal is retried every `pause`
+/// until `window` ends. False when it gave up: the caller un-marks the Tabs,
+/// so their next call tries again.
+pub(crate) async fn reproject<F, Fut>(
+    mut reconcile: F,
+    window: std::time::Duration,
+    pause: std::time::Duration,
+) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let deadline = tokio::time::Instant::now() + window;
+    loop {
+        match reconcile().await {
+            Ok(()) => return true,
+            Err(error)
+                if tokio::time::Instant::now() < deadline
+                    && error.contains("already has an active") =>
+            {
+                tokio::time::sleep(pause).await;
+            }
+            Err(_) => return false,
         }
     }
 }
@@ -328,6 +357,42 @@ mod tests {
 #[cfg(test)]
 mod reconnect_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reprojection_retries_only_a_busy_slice_and_only_within_its_window() {
+        use std::time::Duration;
+        let busy =
+            || async { Err::<(), _>("environment already has an active command".to_owned()) };
+        let attempts = std::cell::Cell::new(0);
+        let settles = || {
+            attempts.set(attempts.get() + 1);
+            let attempt = attempts.get();
+            async move {
+                if attempt < 3 {
+                    Err("environment already has an active command".to_owned())
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        let pause = Duration::from_millis(1);
+        assert!(reproject(settles, Duration::from_secs(5), pause).await);
+        assert_eq!(attempts.get(), 3);
+        assert!(!reproject(busy, Duration::from_millis(20), pause).await);
+        let failed = || async { Err::<(), _>("slice is gone".to_owned()) };
+        assert!(!reproject(failed, Duration::from_secs(5), pause).await);
+    }
+
+    #[test]
+    fn a_closed_tabs_first_call_mark_is_dropped() {
+        let views = AppViews::default();
+        assert!(views.first_call("s", "t1"));
+        assert!(views.first_call("s", "t2"));
+        views.retain_open("s", &["t2".to_owned()], 0);
+        // t1 closed: a Tab with that id would count as new again.
+        assert!(views.first_call("s", "t1"));
+        assert!(!views.first_call("s", "t2"));
+    }
 
     #[test]
     fn a_restart_resumes_polling_once_and_a_reconnected_tab_can_be_unbound() {
