@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const MAX_ROUTES: usize = 64;
+/// Generator-fed routes one kernel claims; more is refused, not truncated.
+pub const MAX_GENERATOR_ROUTES: usize = 4096;
 pub const MAX_PENDING: usize = 1024;
 pub const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_ATTEMPTS: u32 = 8;
@@ -113,17 +115,7 @@ impl InboxRoute {
     /// The opaque id event services deliver this route's occurrences under.
     /// It names no owner or App.
     pub fn binding_id(&self) -> String {
-        let digest = Sha256::digest(
-            [
-                self.owner_id.as_bytes(),
-                b"\0",
-                self.installation_id.as_bytes(),
-                b"\0",
-                self.route_id.as_bytes(),
-            ]
-            .concat(),
-        );
-        format!("app-route-{}", &format!("{digest:x}")[..40])
+        route_binding_id(&self.owner_id, &self.installation_id, &self.route_id)
     }
 }
 
@@ -341,14 +333,32 @@ const ROUTE_COLUMNS: &str = "route_id,owner_id,installation_id,event_name,source
 
 /// Every route an event generator feeds, across owners, for the kernel's
 /// subscription and delivery claims.
+/// The binding id of `route_id`; see [`InboxRoute::binding_id`].
+pub fn route_binding_id(owner_id: &str, installation_id: &str, route_id: &str) -> String {
+    let digest = Sha256::digest(
+        [
+            owner_id.as_bytes(),
+            b"\0",
+            installation_id.as_bytes(),
+            b"\0",
+            route_id.as_bytes(),
+        ]
+        .concat(),
+    );
+    format!("app-route-{}", &format!("{digest:x}")[..40])
+}
+
 pub fn generator_routes(connection: &Connection) -> Result<Vec<InboxRoute>> {
     let mut statement = connection.prepare(&format!(
         "SELECT {ROUTE_COLUMNS} FROM app_inbox_routes WHERE generator_id IS NOT NULL
-         ORDER BY owner_id,installation_id,route_id LIMIT 4096"
+         ORDER BY owner_id,installation_id,route_id LIMIT ?1"
     ))?;
     let routes = statement
-        .query_map([], route_row)?
+        .query_map([MAX_GENERATOR_ROUTES as i64 + 1], route_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    if routes.len() > MAX_GENERATOR_ROUTES {
+        return Err(InboxError::Limit);
+    }
     Ok(routes)
 }
 
