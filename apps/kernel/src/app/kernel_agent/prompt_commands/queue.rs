@@ -84,11 +84,13 @@ impl<'a> KernelAgentService<'a> {
             // pump may perform provider control or settle older work.
             let providers = self.app.providers.clone();
             let Some(activation) = providers.with_managed_admission_if_open(|| {
-                self.activate_next_queued_prompt_for_mirror(
+                // Keep activation's error as the inner result so the established
+                // re-entrant launch recovery below can recognize an already-active prompt.
+                Ok(self.activate_next_queued_prompt_for_mirror(
                     session_id,
                     &target_agent_id,
                     expected_next,
-                )
+                ))
             })? else {
                 return Ok(None);
             };

@@ -381,8 +381,6 @@ impl ManagedKernelQuiescenceGate {
         }
         if result_sequence != existing.decisions.len() as u64 + 1
             || existing.decisions.len() >= 2
-            || (existing.decisions.is_empty()
-                && outcome != ManagedKernelQuiescenceOutcome::Stopped)
             || existing.decisions.last().is_some_and(|decision| {
                 decision.outcome != ManagedKernelQuiescenceOutcome::Stopped
                     || outcome != ManagedKernelQuiescenceOutcome::KeepRunning
@@ -746,15 +744,6 @@ mod tests {
         assert!(!admission_ran, "provider or queue action must not cross a fence");
 
         let current = || current_idle(&transitions);
-        assert!(gate
-            .apply_release(
-                &challenge,
-                ManagedKernelQuiescenceOutcome::KeepRunning,
-                1,
-                || current_idle(&transitions),
-            )
-            .is_err(), "a reserved fence cannot use the pre-dispatch tombstone sequence");
-        assert!(gate.admission_guard().is_err(), "rejected pre-dispatch release retains the fence");
         gate.apply_release(
             &challenge,
             ManagedKernelQuiescenceOutcome::Stopped,
@@ -810,6 +799,82 @@ mod tests {
                 || current_idle(&transitions),
             )
             .is_err(), "a keep-running receipt cannot be advanced later");
+        cleanup(&path, store);
+    }
+
+    #[test]
+    fn reserved_keep_running_sequence_one_cancels_unclaimed_stop_and_survives_restart() {
+        let (path, store, transitions, gate, mutation_lock) = fixture("reserved-cancel");
+        let challenge = challenge("challenge-canceled", "nonce-canceled");
+        gate.confirm_activity_report(
+            challenge.idle_sequence,
+            1,
+            ManagedActivityObservation {
+                running_agent_count: 0,
+                changed_at_ms: 1_000,
+            },
+        );
+        assert!(gate
+            .reserve_if_current(challenge.clone(), || current_idle(&transitions))
+            .expect("current accepted idle can be fenced"));
+        assert!(gate.admission_guard().is_err(), "reservation closes admission");
+
+        gate.apply_release(
+            &challenge,
+            ManagedKernelQuiescenceOutcome::KeepRunning,
+            1,
+            || current_idle(&transitions),
+        )
+        .expect("Cloud may cancel a reserved but unclaimed stop with sequence one");
+        assert!(gate.admission_guard().is_ok(), "exact cancellation releases its fence");
+        gate.apply_release(
+            &challenge,
+            ManagedKernelQuiescenceOutcome::KeepRunning,
+            1,
+            || current_idle(&transitions),
+        )
+        .expect("lost release ACK can be retried idempotently");
+        assert!(!gate
+            .reserve_if_current(challenge.clone(), || current_idle(&transitions))
+            .expect("delayed reserve for canceled challenge stays busy"));
+
+        drop(gate);
+        let restored = ManagedKernelQuiescenceGate::restore(
+            store.clone(),
+            "kernel-1".into(),
+            mutation_lock,
+            transitions.clone(),
+        )
+        .expect("restore durable cancellation receipt");
+        assert!(restored.admission_guard().is_ok(), "restart keeps matching fence released");
+        restored
+            .apply_release(
+                &challenge,
+                ManagedKernelQuiescenceOutcome::KeepRunning,
+                1,
+                || current_idle(&transitions),
+            )
+            .expect("exact release replay remains ACKable after restart");
+        assert!(restored
+            .apply_release(
+                &challenge,
+                ManagedKernelQuiescenceOutcome::Stopped,
+                1,
+                || current_idle(&transitions),
+            )
+            .is_err(), "conflicting outcome cannot replace durable cancellation");
+        let conflicting = ManagedKernelQuiescenceChallenge {
+            nonce: "nonce-conflict".into(),
+            ..challenge.clone()
+        };
+        assert!(restored
+            .apply_release(
+                &conflicting,
+                ManagedKernelQuiescenceOutcome::KeepRunning,
+                1,
+                || current_idle(&transitions),
+            )
+            .is_err(), "challenge identity cannot be rebound after cancellation");
         cleanup(&path, store);
     }
 

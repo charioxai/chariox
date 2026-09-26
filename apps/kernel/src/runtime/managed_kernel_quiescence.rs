@@ -54,6 +54,7 @@ enum QuiescenceCommand {
         #[serde(flatten)]
         challenge: ManagedKernelQuiescenceChallenge,
         outcome: ManagedKernelQuiescenceOutcome,
+        #[serde(rename = "resultSequence")]
         result_sequence: u64,
     },
 }
@@ -440,20 +441,95 @@ mod tests {
     }
 
     #[test]
-    fn canonical_hmac_is_stable_for_same_sorted_contract_fields() {
-        let first = BTreeMap::from([
-            ("protocolVersion", json!(1)),
-            ("action", json!("auto_stop_quiescence_poll")),
+    fn cloud_release_commands_decode_camel_case_result_sequence_for_both_outcomes() {
+        let challenge = challenge();
+        for (outcome, result_sequence, expected) in [
+            ("stopped", 1, ManagedKernelQuiescenceOutcome::Stopped),
+            (
+                "keep_running",
+                1,
+                ManagedKernelQuiescenceOutcome::KeepRunning,
+            ),
+        ] {
+            let response: PollResponse = serde_json::from_value(json!({
+                "protocolVersion": 1,
+                "command": {
+                    "kind": "release_admission_fence",
+                    "challengeId": challenge.challenge_id.clone(),
+                    "accountId": challenge.account_id.clone(),
+                    "environmentId": challenge.environment_id.clone(),
+                    "machineId": challenge.machine_id.clone(),
+                    "kernelId": challenge.kernel_id.clone(),
+                    "desiredRevision": challenge.desired_revision,
+                    "idleSequence": challenge.idle_sequence,
+                    "idleDeadlineAt": challenge.idle_deadline_at.clone(),
+                    "stopOperationId": challenge.stop_operation_id.clone(),
+                    "nonce": challenge.nonce.clone(),
+                    "outcome": outcome,
+                    "resultSequence": result_sequence,
+                }
+            }))
+            .expect("Cloud release response should decode");
+
+            assert_eq!(response.protocol_version, 1);
+            match response.command.expect("release command") {
+                QuiescenceCommand::ReleaseAdmissionFence {
+                    challenge: decoded,
+                    outcome,
+                    result_sequence: decoded_sequence,
+                } => {
+                    assert_eq!(decoded, challenge);
+                    assert_eq!(outcome, expected);
+                    assert_eq!(decoded_sequence, result_sequence);
+                }
+                QuiescenceCommand::ReserveIdleForStop { .. } => {
+                    panic!("release command decoded as reserve")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cloud_release_ack_matches_canonical_v1_payload_and_hmac_fixture() {
+        // Mirrors Cloud's signedQuiescenceReleaseAck fixture and its
+        // mcred_${"a".repeat(43)} machine credential.
+        let mut binding = binding();
+        binding.machine_credential = format!("mcred_{}", "a".repeat(43));
+        let client = ManagedKernelQuiescenceClient { binding };
+        let challenge = challenge();
+        let values = BTreeMap::from([
             ("accountId", json!("account-1")),
-        ]);
-        let second = BTreeMap::from([
-            ("accountId", json!("account-1")),
-            ("action", json!("auto_stop_quiescence_poll")),
+            ("action", json!("auto_stop_quiescence_release_ack")),
+            ("challengeId", json!("challenge-1")),
+            ("environmentId", json!("environment-1")),
+            ("kernelId", json!("kernel-1")),
+            ("machineId", json!("machine-1")),
+            (
+                "nonce",
+                json!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            ),
+            ("outcome", json!("keep_running")),
             ("protocolVersion", json!(1)),
+            ("resultSequence", json!(1)),
+            ("stopOperationId", json!("stop-operation-1")),
         ]);
+        let canonical = serde_json::to_string(&values).expect("canonical payload");
+        assert_eq!(canonical, concat!(
+            r#"{"accountId":"account-1","action":"auto_stop_quiescence_release_ack","challengeId":"challenge-1","environmentId":"environment-1","kernelId":"kernel-1","machineId":"machine-1","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","outcome":"keep_running","protocolVersion":1,"resultSequence":1,"stopOperationId":"stop-operation-1"}"#
+        ));
+
+        let release = client
+            .signed_release_ack(
+                &challenge,
+                ManagedKernelQuiescenceOutcome::KeepRunning,
+                1,
+            )
+            .expect("release ack should sign");
+        assert_eq!(release["resultSequence"], 1);
+        assert!(release.get("result_sequence").is_none());
         assert_eq!(
-            hmac_signature("credential", &first).expect("first signature"),
-            hmac_signature("credential", &second).expect("same canonical signature"),
+            release["signature"],
+            "sha256:d2a9120425277132c10100e4c96ab3ee8172ae79ff82f8296ca6cae8c99502ec",
         );
     }
 }
