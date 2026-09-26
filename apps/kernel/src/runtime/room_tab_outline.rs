@@ -57,8 +57,8 @@ pub(crate) fn outline(
                 .collect()
         }
     };
-    // The controller keeps at most MAX_SNAPSHOT_NODES raw nodes, cutting the
-    // deepest ones: an outline of a full snapshot may be missing text too.
+    // The controller keeps at most MAX_SNAPSHOT_NODES raw nodes and says when
+    // it cut some; a full snapshot from an older controller counts as cut.
     let mut truncated = nodes.len() >= MAX_SNAPSHOT_NODES;
     let mut outline = Vec::new();
     let mut seen = std::collections::HashSet::new();

@@ -377,6 +377,16 @@ pub fn due(tx: &Connection, now_ms: u64, limit: usize) -> Result<Vec<InboxItem>>
          WHERE state IN ('accepted','retryable') AND expires_at_ms<=?1",
         [now_ms as i64],
     )?;
+    // Every pass also prunes a bounded batch of settled occurrences past the
+    // dedupe window, so an idle or uninstalled installation's rows go too.
+    if let Some(cutoff) = now_ms.checked_sub(DEDUPE_WINDOW_MS) {
+        tx.execute(
+            "DELETE FROM app_inbox WHERE sequence IN (
+               SELECT sequence FROM app_inbox WHERE state IN ('delivered','failed','expired')
+               AND accepted_at_ms<=?1 LIMIT ?2)",
+            params![cutoff as i64, PRUNE_BATCH as i64],
+        )?;
+    }
     let mut statement = tx.prepare(
         "SELECT sequence,owner_id,installation_id,route_id,event_name,occurrence_id,
             payload_json,attempts,accepted_generation

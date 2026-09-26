@@ -1860,7 +1860,9 @@ Workflow trigger and deployment direction:
   (poison) after 8 attempts; an update or start waits without spending one;
   unsettled occurrences expire after 7 days; payloads are dropped when
   settled. The dedupe window is 14 days from acceptance: a replay within it is
-  answered as a duplicate, and settled occurrences older than it are pruned.
+  answered as a duplicate, and settled occurrences older than it are pruned
+  (by the kernel's delivery pass, also for an idle or uninstalled App), so the
+  `delivered`, `failed` and `expired` counts cover about the last 14 days.
   `TestAppInboxRoute {installation_id, route_id, occurrence_id,
   payload}` accepts one occurrence as a source would (`AppInboxOccurrenceAccepted
   {installation_id, route_id, occurrence_id, duplicate}`). Event
@@ -1872,7 +1874,8 @@ Workflow trigger and deployment direction:
   subject `file_pick:<operation>`) in their most recent session. Its only
   choice is Decline. The owner answers from a terminal with `GrantAppFile
   {session_id, operation_id, files: [{name, contents_base64}]}` (at most 8
-  files of 512 KiB each and 640 KiB together, final name components only,
+  files, 512 KiB together so an answer fits one relayed request; final name
+  components only,
   matching the App's accepted suffixes), which answers `AppFileGranted {operation_id, files}` and
   closes the prompt. Only the owner can answer; App code, views and agents
   cannot. Grants are private copies that the App imports once with
@@ -1881,10 +1884,14 @@ Workflow trigger and deployment direction:
   a file an App offered with `files.export`. The offer is shown to the owner
   as a kernel prompt with subject `file_export:<operation>` and a Decline
   choice. The reply is `AppFileExport {operation_id, name, contents_base64}`,
-  released to the owner only. The owner may take it again until the offer
-  expires, so a failed or cancelled local save can be retried. The terminal chooses where to save it (a
-  browser download, or `/app file save OPERATION "PATH"`, which never
-  overwrites a file).
+  released to the owner only. The prompt closes after the first save, but the
+  owner may take the offer again until it ends, so a failed or cancelled local
+  save can be retried: a client keeps `operation_id` and tells the owner how
+  (both terminals show `/app file save OPERATION`). An offer ends when it
+  expires or when the App that made it is updated or uninstalled. The name is
+  a final name component with no control or invisible format characters. The
+  terminal chooses where to save it (a browser download, or
+  `/app file save OPERATION "PATH"`, which never overwrites a file).
 - protocol 356: App view reconnection. A call from an open App view built for
   an older generation, or from a view the kernel lost track of (for example
   after a kernel restart; only the session host's own active installation),
@@ -1903,10 +1910,11 @@ Workflow trigger and deployment direction:
   `description`, `disabled`, `focused`, and `states`: what a reader announces
   about the control, among `checked`, `not checked`, `mixed`, `pressed`,
   `not pressed`, `expanded`, `collapsed`, `selected`, `required`, `invalid`),
-  bounded to 2000 (`truncated` is also set when the controller's snapshot
-  reached its own 5000-node bound, which cuts the deepest nodes first). The
-  Room browser controller's snapshot nodes gain the same `states` (absent
-  from older controllers). It holds what a reader announces: ignored nodes,
+  bounded to 2000 (`truncated` is also set when the controller cut its
+  snapshot at its own 5000-node bound, which cuts the deepest nodes first).
+  The Room browser controller's snapshot nodes gain the same `states`, and
+  the snapshot gains `accessibility_truncated` for that cut (both absent from
+  older controllers, whose full 5000-node snapshot counts as cut). It holds what a reader announces: ignored nodes,
   inline text boxes, unnamed layout wrappers and text its parent's name
   already says (an aria-labelled button's text) are left out, and their
   children hang from the nearest kept ancestor. Nodes are in document order
