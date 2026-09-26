@@ -455,3 +455,30 @@ pub fn has_pending(connection: &Connection, owner_id: &str, installation_id: &st
         |row| row.get(0),
     )?)
 }
+
+/// Occurrence outcomes of one route, so poison and expiry stay visible.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InboxCounts {
+    pub pending: u64,
+    pub delivered: u64,
+    pub failed: u64,
+    pub expired: u64,
+}
+
+pub fn counts(connection: &Connection, route_id: &str) -> Result<InboxCounts> {
+    let mut statement = connection
+        .prepare("SELECT state,count(*) FROM app_inbox WHERE route_id=?1 GROUP BY state")?;
+    let mut counts = InboxCounts::default();
+    for row in statement.query_map([route_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+    })? {
+        let (state, count) = row?;
+        match InboxState::parse(&state)? {
+            InboxState::Accepted | InboxState::Retryable => counts.pending += count,
+            InboxState::Delivered => counts.delivered += count,
+            InboxState::Failed => counts.failed += count,
+            InboxState::Expired => counts.expired += count,
+        }
+    }
+    Ok(counts)
+}

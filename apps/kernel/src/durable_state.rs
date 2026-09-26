@@ -21,6 +21,7 @@ pub(crate) mod app_automations;
 pub(crate) mod app_bindings;
 pub(crate) mod app_event_delivery;
 pub(crate) mod app_event_maintenance;
+pub(crate) mod app_inbox;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_files;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -156,6 +157,7 @@ enum DurableWriterRequest {
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
     AppWake(Box<app_wakes::AppWakeRequest>),
+    AppInbox(Box<app_inbox::AppInboxRequest>),
     AppLog(Box<app_logs::AppLogRequest>),
     AppValidation(Box<app_validations::ValidationRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
@@ -343,6 +345,7 @@ impl DurableKernelStateStore {
         app_publisher_operations::initialize(&connection)?;
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
+        app_inbox::initialize(&connection)?;
         app_worker_lifecycle::initialize(&connection)?;
         app_validations::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
             operation: "durable_state.app_validations",
@@ -1431,6 +1434,10 @@ fn run_durable_writer(
                 app_wakes::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppInbox(request) => {
+                app_inbox::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppLog(request) => {
                 app_logs::execute(&mut connection, *request);
                 continue;
@@ -1537,6 +1544,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::VerifiedApp(_)
                     | DurableWriterRequest::AppState(_)
                     | DurableWriterRequest::AppWake(_)
+                    | DurableWriterRequest::AppInbox(_)
                     | DurableWriterRequest::AppLog(_)
                     | DurableWriterRequest::AppValidation(_)
                     | DurableWriterRequest::AppBinding(_)

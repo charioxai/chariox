@@ -26,6 +26,10 @@ impl KernelRuntimeState {
             LocalDaemonRequest::DisableAppAutomation(request) => &request.installation_id,
             LocalDaemonRequest::UninstallApp(request) => &request.installation_id,
             LocalDaemonRequest::GetAppLogs(request) => &request.installation_id,
+            LocalDaemonRequest::CreateAppInboxRoute(request) => &request.installation_id,
+            LocalDaemonRequest::RemoveAppInboxRoute(request) => &request.installation_id,
+            LocalDaemonRequest::ListAppInboxRoutes(request) => &request.installation_id,
+            LocalDaemonRequest::TestAppInboxRoute(request) => &request.installation_id,
             _ => return None,
         };
         let owner = match crate::runtime::app_control::owner(command) {
@@ -181,6 +185,12 @@ impl KernelRuntimeState {
                         })
                         .collect(),
                 });
+            }
+            request @ (LocalDaemonRequest::CreateAppInboxRoute(_)
+            | LocalDaemonRequest::RemoveAppInboxRoute(_)
+            | LocalDaemonRequest::ListAppInboxRoutes(_)
+            | LocalDaemonRequest::TestAppInboxRoute(_)) => {
+                return self.app_inbox_request(owner, installation, request).await;
             }
             LocalDaemonRequest::UninstallApp(request) => {
                 return self

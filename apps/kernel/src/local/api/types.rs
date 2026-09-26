@@ -118,4 +118,6 @@ pub use workspace::*;
 /// with the installation and the reserved private conversation panel.
 /// Version 352 adds `CreateAgentWorkflow`: a visible one-node workflow for an
 /// agent that gets a trigger or deployment, with `WorkflowDefinition.origin`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 352;
+/// Version 353 adds the installation inbox: `CreateAppInboxRoute`,
+/// `RemoveAppInboxRoute`, `ListAppInboxRoutes` and `TestAppInboxRoute`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 353;

@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 352);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 353);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -312,9 +312,12 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         snapshot.pointer("/1/CreateManagedEnvironment/contextPlan/kernelContext"),
         Some(&serde_json::json!("empty"))
     );
-    assert!(snapshot
-        .pointer("/1/CreateManagedEnvironment/managedRepositoryRoot")
-        .is_none(), "omitted roots preserve the Cloud default");
+    assert!(
+        snapshot
+            .pointer("/1/CreateManagedEnvironment/managedRepositoryRoot")
+            .is_none(),
+        "omitted roots preserve the Cloud default"
+    );
     assert_eq!(
         snapshot.pointer("/2/CreateManagedEnvironment/managedRepositoryRoot"),
         Some(&serde_json::json!("/srv/chariox/repos"))
@@ -356,15 +359,13 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         Some(&serde_json::json!("managed-kernel-1"))
     );
     assert_eq!(
-        snapshot.pointer(
-            "/10/ManagedEnvironmentCatalog/catalog/environments/0/managedRepositoryRoot"
-        ),
+        snapshot
+            .pointer("/10/ManagedEnvironmentCatalog/catalog/environments/0/managedRepositoryRoot"),
         Some(&serde_json::json!("/home/chariox"))
     );
     assert_eq!(
-        snapshot.pointer(
-            "/10/ManagedEnvironmentCatalog/catalog/environments/1/managedRepositoryRoot"
-        ),
+        snapshot
+            .pointer("/10/ManagedEnvironmentCatalog/catalog/environments/1/managedRepositoryRoot"),
         Some(&serde_json::json!("/srv/chariox/repos"))
     );
     assert_eq!(
@@ -395,8 +396,8 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
             "/10/ManagedEnvironmentCatalog/catalog/environments/1/managedRepositoryRoot"
         ),
     });
-    let root_serialized = serde_json::to_string(&root_projection)
-        .expect("managed repository root protocol shape");
+    let root_serialized =
+        serde_json::to_string(&root_projection).expect("managed repository root protocol shape");
     assert_eq!(
         format!("{:x}", Sha256::digest(root_serialized.as_bytes())),
         "5d6eccb89e50875e842c507c6147a78c938014c77feeee063bb584c00be69404"
@@ -457,7 +458,7 @@ fn local_daemon_reimage_request_rejects_repository_root_override() {
 
 #[test]
 fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 352);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 353);
     let preflight = ManagedEnvironmentReimagePreflight {
         environment_id: "environment-1".to_string(),
         retained: ManagedEnvironmentReimagePreflightRetained {
@@ -496,9 +497,8 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
         Some(&serde_json::json!("environment-1"))
     );
     assert_eq!(
-        snapshot.pointer(
-            "/1/ManagedEnvironmentReimagePreflight/preflight/retained/providerServerId"
-        ),
+        snapshot
+            .pointer("/1/ManagedEnvironmentReimagePreflight/preflight/retained/providerServerId"),
         Some(&serde_json::json!("123456789"))
     );
     assert_eq!(
@@ -520,7 +520,7 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
 
 #[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 352);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 353);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {
@@ -541,9 +541,7 @@ fn local_daemon_pre_reimage_observation_shape_is_versioned() {
         Some(&serde_json::json!(1))
     );
     assert_eq!(
-        snapshot.pointer(
-            "/1/ManagedEnvironmentPreReimageObserved/acknowledgement/observedAt"
-        ),
+        snapshot.pointer("/1/ManagedEnvironmentPreReimageObserved/acknowledgement/observedAt"),
         Some(&serde_json::json!("2026-09-22T01:02:03.000Z"))
     );
     let serialized = serde_json::to_string(&snapshot).expect("pre-reimage observation shape");

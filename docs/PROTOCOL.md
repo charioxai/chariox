@@ -1846,6 +1846,23 @@ Workflow trigger and deployment direction:
   {source_agent_id, reason, surface, created_at_ms}` records why it exists;
   the alias (default `<agent>-<reason>`) is ordinary and editable. Binding Apps
   or Extensions to an agent never creates a workflow. Metaagents cannot use it.
+- protocol 353: the installation inbox. `CreateAppInboxRoute {installation_id,
+  route_id, event_name, source_event_type, source_event_version}` routes one
+  external event type to an App's signed `incoming` (or `both`) event;
+  `RemoveAppInboxRoute {installation_id, route_id}` and `ListAppInboxRoutes
+  {installation_id}` answer `AppInboxRoutes {installation_id, routes}`, each
+  with `pending`, `delivered`, `failed` and `expired` occurrence counts. A
+  route grants the App nothing else. An occurrence is validated against the
+  active release's signed schema and recorded (deduplicated by route and
+  source occurrence) before the source is acknowledged; the kernel then sends
+  `events.deliver {name, occurrence_id, payload}` at least once, starting a
+  stopped worker on demand. A handler error retries with backoff and fails
+  (poison) after 8 attempts; an update or start waits without spending one;
+  unsettled occurrences expire after 7 days; payloads are dropped when
+  settled. `TestAppInboxRoute {installation_id, route_id, occurrence_id,
+  payload}` accepts one occurrence as a source would (`AppInboxOccurrenceAccepted
+  {installation_id, route_id, occurrence_id, duplicate}`). Event
+  generator subscriptions for routes follow with the packaged Slack App.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

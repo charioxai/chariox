@@ -135,6 +135,13 @@ fn accepting_dedupes_by_source_occurrence() {
     assert_eq!(due[0].occurrence_id, "occ-1");
     assert_eq!(due[0].payload, json!({"text":"a"}));
     app_inbox::delivered_in(&db, first, 3).unwrap();
+    assert_eq!(
+        app_inbox::counts(&db, "r1").unwrap(),
+        app_inbox::InboxCounts {
+            delivered: 1,
+            ..Default::default()
+        }
+    );
     assert_eq!(app_inbox::state(&db, first).unwrap(), InboxState::Delivered);
     assert!(!app_inbox::has_pending(&db, "owner", "installed").unwrap());
     assert!(app_inbox::due(&db, 100, 10).unwrap().is_empty());

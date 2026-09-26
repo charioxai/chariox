@@ -5,6 +5,7 @@ use super::DurableKernelStateStore;
 use chariox_app_package::{verify, VerificationPolicy, VerifiedPackage};
 use chariox_app_runtime::{
     app_catalog::AppCatalog,
+    app_inbox::IncomingCatalog,
     app_outbox::EventCatalog,
     installation::{InstallationRegistry, StageTrustBinding},
     publisher_trust::{PublisherTrustRegistry, TrustedPublisherSnapshot},
@@ -107,5 +108,18 @@ impl DurableKernelStateStore {
         let release = self.active_app_release(owner, installation)?;
         let verified = release.verify()?;
         release.event_catalog(&verified)
+    }
+
+    /// The active generation and its signed incoming event schemas.
+    pub(crate) fn active_app_incoming_catalog(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(u64, IncomingCatalog), ActiveReleaseError> {
+        let release = self.active_app_release(owner, installation)?;
+        let verified = release.verify()?;
+        let catalog =
+            IncomingCatalog::compile(&verified).map_err(|_| ActiveReleaseError::Invalid)?;
+        Ok((release.generation(), catalog))
     }
 }

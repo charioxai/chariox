@@ -129,6 +129,19 @@ export default function register(chariox) {
     return null;
   });
 
+  // An external request (routed to this installation's inbox) creates one
+  // Todo. Deliveries are at least once; the occurrence identity keeps a
+  // redelivered request from creating a second Todo.
+  chariox.events.register('todo_requested', ({ occurrenceId, payload }) => change(todos => {
+    if (todos.some(todo => todo.source_occurrence === occurrenceId)) return null;
+    if (todos.length >= MAX_TODOS) throw fail('LIMIT_EXCEEDED', `At most ${MAX_TODOS} Todos`);
+    const todo = { id: randomUUID().slice(0, 8), title: payload.title, notes: payload.notes ?? '',
+      due_at_ms: payload.due_at_ms ?? null, done: false, reminded: false, revision: 1,
+      created_at_ms: Date.now(), source_occurrence: occurrenceId };
+    todos.push(todo);
+    return todo;
+  }, (next, todo) => (todo ? wakesFor(next, todo) : {})));
+
   function occurrence(todo) {
     return {
       automationId: AUTOMATION,

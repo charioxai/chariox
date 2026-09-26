@@ -302,6 +302,51 @@ pub struct AppLogEntrySummary {
     pub fields: serde_json::Value,
 }
 
+/// Protocol 353: routes one external event type to an App's declared
+/// incoming (or both-direction) event. The route grants the App nothing else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateAppInboxRouteRequest {
+    pub installation_id: String,
+    pub route_id: String,
+    pub event_name: String,
+    pub source_event_type: String,
+    pub source_event_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppInboxRouteRequest {
+    pub installation_id: String,
+    pub route_id: String,
+}
+
+/// Accepts one occurrence for a route as a source would, for drills and
+/// local development. The payload must match the App's signed schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestAppInboxRouteRequest {
+    pub installation_id: String,
+    pub route_id: String,
+    pub occurrence_id: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppInboxRouteSummary {
+    pub route_id: String,
+    pub event_name: String,
+    pub source_event_type: String,
+    pub source_event_version: u32,
+    pub active: bool,
+    /// Occurrences by outcome; `failed` ones exhausted their attempts.
+    pub pending: u64,
+    pub delivered: u64,
+    pub failed: u64,
+    pub expired: u64,
+}
+
 /// Protocol 347: stops the worker and deactivates the installation at the
 /// caller's expected generation. App data and user workflows are retained.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
