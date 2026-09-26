@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn login_profile_only_contributes_a_validated_provider_path() {
+    fn login_profile_is_reread_for_each_launch_and_only_contributes_validated_path() {
         let home = TestHome::new();
         let local_bin = home.0.join(".local/bin");
         fs::create_dir_all(&local_bin).expect("provider bin should be created");
@@ -277,8 +277,28 @@ mod tests {
             ),
         )
         .expect("login profile should be written");
+        let profile_only_controls = [
+            ("CHARIOX_MANAGED_RELEASE_PUBLIC_KEY", "/profile/release-key"),
+            ("CHARIOX_MANAGED_KERNEL_BINARY", "/profile/kernel"),
+            ("CHARIOX_MANAGED_BOOTSTRAP_PATH", "/profile/bootstrap.json"),
+            ("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "shared_host"),
+            ("CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY", "/profile/builder-key"),
+            ("LD_PRELOAD", "/profile/hostile.so"),
+        ];
+        let provider_probe_script = |message: &str| {
+            let mut source = String::from("#!/bin/sh\n");
+            for (name, value) in profile_only_controls {
+                source.push_str("test \"$(printenv ");
+                source.push_str(name);
+                source.push_str(")\" != '");
+                source.push_str(value);
+                source.push_str("' || exit 31\n");
+            }
+            source.push_str(&format!("printf '{message}\\n'\n"));
+            source
+        };
         let tool = local_bin.join("chariox-provider-path-probe");
-        fs::write(&tool, "#!/bin/sh\nprintf 'ordinary-provider-tool\\n'\n")
+        fs::write(&tool, provider_probe_script("ordinary-provider-tool"))
             .expect("provider probe should be written");
         let mut permissions = fs::metadata(&tool)
             .expect("provider probe should exist")
@@ -286,21 +306,14 @@ mod tests {
         permissions.set_mode(0o700);
         fs::set_permissions(&tool, permissions).expect("provider probe should be executable");
 
-        let supervisor_env = [
-            "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
-            "CHARIOX_MANAGED_KERNEL_BINARY",
-            "CHARIOX_MANAGED_BOOTSTRAP_PATH",
-            "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
-            "CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY",
-            "LD_PRELOAD",
-        ]
-        .map(|name| (name, std::env::var_os(name)));
+        let supervisor_env =
+            profile_only_controls.map(|(name, _)| (name, std::env::var_os(name)));
         let path = resolve_login_path(&home.0);
         assert_eq!(path, OsString::from(&expected_path));
-        for (name, expected) in supervisor_env {
+        for (name, expected) in &supervisor_env {
             assert_eq!(
-                std::env::var_os(name),
-                expected,
+                std::env::var_os(*name),
+                expected.clone(),
                 "supervisor env {name} changed"
             );
         }
@@ -308,13 +321,59 @@ mod tests {
         let output = Command::new("/bin/sh")
             .arg("-c")
             .arg("chariox-provider-path-probe")
-            .env_clear()
             .env("HOME", &home.0)
             .env("PATH", &path)
+            .env_remove("LD_PRELOAD")
+            .env_remove("BASH_ENV")
             .output()
             .expect("provider tool should resolve from the captured PATH");
         assert!(output.status.success());
         assert_eq!(output.stdout, b"ordinary-provider-tool\n");
+
+        let profile_bin_b = home.0.join("toolchain-b/bin");
+        fs::create_dir_all(&profile_bin_b).expect("second profile provider bin should be created");
+        let tool_b = profile_bin_b.join("chariox-provider-path-probe");
+        fs::write(&tool_b, provider_probe_script("ordinary-provider-tool-b"))
+            .expect("second provider probe should be written");
+        let mut permissions = fs::metadata(&tool_b)
+            .expect("second provider probe should exist")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&tool_b, permissions)
+            .expect("second provider probe should be executable");
+
+        let expected_path_b = format!("{}:{BOOTSTRAP_PATH}", profile_bin_b.display());
+        let profile = fs::read_to_string(home.0.join(".profile"))
+            .expect("login profile should be readable");
+        let updated_profile = profile.replace(&expected_path, &expected_path_b);
+        assert_ne!(
+            profile,
+            updated_profile,
+            "second launch profile should change its PATH"
+        );
+        fs::write(home.0.join(".profile"), updated_profile)
+            .expect("updated login profile should be written");
+
+        let restarted_path = resolve_login_path(&home.0);
+        assert_eq!(restarted_path, OsString::from(&expected_path_b));
+        for (name, expected) in &supervisor_env {
+            assert_eq!(
+                std::env::var_os(*name),
+                expected.clone(),
+                "supervisor env {name} changed after the profile update"
+            );
+        }
+        let restarted = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("chariox-provider-path-probe")
+            .env("HOME", &home.0)
+            .env("PATH", &restarted_path)
+            .env_remove("LD_PRELOAD")
+            .env_remove("BASH_ENV")
+            .output()
+            .expect("provider tool should resolve from the updated login PATH");
+        assert!(restarted.status.success());
+        assert_eq!(restarted.stdout, b"ordinary-provider-tool-b\n");
     }
 
     #[test]
