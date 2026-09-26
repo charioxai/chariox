@@ -4,11 +4,16 @@ import { createECDH } from "node:crypto"
 import {
   chmodSync,
   existsSync,
+  linkSync,
+  lstatSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs"
 import os from "node:os"
@@ -180,6 +185,104 @@ test("CLI relay identity refuses a group-readable key file", (t) => {
   chmodSync(identityPath, 0o644)
 
   assert.throws(() => createCliRelayIdentityStore(identityPath).load(), /mode-0600/)
+})
+
+test("identity recovery rejects an external hardlink and preserves unrelated temp-shaped files", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-relay-identity-external-link-"))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const identityPath = path.join(root, "relay", "cli-identity-v1.json")
+  const store = createCliRelayIdentityStore(identityPath)
+  const identity = store.getOrCreate()
+  const externalPath = path.join(root, "external-identity-link")
+  const unrelatedPath = path.join(
+    path.dirname(identityPath),
+    `.${path.basename(identityPath)}.tmp-${process.pid}-${"f".repeat(32)}`,
+  )
+  const unrelatedContents = "unrelated file that recovery must preserve"
+  writeFileSync(unrelatedPath, unrelatedContents, { mode: 0o600 })
+  linkSync(identityPath, externalPath)
+
+  assert.equal(statSync(identityPath).nlink, 2)
+  assert.throws(() => store.getOrCreate(), /single-link/)
+  assert.equal(existsSync(externalPath), true)
+  assert.equal(statSync(identityPath).nlink, 2)
+  assert.equal(readFileSync(unrelatedPath, "utf8"), unrelatedContents)
+
+  unlinkSync(externalPath)
+  assert.equal(store.getOrCreate().publicKeyThumbprint, identity.publicKeyThumbprint)
+})
+
+test("identity recovery rejects more than two links without removing any link", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-relay-identity-many-links-"))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const identityPath = path.join(root, "relay", "cli-identity-v1.json")
+  const store = createCliRelayIdentityStore(identityPath)
+  const identity = store.getOrCreate()
+  const externalPaths = [path.join(root, "external-link-a"), path.join(root, "external-link-b")]
+  for (const externalPath of externalPaths) linkSync(identityPath, externalPath)
+
+  assert.equal(statSync(identityPath).nlink, 3)
+  assert.throws(() => store.load(), /single-link/)
+  assert.equal(statSync(identityPath).nlink, 3)
+  for (const externalPath of externalPaths) assert.equal(existsSync(externalPath), true)
+
+  for (const externalPath of externalPaths) unlinkSync(externalPath)
+  assert.equal(store.getOrCreate().publicKeyThumbprint, identity.publicKeyThumbprint)
+})
+
+test("identity loading rejects a symlink identity path without following its target", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-relay-identity-symlink-"))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const targetPath = path.join(root, "established-identity.json")
+  const targetStore = createCliRelayIdentityStore(targetPath)
+  const identity = targetStore.getOrCreate()
+  const identityPath = path.join(root, "relay", "cli-identity-v1.json")
+  mkdirSync(path.dirname(identityPath), { recursive: true, mode: 0o700 })
+  symlinkSync(targetPath, identityPath)
+
+  assert.throws(() => createCliRelayIdentityStore(identityPath).getOrCreate(), /could not be opened safely/)
+  assert.equal(lstatSync(identityPath).isSymbolicLink(), true)
+  assert.equal(statSync(targetPath).nlink, 1)
+  assert.equal(targetStore.getOrCreate().publicKeyThumbprint, identity.publicKeyThumbprint)
+})
+
+test("identity recovery rejects a symlink temp alias without following or removing its target", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-relay-identity-temp-symlink-"))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const identityPath = path.join(root, "relay", "cli-identity-v1.json")
+  const store = createCliRelayIdentityStore(identityPath)
+  const identity = store.getOrCreate()
+  const externalPath = path.join(root, "external-identity-link")
+  const aliasPath = path.join(
+    path.dirname(identityPath),
+    `.${path.basename(identityPath)}.tmp-${process.pid}-${"e".repeat(32)}`,
+  )
+  linkSync(identityPath, externalPath)
+  symlinkSync(externalPath, aliasPath)
+
+  assert.equal(statSync(identityPath).nlink, 2)
+  assert.throws(() => store.getOrCreate(), /single-link/)
+  assert.equal(lstatSync(aliasPath).isSymbolicLink(), true)
+  assert.equal(existsSync(externalPath), true)
+  assert.equal(statSync(identityPath).nlink, 2)
+
+  unlinkSync(aliasPath)
+  unlinkSync(externalPath)
+  assert.equal(store.getOrCreate().publicKeyThumbprint, identity.publicKeyThumbprint)
+})
+
+test("getOrCreate refuses to rotate a malformed established identity", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-relay-identity-malformed-existing-"))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const identityPath = path.join(root, "relay", "cli-identity-v1.json")
+  const store = createCliRelayIdentityStore(identityPath)
+  store.getOrCreate()
+  const malformedContents = "not-an-identity"
+  writeFileSync(identityPath, malformedContents, { mode: 0o600 })
+
+  assert.throws(() => store.getOrCreate(), /malformed/)
+  assert.equal(readFileSync(identityPath, "utf8"), malformedContents)
+  assert.equal(temporaryIdentityFiles(identityPath).length, 0)
 })
 
 function createPublicationPreload(
