@@ -138,8 +138,17 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
             peer.response().await.1.unwrap_err().code,
             "CAPABILITY_REQUIRED"
         );
-        for id in ["reply", "retry"] {
-            peer.send(id, "connections.action", reply.clone()).await;
+        for (id, key) in [
+            ("reply", None),
+            ("again", None),
+            ("keyed", Some("k")),
+            ("retry", Some("k")),
+        ] {
+            let mut reply = reply.clone();
+            if let Some(key) = key {
+                reply["idempotencyKey"] = json!(key);
+            }
+            peer.send(id, "connections.action", reply).await;
             let answer = peer.response().await.1.unwrap();
             assert_eq!(answer["accepted"], true);
             assert_eq!(answer["result"], json!({"ts": "1.3"}));
@@ -149,7 +158,7 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
     let received = received.lock().unwrap();
     assert_eq!(
         received.len(),
-        2,
+        4,
         "only granted, declared actions reach the generator"
     );
     assert_eq!(
@@ -162,8 +171,16 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
         .as_str()
         .unwrap()
         .starts_with(&format!("app:{installation}:")));
-    assert_eq!(
+    assert_ne!(
         received[0]["idempotency_key"], received[1]["idempotency_key"],
-        "a retried call reaches the generator with the same key"
+        "without a key, a repeated call is a new action"
+    );
+    assert_eq!(
+        received[2]["idempotency_key"],
+        format!("app:{installation}:k")
+    );
+    assert_eq!(
+        received[2]["idempotency_key"], received[3]["idempotency_key"],
+        "a retry with the App's key reaches the generator with the same key"
     );
 }

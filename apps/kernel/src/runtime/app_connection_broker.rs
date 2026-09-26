@@ -14,7 +14,6 @@ use chariox_app_package::ConnectionAccess;
 use chariox_app_runtime::{wire::RemoteError, worker_peer::BrokerRequest};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -134,23 +133,15 @@ impl AppConnectionBroker {
             .get()
             .ok_or_else(|| error("CONNECTION_UNAVAILABLE", true))?
             .snapshot();
-        // A retried call with the same content reaches the generator with the
-        // same key, so the provider performs it once.
-        let idempotency_key = match action.idempotency_key {
-            Some(key) => format!("app:{}:{key}", self.installation),
-            None => {
-                let digest = Sha256::digest(
-                    serde_json::to_vec(&json!([
-                        grant.connection_id,
-                        action.action,
-                        action.input,
-                        action.context,
-                    ]))
-                    .unwrap_or_default(),
-                );
-                format!("app:{}:{digest:x}", self.installation)
-            }
-        };
+        // The App's key makes its retries act once; without one, every call
+        // is a new action.
+        let idempotency_key = format!(
+            "app:{}:{}",
+            self.installation,
+            action
+                .idempotency_key
+                .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()))
+        );
         let request = chariox_event_protocol::AegsProviderActionRequest {
             generator_id: grant.generator_id,
             owner_id: crate::runtime::event_catalog_control::event_connection_owner_id(
@@ -170,7 +161,7 @@ impl AppConnectionBroker {
             &config.event_generator_management_targets,
             &request,
         )
-        .map_err(|_| error("CONNECTION_ACTION_FAILED", true))?;
+        .map_err(|failure| error("CONNECTION_ACTION_FAILED", failure.retryable()))?;
         Ok(json!({
             "accepted": response.accepted,
             "result": response.result,

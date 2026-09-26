@@ -1463,11 +1463,29 @@ fn test_aegs_connection(
     )
 }
 
+/// A provider action the generator did not perform. Its own refusal (a 4xx
+/// other than 429) repeats on retry; anything else may not.
+#[derive(Debug)]
+pub(crate) struct AegsActionFailure {
+    status: Option<u16>,
+    message: String,
+}
+impl AegsActionFailure {
+    pub(crate) fn retryable(&self) -> bool {
+        !matches!(self.status, Some(status) if (400..500).contains(&status) && status != 429)
+    }
+}
+impl std::fmt::Display for AegsActionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 pub(crate) fn invoke_aegs_action(
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     request: &chariox_event_protocol::AegsProviderActionRequest,
-) -> Result<chariox_event_protocol::AegsProviderActionResponse, DaemonError> {
-    post_aegs_json(
+) -> Result<chariox_event_protocol::AegsProviderActionResponse, AegsActionFailure> {
+    send_aegs_json(
         &AegsManagementHttpClient::default(),
         targets,
         &request.generator_id,
@@ -1504,6 +1522,17 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
     path: &str,
     request: &T,
 ) -> Result<R, DaemonError> {
+    send_aegs_json(management_client, targets, generator_id, path, request)
+        .map_err(|failure| catalog_error(failure.message))
+}
+
+fn send_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
+    management_client: &AegsManagementHttpClient,
+    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    generator_id: &str,
+    path: &str,
+    request: &T,
+) -> Result<R, AegsActionFailure> {
     let owner_id = serde_json::to_value(request)
         .ok()
         .and_then(|value| {
@@ -1512,9 +1541,10 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
         })
-        .ok_or_else(|| catalog_error("AEGS request is missing owner_id".to_string()))?;
-    let target = select_event_generator_management_target(targets, generator_id, &owner_id)?;
-    let body = serde_json::to_string(request).map_err(|error| catalog_error(error.to_string()))?;
+        .ok_or_else(|| failure(None, "AEGS request is missing owner_id".to_string()))?;
+    let target = select_event_generator_management_target(targets, generator_id, &owner_id)
+        .map_err(|error| failure(None, error.to_string()))?;
+    let body = serde_json::to_string(request).map_err(|error| failure(None, error.to_string()))?;
     let mut http_request = management_client
         .agent_builder(&target)
         .timeout_connect(Duration::from_secs(3))
@@ -1527,11 +1557,24 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
     let response = http_request
         .set("content-type", "application/json")
         .send_string(&body)
-        .map_err(|error| catalog_error(format!("AEGS {generator_id} request failed: {error}")))?
+        .map_err(|error| {
+            let status = match &error {
+                ureq::Error::Status(status, _) => Some(*status),
+                ureq::Error::Transport(_) => None,
+            };
+            failure(
+                status,
+                format!("AEGS {generator_id} request failed: {error}"),
+            )
+        })?
         .into_string()
-        .map_err(|error| catalog_error(error.to_string()))?;
+        .map_err(|error| failure(None, error.to_string()))?;
     serde_json::from_str(&response)
-        .map_err(|error| catalog_error(format!("AEGS response is invalid: {error}")))
+        .map_err(|error| failure(None, format!("AEGS response is invalid: {error}")))
+}
+
+fn failure(status: Option<u16>, message: String) -> AegsActionFailure {
+    AegsActionFailure { status, message }
 }
 
 pub(crate) fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -> String {
@@ -2212,5 +2255,15 @@ mod tests {
         let error = validate_event_binding_detail(&detail, &contract)
             .expect_err("mismatched catalog identity must be rejected");
         assert!(error.to_string().contains("event catalog returned"));
+    }
+
+    #[test]
+    fn a_generators_own_refusal_is_not_retryable() {
+        let retryable = |status| failure(status, String::new()).retryable();
+        assert!(!retryable(Some(409)));
+        assert!(!retryable(Some(400)));
+        assert!(retryable(Some(429)));
+        assert!(retryable(Some(503)));
+        assert!(retryable(None));
     }
 }
