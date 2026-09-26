@@ -189,7 +189,8 @@ impl CommandRouter {
                 .map(Some);
             }
             request @ (LocalDaemonRequest::ListRemoteMachines(_)
-            | LocalDaemonRequest::ListRemoteMachineKernels(_)) => {
+            | LocalDaemonRequest::ListRemoteMachineKernels(_)
+            | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)) => {
                 return execute_remote_relay_inventory_request(
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),

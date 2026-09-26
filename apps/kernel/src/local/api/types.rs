@@ -101,4 +101,6 @@ pub use workspace::*;
 /// returns the persisted root in managed-environment summaries.
 /// Version 343 carries the originating home prompt in forwarded worker tool context.
 /// Version 344 carries the home-owned Room browser capability in provider-run responses.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 345;
+/// Version 345 carries provider/Cloud owner-bound correlation metadata.
+/// Version 346 adds an explicit fresh relay kernel inventory observation.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 346;

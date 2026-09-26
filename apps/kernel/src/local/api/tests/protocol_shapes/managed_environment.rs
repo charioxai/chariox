@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn managed_reimage_receipt_read_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
     let request =
         LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
             environment_id: "environment-1".to_string(),
@@ -23,7 +23,7 @@ fn managed_reimage_receipt_read_shape_is_versioned() {
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -496,7 +496,7 @@ fn local_daemon_reimage_request_rejects_repository_root_override() {
 
 #[test]
 fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
     let preflight = ManagedEnvironmentReimagePreflight {
         environment_id: "environment-1".to_string(),
         retained: ManagedEnvironmentReimagePreflightRetained {
@@ -558,7 +558,7 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
 
 #[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {

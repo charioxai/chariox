@@ -678,6 +678,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
+        LocalDaemonRequest::QueryFreshRemoteMachineKernels(_) => {
+            "remote_machine.kernel.query_fresh"
+        }
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",

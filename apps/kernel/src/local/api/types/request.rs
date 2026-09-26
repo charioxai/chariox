@@ -182,6 +182,7 @@ pub enum LocalDaemonRequest {
     RestoreSliceBackup(RestoreSliceBackupRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
+    QueryFreshRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
     GetWaitingRoomPublicSnapshot(GetWaitingRoomPublicSnapshotRequest),
     ListExternalProviderSessions(ListExternalProviderSessionsRequest),

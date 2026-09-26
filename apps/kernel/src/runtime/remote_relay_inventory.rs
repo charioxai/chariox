@@ -113,6 +113,13 @@ pub(crate) async fn execute_remote_relay_inventory_request(
             )
             .await
         }
+        LocalDaemonRequest::QueryFreshRemoteMachineKernels(request) => {
+            crate::runtime::fresh_remote_relay_inventory::execute_fresh_remote_machine_kernels_request(
+                config_projection,
+                request,
+            )
+            .await
+        }
         _ => Err(DaemonError::LocalTransport {
             operation: "remote relay inventory request",
             message: "unsupported remote relay inventory request".to_string(),

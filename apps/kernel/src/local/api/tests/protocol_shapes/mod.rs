@@ -9,6 +9,7 @@ mod browser_import;
 mod core;
 mod credential_enrollment;
 mod event_publication;
+mod fresh_remote_relay_inventory;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;

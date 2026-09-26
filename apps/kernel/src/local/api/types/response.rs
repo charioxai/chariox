@@ -181,6 +181,14 @@ pub enum LocalDaemonResponse {
     SliceBackupRestored { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, },
     RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, },
     RemoteMachineKernelsListed { machine_ref: String, kernels: Vec<RelayKernelPresence>, },
+    /// A direct current relay registration observation. This does not prove
+    /// historical heartbeat-ID absence or full MP-10 acceptance.
+    FreshRemoteMachineKernelsObserved {
+        machine_ref: String,
+        query_started_at_ms: u64,
+        query_completed_at_ms: u64,
+        kernels: Vec<RelayKernelPresence>,
+    },
     WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
     WaitingRoomPublicSnapshot { snapshot: WaitingRoomPublicSnapshot, },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
