@@ -57,13 +57,10 @@ fn resolve_login_path_with_fallback(home: &Path, include_home_local_bin: bool) -
 fn fallback_path(home: &Path, include_home_local_bin: bool) -> String {
     if include_home_local_bin {
         let local_bin = home.join(".local/bin");
-        if let Some(local_bin) = local_bin
-            .to_str()
-            .filter(|component| {
-                is_safe_path_component(component)
-                    && component.len() + 1 + BOOTSTRAP_PATH.len() <= MAX_PROVIDER_PATH_BYTES
-            })
-        {
+        if let Some(local_bin) = local_bin.to_str().filter(|component| {
+            is_safe_path_component(component)
+                && component.len() + 1 + BOOTSTRAP_PATH.len() <= MAX_PROVIDER_PATH_BYTES
+        }) {
             return format!("{local_bin}:{BOOTSTRAP_PATH}");
         }
     }
@@ -141,9 +138,7 @@ fn probe_login_path(home: &Path) -> Result<OsString, &'static str> {
         if poll_result == 0 {
             continue;
         }
-        if descriptor.revents
-            & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL)
-            == 0
+        if descriptor.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
         {
             continue;
         }
@@ -188,10 +183,7 @@ fn parse_login_path(output: &[u8]) -> Result<String, &'static str> {
     let framed = output[marker_start + PATH_PROBE_MARKER.len()..]
         .strip_suffix(b"\0")
         .ok_or("login profile emitted unexpected PATH probe output")?;
-    if framed.is_empty()
-        || framed.len() > MAX_PROVIDER_PATH_BYTES
-        || framed.contains(&0)
-    {
+    if framed.is_empty() || framed.len() > MAX_PROVIDER_PATH_BYTES || framed.contains(&0) {
         return Err("login profile returned an invalid PATH");
     }
     let path = std::str::from_utf8(framed).map_err(|_| "login profile PATH is not UTF-8")?;
@@ -306,7 +298,11 @@ mod tests {
         let path = resolve_login_path(&home.0);
         assert_eq!(path, OsString::from(&expected_path));
         for (name, expected) in supervisor_env {
-            assert_eq!(std::env::var_os(name), expected, "supervisor env {name} changed");
+            assert_eq!(
+                std::env::var_os(name),
+                expected,
+                "supervisor env {name} changed"
+            );
         }
 
         let output = Command::new("/bin/sh")
@@ -347,8 +343,8 @@ mod tests {
         let before = fs::read(&heartbeat).expect("background writer should have started");
         assert!(!before.is_empty());
         std::thread::sleep(Duration::from_millis(200));
-        let after = fs::read(&heartbeat)
-            .expect("background writer heartbeat should remain readable");
+        let after =
+            fs::read(&heartbeat).expect("background writer heartbeat should remain readable");
         assert_eq!(after, before, "background writer survived probe cleanup");
     }
 
@@ -375,7 +371,10 @@ mod tests {
             fallback_path(home, true),
             format!("{}:{BOOTSTRAP_PATH}", home.join(".local/bin").display())
         );
-        assert_eq!(fallback_path(Path::new("relative/home"), true), BOOTSTRAP_PATH);
+        assert_eq!(
+            fallback_path(Path::new("relative/home"), true),
+            BOOTSTRAP_PATH
+        );
         assert_eq!(
             fallback_path(Path::new("/srv/worker:home"), true),
             BOOTSTRAP_PATH
@@ -393,10 +392,7 @@ mod tests {
         fs::write(home.0.join(".profile"), "exit 23\n")
             .expect("failing login profile should be written");
 
-        assert_eq!(
-            resolve_login_path(&home.0),
-            OsString::from(BOOTSTRAP_PATH)
-        );
+        assert_eq!(resolve_login_path(&home.0), OsString::from(BOOTSTRAP_PATH));
     }
 
     #[test]

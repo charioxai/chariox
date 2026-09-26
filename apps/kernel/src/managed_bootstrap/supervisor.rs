@@ -942,9 +942,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let path1_fd = path1_fd.expect("Path-1 broker lease should hand off an FD");
         let path1_broker =
             std::fs::read_to_string(&path1_record).expect("Path-1 broker env record should exist");
-        assert!(path1_broker.contains(
-            "path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-        ));
+        assert!(path1_broker
+            .contains("path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"));
         assert!(path1_broker.contains("service=<unset>\n"));
         assert!(path1_broker.contains("publication=<unset>\n"));
         assert!(path1_broker.contains("socket=<unset>\n"));

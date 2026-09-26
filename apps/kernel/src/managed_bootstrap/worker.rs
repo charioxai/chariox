@@ -1260,18 +1260,9 @@ mod tests {
         let mut child = spawn_kernel(&config, &release, &receipt, ManagedProviderTopology::Path1)
             .expect("disposable worker kernel should receive the broker lease");
         let status = child.wait().expect("broker probe kernel should exit");
-        restore_worker_test_env(
-            "CHARIOX_WORKER_ISOLATION_PROBE_MARKER",
-            previous_marker,
-        );
-        restore_worker_test_env(
-            "CHARIOX_MANAGED_PROVIDER_HOME",
-            previous_provider_home,
-        );
-        restore_worker_test_env(
-            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
-            previous_broker_socket,
-        );
+        restore_worker_test_env("CHARIOX_WORKER_ISOLATION_PROBE_MARKER", previous_marker);
+        restore_worker_test_env("CHARIOX_MANAGED_PROVIDER_HOME", previous_provider_home);
+        restore_worker_test_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker_socket);
         restore_worker_test_env("CHARIOX_SLICE_DOCKER_BROKER_FD", previous_broker_fd);
         restore_worker_test_env(
             "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
@@ -1279,10 +1270,7 @@ mod tests {
         );
         assert!(status.success(), "broker probe kernel failed: {status}");
         let broker_observed = fs::read_to_string(&marker).expect("broker probe environment");
-        assert!(broker_observed.contains(&format!(
-            "home={}\n",
-            config.process_home.display()
-        )));
+        assert!(broker_observed.contains(&format!("home={}\n", config.process_home.display())));
         assert!(config.process_home.is_absolute());
         assert!(broker_observed.contains(&format!(
             "path={}:{}\n",
