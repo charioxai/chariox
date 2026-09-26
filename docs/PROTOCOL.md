@@ -1859,7 +1859,9 @@ Workflow trigger and deployment direction:
   stopped worker on demand. A handler error retries with backoff and fails
   (poison) after 8 attempts; an update or start waits without spending one;
   unsettled occurrences expire after 7 days; payloads are dropped when
-  settled. `TestAppInboxRoute {installation_id, route_id, occurrence_id,
+  settled. The dedupe window is 14 days from acceptance: a replay within it is
+  answered as a duplicate, and settled occurrences older than it are pruned.
+  `TestAppInboxRoute {installation_id, route_id, occurrence_id,
   payload}` accepts one occurrence as a source would (`AppInboxOccurrenceAccepted
   {installation_id, route_id, occurrence_id, duplicate}`). Event
   generator subscriptions for routes follow with the packaged Slack App.
