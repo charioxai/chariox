@@ -1346,12 +1346,65 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
     assert!(!dockerfile.contains("npm install -g"));
     assert!(!dockerfile.contains("rustup.rs"));
     assert!(!dockerfile.contains("deb.nodesource.com"));
-    for base in dockerfile.lines().filter(|line| line.starts_with("FROM ")) {
-        assert!(
-            base.contains("@sha256:"),
-            "unpinned slice base image: {base}"
-        );
+    let dockerfile_lines: Vec<_> = dockerfile.lines().map(str::trim).collect();
+    let artifact_stage = "FROM scratch AS managed-release-artifacts";
+    let artifact_stage_indices: Vec<_> = dockerfile_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == artifact_stage).then_some(index))
+        .collect();
+    assert_eq!(
+        artifact_stage_indices.len(),
+        1,
+        "the signed release artifact stage must have one exact scratch declaration"
+    );
+
+    for base in dockerfile_lines
+        .iter()
+        .filter(|line| line.starts_with("FROM "))
+    {
+        let mut fields = base.split_whitespace();
+        assert_eq!(fields.next(), Some("FROM"));
+        let first = fields.next().expect("FROM should name a base image");
+        let image = if first.starts_with("--platform=") {
+            fields.next().expect("FROM platform should be followed by an image")
+        } else {
+            first
+        };
+        if image == "scratch" {
+            assert_eq!(
+                *base, artifact_stage,
+                "scratch is allowed only for the exact release artifact stage"
+            );
+        } else {
+            assert!(
+                base.contains("@sha256:"),
+                "unpinned slice base image: {base}"
+            );
+        }
     }
+
+    let artifact_stage_index = artifact_stage_indices[0];
+    let artifact_stage_end = dockerfile_lines[artifact_stage_index + 1..]
+        .iter()
+        .position(|line| line.starts_with("FROM "))
+        .map(|offset| artifact_stage_index + 1 + offset)
+        .unwrap_or(dockerfile_lines.len());
+    let artifact_stage_instructions: Vec<_> = dockerfile_lines
+        [artifact_stage_index + 1..artifact_stage_end]
+        .iter()
+        .copied()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert_eq!(
+        artifact_stage_instructions,
+        vec![
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+        ],
+        "the release artifact stage must export only the three signed runtime binaries"
+    );
     assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));
     assert!(dockerfile.contains("io.chariox.relay-peer-protocol-version"));
