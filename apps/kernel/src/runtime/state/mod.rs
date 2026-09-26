@@ -287,10 +287,17 @@ mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod provider_liveness_runtime;
+mod claude_setup_token_capture;
+pub(in crate::runtime) use claude_setup_token_capture::{
+    SetupTokenScan, CLAUDE_SETUP_TOKEN_COLUMNS, CLAUDE_SETUP_TOKEN_ROWS,
+};
+mod claude_setup_token_vault;
+pub(in crate::runtime) use claude_setup_token_vault::ClaudeSetupTokenStoreOutcome;
 mod provider_login_state;
 pub(in crate::runtime) use provider_login_state::{
-    ProviderAuthProcessOperation, ProviderLoginProcessBackend, ProviderLoginProcessRecord,
-    ProviderLoginProcessStore, PROVIDER_LOGIN_TIMEOUT_MS,
+    ClaudeSetupTokenLogin, ClaudeSetupTokenVaultPrompt, ProviderAuthProcessOperation,
+    ProviderLoginProcessBackend, ProviderLoginProcessRecord, ProviderLoginProcessStore,
+    PROVIDER_LOGIN_TIMEOUT_MS,
 };
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;

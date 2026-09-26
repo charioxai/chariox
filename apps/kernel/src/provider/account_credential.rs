@@ -93,10 +93,23 @@ fn portable_claude_credentials_authorize_unattended_launch() -> bool {
 
 fn unattended_claude_credential_error_message() -> &'static str {
     if portable_claude_credentials_authorize_unattended_launch() {
-        "unattended Claude launch requires a Chariox-vault setup token or a portable provider-native credential; use `provider setup-token claude <account-profile>` or launch the native Claude TUI to sign in interactively"
+        "unattended Claude launch requires a Chariox-vault setup token or a portable provider-native credential; open Provider Accounts and choose Log in on this Claude account to store a setup token, or launch the native Claude TUI to sign in interactively"
     } else {
-        "unattended Claude launch requires a Chariox-vault setup token on this platform; use `provider setup-token claude <account-profile>` or launch the native Claude TUI to sign in interactively"
+        "unattended Claude launch requires a Chariox-vault setup token on this platform; open Provider Accounts and choose Log in on this Claude account to store a setup token, or launch the native Claude TUI to sign in interactively"
     }
+}
+
+/// Whether a Chariox-held launch credential is registered for the account.
+/// Reads only the registry; no secret is resolved.
+pub(crate) fn provider_account_credential_registered(
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+) -> Result<bool, DaemonError> {
+    let credential_id = provider_account_credential_id(owner_user_id, provider, profile_id);
+    Ok(crate::credential::load_user_credentials()?
+        .iter()
+        .any(|credential| credential.id == credential_id))
 }
 
 pub(crate) fn provider_account_credential_uses_vault(
@@ -232,6 +245,8 @@ mod tests {
             cfg!(target_os = "linux")
         );
         assert!(message.contains("Chariox-vault setup token"));
+        assert!(message.contains("Provider Accounts"));
+        assert!(!message.contains("provider setup-token"));
     }
 
     #[test]

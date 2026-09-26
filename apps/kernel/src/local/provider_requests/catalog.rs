@@ -310,6 +310,18 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            if status.auth_state != "authenticated"
+                && crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )?
+            {
+                // Launches use the profile's vault setup token, which was
+                // verified with Claude when it was stored. Reading it back
+                // needs the vault, so keep that observation and its time.
+                return Ok(profile);
+            }
             let usage = if status.auth_state == "authenticated" {
                 let executable = resolve_claude_executable()?;
                 crate::provider::probe_claude_account_usage(

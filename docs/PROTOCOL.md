@@ -1657,6 +1657,29 @@ Workflow trigger and deployment direction:
   the bound home agent, leased agent, and worker provider run. Calls carrying a
   settled home prompt ID cannot message another agent. The local
   client shape is unchanged, so web and native minimum versions do not change.
+- protocol 344 adds the Claude `setup_token` value for `StartProviderLogin.method`.
+  The kernel runs the official `claude setup-token` command as a managed
+  terminal login whose `ProviderLoginStart.login_kind` is
+  `terminal_setup_token`. Its 40x1000 PTY output is rendered by a terminal
+  emulator. For this login kind, `terminal_output_base64` carries only the
+  rendered screen text plus kernel notes, never raw PTY bytes. Every `sk-ant-`
+  run is replaced with a marker. The kernel captures the token from the
+  rendered screen only when three conditions hold: it is a complete
+  `sk-ant-oat01-` token, more output follows it or the CLI has exited, and it
+  is the only distinct token on screen. It then verifies the token with a
+  no-model `claude -p /usage` call and stores it through the same vault path
+  as `provider setup-token`. Draining, input, cancel, and completion for one
+  login are serialized, and completion takes effect only from `running`. If
+  the encrypted Chariox Vault is locked, the workflow stays `running` and its
+  `interaction` becomes a secret vault-passphrase prompt. A new vault's
+  passphrase must be entered twice. The next `SendProviderLoginInput` is
+  consumed as that passphrase, not written to the exited provider CLI. A wrong
+  passphrase keeps the prompt open. The normal 10-minute workflow timeout and
+  cancellation drop the rendered screen and the captured token. A Claude
+  profile that is signed out natively but has a stored setup token keeps the
+  observation recorded at verification. The message shapes are unchanged. A
+  client that offers the method requires kernel 344. Older kernels reject it
+  through the normal enrollment-method validation.
 - relay peer protocol 57 requires a worker capable of supplying the originating
   turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
   at peer binding before provider dispatch rather than failing on a missing
