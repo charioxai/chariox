@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 import { runBoundedObserverCommand, observeManagedParityHost } from "./managed-browser-computer-parity-host-observer.mjs"
 
 test("host observer rejects option injection before executing SSH", async () => {
@@ -13,6 +14,25 @@ test("host observer refuses ambient Docker configuration", async () => {
     { endpoint: "tcp://elsewhere:2375", id: "engine-123" }]) {
     await assert.rejects(observeManagedParityHost({ host: "trusted-host", engine }), /pinned Unix Docker/)
   }
+})
+
+test("physical cgroup ownership rejects host scope and container-ID substrings", async () => {
+  await runBoundedObserverCommand("python3", ["-B", "-c", `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("probe", sys.argv[1])
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+identity = "a" * 64
+assert probe.belongs_to_container("0::/user.slice/docker-" + identity + ".scope", {identity})
+assert not probe.belongs_to_container("0::/user.slice", {identity})
+assert not probe.belongs_to_container("0::/docker-" + identity + "a.scope", {identity})
+assert not probe.belongs_to_container("0::/docker-a" + identity + ".scope", {identity})
+before = {"pid": 42, "startTicks": "100", "pidNamespace": "pid:[1]", "netNamespace": "net:[1]"}
+escaped = {**before, "pidNamespace": "pid:[2]", "netNamespace": "net:[2]"}
+assert not probe.same_process(before, escaped)
+assert probe.same_process_lifetime(before, escaped)
+assert not probe.same_process_lifetime(before, {**escaped, "startTicks": "101"})
+`, fileURLToPath(new URL("./managed-browser-computer-parity-host-probe.py", import.meta.url))])
 })
 
 test("bounded observer command passes input and returns only stdout", async () => {

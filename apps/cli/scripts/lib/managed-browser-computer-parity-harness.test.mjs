@@ -255,6 +255,19 @@ test("a loader-proven independent inspector owns the final cleanup inventory", a
   })
   assert.equal(failed.status, "failed")
   assert.deepEqual(injected.calls.map(({ step }) => step), ["cleanup.perform"])
+
+  const cleanupFailure = transport({ failStep: "cleanup.perform" })
+  cleanupFailure.setLifecycleObserver = () => {}
+  inspector.begin = async () => {}
+  inspectorCalls.length = 0
+  const cleanupReport = await runManagedBrowserComputerParityHarness({
+    config: config({ inspector: inspectorConfig }), transport: cleanupFailure,
+    inspector, inspectorVerification: verification,
+  })
+  assert.equal(cleanupReport.status, "failed")
+  assert.equal(cleanupReport.failure.code, "cleanup_incomplete")
+  assert.deepEqual(inspectorCalls.map(({ step }) => step), ["cleanup.inspect"],
+    "independent machine retirement must remain reachable after product cleanup failure")
 })
 
 test("managed parity harness rejects a run id that could escape its evidence root", async () => {

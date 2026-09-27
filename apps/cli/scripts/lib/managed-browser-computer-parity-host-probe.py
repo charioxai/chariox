@@ -81,6 +81,10 @@ def same_process(before, after):
     return all(before[key] == after[key] for key in ("pid", "startTicks", "pidNamespace", "netNamespace"))
 
 
+def same_process_lifetime(before, after):
+    return before["pid"] == after["pid"] and before["startTicks"] == after["startTicks"]
+
+
 def path_identity(path):
     value = os.lstat(path)
     return {"path": path, "device": str(value.st_dev), "inode": str(value.st_ino),
@@ -135,7 +139,9 @@ def main():
                 if any(item["Config"].get("Labels", {}).get(key) != value for key, value in labels.items()):
                     raise ValueError("container ownership changed")
                 containers[item["Id"]] = {"id": item["Id"], "labels": labels,
-                    "initPid": item["State"]["Pid"], "running": item["State"]["Running"]}
+                    "initPid": item["State"]["Pid"], "running": item["State"]["Running"],
+                    "mounts": [{key: mount.get(key) for key in ("Type", "Name", "Source", "Destination")}
+                               for mount in item["Mounts"]]}
         names = bounded(docker("volume", "ls", "--quiet", *filters).split(), 64)
         if names:
             for item in json.loads(docker("volume", "inspect", *names)):
@@ -171,16 +177,59 @@ def main():
         except (FileNotFoundError, ProcessLookupError):
             continue
     bounded(processes)
+    profiles = []
+    for identity in processes:
+        prefix = "/proc/" + str(identity["pid"])
+        try:
+            with open(prefix + "/cmdline", "rb") as stream:
+                raw = stream.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("owned process argument bound")
+            args = raw.decode().split("\0")
+            if os.path.basename(args[0]).lower() not in ("chromium", "chromium-browser", "chrome", "google-chrome", "google-chrome-stable"):
+                continue
+            if any(arg.startswith("--type=") for arg in args):
+                continue
+            profile = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--user-data-dir=")), None)
+            if profile is None and "--user-data-dir" in args:
+                profile = args[args.index("--user-data-dir") + 1]
+            if not profile or not profile.startswith("/") or os.path.normpath(profile) != profile:
+                raise ValueError("actual owned browser profile path unavailable")
+            container = next((item for item in containers.values()
+                              if belongs_to_container(identity["cgroup"], {item["id"]})), None)
+            if container is None:
+                raise ValueError("owned browser profile container coverage unavailable")
+            mounts = [mount for mount in container["mounts"] if mount["Type"] == "volume"
+                      and mount["Name"] in volumes and (profile == mount["Destination"]
+                      or profile.startswith(mount["Destination"].rstrip("/") + "/"))]
+            if not mounts:
+                raise ValueError("owned browser profile is outside observed owned volumes")
+            mount = max(mounts, key=lambda item: len(item["Destination"]))
+            host_path = mount["Source"].rstrip("/") + profile[len(mount["Destination"]):]
+            if os.path.realpath(host_path) != host_path:
+                raise ValueError("profile symlink coverage is unavailable")
+            observed = path_identity(host_path)
+            actual = os.stat(prefix + "/root" + profile)
+            if observed["kind"] != "directory" or (observed["device"], observed["inode"]) != (str(actual.st_dev), str(actual.st_ino)):
+                raise ValueError("browser profile mount/inode mismatch")
+            if not same_process(identity, process_identity(identity["pid"])):
+                raise ValueError("browser changed during profile observation")
+            profiles.append({**observed, "process": identity, "containerId": container["id"], "volumeName": mount["Name"]})
+        except (FileNotFoundError, ProcessLookupError):
+            continue
     residual_processes = []
     for old in bounded(retained.get("processes", [])):
         try:
             actual = process_identity(old["pid"])
-            if same_process(old, actual):
+            # Namespace/cgroup escape is residue, not disappearance. Start ticks
+            # still distinguish this process from a reused PID on the same boot.
+            if same_process_lifetime(old, actual):
                 residual_processes.append(actual)
         except (FileNotFoundError, ProcessLookupError):
             pass
     listeners = []
-    for identity in processes + residual_processes:
+    listening_processes = {str(item["pid"]) + ":" + item["startTicks"]: item for item in processes + residual_processes}
+    for identity in listening_processes.values():
         prefix = "/proc/" + str(identity["pid"])
         try:
             sockets = set()
@@ -233,12 +282,23 @@ def main():
                 retained_paths.append(actual)
         except FileNotFoundError:
             pass
+    retained_profiles = []
+    for old in bounded(retained.get("profiles", []), 256):
+        try:
+            actual = path_identity(old["path"])
+            if (actual["device"], actual["inode"]) == (old["device"], old["inode"]):
+                retained_profiles.append(actual)
+        except FileNotFoundError:
+            pass
     if boot != open("/proc/sys/kernel/random/boot_id").read().strip():
         raise ValueError("host rebooted during observation")
+    listeners = list({(item["process"]["netNamespace"], item["protocol"], item["socketInode"]): item
+                      for item in listeners}.values())
     print(json.dumps({"schema": "chariox.managed_parity.host_observation.v1", "bootId": boot,
           "mountNamespace": os.readlink("/proc/self/ns/mnt"), "engineId": engine["id"],
           "hostContainerIds": sorted(all_ids), "hostVolumeNames": sorted(all_volume_names),
           "containers": list(containers.values()), "volumes": list(volumes.values()),
+          "profiles": profiles, "retainedProfiles": retained_profiles,
           "processes": processes, "listeners": listeners, "paths": paths, "mounts": mounts,
           "retainedContainers": retained_containers, "retainedVolumes": retained_volumes,
           "retainedProcesses": residual_processes, "retainedPaths": retained_paths,

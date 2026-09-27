@@ -157,6 +157,15 @@ test("resource caps fail closed for declared disk/memory/process/log overruns", 
   assert.match(result.violations.join("\n"), /log growth 10 bytes exceeds cap 5 bytes/)
 })
 
+test("pre-delete resource samples remain distinct from unavailable post-delete telemetry", () => {
+  const samples = resourceSamples()
+  samples[2] = { ...samples[2], phase: "before-delete" }
+  const caps = { diskBytes: 100, memoryBytes: 100, processCount: 100, logBytes: 100 }
+  assert.equal(evaluateBrowserComputerResourceCaps(samples, caps).ok, false)
+  assert.equal(evaluateBrowserComputerResourceCaps(samples, caps, { terminalPhase: "before-delete" }).ok, true)
+  assert.equal(samples[2].phase, "before-delete")
+})
+
 test("resource growth is measured against the before sample, not only the final sample", () => {
   const result = evaluateBrowserComputerResourceCaps(resourceSamples({
     during: { diskAvailableBytes: 96, memoryAvailableBytes: 96, processCount: 2, logBytes: 2 },

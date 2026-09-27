@@ -1,5 +1,5 @@
 // Drill-local observation only: this never owns or mutates product resources.
-export function createManagedParityObserverHooks({ timeoutMs = 15_000 } = {}) {
+export function createManagedParityObserverHooks({ timeoutMs = 45_000 } = {}) {
   let observer = null
   let failure = null
   let admitted = false

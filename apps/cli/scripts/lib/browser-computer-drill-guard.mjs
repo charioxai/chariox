@@ -304,16 +304,19 @@ export function assertBrowserComputerPreflight(snapshot, options = {}) {
  * Disk and log caps are operation growth caps; memory and process caps are
  * peak caps. Missing process or log measurements fail closed when caps apply.
  */
-export function evaluateBrowserComputerResourceCaps(samples, caps, { additionalSamples = [] } = {}) {
+export function evaluateBrowserComputerResourceCaps(samples, caps, { additionalSamples = [], terminalPhase = "after" } = {}) {
   const normalizedCaps = normalizeBrowserComputerCaps(caps)
   const violations = []
   const rows = []
+  const phases = terminalPhase === "before-delete"
+    ? ["before", "during", "before-delete"] : BROWSER_COMPUTER_SAMPLE_PHASES
+  if (!["after", "before-delete"].includes(terminalPhase)) violations.push("unsupported terminal telemetry phase")
   if (!Array.isArray(samples) || samples.length !== BROWSER_COMPUTER_SAMPLE_PHASES.length) {
-    violations.push("resource evidence must contain exactly one before, during, and after sample")
+    violations.push(`resource evidence must contain exactly one before, during, and ${phases[2]} sample`)
   }
 
   for (let index = 0; index < BROWSER_COMPUTER_SAMPLE_PHASES.length; index += 1) {
-    const phase = BROWSER_COMPUTER_SAMPLE_PHASES[index]
+    const phase = phases[index]
     const sample = Array.isArray(samples) ? samples[index] : undefined
     if (!sample || sample.phase !== phase) {
       violations.push(`resource evidence is missing the ${phase} sample at deterministic position ${index}`)
