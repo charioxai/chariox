@@ -1,5 +1,5 @@
 use super::{
-    transport::{self, Outgoing},
+    transport::{self, FrameState, Outgoing},
     validation, wall_ms, Broker, BrokerCancellation, BrokerRequest, Call, Channel, ControlEvent,
     Message, PeerError, PeerLimits, RemoteError, Result,
 };
@@ -22,7 +22,7 @@ use tokio::{
 struct Pending {
     reply: oneshot::Sender<Result<Message>>,
     deadline: Instant,
-    live: Arc<AtomicBool>,
+    live: Arc<FrameState>,
     _permit: OwnedSemaphorePermit,
 }
 struct Active {
@@ -132,7 +132,7 @@ where
         let _ = call.reply.send(Err(PeerError::Closed));
     }
     for (_, pending) in std::mem::take(&mut actor.pending) {
-        pending.live.store(false, Ordering::Release);
+        pending.live.retire();
         let _ = pending.reply.send(Err(PeerError::Closed));
     }
     actor.queued.clear();
@@ -153,7 +153,7 @@ where
 }
 
 impl Actor {
-    fn send(&mut self, message: Message, live: Option<Arc<AtomicBool>>) -> Result<()> {
+    fn send(&mut self, message: Message, live: Option<Arc<FrameState>>) -> Result<()> {
         validation::message(&message)?;
         let bound =
             self.limits.pending_calls + 2 * self.limits.broker_handlers + self.limits.queued_frames;
@@ -205,7 +205,7 @@ impl Actor {
         if self.pending.contains_key(&id) || self.pending.len() >= self.limits.pending_calls {
             return Err(PeerError::Protocol);
         }
-        let live = Arc::new(AtomicBool::new(true));
+        let live = Arc::new(FrameState::new());
         self.send(call.message, Some(live.clone()))?;
         self.pending.insert(
             id,
@@ -227,7 +227,7 @@ impl Actor {
                 // Match SDK behavior: never revive a retired or unknown call,
                 // and never grow an unbounded collection of response tombstones.
                 if let Some(pending) = self.pending.remove(id) {
-                    pending.live.store(false, Ordering::Release);
+                    pending.live.retire();
                     let result = if Instant::now() >= pending.deadline {
                         Err(PeerError::Deadline)
                     } else {
@@ -421,9 +421,11 @@ impl Actor {
                 .pending
                 .remove(&id)
                 .expect("collected live pending call");
-            pending.live.store(false, Ordering::Release);
+            // Only a request the worker received owes a terminal response.
+            if pending.live.retire() {
+                self.cancelled.insert(id.clone(), now + UNRESPONSIVE_GRACE);
+            }
             let _ = pending.reply.send(Err(PeerError::Deadline));
-            self.cancelled.insert(id.clone(), now + UNRESPONSIVE_GRACE);
             self.send(
                 Message::Cancel {
                     version: WIRE_VERSION,

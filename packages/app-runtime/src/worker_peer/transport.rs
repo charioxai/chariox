@@ -2,7 +2,7 @@ use super::{Message, PeerError, Result};
 use crate::wire::{Reader, Writer};
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
         Arc,
     },
     time::Duration,
@@ -15,8 +15,30 @@ use tokio::{
 pub(super) struct Outgoing {
     pub message: Message,
     // A queued request cancelled before its first write must not start later.
-    pub live: Option<Arc<AtomicBool>>,
+    pub live: Option<Arc<FrameState>>,
     pub publication: Option<super::publication::Guarded>,
+}
+
+/// A request frame is queued, then either written or retired: whichever of
+/// the writer and the call's settlement comes first decides, exactly once.
+pub(super) struct FrameState(AtomicU8);
+const QUEUED: u8 = 0;
+const SENT: u8 = 1;
+const RETIRED: u8 = 2;
+impl FrameState {
+    pub fn new() -> Self {
+        Self(AtomicU8::new(QUEUED))
+    }
+    /// The writer may write the frame only if its call is still pending.
+    fn start(&self) -> bool {
+        self.0
+            .compare_exchange(QUEUED, SENT, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+    /// Retires the call; true when its frame had already reached the worker.
+    pub fn retire(&self) -> bool {
+        self.0.swap(RETIRED, Ordering::AcqRel) == SENT
+    }
 }
 
 pub(super) async fn read<T: AsyncRead + Unpin>(
@@ -54,11 +76,7 @@ pub(super) async fn write<T: AsyncWrite + Unpin>(
             _ = stop(&mut stopped) => return,
             item = outgoing.recv() => match item {Some(item)=>item,None=>return},
         };
-        if item
-            .live
-            .as_ref()
-            .is_some_and(|live| !live.load(Ordering::Acquire))
-        {
+        if item.live.as_ref().is_some_and(|live| !live.start()) {
             continue;
         }
         if item
@@ -110,5 +128,22 @@ pub(super) async fn stop(receiver: &mut watch::Receiver<bool>) {
         if receiver.changed().await.is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::FrameState;
+
+    #[test]
+    fn only_a_written_request_is_owed_a_response() {
+        // Retired while queued: never written, owes nothing.
+        let queued = FrameState::new();
+        assert!(!queued.retire());
+        assert!(!queued.start());
+        // Written first: its retirement is owed the worker's terminal response.
+        let written = FrameState::new();
+        assert!(written.start());
+        assert!(written.retire());
     }
 }
