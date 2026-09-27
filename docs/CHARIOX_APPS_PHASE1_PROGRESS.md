@@ -132,10 +132,10 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 | V-PKG-01 | Valid built-in and local developer packages | Contract tests plus local and managed-kernel drill. | Unverified |
 | V-PKG-02 | Archive attacks | Adversarial package corpus on macOS and Linux. | Unverified |
 | V-PKG-03 | Manifest and protocol mismatch | Parser snapshots and client rendering tests. | Unverified |
-| V-PKG-04 | Interrupted installation | Checkpoint fault-injection suite. | Unverified |
+| V-PKG-04 | Interrupted installation | Checkpoint fault-injection suite. | Implemented on macOS (`v-pkg-04/`) |
 | V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Unverified |
 | V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Unverified |
-| V-PKG-07 | Concurrent operations | Four-client concurrency test. | Unverified |
+| V-PKG-07 | Concurrent operations | Four-client concurrency test. | Implemented (`v-pkg-07/`) |
 | V-PKG-08 | Uninstall and reinstall | Lifecycle drill with all three reference Apps. | Implemented on macOS: live drill with all three Apps, reinstall into kept data (#494) and delete-data (#495, #496) (`v-pkg-08/`); Linux delete-data through the storage helper (#497), passed in the Linux storage fixture |
 
 ### Worker containment/lifecycle matrix
@@ -171,10 +171,10 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
 | V-UX-01 | App Tab and viewer isolation | Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment. | Unverified |
-| V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Unverified |
-| V-UX-03 | Accessibility | Automated audit plus manual VoiceOver pass for every App view. | Unverified |
+| V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Partial: three widths (`screens/responsive-*`) |
+| V-UX-03 | Accessibility | Automated audit plus manual VoiceOver pass for every App view. | Partial: axe 0 violations; VoiceOver [user] |
 | V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Unverified |
-| V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Unverified |
+| V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial: live remote TUI (`remote-tui/`) |
 | V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Unverified |
 | V-UX-07 | Freeform trigger | Web right-click and TUI slash-command drill. | Unverified |
 | V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Unverified |
