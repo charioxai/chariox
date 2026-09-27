@@ -395,3 +395,39 @@ fn deleting_storage_removes_the_installation_journal_last_and_is_repeatable() {
     drop(dir);
     assert_eq!(root.delete_blocking("owner", "app"), Err(Error::Identity));
 }
+
+#[test]
+fn an_interrupted_deletion_is_finished_by_deleting_again_or_by_recovery() {
+    let scratch = Scratch::new();
+    let root = StorageRoot::open(&scratch.0).unwrap();
+    // Volumes detached and the journal renamed to the marker, then the
+    // deletion stopped after removing the data mount and a snapshot.
+    let interrupted = |installation: &str| {
+        let name = storage_name("owner", installation);
+        let dir = Dir::open_or_create_private_child(&scratch.0, OsStr::new(&name)).unwrap();
+        let mut journal = record(&dir);
+        journal.installation = installation.into();
+        journal.save(&dir).unwrap();
+        crate::private_fs::publish(
+            &dir,
+            OsStr::new(journal::NAME),
+            OsStr::new(journal::DELETING),
+        )
+        .unwrap();
+        dir.remove_directory(OsStr::new("data")).unwrap();
+        scratch.0.join(name)
+    };
+    let first = interrupted("app");
+    // Capacity accounting skips storage being deleted instead of requiring
+    // recovery (the host's free space may still refuse on a full disk).
+    let other = storage_name("owner", "new");
+    assert_ne!(
+        root.check_capacity(&other, CAPACITIES, 1, 1),
+        Err(Error::RecoveryRequired)
+    );
+    root.delete_blocking("owner", "app").unwrap();
+    assert!(!first.exists());
+    let second = interrupted("other-app");
+    root.recover_all_blocking().unwrap();
+    assert!(!second.exists());
+}

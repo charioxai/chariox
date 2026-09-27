@@ -165,6 +165,11 @@ impl StorageRoot {
                 return Err(Error::Busy);
             }
             journal::recover_temporaries(&dir)?;
+            if journal::load_deleting(&dir)?.is_some() {
+                // An interrupted deletion: its volumes were already detached.
+                self.finish_deletion(dir, name.to_str().ok_or(Error::Identity)?)?;
+                continue;
+            }
             if let Some(journal) = journal::load(&dir)? {
                 let mut storage = MountedStorage {
                     root: dir,
@@ -202,8 +207,8 @@ impl StorageRoot {
 
     /// Deletes one installation's storage, with its snapshots, after its
     /// workers are reaped: the owner deleted the App's data. Volumes are
-    /// detached first. The journal goes last, so an interrupted deletion is
-    /// storage recovery still recognizes, and deleting again finishes it.
+    /// detached first; then the journal is renamed to a deletion marker, so a
+    /// retried deletion, or startup recovery, only removes what is left.
     /// Absent storage is already deleted.
     pub fn delete_blocking(&self, owner: &str, installation: &str) -> Result<()> {
         journal::identifier(owner)?;
@@ -230,37 +235,60 @@ impl StorageRoot {
             return Ok(());
         };
         journal::recover_temporaries(&dir)?;
-        if let Some(journal) = journal::load(&dir)? {
-            if journal.owner != owner || journal.installation != installation {
-                return Err(Error::Identity);
-            }
-            let mut storage = MountedStorage {
-                root: dir,
-                path: self.path.join(&name),
-                journal,
-                images: [None, None],
-                mounted: [None, None],
-                released: false,
-                cleanup_attempted: false,
-                deadline: std::time::Instant::now(),
-            };
-            storage.release_blocking()?;
-        }
-        let Some(dir) = open()? else {
-            return Ok(());
+        let deleting = journal::load_deleting(&dir)?;
+        let recorded = match &deleting {
+            Some(journal) => Some(journal.clone()),
+            None => journal::load(&dir)?,
         };
+        if recorded
+            .as_ref()
+            .is_some_and(|journal| journal.owner != owner || journal.installation != installation)
+        {
+            return Err(Error::Identity);
+        }
+        let dir = match (deleting, recorded) {
+            (None, Some(journal)) => {
+                let mut storage = MountedStorage {
+                    root: dir,
+                    path: self.path.join(&name),
+                    journal,
+                    images: [None, None],
+                    mounted: [None, None],
+                    released: false,
+                    cleanup_attempted: false,
+                    deadline: std::time::Instant::now(),
+                };
+                storage.release_blocking()?;
+                drop(storage);
+                let dir = open()?.ok_or(Error::Identity)?;
+                crate::private_fs::publish(
+                    &dir,
+                    OsStr::new(journal::NAME),
+                    OsStr::new(journal::DELETING),
+                )?;
+                dir.sync()?;
+                dir
+            }
+            _ => dir,
+        };
+        self.finish_deletion(dir, &name)
+    }
+
+    /// Removes a deleting installation's files, then its marker, then the
+    /// directory; its volumes were detached before the marker was written.
+    fn finish_deletion(&self, dir: Dir, name: &str) -> Result<()> {
         let mut remaining = MAX_DELETED_ENTRIES;
         crate::private_fs::remove_contents_preserving(
             &dir,
             &mut remaining,
-            OsStr::new(journal::NAME),
+            OsStr::new(journal::DELETING),
             &mut || Ok(()),
         )?;
-        dir.remove_file(OsStr::new(journal::NAME))?;
+        dir.remove_file(OsStr::new(journal::DELETING))?;
         dir.sync()?;
-        FileIdentity::of(&dir.0)?.require(&self.dir, OsStr::new(&name), &dir.0)?;
+        FileIdentity::of(&dir.0)?.require(&self.dir, OsStr::new(name), &dir.0)?;
         drop(dir);
-        self.dir.remove_directory(OsStr::new(&name))?;
+        self.dir.remove_directory(OsStr::new(name))?;
         self.dir.sync()?;
         Ok(())
     }
@@ -389,6 +417,10 @@ impl StorageRoot {
                 existing = true;
             }
             let dir = self.dir.child(entry)?;
+            if journal::load_deleting(&dir)?.is_some() {
+                // Being deleted: its images no longer count.
+                continue;
+            }
             if let Some(journal) = journal::load(&dir)? {
                 if value == selected {
                     reserved = true;
