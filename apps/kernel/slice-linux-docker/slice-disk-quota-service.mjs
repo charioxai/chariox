@@ -23,37 +23,74 @@ function serviceGid(name) {
   return Number(gid)
 }
 
+export function handleSliceDiskQuotaConnection(socket, allocator, {
+  requestTimeoutMs = SLICE_DISK_QUOTA_REQUEST_TIMEOUT_MS,
+  inactivityTimeoutMs = requestTimeoutMs,
+} = {}) {
+  let chunks = []
+  let receivedBytes = 0
+  let settled = false
+  let absoluteDeadline
+
+  const cleanup = () => {
+    clearTimeout(absoluteDeadline)
+    socket.setTimeout(0)
+  }
+  const closeWithoutResponse = () => {
+    if (settled) return
+    settled = true
+    cleanup()
+    socket.destroy()
+  }
+  if ([requestTimeoutMs, inactivityTimeoutMs].some((timeoutMs) => (
+    !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647
+  ))) {
+    throw new RangeError("managed disk quota request timeouts must be positive bounded integers")
+  }
+  socket.setTimeout(inactivityTimeoutMs, closeWithoutResponse)
+  absoluteDeadline = setTimeout(closeWithoutResponse, requestTimeoutMs)
+  socket.on("error", closeWithoutResponse)
+  socket.on("data", (chunk) => {
+    if (settled) return
+    receivedBytes += chunk.length
+    if (receivedBytes > SLICE_DISK_QUOTA_FRAME_MAX_BYTES) {
+      closeWithoutResponse()
+      return
+    }
+    chunks.push(Buffer.from(chunk))
+  })
+  socket.once("end", () => {
+    if (settled) return
+    const input = Buffer.concat(chunks, receivedBytes)
+    chunks = []
+    const newline = input.indexOf(0x0a)
+    if (newline < 0 || newline !== input.length - 1) {
+      closeWithoutResponse()
+      return
+    }
+    settled = true
+    cleanup()
+    try {
+      const result = allocator.handle(JSON.parse(input.subarray(0, newline).toString("utf8")))
+      socket.end(`${JSON.stringify({ protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION, ok: true, result })}\n`)
+    } catch (error) {
+      socket.end(`${JSON.stringify({
+        protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })}\n`)
+    }
+  })
+  socket.once("close", closeWithoutResponse)
+}
+
 function createServerService() {
   const stateStore = createFileSliceDiskQuotaStateStore()
   const allocator = createSliceDiskQuotaAllocator({ backend: createSystemSliceDiskQuotaBackend(), stateStore })
   mkdirSync(dirname(SLICE_DISK_QUOTA_SOCKET_PATH), { recursive: true, mode: 0o750 })
   chownSync(dirname(SLICE_DISK_QUOTA_SOCKET_PATH), 0, serviceGid("chariox-docker"))
   chmodSync(dirname(SLICE_DISK_QUOTA_SOCKET_PATH), 0o750)
-  const server = createServer((socket) => {
-    socket.setTimeout(SLICE_DISK_QUOTA_REQUEST_TIMEOUT_MS, () => socket.destroy())
-    let input = ""
-    socket.setEncoding("utf8")
-    socket.on("data", (chunk) => {
-      input += chunk
-      if (Buffer.byteLength(input) > SLICE_DISK_QUOTA_FRAME_MAX_BYTES) {
-        socket.destroy(new Error("disk quota request is too large"))
-        return
-      }
-      const newline = input.indexOf("\n")
-      if (newline < 0) return
-      const line = input.slice(0, newline)
-      if (input.slice(newline + 1).length !== 0) {
-        socket.destroy(new Error("disk quota request must be one frame"))
-        return
-      }
-      try {
-        const response = allocator.handle(JSON.parse(line))
-        socket.end(`${JSON.stringify({ protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION, ok: true, result: response })}\n`)
-      } catch (error) {
-        socket.end(`${JSON.stringify({ protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION, ok: false, error: error instanceof Error ? error.message : String(error) })}\n`)
-      }
-    })
-  })
+  const server = createServer({ allowHalfOpen: true }, (socket) => handleSliceDiskQuotaConnection(socket, allocator))
   server.listen(SLICE_DISK_QUOTA_SOCKET_PATH, () => {
     chownSync(SLICE_DISK_QUOTA_SOCKET_PATH, 0, serviceGid("chariox-docker"))
     chmodSync(SLICE_DISK_QUOTA_SOCKET_PATH, 0o660)
