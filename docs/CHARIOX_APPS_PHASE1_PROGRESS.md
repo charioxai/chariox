@@ -136,7 +136,7 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 | V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Unverified |
 | V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Unverified |
 | V-PKG-07 | Concurrent operations | Four-client concurrency test. | Unverified |
-| V-PKG-08 | Uninstall and reinstall | Lifecycle drill with all three reference Apps. | Implemented on macOS: live drill with all three Apps, reinstall into kept data (#494) and delete-data (#495, #496) (`v-pkg-08/`); Linux delete-data pending a storage-helper operation |
+| V-PKG-08 | Uninstall and reinstall | Lifecycle drill with all three reference Apps. | Implemented on macOS: live drill with all three Apps, reinstall into kept data (#494) and delete-data (#495, #496) (`v-pkg-08/`); Linux delete-data through the storage helper (#497), passed in the Linux storage fixture |
 
 ### Worker containment/lifecycle matrix
 
