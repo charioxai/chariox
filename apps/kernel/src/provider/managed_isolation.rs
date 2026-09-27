@@ -332,15 +332,15 @@ fn canonical_preparation_home(path: &Path) -> Result<PathBuf, DaemonError> {
             "worker preparation HOME must be a real directory",
         ));
     }
-    let state_root = path
+    let preparation_root = path
         .parent()
         .ok_or_else(|| isolation_error("worker preparation HOME has no durable state parent"))?;
-    let state_metadata = std::fs::symlink_metadata(state_root).map_err(|error| {
+    let preparation_metadata = std::fs::symlink_metadata(preparation_root).map_err(|error| {
         isolation_error(format!(
             "worker preparation state root could not be inspected: {error}"
         ))
     })?;
-    if state_metadata.file_type().is_symlink() || !state_metadata.is_dir() {
+    if preparation_metadata.file_type().is_symlink() || !preparation_metadata.is_dir() {
         return Err(isolation_error(
             "worker preparation state root must be a real directory",
         ));
@@ -348,29 +348,113 @@ fn canonical_preparation_home(path: &Path) -> Result<PathBuf, DaemonError> {
     let canonical = path.canonicalize().map_err(|error| {
         isolation_error(format!("worker preparation HOME is unavailable: {error}"))
     })?;
-    let canonical_state_root = state_root.canonicalize().map_err(|error| {
+    let canonical_preparation_root = preparation_root.canonicalize().map_err(|error| {
         isolation_error(format!(
             "worker preparation state root is unavailable: {error}"
         ))
     })?;
-    if canonical.parent() != Some(canonical_state_root.as_path()) {
+    if canonical.parent() != Some(canonical_preparation_root.as_path()) {
         return Err(isolation_error(
             "worker preparation HOME has an inconsistent durable state parent",
         ));
     }
-    if state_root.file_name().and_then(|name| name.to_str()) != Some(".chariox-project-environment")
-        || canonical
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_none_or(|name| {
-                name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
-    {
+    let home_key = canonical.file_name().and_then(|name| name.to_str());
+    if home_key.is_none_or(|name| {
+        name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
         return Err(isolation_error(
             "worker preparation HOME is outside the durable project state boundary",
         ));
     }
+
+    // Existing runs can still carry the former workspace-adjacent location;
+    // keep accepting that exact boundary for rollback/restart. New setup runs
+    // use the durable kernel state tree and must match its complete directory
+    // shape, not just the hash-named leaf.
+    match preparation_root.file_name().and_then(|name| name.to_str()) {
+        Some(".chariox-project-environment") => return Ok(canonical),
+        Some("project-environment-preparation") => {}
+        _ => {
+            return Err(isolation_error(
+                "worker preparation HOME is outside the durable project state boundary",
+            ))
+        }
+    }
+
+    let state_root = preparation_root.parent().ok_or_else(|| {
+        isolation_error("worker preparation state root has no kernel home parent")
+    })?;
+    let kernel_home = state_root
+        .parent()
+        .ok_or_else(|| isolation_error("worker preparation state root has no kernel home"))?;
+    if state_root.file_name().and_then(|name| name.to_str()) != Some("state") {
+        return Err(isolation_error(
+            "worker preparation HOME is outside the durable kernel state boundary",
+        ));
+    }
+
+    let canonical_state_root = canonical_preparation_directory(state_root, "kernel state root")?;
+    let canonical_kernel_home = canonical_preparation_directory(kernel_home, "kernel home")?;
+    if canonical_preparation_root.parent() != Some(canonical_state_root.as_path())
+        || canonical_state_root.parent() != Some(canonical_kernel_home.as_path())
+    {
+        return Err(isolation_error(
+            "worker preparation HOME has an inconsistent kernel state path",
+        ));
+    }
+
+    validate_preparation_home_directory(&metadata, "worker preparation HOME", true)?;
+    validate_preparation_home_directory(
+        &preparation_metadata,
+        "worker preparation state root",
+        true,
+    )?;
+    let state_metadata = std::fs::symlink_metadata(state_root).map_err(|error| {
+        isolation_error(format!("kernel state root could not be inspected: {error}"))
+    })?;
+    let kernel_metadata = std::fs::symlink_metadata(kernel_home).map_err(|error| {
+        isolation_error(format!("kernel home could not be inspected: {error}"))
+    })?;
+    validate_preparation_home_directory(&state_metadata, "kernel state root", false)?;
+    validate_preparation_home_directory(&kernel_metadata, "kernel home", false)?;
     Ok(canonical)
+}
+
+fn canonical_preparation_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| isolation_error(format!("{label} could not be inspected: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(isolation_error(format!("{label} must be a real directory")));
+    }
+    path.canonicalize()
+        .map_err(|error| isolation_error(format!("{label} could not be resolved: {error}")))
+}
+
+fn validate_preparation_home_directory(
+    metadata: &std::fs::Metadata,
+    label: &str,
+    private: bool,
+) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(isolation_error(format!(
+                "{label} must be owned by the kernel user"
+            )));
+        }
+        let mode = metadata.mode() & 0o777;
+        if (private && mode != 0o700) || (!private && mode & 0o022 != 0) {
+            return Err(isolation_error(format!(
+                "{label} has unsafe permissions"
+            )));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (metadata, label, private);
+
+    Ok(())
 }
 
 pub(crate) fn provider_reported_path_on_kernel(
@@ -2080,6 +2164,60 @@ fn isolation_error(message: impl Into<String>) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn kernel_preparation_home_fixture(root: &Path) -> PathBuf {
+        let kernel_home = root.join("kernel-home");
+        let home = kernel_home
+            .join("state")
+            .join("project-environment-preparation")
+            .join("d".repeat(64));
+        std::fs::create_dir_all(&home).expect("kernel preparation HOME should exist");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let preparation_root = home.parent().expect("preparation root should exist");
+            std::fs::set_permissions(&kernel_home, std::fs::Permissions::from_mode(0o700))
+                .expect("kernel home should be private");
+            std::fs::set_permissions(preparation_root, std::fs::Permissions::from_mode(0o700))
+                .expect("preparation root should be private");
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))
+                .expect("preparation HOME should be private");
+        }
+        home.canonicalize()
+            .expect("kernel preparation HOME should canonicalize")
+    }
+
+    fn preparation_test_run(provider: &str, program: &str) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new(
+            "preparation-home-provider-test",
+            provider,
+            provider,
+            "default",
+            "default",
+        );
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: provider.to_string(),
+            pty_target: None,
+            pty_program: Some(program.to_string()),
+            pty_args: vec![
+                "--setenv".to_string(),
+                "HOME".to_string(),
+                SANDBOX_HOME.to_string(),
+                "--setenv".to_string(),
+                MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+                "1".to_string(),
+                "--".to_string(),
+                program.to_string(),
+            ],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        RuntimeProviderRun::new("preparation-home-provider-run", &request, launch_result)
+    }
 
     #[test]
     fn managed_provider_reported_path_resolves_through_its_account_bind() {
@@ -5662,6 +5800,107 @@ printf 'managed account environment probe passed\n'
                 && window[1] == host_home.display().to_string()
                 && window[2] == host_home.display().to_string()
         }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_provider_run_accepts_kernel_preparation_home_for_all_official_providers() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-kernel-preparation-home-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let home = kernel_preparation_home_fixture(&root);
+        let home_text = home.display().to_string();
+
+        for (provider, program) in [
+            ("codex", "/usr/bin/codex"),
+            ("claude", "/usr/bin/claude"),
+            ("opencode", "/usr/bin/opencode"),
+        ] {
+            let mut run = preparation_test_run(provider, program);
+            run.set_preparation_environment(home_text.clone(), "/usr/bin".to_string())
+                .expect("provider setter should accept the kernel-created durable HOME");
+            assert!(run.preparation_environment_matches(&home_text, "/usr/bin"));
+            assert_eq!(
+                run.preparation_environment(),
+                Some((home_text.clone(), "/usr/bin".to_string()))
+            );
+            let restored: RuntimeProviderRun = serde_json::from_value(
+                serde_json::to_value(&run).expect("provider run should serialize for restart"),
+            )
+            .expect("provider run should restore after restart");
+            assert_eq!(
+                restored.preparation_environment(),
+                Some((home_text.clone(), "/usr/bin".to_string()))
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_provider_run_rejects_unrelated_symlinked_and_insecure_preparation_homes() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-kernel-preparation-home-rejected-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let home = kernel_preparation_home_fixture(&root);
+        let unrelated = root.join("unrelated-home");
+        std::fs::create_dir_all(&unrelated).expect("unrelated HOME should exist");
+
+        let mut unrelated_run = preparation_test_run("codex", "/usr/bin/codex");
+        assert!(unrelated_run
+            .set_preparation_environment(unrelated.display().to_string(), "/usr/bin".to_string())
+            .is_err());
+
+        let malformed_home = home
+            .parent()
+            .expect("preparation root should exist")
+            .join("d".repeat(63));
+        std::fs::create_dir_all(&malformed_home).expect("malformed HOME should exist");
+        let mut malformed_run = preparation_test_run("codex", "/usr/bin/codex");
+        assert!(malformed_run
+            .set_preparation_environment(
+                malformed_home.display().to_string(),
+                "/usr/bin".to_string(),
+            )
+            .is_err());
+
+        let matching_leaf_outside_state = root
+            .join("not-kernel-state")
+            .join("project-environment-preparation")
+            .join("e".repeat(64));
+        std::fs::create_dir_all(&matching_leaf_outside_state)
+            .expect("wrong-boundary HOME should exist");
+        let mut wrong_boundary_run = preparation_test_run("codex", "/usr/bin/codex");
+        assert!(wrong_boundary_run
+            .set_preparation_environment(
+                matching_leaf_outside_state.display().to_string(),
+                "/usr/bin".to_string(),
+            )
+            .is_err());
+
+        let symlink_home = root.join("symlink-home");
+        symlink(&home, &symlink_home).expect("symlink HOME should be created");
+        let mut symlink_run = preparation_test_run("claude", "/usr/bin/claude");
+        assert!(symlink_run
+            .set_preparation_environment(symlink_home.display().to_string(), "/usr/bin".to_string())
+            .is_err());
+
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755))
+            .expect("insecure HOME permissions should be set");
+        let mut insecure_run = preparation_test_run("opencode", "/usr/bin/opencode");
+        assert!(insecure_run
+            .set_preparation_environment(home.display().to_string(), "/usr/bin".to_string())
+            .is_err());
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))
+            .expect("HOME permissions should be restored for cleanup");
+
         let _ = std::fs::remove_dir_all(root);
     }
 
