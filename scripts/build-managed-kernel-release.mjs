@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
@@ -12,11 +12,31 @@ const BUILD_TARGET = "x86_64-unknown-linux-gnu"
 const ARTIFACT_STAGE = "managed-release-artifacts"
 const BUILDER_DOCKERFILE = "apps/kernel/slice-linux-docker/docker/Dockerfile"
 const ARTIFACTS = ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"]
-const REQUIRED_OPTIONS = ["source-repository", "source-commit", "builder-signing-key", "output"]
+const REQUIRED_OPTIONS = ["source-repository", "source-commit", "builder-signing-key", "output", "builder"]
 const BUILDER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
+const NODE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/
+const DEFAULT_PREFLIGHT_TIMEOUT_SECONDS = 15
+const MAX_PREFLIGHT_TIMEOUT_SECONDS = 60
+const DEFAULT_BUILD_TIMEOUT_SECONDS = 2 * 60 * 60
+const MAX_BUILD_TIMEOUT_SECONDS = 4 * 60 * 60
+const MAX_DOCKER_OUTPUT_BYTES = 4 * 1024 * 1024
+const MAX_BUILDKIT_CPUS = 8
+const MAX_BUILDKIT_MEMORY_BYTES = 16 * 1024 ** 3
+const MAX_BUILDKIT_MEMORY_WITH_SWAP_BYTES = 32 * 1024 ** 3
+const MIN_BUILDKIT_MEMORY_BYTES = 4 * 1024 ** 3
+const BUILD_CANCELLATION_GRACE_MS = 15_000
 
 function usage() {
-  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --output <new-directory> [--builder <name>]"
+  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --builder <name> --output <new-directory> [--preflight-timeout-seconds <1-60>] [--build-timeout-seconds <1-14400>]"
+}
+
+function parseBoundedSeconds(value, name, maximum) {
+  if (!/^[1-9][0-9]*$/.test(value)) throw new Error(`${name} must be an integer from 1 to ${maximum}`)
+  const seconds = Number(value)
+  if (!Number.isSafeInteger(seconds) || seconds > maximum) {
+    throw new Error(`${name} must be an integer from 1 to ${maximum}`)
+  }
+  return seconds
 }
 
 function parseOptions(argv) {
@@ -26,14 +46,352 @@ function parseOptions(argv) {
     const value = argv[index + 1]
     if (!option?.startsWith("--") || !value || value.startsWith("--")) throw new Error(usage())
     const name = option.slice(2)
-    if (![...REQUIRED_OPTIONS, "builder"].includes(name) || options.has(name)) throw new Error(usage())
+    if (![...REQUIRED_OPTIONS, "preflight-timeout-seconds", "build-timeout-seconds"].includes(name) || options.has(name)) {
+      throw new Error(usage())
+    }
     if (name === "builder" && !BUILDER_NAME_PATTERN.test(value)) {
       throw new Error("builder name must be 1 to 63 ASCII letters, digits, dots, underscores, or hyphens")
     }
-    options.set(name, name === "source-commit" || name === "builder" ? value : resolve(value))
+    if (name === "preflight-timeout-seconds") {
+      options.set(name, parseBoundedSeconds(value, name, MAX_PREFLIGHT_TIMEOUT_SECONDS))
+    } else if (name === "build-timeout-seconds") {
+      options.set(name, parseBoundedSeconds(value, name, MAX_BUILD_TIMEOUT_SECONDS))
+    } else {
+      options.set(name, name === "source-commit" || name === "builder" ? value : resolve(value))
+    }
   }
   if (!REQUIRED_OPTIONS.every((name) => options.has(name))) throw new Error(usage())
-  return Object.fromEntries(options)
+  const parsed = Object.fromEntries(options)
+  parsed["preflight-timeout-seconds"] ??= DEFAULT_PREFLIGHT_TIMEOUT_SECONDS
+  parsed["build-timeout-seconds"] ??= DEFAULT_BUILD_TIMEOUT_SECONDS
+  return parsed
+}
+
+function signalProcessTree(child, signal) {
+  if (process.platform === "win32") {
+    child.kill(signal)
+    return
+  }
+  if (child.pid) process.kill(-child.pid, signal)
+}
+
+function runCommand(command, args, {
+  env,
+  timeoutMs,
+  captureOutput = false,
+  streamOutput = false,
+  gracefulCancellation = false,
+}) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(command, args, {
+      env,
+      detached: process.platform !== "win32",
+      stdio: captureOutput || streamOutput ? ["ignore", "pipe", "pipe"] : "inherit",
+    })
+    const stdout = []
+    const stderr = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    let timedOut = false
+    let outputLimitExceeded = false
+    let spawnError
+    let forceKillTimer
+    let terminationStarted = false
+    let interruptedSignal
+    let parentSignalCount = 0
+
+    const terminate = () => {
+      if (terminationStarted) return
+      terminationStarted = true
+      try {
+        // Docker CLI forwards termination to Buildx; its command context reaches
+        // the BuildKit Solve RPC, whose cancellation stops the remote solve.
+        // Allow that path to drain before the bounded process-group fallback.
+        if (gracefulCancellation) child.kill("SIGTERM")
+        else signalProcessTree(child, "SIGTERM")
+      } catch {}
+      forceKillTimer = setTimeout(() => {
+        if (gracefulCancellation) {
+          try { signalProcessTree(child, "SIGKILL") } catch {}
+          return
+        }
+        try { signalProcessTree(child, "SIGKILL") } catch {}
+      }, gracefulCancellation ? BUILD_CANCELLATION_GRACE_MS : 250)
+      forceKillTimer.unref?.()
+    }
+    const timeout = setTimeout(() => {
+      timedOut = true
+      terminate()
+    }, timeoutMs)
+
+    const parentSignalHandlers = new Map()
+    if (gracefulCancellation) {
+      for (const signal of ["SIGINT", "SIGTERM"]) {
+        const handler = () => {
+          parentSignalCount += 1
+          if (parentSignalCount > 1) {
+            try { signalProcessTree(child, "SIGKILL") } catch {}
+            return
+          }
+          interruptedSignal = signal
+          terminate()
+        }
+        parentSignalHandlers.set(signal, handler)
+        process.on(signal, handler)
+      }
+    }
+
+    if (captureOutput || streamOutput) {
+      const collect = (chunks, label) => (chunk) => {
+        if (streamOutput) {
+          const destination = label === "stdout" ? process.stdout : process.stderr
+          destination.write(chunk)
+          return
+        }
+        if (label === "stdout") stdoutBytes += chunk.length
+        else stderrBytes += chunk.length
+        if (stdoutBytes + stderrBytes > MAX_DOCKER_OUTPUT_BYTES) {
+          if (!outputLimitExceeded) {
+            outputLimitExceeded = true
+            terminate()
+          }
+          return
+        }
+        chunks.push(chunk)
+      }
+      child.stdout.on("data", collect(stdout, "stdout"))
+      child.stderr.on("data", collect(stderr, "stderr"))
+    }
+    child.on("error", (error) => { spawnError = error })
+    child.on("close", (status, signal) => {
+      clearTimeout(timeout)
+      if (forceKillTimer) clearTimeout(forceKillTimer)
+      for (const [parentSignal, handler] of parentSignalHandlers) {
+        process.removeListener(parentSignal, handler)
+      }
+      resolvePromise({
+        status,
+        signal,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        timedOut,
+        outputLimitExceeded,
+        spawnError,
+        interruptedSignal,
+      })
+    })
+  })
+}
+
+function requiredSingleField(fields, name, description) {
+  const values = fields.get(name) ?? []
+  if (values.length !== 1 || !values[0]) throw new Error(`managed builder ${description} is missing or ambiguous`)
+  return values[0]
+}
+
+function parseBuildxInspect(output, expectedBuilderName) {
+  const topFields = new Map()
+  const nodes = []
+  let inNodes = false
+  let currentNode
+
+  for (const line of output.split(/\r?\n/)) {
+    if (!inNodes) {
+      const match = /^([A-Za-z][A-Za-z ]*):\s*(.*?)\s*$/.exec(line)
+      if (!match) continue
+      if (match[1] === "Nodes") {
+        inNodes = true
+        continue
+      }
+      const values = topFields.get(match[1]) ?? []
+      values.push(match[2])
+      topFields.set(match[1], values)
+      continue
+    }
+
+    const match = /^(\s*)([A-Za-z][A-Za-z ]*):\s*(.*?)\s*$/.exec(line)
+    if (!match) continue
+    const indentation = match[1].length
+    if (indentation === 2 && match[2] === "Name") {
+      currentNode = new Map()
+      nodes.push(currentNode)
+    }
+    if (currentNode && indentation === 2) {
+      const values = currentNode.get(match[2]) ?? []
+      values.push(match[3])
+      currentNode.set(match[2], values)
+    }
+  }
+
+  const name = requiredSingleField(topFields, "Name", "name")
+  const driver = requiredSingleField(topFields, "Driver", "driver")
+  if (name !== expectedBuilderName) throw new Error("managed builder identity does not match the requested builder")
+  if (driver !== "docker-container") throw new Error("managed builder must use the docker-container driver")
+  if (nodes.length === 0) throw new Error("managed builder has no inspectable nodes")
+
+  return {
+    name,
+    nodes: nodes.map((node) => {
+      const nodeName = requiredSingleField(node, "Name", "node name")
+      const endpoint = requiredSingleField(node, "Endpoint", "node endpoint")
+      const status = requiredSingleField(node, "Status", "node status")
+      if (!NODE_NAME_PATTERN.test(nodeName)) throw new Error("managed builder node name is malformed")
+      if (status !== "running") throw new Error("managed builder nodes must already be running")
+      return { name: nodeName, endpoint }
+    }),
+  }
+}
+
+function dockerEndpointArguments(endpoint) {
+  if (/^(unix|tcp|ssh):\/\/[^\s]+$/.test(endpoint)) return ["--host", endpoint]
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/.test(endpoint)) return ["--context", endpoint]
+  throw new Error("managed builder node endpoint is unsupported")
+}
+
+function dockerInspectObject(output) {
+  let parsed
+  try {
+    parsed = JSON.parse(output.trim())
+  } catch {
+    throw new Error("managed builder container inspect output is malformed")
+  }
+  if (Array.isArray(parsed)) {
+    if (parsed.length !== 1) throw new Error("managed builder container inspect output is ambiguous")
+    parsed = parsed[0]
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("managed builder container inspect output is malformed")
+  }
+  return parsed
+}
+
+function nonnegativeInteger(value, name) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`managed builder container ${name} is malformed`)
+  return value
+}
+
+function cpusetCpuCount(value) {
+  if (typeof value !== "string") throw new Error("managed builder container CPU set is malformed")
+  if (value === "") return 0
+  const seen = new Set()
+  for (const range of value.split(",")) {
+    const match = /^(0|[1-9][0-9]*)(?:-(0|[1-9][0-9]*))?$/.exec(range)
+    if (!match) throw new Error("managed builder container CPU set is malformed")
+    const start = Number(match[1])
+    const end = Number(match[2] ?? match[1])
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start || end - start > MAX_BUILDKIT_CPUS) {
+      throw new Error("managed builder container CPU set is malformed")
+    }
+    for (let cpu = start; cpu <= end; cpu++) {
+      if (seen.has(cpu)) throw new Error("managed builder container CPU set is malformed")
+      seen.add(cpu)
+      if (seen.size > MAX_BUILDKIT_CPUS) throw new Error("managed builder CPU cap exceeds the release-build limit")
+    }
+  }
+  return seen.size
+}
+
+function validateBuilderContainer(container, node) {
+  if (typeof container.Id !== "string" || !/^[a-f0-9]{64}$/.test(container.Id)) {
+    throw new Error("managed builder container identity is malformed")
+  }
+  if (container.Name !== `/${node.name}`) throw new Error("managed builder container does not match its inspected node")
+  if (!container.State || container.State.Running !== true) {
+    throw new Error("managed builder containers must already be running")
+  }
+  if (typeof container.State.StartedAt !== "string" || !Number.isFinite(Date.parse(container.State.StartedAt))) {
+    throw new Error("managed builder container start identity is malformed")
+  }
+  const host = container.HostConfig
+  if (!host || typeof host !== "object" || Array.isArray(host)) {
+    throw new Error("managed builder container resource configuration is missing")
+  }
+
+  const nanoCpus = nonnegativeInteger(host.NanoCpus, "NanoCpus")
+  const cpuQuota = nonnegativeInteger(host.CpuQuota, "CpuQuota")
+  const cpuPeriod = nonnegativeInteger(host.CpuPeriod, "CpuPeriod")
+  const memory = nonnegativeInteger(host.Memory, "Memory")
+  const memorySwap = nonnegativeInteger(host.MemorySwap, "MemorySwap")
+  const cpuSet = cpusetCpuCount(host.CpusetCpus)
+  const cpuCaps = []
+
+  if (nanoCpus > 0) cpuCaps.push(nanoCpus / 1_000_000_000)
+  if (cpuQuota > 0 || cpuPeriod > 0) {
+    if (cpuQuota === 0 || cpuPeriod === 0) throw new Error("managed builder CPU quota configuration is malformed")
+    cpuCaps.push(cpuQuota / cpuPeriod)
+  }
+  if (cpuSet > 0) cpuCaps.push(cpuSet)
+  if (cpuCaps.length === 0) throw new Error("managed builder has no hard CPU limit")
+  const effectiveCpus = Math.min(...cpuCaps)
+  if (effectiveCpus < 1 || effectiveCpus > MAX_BUILDKIT_CPUS) {
+    throw new Error("managed builder CPU cap is outside the release-build limit")
+  }
+
+  if (memory < MIN_BUILDKIT_MEMORY_BYTES || memory > MAX_BUILDKIT_MEMORY_BYTES) {
+    throw new Error("managed builder memory cap is outside the release-build limit")
+  }
+  if (memorySwap === 0 || memorySwap < memory) {
+    throw new Error("managed builder requires an explicit finite memory-swap cap")
+  }
+  const memoryWithSwap = memorySwap
+  if (memoryWithSwap > MAX_BUILDKIT_MEMORY_WITH_SWAP_BYTES) {
+    throw new Error("managed builder memory-plus-swap cap exceeds the release-build limit")
+  }
+  return {
+    name: node.name,
+    endpoint: node.endpoint,
+    containerId: container.Id,
+    startedAt: container.State.StartedAt,
+    effectiveCpus,
+    memoryBytes: memory,
+    memoryWithSwapBytes: memoryWithSwap,
+  }
+}
+
+async function dockerOutput(args, options, label, deadlineMs) {
+  const timeoutMs = deadlineMs - Date.now()
+  if (timeoutMs <= 0) throw new Error(`${label} timed out`)
+  const result = await runCommand("docker", args, {
+    env: options.dockerEnvironment,
+    timeoutMs,
+    captureOutput: true,
+  })
+  if (result.timedOut) throw new Error(`${label} timed out`)
+  if (result.outputLimitExceeded) throw new Error(`${label} output exceeded the inspection limit`)
+  if (result.spawnError || result.status !== 0) throw new Error(`${label} failed`)
+  return result.stdout
+}
+
+async function verifyManagedBuilder(options) {
+  const deadlineMs = options.preflightDeadlineMs
+  const builderOutput = await dockerOutput(
+    ["buildx", "inspect", options.builder],
+    options,
+    "docker buildx inspect",
+    deadlineMs,
+  )
+  const builder = parseBuildxInspect(builderOutput, options.builder)
+  let inspectedBytes = Buffer.byteLength(builderOutput)
+  const nodes = []
+  for (const node of builder.nodes) {
+    const inspectArgs = [
+      ...dockerEndpointArguments(node.endpoint),
+      "inspect", "--type", "container", "--format", "{{json .}}", node.name,
+    ]
+    const containerOutput = await dockerOutput(inspectArgs, options, "docker inspect", deadlineMs)
+    inspectedBytes += Buffer.byteLength(containerOutput)
+    if (inspectedBytes > MAX_DOCKER_OUTPUT_BYTES) {
+      throw new Error("managed builder inspection output exceeded the aggregate limit")
+    }
+    nodes.push(validateBuilderContainer(dockerInspectObject(containerOutput), node))
+  }
+  return { name: builder.name, nodes }
+}
+
+function assertBuilderUnchanged(before, after) {
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    throw new Error("managed builder identity or resource limits changed during the release build")
+  }
 }
 
 function git(repository, args, encoding = "utf8") {
@@ -114,34 +472,57 @@ async function build(options) {
   const signingKey = await requirePrivateKey(options["builder-signing-key"])
   if (await stat(options.output).then(() => true, () => false)) throw new Error("output must not exist")
 
+  const dockerEnvironment = Object.fromEntries(
+    ["PATH", "HOME", "DOCKER_HOST"].flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []),
+  )
+  dockerEnvironment.LC_ALL = "C"
+  dockerEnvironment.NO_COLOR = "1"
+  const verifiedBuilder = await verifyManagedBuilder({
+    ...options,
+    dockerEnvironment,
+    preflightDeadlineMs: Date.now() + options["preflight-timeout-seconds"] * 1000,
+  })
+
   const scratch = await mkdtemp(join(tmpdir(), "chariox-managed-build."))
   const source = join(scratch, "source")
   const pending = join(dirname(options.output), `.new-${basename(options.output)}-${process.pid}`)
   const exported = join(scratch, "artifacts")
-  const dockerEnvironment = Object.fromEntries(
-    ["PATH", "HOME", "DOCKER_HOST"].flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []),
-  )
   try {
     await mkdir(source, { mode: 0o700 })
     await mkdir(dirname(options.output), { recursive: true })
     await rm(pending, { recursive: true, force: true })
     await mkdir(pending, { mode: 0o755 })
     await materializeGitTree(repository, commit, source)
-    const dockerBuild = spawnSync(
+    const dockerBuild = await runCommand(
       "docker",
       [
-        "buildx", "build", ...(options.builder ? ["--builder", options.builder] : []),
+        "buildx", "build", "--builder", verifiedBuilder.name,
         "--pull", "--platform", "linux/amd64", "--target", ARTIFACT_STAGE,
         "--file", join(source, BUILDER_DOCKERFILE),
         "--output", `type=local,dest=${exported}`,
         source,
       ],
       {
-        stdio: "inherit",
         env: dockerEnvironment,
+        timeoutMs: options["build-timeout-seconds"] * 1000,
+        streamOutput: true,
+        gracefulCancellation: true,
       },
     )
-    if (dockerBuild.status !== 0) throw new Error(`locked managed release artifact export failed with status ${dockerBuild.status}`)
+    if (dockerBuild.timedOut) throw new Error("locked managed release build timed out")
+    if (dockerBuild.interruptedSignal) {
+      throw new Error(`locked managed release build interrupted by ${dockerBuild.interruptedSignal}`)
+    }
+    if (dockerBuild.spawnError) throw new Error("locked managed release artifact export could not start")
+    if (dockerBuild.status !== 0) {
+      throw new Error(`locked managed release artifact export failed with status ${dockerBuild.status ?? "unknown"}`)
+    }
+    const builderAfterBuild = await verifyManagedBuilder({
+      ...options,
+      dockerEnvironment,
+      preflightDeadlineMs: Date.now() + options["preflight-timeout-seconds"] * 1000,
+    })
+    assertBuilderUnchanged(verifiedBuilder, builderAfterBuild)
     const exportMetadata = await lstat(exported)
     if (exportMetadata.isSymbolicLink() || !exportMetadata.isDirectory()) {
       throw new Error("managed release artifact export is not a directory")
