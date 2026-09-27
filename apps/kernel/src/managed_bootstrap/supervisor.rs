@@ -1034,10 +1034,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
                     "/bin/sh -c 'i=0; while [ \"$i\" -lt 1000 ]; do ",
                     "printf x || :; printf x >> \"$HOME/writer-heartbeat\"; ",
                     "/bin/sleep 0.02; i=$((i + 1)); done' &\n",
-                    "export PATH='/profile/never'\n",
+                    "export PATH='relative:/usr/bin:'\n",
                 ),
             )
-            .expect("timeout login profile should be written");
+            .expect("Path-1 broker login profile should be written");
             write_path1_broker_kernel_probe(&config.kernel_binary, &path1_record);
             let (mut child, path1_fd) =
                 spawn_kernel_with_handoff(&config, &release, ManagedProviderTopology::Path1)
@@ -1059,8 +1059,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             )));
             assert!(path1_broker.contains("repository_root=/srv/managed workspaces\n"));
             assert!(path1_broker.contains("topology=path1\n"));
-            assert!(path1_broker
-                .contains("path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"));
+            assert!(path1_broker.contains("path=relative:/usr/bin:\n"));
             assert!(path1_broker.contains("slice_root=/var/lib/chariox-slice-share/slices\n"));
             assert!(path1_broker.contains("capability_root=<unset>\n"));
             assert!(path1_broker.contains("provider_isolation=<unset>\n"));
@@ -1189,6 +1188,45 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
              if [ \"$generation\" = 1 ]; then exec /bin/sleep 5; fi\n",
         );
         script
+    }
+
+    #[cfg(target_os = "linux")]
+    fn confirmation_test_envelope(
+        runtime_release_digest: &str,
+    ) -> super::super::state::ManagedBootstrapEnvelope {
+        super::super::state::ManagedBootstrapEnvelope {
+            schema_version: 1,
+            cloud_api_url: "https://cloud.example.test".to_string(),
+            environment_id: "environment-1".to_string(),
+            token: format!("mkboot_{}", "b".repeat(40)),
+            expires_at: "2026-09-23T00:00:00Z".to_string(),
+            runtime_release_digest: runtime_release_digest.to_string(),
+            managed_repository_root: None,
+            provider_rebuild_action_id: None,
+            expected_data_volume_serial: None,
+            expected_data_volume_size_gb: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn persist_confirmation_test_envelope(
+        path: &std::path::Path,
+        envelope: &super::super::state::ManagedBootstrapEnvelope,
+    ) {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": envelope.schema_version,
+            "cloudApiUrl": &envelope.cloud_api_url,
+            "environmentId": &envelope.environment_id,
+            "token": &envelope.token,
+            "expiresAt": &envelope.expires_at,
+            "runtimeReleaseDigest": &envelope.runtime_release_digest,
+            "managedRepositoryRoot": &envelope.managed_repository_root,
+            "providerRebuildActionId": &envelope.provider_rebuild_action_id,
+            "expectedDataVolumeSerial": &envelope.expected_data_volume_serial,
+            "expectedDataVolumeSizeGb": envelope.expected_data_volume_size_gb,
+        }))
+        .expect("confirmation envelope fixture should serialize");
+        std::fs::write(path, bytes).expect("confirmation envelope fixture should persist");
     }
 
     #[cfg(target_os = "linux")]
@@ -1327,23 +1365,12 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let receipt = BootstrapReceipt::read(&config.receipt_path)
             .expect("exchanged receipt should be valid")
             .expect("exchanged receipt should exist");
-        std::fs::write(&config.envelope_path, b"pending confirmation")
-            .expect("confirmation envelope should exist");
+        let envelope = confirmation_test_envelope(&runtime_release_digest);
+        persist_confirmation_test_envelope(&config.envelope_path, &envelope);
         let mut profile = crate::config::PersistedCloudRelayProfile::default();
         profile.machine_credential = Some(format!("mcred_{}", "a".repeat(40)));
         let mut confirmation = Some(PendingConfirmation {
-            envelope: super::super::state::ManagedBootstrapEnvelope {
-                schema_version: 1,
-                cloud_api_url: "https://cloud.example.test".to_string(),
-                environment_id: receipt.environment_id.clone(),
-                token: format!("mkboot_{}", "b".repeat(40)),
-                expires_at: "2026-09-23T00:00:00Z".to_string(),
-                runtime_release_digest: receipt.runtime_release_digest.clone(),
-                managed_repository_root: None,
-                provider_rebuild_action_id: None,
-                expected_data_volume_serial: None,
-                expected_data_volume_size_gb: None,
-            },
+            envelope,
             receipt,
             profile,
         });
@@ -1390,16 +1417,17 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", "/stale/managed-vault.json");
         std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
 
+        let cloud = Path1ConfirmationCloud {
+            relay_ready_marker: std::path::PathBuf::from(format!(
+                "{}.1.relay-ready",
+                capture.display()
+            )),
+        };
         let run = run_kernel_once(
             &config,
             &release,
             &mut confirmation,
-            &Path1ConfirmationCloud {
-                relay_ready_marker: std::path::PathBuf::from(format!(
-                    "{}.1.relay-ready",
-                    capture.display()
-                )),
-            },
+            &cloud,
             ManagedProviderTopology::Path1,
         );
 
@@ -1411,6 +1439,14 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             run.status
         );
         assert!(confirmation.is_none());
+        assert!(!config.envelope_path.exists());
+        assert_eq!(
+            BootstrapReceipt::read(&config.receipt_path)
+                .expect("confirmed receipt should decode")
+                .expect("confirmed receipt should remain")
+                .status,
+            BootstrapReceiptStatus::Confirmed
+        );
         for generation in [1, 2] {
             assert_path1_confirmation_capture(
                 &std::path::PathBuf::from(format!("{}.{generation}", capture.display())),
