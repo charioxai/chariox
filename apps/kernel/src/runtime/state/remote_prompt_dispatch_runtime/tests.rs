@@ -14,6 +14,7 @@ use super::super::remote_prompt_worker_submission_runtime::{
 };
 use super::*;
 use crate::transport::relay_peer::RelayPeerEvent;
+use crate::transport::relay_discovery;
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -161,137 +162,103 @@ fn claim_test_envelope_kind(envelope: &RelayEnvelope) -> &'static str {
     }
 }
 
-fn claim_test_discovery_error_is_retryable(error: &tokio_tungstenite::tungstenite::Error) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    message.contains("reset")
-        || message.contains("connection closed")
-        || message.contains("closed metadata connection")
-}
-
 async fn accept_claim_test_worker_metadata(
     listener: &TcpListener,
     worker_id: &str,
     home_relay_token: &str,
     stage: &'static str,
+    trace_checkpoint: Option<relay_discovery::RelayDiscoveryTestTraceCheckpoint>,
     diagnostics: impl Fn() -> String,
-) -> (
-    WebSocketStream<TcpStream>,
-    String,
-    std::net::SocketAddr,
-    Vec<String>,
-) {
-    // Temporary peer requests query GetLiveKernel before opening their separately
-    // registered peer socket. Keep this discovery phase within the existing two-second
-    // request bound while recording retryable sockets that close before their first frame.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-    let mut abandoned_sockets = Vec::new();
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
+) -> (WebSocketStream<TcpStream>, String, std::net::SocketAddr) {
+    // A normal temporary peer call writes GetLiveKernel on this discovery socket before it
+    // opens its separately registered peer socket. Report a reset here immediately rather
+    // than treating an unlabelled abandoned connection as a metadata retry.
+    let (stream, peer_addr) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        listener.accept(),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        let relay_trace = trace_checkpoint
+            .map(|checkpoint| {
+                relay_discovery::take_relay_discovery_test_trace(checkpoint, None)
+            })
+            .unwrap_or_else(|| "not captured".to_string());
+        panic!("{stage}: relay did not accept discovery socket; relay_trace={relay_trace}")
+    })
+    .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
+    let mut discovery = accept_async(stream)
+        .await
+        .unwrap_or_else(|error| {
+            let relay_trace = trace_checkpoint
+                .map(|checkpoint| {
+                    relay_discovery::take_relay_discovery_test_trace(
+                        checkpoint,
+                        Some(peer_addr),
+                    )
+                })
+                .unwrap_or_else(|| "not captured".to_string());
             panic!(
-                    "temporary relay did not receive worker metadata before deadline at {stage}; abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
-                    diagnostics()
-                );
-        }
-        let (stream, peer_addr) = match tokio::time::timeout(remaining, listener.accept()).await {
-                Err(_) => panic!(
-                    "temporary relay did not accept worker metadata discovery at {stage}; abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
-                    diagnostics()
-                ),
-                Ok(Err(error)) => panic!(
-                    "temporary relay listener failed at {stage}: {error}; abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
-                    diagnostics()
-                ),
-                Ok(Ok(accepted)) => accepted,
-            };
-        let mut discovery = match tokio::time::timeout(
-                deadline.saturating_duration_since(tokio::time::Instant::now()),
-                accept_async(stream),
+                "{stage}: relay discovery upgrade failed: {error}; peer={peer_addr}; relay_trace={relay_trace}"
+            );
+        });
+    let envelope = receive_claim_test_envelope_with_diagnostics(
+        &mut discovery,
+        "temporary discovery first envelope",
+        || {
+            format!(
+                "operation={stage},socket=discovery,peer={peer_addr},relay_trace={},{}",
+                trace_checkpoint
+                    .map(|checkpoint| {
+                        relay_discovery::take_relay_discovery_test_trace(
+                            checkpoint,
+                            Some(peer_addr),
+                        )
+                    })
+                    .unwrap_or_else(|| "not captured".to_string()),
+                diagnostics(),
             )
-            .await
-            {
-                Err(_) => panic!(
-                    "temporary relay discovery upgrade timed out at {stage}; peer={peer_addr}, abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
-                    diagnostics()
-                ),
-                Ok(Ok(discovery)) => discovery,
-                Ok(Err(error)) if claim_test_discovery_error_is_retryable(&error) => {
-                    abandoned_sockets.push(format!("peer={peer_addr}, websocket_upgrade={error:?}"));
-                    continue;
-                }
-                Ok(Err(error)) => panic!(
-                    "temporary relay discovery upgrade failed at {stage}: {error:?}; abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
-                    diagnostics()
-                ),
-            };
-        let first_frame = match tokio::time::timeout(
-                deadline.saturating_duration_since(tokio::time::Instant::now()),
-                discovery.next(),
-            )
-            .await
-            {
-                Err(_) => panic!(
-                    "temporary relay discovery produced no first frame before deadline at {stage}; peer={peer_addr}, abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
-                    diagnostics()
-                ),
-                Ok(None) => {
-                    abandoned_sockets.push(format!(
-                        "peer={peer_addr}, websocket_eof_before_first_frame"
-                    ));
-                    continue;
-                }
-                Ok(Some(Ok(Message::Close(_)))) => {
-                    abandoned_sockets.push(format!(
-                        "peer={peer_addr}, websocket_close_before_first_frame"
-                    ));
-                    continue;
-                }
-                Ok(Some(Err(error))) if claim_test_discovery_error_is_retryable(&error) => {
-                    abandoned_sockets.push(format!(
-                        "peer={peer_addr}, first_frame_error={error:?}"
-                    ));
-                    continue;
-                }
-                Ok(Some(Err(error))) => panic!(
-                    "temporary relay discovery read failed at {stage}: {error:?}; peer={peer_addr}, abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
-                    diagnostics()
-                ),
-                Ok(Some(Ok(frame))) => frame,
-            };
-        let envelope: RelayEnvelope = serde_json::from_str(
-            first_frame
-                .to_text()
-                .unwrap_or_else(|error| panic!("{stage}: discovery frame was not text: {error}")),
-        )
-        .unwrap_or_else(|error| panic!("{stage}: discovery envelope did not decode: {error}"));
-        let request_id = match envelope {
-                RelayEnvelope::ClientMetadataRequest {
-                    request_id,
+        },
+    )
+    .await;
+    let request_id = match envelope {
+        RelayEnvelope::ClientMetadataRequest {
+            request_id,
+            query,
+            auth_token,
+        } => {
+            assert_eq!(
+                auth_token, home_relay_token,
+                "{stage}: metadata query should use the configured home relay token"
+            );
+            assert!(
+                matches!(
                     query,
-                    auth_token,
-                } => {
-                    assert_eq!(
-                        auth_token, home_relay_token,
-                        "{stage}: metadata query should use the configured home relay token"
-                    );
-                    assert!(
-                        matches!(
-                            query,
-                            chariox_relay::protocol::RelayMetadataQuery::GetLiveKernel {
-                                kernel_ref
-                            } if kernel_ref == worker_id
-                        ),
-                        "{stage}: discovery should query the exact worker kernel"
-                    );
-                    request_id
-                }
-                other => panic!(
-                    "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest; peer={peer_addr}, abandoned_discovery_sockets={abandoned_sockets:?}",
-                    claim_test_envelope_kind(&other)
+                    chariox_relay::protocol::RelayMetadataQuery::GetLiveKernel {
+                        kernel_ref
+                    } if kernel_ref == worker_id
                 ),
-            };
-        return (discovery, request_id, peer_addr, abandoned_sockets);
-    }
+                "{stage}: discovery should query the exact worker kernel"
+            );
+            request_id
+        }
+        other => {
+            let relay_trace = trace_checkpoint
+                .map(|checkpoint| {
+                    relay_discovery::take_relay_discovery_test_trace(
+                        checkpoint,
+                        Some(peer_addr),
+                    )
+                })
+                .unwrap_or_else(|| "not captured".to_string());
+            panic!(
+                "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest; peer={peer_addr}; relay_trace={relay_trace}; {}",
+                claim_test_envelope_kind(&other),
+                diagnostics(),
+            );
+        }
+    };
+    (discovery, request_id, peer_addr)
 }
 
 async fn accept_claim_test_prompt(
@@ -303,23 +270,19 @@ async fn accept_claim_test_prompt(
     worker_public_key: &str,
     worker_private_key: &str,
     stage: &'static str,
+    trace_checkpoint: Option<relay_discovery::RelayDiscoveryTestTraceCheckpoint>,
     diagnostics: impl Fn() -> String,
 ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
-    let (mut discovery, request_id, discovery_peer, abandoned_sockets) =
+    let (mut discovery, request_id, discovery_peer) =
         accept_claim_test_worker_metadata(
             listener,
             worker_id,
             home_relay_token,
             stage,
+            trace_checkpoint,
             &diagnostics,
         )
         .await;
-    if !abandoned_sockets.is_empty() {
-        eprintln!(
-                "temporary relay discovery trace at {stage}: abandoned_sockets={abandoned_sockets:?}; accepted_metadata_peer={discovery_peer}; metadata_request_id={request_id}; worker={worker_id}; {}",
-                diagnostics()
-            );
-    }
     let presence = serde_json::from_value(serde_json::json!({
         "kernel_id": worker_id,
         "machine_id": machine_id,
@@ -868,6 +831,7 @@ mod receipt_reconciliation {
             .expect("fake relay listener should bind");
         let relay_url = format!("ws://{}", listener.local_addr().unwrap());
         let fixture = make_receipt_reconciliation_fixture(&relay_url, "cancel-claimed").await;
+        let trace_relay_url = relay_url.clone();
         fixture
             .runtime
             .owned
@@ -1002,6 +966,8 @@ mod receipt_reconciliation {
             release_drain_rx
                 .await
                 .expect("test should release the terminal projection");
+            let successor_trace_checkpoint =
+                relay_discovery::relay_discovery_test_trace_checkpoint(&trace_relay_url);
             send_fake_worker_peer_response(
                 drain_request,
                 &worker_id,
@@ -1042,6 +1008,7 @@ mod receipt_reconciliation {
                 &worker_public_key,
                 &worker_private_key,
                 "queued successor submission",
+                Some(successor_trace_checkpoint),
                 move || {
                     claim_test_successor_state_tags(
                         &state_tags_runtime,
@@ -3823,6 +3790,7 @@ mod dispatch_settlement {
                 &worker_public_key,
                 &worker_private_key,
                 "predecessor submission",
+                None,
                 || "state_tags_available=false".to_string(),
             )
             .await;
@@ -3866,6 +3834,7 @@ mod dispatch_settlement {
                 &worker_public_key,
                 &worker_private_key,
                 "successor submission",
+                None,
                 move || {
                     claim_test_successor_state_tags(
                         &state_tags_runtime,
