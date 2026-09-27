@@ -115,6 +115,12 @@ def receipts(archive, proof):
             parts = name.split("/")
             if len(parts) == 2 and parts[0] in (".", "chariox-browser-lifecycle-1001"):
                 name = parts[1]
+            if re.fullmatch(r"record-[a-z0-9_]{8}", name):
+                if not member.isfile() or member.uid != 1001 or member.mode & 0o777 != 0o600 or member.size > 4096:
+                    raise RuntimeError("invalid interrupted lifecycle write")
+                # An interrupted atomic write has no authority. Do not parse,
+                # promote or copy it into retirement evidence.
+                continue
             if not re.fullmatch(r"(?:[a-f0-9]{32}(?:\.retired|\.container-retired)?\.json|[a-f0-9]{64}\.json|launch\.lock)", name):
                 raise RuntimeError("unexpected lifecycle archive path")
             if not member.isfile() or member.uid != 1001 or member.mode & 0o777 != 0o600 or member.size > 4096 or name in files:

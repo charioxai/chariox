@@ -51,6 +51,16 @@ class Docker:
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_interrupted_atomic_write_is_not_lifetime_authority(self):
+        docker = Docker(data=archive([(INSTANCE + ".json", RECORD, tarfile.REGTYPE, 1001),
+            ("record-abcd1234", {"incomplete": True}, tarfile.REGTYPE, 1001)]))
+        self.assertEqual(module.reconcile(IDENTITY, LABELS, docker)["retired"], 1)
+        for kind, uid in [(tarfile.SYMTYPE, 1001), (tarfile.REGTYPE, 0)]:
+            docker = Docker(data=archive([("record-abcd1234", {}, kind, uid)]))
+            with self.assertRaises(RuntimeError):
+                module.reconcile(IDENTITY, LABELS, docker)
+            self.assertEqual(docker.writes, [])
+
     def test_exact_stopped_generation_emits_only_owned_missing_receipt(self):
         docker = Docker()
         result = module.reconcile(IDENTITY, LABELS, docker)
