@@ -3495,8 +3495,26 @@ mod tests {
         fs::remove_dir_all(root).expect("remove machine-bound transfer fixture");
     }
 
-    #[tokio::test]
-    async fn disposable_worker_peer_arm_requires_confirmed_home_binding_and_valid_plan() {
+    #[test]
+    fn disposable_worker_peer_arm_requires_confirmed_home_binding_and_valid_plan() {
+        std::thread::Builder::new()
+            .name("disposable-worker-peer-arm".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("disposable peer arm test runtime")
+                    .block_on(
+                        disposable_worker_peer_arm_requires_confirmed_home_binding_and_valid_plan_inner(),
+                    );
+            })
+            .expect("disposable peer arm test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    async fn disposable_worker_peer_arm_requires_confirmed_home_binding_and_valid_plan_inner() {
         let _env_guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-disposable-peer-arm-{}-{}",
