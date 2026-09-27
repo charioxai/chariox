@@ -9,6 +9,7 @@ import { once } from "node:events"
 import { test } from "node:test"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
+const managedBuildHistoryId = "blix8xemjjxks864hv4fmtwj0"
 const packager = join(repositoryRoot, "scripts/package-managed-kernel-release.mjs")
 const builder = join(repositoryRoot, "scripts/build-managed-kernel-release.mjs")
 const installer = join(repositoryRoot, "deploy/managed-kernel/install-image.sh")
@@ -1422,7 +1423,17 @@ if [ "$1" = buildx ] && [ "$2" = history ]; then
       [ "$#" -eq 8 ]
       [ "$4" = --builder ] && [ "$6" = --format ] && [ "$7" = json ] && [ "$8" = --no-trunc ]
       [ "$5" = "$(cat '${root}/builder-current-name')" ]
-      printf '[]\n'
+      if [ ! -f '${root}/builder-current-ref' ]; then exit 0; fi
+      build_ref=$(cat '${root}/builder-current-ref')
+      builder_from_ref=\${build_ref%%/*}
+      [ "$5" = "$builder_from_ref" ] || exit 0
+      started_at=$(cat '${root}/builder-current-started-at')
+      completed_at=$(cat '${root}/builder-current-completed-at')
+      build_status=$(cat '${root}/builder-current-status')
+      completed_steps=3
+      [ "$build_status" != Error ] || completed_steps=2
+      printf '{"ref":"%s","name":"source/apps/kernel/slice-linux-docker/docker (managed-release-artifacts)","status":"%s","created_at":"%s","completed_at":"%s","total_steps":3,"completed_steps":%s,"cached_steps":0}\n' \
+        "$build_ref" "$build_status" "$started_at" "$completed_at" "$completed_steps"
       ;;
     inspect)
       [ "$#" -eq 8 ]
@@ -1434,8 +1445,8 @@ if [ "$1" = buildx ] && [ "$2" = history ]; then
       [ "$8" = "$build_id" ]
       source_directory=$(cat '${root}/builder-current-source')
       started_at=$(cat '${root}/builder-current-started-at')
+      completed_at=$(cat '${root}/builder-current-completed-at')
       build_status=$(cat '${root}/builder-current-status')
-      completed_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
       printf '{"Ref":"%s","Context":"%s","Target":"managed-release-artifacts","StartedAt":"%s","Status":"%s","CompletedAt":"%s"}\n' "$build_id" "$source_directory" "$started_at" "$build_status" "$completed_at"
       ;;
     *) exit 34 ;;
@@ -1475,16 +1486,18 @@ case "$1 $2" in
     ! grep -F 'working tree drift' "$dockerfile" >/dev/null
     for argument do printf '%s\\000' "$argument" >> '${trace}'; done
     printf '\\000' >> '${trace}'
-    build_ref="$builder_name/node0/fixture-build-$$"
-    build_status=completed
-    if [ "$builder_name" = fail-builder ]; then build_status=error; fi
+    build_ref="$builder_name/node0/${managedBuildHistoryId}"
+    build_status=Completed
+    if [ "$builder_name" = fail-builder ]; then build_status=Error; fi
     started_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    completed_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
     printf '%s\n' "$source" > '${root}/builder-current-source'
     printf '%s\n' "$build_ref" > '${root}/builder-current-ref'
     printf '%s\n' "$started_at" > '${root}/builder-current-started-at'
+    printf '%s\n' "$completed_at" > '${root}/builder-current-completed-at'
     printf '%s\n' "$build_status" > '${root}/builder-current-status'
     printf '{"buildx.build.ref":"%s"}\n' "$build_ref" > "$metadata_path"
-    if [ "$build_status" = error ]; then exit 39; fi
+    if [ "$build_status" = Error ]; then exit 39; fi
     export_case=normal
     case " $* " in
       *" --builder missing-artifact "*) export_case=missing ;;
@@ -1568,9 +1581,9 @@ esac
     initialVerificationCalls[3],
     /^buildx build --builder bounded-release-builder .*--metadata-file /,
   )
-  assert.match(
+  assert.equal(
     initialVerificationCalls[4],
-    /^buildx history inspect --builder bounded-release-builder --format json fixture-build-[0-9]+$/,
+    `buildx history inspect --builder bounded-release-builder --format json ${managedBuildHistoryId}`,
   )
   assert.equal(initialVerificationCalls[5], "buildx inspect bounded-release-builder")
   assert.equal(initialVerificationCalls[6], initialVerificationCalls[1])
