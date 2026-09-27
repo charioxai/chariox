@@ -1,5 +1,5 @@
-:root { color-scheme: light dark; --accent: #3b6cf6; --muted: #8a8f98; --line: #d0d4da; }
-@media (prefers-color-scheme: dark) { :root { --line: #3a3f47; } }
+:root { color-scheme: light dark; --accent: #3b6cf6; --muted: #5f6670; --line: #d0d4da; }
+@media (prefers-color-scheme: dark) { :root { --line: #3a3f47; --muted: #9ba1aa; } }
 * { box-sizing: border-box; }
 body { margin: 0; font: 15px/1.45 system-ui, sans-serif; }
 main { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
