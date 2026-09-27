@@ -14,6 +14,8 @@ use std::{
 };
 
 pub(super) const RESOURCE_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+/// How long a cancelled running worker may take to finish exiting on its own.
+const EXIT_GRACE: Duration = Duration::from_millis(250);
 
 /// Owns both waitpid authority and reservations, including while unwinding.
 pub(super) struct Child {
@@ -214,6 +216,15 @@ pub(super) fn run(
     let mut next_resource_check = Instant::now();
     let failure = loop {
         if cancelled.load(Ordering::Acquire) {
+            // A worker exiting on its own closes its connection first, which
+            // cancels it here: give it a moment to finish that exit.
+            let grace = Instant::now() + EXIT_GRACE;
+            while running && Instant::now() < grace {
+                if matches!(child.exited(), Ok(true)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             break Some(WorkerError::Cancelled);
         }
         if !running && Instant::now() >= deadline {
