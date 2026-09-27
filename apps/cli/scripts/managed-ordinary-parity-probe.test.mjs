@@ -17,6 +17,7 @@ const PROBE_FIXTURE_PATHS = Object.freeze([
   "apps/cli/scripts/managed-ordinary-parity-probe.mjs",
   "apps/cli/scripts/managed-ordinary-parity-matrix.mjs",
   "apps/cli/scripts/lib/managed-ordinary-provider-turn-binding.mjs",
+  "apps/cli/scripts/lib/managed-ordinary-project-setup-observer.mjs",
 ])
 
 async function copyProbeRuntimeSources(root) {
@@ -30,6 +31,8 @@ async function copyProbeRuntimeSources(root) {
     writeFile(matrixPath, await readFile(matrixSource)),
     writeFile(bindingPath, await readFile(providerTurnBindingSource)),
   ])
+  const observerPath = join(root, PROBE_FIXTURE_PATHS[3])
+  await writeFile(observerPath, await readFile(projectSetupObserverSource))
   return probePath
 }
 
