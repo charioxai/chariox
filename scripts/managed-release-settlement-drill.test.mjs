@@ -14,9 +14,9 @@ import {
   removeOwnedDirectory,
   runSettlementScenario,
   trackChild,
-  verifyOciBaseLayout,
   writeBuildContext,
 } from "./managed-release-settlement-drill.mjs"
+import { verifyOciBaseLayout } from "./managed-release-oci-layout.mjs"
 
 const BUILDER = "chariox-settlement-test-00000000"
 const NODE = "builder0"
@@ -49,7 +49,13 @@ function ociDescriptor(mediaType, bytes, platform) {
   return { mediaType, digest: digest(bytes), size: bytes.length, ...(platform ? { platform } : {}) }
 }
 
-async function makeOciLayout(parent, { symlinkLayer = false, missingLayer = false, ambiguousPlatform = false, foreignDescriptor = false } = {}) {
+async function makeOciLayout(parent, {
+  symlinkLayer = false,
+  missingLayer = false,
+  ambiguousPlatform = false,
+  foreignDescriptor = false,
+  auxiliaryArtifact = true,
+} = {}) {
   const layout = join(parent, "layout")
   const blobs = join(layout, "blobs", "sha256")
   await mkdir(blobs, { recursive: true, mode: 0o700 })
@@ -93,10 +99,17 @@ async function makeOciLayout(parent, { symlinkLayer = false, missingLayer = fals
     manifests: indexManifests,
   }))
   const index = ociDescriptor(OCI_INDEX_MEDIA_TYPE, indexBytes)
+  const artifact = {
+    mediaType: OCI_MANIFEST_MEDIA_TYPE,
+    digest: "sha256:f5dc0fe8b50909a5905558c86ce9983eca9542c513068ec82112869b0b96faf6",
+    size: 880,
+    annotations: { "io.containerd.manifest.subject": index.digest },
+    artifactType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+  }
   const rootIndex = Buffer.from(JSON.stringify({
     schemaVersion: 2,
     mediaType: OCI_INDEX_MEDIA_TYPE,
-    manifests: [index],
+    manifests: [index, ...(auxiliaryArtifact ? [artifact] : [])],
   }))
   await writeFile(join(layout, "oci-layout"), JSON.stringify({ imageLayoutVersion: "1.0.0" }))
   await writeFile(join(layout, "index.json"), rootIndex)
@@ -130,7 +143,7 @@ async function makeOciLayout(parent, { symlinkLayer = false, missingLayer = fals
     indexDigest: index.digest,
     manifestDigest: manifest.digest,
   }
-  return { layout: expected.layoutPath, expected, index, manifest, layer, externalLayer }
+  return { layout: expected.layoutPath, expected, index, manifest, layer, artifact, externalLayer }
 }
 
 async function makeWritableAndRemove(path) {
@@ -294,6 +307,33 @@ test("verifies only the pinned linux/amd64 OCI index-to-manifest closure", async
   }
 })
 
+test("accepts the source OCI index's nonselected containerd signature artifact sibling", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "managed-release-oci-artifact-sibling-"))
+  try {
+    const fixture = await makeOciLayout(await realpath(parent))
+    const input = await verifyOciBaseLayout({ ...fixture.expected, repository: REPOSITORY })
+    assert.equal(input.indexDigest, fixture.index.digest)
+    assert.equal(input.manifestDigest, fixture.manifest.digest)
+  } finally {
+    await makeWritableAndRemove(parent)
+  }
+})
+
+test("refuses to select the source OCI signature artifact as the pinned build index", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "managed-release-oci-artifact-selected-"))
+  try {
+    const fixture = await makeOciLayout(await realpath(parent))
+    await assert.rejects(verifyOciBaseLayout({
+      ...fixture.expected,
+      indexDigest: fixture.artifact.digest,
+      manifestDigest: fixture.artifact.digest,
+      repository: REPOSITORY,
+    }), /non-index descriptor/)
+  } finally {
+    await makeWritableAndRemove(parent)
+  }
+})
+
 test("rejects an OCI base digest that does not match its verified index", async () => {
   const parent = await mkdtemp(join(tmpdir(), "managed-release-oci-wrong-digest-"))
   try {
@@ -396,6 +436,76 @@ test("tracked child deadlines and output limits wait for close and reap", async 
   assert.equal(limited.outputLimitExceeded, true)
   assert.equal(limited.reaped, true)
   assert.equal(limited.streamsClosed, true)
+})
+
+test("safe OCI openers reject deterministic regular-file-to-FIFO swaps without hanging", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "managed-release-oci-fifo-race-"))
+  const moduleUrl = new URL("./managed-release-oci-layout.mjs", import.meta.url).href
+  const raceChild = async ({ kind, path, layoutPath, descriptor }) => {
+    const code = `
+      (async () => {
+        const { spawnSync } = await import("node:child_process")
+        const fs = await import("node:fs/promises")
+        const oci = await import(process.env.OCI_MODULE_URL)
+        const beforeOpen = async (file) => {
+          await fs.unlink(file)
+          const result = spawnSync("mkfifo", [file], { timeout: 1000 })
+          if (result.error || result.status !== 0) throw new Error("bounded mkfifo fixture failed")
+        }
+        try {
+          if (process.env.OCI_RACE_KIND === "read") {
+            await oci.readLayoutFile(process.env.OCI_RACE_PATH, "race fixture", 1024, { beforeOpen })
+          } else {
+            await oci.hashLayoutBlob(process.env.OCI_RACE_LAYOUT, JSON.parse(process.env.OCI_RACE_DESCRIPTOR), "race fixture", { beforeOpen })
+          }
+          process.exitCode = 11
+        } catch (error) {
+          if (/changed to a non-regular file/.test(error.message)) process.exitCode = 0
+          else {
+            process.stderr.write(String(error.stack || error))
+            process.exitCode = 12
+          }
+        }
+      })().catch((error) => {
+        process.stderr.write(String(error.stack || error))
+        process.exitCode = 13
+      })
+    `
+    const result = await trackChild(spawn(process.execPath, ["-e", code], {
+      env: {
+        ...process.env,
+        OCI_MODULE_URL: moduleUrl,
+        OCI_RACE_KIND: kind,
+        OCI_RACE_PATH: path,
+        OCI_RACE_LAYOUT: layoutPath ?? "",
+        OCI_RACE_DESCRIPTOR: descriptor ? JSON.stringify(descriptor) : "{}",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    }), 2_500).completion
+    assert.equal(result.timedOut, false, `${kind} safe opener must not block on the raced FIFO`)
+    assert.equal(result.reaped, true)
+    assert.equal(result.streamsClosed, true)
+    assert.equal(result.status, 0, result.stderr)
+  }
+
+  try {
+    const readPath = join(parent, "read-race.json")
+    await writeFile(readPath, "{}")
+    await chmod(readPath, 0o444)
+    await raceChild({ kind: "read", path: readPath })
+
+    const layoutPath = join(parent, "blob-layout")
+    const blobDirectory = join(layoutPath, "blobs", "sha256")
+    const blobBytes = Buffer.from("bounded FIFO opener race")
+    const blobDescriptor = ociDescriptor(OCI_LAYER_MEDIA_TYPE, blobBytes)
+    const blobPath = join(blobDirectory, blobDescriptor.digest.slice("sha256:".length))
+    await mkdir(blobDirectory, { recursive: true, mode: 0o700 })
+    await writeFile(blobPath, blobBytes)
+    await chmod(blobPath, 0o444)
+    await raceChild({ kind: "hash", path: blobPath, layoutPath, descriptor: blobDescriptor })
+  } finally {
+    await makeWritableAndRemove(parent)
+  }
 })
 
 test("tracked child closes an escaped inherited pipe without claiming a remote Solve settled", async () => {
