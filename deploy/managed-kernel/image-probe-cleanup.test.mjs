@@ -8,7 +8,7 @@ import test from 'node:test'
 const source = await readFile(new URL('./prepare-hetzner-image.sh', import.meta.url), 'utf8')
 const functions = source.slice(source.indexOf('assert_unmounted_probe_root()'), source.indexOf('assert_path1_unit_has_no_dropins()'))
 const linuxTest = process.platform === 'linux' ? test : test.skip
-async function runExit(t, body, scenario = '') {
+async function runExit(t, body, scenario = '', topology = 'path1') {
   const root = await mkdtemp(join(tmpdir(), 'chariox-probe-exit-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, 'data'))
@@ -24,10 +24,13 @@ async function runExit(t, body, scenario = '') {
     .replaceAll('/var/lib/chariox-docker/data', `${root}/data`)
   const result = spawnSync('sh', ['-c', `set -eu
 path1_data_volume_dropins_bypassed=0
-managed_provider_topology=path1
+managed_provider_topology=${topology}
 ${shell}
 systemctl() {
   printf '%s\\n' "$*" >> '${root}/services'
+  if [ '${topology}' = shared_host ]; then
+    case "$*" in *chariox-data-volume-admission.service*) return 5 ;; esac
+  fi
   case "$1" in
     stop) [ '${scenario}' != stop-failure ] ;;
     show) [ '${scenario}' != state-error ] || return 1; if [ '${scenario}' = active ]; then echo active; else echo inactive; fi ;;
@@ -53,6 +56,43 @@ test('EXIT after a claimed probe failure clears only its data and preserves the 
     assert.ok(services.includes(`show --property=ActiveState --value ${unit}.service`))
   }
 })
+
+test('shared-host EXIT clears only claimed probe data without requiring Path-1 admission', async t => {
+  const { root, result } = await runExit(t, 'claim_empty_probe_root "$1/data"; touch "$1/data/probe-metadata"; exit 7', '', 'shared_host')
+  assert.equal(result.status, 7, result.stderr)
+  assert.deepEqual(await readdir(join(root, 'data')), [])
+  const services = await readFile(join(root, 'services'), 'utf8')
+  for (const unit of ['chariox-rootless-docker', 'chariox-slice-disk-quota-allocator']) {
+    assert.ok(services.includes(`stop ${unit}.service`))
+    assert.ok(services.includes(`show --property=ActiveState --value ${unit}.service`))
+  }
+  assert.doesNotMatch(services, /chariox-data-volume-admission|daemon-reload/)
+})
+
+test('shared-host inherited data is never claimed or cleared and does not stop services', async t => {
+  const { root, result } = await runExit(t, 'touch "$1/data/inherited"; claim_empty_probe_root "$1/data"', '', 'shared_host')
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /pre-existing data/)
+  assert.deepEqual(await readdir(join(root, 'data')), ['inherited'])
+  assert.ok(!(await readdir(root)).includes('services'))
+})
+
+for (const [scenario, mutation, diagnostic] of [
+  ['active', '', /storage services could not be stopped/],
+  ['stop-failure', '', /storage services could not be stopped/],
+  ['state-error', '', /storage services could not be stopped/],
+  ['', 'mv "$1/data" "$1/original"; mkdir "$1/data"; touch "$1/data/unowned"', /identity changed/],
+  ['', 'findmnt() { printf "%s\\n" "$probe_root/nested"; }', /contains a mount/],
+  ['', 'findmnt() { return 1; }', /could not inspect probe mounts/],
+]) {
+  test(`shared-host cleanup preserves data on ${scenario || diagnostic.source}`, async t => {
+    const { root, result } = await runExit(t,
+      `claim_empty_probe_root "$1/data"; touch "$1/data/probe-metadata"; ${mutation || ':'}; exit 7`, scenario, 'shared_host')
+    assert.equal(result.status, 7, result.stderr)
+    assert.match(result.stderr, diagnostic)
+    assert.ok((await readdir(join(root, 'data'))).length > 0)
+  })
+}
 
 test('EXIT before claim preserves inherited data', async t => {
   const { root, result } = await runExit(t, 'touch "$1/data/inherited"; exit 7')

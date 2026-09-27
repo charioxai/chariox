@@ -135,13 +135,14 @@ cleanup_path1_data_volume_bypass() {
   trap - EXIT HUP INT TERM
   if [ "$path1_data_volume_dropins_bypassed" -eq 1 ] || [ -n "${claimed_probe_root:-}" ]; then
     builder_services_stopped=1
-    systemctl stop chariox-rootless-docker.service || builder_services_stopped=0
-    systemctl stop chariox-slice-disk-quota-allocator.service || builder_services_stopped=0
-    systemctl stop chariox-data-volume-admission.service || builder_services_stopped=0
-    for builder_unit in \
-      chariox-rootless-docker.service \
-      chariox-slice-disk-quota-allocator.service \
-      chariox-data-volume-admission.service; do
+    builder_storage_units='chariox-rootless-docker.service chariox-slice-disk-quota-allocator.service'
+    if [ "$managed_provider_topology" = path1 ]; then
+      builder_storage_units="$builder_storage_units chariox-data-volume-admission.service"
+    fi
+    for builder_unit in $builder_storage_units; do
+      systemctl stop "$builder_unit" || builder_services_stopped=0
+    done
+    for builder_unit in $builder_storage_units; do
       builder_active_state=$(systemctl show --property=ActiveState --value "$builder_unit") || builder_services_stopped=0
       if [ "$builder_active_state" != inactive ]; then
         builder_services_stopped=0
@@ -159,7 +160,7 @@ cleanup_path1_data_volume_bypass() {
       fi
       restore_path1_data_volume_dropins || builder_cleanup_failed=1
     else
-      echo "prepare-hetzner-image.sh: Path-1 drop-ins remain bypassed because image-builder storage services could not be stopped" >&2
+      echo "prepare-hetzner-image.sh: probe data and any bypassed drop-ins preserved because image-builder storage services could not be stopped" >&2
       builder_cleanup_failed=1
     fi
   fi
@@ -170,6 +171,10 @@ cleanup_path1_data_volume_bypass() {
 }
 
 bypass_path1_data_volume_dropins() {
+  # Both topologies claim and start a disposable rootless engine below. Register
+  # cleanup before the topology-specific bypass, but never claim inherited data.
+  trap cleanup_path1_data_volume_bypass EXIT
+  trap 'exit 1' HUP INT TERM
   [ "$managed_provider_topology" = path1 ] || return 0
   builder_rootless_dropin=/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf
   builder_allocator_dropin=/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf
@@ -182,8 +187,6 @@ bypass_path1_data_volume_dropins() {
     && [ "$(readlink "$builder_allocator_dropin")" = "$builder_allocator_target" ] \
     || fail "signed quota allocator data-volume drop-in is missing or changed"
   path1_data_volume_dropins_bypassed=1
-  trap cleanup_path1_data_volume_bypass EXIT
-  trap 'exit 1' HUP INT TERM
   rm -- "$builder_rootless_dropin" "$builder_allocator_dropin"
   systemctl daemon-reload
 }
