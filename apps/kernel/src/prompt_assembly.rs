@@ -1302,6 +1302,12 @@ mod tests {
         assert!(base.contains("Treat every interaction as an equal-level, self-contained message"));
         assert!(base
             .contains("Include a follow-up destination only when the sender explicitly requests"));
+        let agent_message =
+            fs::read_to_string(root.join("runtime").join("agent-message-context.md"))
+                .expect("agent message context should read");
+        assert!(agent_message.contains("do not reply to an acknowledgement or status-only completion"));
+        assert!(agent_message.contains("new bounded actionable request or a materially useful result"));
+        assert!(agent_message.contains("Useful answers, clarifying questions, and corrections"));
         let workflow_turn = fs::read_to_string(root.join("workflow").join("turn.md"))
             .expect("workflow turn prompt should read");
         assert!(workflow_turn.contains("workflow_handoffs"));
