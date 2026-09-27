@@ -1534,7 +1534,8 @@ Workflow endpoint direction:
 Workflow trigger and deployment direction:
 
 - HTTP, schedule, and event-notification triggers created on the current kernel
-  remain attached to the editable source workflow and its source session
+  (an event-notification trigger is an `event_based` publication that App
+  automations target; protocol 365) remain attached to the editable source workflow and its source session
 - accepting a trigger invocation MUST enqueue it through the workflow endpoint's
   normal queue path; it MUST NOT create a hidden session, cloned agents, or a
   separate queue namespace
@@ -1594,7 +1595,7 @@ Workflow trigger and deployment direction:
   and the complete distinct `runtime_keys` set. A kernel using retained publication
   control storage starts with autonomous work held. Restoring state or attaching
   a client does not activate it. The gateway validates this boot's
-  provider/credential/extension bindings, prepares every replica, installs event bindings and
+  provider/credential/extension bindings, prepares every replica and
   attaches, then requests activation. The kernel requires every enabled retained
   runtime to match a successful materialization by its owner in this process.
   `WorkflowPublicationRuntimeActivated` acknowledges that exact set. Invalid or
@@ -1673,6 +1674,12 @@ Workflow trigger and deployment direction:
   turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
   at peer binding before provider dispatch rather than failing on a missing
   tool field mid-turn. The local daemon shape and client minimums do not change.
+- relay peer protocol 58 (with local protocol 365) drops the workflow event
+  capability flags: `RemoteWorkflowTurnContext.event_context_enabled` /
+  `event_actions_enabled` and the leased provider run's
+  `workflow_event_actions_enabled`. A v58 peer reads a v57 peer's extra fields
+  and ignores them; a v57 peer cannot decode a v58 provider run, so home and
+  worker must both run v58.
 - protocol 288 adds `ListAppInstallations`, `GetAppInstallation` and
   `GetAppInstallationJournal` on the same local/relay terminal path. The kernel
   derives ownership from the authenticated caller; requests cannot name an owner
@@ -1939,8 +1946,8 @@ Workflow trigger and deployment direction:
   `CreateAppInboxRoute` takes an optional `connection {generator_id,
   connection_id, connection_scope, filter?}`: the owner's connection at an
   event generator (AEGS). The kernel checks the connection with that
-  generator before it stores the route, then treats the route like a workflow
-  event binding: it subscribes to `source_event_type` at the generator and
+  generator before it stores the route, then subscribes to
+  `source_event_type` at the generator and
   claims the route at the event delivery service (AEDS) under an opaque
   `app-route-...` binding id that names no owner or App. A delivery for it is
   validated against the App's signed incoming schema and recorded in the
@@ -1965,7 +1972,7 @@ Workflow trigger and deployment direction:
   endpoint as the owner's pseudonymous event owner, with an idempotency key
   scoped to the installation. The App never holds the provider credential;
   anything else is refused (`CONNECTION_NOT_GRANTED`, `CAPABILITY_REQUIRED`).
-- protocol 360: an event binding moves to an App. `MoveEventBindingToApp
+- protocol 360 (retired in 365): an event binding moves to an App. `MoveEventBindingToApp
   {session_id, binding_id, installation_id, route_id, event_name,
   automation?: {automation_id, event_name}}` turns a workflow event binding in
   the kernel's event environment into an App inbox route on the same
@@ -1990,10 +1997,10 @@ Workflow trigger and deployment direction:
   whole request with its App error code, so a copy never starts from a
   partial or mixed record.
 - protocol 362: resource filters. An event generator resource may carry
-  `filter`, the event filter that narrows a binding to it when other resources
-  share its `connection_scope` (Slack channels share their workspace's scope
-  and carry `{"event.channel": id}`). Clients merge it into the binding's
-  filter; no client special-cases a generator.
+  `filter`, the event filter that narrows an App inbox route to it when other
+  resources share its `connection_scope` (Slack channels share their
+  workspace's scope and carry `{"event.channel": id}`). Clients merge it into
+  the route's filter; no client special-cases a generator.
 - protocol 363: App data deletion. `UninstallApp` gains `delete_data` (omitted
   when false): the kernel also deletes the App's structured state, wakes,
   logs and file handoffs and the release it kept, so the installation can no
@@ -2015,6 +2022,30 @@ Workflow trigger and deployment direction:
   `event_action` refuses it for bindings persisted before 364. Older peers,
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
+- protocol 365: direct workflow event bindings are retired. Events reach
+  workflows only through Apps: an App inbox route (protocol 358) receives the
+  generator's events, and an App automation sends the App's outgoing event to
+  an `event_based` publication. `CreateWorkflowEventBinding`,
+  `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
+  `TransferWorkflowEventBinding`, `TestWorkflowEventBinding` and
+  `MoveEventBindingToApp` are removed with their responses, as are the
+  `event_context` and `event_action` runtime tools (they served direct-binding
+  runs only) and `RemoteWorkflowTurnContext.event_context_enabled` /
+  `event_actions_enabled`. `ListEventConnectionDependencies` answers
+  `EventConnectionDependency {installation_id, route_id?, active}`: the App
+  inbox routes (`route_id`) and App connection grants (no `route_id`) that use
+  the connection; `EventConnection.attached_trigger_count` counts the active
+  ones, and `RemoveEventConnection` (with `confirm`) is refused while any
+  remains. `EventConnectionRemoved` loses `deactivated_bindings`.
+  `EventDeliveryStatus.active_route_count` counts active App routes. The kernel
+  claims only App routes at the event service and resumes only its default
+  environment; a delivery for any other binding id is logged and acknowledged,
+  never retried. Exported publication packages no longer carry
+  `event_bindings_path` or `event-bindings.example.json`; a server reading an
+  older package ignores both. Sessions and durable workflow state written by an
+  older kernel load with their bindings ignored; peers that still send the
+  removed turn-context fields are read with them ignored (relay peer
+  protocol 58).
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

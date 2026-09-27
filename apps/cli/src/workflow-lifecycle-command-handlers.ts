@@ -180,7 +180,7 @@ const triggerNextCommand = {
   http: (workflowId: string, endpointId: string) => `/workflow trigger create ${workflowId} ${endpointId} --route /`,
   schedule: (workflowId: string, endpointId: string) => `/workflow schedule add ${workflowId} ${endpointId} --every 1h`,
   notification: (workflowId: string, endpointId: string) =>
-    `/workflow trigger create ${workflowId} ${endpointId} --kind event_based, then /workflow trigger event attach`,
+    `/workflow trigger create ${workflowId} ${endpointId} --kind event_based, then /app automation add <installation-id> <automation-id> <event> <session-id> <trigger-id>`,
 } as const
 
 export async function handleWorkflowAliasCommand(

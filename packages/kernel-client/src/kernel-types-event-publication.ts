@@ -169,11 +169,12 @@ export type EventConnectionPage = {
   next_cursor?: string | null
 }
 
-export type WorkflowEventBindingDependency = {
-  session_id: string
-  publication_id: string
-  binding_id: string
-  status: "active" | "paused" | "conflict" | "tombstoned"
+/** Protocol 365: an App that uses an event connection, through an inbox
+ * route (`route_id`) or a connection grant (no `route_id`). */
+export type EventConnectionDependency = {
+  installation_id: string
+  route_id?: string | null
+  active: boolean
 }
 
 export type EventDeliveryStatus = {

@@ -4,7 +4,7 @@ import {
   getAppLogsRequest, openAppViewRequest, uninstallAppRequest, createAppInboxRouteRequest, listAppInboxRoutesRequest,
   type AppInboxConnection,
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
-  grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, moveEventBindingToAppRequest, getAppSetRequest,
+  grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
 } from "./ipc-app-requests.js"
 import type { AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import type { ShellCommandResult } from "./shell-core.js"
@@ -21,7 +21,6 @@ const usage = [
   "       app inbox list <installation-id> | remove <installation-id> <route-id>",
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
   "       app inbox test <installation-id> <route-id> <occurrence-id> <json-payload>",
-  "       app inbox move <installation-id> <route-id> <event> <binding-id> [--session <session-id>] [--automation <automation-id>/<outgoing-event>]",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
 ].join("\n")
 
@@ -69,10 +68,6 @@ export async function executeAppCommand(
       generation = installation.generation
     }
     request = uninstallAppRequest(rest[0], generation, flags.deleteData)
-  } else if (action === "inbox" && rest[0] === "move") {
-    const parsed = moveRequest(rest.slice(1), defaults.sessionId)
-    if (typeof parsed === "string") return { ok: false, message: parsed }
-    request = parsed
   } else if (action === "inbox") {
     const parsed = inboxRequest(rest)
     if (!parsed) return { ok: false, message: usage }
@@ -137,19 +132,6 @@ export async function executeAppCommand(
       + `${plural(installation.connections.length, "connection")}`)
     return { ok: true, message: [`App set (${data.schema}): ${plural(data.installations.length, "active installation")}`, ...lines].join("\n"), data }
   }
-  if (response.EventBindingMovedToApp) {
-    const data = expect<{ binding_id: string; installation_id: string; route: AppInboxRouteSummary;
-      connection: AppConnectionSummary | null; automation: AppAutomationSummary | null }>(response, "EventBindingMovedToApp")
-    const lines = [
-      `Event binding ${data.binding_id} is paused; ${data.installation_id} receives its events:`,
-      formatInboxRoute(data.route),
-      data.connection
-        ? `Granted ${data.connection.connection_id} · actions: ${data.connection.actions.join(", ") || "none declared"}`
-        : "No connection granted (the binding had no actions, or the App declares none for this generator).",
-      ...(data.automation ? [formatAutomation(data.automation)] : []),
-    ]
-    return { ok: true, message: lines.join("\n"), data }
-  }
   if (response.AppWorker) {
     const data = expect<{ worker: AppWorkerSummary }>(response, "AppWorker")
     return { ok: true, message: formatWorker(data.worker), data }
@@ -203,26 +185,6 @@ function automationRequest(args: string[]): Record<string, unknown> | null {
     installationId: installation, automationId: automationId ?? "", expectedRevision,
     eventName: eventName ?? "", sessionId: sessionId ?? "", publicationRef: publicationRef ?? "",
     ...(queueRef === undefined ? {} : { queueRef }), scheduled,
-  })
-}
-
-/** `app inbox move ...`: the request, or why it cannot be made. */
-function moveRequest(args: string[], defaultSessionId: string | undefined): Record<string, unknown> | string {
-  const [installationId, routeId, eventName, bindingId, ...flags] = args
-  if (!installationId || !routeId || !eventName || !bindingId || flags.length % 2 !== 0) return usage
-  let sessionId = defaultSessionId
-  let automation: { automationId: string; eventName: string } | undefined
-  for (let index = 0; index < flags.length; index += 2) {
-    const [flag, value = ""] = [flags[index], flags[index + 1]]
-    if (flag === "--session" && value) sessionId = value
-    else if (flag === "--automation" && /^[^/]+\/[^/]+$/.test(value)) {
-      const [automationId = "", outgoing = ""] = value.split("/")
-      automation = { automationId, eventName: outgoing }
-    } else return usage
-  }
-  if (!sessionId) return "Attach to the binding's session or pass --session."
-  return moveEventBindingToAppRequest({
-    sessionId, bindingId, installationId, routeId, eventName, ...(automation ? { automation } : {}),
   })
 }
 

@@ -745,29 +745,6 @@ export type WorkflowPublicationRuntimeLogEntry = {
   message: string
 }
 
-export type WorkflowEventBindingStatus = "active" | "paused" | "conflict" | "tombstoned"
-
-export type WorkflowEventBinding = {
-  id: string
-  publication_id: string
-  generator_id: string
-  generator_version: string
-  manifest_digest: string
-  connection_id: string
-  connection_scope: string
-  event_type: string
-  event_type_version: number
-  filter?: unknown
-  event_interest_key: string
-  environment_id: string
-  endpoint_id: string
-  queue_ref?: string | null
-  revision: number
-  status: WorkflowEventBindingStatus
-  created_at_ms: number
-  updated_at_ms: number
-}
-
 export type WorkflowEventDeliveryReceipt = {
   delivery_id: string
   binding_id: string

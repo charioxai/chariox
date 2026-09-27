@@ -10,6 +10,7 @@ import {
 test("TUI publication handler creates an event-based publication for the selected workflow", async () => {
   const notices: string[] = []
   const requests: Record<string, unknown>[] = []
+  const applied: RuntimeSession[] = []
   const updated = session({
     workflows: [
       { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
@@ -18,6 +19,7 @@ test("TUI publication handler creates an event-based publication for the selecte
   })
   await handleWorkflowPublicationCommand({
     ...deps(notices),
+    applySessionState: (value) => applied.push(value),
     selectedWorkflowId: () => "workflow-2",
     sendWorkflowEventPublicationRequest: async (request) => {
       requests.push(request)
@@ -58,6 +60,7 @@ test("TUI publication handler creates an event-based publication for the selecte
       poll_ms: null,
     },
   }])
+  assert.deepEqual(applied, [updated])
   assert.match(notices[0] ?? "", /created workflow trigger publication-1/)
 })
 
@@ -101,28 +104,6 @@ test("TUI event publication handler renders paged catalog results", async () => 
   assert.deepEqual(requests, [{ GetEventGeneratorCatalogLanding: { limit: 1 } }])
   assert.match(notices[0] ?? "", /dev\.chariox\.dummy@1\.0\.0/)
   assert.match(notices[0] ?? "", /next cursor: next-page/)
-})
-
-test("TUI event publication handler applies session mutations", async () => {
-  const notices: string[] = []
-  const applied: RuntimeSession[] = []
-  const updated = session({ workflow_event_bindings: [] })
-  await handleWorkflowEventPublicationCommand({
-    ...deps(notices),
-    applySessionState: (value) => applied.push(value),
-    sendWorkflowEventPublicationRequest: async () => ({
-      WorkflowEventBindingUpdated: {
-        binding: {
-          id: "binding-1",
-          status: "paused",
-        },
-        session: updated,
-      },
-    }),
-  }, ["pause", "binding-1"])
-
-  assert.deepEqual(applied, [updated])
-  assert.deepEqual(notices, ["paused workflow event binding binding-1"])
 })
 
 function deps(notices: string[]) {
