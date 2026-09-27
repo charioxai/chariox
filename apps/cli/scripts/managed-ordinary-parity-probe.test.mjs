@@ -260,21 +260,16 @@ test("probe fails closed when a required product observation is absent", async (
 test("MP-08 Project setup external assertions cannot satisfy the product observer", async (context) => {
   const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-project-setup-assertion-only-"))
   context.after(() => rm(root, { recursive: true, force: true }))
-  const destination = join(root, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
-  const matrixDestination = join(root, "apps/cli/scripts/managed-ordinary-parity-matrix.mjs")
+  const destination = await copyProbeRuntimeSources(root)
   const observerDestination = join(root, "apps/cli/scripts/lib/managed-ordinary-project-setup-observer.mjs")
-  await mkdir(dirname(destination), { recursive: true })
   await mkdir(dirname(observerDestination), { recursive: true })
-  await writeFile(destination, await readFile(probeSource))
-  await writeFile(matrixDestination, await readFile(matrixSource))
   await writeFile(observerDestination, await readFile(projectSetupObserverSource))
   await git(root, ["init", "--quiet"])
   await git(root, ["config", "user.name", "parity-probe-test"])
   await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
   await git(root, [
     "add",
-    "apps/cli/scripts/managed-ordinary-parity-probe.mjs",
-    "apps/cli/scripts/managed-ordinary-parity-matrix.mjs",
+    ...PROBE_FIXTURE_PATHS,
     "apps/cli/scripts/lib/managed-ordinary-project-setup-observer.mjs",
   ])
   await git(root, ["commit", "--quiet", "-m", "probe fixture"])
