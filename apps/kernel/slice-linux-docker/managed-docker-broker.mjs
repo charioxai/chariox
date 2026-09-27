@@ -28,7 +28,10 @@ import { createInterface } from "node:readline"
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { requestSliceDiskQuota, sliceDiskQuotaIdentityFromEnvironment } from "./slice-disk-quota-client.mjs"
-import { runWithSliceDiskQuotaAdmission } from "./slice-disk-quota-admission.mjs"
+import {
+  readSliceDiskQuotaMarkerInspection,
+  runWithSliceDiskQuotaAdmission,
+} from "./slice-disk-quota-admission.mjs"
 
 const MAX_FRAME_BYTES = 12 * 1024 * 1024
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -1280,29 +1283,14 @@ function diskQuotaMarkerPresent(container) {
     ["container", "inspect", "--format", "{{json .Config.Labels}}", container],
     { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
   )
-  if (inspectedContainer.status === 0) {
-    let labels
-    try { labels = JSON.parse(inspectedContainer.stdout) } catch { fail("slice disk quota labels are malformed") }
-    if (labels["io.chariox.slice.disk-quota"] !== undefined) {
-      if (labels["io.chariox.slice.disk-quota"] !== "xfs-project-v1") fail("slice disk quota marker is unsupported")
-      return true
-    }
-  }
+  if (readSliceDiskQuotaMarkerInspection(inspectedContainer, "container", container)) return true
   const volume = `${container}-home`
   const inspectedVolume = spawnSync(
     "/usr/bin/docker",
     ["volume", "inspect", "--format", "{{json .Labels}}", volume],
     { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
   )
-  if (inspectedVolume.status === 0) {
-    let labels
-    try { labels = JSON.parse(inspectedVolume.stdout) } catch { fail("slice home-volume quota labels are malformed") }
-    if (labels["io.chariox.slice.disk-quota"] !== undefined) {
-      if (labels["io.chariox.slice.disk-quota"] !== "xfs-project-v1") fail("slice home-volume disk quota marker is unsupported")
-      return true
-    }
-  }
-  return false
+  return readSliceDiskQuotaMarkerInspection(inspectedVolume, "volume", volume)
 }
 
 function requireExactContainerMounts(container, expected, stop) {
