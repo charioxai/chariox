@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::project_environment_setup_storage::{
     cleanup_after_settled_group, kill_live_process_group, open_pidfd, wait_child_or_cancel,
@@ -7,6 +8,127 @@ use super::project_environment_setup_storage::{
 
 pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = 120_000;
 pub(super) const VALIDATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+const VALIDATION_OUTPUT_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
+const VALIDATION_OUTPUT_UNSETTLED_PREFIX: &str =
+    "validation cleanup incomplete: output pipes remained open after process settlement";
+const VALIDATION_OUTPUT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+struct ValidationOutputReader {
+    task: std::thread::JoinHandle<Result<usize, String>>,
+    stop: Arc<AtomicBool>,
+}
+
+#[cfg(unix)]
+fn spawn_validation_output_reader<R>(output: R) -> Result<ValidationOutputReader, String>
+where
+    R: Read + Send + std::os::fd::AsRawFd + 'static,
+{
+    use std::os::fd::AsRawFd;
+
+    let fd = output.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(format!(
+            "validation output pipe could not be made nonblocking: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_stop = Arc::clone(&stop);
+    let task = std::thread::spawn(move || count_validation_output_nonblocking(output, reader_stop));
+    Ok(ValidationOutputReader { task, stop })
+}
+
+#[cfg(not(unix))]
+fn spawn_validation_output_reader<R>(mut output: R) -> Result<ValidationOutputReader, String>
+where
+    R: Read + Send + 'static,
+{
+    let stop = Arc::new(AtomicBool::new(false));
+    let task = std::thread::spawn(move || count_validation_output_blocking(&mut output));
+    Ok(ValidationOutputReader { task, stop })
+}
+
+fn join_validation_output_reader(
+    reader: ValidationOutputReader,
+) -> Result<usize, String> {
+    reader
+        .task
+        .join()
+        .map_err(|_| "worker validation output reader panicked".to_string())?
+}
+
+fn settle_validation_output_readers(
+    mut stdout: Option<ValidationOutputReader>,
+    mut stderr: Option<ValidationOutputReader>,
+    timeout: Duration,
+) -> Result<Option<(Option<usize>, Option<usize>)>, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if stdout.as_ref().map_or(true, |reader| reader.task.is_finished())
+            && stderr.as_ref().map_or(true, |reader| reader.task.is_finished())
+        {
+            let stdout_bytes = stdout.take().map(join_validation_output_reader).transpose()?;
+            let stderr_bytes = stderr.take().map(join_validation_output_reader).transpose()?;
+            return Ok(Some((stdout_bytes, stderr_bytes)));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            if let Some(reader) = stdout.as_ref() {
+                reader.stop.store(true, Ordering::Release);
+            }
+            if let Some(reader) = stderr.as_ref() {
+                reader.stop.store(true, Ordering::Release);
+            }
+            let stop_deadline = Instant::now() + Duration::from_millis(100);
+            while Instant::now() < stop_deadline
+                && !(stdout.as_ref().map_or(true, |reader| reader.task.is_finished())
+                    && stderr.as_ref().map_or(true, |reader| reader.task.is_finished()))
+            {
+                std::thread::sleep(VALIDATION_OUTPUT_POLL_INTERVAL.min(
+                    stop_deadline.saturating_duration_since(Instant::now()),
+                ));
+            }
+            // A timed-out pipe is never reported as settled, even if the stop
+            // request closes our readers during the bounded cancellation grace.
+            if stdout.as_ref().is_some_and(|reader| reader.task.is_finished()) {
+                if let Some(reader) = stdout.take() {
+                    let _ = join_validation_output_reader(reader);
+                }
+            }
+            if stderr.as_ref().is_some_and(|reader| reader.task.is_finished()) {
+                if let Some(reader) = stderr.take() {
+                    let _ = join_validation_output_reader(reader);
+                }
+            }
+            return Ok(None);
+        }
+        std::thread::sleep(VALIDATION_OUTPUT_POLL_INTERVAL.min(deadline - now));
+    }
+}
+
+fn mark_validation_output_unsettled(
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+) -> String {
+    match store.mark_validation_output_unsettled(operation_id, attempt, command_index) {
+        Ok(()) => format!(
+            "{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; owned scratch was retained for explicit recovery"
+        ),
+        Err(error) => {
+            store.mark_validation_cleanup_incomplete(
+                operation_id,
+                attempt,
+                "validation output remained open and its incomplete cleanup state could not be fully recorded",
+            );
+            format!(
+                "{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; cleanup state persistence failed: {error}"
+            )
+        }
+    }
+}
 
 const WORKER_KERNEL_ENV_NAMES: &[&str] = &[
     "CHARIOX_HOME",
@@ -632,23 +754,70 @@ pub(super) fn run_worker_validation_command_with_persistence_hook(
     ) -> Result<ValidationProcessIdentity, String>,
     after_process_lease_persisted: impl FnOnce() -> Result<(), String>,
 ) -> Result<(i32, usize, usize), String> {
+    run_worker_validation_command_with_output_timeout(
+        command_text,
+        workspace_root,
+        environment,
+        scratch,
+        store,
+        operation_id,
+        attempt,
+        command_index,
+        should_cancel,
+        overall_deadline,
+        persist_process_identity,
+        after_process_lease_persisted,
+        VALIDATION_OUTPUT_SETTLE_TIMEOUT,
+    )
+}
+
+pub(super) fn run_worker_validation_command_with_output_timeout(
+    command_text: &str,
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    scratch: &WorkerValidationScratch,
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+    should_cancel: impl Fn() -> bool,
+    overall_deadline: Option<Instant>,
+    persist_process_identity: impl FnOnce(
+        &ProjectEnvironmentSetupStore,
+        &str,
+        u32,
+        usize,
+        u32,
+    ) -> Result<ValidationProcessIdentity, String>,
+    after_process_lease_persisted: impl FnOnce() -> Result<(), String>,
+    output_settle_timeout: Duration,
+) -> Result<(i32, usize, usize), String> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (
+            command_index,
+            persist_process_identity,
+            after_process_lease_persisted,
+            output_settle_timeout,
+        );
+        let result = run_worker_validation_command_with_scratch(
             command_text,
             workspace_root,
             environment,
-            store,
-            operation_id,
-            attempt,
-            command_index,
+            scratch,
             should_cancel,
             overall_deadline,
-            persist_process_identity,
-            after_process_lease_persisted,
         );
-        let _ = scratch.cleanup();
-        return Err("durable validation process recovery is unsupported on this platform".to_string());
+        if let Err(error) = &result {
+            if error.starts_with(VALIDATION_OUTPUT_UNSETTLED_PREFIX) {
+                store.mark_validation_cleanup_incomplete(
+                    operation_id,
+                    attempt,
+                    "non-Linux validation output remained open; owned scratch was retained and restart process recovery is unsupported",
+                );
+            }
+        }
+        return result;
     }
 
     #[cfg(target_os = "linux")]
@@ -745,8 +914,42 @@ pub(super) fn run_worker_validation_command_with_persistence_hook(
             ));
         }
         let gate_stdin = gate_stdin.expect("the validation gate pipe was checked");
-        let stdout_reader = std::thread::spawn(move || count_validation_output(stdout.expect("checked stdout")));
-        let stderr_reader = std::thread::spawn(move || count_validation_output(stderr.expect("checked stderr")));
+        let stdout_pipe = stdout.expect("checked stdout");
+        let stderr_pipe = stderr.expect("checked stderr");
+        let stdout_reader = match spawn_validation_output_reader(stdout_pipe) {
+            Ok(reader) => reader,
+            Err(error) => {
+                return Err(abort_gated_child(
+                    &mut child,
+                    Some(gate_stdin),
+                    None,
+                    Some(stderr_pipe),
+                    scratch,
+                    store,
+                    operation_id,
+                    attempt,
+                    command_index,
+                    &error,
+                ));
+            }
+        };
+        let stderr_reader = match spawn_validation_output_reader(stderr_pipe) {
+            Ok(reader) => reader,
+            Err(error) => {
+                return Err(abort_gated_child_with_readers(
+                    &mut child,
+                    Some(gate_stdin),
+                    Some(stdout_reader),
+                    None,
+                    scratch,
+                    store,
+                    operation_id,
+                    attempt,
+                    command_index,
+                    &error,
+                ));
+            }
+        };
         let pidfd = match open_pidfd(pid) {
             Ok(pidfd) => pidfd,
             Err(error) => {
@@ -826,16 +1029,24 @@ pub(super) fn run_worker_validation_command_with_persistence_hook(
 
         match wait_child_or_cancel(&pidfd, &mut child, &identity, deadline, &should_cancel) {
             Ok(status) => {
-                let output = match (stdout_reader.join(), stderr_reader.join()) {
-                    (Ok(Ok(stdout_bytes)), Ok(Ok(stderr_bytes))) => {
+                let output = match settle_validation_output_readers(
+                    Some(stdout_reader),
+                    Some(stderr_reader),
+                    output_settle_timeout,
+                ) {
+                    Ok(Some((Some(stdout_bytes), Some(stderr_bytes)))) => {
                         Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
                     }
-                    (Err(_), _) | (_, Err(_)) => {
-                        Err("worker validation output reader panicked".to_string())
+                    Ok(None) => {
+                        return Err(mark_validation_output_unsettled(
+                            store,
+                            operation_id,
+                            attempt,
+                            command_index,
+                        ));
                     }
-                    (Ok(Err(error)), _) | (_, Ok(Err(error))) => {
-                        Err(format!("worker validation output could not be read: {error}"))
-                    }
+                    Ok(Some(_)) => Err("worker validation output reader was unavailable".to_string()),
+                    Err(error) => Err(error),
                 };
                 cleanup_after_settled_group(
                     scratch,
@@ -847,6 +1058,21 @@ pub(super) fn run_worker_validation_command_with_persistence_hook(
                 output
             }
             Err(error) if error.process_group_settled => {
+                match settle_validation_output_readers(
+                    Some(stdout_reader),
+                    Some(stderr_reader),
+                    output_settle_timeout,
+                ) {
+                    Ok(None) => {
+                        return Err(mark_validation_output_unsettled(
+                            store,
+                            operation_id,
+                            attempt,
+                            command_index,
+                        ));
+                    }
+                    Ok(Some(_)) | Err(_) => {}
+                }
                 cleanup_after_settled_group(
                     scratch,
                     store,
@@ -854,8 +1080,6 @@ pub(super) fn run_worker_validation_command_with_persistence_hook(
                     attempt,
                     command_index,
                 )?;
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
                 Err(error.message)
             }
             Err(error) => {
@@ -906,8 +1130,8 @@ fn abort_gated_child(
     command_index: usize,
     reason: &str,
 ) -> String {
-    let stdout_reader = stdout.map(|pipe| std::thread::spawn(move || count_validation_output(pipe)));
-    let stderr_reader = stderr.map(|pipe| std::thread::spawn(move || count_validation_output(pipe)));
+    let stdout_reader = stdout.and_then(|pipe| spawn_validation_output_reader(pipe).ok());
+    let stderr_reader = stderr.and_then(|pipe| spawn_validation_output_reader(pipe).ok());
     abort_gated_child_with_readers(
         child,
         gate_stdin,
@@ -926,8 +1150,8 @@ fn abort_gated_child(
 fn abort_gated_child_with_readers(
     child: &mut std::process::Child,
     gate_stdin: Option<std::process::ChildStdin>,
-    stdout_reader: Option<std::thread::JoinHandle<Result<usize, String>>>,
-    stderr_reader: Option<std::thread::JoinHandle<Result<usize, String>>>,
+    stdout_reader: Option<ValidationOutputReader>,
+    stderr_reader: Option<ValidationOutputReader>,
     scratch: &WorkerValidationScratch,
     store: &ProjectEnvironmentSetupStore,
     operation_id: &str,
@@ -939,11 +1163,20 @@ fn abort_gated_child_with_readers(
     let _ = child.kill();
     match child.wait_timeout(Duration::from_secs(1)) {
         Ok(Some(_)) => {
-            if let Some(reader) = stdout_reader {
-                let _ = reader.join();
-            }
-            if let Some(reader) = stderr_reader {
-                let _ = reader.join();
+            if matches!(
+                settle_validation_output_readers(
+                    stdout_reader,
+                    stderr_reader,
+                    VALIDATION_OUTPUT_SETTLE_TIMEOUT,
+                ),
+                Ok(None)
+            ) {
+                store.mark_validation_cleanup_incomplete(
+                    operation_id,
+                    attempt,
+                    "gated validation output pipes did not close after child reaping",
+                );
+                return format!("{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; gated command was not released");
             }
             finish_unstarted_lease(scratch, store, operation_id, attempt, command_index, reason.to_string())
         }
@@ -971,8 +1204,8 @@ fn terminate_gated_child(
     child: &mut std::process::Child,
     identity: &ValidationProcessIdentity,
     gate_stdin: Option<std::process::ChildStdin>,
-    stdout_reader: Option<std::thread::JoinHandle<Result<usize, String>>>,
-    stderr_reader: Option<std::thread::JoinHandle<Result<usize, String>>>,
+    stdout_reader: Option<ValidationOutputReader>,
+    stderr_reader: Option<ValidationOutputReader>,
     scratch: &WorkerValidationScratch,
     store: &ProjectEnvironmentSetupStore,
     operation_id: &str,
@@ -999,11 +1232,20 @@ fn terminate_gated_child(
                 );
                 return format!("validation cleanup incomplete: {error}");
             }
-            if let Some(reader) = stdout_reader {
-                let _ = reader.join();
-            }
-            if let Some(reader) = stderr_reader {
-                let _ = reader.join();
+            if matches!(
+                settle_validation_output_readers(
+                    stdout_reader,
+                    stderr_reader,
+                    VALIDATION_OUTPUT_SETTLE_TIMEOUT,
+                ),
+                Ok(None)
+            ) {
+                store.mark_validation_cleanup_incomplete(
+                    operation_id,
+                    attempt,
+                    "gated validation output pipes did not close after process-group settlement",
+                );
+                return format!("{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; gated command was not released");
             }
             finish_unstarted_lease(scratch, store, operation_id, attempt, command_index, reason.to_string())
         }
@@ -1087,8 +1329,29 @@ pub(super) fn run_worker_validation_command(
         let _ = child.wait();
         return Err("worker validation command did not provide stderr capture".to_string());
     };
-    let stdout_reader = std::thread::spawn(move || count_validation_output(stdout));
-    let stderr_reader = std::thread::spawn(move || count_validation_output(stderr));
+    let stdout_reader = match spawn_validation_output_reader(stdout) {
+        Ok(reader) => reader,
+        Err(error) => {
+            terminate_validation_process_group(&mut child);
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let stderr_reader = match spawn_validation_output_reader(stderr) {
+        Ok(reader) => reader,
+        Err(error) => {
+            terminate_validation_process_group(&mut child);
+            let _ = child.wait();
+            return match settle_validation_output_readers(
+                Some(stdout_reader),
+                None,
+                VALIDATION_OUTPUT_SETTLE_TIMEOUT,
+            ) {
+                Ok(None) => Err(format!("{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; {error}")),
+                Ok(Some(_)) | Err(_) => Err(error),
+            };
+        }
+    };
     let outcome = loop {
         if should_cancel() {
             break Err("worker validation command cancelled".to_string());
@@ -1108,24 +1371,28 @@ pub(super) fn run_worker_validation_command(
         Err(error) => {
             terminate_validation_process_group(&mut child);
             let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(error);
+            return match settle_validation_output_readers(
+                Some(stdout_reader),
+                Some(stderr_reader),
+                VALIDATION_OUTPUT_SETTLE_TIMEOUT,
+            ) {
+                Ok(None) => Err(format!("{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; {error}")),
+                Ok(Some(_)) | Err(_) => Err(error),
+            };
         }
     };
     terminate_validation_process_group(&mut child);
-    let stdout_bytes = stdout_reader
-        .join()
-        .map_err(|_| "worker validation stdout reader panicked".to_string())?;
-    let stdout_bytes = stdout_bytes?;
-    let stderr_bytes = stderr_reader
-        .join()
-        .map_err(|_| "worker validation stderr reader panicked".to_string())?;
-    let stderr_bytes = stderr_bytes?;
+    let Some((Some(stdout_bytes), Some(stderr_bytes))) = settle_validation_output_readers(
+        Some(stdout_reader),
+        Some(stderr_reader),
+        VALIDATION_OUTPUT_SETTLE_TIMEOUT,
+    )? else {
+        return Err(format!("{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; scratch must be retained"));
+    };
     Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
 }
 
-#[cfg(test)]
+#[cfg(any(test, not(target_os = "linux")))]
 pub(super) fn run_worker_validation_command_with_scratch(
     command_text: &str,
     workspace_root: &Path,
@@ -1146,6 +1413,11 @@ pub(super) fn run_worker_validation_command_with_scratch(
         should_cancel,
         overall_deadline,
     );
+    if let Err(error) = &command_result {
+        if error.starts_with(VALIDATION_OUTPUT_UNSETTLED_PREFIX) {
+            return command_result;
+        }
+    }
     let cleanup_result = scratch.cleanup();
     match (command_result, cleanup_result) {
         (Ok(result), Ok(())) => Ok(result),
@@ -2274,6 +2546,115 @@ done
     }
 }
 
+#[cfg(all(test, not(target_os = "linux"), unix))]
+mod non_linux_recovery_fallback_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Fixture {
+        root: PathBuf,
+        workspace: PathBuf,
+        operation_id: String,
+        scratch: WorkerValidationScratch,
+    }
+
+    impl Fixture {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let suffix = NEXT.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "chariox-validation-nonlinux-{}-{label}-{suffix}",
+                std::process::id(),
+            ));
+            let workspace = root.join("workspace");
+            let durable_home = root.join("home");
+            std::fs::create_dir_all(&workspace).expect("fixture workspace should be created");
+            std::fs::create_dir_all(&durable_home).expect("fixture HOME should be created");
+            let operation_id = format!("nonlinux-{label}-{suffix}");
+            let scratch = WorkerValidationScratch::create_for_worker(
+                &workspace,
+                &durable_home,
+                &operation_id,
+                1,
+                0,
+            )
+            .expect("the ordinary validation scratch should be created");
+            Self {
+                root,
+                workspace,
+                operation_id,
+                scratch,
+            }
+        }
+
+        fn run(
+            &self,
+            command: &str,
+            environment: &BTreeMap<String, String>,
+            should_cancel: impl Fn() -> bool,
+        ) -> Result<(i32, usize, usize), String> {
+            let store = super::super::ProjectEnvironmentSetupStore::default();
+            run_worker_validation_command_with_recovery(
+                command,
+                &self.workspace,
+                environment,
+                &self.scratch,
+                &store,
+                &self.operation_id,
+                1,
+                0,
+                should_cancel,
+                None,
+            )
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = self.scratch.cleanup();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_runs_success_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("success");
+        let result = fixture
+            .run("printf ready", &BTreeMap::new(), || false)
+            .expect("ordinary validation should use the shared runner");
+        assert_eq!(result, (0, 5, 0));
+        assert!(!fixture.scratch.path().exists());
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_records_failure_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("failure");
+        let result = fixture
+            .run("printf nope >&2; exit 9", &BTreeMap::new(), || false)
+            .expect("a nonzero command exit should remain an ordinary validation result");
+        assert_eq!(result, (9, 0, 4));
+        assert!(!fixture.scratch.path().exists());
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_cancels_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("cancel");
+        let started = fixture.root.join("command-started");
+        let environment = BTreeMap::from([(
+            "NONLINUX_VALIDATION_STARTED".to_string(),
+            started.display().to_string(),
+        )]);
+        let result = fixture.run(
+            "printf started > \"$NONLINUX_VALIDATION_STARTED\"; sleep 2",
+            &environment,
+            || started.exists(),
+        );
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(started.exists(), "the real validation command must start before cancel");
+        assert!(!fixture.scratch.path().exists());
+    }
+}
+
 #[cfg(unix)]
 fn terminate_validation_process_group(child: &mut std::process::Child) {
     let process_group = child.id() as libc::pid_t;
@@ -2285,13 +2666,59 @@ fn terminate_validation_process_group(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
-fn count_validation_output(mut output: impl Read) -> Result<usize, String> {
+#[cfg(unix)]
+fn count_validation_output_nonblocking<R>(
+    mut output: R,
+    stop: Arc<AtomicBool>,
+) -> Result<usize, String>
+where
+    R: Read + std::os::fd::AsRawFd,
+{
+    use std::os::fd::AsRawFd;
+
     let mut buffer = [0_u8; 8192];
     let mut bytes = 0_usize;
     loop {
-        let read = output
-            .read(&mut buffer)
-            .map_err(|error| error.to_string())?;
+        if stop.load(Ordering::Acquire) {
+            return Ok(bytes);
+        }
+        let mut descriptor = libc::pollfd {
+            fd: output.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 20) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.to_string());
+        }
+        if ready == 0 {
+            continue;
+        }
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Ok(bytes);
+            }
+            match output.read(&mut buffer) {
+                Ok(0) => return Ok(bytes),
+                Ok(read) => bytes = bytes.saturating_add(read),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn count_validation_output_blocking(output: &mut impl Read) -> Result<usize, String> {
+    let mut buffer = [0_u8; 8192];
+    let mut bytes = 0_usize;
+    loop {
+        let read = output.read(&mut buffer).map_err(|error| error.to_string())?;
         if read == 0 {
             return Ok(bytes);
         }

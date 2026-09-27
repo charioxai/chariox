@@ -8,6 +8,13 @@ pub(super) use self::process_lease::{
     wait_for_process_group_absence, ValidationProcessIdentity,
 };
 
+// Version 1 means this platform persists a process identity before releasing
+// the validation command gate. Version 2 explicitly records that ordinary
+// validation may run but cannot be recovered after a kernel restart.
+const VALIDATION_RECOVERY_VERSION: u8 = if cfg!(target_os = "linux") { 1 } else { 2 };
+const VALIDATION_RECOVERY_SUPPORTED_VERSION: u8 = 1;
+const VALIDATION_RECOVERY_UNSUPPORTED_VERSION: u8 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct SetupExecution {
     pub(super) owner_user_id: String,
@@ -260,6 +267,9 @@ impl ProjectEnvironmentSetupStore {
 
             let interrupted_phase = entry.status.phase;
             let persisted_lease = entry.validation_command_lease.clone();
+            let unsupported_platform_recovery = persisted_lease.is_none()
+                && interrupted_phase == ProjectEnvironmentSetupPhase::Validating
+                && entry.validation_recovery_version == VALIDATION_RECOVERY_UNSUPPORTED_VERSION;
             let recovery = match persisted_lease.as_ref() {
                 Some(lease)
                     if lease.matches_operation(
@@ -271,7 +281,7 @@ impl ProjectEnvironmentSetupStore {
                 }
                 Some(_) => Err("validation process lease does not match its setup operation".to_string()),
                 None if interrupted_phase == ProjectEnvironmentSetupPhase::Validating
-                    && entry.validation_recovery_version != 1 =>
+                    && entry.validation_recovery_version != VALIDATION_RECOVERY_SUPPORTED_VERSION =>
                 {
                     Err("validation has no recognized durable process lease; cleanup is incomplete".to_string())
                 }
@@ -302,8 +312,11 @@ impl ProjectEnvironmentSetupStore {
                     candidate.status.failure_code =
                         Some("validation_cleanup_incomplete".to_string());
                     candidate.status.failure_message = Some(
-                        "kernel restart left a validation process or scratch owner that could not be safely verified"
-                            .to_string(),
+                        if unsupported_platform_recovery {
+                            "restart recovery for this validation command was unsupported on its originating platform; process and scratch cleanup remain unverified".to_string()
+                        } else {
+                            "kernel restart left a validation process or scratch owner that could not be safely verified".to_string()
+                        },
                     );
                     candidate.status.retryable = false;
                     // Keep the exact lease for a later conservative retry of
@@ -412,7 +425,7 @@ impl ProjectEnvironmentSetupStore {
             fingerprint,
             cancel_requested: false,
             home_definition_ack: None,
-            validation_recovery_version: 1,
+            validation_recovery_version: VALIDATION_RECOVERY_VERSION,
             validation_command_lease: None,
             active_executions: 0,
         };
@@ -468,7 +481,7 @@ impl ProjectEnvironmentSetupStore {
         entry.status.updated_at_ms = crate::session::unix_epoch_ms();
         entry.cancel_requested = false;
         entry.home_definition_ack = None;
-        entry.validation_recovery_version = 1;
+        entry.validation_recovery_version = VALIDATION_RECOVERY_VERSION;
         entry.validation_command_lease = None;
         let execution = entry.execution.clone();
         let status = entry.status.clone();
@@ -1565,7 +1578,7 @@ impl ProjectEnvironmentSetupStore {
         if entry.status.attempt != attempt
             || entry.cancel_requested
             || entry.status.phase != ProjectEnvironmentSetupPhase::Validating
-            || entry.validation_recovery_version != 1
+            || entry.validation_recovery_version != VALIDATION_RECOVERY_SUPPORTED_VERSION
             || entry.validation_command_lease.is_some()
         {
             return Err("validation setup attempt cannot authorize a command start".to_string());
@@ -1706,6 +1719,49 @@ impl ProjectEnvironmentSetupStore {
                 serde_json::json!({"error": error}),
             );
         }
+    }
+
+    pub(super) fn mark_validation_output_unsettled(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+    ) -> Result<(), String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt {
+            return Err("validation setup attempt changed before output settlement".to_string());
+        }
+        let mut candidate = entry.clone();
+        let lease = candidate
+            .validation_command_lease
+            .as_mut()
+            .filter(|lease| {
+                lease.operation_id() == operation_id
+                    && lease.attempt() == attempt
+                    && lease.command_index() == command_index
+            })
+            .ok_or_else(|| "validation process lease changed before output settlement".to_string())?;
+        lease.mark_output_pipe_unsettled();
+        candidate.status.phase = ProjectEnvironmentSetupPhase::Failed;
+        candidate.status.progress_percent = 0;
+        candidate.status.message = Some("validation command cleanup is incomplete".to_string());
+        candidate.status.failure_code = Some("validation_cleanup_incomplete".to_string());
+        candidate.status.failure_message = Some(
+            "validation output remained open after process-group settlement; a detached descendant may retain access to command scratch"
+                .to_string(),
+        );
+        candidate.status.retryable = false;
+        candidate.status.updated_at_ms = crate::session::unix_epoch_ms();
+        candidate.cancel_requested = false;
+        entries.insert(operation_id.to_string(), candidate.clone());
+        self.persist_checked(&candidate)?;
+        Ok(())
     }
 
     fn persist_checked(&self, entry: &SetupEntry) -> Result<(), String> {

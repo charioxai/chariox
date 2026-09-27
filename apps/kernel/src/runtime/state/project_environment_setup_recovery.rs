@@ -23,6 +23,8 @@ pub(super) struct ValidationCommandLease {
     owner_token: String,
     boot_id: String,
     process: Option<ValidationProcessIdentity>,
+    #[serde(default)]
+    output_pipe_unsettled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +71,7 @@ impl ValidationCommandLease {
             owner_token: owner_token(operation_id, attempt, command_index),
             boot_id,
             process: None,
+            output_pipe_unsettled: false,
         })
     }
 
@@ -111,6 +114,10 @@ impl ValidationCommandLease {
     pub(super) fn process(&self) -> Option<&ValidationProcessIdentity> {
         self.process.as_ref()
     }
+
+    pub(super) fn mark_output_pipe_unsettled(&mut self) {
+        self.output_pipe_unsettled = true;
+    }
 }
 
 impl ValidationProcessIdentity {
@@ -143,6 +150,12 @@ impl ValidationProcessIdentity {
 
 pub(super) fn recover_validation_command(lease: &ValidationCommandLease) -> Result<(), String> {
     validate_lease(lease)?;
+    if lease.output_pipe_unsettled {
+        return Err(
+            "validation output remained open after process-group settlement; scratch ownership recovery is incomplete"
+                .to_string(),
+        );
+    }
     match lease.process.as_ref() {
         Some(process) if current_boot_id()? != process.boot_id => {
             // A Linux boot ID change proves that no process from the old boot
@@ -1165,6 +1178,84 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn detached_output_writer_hits_absolute_bound_and_retains_durable_cleanup_lease() {
+        let root = test_root("detached-output-writer");
+        let (store, durable) = durable_setup_store(&root, "detached-output-writer-op");
+        let scratch = make_scratch(&root, "detached-output-writer-op", 1, 0);
+        let scratch_path = scratch.path().to_path_buf();
+        let started = Instant::now();
+        let result = super::super::project_environment_setup_validation::run_worker_validation_command_with_output_timeout(
+            "/usr/bin/setsid /bin/sh -c '/bin/sleep 0.25' & exit 0",
+            &root.join("workspace"),
+            &BTreeMap::new(),
+            &scratch,
+            &store,
+            "detached-output-writer-op",
+            1,
+            0,
+            || false,
+            None,
+            |store, operation_id, attempt, command_index, pid| {
+                store.persist_validation_process_identity(
+                    operation_id,
+                    attempt,
+                    command_index,
+                    pid,
+                )
+            },
+            || Ok(()),
+            Duration::from_millis(40),
+        );
+        let error = result.expect_err("a detached writer must not hold validation indefinitely");
+        assert!(error.contains("output pipes remained open"), "unexpected error: {error}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(scratch_path.exists(), "scratch remains while detached output may be active");
+
+        let event = durable
+            .load_events_by_kind("project.environment_setup.updated")
+            .expect("the output cleanup state should be readable")
+            .pop()
+            .expect("the output uncertainty event should be persisted");
+        assert_eq!(
+            event.payload["entry"]["validation_command_lease"]["output_pipe_unsettled"],
+            true
+        );
+        assert_eq!(
+            event.payload["entry"]["status"]["failure_code"],
+            "validation_cleanup_incomplete"
+        );
+        assert_eq!(
+            event.payload["entry"]["status"]["retryable"],
+            false
+        );
+
+        let _restored = super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
+        assert!(scratch_path.exists(), "restart must preserve scratch with uncertain output ownership");
+        let restored_event = durable
+            .load_events_by_kind("project.environment_setup.updated")
+            .expect("the restored cleanup state should be readable")
+            .pop()
+            .expect("restore should persist its conservative result");
+        assert_eq!(
+            restored_event.payload["entry"]["status"]["failure_code"],
+            "validation_cleanup_incomplete"
+        );
+        assert_eq!(
+            restored_event.payload["entry"]["validation_command_lease"]["output_pipe_unsettled"],
+            true
+        );
+
+        // Let the short-lived detached fixture release the pipe, then remove
+        // only this test's still-marker-verified scratch directory.
+        std::thread::sleep(Duration::from_millis(300));
+        scratch
+            .cleanup()
+            .expect("the test-owned scratch should be removable after its writer exits");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn durable_restore_settles_live_group_and_persists_retryable_failed_status() {
         use std::os::unix::process::CommandExt;
 
@@ -1316,6 +1407,28 @@ mod tests {
             Some("validation_cleanup_incomplete")
         );
         assert!(!persisted.entry.status.retryable);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn non_linux_restart_records_unsupported_recovery_without_blocking_command_execution_contract() {
+        let root = test_root("nonlinux-restart-recovery");
+        let (_store, durable) = durable_setup_store(&root, "nonlinux-restart-recovery-op");
+        let _restored = super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
+        let event = durable
+            .load_events_by_kind("project.environment_setup.updated")
+            .expect("the unsupported recovery status should be readable")
+            .pop()
+            .expect("restore should persist the conservative status");
+        assert_eq!(
+            event.payload["entry"]["status"]["failure_code"],
+            "validation_cleanup_incomplete"
+        );
+        assert_eq!(event.payload["entry"]["status"]["retryable"], false);
+        assert!(event.payload["entry"]["status"]["failure_message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unsupported on its originating platform")));
         let _ = fs::remove_dir_all(&root);
     }
 
