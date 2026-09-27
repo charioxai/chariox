@@ -296,6 +296,45 @@ fn drop_preserves_recovery_after_an_explicit_cleanup_attempt() {
 }
 
 #[test]
+fn a_restore_whose_rename_landed_records_the_restored_generation() {
+    let scratch = Scratch::new();
+    let dir = Dir::open_private(&scratch.0).unwrap();
+    let mut journal = record(&dir);
+    let data = dir
+        .create_private_file(OsStr::new(&journal.images[0].image))
+        .unwrap();
+    let renamed = FileIdentity::of(&data).unwrap();
+    let other =
+        FileIdentity::of(&dir.create_private_file(OsStr::new("other.dmg")).unwrap()).unwrap();
+    // 5 committed, 6 failed: the restore of 5's snapshot was interrupted.
+    journal.generation = 6;
+    let mut storage = MountedStorage {
+        root: dir,
+        path: scratch.0.clone(),
+        journal,
+        images: [None, None],
+        mounted: [None, None],
+        released: true,
+        cleanup_attempted: true,
+        deadline: std::time::Instant::now(),
+    };
+    // The rename had not landed: nothing changes but the cleared intent.
+    storage.journal.restoring = Some(other);
+    storage.journal.restoring_generation = Some(5);
+    storage.settle_restore().unwrap();
+    assert_eq!(storage.journal.generation, 6);
+    assert!(storage.journal.restoring.is_none() && storage.journal.restoring_generation.is_none());
+    // The rename landed: the data is 5's again.
+    storage.journal.restoring = Some(renamed.clone());
+    storage.journal.restoring_generation = Some(5);
+    storage.settle_restore().unwrap();
+    assert_eq!(storage.journal.generation, 5);
+    assert_eq!(storage.journal.images[0].identity, Some(renamed));
+    let saved = journal::load(&storage.root).unwrap().unwrap();
+    assert_eq!((saved.generation, saved.restoring.is_none()), (5, true));
+}
+
+#[test]
 fn only_the_committed_generation_may_reuse_storage_of_an_uncommitted_successor() {
     // Normal starts and updates move forward.
     assert!(super::admits_generation(5, 5, 5));

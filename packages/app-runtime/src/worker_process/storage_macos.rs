@@ -350,7 +350,13 @@ impl StorageRoot {
                     let kept = dir
                         .read_file(OsStr::new(&volume::snapshot_name(committed)), false)
                         .is_ok();
-                    snapshot_step(journal.generation, generation, committed, kept)
+                    // As the start will see it once an interrupted restore
+                    // is settled: the rename may have landed.
+                    let previous = match journal.restoring {
+                        Some(_) => journal.restoring_generation.unwrap_or(journal.generation),
+                        None => journal.generation,
+                    };
+                    snapshot_step(previous, generation, committed, kept)
                 });
                 let mut present = Vec::new();
                 if matches!(planned, None | Some(SnapshotStep::Keep)) {
