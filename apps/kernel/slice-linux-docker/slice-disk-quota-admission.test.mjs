@@ -71,14 +71,18 @@ test("the broker validates container and volume inspections before deriving mark
   assert.match(markerReader, /readSliceDiskQuotaMarkerInspection\(inspectedVolume, "volume", volume\)/)
 })
 
-test("broker start wires outage fallback through the durable receipt and immutable Docker ID", async () => {
+test("broker start holds shared coordination through strict proof recheck and immutable Docker ID use", async () => {
   const source = await readFile(new URL("./managed-docker-broker.mjs", import.meta.url), "utf8")
-  const reserveStart = source.indexOf('operation: "reserve"')
-  const proofRevocation = source.lastIndexOf("removeSliceDiskQuotaUnboundedProof(", reserveStart)
-  assert.ok(proofRevocation >= 0 && proofRevocation < reserveStart)
-  assert.match(source, /resolveUnboundedProof: \(\) => resolveBrokerUnboundedQuotaProof\(containerName\)/)
+  const service = await readFile(new URL("./slice-disk-quota-service.mjs", import.meta.url), "utf8")
+  const coordinator = await readFile(new URL("./slice-disk-quota-coordinator.mjs", import.meta.url), "utf8")
+  assert.match(source, /withContainerLock\(containerName, async \(lock\) => runWithSliceDiskQuotaAdmission/)
+  assert.match(source, /resolveUnboundedProof: \(\) => resolveBrokerUnboundedQuotaProof\(containerName, lock\)/)
+  assert.match(source, /resolveUnboundedProof\(lock, current\.identity, current\.binding\)/)
+  assert.match(service, /coordinator\.runReservation\(request\.identity, \(\) => allocator\.handle\(request\)/)
+  assert.match(coordinator, /withStateLock\(lock, async \(\) => \{[\s\S]*revokeUnboundedProof\(lock, identity\)[\s\S]*return operation\(\)/)
   assert.match(source, /prepared\.args\[1\] = admission\.containerId/)
-  assert.match(source, /writeSliceDiskQuotaUnboundedProof\(UNBOUNDED_QUOTA_PROOF_ROOT/)
+  assert.match(coordinator, /stateStore\.loadRequired\(\)/)
+  assert.match(coordinator, /writeSliceDiskQuotaUnboundedProof\(resolvedProofRoot/)
 })
 
 function admission({

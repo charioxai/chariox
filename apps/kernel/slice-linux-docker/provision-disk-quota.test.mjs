@@ -34,27 +34,28 @@ test("every brokered Docker start and unpause requires allocator admission befor
     read("./managed-docker-broker.mjs"),
     read("./slice-disk-quota-admission.mjs"),
   ])
-  assert.match(source, /import \{ runWithSliceDiskQuotaAdmission \} from "\.\/slice-disk-quota-admission\.mjs"/)
+  assert.match(source, /runWithSliceDiskQuotaAdmission,[\s\S]*from "\.\/slice-disk-quota-admission\.mjs"/)
   const execute = source.slice(source.indexOf("async function execute(request)"), source.indexOf("function errorResponse"))
-  const runPrepared = execute.indexOf("const runPrepared = () =>")
+  const runPrepared = execute.indexOf("const runPrepared = (admission) =>")
   const prepare = execute.indexOf("prepared = request.kind === \"docker\" ? prepareDocker(request.args)", runPrepared)
   const spawn = execute.indexOf("return spawnBounded(command, args", prepare)
   const dispatch = execute.indexOf('const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])')
-  const admissionCall = execute.indexOf("? await runWithSliceDiskQuotaAdmission({", dispatch)
+  const admissionCall = execute.indexOf("? await sliceDiskQuotaCoordinator.withContainerLock(containerName", dispatch)
   const directRun = execute.indexOf(": runPrepared()", admissionCall)
 
   assert.ok(runPrepared >= 0 && prepare > runPrepared && spawn > prepare)
   assert.ok(dispatch > runPrepared && admissionCall > dispatch && directRun > admissionCall)
   assert.ok(execute.indexOf("containerName,", admissionCall) < directRun)
+  assert.ok(execute.indexOf("runWithSliceDiskQuotaAdmission({", admissionCall) < directRun)
   assert.ok(execute.indexOf("quotaMarkerPresent: diskQuotaMarkerPresent(containerName)", admissionCall) < directRun)
-  assert.ok(execute.indexOf("run: runPrepared", admissionCall) < directRun)
+  assert.ok(execute.indexOf("run: async (quotaResult, admission)", admissionCall) < directRun)
   assert.equal(execute.indexOf("runWithSliceDiskQuotaAdmission", admissionCall), execute.lastIndexOf("runWithSliceDiskQuotaAdmission"))
 
   const requestShape = admission.indexOf('operation: "ensure_before_start"')
   const requestValidation = admission.indexOf("validateSliceDiskQuotaRequest(request)", requestShape)
   const quotaRequest = admission.indexOf("const result = await requestQuota(request)", requestValidation)
   const evidenceValidation = admission.indexOf("if (!validateEnsureBeforeStartResult(result) && quotaMarkerPresent)", quotaRequest)
-  const admittedRun = admission.indexOf("return run(result)", evidenceValidation)
+  const admittedRun = admission.indexOf("return run(result,", evidenceValidation)
   assert.ok(requestShape >= 0 && requestValidation > requestShape)
   assert.ok(quotaRequest > requestValidation && evidenceValidation > quotaRequest && admittedRun > evidenceValidation)
 })
@@ -113,6 +114,15 @@ test("fresh quota driver selection is gated by the exact XFS project-quota mount
   assert.match(unit, /slice-disk-quota-service\.mjs/)
   assert.match(installer, /slice-disk-quota-xfs-backend\.mjs/)
   assert.match(imagePrep, /xfsprogs/)
+})
+
+test("shared allocator coordination helper is packaged and writable to the broker only at its state root", async () => {
+  const [brokerUnit, installer] = await Promise.all([
+    read("../../../deploy/managed-kernel/chariox-slice-broker.service"),
+    read("../../../deploy/managed-kernel/install-image.sh"),
+  ])
+  assert.match(brokerUnit, /ReadWritePaths=.*\/var\/lib\/chariox-slice-disk-quota/)
+  assert.match(installer, /slice-disk-quota-coordinator\.mjs/)
 })
 
 test("paired disk-cap user-config fields are covered by local-daemon protocol 350", async () => {

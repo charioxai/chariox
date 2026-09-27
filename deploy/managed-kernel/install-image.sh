@@ -135,7 +135,7 @@ if [ "$managed_provider_topology" = path1 ]; then
 fi
 require_directory "$image_root/usr/lib/chariox/slice-build-context"
 rootless_context=usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker
-for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf chariox-slice-disk-quota-allocator.service slice-disk-quota-admission.mjs slice-disk-quota-allocator.mjs slice-disk-quota-client.mjs slice-disk-quota-contract.mjs slice-disk-quota-service.mjs slice-disk-quota-state-store.mjs slice-disk-quota-xfs-backend.mjs probe-slice-disk-quota-backend.mjs; do
+for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf chariox-slice-disk-quota-allocator.service slice-disk-quota-admission.mjs slice-disk-quota-allocator.mjs slice-disk-quota-client.mjs slice-disk-quota-contract.mjs slice-disk-quota-coordinator.mjs slice-disk-quota-service.mjs slice-disk-quota-state-store.mjs slice-disk-quota-xfs-backend.mjs probe-slice-disk-quota-backend.mjs; do
   require_regular_file "$image_root/$rootless_context/$rootless_file"
 done
 if [ "$managed_provider_topology" = path1 ]; then

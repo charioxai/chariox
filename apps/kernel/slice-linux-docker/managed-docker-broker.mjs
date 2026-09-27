@@ -29,12 +29,10 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { requestSliceDiskQuota, sliceDiskQuotaIdentityFromEnvironment } from "./slice-disk-quota-client.mjs"
 import { validateSliceDiskQuotaIdentity } from "./slice-disk-quota-contract.mjs"
+import { createSliceDiskQuotaCoordinator } from "./slice-disk-quota-coordinator.mjs"
 import {
-  hasMatchingSliceDiskQuotaUnboundedProof,
-  removeSliceDiskQuotaUnboundedProof,
   readSliceDiskQuotaMarkerInspection,
   runWithSliceDiskQuotaAdmission,
-  writeSliceDiskQuotaUnboundedProof,
 } from "./slice-disk-quota-admission.mjs"
 
 const MAX_FRAME_BYTES = 12 * 1024 * 1024
@@ -58,7 +56,7 @@ const BROKER_ARTIFACT_ROOT = resolve(
 )
 const HANDLE_ROOT = resolve(process.env.CHARIOX_SLICE_DOCKER_HANDLE_ROOT ?? "/var/lib/chariox-docker/mount-handles")
 const HANDLE_STATE = resolve(process.env.CHARIOX_SLICE_DOCKER_HANDLE_STATE ?? "/var/lib/chariox-docker/mount-handles.json")
-const UNBOUNDED_QUOTA_PROOF_ROOT = `${HANDLE_STATE}.unbounded-quota`
+const sliceDiskQuotaCoordinator = createSliceDiskQuotaCoordinator()
 const MAX_PERSISTENT_HANDLES = 256
 const MAX_HOME_ARCHIVE_BYTES = 32 * 1024 * 1024 * 1024
 const MIN_FREE_AFTER_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
@@ -1387,19 +1385,21 @@ function unboundedQuotaObservation(container) {
   }
 }
 
-function resolveBrokerUnboundedQuotaProof(container) {
+async function resolveBrokerUnboundedQuotaProof(container, lock) {
   const observed = unboundedQuotaObservation(container)
-  if (!hasMatchingSliceDiskQuotaUnboundedProof(UNBOUNDED_QUOTA_PROOF_ROOT, observed.identity, observed.binding)) {
-    return undefined
-  }
-  return { containerId: observed.binding.containerId }
+  return sliceDiskQuotaCoordinator.resolveUnboundedProof(lock, observed.identity, observed.binding)
 }
 
-function rememberBrokerUnboundedQuotaProof(identity, container) {
+async function rememberBrokerUnboundedQuotaProof(identity, container, lock) {
   try {
+    sliceDiskQuotaCoordinator.assertLockHeld(lock)
     const observed = unboundedQuotaObservation(container)
     if (JSON.stringify(observed.identity) !== JSON.stringify(identity)) return
-    writeSliceDiskQuotaUnboundedProof(UNBOUNDED_QUOTA_PROOF_ROOT, observed.identity, observed.binding)
+    await sliceDiskQuotaCoordinator.captureUnboundedProof(
+      lock,
+      observed.identity,
+      observed.binding,
+    )
   } catch {
     // Online allocator evidence remains sufficient for this operation; no offline proof is cached.
   }
@@ -1638,7 +1638,6 @@ async function execute(request) {
     const quota = provisionerQuotaRequest(request.environment)
     unboundedQuotaIdentity = quota.identity
     if (quota.limits) {
-      removeSliceDiskQuotaUnboundedProof(UNBOUNDED_QUOTA_PROOF_ROOT, quota.identity)
       await requestSliceDiskQuota({
         protocolVersion: 1,
         operation: "reserve",
@@ -1705,30 +1704,52 @@ async function execute(request) {
     }
     const containerName = request.kind === "docker" ? request.args[1] : undefined
     const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])
+    const isQuotaProvision = request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)
     const result = isDockerStartOrUnpause
-      ? await runWithSliceDiskQuotaAdmission({
+      ? await sliceDiskQuotaCoordinator.withContainerLock(containerName, async (lock) => runWithSliceDiskQuotaAdmission({
         containerName,
         quotaMarkerPresent: diskQuotaMarkerPresent(containerName),
-        resolveUnboundedProof: () => resolveBrokerUnboundedQuotaProof(containerName),
-        run: (quotaResult, admission) => {
+        resolveUnboundedProof: () => resolveBrokerUnboundedQuotaProof(containerName, lock),
+        run: async (quotaResult, admission) => {
+          sliceDiskQuotaCoordinator.assertLockHeld(lock)
+          let durableUnboundedState
+          if (admission.source === "allocator") {
+            if (quotaResult.bounded) {
+              await sliceDiskQuotaCoordinator.assertBounded(lock)
+            } else {
+              durableUnboundedState = await sliceDiskQuotaCoordinator.assertUnbounded(lock, { allowMissing: true })
+            }
+          } else {
+            const current = unboundedQuotaObservation(containerName)
+            const currentProof = await sliceDiskQuotaCoordinator.resolveUnboundedProof(
+              lock,
+              current.identity,
+              current.binding,
+            )
+            if (currentProof?.containerId !== admission.containerId) {
+              fail("broker-owned unbounded quota proof changed before container start")
+            }
+          }
+
           let before
           if (admission.source === "allocator" && quotaResult.bounded === false) {
             try {
               before = unboundedQuotaObservation(containerName)
             } catch {
-              // Online admission is still authoritative; without a stable Docker binding it is not cached.
+              // Online allocator evidence remains sufficient; without a stable binding no receipt is cached.
             }
           }
+          sliceDiskQuotaCoordinator.assertLockHeld(lock)
           const started = runPrepared(admission)
-          if (before && started.status === 0) {
+          if (before && durableUnboundedState && started.status === 0) {
             try {
               const after = unboundedQuotaObservation(containerName)
               if (
                 JSON.stringify(before.identity) === JSON.stringify(after.identity) &&
                 JSON.stringify(before.binding) === JSON.stringify(after.binding)
               ) {
-                writeSliceDiskQuotaUnboundedProof(
-                  UNBOUNDED_QUOTA_PROOF_ROOT,
+                await sliceDiskQuotaCoordinator.captureUnboundedProof(
+                  lock,
                   after.identity,
                   after.binding,
                 )
@@ -1739,16 +1760,42 @@ async function execute(request) {
           }
           return started
         },
-      })
+      }))
+      : isQuotaProvision
+        ? await sliceDiskQuotaCoordinator.withContainerLock(
+          unboundedQuotaIdentity.containerName,
+          async (lock) => {
+            let durableUnboundedState
+            if (boundedLimits) {
+              await sliceDiskQuotaCoordinator.assertBounded(lock, {
+                identity: unboundedQuotaIdentity,
+                limits: boundedLimits,
+              })
+            } else if (unboundedQuotaStatusVerified) {
+              durableUnboundedState = await sliceDiskQuotaCoordinator.assertUnbounded(lock, { allowMissing: true })
+            } else {
+              await sliceDiskQuotaCoordinator.assertUnbounded(lock)
+            }
+            const provisioned = runPrepared()
+            if (provisioned.status === 0 && unboundedQuotaStatusVerified && durableUnboundedState) {
+              await rememberBrokerUnboundedQuotaProof(
+                unboundedQuotaIdentity,
+                request.environment.CHARIOX_SLICE_NAME,
+                lock,
+              )
+            }
+            return provisioned
+          },
+        )
       : runPrepared()
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)
     }
     if (request.kind === "provisioner" && request.action === "destroy" && result.status === 0) {
-      removeSliceDiskQuotaUnboundedProof(
-        UNBOUNDED_QUOTA_PROOF_ROOT,
-        sliceDiskQuotaIdentityFromEnvironment(request.environment),
-      )
+      const identity = sliceDiskQuotaIdentityFromEnvironment(request.environment)
+      await sliceDiskQuotaCoordinator.withContainerLock(identity.containerName, (lock) => {
+        sliceDiskQuotaCoordinator.revokeUnboundedProof(lock, identity)
+      })
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
       if (releaseDiskQuota) {
         const quota = provisionerQuotaRequest(request.environment)
@@ -1767,14 +1814,6 @@ async function execute(request) {
       } else {
         removePersistentHandles((record) => prepared.newHandles.has(record.handle))
       }
-    }
-    if (
-      request.kind === "provisioner" &&
-      ["provision", "restore-state", "recover"].includes(request.action) &&
-      unboundedQuotaStatusVerified &&
-      result.status === 0
-    ) {
-      rememberBrokerUnboundedQuotaProof(unboundedQuotaIdentity, request.environment.CHARIOX_SLICE_NAME)
     }
     const response = {
       status: result.status ?? 125,

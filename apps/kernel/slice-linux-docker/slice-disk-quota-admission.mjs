@@ -17,6 +17,7 @@ import { requestSliceDiskQuota } from "./slice-disk-quota-client.mjs"
 import {
   SLICE_DISK_QUOTA_PROTOCOL_VERSION,
   sliceDiskQuotaIdentityKey,
+  validateSliceDiskQuotaIdentity,
   validateSliceDiskQuotaRequest,
 } from "./slice-disk-quota-contract.mjs"
 
@@ -154,7 +155,8 @@ function unboundedProofPath(root, identity) {
   if (typeof root !== "string" || root.length === 0 || !root.startsWith("/")) {
     throw new TypeError("managed unbounded quota proof root is invalid")
   }
-  const key = createHash("sha256").update(sliceDiskQuotaIdentityKey(identity)).digest("hex")
+  validateSliceDiskQuotaIdentity(identity)
+  const key = createHash("sha256").update(identity.containerName).digest("hex")
   return join(root, `${key}.json`)
 }
 
