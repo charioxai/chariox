@@ -351,18 +351,28 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(WorkflowPromptDispatches::default());
         };
+        let released_workflow_claims =
+            self.release_completed_workflow_write_claims(session_id, &workflow_run);
         let agent_id = node_run.agent_id().to_string();
         let session = self.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, &agent_id)
         else {
-            return Ok(WorkflowPromptDispatches::default());
+            let mut dispatches = WorkflowPromptDispatches::default();
+            if released_workflow_claims > 0 {
+                dispatches.extend(self.workflow_retry_blocked_claims());
+            }
+            return Ok(dispatches);
         };
         if active_prompt.workflow_run_id() != Some(workflow_run_id)
             || active_prompt.workflow_node_run_id() != Some(workflow_node_run_id)
         {
-            return Ok(WorkflowPromptDispatches::default());
+            let mut dispatches = WorkflowPromptDispatches::default();
+            if released_workflow_claims > 0 {
+                dispatches.extend(self.workflow_retry_blocked_claims());
+            }
+            return Ok(dispatches);
         }
         let provider_run_id = self
             .provider_store
@@ -390,20 +400,15 @@ impl KernelRuntimeOwnedState {
                 provider_run_id.as_deref(),
             )?
         };
-        let released_workflow_claim = self.release_workflow_node_workspace_claim(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-        );
         let mut dispatches = WorkflowPromptDispatches::default();
         if let Some(mut completion) = completion {
             if let Some(dispatch) = completion.dispatch.take() {
                 dispatches.local.push(dispatch);
             }
-            if completion.released_claim || released_workflow_claim {
+            if completion.released_claim || released_workflow_claims > 0 {
                 dispatches.extend(self.workflow_retry_blocked_claims());
             }
-        } else if released_workflow_claim {
+        } else if released_workflow_claims > 0 {
             dispatches.extend(self.workflow_retry_blocked_claims());
         }
         dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));

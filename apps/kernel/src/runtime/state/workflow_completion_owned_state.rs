@@ -238,6 +238,18 @@ impl KernelRuntimeOwnedState {
                 }) {
                 Ok(workflow_run) => workflow_run,
                 Err(error) => {
+                    if let Some(released_claims) = self.release_archived_completed_workflow_claims(
+                        session_id,
+                        workflow_run_id,
+                        workflow_node_run_id,
+                    ) {
+                        activity_mutation.record();
+                        let mut dispatches = WorkflowPromptDispatches::default();
+                        if released_claims {
+                            dispatches.extend(self.workflow_retry_blocked_claims());
+                        }
+                        return Ok(dispatches);
+                    }
                     rollback_prompt
                         .take()
                         .expect("provider prompt rollback should run once")();
@@ -476,11 +488,15 @@ impl KernelRuntimeOwnedState {
                 message,
             );
         }
-        self.release_workflow_node_workspace_claim(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-        );
+        if update.workflow_run.status() == crate::session::WorkflowRunStatus::Completed {
+            self.release_completed_workflow_write_claims(session_id, &update.workflow_run);
+        } else {
+            self.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+        }
         let mut dispatches =
             self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches)?;
         // Queue promotion may already have exchanged the completed node's claim for the next

@@ -1,5 +1,7 @@
 use super::*;
 
+mod workflow_claim_release;
+
 #[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
