@@ -624,9 +624,10 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
     let relay_state = Arc::clone(&runtime.owned.relay_state);
     let (outgoing_tx, mut peer_requests, _event_rx) =
         crate::transport::relay_client::RelayOutgoingSender::channel(8);
+    let outgoing_liveness_tx = outgoing_tx.clone();
     {
         let mut relay = relay_state.write().await;
-        relay.test_set_connected_sender(outgoing_tx, relay_url);
+        relay.test_set_connected_sender(outgoing_tx, relay_url.clone());
         relay.remember_peer_public_key(WORKER_ID, worker_config.relay_public_key.clone());
     }
 
@@ -798,6 +799,27 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                     },
                 )
                 .await;
+            }
+            RelayPeerRequest::DrainLeasedRuntimeProjection {
+                leased_agent_id,
+                provider_run_id,
+                pump_output,
+            } => {
+                assert_eq!(
+                    submit_count, 1,
+                    "the successor projection drain must follow its exact submission ACK"
+                );
+                assert_eq!(leased_agent_id, LEASED_AGENT_ID);
+                assert_eq!(provider_run_id, SUCCESSOR_WORKER_RUN_ID);
+                assert!(pump_output, "successor projection drain should pump output");
+                acknowledge_peer_request(
+                    &relay_state,
+                    request_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                )
+                .await;
                 break;
             }
             other => panic!("unexpected worker request during successor dispatch: {other:?}"),
@@ -840,23 +862,92 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         "the successor ACK should stay bound to its exact worker run"
     );
     assert_eq!(submit_count, 1);
-    // Keep the full duplicate-observation bound while distinguishing a closed test channel
-    // from an unexpected envelope, which the old is_err() assertion did not report.
-    match tokio::time::timeout(std::time::Duration::from_millis(300), peer_requests.recv()).await {
-        Err(_) => {}
-        Ok(None) => panic!(
-            "fake relay outgoing request channel closed during the 300 ms duplicate observation window"
-        ),
-        Ok(Some(envelope @ RelayEnvelope::DaemonPeerRequest { .. })) => {
-            let (_, target_id, request) = decode_peer_request(envelope, &worker_private_key);
-            panic!(
-                "unexpected worker peer request during the 300 ms duplicate observation window: target={target_id}, request={request:?}"
-            );
-        }
-        Ok(Some(envelope)) => panic!(
-            "unexpected relay outgoing envelope during the 300 ms duplicate observation window: {envelope:?}"
-        ),
+    {
+        let relay = relay_state.read().await;
+        assert!(
+            relay.connected(),
+            "the fixture relay should remain connected"
+        );
+        assert_eq!(
+            relay.connected_relay_url().as_deref(),
+            Some(relay_url.as_str()),
+            "the duplicate observation must use the same connected relay fixture"
+        );
+        assert!(
+            relay.outgoing_sender().is_some(),
+            "the fixture relay should retain its outgoing sender"
+        );
     }
+    // Keep the original sender alive so the receiver stays open for the entire observation
+    // window even if the relay state drops its own sender.
+    let duplicate_observation_deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+    loop {
+        let remaining =
+            duplicate_observation_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, peer_requests.recv()).await {
+            Err(_) => break,
+            Ok(None) => panic!(
+                "fixture-owned relay sender did not keep the request channel open"
+            ),
+            Ok(Some(envelope @ RelayEnvelope::DaemonPeerRequest { .. })) => {
+                let (request_id, target_id, request) =
+                    decode_peer_request(envelope, &worker_private_key);
+                assert_eq!(
+                    target_id, WORKER_ID,
+                    "the observation window must preserve the worker target"
+                );
+                match request {
+                    RelayPeerRequest::DrainLeasedRuntimeProjection {
+                        leased_agent_id,
+                        provider_run_id,
+                        pump_output,
+                    } => {
+                        assert_eq!(leased_agent_id, LEASED_AGENT_ID);
+                        assert_eq!(provider_run_id, SUCCESSOR_WORKER_RUN_ID);
+                        assert!(
+                            pump_output,
+                            "successor projection drain should pump output"
+                        );
+                        acknowledge_peer_request(
+                            &relay_state,
+                            request_id,
+                            &worker_private_key,
+                            &home_public_key,
+                            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                        )
+                        .await;
+                    }
+                    other => panic!(
+                        "unexpected worker peer request during the 300 ms duplicate observation window: {other:?}"
+                    ),
+                }
+            }
+            Ok(Some(envelope)) => panic!(
+                "unexpected relay outgoing envelope during the 300 ms duplicate observation window: {envelope:?}"
+            ),
+        }
+    }
+    {
+        let relay = relay_state.read().await;
+        assert!(
+            relay.connected(),
+            "the fixture relay disconnected during duplicate observation"
+        );
+        assert_eq!(
+            relay.connected_relay_url().as_deref(),
+            Some(relay_url.as_str()),
+            "the fixture relay changed during duplicate observation"
+        );
+        assert!(
+            relay.outgoing_sender().is_some(),
+            "the fixture relay dropped its outgoing sender during duplicate observation"
+        );
+    }
+    drop(outgoing_liveness_tx);
 }
 
 #[tokio::test]
