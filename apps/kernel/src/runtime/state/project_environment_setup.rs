@@ -2196,7 +2196,7 @@ impl KernelRuntimeState {
         // home-kernel boundary.
         let config = self.owned.config_projection.snapshot();
         ensure_worker_validation_boundary(&config)?;
-        let worker_id = config.host_machine_id;
+        let worker_id = config.host_machine_id.clone();
         let platform = actual_worker_platform();
         if worker_id != execution.target_worker_id || platform != execution.target_platform {
             return Err(setup_error(
