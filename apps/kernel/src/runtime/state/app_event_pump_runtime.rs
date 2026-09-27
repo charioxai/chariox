@@ -348,6 +348,19 @@ mod tests {
             workflow_id: "w".into(),
             endpoint_id: "e".into(),
         })));
+        assert!(gone(AppAutomationError::Storage(DaemonError::WorkflowNotFound {
+            session_id: "s".into(),
+            workflow_id: "w".into(),
+        })));
+        // A deleted queue fails queue resolution with an invalid graph reference.
+        assert!(gone(AppAutomationError::Storage(
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: "s".into(),
+                workflow_id: "w".into(),
+                reference: "queue".into(),
+                message: "workflow prompt queue was not found",
+            }
+        )));
         assert!(!gone(AppAutomationError::TargetChanged));
         assert!(!gone(AppAutomationError::Storage(DaemonError::SessionNotFound {
             session_id: "s".into(),
