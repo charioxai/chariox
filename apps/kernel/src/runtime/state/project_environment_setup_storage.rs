@@ -1,5 +1,13 @@
 use super::*;
 
+#[path = "project_environment_setup_recovery.rs"]
+pub(super) mod process_lease;
+use self::process_lease::{recover_validation_command, ValidationCommandLease};
+pub(super) use self::process_lease::{
+    cleanup_after_settled_group, kill_live_process_group, open_pidfd, wait_child_or_cancel,
+    wait_for_process_group_absence, ValidationProcessIdentity,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct SetupExecution {
     pub(super) owner_user_id: String,
@@ -31,6 +39,13 @@ pub(super) struct SetupEntry {
     pub(super) cancel_requested: bool,
     #[serde(default)]
     pub(super) home_definition_ack: Option<HomeDefinitionPersistenceAck>,
+    /// Versioned marker distinguishes new operations, which persist a scratch
+    /// intent before every child spawn, from legacy in-flight validation
+    /// entries that cannot be safely attributed after a kernel restart.
+    #[serde(default)]
+    validation_recovery_version: u8,
+    #[serde(default)]
+    validation_command_lease: Option<ValidationCommandLease>,
     #[serde(skip)]
     active_executions: usize,
 }
@@ -230,24 +245,98 @@ impl ProjectEnvironmentSetupStore {
             );
         }
         for entry in entries.values_mut() {
-            if matches!(
+            let interrupted = matches!(
                 entry.status.phase,
                 ProjectEnvironmentSetupPhase::Requested
                     | ProjectEnvironmentSetupPhase::Preparing
                     | ProjectEnvironmentSetupPhase::Validating
-            ) {
-                entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
-                entry.status.progress_percent = 0;
-                entry.status.message =
-                    Some("kernel restarted before target environment setup completed".to_string());
-                entry.status.failure_code = Some("kernel_restarted".to_string());
-                entry.status.failure_message = Some(
-                    "setup was interrupted by kernel restart; retry the operation".to_string(),
-                );
-                entry.status.retryable = true;
-                entry.status.updated_at_ms = crate::session::unix_epoch_ms();
-                entry.cancel_requested = false;
+            );
+            let cleanup_retry = entry.status.phase == ProjectEnvironmentSetupPhase::Failed
+                && entry.status.failure_code.as_deref() == Some("validation_cleanup_incomplete")
+                && entry.validation_command_lease.is_some();
+            if !interrupted && !cleanup_retry {
+                continue;
             }
+
+            let interrupted_phase = entry.status.phase;
+            let persisted_lease = entry.validation_command_lease.clone();
+            let recovery = match persisted_lease.as_ref() {
+                Some(lease)
+                    if lease.matches_operation(
+                        &entry.execution.operation_id,
+                        entry.status.attempt,
+                    ) =>
+                {
+                    recover_validation_command(lease)
+                }
+                Some(_) => Err("validation process lease does not match its setup operation".to_string()),
+                None if interrupted_phase == ProjectEnvironmentSetupPhase::Validating
+                    && entry.validation_recovery_version != 1 =>
+                {
+                    Err("validation has no recognized durable process lease; cleanup is incomplete".to_string())
+                }
+                None => Ok(()),
+            };
+
+            let mut candidate = entry.clone();
+            candidate.status.phase = ProjectEnvironmentSetupPhase::Failed;
+            candidate.status.progress_percent = 0;
+            candidate.status.updated_at_ms = crate::session::unix_epoch_ms();
+            candidate.status.validation = None;
+            candidate.cancel_requested = false;
+            match recovery {
+                Ok(()) => {
+                    candidate.status.message = Some(
+                        "kernel restarted before target environment setup completed".to_string(),
+                    );
+                    candidate.status.failure_code = Some("kernel_restarted".to_string());
+                    candidate.status.failure_message = Some(
+                        "setup was interrupted by kernel restart; retry the operation".to_string(),
+                    );
+                    candidate.status.retryable = true;
+                    candidate.validation_command_lease = None;
+                }
+                Err(_) => {
+                    candidate.status.message =
+                        Some("validation command cleanup is incomplete".to_string());
+                    candidate.status.failure_code =
+                        Some("validation_cleanup_incomplete".to_string());
+                    candidate.status.failure_message = Some(
+                        "kernel restart left a validation process or scratch owner that could not be safely verified"
+                            .to_string(),
+                    );
+                    candidate.status.retryable = false;
+                    // Keep the exact lease for a later conservative retry of
+                    // startup reconciliation. Never clear uncertain ownership.
+                    candidate.validation_command_lease = persisted_lease.clone();
+                }
+            }
+
+            let append = durable_state_store.append_event(
+                "project.environment_setup.updated",
+                Some(candidate.execution.operation_id.clone()),
+                serde_json::json!(PersistedSetupEntry {
+                    entry: candidate.clone(),
+                }),
+            );
+            if let Err(error) = append {
+                candidate.status.message =
+                    Some("validation command cleanup state could not be persisted".to_string());
+                candidate.status.failure_code =
+                    Some("validation_cleanup_incomplete".to_string());
+                candidate.status.failure_message = Some(
+                    "kernel restarted after cleanup but could not persist the settled failure state"
+                        .to_string(),
+                );
+                candidate.status.retryable = false;
+                candidate.validation_command_lease = persisted_lease;
+                crate::logging::warn_with_fields(
+                    "project.environment_setup",
+                    "failed to persist validation restart recovery state",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+            }
+            *entry = candidate;
         }
         drop(entries);
         store
@@ -323,6 +412,8 @@ impl ProjectEnvironmentSetupStore {
             fingerprint,
             cancel_requested: false,
             home_definition_ack: None,
+            validation_recovery_version: 1,
+            validation_command_lease: None,
             active_executions: 0,
         };
         entries.insert(status.operation_id.clone(), entry.clone());
@@ -377,6 +468,8 @@ impl ProjectEnvironmentSetupStore {
         entry.status.updated_at_ms = crate::session::unix_epoch_ms();
         entry.cancel_requested = false;
         entry.home_definition_ack = None;
+        entry.validation_recovery_version = 1;
+        entry.validation_command_lease = None;
         let execution = entry.execution.clone();
         let status = entry.status.clone();
         let persisted = entry.clone();
@@ -1447,6 +1540,189 @@ impl ProjectEnvironmentSetupStore {
         drop(entries);
         self.persist(&persisted);
         true
+    }
+
+    pub(super) fn persist_validation_scratch_intent(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+        scratch_path: &Path,
+    ) -> Result<(), String> {
+        let lease = ValidationCommandLease::scratch_intent(
+            operation_id,
+            attempt,
+            command_index,
+            scratch_path,
+        )?;
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || entry.status.phase != ProjectEnvironmentSetupPhase::Validating
+            || entry.validation_recovery_version != 1
+            || entry.validation_command_lease.is_some()
+        {
+            return Err("validation setup attempt cannot authorize a command start".to_string());
+        }
+        let mut candidate = entry.clone();
+        candidate.validation_command_lease = Some(lease);
+        self.persist_checked(&candidate)?;
+        entries.insert(operation_id.to_string(), candidate);
+        Ok(())
+    }
+
+    pub(super) fn persist_validation_process_identity(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+        pid: u32,
+    ) -> Result<ValidationProcessIdentity, String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || entry.status.phase != ProjectEnvironmentSetupPhase::Validating
+        {
+            return Err("validation setup attempt cannot bind a child process".to_string());
+        }
+        let mut candidate = entry.clone();
+        let lease = candidate
+            .validation_command_lease
+            .as_mut()
+            .filter(|lease| {
+                lease.operation_id() == operation_id
+                    && lease.attempt() == attempt
+                    && lease.command_index() == command_index
+                    && lease.process().is_none()
+            })
+            .ok_or_else(|| "validation scratch intent is missing or already bound".to_string())?;
+        let identity = ValidationProcessIdentity::from_child(pid, lease.boot_id())?;
+        lease
+            .bind_process(identity.clone())
+            .map_err(|error| error.to_string())?;
+        self.persist_checked(&candidate)?;
+        entries.insert(operation_id.to_string(), candidate);
+        Ok(identity)
+    }
+
+    pub(super) fn release_validation_start_gate(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+        release: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || entry.status.phase != ProjectEnvironmentSetupPhase::Validating
+            || !entry.validation_command_lease.as_ref().is_some_and(|lease| {
+                lease.operation_id() == operation_id
+                    && lease.attempt() == attempt
+                    && lease.command_index() == command_index
+                    && lease.process().is_some()
+            })
+        {
+            return Err("validation setup attempt no longer authorizes command start".to_string());
+        }
+        release()
+    }
+
+    pub(super) fn clear_validation_command_lease(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+    ) -> Result<(), String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt
+            || !entry.validation_command_lease.as_ref().is_some_and(|lease| {
+                lease.operation_id() == operation_id
+                    && lease.attempt() == attempt
+                    && lease.command_index() == command_index
+            })
+        {
+            return Err("validation command lease changed before cleanup settled".to_string());
+        }
+        let mut candidate = entry.clone();
+        candidate.validation_command_lease = None;
+        self.persist_checked(&candidate)?;
+        entries.insert(operation_id.to_string(), candidate);
+        Ok(())
+    }
+
+    pub(super) fn mark_validation_cleanup_incomplete(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        message: &str,
+    ) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let Some(entry) = entries.get_mut(operation_id) else {
+            return;
+        };
+        if entry.status.attempt != attempt {
+            return;
+        }
+        entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
+        entry.status.progress_percent = 0;
+        entry.status.message = Some("validation command cleanup is incomplete".to_string());
+        entry.status.failure_code = Some("validation_cleanup_incomplete".to_string());
+        entry.status.failure_message = Some(message.to_string());
+        entry.status.retryable = false;
+        entry.status.updated_at_ms = crate::session::unix_epoch_ms();
+        entry.cancel_requested = false;
+        if let Err(error) = self.persist_checked(entry) {
+            crate::logging::warn_with_fields(
+                "project.environment_setup",
+                "failed to persist validation cleanup-incomplete state",
+                serde_json::json!({"error": error}),
+            );
+        }
+    }
+
+    fn persist_checked(&self, entry: &SetupEntry) -> Result<(), String> {
+        let durable_state_store = self
+            .durable_state_store
+            .as_ref()
+            .ok_or_else(|| "durable setup state is unavailable".to_string())?;
+        durable_state_store
+            .append_event(
+                "project.environment_setup.updated",
+                Some(entry.execution.operation_id.clone()),
+                serde_json::json!(PersistedSetupEntry {
+                    entry: entry.clone(),
+                }),
+            )
+            .map(|_| ())
+            .map_err(|error| format!("validation command lease could not be persisted: {error}"))
     }
 
     pub(super) fn mark_failed(&self, operation_id: &str, attempt: u32, code: &str, message: &str) {

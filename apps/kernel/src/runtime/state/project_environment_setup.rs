@@ -2386,11 +2386,15 @@ impl KernelRuntimeState {
                         break;
                     }
                 };
-                let result = run_worker_validation_command_with_scratch(
+                let result = run_worker_validation_command_with_recovery(
                     &command,
                     &workspace_root,
                     &environment,
                     &scratch,
+                    &cancellation,
+                    &operation_id,
+                    attempt,
+                    command_index,
                     || cancellation.is_cancelled(&operation_id, attempt),
                     Some(overall_deadline),
                 );

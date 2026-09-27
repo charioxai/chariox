@@ -1,5 +1,10 @@
 use super::*;
 
+use super::project_environment_setup_storage::{
+    cleanup_after_settled_group, kill_live_process_group, open_pidfd, wait_child_or_cancel,
+    wait_for_process_group_absence, ValidationProcessIdentity,
+};
+
 pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = 120_000;
 pub(super) const VALIDATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -549,6 +554,479 @@ fn worker_validation_environment_allowed(name: &str, removed: &BTreeSet<String>)
         && !name.starts_with("CHARIOX_")
 }
 
+pub(super) fn run_worker_validation_command_with_recovery(
+    command_text: &str,
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    scratch: &WorkerValidationScratch,
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+    should_cancel: impl Fn() -> bool,
+    overall_deadline: Option<Instant>,
+) -> Result<(i32, usize, usize), String> {
+    run_worker_validation_command_with_hook(
+        command_text,
+        workspace_root,
+        environment,
+        scratch,
+        store,
+        operation_id,
+        attempt,
+        command_index,
+        should_cancel,
+        overall_deadline,
+        || Ok(()),
+    )
+}
+
+pub(super) fn run_worker_validation_command_with_hook(
+    command_text: &str,
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    scratch: &WorkerValidationScratch,
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+    should_cancel: impl Fn() -> bool,
+    overall_deadline: Option<Instant>,
+    after_process_lease_persisted: impl FnOnce() -> Result<(), String>,
+) -> Result<(i32, usize, usize), String> {
+    run_worker_validation_command_with_persistence_hook(
+        command_text,
+        workspace_root,
+        environment,
+        scratch,
+        store,
+        operation_id,
+        attempt,
+        command_index,
+        should_cancel,
+        overall_deadline,
+        |store, operation_id, attempt, command_index, pid| {
+            store.persist_validation_process_identity(operation_id, attempt, command_index, pid)
+        },
+        after_process_lease_persisted,
+    )
+}
+
+pub(super) fn run_worker_validation_command_with_persistence_hook(
+    command_text: &str,
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    scratch: &WorkerValidationScratch,
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+    should_cancel: impl Fn() -> bool,
+    overall_deadline: Option<Instant>,
+    persist_process_identity: impl FnOnce(
+        &ProjectEnvironmentSetupStore,
+        &str,
+        u32,
+        usize,
+        u32,
+    ) -> Result<ValidationProcessIdentity, String>,
+    after_process_lease_persisted: impl FnOnce() -> Result<(), String>,
+) -> Result<(i32, usize, usize), String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (
+            command_text,
+            workspace_root,
+            environment,
+            store,
+            operation_id,
+            attempt,
+            command_index,
+            should_cancel,
+            overall_deadline,
+            persist_process_identity,
+            after_process_lease_persisted,
+        );
+        let _ = scratch.cleanup();
+        return Err("durable validation process recovery is unsupported on this platform".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+
+        let command_deadline =
+            Instant::now() + Duration::from_millis(VALIDATION_COMMAND_TIMEOUT_MS);
+        let deadline = overall_deadline.map_or(command_deadline, |value| value.min(command_deadline));
+        if let Err(error) = store.persist_validation_scratch_intent(
+            operation_id,
+            attempt,
+            command_index,
+            scratch.path(),
+        ) {
+            if let Err(cleanup_error) = scratch.cleanup() {
+                store.mark_validation_cleanup_incomplete(
+                    operation_id,
+                    attempt,
+                    "validation scratch could not be removed after durable intent failure",
+                );
+                return Err(format!("{error}; validation cleanup incomplete: {cleanup_error}"));
+            }
+            return Err(error);
+        }
+        if deadline.saturating_duration_since(Instant::now()).is_zero() {
+            return Err(finish_unstarted_lease(
+                scratch,
+                store,
+                operation_id,
+                attempt,
+                command_index,
+                "worker validation command exceeded the overall setup deadline".to_string(),
+            ));
+        }
+
+        // The shell has executed but remains blocked on a private stdin pipe.
+        // Its durable process identity is committed before this pipe releases
+        // the requested project command.
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("IFS= read -r _ || exit 125; exec 0</dev/null; exec /bin/sh -c \"$1\"")
+            .arg("chariox-validation-gate")
+            .arg(command_text)
+            .current_dir(workspace_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env_clear()
+            .envs(environment)
+            .env(
+                VALIDATION_SCRATCH_DIR_ENV,
+                scratch.path().as_os_str(),
+            );
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                return Err(finish_unstarted_lease(
+                    scratch,
+                    store,
+                    operation_id,
+                    attempt,
+                    command_index,
+                    error.to_string(),
+                ));
+            }
+        };
+        let pid = child.id();
+        let gate_stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        if gate_stdin.is_none() || stdout.is_none() || stderr.is_none() {
+            return Err(abort_gated_child(
+                &mut child,
+                gate_stdin,
+                stdout,
+                stderr,
+                scratch,
+                store,
+                operation_id,
+                attempt,
+                command_index,
+                "worker validation command could not establish its start gate and output pipes",
+            ));
+        }
+        let gate_stdin = gate_stdin.expect("the validation gate pipe was checked");
+        let stdout_reader = std::thread::spawn(move || count_validation_output(stdout.expect("checked stdout")));
+        let stderr_reader = std::thread::spawn(move || count_validation_output(stderr.expect("checked stderr")));
+        let pidfd = match open_pidfd(pid) {
+            Ok(pidfd) => pidfd,
+            Err(error) => {
+                return Err(abort_gated_child_with_readers(
+                    &mut child,
+                    Some(gate_stdin),
+                    Some(stdout_reader),
+                    Some(stderr_reader),
+                    scratch,
+                    store,
+                    operation_id,
+                    attempt,
+                    command_index,
+                    &error,
+                ));
+            }
+        };
+        let identity = match persist_process_identity(
+            store,
+            operation_id,
+            attempt,
+            command_index,
+            pid,
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return Err(abort_gated_child_with_readers(
+                    &mut child,
+                    Some(gate_stdin),
+                    Some(stdout_reader),
+                    Some(stderr_reader),
+                    scratch,
+                    store,
+                    operation_id,
+                    attempt,
+                    command_index,
+                    &error,
+                ));
+            }
+        };
+        if let Err(error) = after_process_lease_persisted() {
+            return Err(terminate_gated_child(
+                &mut child,
+                &identity,
+                Some(gate_stdin),
+                Some(stdout_reader),
+                Some(stderr_reader),
+                scratch,
+                store,
+                operation_id,
+                attempt,
+                command_index,
+                &error,
+            ));
+        }
+        if let Err(error) = store.release_validation_start_gate(
+            operation_id,
+            attempt,
+            command_index,
+            || gate_stdin.write_all(b"\n").map_err(|error| error.to_string()),
+        ) {
+            return Err(terminate_gated_child(
+                &mut child,
+                &identity,
+                Some(gate_stdin),
+                Some(stdout_reader),
+                Some(stderr_reader),
+                scratch,
+                store,
+                operation_id,
+                attempt,
+                command_index,
+                &error,
+            ));
+        }
+        drop(gate_stdin);
+
+        match wait_child_or_cancel(&pidfd, &mut child, &identity, deadline, &should_cancel) {
+            Ok(status) => {
+                let output = match (stdout_reader.join(), stderr_reader.join()) {
+                    (Ok(Ok(stdout_bytes)), Ok(Ok(stderr_bytes))) => {
+                        Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
+                    }
+                    (Err(_), _) | (_, Err(_)) => {
+                        Err("worker validation output reader panicked".to_string())
+                    }
+                    (Ok(Err(error)), _) | (_, Ok(Err(error))) => {
+                        Err(format!("worker validation output could not be read: {error}"))
+                    }
+                };
+                cleanup_after_settled_group(
+                    scratch,
+                    store,
+                    operation_id,
+                    attempt,
+                    command_index,
+                )?;
+                output
+            }
+            Err(error) if error.process_group_settled => {
+                cleanup_after_settled_group(
+                    scratch,
+                    store,
+                    operation_id,
+                    attempt,
+                    command_index,
+                )?;
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                Err(error.message)
+            }
+            Err(error) => {
+                store.mark_validation_cleanup_incomplete(
+                    operation_id,
+                    attempt,
+                    "kernel could not prove the validation process group was absent",
+                );
+                drop(stdout_reader);
+                drop(stderr_reader);
+                Err(format!("validation cleanup incomplete: {}", error.message))
+            }
+        }
+    }
+}
+
+fn finish_unstarted_lease(
+    scratch: &WorkerValidationScratch,
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+    reason: String,
+) -> String {
+    match cleanup_after_settled_group(scratch, store, operation_id, attempt, command_index) {
+        Ok(()) => reason,
+        Err(cleanup_error) => {
+            store.mark_validation_cleanup_incomplete(
+                operation_id,
+                attempt,
+                "validation scratch or intent could not be settled after a spawn failure",
+            );
+            format!("{reason}; validation cleanup incomplete: {cleanup_error}")
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn abort_gated_child(
+    child: &mut std::process::Child,
+    gate_stdin: Option<std::process::ChildStdin>,
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
+    scratch: &WorkerValidationScratch,
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+    reason: &str,
+) -> String {
+    let stdout_reader = stdout.map(|pipe| std::thread::spawn(move || count_validation_output(pipe)));
+    let stderr_reader = stderr.map(|pipe| std::thread::spawn(move || count_validation_output(pipe)));
+    abort_gated_child_with_readers(
+        child,
+        gate_stdin,
+        stdout_reader,
+        stderr_reader,
+        scratch,
+        store,
+        operation_id,
+        attempt,
+        command_index,
+        reason,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn abort_gated_child_with_readers(
+    child: &mut std::process::Child,
+    gate_stdin: Option<std::process::ChildStdin>,
+    stdout_reader: Option<std::thread::JoinHandle<Result<usize, String>>>,
+    stderr_reader: Option<std::thread::JoinHandle<Result<usize, String>>>,
+    scratch: &WorkerValidationScratch,
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+    reason: &str,
+) -> String {
+    drop(gate_stdin);
+    let _ = child.kill();
+    match child.wait_timeout(Duration::from_secs(1)) {
+        Ok(Some(_)) => {
+            if let Some(reader) = stdout_reader {
+                let _ = reader.join();
+            }
+            if let Some(reader) = stderr_reader {
+                let _ = reader.join();
+            }
+            finish_unstarted_lease(scratch, store, operation_id, attempt, command_index, reason.to_string())
+        }
+        Ok(None) => {
+            store.mark_validation_cleanup_incomplete(
+                operation_id,
+                attempt,
+                "gated validation child did not exit after a start failure",
+            );
+            "validation cleanup incomplete: gated child could not be reaped".to_string()
+        }
+        Err(error) => {
+            store.mark_validation_cleanup_incomplete(
+                operation_id,
+                attempt,
+                "gated validation child could not be reaped after a start failure",
+            );
+            format!("validation cleanup incomplete: gated child could not be reaped: {error}")
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_gated_child(
+    child: &mut std::process::Child,
+    identity: &ValidationProcessIdentity,
+    gate_stdin: Option<std::process::ChildStdin>,
+    stdout_reader: Option<std::thread::JoinHandle<Result<usize, String>>>,
+    stderr_reader: Option<std::thread::JoinHandle<Result<usize, String>>>,
+    scratch: &WorkerValidationScratch,
+    store: &ProjectEnvironmentSetupStore,
+    operation_id: &str,
+    attempt: u32,
+    command_index: usize,
+    reason: &str,
+) -> String {
+    drop(gate_stdin);
+    if let Err(error) = kill_live_process_group(child, identity) {
+        store.mark_validation_cleanup_incomplete(
+            operation_id,
+            attempt,
+            "gated validation process group could not be verified for termination",
+        );
+        return format!("validation cleanup incomplete: {error}");
+    }
+    match child.wait_timeout(Duration::from_secs(1)) {
+        Ok(Some(_)) => {
+            if let Err(error) = wait_for_process_group_absence(identity.process_group_id()) {
+                store.mark_validation_cleanup_incomplete(
+                    operation_id,
+                    attempt,
+                    "gated validation process group did not settle after termination",
+                );
+                return format!("validation cleanup incomplete: {error}");
+            }
+            if let Some(reader) = stdout_reader {
+                let _ = reader.join();
+            }
+            if let Some(reader) = stderr_reader {
+                let _ = reader.join();
+            }
+            finish_unstarted_lease(scratch, store, operation_id, attempt, command_index, reason.to_string())
+        }
+        Ok(None) => {
+            store.mark_validation_cleanup_incomplete(
+                operation_id,
+                attempt,
+                "gated validation process group did not exit after termination",
+            );
+            "validation cleanup incomplete: gated process could not be reaped".to_string()
+        }
+        Err(error) => {
+            store.mark_validation_cleanup_incomplete(
+                operation_id,
+                attempt,
+                "gated validation process group could not be reaped after termination",
+            );
+            format!("validation cleanup incomplete: gated process could not be reaped: {error}")
+        }
+    }
+}
+
+
 pub(super) fn run_worker_validation_command(
     command_text: &str,
     workspace_root: &Path,
@@ -647,6 +1125,7 @@ pub(super) fn run_worker_validation_command(
     Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
 }
 
+#[cfg(test)]
 pub(super) fn run_worker_validation_command_with_scratch(
     command_text: &str,
     workspace_root: &Path,
