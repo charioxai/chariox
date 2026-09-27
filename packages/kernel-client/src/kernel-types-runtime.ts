@@ -214,6 +214,12 @@ export type SessionConfigState = {
 
 export type CharioxUserConfig = {
   version: number
+  slices?: {
+    linux?: {
+      disk_layer_mb?: number
+      disk_home_mb?: number
+    }
+  }
   providers?: {
     default?: string
     model?: string

@@ -130,7 +130,7 @@ require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.ser
 require_regular_file "$image_root/etc/systemd/system/chariox-slice-broker.service"
 require_directory "$image_root/usr/lib/chariox/slice-build-context"
 rootless_context=usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker
-for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf; do
+for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf chariox-slice-disk-quota-allocator.service slice-disk-quota-allocator.mjs slice-disk-quota-client.mjs slice-disk-quota-contract.mjs slice-disk-quota-service.mjs slice-disk-quota-state-store.mjs slice-disk-quota-xfs-backend.mjs probe-slice-disk-quota-backend.mjs; do
   require_regular_file "$image_root/$rootless_context/$rootless_file"
 done
 
@@ -536,6 +536,7 @@ atomic_symlink "current/usr/lib/chariox/build-attestation.sig" "$install_root/us
 atomic_symlink "current/usr/lib/chariox/builder-public-key" "$install_root/usr/lib/chariox/builder-public-key"
 atomic_symlink "current/usr/lib/chariox/slice-build-context" "$install_root/usr/lib/chariox/slice-build-context"
 atomic_symlink "../../../usr/lib/chariox/current/$rootless_context/chariox-rootless-engine.service" "$install_root/etc/systemd/user/chariox-rootless-engine.service"
+atomic_symlink "../../../usr/lib/chariox/current/$rootless_context/chariox-slice-disk-quota-allocator.service" "$install_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service"
 atomic_symlink "../../../../usr/lib/chariox/current/$rootless_context/chariox-rootless-user-manager.conf" "$install_root/etc/systemd/system/user@$docker_uid.service.d/50-chariox-docker.conf"
 previous_current_target=
 if [ -L "$install_root/usr/lib/chariox/current" ]; then
@@ -563,6 +564,7 @@ fi
 if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service" \
   || ! systemctl daemon-reload \
   || ! loginctl enable-linger chariox-docker \
+  || ! systemctl enable chariox-slice-disk-quota-allocator.service \
   || ! systemctl enable chariox-rootless-docker.service \
   || ! systemctl enable "$selected_bootstrap_service"; then
   if restore_previous_current; then

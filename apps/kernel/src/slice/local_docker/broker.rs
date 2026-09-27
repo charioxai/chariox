@@ -105,6 +105,13 @@ struct BrokerResponse {
     status: i32,
     stdout_base64: String,
     stderr_base64: String,
+    #[serde(default)]
+    disk_quota_evidence: Option<super::super::disk_quota_policy::SliceDiskQuotaEvidence>,
+}
+
+pub(super) struct BrokerExecution {
+    pub(super) output: Output,
+    pub(super) disk_quota_evidence: Option<super::super::disk_quota_policy::SliceDiskQuotaEvidence>,
 }
 
 #[cfg(unix)]
@@ -240,7 +247,7 @@ fn broker_is_configured() -> bool {
 }
 
 #[cfg(unix)]
-fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
+fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerExecution> {
     let request = Zeroizing::new(
         serde_json::to_vec(request)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
@@ -284,16 +291,24 @@ fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
         };
-        Ok(Output {
-            status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
-            stdout: decode(&response.stdout_base64)?,
-            stderr: decode(&response.stderr_base64)?,
+        Ok(BrokerExecution {
+            output: Output {
+                status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
+                stdout: decode(&response.stdout_base64)?,
+                stderr: decode(&response.stderr_base64)?,
+            },
+            disk_quota_evidence: response.disk_quota_evidence,
         })
     })();
     if result.is_err() {
         *state = None;
     }
     result
+}
+
+#[cfg(unix)]
+fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
+    execute_with_disk_evidence(request).map(|response| response.output)
 }
 
 #[cfg(unix)]
@@ -323,7 +338,7 @@ pub(super) fn run_provisioner(
     command: &Command,
     action: &str,
     inputs: &[ProvisionerInput],
-) -> Option<io::Result<Output>> {
+) -> Option<io::Result<BrokerExecution>> {
     if !broker_is_configured() {
         return None;
     }
@@ -341,7 +356,7 @@ pub(super) fn run_provisioner(
                 ),
             })
             .collect::<Vec<_>>();
-        Some(execute(&BrokerRequest::Provisioner {
+        Some(execute_with_disk_evidence(&BrokerRequest::Provisioner {
             action,
             environment: &environment,
             files: &files,

@@ -95,6 +95,8 @@ pub struct LocalDockerSliceOptions {
     pub allow_provider_sandbox_compatibility: bool,
     pub memory_mb: Option<u32>,
     pub cpus: Option<String>,
+    pub disk_layer_mb: Option<u32>,
+    pub disk_home_mb: Option<u32>,
     pub screen_width: u32,
     pub screen_height: u32,
 }
@@ -139,6 +141,8 @@ impl LocalDockerSliceOptions {
                     .unwrap_or(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
             ),
             cpus: linux.cpus.clone(),
+            disk_layer_mb: linux.disk_layer_mb,
+            disk_home_mb: linux.disk_home_mb,
             screen_width: linux.screen_width.unwrap_or(1280),
             screen_height: linux.screen_height.unwrap_or(800),
         }
@@ -184,6 +188,26 @@ pub fn run_local_docker_slice_action(
             ),
         });
     }
+    let disk_quota_limits = if matches!(
+        action,
+        LocalDockerSliceAction::Provision
+            | LocalDockerSliceAction::RestoreState
+            | LocalDockerSliceAction::Recover
+    ) {
+        let limits = super::disk_quota_policy::SliceDiskQuotaLimits::from_megabytes(
+            options.disk_layer_mb,
+            options.disk_home_mb,
+        )?;
+        if limits.is_some() && !broker::configured() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.disk.quota",
+                message: "bounded slices require the managed Docker broker and verified XFS project-quota backend; unconfigured local Docker remains available without disk caps".into(),
+            });
+        }
+        limits
+    } else {
+        None
+    };
     let _memory_admission = if matches!(
         action,
         LocalDockerSliceAction::Provision
@@ -334,15 +358,18 @@ pub fn run_local_docker_slice_action(
                 log_path.display()
             ),
         })?;
+    let mut disk_quota_evidence = None;
     let status =
         if let Some(output) = broker::run_provisioner(&command, action_name, &broker_inputs) {
-            let output = output.map_err(|error| DaemonError::LocalTransport {
+            let response = output.map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.local_docker",
                 message: format!(
                     "failed to use the managed slice Docker broker (log: {}): {error}",
                     log_path.display()
                 ),
             })?;
+            disk_quota_evidence = response.disk_quota_evidence;
+            let output = response.output;
             let mut stdout_log = log_file;
             let mut stderr_log = stderr_log;
             stdout_log
@@ -372,6 +399,12 @@ pub fn run_local_docker_slice_action(
                 })?
         };
     if status.success() {
+        if let Some(limits) = disk_quota_limits.as_ref() {
+            super::disk_quota_policy::require_verified_quotas(
+                Some(limits),
+                disk_quota_evidence.as_ref(),
+            )?;
+        }
         return Ok(());
     }
     Err(DaemonError::LocalTransport {
@@ -621,6 +654,7 @@ pub fn start_local_docker_slice_provider_login(
         );
     configure_local_docker_slice_command(&mut command, record, None, options, false)?;
     let output = broker::run_provisioner(&command, "start-provider-login", &[])
+        .map(|response| response.map(|response| response.output))
         .unwrap_or_else(|| command.output())
         .map_err(|error| DaemonError::LocalTransport {
             operation: "slice.auth.login",
@@ -1139,6 +1173,11 @@ fn configure_local_docker_slice_command(
     command.env("CHARIOX_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
     if let Some(cpus) = options.cpus.as_deref() {
         command.env("CHARIOX_SLICE_DOCKER_CPUS", cpus);
+    }
+    if let (Some(layer_mb), Some(home_mb)) = (options.disk_layer_mb, options.disk_home_mb) {
+        command
+            .env("CHARIOX_SLICE_DISK_LAYER_MB", layer_mb.to_string())
+            .env("CHARIOX_SLICE_DISK_HOME_MB", home_mb.to_string());
     }
     if let Some(extension_dockerfile) = options.extension_dockerfile.as_deref() {
         command.env("CHARIOX_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
