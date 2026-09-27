@@ -108,6 +108,11 @@ test("an owner grants, lists and revokes an App's generator connections (protoco
     send: async () => ({ AppRequestFailed: { code: "invalid_request" } }),
   })
   assert.match(undeclared.message ?? "", /must declare this generator under capabilities\.connections/)
+  // Only a grant checks the manifest; list and revoke refusals stay neutral.
+  const listed = await executeAppCommand(["connection", "list", "slack"], {
+    send: async () => ({ AppRequestFailed: { code: "invalid_request" } }),
+  })
+  assert.equal(listed.message, "Invalid App request.")
 })
 
 test("app set shows each active installation's release and configuration (protocol 361)", async () => {
