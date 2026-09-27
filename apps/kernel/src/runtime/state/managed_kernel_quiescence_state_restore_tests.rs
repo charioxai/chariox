@@ -196,3 +196,42 @@ fn persisted_restore_rejects_reservation_that_overlaps_a_tombstone() {
 
     cleanup(&path, store, transitions);
 }
+
+#[test]
+fn persisted_restore_accepts_exact_canceled_reservation_tombstone_mirror() {
+    let released = keep_running_tombstone("challenge-canceled".into(), "nonce-canceled".into());
+    let state = PersistedQuiescenceState {
+        kernel_id: "kernel-1".into(),
+        // `apply_release` stores the released KeepRunning receipt in tombstones and
+        // leaves the exact unfenced reservation as the current challenge record.
+        reservation: Some(released.clone()),
+        tombstones: vec![released.clone()],
+    };
+    let (path, store, transitions, mutation_lock) = persist_snapshot("exact-cancel-mirror", &state);
+    let gate = restore(&store, &transitions, &mutation_lock)
+        .expect("restore the exact durable cancellation receipt written by apply_release");
+
+    assert!(gate.admission_guard().is_ok(), "a keep-running mirror must stay unfenced");
+    gate.apply_release(
+        &released.challenge,
+        ManagedKernelQuiescenceOutcome::KeepRunning,
+        1,
+        || Err(quiescence_error("exact cancellation replay must not need activity")),
+    )
+    .expect("the persisted cancellation receipt remains idempotent after restart");
+    let conflicting_nonce = ManagedKernelQuiescenceChallenge {
+        nonce: "nonce-rebound".into(),
+        ..released.challenge.clone()
+    };
+    assert!(gate
+        .apply_release(
+            &conflicting_nonce,
+            ManagedKernelQuiescenceOutcome::KeepRunning,
+            1,
+            || Err(quiescence_error("conflicting replay must not need activity")),
+        )
+        .is_err(), "an exact overlap exception must not allow nonce rebinding");
+
+    drop(gate);
+    cleanup(&path, store, transitions);
+}

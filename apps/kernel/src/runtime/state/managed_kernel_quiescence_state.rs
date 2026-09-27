@@ -561,14 +561,23 @@ fn validate_persisted_state(
             // challenge_id is the existing replay key used by reserve and release handling.
             && challenge_ids.insert(tombstone.challenge.challenge_id.as_str())
     });
+    let valid_reservation_state = state.reservation.as_ref().is_none_or(|reservation| {
+        valid_reservation(reservation, kernel_id)
+            && state
+                .tombstones
+                .iter()
+                .find(|tombstone| {
+                    tombstone.challenge.challenge_id == reservation.challenge.challenge_id
+                })
+                .is_none_or(|tombstone| {
+                    // apply_release records a KeepRunning tombstone while retaining
+                    // the exact, unfenced reservation as the current challenge.
+                    // Only that field-for-field-equivalent replay record may overlap.
+                    tombstone == reservation
+                })
+    });
     let valid = state.kernel_id == kernel_id
-        && state
-            .reservation
-            .as_ref()
-            .is_none_or(|reservation| {
-                valid_reservation(reservation, kernel_id)
-                    && !challenge_ids.contains(reservation.challenge.challenge_id.as_str())
-            })
+        && valid_reservation_state
         && valid_tombstones;
     if valid {
         Ok(())
