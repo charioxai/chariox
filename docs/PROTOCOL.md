@@ -1743,8 +1743,8 @@ Workflow trigger and deployment direction:
   path. Restart issues a fresh pending decision; it does not restore consent
   from an unanswered interaction. Status preserves historical operation identity,
   and cancellation fences preparation/activation on the same durable writer.
-  Generations remain opaque strings. Information-set declarations are review
-  material here; installation confirmation does not grant their data access.
+  Generations remain opaque strings. (Information-set declarations were later
+  removed from the package contract.)
 - protocol 344 merges the Chariox Apps line (protocols 288-297 above, developed
   on the Apps branch in parallel with main's 298-343) onto main. It adds no shape
   beyond those two lines; clients depending on App requests require 344.

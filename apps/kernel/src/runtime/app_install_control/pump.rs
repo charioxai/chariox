@@ -248,7 +248,7 @@ impl AppInstallControl {
                     "Install",
                 )
             };
-            let message=format!("{question}\n\n{}\n\nDeclared information sets are shown for review only. This decision does not grant information-set access.",
+            let message=format!("{question}\n\n{}",
                 serde_json::to_string_pretty(prompt.challenge.review()).unwrap_or_default());
             let interaction = RuntimeInteraction::for_kernel_operation(
                 prompt.challenge.interaction_id(),

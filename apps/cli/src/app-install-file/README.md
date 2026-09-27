@@ -18,7 +18,7 @@ A publisher must already be enrolled; the package cannot enroll its own key.
 The terminal displays checking/upload progress and the durable operation ID. Use
 `/app operation` to refresh preparation, approval, startup or completion status.
 Review and respond through the existing owner-scoped kernel approval panel.
-Installation requests never approve capabilities or information-set access.
+Installation requests never approve capabilities.
 `/app operation ID` and `/app cancel ID` inspect or cancel a retained operation
 from another terminal without supplying local file paths.
 
