@@ -71,69 +71,175 @@ const WORKER_AUTOMATIC_CREDENTIAL_ENV_NAMES: &[&str] = &[
 /// worker and is reused by every apply/validate call for this project. It must
 /// not be deleted at the end of one command: user-scoped rustup/cargo,
 /// Python, npm, and other ordinary project tools may place their installed
-/// state below HOME.
+/// state below HOME. It lives under the kernel's resolved CHARIOX_HOME state
+/// root; an existing workspace-adjacent HOME is preserved and blocks setup
+/// until explicitly migrated.
 pub(super) struct WorkerPreparationHome {
     path: PathBuf,
 }
 
 impl WorkerPreparationHome {
+    /// Create a stable project/worker HOME beneath the kernel's resolved
+    /// CHARIOX_HOME, never from provider or project-supplied environment.
     pub(super) fn for_project_worker(
         workspace_root: &Path,
+        kernel_home: &Path,
         project_id: &str,
         worker_id: &str,
     ) -> Result<Self, DaemonError> {
-        let state_root = workspace_root
-            .parent()
-            .ok_or_else(|| setup_error("worker worktree has no durable state parent"))?
-            .join(".chariox-project-environment");
-        let mut digest = Sha256::new();
-        digest.update(workspace_root.as_os_str().to_string_lossy().as_bytes());
-        digest.update([0]);
-        digest.update(project_id.as_bytes());
-        digest.update([0]);
-        digest.update(worker_id.as_bytes());
-        let path = state_root.join(format!("{:x}", digest.finalize()));
+        let workspace_root =
+            canonical_preparation_directory(workspace_root, "worker project worktree")?;
+        let kernel_home = canonical_preparation_directory(kernel_home, "worker kernel home")?;
+        verify_preparation_directory_owner(&kernel_home, "worker kernel home")?;
+        if workspace_root.starts_with(&kernel_home) || kernel_home.starts_with(&workspace_root) {
+            return Err(setup_error(
+                "worker preparation HOME must remain outside the project worktree",
+            ));
+        }
 
-        std::fs::create_dir_all(&state_root).map_err(|error| {
-            setup_error(&format!(
-                "durable worker preparation state could not be created: {error}"
-            ))
-        })?;
-        std::fs::create_dir_all(&path).map_err(|error| {
-            setup_error(&format!(
-                "durable worker preparation HOME could not be created: {error}"
-            ))
-        })?;
-        for directory in [&state_root, &path] {
-            let metadata = std::fs::symlink_metadata(directory).map_err(|error| {
-                setup_error(&format!(
-                    "durable worker preparation state could not be inspected: {error}"
-                ))
-            })?;
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                return Err(setup_error(
-                    "durable worker preparation state must be real directories",
-                ));
-            }
-        }
-        #[cfg(unix)]
-        for directory in [&state_root, &path] {
-            std::fs::set_permissions(
-                directory,
-                std::os::unix::fs::PermissionsExt::from_mode(0o700),
-            )
-            .map_err(|error| {
-                setup_error(&format!(
-                    "durable worker preparation HOME permissions could not be secured: {error}"
-                ))
-            })?;
-        }
+        let home_key = worker_preparation_home_key(&workspace_root, project_id, worker_id);
+        reject_legacy_preparation_home(&workspace_root, &home_key)?;
+
+        let state_root = kernel_home.join("state");
+        ensure_preparation_directory(&state_root, "worker kernel state root", false)?;
+        let preparation_root = state_root.join("project-environment-preparation");
+        ensure_preparation_directory(&preparation_root, "worker preparation state", true)?;
+        let path = preparation_root.join(home_key);
+        ensure_preparation_directory(&path, "worker preparation HOME", true)?;
         Ok(Self { path })
     }
 
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn worker_preparation_home_key(
+    workspace_root: &Path,
+    project_id: &str,
+    worker_id: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(workspace_root.as_os_str().to_string_lossy().as_bytes());
+    digest.update([0]);
+    digest.update(project_id.as_bytes());
+    digest.update([0]);
+    digest.update(worker_id.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+fn canonical_preparation_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| setup_error(&format!("{label} could not be resolved: {error}")))?;
+    let metadata = std::fs::symlink_metadata(&canonical).map_err(|error| {
+        setup_error(&format!("{label} could not be inspected: {error}"))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(setup_error(&format!("{label} must be a real directory")));
+    }
+    Ok(canonical)
+}
+
+fn reject_legacy_preparation_home(
+    workspace_root: &Path,
+    home_key: &str,
+) -> Result<(), DaemonError> {
+    let legacy_root = workspace_root
+        .parent()
+        .ok_or_else(|| setup_error("worker worktree has no legacy state parent"))?
+        .join(".chariox-project-environment");
+    let legacy_root_metadata = match std::fs::symlink_metadata(&legacy_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(setup_error(&format!(
+                "legacy worker preparation state could not be inspected: {error}"
+            )))
+        }
+    };
+    if legacy_root_metadata.file_type().is_symlink() || !legacy_root_metadata.is_dir() {
+        return Err(setup_error(
+            "legacy workspace-adjacent preparation state is not a real directory; existing state was left untouched",
+        ));
+    }
+
+    let legacy_home = legacy_root.join(home_key);
+    match std::fs::symlink_metadata(&legacy_home) {
+        Ok(_) => Err(setup_error(
+            "legacy workspace-adjacent preparation HOME exists; setup is blocked until its installed tools are explicitly migrated; existing state was left untouched",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(setup_error(&format!(
+            "legacy worker preparation HOME could not be inspected: {error}"
+        ))),
+    }
+}
+
+fn ensure_preparation_directory(
+    path: &Path,
+    label: &str,
+    private: bool,
+) -> Result<(), DaemonError> {
+    #[cfg(not(unix))]
+    let _ = private;
+
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(setup_error(&format!("{label} could not be created: {error}")))
+                }
+            }
+        }
+        Err(error) => {
+            return Err(setup_error(&format!("{label} could not be inspected: {error}")))
+        }
+    }
+
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| setup_error(&format!("{label} could not be inspected: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(setup_error(&format!("{label} must be a real directory")));
+    }
+    verify_preparation_directory_owner(path, label)?;
+
+    #[cfg(unix)]
+    if private {
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .map_err(|error| {
+                setup_error(&format!("{label} permissions could not be secured: {error}"))
+            })?;
+    }
+    Ok(())
+}
+
+fn verify_preparation_directory_owner(
+    path: &Path,
+    label: &str,
+) -> Result<(), DaemonError> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| setup_error(&format!("{label} could not be inspected: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(setup_error(&format!("{label} must be a real directory")));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(setup_error(&format!("{label} must be owned by the worker kernel user")));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn ensure_worker_validation_boundary(config: &DaemonConfig) -> Result<(), DaemonError> {
@@ -653,7 +759,9 @@ mod tests {
             crate::session::unix_epoch_ms()
         ));
         let workspace = root.join("workspace");
+        let kernel_home = root.join("kernel-home");
         std::fs::create_dir_all(&workspace).expect("durable-home workspace should exist");
+        std::fs::create_dir_all(&kernel_home).expect("worker kernel home should exist");
         let request = crate::provider::LaunchProviderRequest::new(
             "session-1",
             "codex",
@@ -677,9 +785,18 @@ mod tests {
             },
         );
 
-        let preparation_home =
-            WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
-                .expect("durable preparation HOME should be created");
+        let preparation_home = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-1",
+            "worker-1",
+        )
+        .expect("durable preparation HOME should be created");
+        let expected_preparation_root = kernel_home
+            .canonicalize()
+            .unwrap()
+            .join("state/project-environment-preparation");
+        assert!(preparation_home.path().starts_with(&expected_preparation_root));
         let apply_environment =
             worker_validation_environment_with_home(&run, Some(preparation_home.path()));
         let installed = run_worker_setup_steps(
@@ -694,10 +811,40 @@ mod tests {
         .expect("install-like setup should execute through the worker boundary");
         assert!(installed);
 
-        let validation_home =
-            WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
-                .expect("validation should reuse durable preparation HOME");
+        let validation_home = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-1",
+            "worker-1",
+        )
+        .expect("validation should reuse durable preparation HOME");
         assert_eq!(validation_home.path(), preparation_home.path());
+        let other_project = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-2",
+            "worker-1",
+        )
+        .expect("another project should receive its own preparation HOME");
+        let other_worker = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-1",
+            "worker-2",
+        )
+        .expect("another worker should receive its own preparation HOME");
+        let other_workspace = root.join("other-workspace");
+        std::fs::create_dir_all(&other_workspace).expect("other worktree should exist");
+        let other_worktree = WorkerPreparationHome::for_project_worker(
+            &other_workspace,
+            &kernel_home,
+            "project-1",
+            "worker-1",
+        )
+        .expect("another worktree should receive its own preparation HOME");
+        assert_ne!(preparation_home.path(), other_project.path());
+        assert_ne!(preparation_home.path(), other_worker.path());
+        assert_ne!(preparation_home.path(), other_worktree.path());
         let validation_environment =
             worker_validation_environment_with_home(&run, Some(validation_home.path()));
         let validation = run_worker_validation_command(
@@ -710,6 +857,196 @@ mod tests {
         .expect("validation should see the install-like HOME artifact");
         assert_eq!(validation.0, 0);
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preparation_home_uses_kernel_state_when_accessible_worktree_parent_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-preparation-readonly-parent-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace_parent = root.join("readonly-workspace-parent");
+        let workspace = workspace_parent.join("project");
+        let kernel_home = root.join("kernel-home");
+        std::fs::create_dir_all(&workspace).expect("accessible worktree should exist");
+        std::fs::create_dir_all(&kernel_home).expect("trusted kernel home should exist");
+        std::fs::set_permissions(
+            &workspace_parent,
+            std::fs::Permissions::from_mode(0o555),
+        )
+        .expect("fixture worktree parent should become non-writable");
+
+        let result = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-readonly-parent",
+            "worker-1",
+        );
+        std::fs::set_permissions(
+            &workspace_parent,
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .expect("fixture worktree parent should be writable for cleanup");
+
+        let preparation_home = result.expect("kernel state should not depend on worktree-parent write access");
+        let expected_preparation_root = kernel_home
+            .canonicalize()
+            .unwrap()
+            .join("state/project-environment-preparation");
+        assert!(preparation_home.path().starts_with(&expected_preparation_root));
+        assert!(
+            !workspace_parent
+                .join(".chariox-project-environment")
+                .exists(),
+            "preparation must not write beside the project worktree",
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preparation_home_for_modeled_tmp_workspace_stays_under_kernel_state() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-preparation-modeled-tmp-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("tmp");
+        let kernel_home = root.join("kernel-home");
+        std::fs::create_dir_all(&workspace).expect("modeled /tmp worktree should exist");
+        std::fs::create_dir_all(&kernel_home).expect("trusted kernel home should exist");
+
+        let preparation_home = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-modeled-tmp",
+            "worker-1",
+        )
+        .expect("modeled /tmp placement should use kernel-owned state");
+
+        let expected_preparation_root = kernel_home
+            .canonicalize()
+            .unwrap()
+            .join("state/project-environment-preparation");
+        assert!(preparation_home.path().starts_with(&expected_preparation_root));
+        assert!(
+            !root
+                .join(".chariox-project-environment")
+                .exists(),
+            "no workspace-adjacent preparation root should be created",
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preparation_home_rejects_kernel_state_inside_the_project_worktree() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-preparation-kernel-home-in-worktree-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("workspace");
+        let kernel_home = workspace.join("kernel-home");
+        std::fs::create_dir_all(&kernel_home).expect("worktree and kernel home should exist");
+
+        let result = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-kernel-home-inside-worktree",
+            "worker-1",
+        );
+
+        assert!(result.is_err());
+        assert!(
+            !kernel_home.join("state").exists(),
+            "preparation must not create Chariox state inside the project worktree",
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn existing_sibling_preparation_home_fails_closed_without_moving_or_discarding_tools() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-preparation-legacy-conflict-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("workspace");
+        let kernel_home = root.join("kernel-home");
+        std::fs::create_dir_all(&workspace).expect("legacy workspace should exist");
+        std::fs::create_dir_all(&kernel_home).expect("trusted kernel home should exist");
+        let home_key = worker_preparation_home_key(
+            &workspace.canonicalize().unwrap(),
+            "project-legacy",
+            "worker-1",
+        );
+        let legacy_home = root
+            .join(".chariox-project-environment")
+            .join(home_key);
+        std::fs::create_dir_all(legacy_home.join(".local/bin"))
+            .expect("legacy preparation tools should exist");
+        let legacy_tool = legacy_home.join(".local/bin/installed-tool");
+        std::fs::write(&legacy_tool, b"preserve-installed-tool")
+            .expect("legacy tool should be written");
+
+        let result = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-legacy",
+            "worker-1",
+        );
+        let error = match result {
+            Ok(_) => panic!("legacy state requires explicit migration"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("explicitly migrated"));
+        assert_eq!(
+            std::fs::read(&legacy_tool).unwrap(),
+            b"preserve-installed-tool",
+        );
+        assert!(
+            !kernel_home.join("state").exists(),
+            "conflict must fail before creating a competing HOME",
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preparation_home_rejects_symlinked_kernel_state_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-preparation-state-symlink-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("workspace");
+        let kernel_home = root.join("kernel-home");
+        let foreign_state = root.join("foreign-state");
+        std::fs::create_dir_all(&workspace).expect("worktree should exist");
+        std::fs::create_dir_all(&kernel_home).expect("trusted kernel home should exist");
+        std::fs::create_dir_all(&foreign_state).expect("foreign state should exist");
+        std::fs::write(foreign_state.join("keep"), b"preserve")
+            .expect("foreign sentinel should be written");
+        symlink(&foreign_state, kernel_home.join("state"))
+            .expect("kernel state replacement symlink should be created");
+
+        let result = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-symlink-state",
+            "worker-1",
+        );
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(foreign_state.join("keep")).unwrap(), b"preserve");
+        assert!(!foreign_state.join("project-environment-preparation").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -944,7 +1281,9 @@ mod tests {
             crate::session::unix_epoch_ms()
         ));
         let workspace = root.join("workspace");
+        let kernel_home = root.join("kernel-home");
         std::fs::create_dir_all(&workspace).expect("provider environment workspace should exist");
+        std::fs::create_dir_all(&kernel_home).expect("worker kernel home should exist");
         let trace = root.join("provider-command.log");
         let child_script = r#"
 set -eu
@@ -993,9 +1332,15 @@ done
             },
         );
 
-        let preparation_home =
-            WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
-                .expect("durable provider preparation HOME should be created");
+        let preparation_home = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-1",
+            "worker-1",
+        )
+        .expect("durable provider preparation HOME should be created");
+        let provider_home = root.join("old-home");
+        assert_ne!(preparation_home.path(), provider_home.as_path());
         let definition = ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
@@ -1015,6 +1360,12 @@ done
             Some(preparation_home.path()),
             Some(&workspace),
             Some(&definition),
+        );
+        let expected_preparation_home = preparation_home.path().display().to_string();
+        assert_eq!(
+            prepared_environment.get("HOME"),
+            Some(&expected_preparation_home),
+            "provider-supplied HOME must not replace kernel-owned preparation state",
         );
         let prepared_path = prepared_environment
             .get("PATH")

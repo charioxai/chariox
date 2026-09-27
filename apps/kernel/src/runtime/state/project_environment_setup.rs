@@ -2226,9 +2226,17 @@ impl KernelRuntimeState {
                 "prepared provider context changed before worker setup",
             ));
         }
+        let kernel_home = std::env::var_os("CHARIOX_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| setup_error("worker kernel home is not configured"))?
+            .canonicalize()
+            .map_err(|error| {
+                setup_error(&format!("worker kernel home could not be resolved: {error}"))
+            })?;
         let workspace_root = canonical_worker_workspace(
             &execution.workspace_id,
-            std::env::var_os("CHARIOX_HOME").as_deref(),
+            Some(kernel_home.as_os_str()),
         )?;
         let provider_working_directory = provider_run
             .working_directory()
@@ -2236,7 +2244,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| setup_error("prepared provider context has no working directory"))?;
         let provider_working_directory = canonical_worker_workspace(
             &provider_working_directory,
-            std::env::var_os("CHARIOX_HOME").as_deref(),
+            Some(kernel_home.as_os_str()),
         )?;
         if provider_working_directory != workspace_root {
             return Err(setup_error(
@@ -2245,6 +2253,7 @@ impl KernelRuntimeState {
         }
         let preparation_home = WorkerPreparationHome::for_project_worker(
             &workspace_root,
+            &kernel_home,
             &execution.project_id,
             &worker_id,
         )?;
