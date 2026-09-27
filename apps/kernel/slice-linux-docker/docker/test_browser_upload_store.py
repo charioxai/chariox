@@ -75,6 +75,32 @@ class UploadOwnershipTests(unittest.TestCase):
             self.assertFalse((root / entry["id"]).exists())
             self.assertEqual(json.loads((root / "ledger.json").read_text()), [])
 
+    def test_legacy_exposed_debt_requires_exact_captured_entry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve() / "uploads"
+            root.mkdir(mode=0o700)
+            entry = {"id": str(uuid.uuid4()), "bytes": 8, "count": 1, "phase": "exposed", "owner": {}, "lifetime": None}
+            (root / entry["id"]).mkdir()
+            store.lifecycle.write_json(root / "ledger.json", [entry])
+            store.transact(root, {"action": "reap"})
+            self.assertTrue((root / entry["id"]).exists())
+            proof = {"version": 1, "authority": "docker-stopped-container", "engineId": "engine-1234",
+                     "containerId": "a" * 64, "startedAt": "2026-09-27T19:00:00Z", "finishedAt": "2026-09-27T19:01:00Z",
+                     "entries": [{**entry, "bytes": 7}]}
+            marker = root / "legacy-container-retired.json"
+            store.lifecycle.write_json(marker, {**proof, "authority": "browser-only"})
+            with self.assertRaisesRegex(RuntimeError, "invalid legacy container"):
+                store.transact(root, {"action": "reap"})
+            self.assertTrue((root / entry["id"]).exists())
+            store.lifecycle.write_json(marker, proof)
+            store.transact(root, {"action": "reap"})
+            self.assertTrue((root / entry["id"]).exists())
+            store.lifecycle.write_json(marker, {**proof, "entries": [entry]})
+            store.transact(root, {"action": "reap"})
+            self.assertFalse((root / entry["id"]).exists())
+            self.assertFalse(marker.exists())
+            self.assertEqual(store.lifecycle.read_json(root / "ledger.json"), [])
+
     def test_unbound_browser_cannot_reserve_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve() / "uploads"

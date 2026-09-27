@@ -16,6 +16,7 @@ lifecycle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lifecycle)
 MAX_BYTES = 1024 * 1024 * 1024
 MAX_FILES = 128
+BOUNDARY_FIELDS = {"version", "authority", "engineId", "containerId", "startedAt", "finishedAt"}
 
 
 def lock_quota(stream):
@@ -83,6 +84,30 @@ def retired(record):
         return False
 
 
+def valid_container_boundary(proof):
+    return (isinstance(proof, dict) and BOUNDARY_FIELDS <= proof.keys()
+            and type(proof["version"]) is int and proof["version"] == 1 and proof["authority"] == "docker-stopped-container"
+            and isinstance(proof["engineId"], str) and re.fullmatch(r"[a-zA-Z0-9:_-]{8,128}", proof["engineId"]) is not None
+            and isinstance(proof["containerId"], str) and re.fullmatch(r"[a-f0-9]{64}", proof["containerId"]) is not None
+            and all(isinstance(proof[key], str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", proof[key])
+                    for key in ("startedAt", "finishedAt")))
+
+
+def legacy_retirements(root):
+    try:
+        proof = lifecycle.read_json(root / "legacy-container-retired.json", 1048576)
+    except FileNotFoundError:
+        return []
+    if not valid_container_boundary(proof) or set(proof) != BOUNDARY_FIELDS | {"entries"}:
+        raise RuntimeError("invalid legacy container retirement proof")
+    entries = proof["entries"]
+    if not isinstance(entries, list) or len(entries) > MAX_FILES or any(
+            not isinstance(entry, dict) or entry.get("lifetime") is not None
+            or entry.get("phase") not in ("preparing", "exposed") for entry in entries):
+        raise RuntimeError("invalid captured legacy uploads")
+    return entries
+
+
 def container_retired(entry):
     record = entry.get("lifetime")
     if not record or not retired(record):
@@ -98,12 +123,7 @@ def container_retired(entry):
     # Only the normal host Docker lifecycle writes this companion after proving
     # the entire container exited. Graceful browser retirement does not prove
     # that a controller still preparing files has stopped.
-    return (set(proof) == {"version", "authority", "engineId", "containerId", "startedAt", "finishedAt", "lifetime"}
-            and proof["version"] == 1 and proof["authority"] == "docker-stopped-container"
-            and isinstance(proof["engineId"], str) and re.fullmatch(r"[a-zA-Z0-9:_-]{8,128}", proof["engineId"]) is not None
-            and isinstance(proof["containerId"], str) and re.fullmatch(r"[a-f0-9]{64}", proof["containerId"]) is not None
-            and all(isinstance(proof[key], str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", proof[key])
-                    for key in ("startedAt", "finishedAt"))
+    return (valid_container_boundary(proof) and set(proof) == BOUNDARY_FIELDS | {"lifetime"}
             and proof["lifetime"] == record)
 
 
@@ -154,7 +174,8 @@ def transact(root, request):
         for entry in ledger:
             if not isinstance(entry, dict) or not re.fullmatch(r"[a-f0-9-]{36}", entry.get("id", "")) or not isinstance(entry.get("bytes"), int) or not 0 <= entry["bytes"] <= MAX_BYTES or not isinstance(entry.get("count"), int) or not 1 <= entry["count"] <= 20:
                 raise RuntimeError("invalid upload ledger entry")
-        removable = [entry for entry in ledger if
+        legacy = legacy_retirements(root)
+        removable = [entry for entry in ledger if entry in legacy or
                      (entry.get("phase") == "preparing" and (process_state(entry["owner"]) == "dead" or container_retired(entry)))
                      or (entry.get("phase") == "exposed" and retired(entry.get("lifetime")))]
         for entry in removable:
@@ -189,6 +210,8 @@ def transact(root, request):
         elif action != "reap":
             raise RuntimeError("unknown upload store operation")
         lifecycle.write_json(root / "ledger.json", ledger)
+        if not any(entry in legacy for entry in ledger):
+            (root / "legacy-container-retired.json").unlink(missing_ok=True)
         prune_receipts(ledger)
         return result
 
