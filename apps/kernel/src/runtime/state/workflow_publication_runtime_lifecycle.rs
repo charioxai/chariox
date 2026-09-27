@@ -283,6 +283,7 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
 pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
     runtime_state: &KernelRuntimeState,
 ) {
+    stop_disabled_publication_runtimes(runtime_state).await;
     let candidates = runtime_state
         .owned
         .session_store
@@ -419,6 +420,63 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
                     }),
                 );
             }
+        }
+    }
+}
+
+/// A disabled publication (for example, one whose workflow was deleted) must
+/// not keep its gateway serving requests the kernel will refuse.
+async fn stop_disabled_publication_runtimes(runtime_state: &KernelRuntimeState) {
+    let disabled = runtime_state
+        .owned
+        .session_store
+        .read()
+        .durable_sessions()
+        .into_iter()
+        .flat_map(|session| {
+            session
+                .workflow_publications()
+                .iter()
+                .filter(|publication| !publication.enabled())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for publication in disabled {
+        let process_key =
+            publication_runtime_process_key(publication.session_id(), publication.id());
+        if !matches!(
+            runtime_state
+                .owned
+                .workflow_publication_runtimes
+                .running(&process_key)
+                .await,
+            Ok(Some(_))
+        ) {
+            continue;
+        }
+        let result = stop_publication_runtime(runtime_state, &process_key)
+            .await
+            .and_then(|()| {
+                mark_publication_runtime_status(
+                    runtime_state,
+                    publication.session_id(),
+                    publication.id(),
+                    "stopped",
+                    Some(None),
+                    Some(stopped_publication_runtime_metadata(&publication, false)),
+                )
+            });
+        if let Err(error) = result {
+            crate::logging::warn_with_fields(
+                "daemon.publication_runtime",
+                "failed to stop disabled publication runtime",
+                serde_json::json!({
+                    "session_id": publication.session_id(),
+                    "publication_id": publication.id(),
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 }
