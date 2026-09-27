@@ -831,7 +831,10 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     fixture.trustedBuilderPublicKey,
   )
   assert.equal(incompleteDataVolume.status, 1)
-  assert.match(incompleteDataVolume.stderr, /incomplete Path-1 data-volume admission artifact set/)
+  assert.match(
+    incompleteDataVolume.stderr,
+    /^verify-image-release\.mjs: release contains an incomplete Path-1 data-volume admission artifact set/,
+  )
   await writeFile(manifestPath, originalManifestBytes)
   await writeFile(signaturePath, originalSignature)
 
@@ -875,7 +878,10 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     fixture.trustedBuilderPublicKey,
   )
   assert.equal(path1WithoutDataVolume.status, 1)
-  assert.match(path1WithoutDataVolume.stderr, /Path-1 releases must include data-volume admission and both ordering drop-ins/)
+  assert.match(
+    path1WithoutDataVolume.stderr,
+    /^verify-image-release\.mjs: Path-1 releases must include data-volume admission and both ordering drop-ins/,
+  )
   const oldSharedHostHarnessRoot = join(root, "old-shared-host-harness")
   await mkdir(oldSharedHostHarnessRoot)
   const oldSharedHostHarness = await createInstallerHarness(oldSharedHostHarnessRoot)
