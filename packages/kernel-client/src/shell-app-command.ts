@@ -14,7 +14,7 @@ const usage = [
   "usage: app list [--after <installation-id>] [--limit <1..100>] | status <installation-id> | journal <installation-id> | set",
   "       app logs <installation-id> [--after <sequence>]",
   "       app worker <installation-id> | start <installation-id> | stop <installation-id> | restart <installation-id>",
-  "       app open <installation-id> [--session <session-id>] | uninstall <installation-id> [--generation <n>]",
+  "       app open <installation-id> [--session <session-id>] | uninstall <installation-id> [--generation <n>] [--delete-data]",
   "       app automation list <installation-id>",
   "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--revision <n>]",
   "       app automation disable <installation-id> <automation-id> <revision>",
@@ -57,17 +57,18 @@ export async function executeAppCommand(
     const sessionId = rest[2] ?? defaults.sessionId
     if (!sessionId) return { ok: false, message: "Attach to a session or pass --session to open an App view." }
     request = openAppViewRequest(sessionId, rest[0])
-  } else if (action === "uninstall" && rest[0] && (rest.length === 1 || (rest.length === 3 && rest[1] === "--generation" && /^\d{1,19}$/.test(rest[2] ?? "")))) {
+  } else if (action === "uninstall" && rest[0] && uninstallFlags(rest.slice(1))) {
     // Fenced by --generation (the one the user reviewed) or, by default, the
     // generation read just now; the kernel refuses a stale one without effect.
-    let generation = rest[2]
+    const flags = uninstallFlags(rest.slice(1))!
+    let generation = flags.generation
     if (!generation) {
       const current = await client.send(getAppInstallationRequest(rest[0]))
       const installation = (current.AppInstallation as { installation?: AppInstallationSummary } | undefined)?.installation
       if (!installation) return appFailure(current)
       generation = installation.generation
     }
-    request = uninstallAppRequest(rest[0], generation)
+    request = uninstallAppRequest(rest[0], generation, flags.deleteData)
   } else if (action === "inbox" && rest[0] === "move") {
     const parsed = moveRequest(rest.slice(1), defaults.sessionId)
     if (typeof parsed === "string") return { ok: false, message: parsed }
@@ -101,7 +102,10 @@ export async function executeAppCommand(
   }
   if (action === "uninstall") {
     const data = expect<{ installation: AppInstallationSummary }>(response, "AppInstallation")
-    return { ok: true, message: `Uninstalled ${data.installation.installation_id}. Its data is kept.`, data }
+    const kept = data.installation.data_kept
+      ? `Its data is kept: app update ${data.installation.installation_id} <package> reinstalls into it.`
+      : "Its data is deleted."
+    return { ok: true, message: `Uninstalled ${data.installation.installation_id}. ${kept}`, data }
   }
   if (action === "list") {
     const page = expect<{ installations: AppInstallationSummary[]; next_cursor: string | null }>(response, "AppInstallationsListed")
@@ -277,7 +281,19 @@ function formatInstallation(app: AppInstallationSummary): string {
   const version = app.active_release ? `version ${app.active_release.version}` : "no active release"
   const pending = app.pending_generation == null ? "" : `; pending generation ${app.pending_generation}`
   const paused = app.admission_paused ? "; admission paused" : ""
-  return `${app.installation_id} · ${app.app_id} · ${version}; generation ${app.generation}${pending}${paused}`
+  const kept = app.data_kept ? "; data kept" : ""
+  return `${app.installation_id} · ${app.app_id} · ${version}; generation ${app.generation}${pending}${paused}${kept}`
+}
+
+function uninstallFlags(args: string[]): { generation?: string; deleteData: boolean } | null {
+  const flags: { generation?: string; deleteData: boolean } = { deleteData: false }
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === "--delete-data" && !flags.deleteData) flags.deleteData = true
+    else if (arg === "--generation" && !flags.generation && /^\d{1,19}$/.test(args[index + 1] ?? "")) flags.generation = args[++index]!
+    else return null
+  }
+  return flags
 }
 
 function expect<T>(response: Record<string, unknown>, variant: string): T {

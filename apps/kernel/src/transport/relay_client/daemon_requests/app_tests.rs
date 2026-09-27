@@ -379,12 +379,14 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
     let router =
         CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
     let cache = CommandResultCache::default();
-    let uninstall = |expected_generation: &str| {
+    let uninstall_with = |expected_generation: &str, delete_data| {
         LocalDaemonRequest::UninstallApp(UninstallAppRequest {
             installation_id: "installed".into(),
             expected_generation: expected_generation.into(),
+            delete_data,
         })
     };
+    let uninstall = |expected_generation: &str| uninstall_with(expected_generation, false);
     let failed = |code| LocalDaemonResponse::AppRequestFailed { code };
     assert_eq!(
         dispatch(
@@ -428,7 +430,33 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
         panic!("Alice uninstalls her App")
     };
     assert!(installation.active_release.is_none());
+    assert!(installation.data_kept);
     assert_ne!(installation.generation, generation);
+    // Uninstalling again with delete_data deletes the kept data (protocol 363).
+    // Linux storage deletion needs a storage-helper operation: refused there.
+    store
+        .append_app_log("alice", "installed", "info", "kept", &serde_json::json!({}))
+        .unwrap();
+    let delete = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        uninstall_with(&installation.generation, true),
+        "u-delete",
+    )
+    .await;
+    if cfg!(target_os = "linux") {
+        assert_eq!(delete, failed(AppRequestErrorCode::InvalidRequest));
+    } else {
+        let LocalDaemonResponse::AppInstallation { installation } = delete else {
+            panic!("Alice deletes the kept data")
+        };
+        assert!(!installation.data_kept);
+        assert!(store
+            .app_logs("alice", "installed", 0, 10)
+            .unwrap()
+            .is_empty());
+    }
     // The successful uninstall stopped the App first.
     let worker = LocalDaemonRequest::GetAppWorker(crate::local::AppWorkerRequest {
         installation_id: "installed".into(),

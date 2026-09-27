@@ -142,4 +142,7 @@ pub use workspace::*;
 /// configuration (`AppSet`).
 /// Version 362 adds an optional `filter` to event generator resources: the
 /// filter that narrows a binding to a resource sharing its connection scope.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 362;
+/// Version 363 adds `delete_data` to `UninstallApp` and `data_kept` to App
+/// installation summaries: an uninstalled installation keeps its data for a
+/// reinstall unless the owner deletes it.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 363;

@@ -64,6 +64,12 @@ pub(crate) enum AppRegistryMutation {
         expected_generation: u64,
         now_ms: u64,
     },
+    /// Deletes an uninstalled installation's data records and the release it
+    /// kept, so it can no longer be reinstalled into.
+    ForgetData {
+        installation_id: String,
+        expected_generation: u64,
+    },
 }
 
 impl AppRegistryMutation {
@@ -76,6 +82,9 @@ impl AppRegistryMutation {
                 installation_id, ..
             }
             | Self::Uninstall {
+                installation_id, ..
+            }
+            | Self::ForgetData {
                 installation_id, ..
             } => installation_id,
             Self::Decide { token, .. }
@@ -247,6 +256,11 @@ fn apply(
         } => registry
             .uninstall(&installation_id, expected_generation, now_ms)
             .map(AppRegistryOutcome::Installation),
+        AppRegistryMutation::ForgetData {
+            installation_id,
+            expected_generation,
+        } => forget_data(connection, owner_id, &installation_id, expected_generation)
+            .map(AppRegistryOutcome::Installation),
     }?;
     // The uninstall is committed; a failed cleanup is repeated when a
     // reinstall stages, so it does not fail the uninstall.
@@ -309,4 +323,43 @@ pub(crate) fn forget_uninstalled(
         installation_id,
     )?;
     chariox_app_runtime::app_inbox::remove_all_routes_in(connection, owner_id, installation_id)
+}
+
+/// App data records of an uninstalled installation, deleted together with the
+/// release it kept. Its private storage is deleted by the supervisor first.
+const DATA_TABLES: [&str; 6] = [
+    "app_state_values",
+    "app_state_heads",
+    "app_state_snapshot_values",
+    "app_state_migrations",
+    "app_wakes",
+    "app_logs",
+];
+
+fn forget_data(
+    connection: &mut Connection,
+    owner_id: &str,
+    installation_id: &str,
+    expected_generation: u64,
+) -> Result<Installation, InstallationError> {
+    let generation = i64::try_from(expected_generation).map_err(|_| InstallationError::Conflict)?;
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let changed = transaction.execute(
+        "UPDATE app_installations SET retained_json=NULL
+         WHERE installation_id=?1 AND owner_id=?2 AND generation=?3
+           AND active_json IS NULL AND pending_generation IS NULL",
+        rusqlite::params![installation_id, owner_id, generation],
+    )?;
+    if changed != 1 {
+        return Err(InstallationError::Conflict);
+    }
+    for table in DATA_TABLES {
+        transaction.execute(
+            &format!("DELETE FROM {table} WHERE installation_id=?1"),
+            [installation_id],
+        )?;
+    }
+    transaction.commit()?;
+    InstallationRegistry::new(connection).get(installation_id)
 }

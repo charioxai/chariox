@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let release = AppReleaseSummary {
         version: "1.0.0".into(),
         publisher_id: "publisher".into(),
@@ -35,6 +35,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
                 active_release: Some(release.clone()),
                 pending_generation: Some("9223372036854775806".into()),
                 admission_paused: false,
+                data_kept: true,
             },
         },
         LocalDaemonResponse::AppInstallationJournal {
@@ -71,7 +72,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
     let encoded = serde_json::to_vec(&snapshot).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(&encoded)),
-        "e147af40b512fe8437817982f8e6b8e0138586d7ea9174493608002e0e105cf6"
+        "49ca2c2378eddcfc193c7397ef4920ee8844f8cf4d7f20d04687190752116471"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ListAppInstallations": {"owner_id": "other"}})
@@ -85,7 +86,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
 
 #[test]
 fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let handle = format!("upload_{}", "a".repeat(64));
     let digest = format!("sha256:{:064x}", 1);
     let requests = vec![
@@ -167,7 +168,7 @@ fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
 
 #[test]
 fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let requests = vec![
         LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
             installation_id: "todo".into(),
@@ -259,7 +260,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
 fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
     use crate::runtime::browser_controller_app_view::{BrowserAppViewError, BrowserAppViewRequest};
     use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let request = LocalDaemonRequest::OpenAppView(OpenAppViewRequest {
         session_id: "session-1".into(),
         installation_id: "todo".into(),
@@ -317,10 +318,11 @@ fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
 
 #[test]
 fn app_uninstall_shape_is_versioned_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let request = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
         installation_id: "todo".into(),
         expected_generation: "3".into(),
+        delete_data: false,
     });
     let encoded = serde_json::to_vec(&request).unwrap();
     assert_eq!(
@@ -336,11 +338,23 @@ fn app_uninstall_shape_is_versioned_and_names_no_owner() {
         "UninstallApp": {"installation_id": "todo", "expected_generation": "3", "owner_id": "other"}
     }))
     .is_err());
+    // Protocol 363: deleting the data is explicit and omitted when not asked.
+    let delete = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+        installation_id: "todo".into(),
+        expected_generation: "3".into(),
+        delete_data: true,
+    });
+    assert_eq!(
+        serde_json::to_value(&delete).unwrap(),
+        serde_json::json!({"UninstallApp": {
+            "installation_id": "todo", "expected_generation": "3", "delete_data": true
+        }})
+    );
 }
 
 #[test]
 fn app_logs_shape_is_versioned_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let request = LocalDaemonRequest::GetAppLogs(GetAppLogsRequest {
         installation_id: "todo".into(),
         after_sequence: Some("7".into()),
@@ -380,7 +394,7 @@ fn app_logs_shape_is_versioned_and_names_no_owner() {
 
 #[test]
 fn app_update_shape_is_versioned_fenced_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let request = LocalDaemonRequest::BeginAppUpdate(BeginAppUpdateRequest {
         session_id: "session-1".into(),
         request_id: "update-1".into(),
@@ -411,7 +425,7 @@ fn app_update_shape_is_versioned_fenced_and_names_no_owner() {
 
 #[test]
 fn app_inbox_shapes_are_versioned_and_name_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let requests = vec![
         LocalDaemonRequest::CreateAppInboxRoute(CreateAppInboxRouteRequest {
             installation_id: "todo".into(),
@@ -485,7 +499,7 @@ fn app_inbox_shapes_are_versioned_and_name_no_owner() {
 
 #[test]
 fn app_inbox_routes_from_generator_connections_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let connection = AppInboxConnection {
         generator_id: "dev.chariox.slack".into(),
         connection_id: "connection-1".into(),
@@ -542,7 +556,7 @@ fn app_inbox_routes_from_generator_connections_are_versioned() {
 
 #[test]
 fn app_connection_grants_are_versioned_and_name_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let requests = vec![
         LocalDaemonRequest::GrantAppConnection(GrantAppConnectionRequest {
             installation_id: "slack".into(),
@@ -592,7 +606,7 @@ fn app_connection_grants_are_versioned_and_name_no_owner() {
 
 #[test]
 fn moving_an_event_binding_to_an_app_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let request = LocalDaemonRequest::MoveEventBindingToApp(MoveEventBindingToAppRequest {
         session_id: "s".into(),
         binding_id: "binding-1".into(),
@@ -639,7 +653,7 @@ fn moving_an_event_binding_to_an_app_is_versioned() {
 
 #[test]
 fn an_app_set_is_versioned_and_carries_no_app_data() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let request = LocalDaemonRequest::GetAppSet(GetAppSetRequest {});
     assert_eq!(
         serde_json::from_slice::<LocalDaemonRequest>(&serde_json::to_vec(&request).unwrap())
@@ -679,7 +693,7 @@ fn an_app_set_is_versioned_and_carries_no_app_data() {
 
 #[test]
 fn app_file_grant_shapes_are_versioned_and_carry_no_host_path() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let request = LocalDaemonRequest::GrantAppFile(GrantAppFileRequest {
         session_id: "s".into(),
         operation_id: "file-pick-1".into(),
@@ -717,7 +731,7 @@ fn app_file_grant_shapes_are_versioned_and_carry_no_host_path() {
 
 #[test]
 fn app_file_export_shapes_are_versioned_and_name_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let request = LocalDaemonRequest::SaveAppFileExport(SaveAppFileExportRequest {
         session_id: "s".into(),
         operation_id: "file-export-1".into(),
@@ -753,7 +767,7 @@ fn app_file_export_shapes_are_versioned_and_name_no_owner() {
 fn app_view_reload_shape_is_versioned_and_names_only_the_tab_and_assets() {
     use crate::runtime::browser_controller_app_view::{BrowserAppViewAsset, BrowserAppViewRequest};
     use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
     let command = RoomBrowserControllerCommand::AppView {
         request: BrowserAppViewRequest::Reload {
             target_id: "target-1".into(),

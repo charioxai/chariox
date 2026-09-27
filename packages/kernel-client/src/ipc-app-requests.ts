@@ -68,8 +68,9 @@ export function getAppLogsRequest(installationId: string, afterSequence?: string
     ...(afterSequence ? { after_sequence: afterSequence } : {}), ...(limit ? { limit } : {}) } }
 }
 
-export function uninstallAppRequest(installationId: string, expectedGeneration: string) {
-  return { UninstallApp: { installation_id: installationId, expected_generation: expectedGeneration } }
+export function uninstallAppRequest(installationId: string, expectedGeneration: string, deleteData = false) {
+  return { UninstallApp: { installation_id: installationId, expected_generation: expectedGeneration,
+    ...(deleteData ? { delete_data: true } : {}) } }
 }
 
 export function openAppViewRequest(sessionId: string, installationId: string) {

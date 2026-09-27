@@ -11,6 +11,7 @@ fn release(release: ReleaseMetadata) -> AppReleaseSummary {
 }
 
 pub(super) fn installation(value: Installation) -> AppInstallationSummary {
+    let data_kept = value.active.is_none() && value.retained.is_some();
     AppInstallationSummary {
         installation_id: value.installation_id,
         app_id: value.app_id,
@@ -20,6 +21,7 @@ pub(super) fn installation(value: Installation) -> AppInstallationSummary {
             .pending_generation
             .map(|generation| generation.to_string()),
         admission_paused: value.admission_paused,
+        data_kept,
     }
 }
 

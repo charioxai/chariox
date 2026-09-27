@@ -168,6 +168,9 @@ pub struct AppInstallationSummary {
     pub active_release: Option<AppReleaseSummary>,
     pub pending_generation: Option<String>,
     pub admission_paused: bool,
+    /// Protocol 363: an uninstalled installation that still holds its data; an
+    /// update of it reinstalls the App into that data.
+    pub data_kept: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -423,12 +426,17 @@ pub struct AppFileContents {
 }
 
 /// Protocol 347: stops the worker and deactivates the installation at the
-/// caller's expected generation. App data and user workflows are retained.
+/// caller's expected generation. User workflows are retained, and so is App
+/// data unless `delete_data` (protocol 363) is set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UninstallAppRequest {
     pub installation_id: String,
     pub expected_generation: String,
+    /// Also delete the App's data: its storage, structured state, wakes and
+    /// logs. The installation can then no longer be reinstalled into.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delete_data: bool,
 }
 
 /// Opens the installation's view as a managed Tab in the session's Room

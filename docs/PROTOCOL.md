@@ -1994,6 +1994,16 @@ Workflow trigger and deployment direction:
   share its `connection_scope` (Slack channels share their workspace's scope
   and carry `{"event.channel": id}`). Clients merge it into the binding's
   filter; no client special-cases a generator.
+- protocol 363: App data deletion. `UninstallApp` gains `delete_data` (omitted
+  when false): the kernel also deletes the App's private storage, structured
+  state, wakes and logs and the release it kept, so the installation can no
+  longer be reinstalled into. `UninstallApp` on an already uninstalled
+  installation, at its current generation, deletes its kept data the same way,
+  which also finishes a deletion interrupted after the uninstall. App
+  installation summaries gain `data_kept`: uninstalled, with data an update
+  can reinstall into. Linux App storage is root-owned; until the storage
+  helper can delete it, `delete_data` is refused there with `invalid_request`
+  and nothing changes.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

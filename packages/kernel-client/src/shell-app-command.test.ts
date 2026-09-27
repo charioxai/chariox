@@ -96,7 +96,7 @@ test("App open targets the attached session unless one is given", async () => {
 
 test("App uninstall is fenced by the generation it just read", async () => {
   const sent: Record<string, unknown>[] = []
-  const installation = { installation_id: "todo", app_id: "com.chariox.todo", generation: "7", active_release: null, pending_generation: null, admission_paused: false }
+  const installation = { installation_id: "todo", app_id: "com.chariox.todo", generation: "7", active_release: null, pending_generation: null, admission_paused: false, data_kept: true }
   const result = await executeAppCommand(["uninstall", "todo"], { send: async (request) => {
     sent.push(request)
     return { AppInstallation: { installation } }
@@ -106,7 +106,7 @@ test("App uninstall is fenced by the generation it just read", async () => {
     { UninstallApp: { installation_id: "todo", expected_generation: "7" } },
   ])
   assert.equal(result.ok, true)
-  assert.match(result.message!, /Uninstalled todo\. Its data is kept\./)
+  assert.match(result.message!, /Uninstalled todo\. Its data is kept: app update todo <package> reinstalls into it\./)
   const missing = await executeAppCommand(["uninstall", "gone"], { send: async () => ({ AppRequestFailed: { code: "not_found" } }) })
   assert.equal(missing.message, "App installation not found.")
   const pinned: Record<string, unknown>[] = []
@@ -115,6 +115,15 @@ test("App uninstall is fenced by the generation it just read", async () => {
     return { AppInstallation: { installation } }
   } })
   assert.deepEqual(pinned, [{ UninstallApp: { installation_id: "todo", expected_generation: "5" } }])
+  const deleted: Record<string, unknown>[] = []
+  const removed = await executeAppCommand(["uninstall", "todo", "--delete-data", "--generation", "5"], { send: async (request) => {
+    deleted.push(request)
+    return { AppInstallation: { installation: { ...installation, data_kept: false } } }
+  } })
+  assert.deepEqual(deleted, [{ UninstallApp: { installation_id: "todo", expected_generation: "5", delete_data: true } }])
+  assert.match(removed.message!, /Uninstalled todo\. Its data is deleted\./)
+  const repeated = await executeAppCommand(["uninstall", "todo", "--delete-data", "--delete-data"], { send: async () => ({}) })
+  assert.equal(repeated.ok, false)
 })
 
 test("App logs page by sequence and escape App-authored control characters", async () => {

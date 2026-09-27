@@ -25,6 +25,8 @@ export type AppInstallationSummary = {
   active_release: AppReleaseSummary | null
   pending_generation: string | null
   admission_paused: boolean
+  /** Protocol 363: uninstalled, with its data kept for a reinstall. */
+  data_kept: boolean
 }
 
 export type AppUpdateSummary = {

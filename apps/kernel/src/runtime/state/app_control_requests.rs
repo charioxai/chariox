@@ -225,6 +225,7 @@ impl KernelRuntimeState {
                         installation,
                         current.generation,
                         &request.expected_generation,
+                        request.delete_data,
                     )
                     .await;
             }
@@ -245,10 +246,16 @@ impl KernelRuntimeState {
         installation: String,
         current_generation: u64,
         expected_generation: &str,
+        delete_data: bool,
     ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
         let expected: u64 = expected_generation
             .parse()
             .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
+        // Linux App storage is root-owned: deleting it needs a storage-helper
+        // operation that does not exist yet, so the request changes nothing.
+        if delete_data && cfg!(target_os = "linux") {
+            return Err(AppRequestErrorCode::InvalidRequest);
+        }
         if expected != current_generation {
             return Err(AppRequestErrorCode::Conflict);
         }
@@ -278,14 +285,38 @@ impl KernelRuntimeState {
         })?;
         self.unbind_uninstalled_app(&view_owner, &view_installation)
             .await;
-        match outcome {
-            crate::durable_state::apps::AppRegistryOutcome::Installation(installation) => {
-                Ok(LocalDaemonResponse::AppInstallation {
-                    installation: crate::runtime::app_control::installation_summary(installation),
-                })
-            }
-            _ => Err(AppRequestErrorCode::StorageUnavailable),
+        let crate::durable_state::apps::AppRegistryOutcome::Installation(mut installation) =
+            outcome
+        else {
+            return Err(AppRequestErrorCode::StorageUnavailable);
+        };
+        // A failure here leaves the App uninstalled with its data; uninstalling
+        // again with delete_data finishes the deletion.
+        if delete_data {
+            let store = self.owned.durable_state_store.clone();
+            let permit = self.app_control().try_admit()?;
+            let generation = installation.generation;
+            installation = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                store.mutate_app_installation(
+                    &view_owner,
+                    crate::durable_state::apps::AppRegistryMutation::ForgetData {
+                        installation_id: view_installation,
+                        expected_generation: generation,
+                    },
+                )
+            })
+            .await
+            .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+            .map_err(crate::runtime::app_control::registry_error)
+            .and_then(|outcome| match outcome {
+                crate::durable_state::apps::AppRegistryOutcome::Installation(value) => Ok(value),
+                _ => Err(AppRequestErrorCode::StorageUnavailable),
+            })?;
         }
+        Ok(LocalDaemonResponse::AppInstallation {
+            installation: crate::runtime::app_control::installation_summary(installation),
+        })
     }
 
     /// Returns whether a new start was accepted (an owner thread was spawned).
