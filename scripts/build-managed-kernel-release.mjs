@@ -40,7 +40,7 @@ const BUILD_CANCELLATION_GRACE_MS = 15_000
 const BUILD_HISTORY_READ_TIMEOUT_MS = 15_000
 
 function usage() {
-  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --builder <name> --output <new-directory> [--preflight-timeout-seconds <1-60>] [--build-timeout-seconds <1-14400>]"
+  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --builder <name> --output <new-directory> [--preflight-timeout-seconds <1-60>] [--build-timeout-seconds <1-14400>] [--cargo-jobs <1|2>]"
 }
 
 function parseBoundedSeconds(value, name, maximum) {
@@ -59,13 +59,16 @@ function parseOptions(argv) {
     const value = argv[index + 1]
     if (!option?.startsWith("--") || !value || value.startsWith("--")) throw new Error(usage())
     const name = option.slice(2)
-    if (![...REQUIRED_OPTIONS, "preflight-timeout-seconds", "build-timeout-seconds"].includes(name) || options.has(name)) {
+    if (![...REQUIRED_OPTIONS, "preflight-timeout-seconds", "build-timeout-seconds", "cargo-jobs"].includes(name) || options.has(name)) {
       throw new Error(usage())
     }
     if (name === "builder" && !BUILDER_NAME_PATTERN.test(value)) {
       throw new Error("builder name must be 1 to 63 ASCII letters, digits, dots, underscores, or hyphens")
     }
-    if (name === "preflight-timeout-seconds") {
+    if (name === "cargo-jobs") {
+      if (!/^[12]$/.test(value)) throw new Error("cargo-jobs must be 1 or 2")
+      options.set(name, Number(value))
+    } else if (name === "preflight-timeout-seconds") {
       options.set(name, parseBoundedSeconds(value, name, MAX_PREFLIGHT_TIMEOUT_SECONDS))
     } else if (name === "build-timeout-seconds") {
       options.set(name, parseBoundedSeconds(value, name, MAX_BUILD_TIMEOUT_SECONDS))
@@ -610,6 +613,11 @@ export async function runManagedKernelReleaseBuild(options, {
     dockerEnvironment,
     preflightDeadlineMs: Date.now() + options["preflight-timeout-seconds"] * 1000,
   })
+  const cargoJobs = options["cargo-jobs"] ?? 1
+  if (cargoJobs !== 1 && cargoJobs !== 2) throw new Error("cargo-jobs must be 1 or 2")
+  if (cargoJobs === 2 && verifiedBuilder.nodes.some(node => node.effectiveCpus < 4 || node.memoryBytes < 12 * 1024 ** 3)) {
+    throw new Error("cargo-jobs=2 requires at least 4 bounded CPUs and 12 GiB bounded memory on every builder node")
+  }
   const lease = await acquireBuilderLease({
     home: environment.HOME,
     builderName: verifiedBuilder.name,
@@ -697,6 +705,7 @@ export async function runManagedKernelReleaseBuild(options, {
         "buildx", "build", "--builder", verifiedBuilder.name,
         "--pull", "--platform", "linux/amd64", "--target", ARTIFACT_STAGE,
         "--metadata-file", metadataPath,
+        "--build-arg", `CHARIOX_CARGO_BUILD_JOBS=${cargoJobs}`,
         "--file", join(source, BUILDER_DOCKERFILE),
         "--output", `type=local,dest=${exported}`,
         source,

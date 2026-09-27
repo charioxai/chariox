@@ -560,6 +560,7 @@ test("managed release build requires a bounded, already-running Buildx builder b
   assert.ok(trace[1].startsWith(`--host ${buildkitEndpoint} inspect --type container --format `), trace[1])
   assert.equal(trace[2], `buildx history ls --builder ${builderName} --format json --no-trunc`)
   assert.ok(trace[3].startsWith(`buildx build --builder ${builderName} --pull --platform linux/amd64 --target managed-release-artifacts --metadata-file `), trace[3])
+  assert.match(trace[3], /--build-arg CHARIOX_CARGO_BUILD_JOBS=1/)
   assert.ok(trace[4].startsWith(`buildx history inspect --builder ${builderName} --format json `), trace[4])
   assert.equal(trace[4].slice(`buildx history inspect --builder ${builderName} --format json `.length), historyBuildId)
   assert.equal(trace[5], `buildx inspect ${builderName}`)
@@ -572,6 +573,37 @@ test("managed release build requires a bounded, already-running Buildx builder b
   const attestation = await readFile(join(fixture.output, "build-attestation.json"))
   const signature = Buffer.from(await readFile(join(fixture.output, "build-attestation.sig"), "utf8"), "base64")
   assert.equal(verify(null, attestation, fixture.keys.publicKey, signature), true)
+})
+
+test("two Cargo jobs require explicit bounded CPU and memory headroom", async context => {
+  const dockerfile = await readFile(join(repositoryRoot, 'apps/kernel/slice-linux-docker/docker/Dockerfile'), 'utf8')
+  assert.match(dockerfile, /ARG CHARIOX_CARGO_BUILD_JOBS=1/)
+  const guard = dockerfile.match(/case "\$CHARIOX_CARGO_BUILD_JOBS" in 1\|2\)[^\n]*?esac/)?.[0]
+  assert.ok(guard, 'Dockerfile must validate the finite job choice')
+  for (const jobs of ['0', '1', '2', '3', 'auto']) {
+    const result = spawnSync('sh', ['-c', guard], { env: { ...process.env, CHARIOX_CARGO_BUILD_JOBS: jobs } })
+    assert.equal(result.status, jobs === '1' || jobs === '2' ? 0 : 2)
+  }
+  for (const [label, container, jobs, accepted] of [
+    ['insufficient both', builderContainer(), '2', false],
+    ['insufficient memory', builderContainer({ cpuQuota: 400_000 }), '2', false],
+    ['insufficient CPU', builderContainer({ memory: 12 * memoryGiB, memorySwap: 12 * memoryGiB }), '2', false],
+    ['invalid jobs', builderContainer(), '3', false],
+    ['bounded two', builderContainer({ cpuQuota: 400_000, memory: 12 * memoryGiB, memorySwap: 12 * memoryGiB }), '2', true],
+  ]) {
+    const root = await mkdtemp(join(tmpdir(), 'chariox-managed-build-jobs-'))
+    context.after(() => rm(root, { recursive: true, force: true }))
+    const fixture = await makeFixture(root)
+    await fixture.configure({ containerOutput: container })
+    const result = fixture.run(['--cargo-jobs', jobs])
+    assert.equal(result.status, accepted ? 0 : 1, `${label}: ${result.stderr}`)
+    const trace = await readFile(fixture.trace, 'utf8').catch(() => '')
+    if (accepted) assert.match(trace, /--build-arg CHARIOX_CARGO_BUILD_JOBS=2/)
+    else {
+      assert.match(result.stderr, /cargo-jobs/)
+      assert.doesNotMatch(trace, /buildx build/)
+    }
+  }
 })
 
 test("initial barrier write failures clean only owned scratch and never build or sign", async (context) => {

@@ -26,7 +26,9 @@ COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
 ARG CHARIOX_PREBUILT_RUNTIME=0
 ARG CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 ARG CHARIOX_RUNTIME_BUILD_PROFILE=release
+ARG CHARIOX_CARGO_BUILD_JOBS=1
 RUN mkdir -p /opt/chariox-runtime-bin \
+  && case "$CHARIOX_CARGO_BUILD_JOBS" in 1|2) ;; *) echo "Cargo jobs must be 1 or 2" >&2; exit 2 ;; esac \
   && if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]; then \
       test -x /opt/chariox-prebuilt/chariox-kernel \
       && test -x /opt/chariox-prebuilt/chariox-relay \
@@ -35,8 +37,8 @@ RUN mkdir -p /opt/chariox-runtime-bin \
     else \
       case "$CHARIOX_RUNTIME_BUILD_PROFILE" in \
         release) \
-          CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
-          && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
+          CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
+          && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
           && profile_dir="release" \
           ;; \
         dev) \
