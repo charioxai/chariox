@@ -1979,15 +1979,15 @@ Workflow trigger and deployment direction:
   active installations with the release, the signed capabilities they approved
   and their configuration, read through the same owner-scoped requests. It is
   the versioned description a kernel copy installs from (Phase 2); App data is
-  never part of it.
+  never part of it. It fails closed: an installation that cannot be read
+  completely, including one that updates while the set is read, fails the
+  whole request with its App error code, so a copy never starts from a
+  partial or mixed record.
 - protocol 362: resource filters. An event generator resource may carry
   `filter`, the event filter that narrows a binding to it when other resources
   share its `connection_scope` (Slack channels share their workspace's scope
   and carry `{"event.channel": id}`). Clients merge it into the binding's
-  filter; no client special-cases a generator. It fails closed: an installation that cannot be read
-  completely, including one that updates while the set is read, fails the
-  whole request with its App error code, so a copy never starts from a
-  partial or mixed record.
+  filter; no client special-cases a generator.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
