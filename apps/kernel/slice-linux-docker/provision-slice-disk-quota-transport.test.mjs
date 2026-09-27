@@ -9,6 +9,8 @@ import {
   SLICE_DISK_QUOTA_FRAME_MAX_BYTES,
   SLICE_DISK_QUOTA_PROTOCOL_VERSION,
 } from "./slice-disk-quota-contract.mjs"
+import { runWithSliceDiskQuotaAdmission } from "./slice-disk-quota-admission.mjs"
+import { createSliceDiskQuotaAllocator } from "./slice-disk-quota-allocator.mjs"
 import { requestSliceDiskQuota } from "./slice-disk-quota-client.mjs"
 import { handleSliceDiskQuotaConnection } from "./slice-disk-quota-service.mjs"
 
@@ -90,6 +92,71 @@ async function createQuotaServicePeer(context, allocator, options = {}) {
   return createUnixPeer(context, (socket) => {
     handleSliceDiskQuotaConnection(socket, allocator, options)
   })
+}
+
+const admissionIdentity = {
+  ownerKernelId: "kernel-1",
+  ownerMachineId: "machine-1",
+  sliceId: "slice-1",
+  containerName: "chariox-slice-admission-test",
+  homeVolumeName: "chariox-slice-admission-test-home",
+}
+const admissionLimits = {
+  writableLayerBytes: 512 * 1024 * 1024,
+  persistentHomeBytes: 2_048 * 1024 * 1024,
+}
+
+function createAdmissionAllocator(reserved) {
+  const state = {
+    schemaVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
+    nextProjectId: 1_073_741_826,
+    reservations: reserved
+      ? {
+        "kernel-1\0machine-1\0slice-1": {
+          identity: admissionIdentity,
+          limits: admissionLimits,
+          projectIds: { writableLayer: 1_073_741_824, persistentHome: 1_073_741_825 },
+        },
+      }
+      : {},
+  }
+  const stateStore = {
+    load: () => structuredClone(state),
+    save: () => {},
+  }
+  const identityLabels = {
+    "io.chariox.slice.id": admissionIdentity.sliceId,
+    "io.chariox.slice.owner-kernel-id": admissionIdentity.ownerKernelId,
+    "io.chariox.slice.owner-machine-id": admissionIdentity.ownerMachineId,
+  }
+  const backend = {
+    probe: () => ({
+      supported: true,
+      totalBytes: 64 * 1024 ** 3,
+      availableBytes: 48 * 1024 ** 3,
+      hostTotalBytes: 128 * 1024 ** 3,
+      hostAvailableBytes: 32 * 1024 ** 3,
+    }),
+    projectIdsInUse: () => [],
+    projectUsageBytes: () => 0,
+    inspectHome: () => ({
+      driver: "local",
+      persistent: true,
+      labels: identityLabels,
+      path: "/data/volumes/chariox-slice-admission-test-home/_data",
+    }),
+    inspectLayer: () => ({
+      driver: "overlay2",
+      labels: identityLabels,
+      paths: ["/data/overlay2/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/diff"],
+      state: "exited",
+    }),
+    inspectContainer: () => ({ state: "exited" }),
+    applyHardQuota: ({ limitBytes }) => ({ treeVerified: true, effectiveLimitBytes: limitBytes, usedBytes: 0 }),
+    verifyHardQuota: ({ limitBytes }) => ({ treeVerified: true, effectiveLimitBytes: limitBytes, usedBytes: 0 }),
+    clearProjectQuota: () => {},
+  }
+  return createSliceDiskQuotaAllocator({ backend, stateStore })
 }
 
 test("client rejects when the allocator closes after receiving a request without a response", async (context) => {
@@ -270,6 +337,78 @@ test("client and service handler round-trip a probe through the real Unix socket
     { operation: "probe", handled: true },
   )
   assert.deepEqual(allocator.calls, [PROBE_REQUEST])
+})
+
+test("quota-marked start rejects an absent reservation over the real Unix socket", async (context) => {
+  const productionAllocator = createAdmissionAllocator(false)
+  const requests = []
+  const allocator = {
+    handle(request) {
+      requests.push(request)
+      return productionAllocator.handle(request)
+    },
+  }
+  const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 1_000 })
+  let mutationCount = 0
+
+  await assert.rejects(runWithSliceDiskQuotaAdmission({
+    containerName: admissionIdentity.containerName,
+    quotaMarkerPresent: true,
+    requestQuota: (request) => requestSliceDiskQuota(request, { socketPath, requestTimeoutMs: 1_000 }),
+    run: () => { mutationCount += 1 },
+  }), /quota marker but no matching durable reservation/)
+  assert.deepEqual(requests, [{
+    protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
+    operation: "ensure_before_start",
+    containerName: admissionIdentity.containerName,
+  }])
+  assert.equal(mutationCount, 0)
+})
+
+test("quota-marked start accepts exact reservation evidence over the real Unix socket", async (context) => {
+  const productionAllocator = createAdmissionAllocator(true)
+  const requests = []
+  const allocator = {
+    handle(request) {
+      requests.push(request)
+      return productionAllocator.handle(request)
+    },
+  }
+  const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 1_000 })
+  let mutationResult
+
+  const result = await runWithSliceDiskQuotaAdmission({
+    containerName: admissionIdentity.containerName,
+    quotaMarkerPresent: true,
+    requestQuota: (request) => requestSliceDiskQuota(request, { socketPath, requestTimeoutMs: 1_000 }),
+    run: (admission) => {
+      mutationResult = admission
+      return "started"
+    },
+  })
+  assert.equal(result, "started")
+  assert.deepEqual(mutationResult, {
+    bounded: true,
+    evidence: {
+      writableLayer: {
+        backendSupportsHardQuota: true,
+        isPersistent: false,
+        effectiveLimitBytes: admissionLimits.writableLayerBytes,
+        usedBytes: 0,
+      },
+      persistentHome: {
+        backendSupportsHardQuota: true,
+        isPersistent: true,
+        effectiveLimitBytes: admissionLimits.persistentHomeBytes,
+        usedBytes: 0,
+      },
+    },
+  })
+  assert.deepEqual(requests, [{
+    protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
+    operation: "ensure_before_start",
+    containerName: admissionIdentity.containerName,
+  }])
 })
 
 test("client receives the allocator error envelope from the real service handler", async (context) => {

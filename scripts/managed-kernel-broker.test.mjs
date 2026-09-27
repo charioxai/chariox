@@ -663,6 +663,8 @@ test("managed slice broker pins lazy builds to the signed context digest", async
       CHARIOX_SLICE_NAME: "chariox-slice-dev",
       CHARIOX_SLICE_ID: "slice-dev",
       CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+      CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-dev",
+      CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-dev",
     },
     files: [],
   }
@@ -832,6 +834,8 @@ test("managed slice broker recovers after an oversized command output", async (c
       CHARIOX_SLICE_NAME: "chariox-slice-dev",
       CHARIOX_SLICE_ID: "slice-dev",
       CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+      CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-dev",
+      CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-dev",
     },
     files: [],
   }
