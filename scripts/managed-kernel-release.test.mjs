@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, join, relative, sep } from "node:path"
+import { basename, join, posix, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { once } from "node:events"
@@ -20,6 +20,7 @@ const rootlessDockerService = join(repositoryRoot, "deploy/managed-kernel/chario
 const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-slice-broker.service")
 const quotaRuntimeAssets = [
   "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.service",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
   "apps/kernel/slice-linux-docker/slice-disk-quota-allocator.mjs",
   "apps/kernel/slice-linux-docker/slice-disk-quota-client.mjs",
   "apps/kernel/slice-linux-docker/slice-disk-quota-contract.mjs",
@@ -208,6 +209,29 @@ async function treeDigest(root) {
   hash.update(`directory:1:.:${metadata.mode & 0o7777}:`)
   await updateTreeHash(root, root, hash)
   return `sha256:${hash.digest("hex")}`
+}
+
+async function localEsmImportClosure(root, entry) {
+  const pending = [entry]
+  const visited = new Set()
+  while (pending.length > 0) {
+    const current = pending.pop()
+    if (visited.has(current)) continue
+    visited.add(current)
+    const source = await readFile(join(root, ...current.split("/")), "utf8")
+    const specifiers = [
+      ...source.matchAll(/\bfrom\s*["'](\.[^"']+)["']/g),
+      ...source.matchAll(/\bimport\s*["'](\.[^"']+)["']/g),
+    ].map((match) => match[1])
+    for (const specifier of specifiers) {
+      const dependency = posix.normalize(posix.join(posix.dirname(current), specifier))
+      if (dependency === ".." || dependency.startsWith("../") || !dependency.endsWith(".mjs")) {
+        throw new Error(`broker import escapes the packaged ESM context: ${current} -> ${specifier}`)
+      }
+      pending.push(dependency)
+    }
+  }
+  return [...visited].sort()
 }
 
 async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAsset } = {}) {
@@ -399,6 +423,23 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/local/bin/chariox-managed-bootstrap",
   ]) {
     assert.ok(packagedPaths.includes(requiredPath), `missing packaged path ${requiredPath}`)
+  }
+  const brokerContextRoot = join(releaseRoot, "usr/lib/chariox/slice-build-context")
+  const brokerImportClosure = await localEsmImportClosure(
+    brokerContextRoot,
+    "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+  )
+  assert.deepEqual(brokerImportClosure, [
+    "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
+    "apps/kernel/slice-linux-docker/slice-disk-quota-client.mjs",
+    "apps/kernel/slice-linux-docker/slice-disk-quota-contract.mjs",
+  ])
+  for (const modulePath of brokerImportClosure) {
+    assert.ok(
+      packagedPaths.includes(`usr/lib/chariox/slice-build-context/${modulePath}`),
+      `broker import dependency is absent from the signed release: ${modulePath}`,
+    )
   }
 
   const manifestBytes = await readFile(join(releaseRoot, "usr/lib/chariox/release-manifest.json"))
@@ -1326,29 +1367,43 @@ test("managed image installer rejects a signed release missing a quota runtime f
     context.skip("requires Linux root ownership semantics")
     return
   }
-  const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-missing-quota-"))
-  context.after(() => rm(root, { recursive: true, force: true }))
-  const omittedAsset = "apps/kernel/slice-linux-docker/slice-disk-quota-service.mjs"
-  const fixture = await makeFixture(root, "", { omitQuotaAsset: omittedAsset })
-  const output = join(root, "release")
-  const packaged = runPackager({ ...fixture, output })
-  assert.equal(packaged.status, 0, packaged.stderr)
-  const harness = await createInstallerHarness(root)
-  const env = {
-    ...process.env,
-    PATH: `${harness.bin}:${process.env.PATH}`,
-    HARNESS_STATE: harness.state,
-    CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
-    CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+  for (const [label, omittedAsset, invalidFile] of [
+    [
+      "allocator service",
+      "apps/kernel/slice-linux-docker/slice-disk-quota-service.mjs",
+      /managed kernel image contains an invalid file: .*slice-disk-quota-service\.mjs/,
+    ],
+    [
+      "broker admission dependency",
+      "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
+      /managed kernel image contains an invalid file: .*slice-disk-quota-admission\.mjs/,
+    ],
+  ]) {
+    await context.test(label, async (subtest) => {
+      const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-missing-quota-"))
+      subtest.after(() => rm(root, { recursive: true, force: true }))
+      const fixture = await makeFixture(root, "", { omitQuotaAsset: omittedAsset })
+      const output = join(root, "release")
+      const packaged = runPackager({ ...fixture, output })
+      assert.equal(packaged.status, 0, packaged.stderr)
+      const harness = await createInstallerHarness(root)
+      const env = {
+        ...process.env,
+        PATH: `${harness.bin}:${process.env.PATH}`,
+        HARNESS_STATE: harness.state,
+        CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+        CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+      }
+      const result = spawnSync(
+        installer,
+        installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture),
+        { encoding: "utf8", env },
+      )
+      assert.equal(result.status, 1)
+      assert.match(result.stderr, invalidFile)
+      assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+    })
   }
-  const result = spawnSync(
-    installer,
-    installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture),
-    { encoding: "utf8", env },
-  )
-  assert.equal(result.status, 1)
-  assert.match(result.stderr, /managed kernel image contains an invalid file: .*slice-disk-quota-service\.mjs/)
-  assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
 })
 
 test("managed image installer verifies, installs twice, and rejects seeded runtime state", async (context) => {
