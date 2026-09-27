@@ -25,6 +25,9 @@ pub(super) fn projection(value: InstallOperation) -> LocalDaemonResponse {
             request_id: value.request_id,
             phase: match value.phase {
                 InstallPhase::Preparing => AppInstallOperationPhase::Preparing,
+                // Approved but not yet started (for example waiting for a
+                // worker slot): the person's part is done.
+                InstallPhase::AwaitingApproval if value.approved => AppInstallOperationPhase::Starting,
                 InstallPhase::AwaitingApproval => AppInstallOperationPhase::AwaitingApproval,
                 InstallPhase::Starting => AppInstallOperationPhase::Starting,
                 InstallPhase::Committed => AppInstallOperationPhase::Committed,

@@ -132,6 +132,19 @@ pub(super) fn load(
             let review = review
                 .map(|json| serde_json::from_str(&json).map_err(|_| InstallOperationError::Storage))
                 .transpose()?;
+            // The owner's decision is recorded with the staged release. It only
+            // informs status, so a missing record reads as not yet approved.
+            let approved = connection
+                .query_row(
+                    "SELECT json_extract(record_json,'$.decision.status') FROM app_installation_updates
+                     WHERE installation_id=?1 AND generation=?2",
+                    params![installation, generation as i64],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("approved");
             Ok(InstallOperation {
                 input,
                 review,
@@ -157,6 +170,7 @@ pub(super) fn load(
                 attempt,
                 failure,
                 cleanup_pending,
+                approved,
             })
         },
     )

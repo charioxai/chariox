@@ -146,9 +146,14 @@ fn verified_review_nonce_and_original_deadline_fence_fresh_writer_budgets() {
         .unwrap();
     assert_eq!(pending[0].decision, CapabilityDecision::Pending);
     let accepted = Arc::new(f.arm("review", "new-human-decision"));
-    f.store
+    assert!(!operation.approved);
+    let decided = f
+        .store
         .decide_app_install(accepted, true, budget())
         .unwrap();
+    // Still stored as approval until the start, but the decision is known.
+    assert_eq!(decided.phase, InstallPhase::AwaitingApproval);
+    assert!(decided.approved);
     assert!(matches!(
         f.store
             .arm_app_install_review("alice", "review", "restart", budget())

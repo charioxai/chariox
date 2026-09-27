@@ -70,6 +70,8 @@ pub(crate) struct InstallOperation {
     pub(crate) attempt: Option<String>,
     pub(crate) failure: Option<String>,
     pub(crate) cleanup_pending: bool,
+    /// The owner approved its capabilities (recorded with the staged release).
+    pub(crate) approved: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstallInput {
