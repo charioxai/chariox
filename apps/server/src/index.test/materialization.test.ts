@@ -173,7 +173,6 @@ test("gateway materializes exported publication packages through the kernel", as
         requested_scope: "repository:charioxai/drill",
         endpoint_id: "endpoint-1",
         queue_ref: "default",
-        reply_mode: "disabled",
         action_ids: [],
         source_environment_id: "source-environment",
         source_revision: 1,

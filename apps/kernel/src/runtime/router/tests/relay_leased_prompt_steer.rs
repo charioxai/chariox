@@ -138,7 +138,7 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
 }
 
 #[tokio::test]
-async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_discovery() {
+async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_discovery() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let mut config = DaemonConfig::for_tests();
@@ -180,8 +180,7 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         workflow_run_id: "workflow-run-tools".to_string(),
         workflow_node_run_id: "workflow-node-tools".to_string(),
         delivery_token: "delivery-token-tools".to_string(),
-        event_reply_enabled: true,
-        event_context_enabled: false,
+        event_context_enabled: true,
         event_actions_enabled: false,
     };
     let queued_workflow_context = crate::execution_lease::RemoteWorkflowTurnContext {
@@ -191,14 +190,13 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         workflow_run_id: "workflow-run-tools-queued".to_string(),
         workflow_node_run_id: "workflow-node-tools-queued".to_string(),
         delivery_token: "delivery-token-tools-queued".to_string(),
-        event_reply_enabled: false,
         event_context_enabled: false,
         event_actions_enabled: false,
     };
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-    let fresh_discovery_saw_reply = Arc::new(AtomicBool::new(false));
+    let fresh_discovery_saw_event_context = Arc::new(AtomicBool::new(false));
     let probe_state = router.runtime_state.clone();
-    let probe_flag = Arc::clone(&fresh_discovery_saw_reply);
+    let probe_flag = Arc::clone(&fresh_discovery_saw_event_context);
     let provider_run_projection = app
         .try_lock()
         .expect("app should be available")
@@ -211,7 +209,7 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
                 .runtime_tool_specs_for_auth_token(&auth_token)
                 .iter()
                 .any(|spec| {
-                    spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+                    spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
                 })
             {
                 probe_flag.store(true, Ordering::SeqCst);
@@ -235,8 +233,8 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
     };
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
     assert!(
-        fresh_discovery_saw_reply.load(Ordering::SeqCst),
-        "fresh provider discovery must expose reply_to_event before launch returns"
+        fresh_discovery_saw_event_context.load(Ordering::SeqCst),
+        "fresh provider discovery must expose event_context before launch returns"
     );
     let leased_token = {
         let app_guard = app.try_lock().expect("app should be available");
@@ -291,7 +289,7 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
             .leased_workflow_turn_context_for_provider_run(&provider_run_id)
             .expect("active leased turn should retain its own workflow context");
         assert_eq!(active_context.workflow_run_id, "workflow-run-tools");
-        assert!(active_context.event_reply_enabled);
+        assert!(active_context.event_context_enabled);
         (ordinary_token, reused_provider_run_id)
     };
     assert_eq!(provider_run_id, reused_provider_run_id);
@@ -299,7 +297,7 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         .runtime_state
         .runtime_tool_specs_for_auth_token(&leased_token);
     assert!(specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
     }));
     let _app_guard = app
         .try_lock()
@@ -309,9 +307,9 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         .runtime_tool_specs_for_auth_token(&leased_token);
     assert!(
         contended_specs.iter().any(|spec| {
-            spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+            spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
         }),
-        "provider discovery must retain reply_to_event while the app mutex is contended"
+        "provider discovery must retain event_context while the app mutex is contended"
     );
     let ordinary_specs = router
         .runtime_state
@@ -320,6 +318,6 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         .iter()
         .any(|spec| { spec.name == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL }));
     assert!(!ordinary_specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
     }));
 }

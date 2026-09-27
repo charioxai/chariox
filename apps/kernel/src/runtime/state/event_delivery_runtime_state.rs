@@ -705,7 +705,6 @@ mod tests {
                 serde_json::json!({"scope": "event-admission"}),
                 Some("event-admission-environment".to_string()),
                 Some("default".to_string()),
-                None,
                 Vec::new(),
             )
             .expect("event binding should create");

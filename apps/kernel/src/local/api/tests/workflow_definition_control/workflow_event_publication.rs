@@ -485,7 +485,6 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
         filter: serde_json::json!({"channel": "default"}),
         environment_id: Some("environment-local".to_string()),
         queue_ref: Some("default".to_string()),
-        reply_mode: None,
         action_ids: Vec::new(),
     };
     let binding = match harness
@@ -577,7 +576,6 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
     .unwrap();
     assert!(binding_template.contains("\"requested_scope\": \"tenant:local\""));
     assert!(binding_template.contains("\"connection_id\": null"));
-    assert!(binding_template.contains("\"reply_mode\": \"disabled\""));
     assert!(binding_template.contains("\"action_ids\": []"));
     assert!(!binding_template.contains("connection-local"));
     let publication_json = package_json_file(&package_files, "publication.json");
@@ -979,7 +977,6 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     filter: serde_json::json!({"channel": "removal"}),
                     environment_id: Some("environment-removal".to_string()),
                     queue_ref: Some("default".to_string()),
-                    reply_mode: None,
                     action_ids: Vec::new(),
                 },
             ))
@@ -1106,7 +1103,6 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     filter: serde_json::json!({"channel": "reattach"}),
                     environment_id: Some("environment-removal".to_string()),
                     queue_ref: Some("default".to_string()),
-                    reply_mode: None,
                     action_ids: Vec::new(),
                 },
             ))
@@ -1243,7 +1239,6 @@ fn reduced_connection_scopes_block_binding_reactivation_and_transfer() {
                     filter: serde_json::json!({"channel": "scoped"}),
                     environment_id: Some("environment-scoped".to_string()),
                     queue_ref: Some("default".to_string()),
-                    reply_mode: None,
                     action_ids: Vec::new(),
                 },
             ))
@@ -1427,7 +1422,6 @@ fn app_inbox_routes_are_checked_with_the_generator_before_they_are_stored() {
                 filter: serde_json::json!({"channel": "taken"}),
                 environment_id: None,
                 queue_ref: Some("default".to_string()),
-                reply_mode: None,
                 action_ids: Vec::new(),
             },
         ))
@@ -1609,7 +1603,6 @@ fn a_workflow_binding_cannot_take_an_interest_an_app_route_receives() {
                 filter: serde_json::json!({"channel": channel}),
                 environment_id: None,
                 queue_ref: Some("default".to_string()),
-                reply_mode: None,
                 action_ids: Vec::new(),
             },
         ))
@@ -1775,7 +1768,6 @@ fn a_binding_that_cannot_move_to_an_app_stays_active() {
                     filter: serde_json::json!({"channel": channel}),
                     environment_id: environment_id.map(str::to_string),
                     queue_ref: Some("default".to_string()),
-                    reply_mode: None,
                     action_ids: Vec::new(),
                 },
             ))
@@ -1956,7 +1948,6 @@ fn a_refused_move_leaves_nothing_behind_and_the_same_move_then_succeeds() {
                     filter: serde_json::json!({"channel": "moved"}),
                     environment_id: None,
                     queue_ref: Some("default".to_string()),
-                    reply_mode: None,
                     action_ids: Vec::new(),
                 },
             ))
@@ -2041,7 +2032,6 @@ fn a_refused_move_leaves_nothing_behind_and_the_same_move_then_succeeds() {
                     filter: serde_json::json!({"channel": "acting"}),
                     environment_id: None,
                     queue_ref: Some("default".to_string()),
-                    reply_mode: None,
                     action_ids: vec!["dummy.ping".to_string()],
                 },
             ))

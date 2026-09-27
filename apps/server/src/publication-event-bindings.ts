@@ -16,7 +16,6 @@ interface MaterializedEventBinding {
   readonly requested_scope: string
   readonly endpoint_id: string
   readonly queue_ref: string | null
-  readonly reply_mode: "disabled" | "thread" | "channel"
   readonly action_ids: readonly string[]
   readonly activation: {
     readonly connection_id: string
@@ -53,7 +52,6 @@ export async function activatePublicationEventBindings(input: {
         filter: binding.filter,
         environmentId: binding.activation.environment_id,
         queueRef: binding.queue_ref,
-        replyMode: binding.reply_mode,
         actionIds: binding.action_ids,
       },
     ))
@@ -100,7 +98,6 @@ function parseEventBindings(value: unknown, publicationId: string): {
       "requested_scope",
       "endpoint_id",
       "queue_ref",
-      "reply_mode",
       "action_ids",
       "source_environment_id",
       "source_revision",
@@ -117,10 +114,6 @@ function parseEventBindings(value: unknown, publicationId: string): {
     if (!Number.isSafeInteger(binding.source_revision) || (binding.source_revision as number) < 1) {
       throw new Error(`publication event binding ${sourceBindingId} source_revision is invalid`)
     }
-    const replyMode = binding.reply_mode
-    if (replyMode !== "disabled" && replyMode !== "thread" && replyMode !== "channel") {
-      throw new Error(`publication event binding ${sourceBindingId} reply_mode is invalid`)
-    }
     if (!Array.isArray(binding.action_ids) || binding.action_ids.some((item) => typeof item !== "string" || !item.trim())) {
       throw new Error(`publication event binding ${sourceBindingId} action_ids are invalid`)
     }
@@ -135,7 +128,6 @@ function parseEventBindings(value: unknown, publicationId: string): {
       requested_scope: requiredString(binding.requested_scope, `publication event binding ${sourceBindingId} requested_scope`),
       endpoint_id: requiredString(binding.endpoint_id, `publication event binding ${sourceBindingId} endpoint_id`),
       queue_ref: optionalString(binding.queue_ref, `publication event binding ${sourceBindingId} queue_ref`),
-      reply_mode: replyMode,
       action_ids: [...binding.action_ids],
       activation: {
         connection_id: requiredString(activation.connection_id, `publication event binding ${sourceBindingId} connection_id`),

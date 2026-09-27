@@ -926,7 +926,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         session_id: &str,
         agent_id: &str,
         backing_prompt_id: &str,
-    ) -> Option<(bool, bool, bool)> {
+    ) -> Option<(bool, bool)> {
         self.app
             .leased_workflow_turns
             .values()
@@ -943,7 +943,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .map(|binding| {
                 (
-                    binding.context.event_reply_enabled,
                     binding.context.event_context_enabled,
                     binding.context.event_actions_enabled,
                 )
@@ -1291,7 +1290,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 (
                     binding.backing_prompt_id.clone(),
                     binding.provider_run_id.clone(),
-                    binding.context.event_reply_enabled,
+                    binding.context.event_context_enabled,
                 )
             })
     }

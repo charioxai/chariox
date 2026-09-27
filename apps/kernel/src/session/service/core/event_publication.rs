@@ -20,7 +20,6 @@ impl SessionService {
         filter: Value,
         environment_id: Option<String>,
         queue_ref: Option<String>,
-        reply_mode: Option<String>,
         action_ids: Vec<String>,
     ) -> Result<WorkflowEventBinding, DaemonError> {
         let publication = self.resolve_workflow_publication_ref(session_id, publication_ref)?;
@@ -70,18 +69,7 @@ impl SessionService {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .or_else(|| publication.queue_ref().map(str::to_string));
-        let reply_mode = normalize_event_reply_mode(reply_mode)?;
         let action_ids = normalize_event_action_ids(action_ids)?;
-        if action_ids
-            .iter()
-            .any(|action| action == "notification.reply")
-            && reply_mode == "disabled"
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "create workflow event binding",
-                message: "notification.reply requires reply_mode thread or channel".to_string(),
-            });
-        }
         self.resolve_workflow_prompt_queue_ref(
             session_id,
             publication.workflow_id(),
@@ -109,9 +97,7 @@ impl SessionService {
                     && existing.endpoint_id == publication.endpoint_id()
                     && existing.queue_ref == queue_ref
                 {
-                    if existing.reply_mode.as_deref() == Some(reply_mode.as_str())
-                        && existing.action_ids == action_ids
-                    {
+                    if existing.action_ids == action_ids {
                         return Ok(existing.clone());
                     }
                     let binding = self
@@ -119,13 +105,12 @@ impl SessionService {
                         .get_mut(session.id())
                         .and_then(|session| session.workflow_event_binding_mut(&existing.id))
                         .ok_or_else(|| DaemonError::LocalTransport {
-                            operation: "update workflow event binding reply mode",
+                            operation: "update workflow event binding actions",
                             message: format!(
                                 "workflow event binding `{}` was not found",
                                 existing.id
                             ),
                         })?;
-                    binding.reply_mode = Some(reply_mode.clone());
                     binding.action_ids = action_ids.clone();
                     binding.revision = binding.revision.saturating_add(1);
                     binding.updated_at_ms = unix_epoch_ms();
@@ -150,7 +135,6 @@ impl SessionService {
             environment_id,
             endpoint_id: publication.endpoint_id().to_string(),
             queue_ref,
-            reply_mode: Some(reply_mode),
             action_ids,
             revision: 1,
             status: WorkflowEventBindingStatus::Active,
@@ -363,21 +347,6 @@ impl SessionService {
         session.prune_expired_workflow_event_delivery_receipts(unix_epoch_ms());
         session.record_workflow_event_delivery_receipt(receipt);
         Ok(())
-    }
-}
-
-fn normalize_event_reply_mode(value: Option<String>) -> Result<String, DaemonError> {
-    let value = value
-        .unwrap_or_else(|| "disabled".to_string())
-        .trim()
-        .to_ascii_lowercase();
-    if matches!(value.as_str(), "disabled" | "thread" | "channel") {
-        Ok(value)
-    } else {
-        Err(DaemonError::LocalTransport {
-            operation: "create workflow event binding",
-            message: "reply_mode must be `disabled`, `thread`, or `channel`".to_string(),
-        })
     }
 }
 

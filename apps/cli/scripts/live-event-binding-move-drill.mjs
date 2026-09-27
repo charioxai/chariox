@@ -41,7 +41,7 @@ try {
     session_id: options.session, publication_ref: publication.id, generator_id: "dev.chariox.dummy",
     generator_version: generator.version, manifest_digest: generator.manifest_digest, connection_id: options.connection,
     connection_scope: options.scope, event_type: "dummy.test", event_type_version: 1, filter: { channel: `move-${tag}` },
-    environment_id: null, queue_ref: "default", reply_mode: null, action_ids: [],
+    environment_id: null, queue_ref: "default", action_ids: [],
   } })).WorkflowEventBindingCreated.binding
   evidence.steps.push({ step: "old-path binding", binding: binding.id, publication: publication.id })
 

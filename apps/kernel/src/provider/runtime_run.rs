@@ -54,13 +54,9 @@ pub struct RuntimeProviderRun {
     /// for workflow execution, keeping ordinary turns' tool surface small.
     #[serde(skip)]
     workflow_tools_enabled: bool,
-    /// Capability snapshot for the current workflow provider run. This is
-    /// separate from `workflow_tools_enabled` because event reply is opt-in at
-    /// the event binding and must not pollute ordinary workflow contexts.
-    #[serde(skip)]
-    workflow_event_reply_enabled: bool,
     /// Capability snapshot for bounded provider event context. This is
-    /// independent from the event reply capability.
+    /// separate from `workflow_tools_enabled` because event context is opt-in
+    /// at the event binding and must not pollute ordinary workflow contexts.
     #[serde(skip)]
     workflow_event_context_enabled: bool,
     workflow_event_actions_enabled: bool,
@@ -159,7 +155,6 @@ impl RuntimeProviderRun {
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
             workflow_tools_enabled: false,
-            workflow_event_reply_enabled: request.workflow_event_reply_enabled,
             workflow_event_context_enabled: request.workflow_event_context_enabled,
             workflow_event_actions_enabled: request.workflow_event_actions_enabled,
             workflow_fresh_context_node_run_id: None,
@@ -229,7 +224,6 @@ impl RuntimeProviderRun {
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
             workflow_tools_enabled: false,
-            workflow_event_reply_enabled: false,
             workflow_event_context_enabled: false,
             workflow_event_actions_enabled: false,
             workflow_fresh_context_node_run_id: None,
@@ -546,10 +540,6 @@ impl RuntimeProviderRun {
 
     pub fn enable_workflow_tools(&mut self) {
         self.workflow_tools_enabled = true;
-    }
-
-    pub fn workflow_event_reply_enabled(&self) -> bool {
-        self.workflow_event_reply_enabled
     }
 
     pub fn workflow_event_context_enabled(&self) -> bool {

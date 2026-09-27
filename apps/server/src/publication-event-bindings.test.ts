@@ -25,7 +25,6 @@ test("activates materialized event routes on the independent runtime session", a
       requested_scope: "repository:charioxai/drill",
       endpoint_id: "endpoint-1",
       queue_ref: "review",
-      reply_mode: "thread",
       action_ids: ["notification.reply"],
       source_environment_id: "source-environment",
       source_revision: 2,
@@ -70,7 +69,6 @@ test("activates materialized event routes on the independent runtime session", a
       filter: { repository: "charioxai/drill" },
       environment_id: "environment-1",
       queue_ref: "review",
-      reply_mode: "thread",
       action_ids: ["notification.reply"],
     },
   }])
@@ -94,7 +92,6 @@ test("rejects changed destination authorization before contacting the kernel", a
       requested_scope: "repository:charioxai/drill",
       endpoint_id: "endpoint-1",
       queue_ref: null,
-      reply_mode: "disabled",
       action_ids: [],
       source_environment_id: "source-environment",
       source_revision: 1,

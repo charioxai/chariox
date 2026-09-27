@@ -34,14 +34,13 @@ impl<'a> KernelAgentService<'a> {
             };
             let is_workflow_prompt = source_is_workflow || leased_event_capabilities.is_some();
             let provider_run_id = match if is_workflow_prompt {
-                if let Some((event_reply_enabled, event_context_enabled, event_actions_enabled)) =
+                if let Some((event_context_enabled, event_actions_enabled)) =
                     leased_event_capabilities
                 {
                     crate::app::workflow_runtime::ensure_workflow_provider_run_with_event_capabilities_from_runtime(
                         self.app,
                         session_id,
                         &target_agent_id,
-                        event_reply_enabled,
                         event_context_enabled,
                         event_actions_enabled,
                     )

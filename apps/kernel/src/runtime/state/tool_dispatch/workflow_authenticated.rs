@@ -8,9 +8,6 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let owned = &self.owned;
-        let provider_run_allows_event_reply = provider_runs
-            .iter()
-            .any(|run| run.workflow_event_reply_enabled());
         let provider_run_allows_event_context = provider_runs
             .iter()
             .any(|run| run.workflow_event_context_enabled());
@@ -20,11 +17,10 @@ impl KernelRuntimeState {
         // Tool discovery is advisory. A provider can retain a tool name from
         // an earlier snapshot, and an event binding can be edited while that
         // provider turn is still running. Enforce the capability snapshot at
-        // dispatch time before the live binding/reply handler is consulted.
+        // dispatch time before the live binding handler is consulted.
         let event_action_requested = matches!(
             canonical_tool_name,
-            crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
-                | crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
+            crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
                 | crate::transport::runtime_tools::EVENT_ACTION_TOOL
         );
         let leased_event_context = if event_action_requested {
@@ -42,22 +38,8 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        if canonical_tool_name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
-            && !event_reply_dispatch_snapshot_allows(
-                provider_run_allows_event_reply,
-                leased_event_context
-                    .as_ref()
-                    .map(|context| context.event_reply_enabled),
-            )
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "dispatch_authenticated_workflow_runtime_tool_call",
-                message: "reply_to_event is not enabled for the active workflow provider run"
-                    .to_string(),
-            });
-        }
         if canonical_tool_name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
-            && !event_reply_dispatch_snapshot_allows(
+            && !event_tool_dispatch_snapshot_allows(
                 provider_run_allows_event_context,
                 leased_event_context
                     .as_ref()
@@ -71,7 +53,7 @@ impl KernelRuntimeState {
             });
         }
         if canonical_tool_name == crate::transport::runtime_tools::EVENT_ACTION_TOOL
-            && !event_reply_dispatch_snapshot_allows(
+            && !event_tool_dispatch_snapshot_allows(
                 provider_run_allows_event_actions,
                 leased_event_context
                     .as_ref()
@@ -116,11 +98,6 @@ impl KernelRuntimeState {
             }
             crate::transport::runtime_tools::AGENT_APP_ACTION_TOOL => serde_json::from_value::<
                 crate::transport::runtime_tools::AgentAppActionArgs,
-            >(arguments.clone())
-            .ok()
-            .and_then(|args| args.delivery_token),
-            crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL => serde_json::from_value::<
-                crate::transport::runtime_tools::ReplyToEventArgs,
             >(arguments.clone())
             .ok()
             .and_then(|args| args.delivery_token),
@@ -248,7 +225,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn event_reply_dispatch_snapshot_allows(
+fn event_tool_dispatch_snapshot_allows(
     owned_provider_run_enabled: bool,
     leased_binding_enabled: Option<bool>,
 ) -> bool {
@@ -257,13 +234,13 @@ fn event_reply_dispatch_snapshot_allows(
 
 #[cfg(test)]
 mod tests {
-    use super::event_reply_dispatch_snapshot_allows;
+    use super::event_tool_dispatch_snapshot_allows;
 
     #[test]
     fn event_action_dispatch_requires_the_provider_or_lease_snapshot() {
-        assert!(event_reply_dispatch_snapshot_allows(true, None));
-        assert!(event_reply_dispatch_snapshot_allows(false, Some(true)));
-        assert!(!event_reply_dispatch_snapshot_allows(false, Some(false)));
-        assert!(!event_reply_dispatch_snapshot_allows(false, None));
+        assert!(event_tool_dispatch_snapshot_allows(true, None));
+        assert!(event_tool_dispatch_snapshot_allows(false, Some(true)));
+        assert!(!event_tool_dispatch_snapshot_allows(false, Some(false)));
+        assert!(!event_tool_dispatch_snapshot_allows(false, None));
     }
 }

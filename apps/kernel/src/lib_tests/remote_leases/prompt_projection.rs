@@ -516,8 +516,7 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
                 workflow_run_id: "workflow-first".to_string(),
                 workflow_node_run_id: "node-first".to_string(),
                 delivery_token: "delivery-first".to_string(),
-                event_reply_enabled: true,
-                event_context_enabled: false,
+                event_context_enabled: true,
                 event_actions_enabled: false,
             }),
             Some(crate::transport::relay_peer::RemoteGitTurnContext {
@@ -546,7 +545,7 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
         .providers()
         .get_run(&first_provider_run_id)
         .expect("first provider run should exist")
-        .workflow_event_reply_enabled());
+        .workflow_event_context_enabled());
 
     let second_home_prompt_id = "home-leased-workflow-second";
     let (queued_provider_run_id, second_outcome) = RemoteLeaseRuntime::new(&mut app)
@@ -561,7 +560,6 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
                 workflow_run_id: "workflow-second".to_string(),
                 workflow_node_run_id: "node-second".to_string(),
                 delivery_token: "delivery-second".to_string(),
-                event_reply_enabled: false,
                 event_context_enabled: false,
                 event_actions_enabled: false,
             }),
@@ -625,7 +623,7 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
         .providers()
         .get_run(&second_provider_run_id)
         .expect("replacement provider run should exist")
-        .workflow_event_reply_enabled());
+        .workflow_event_context_enabled());
     assert_eq!(
         RemoteLeaseRuntime::new(&mut app)
             .leased_agent_snapshot_for_test(&leased_agent.id)
@@ -700,7 +698,7 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
                   home_session_id: &str,
                   home_agent_id: &str,
                   workflow_run_id: &str,
-                  event_reply_enabled: bool| {
+                  event_context_enabled: bool| {
         RemoteLeaseRuntime::new(app).submit_leased_prompt_with_workflow_context(
             &agent.id,
             "same home prompt id from independent lease\n",
@@ -712,8 +710,7 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
                 workflow_run_id: workflow_run_id.to_string(),
                 workflow_node_run_id: format!("{workflow_run_id}-node"),
                 delivery_token: format!("{workflow_run_id}-delivery"),
-                event_reply_enabled,
-                event_context_enabled: false,
+                event_context_enabled,
                 event_actions_enabled: false,
             }),
             Some(crate::transport::relay_peer::RemoteGitTurnContext {

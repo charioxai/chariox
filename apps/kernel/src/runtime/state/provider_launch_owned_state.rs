@@ -922,7 +922,6 @@ mod tests {
                 false,
                 false,
                 false,
-                false,
                 None,
             )
             .expect("locked vault must not block synchronous workflow admission");

@@ -101,12 +101,8 @@ pub struct RemoteWorkflowTurnContext {
     pub workflow_run_id: String,
     pub workflow_node_run_id: String,
     pub delivery_token: String,
-    /// Capability snapshot selected by the home workflow event binding.
-    /// Older peers default to disabled, preserving the safe behavior.
-    #[serde(default)]
-    pub event_reply_enabled: bool,
-    /// Whether this event run may request bounded provider context. This is
-    /// independent from reply mode and defaults off for older peers.
+    /// Whether this event run may request bounded provider context. Defaults
+    /// off for older peers.
     #[serde(default)]
     pub event_context_enabled: bool,
     /// Whether this event run has at least one catalog-validated action.

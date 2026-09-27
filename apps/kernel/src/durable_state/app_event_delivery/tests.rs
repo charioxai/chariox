@@ -231,7 +231,7 @@ fn artifacts_remain_metadata_and_app_source_cannot_name_legacy_event_authority()
     let invocation = queued.publication_invocation().unwrap();
     assert_eq!(invocation.transport, "app_event");
     assert_eq!(invocation.hook_id.as_deref(), Some("automation"));
-    // All existing legacy event reply/context/action lookups require "event".
+    // All existing legacy event context/action lookups require "event".
     assert_ne!(invocation.transport, "event");
     assert_eq!(
         invocation.artifacts[0]["reference"],

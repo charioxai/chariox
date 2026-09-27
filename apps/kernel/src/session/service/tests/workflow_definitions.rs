@@ -460,7 +460,6 @@ fn workflow_design_endpoint_max_instances_contract() {
             serde_json::json!({}),
             None,
             Some("default".to_string()),
-            Some("disabled".to_string()),
             Vec::new(),
         )
         .expect("event binding should be created");

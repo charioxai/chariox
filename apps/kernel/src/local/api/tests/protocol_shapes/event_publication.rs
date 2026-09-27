@@ -37,7 +37,7 @@ fn sample_event_connection(
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 364);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -84,7 +84,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 filter: serde_json::json!({"repository": "chariox"}),
                 environment_id: Some("environment-1".to_string()),
                 queue_ref: Some("priority".to_string()),
-                reply_mode: None,
                 action_ids: Vec::new(),
             },
         ),
@@ -377,5 +376,109 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "68aa1e81fc6fa7d43901fd2b95a92846986b7407538baae12f94073f1fc98745"
+    );
+}
+
+#[test]
+fn workflow_event_binding_and_turn_context_shapes_are_versioned() {
+    // Protocol 364 removed the workflow event reply surface.
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 364);
+    let binding = crate::session::WorkflowEventBinding {
+        id: "binding-1".to_string(),
+        publication_id: "publication-1".to_string(),
+        generator_id: "dev.chariox.github".to_string(),
+        generator_version: "1.0.0".to_string(),
+        manifest_digest: format!("sha256:{}", "a".repeat(64)),
+        connection_id: "connection-1".to_string(),
+        connection_scope: "installation:1".to_string(),
+        event_type: "pull_request.opened".to_string(),
+        event_type_version: 1,
+        filter: serde_json::json!({"repository": "chariox"}),
+        event_interest_key: "interest-1".to_string(),
+        environment_id: "environment-1".to_string(),
+        endpoint_id: "endpoint-1".to_string(),
+        queue_ref: Some("default".to_string()),
+        action_ids: vec!["notification.reply".to_string()],
+        revision: 1,
+        status: crate::session::WorkflowEventBindingStatus::Active,
+        created_at_ms: 1_700_000,
+        updated_at_ms: 1_800_000,
+    };
+    let context = crate::execution_lease::RemoteWorkflowTurnContext {
+        home_kernel_id: "home".to_string(),
+        home_session_id: "room".to_string(),
+        home_agent_id: "agent".to_string(),
+        workflow_run_id: "run".to_string(),
+        workflow_node_run_id: "node".to_string(),
+        delivery_token: "token".to_string(),
+        event_context_enabled: true,
+        event_actions_enabled: true,
+    };
+    let snapshot = serde_json::json!({"binding": binding, "context": context});
+    let keys = |value: &serde_json::Value| {
+        value
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        keys(&snapshot["binding"]),
+        [
+            "action_ids",
+            "connection_id",
+            "connection_scope",
+            "created_at_ms",
+            "endpoint_id",
+            "environment_id",
+            "event_interest_key",
+            "event_type",
+            "event_type_version",
+            "filter",
+            "generator_id",
+            "generator_version",
+            "id",
+            "manifest_digest",
+            "publication_id",
+            "queue_ref",
+            "revision",
+            "status",
+            "updated_at_ms",
+        ]
+    );
+    assert_eq!(
+        keys(&snapshot["context"]),
+        [
+            "delivery_token",
+            "event_actions_enabled",
+            "event_context_enabled",
+            "home_agent_id",
+            "home_kernel_id",
+            "home_session_id",
+            "workflow_node_run_id",
+            "workflow_run_id",
+        ]
+    );
+    // Persisted bindings and older peers may still carry removed fields.
+    let mut legacy = snapshot.clone();
+    legacy["binding"]["retired_field"] = serde_json::json!("thread");
+    legacy["context"]["retired_field"] = serde_json::json!(true);
+    assert_eq!(
+        serde_json::from_value::<crate::session::WorkflowEventBinding>(legacy["binding"].clone())
+            .unwrap(),
+        binding
+    );
+    assert_eq!(
+        serde_json::from_value::<crate::execution_lease::RemoteWorkflowTurnContext>(
+            legacy["context"].clone()
+        )
+        .unwrap(),
+        context
+    );
+    let serialized = serde_json::to_string(&snapshot).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        "b917c96b330312ffbb262dec487a260d4fa323a56a60e75ccc4abe8f6c02b117"
     );
 }

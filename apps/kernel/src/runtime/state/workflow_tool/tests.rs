@@ -71,7 +71,7 @@ fn runtime_tool_snapshot_policy_keeps_external_context_tools_out_of_large_writes
         crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
     ));
     assert!(!super::runtime_tool_requires_session_snapshot(
-        crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
+        crate::transport::runtime_tools::EVENT_ACTION_TOOL
     ));
 }
 
@@ -128,7 +128,7 @@ fn event_context_runtime_receipts_redact_provider_payloads() {
 }
 
 #[test]
-fn event_context_tool_is_discovered_without_reply_tool() {
+fn event_context_tool_is_discovered_without_event_action_tool() {
     let worktree = crate::test_support::TestWorktree::new("workflow-tool-event-context");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -163,9 +163,6 @@ fn event_context_tool_is_discovered_without_reply_tool() {
     assert!(!specs
         .iter()
         .any(|spec| { spec.name == crate::transport::runtime_tools::EVENT_ACTION_TOOL_QUALIFIED }));
-    assert!(!specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
-    }));
 }
 
 #[test]
@@ -321,7 +318,7 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
     let runtime = runtime_state_from_app(app);
     let ordinary_specs = runtime.runtime_tool_specs_for_auth_token(&ordinary_auth_token);
     assert!(!ordinary_specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
     }));
     runtime
         .owned
@@ -399,14 +396,14 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
 
     assert_ne!(workflow_provider.id(), ordinary.id());
     assert!(workflow_provider.workflow_tools_enabled());
-    assert!(!workflow_provider.workflow_event_reply_enabled());
+    assert!(!workflow_provider.workflow_event_context_enabled());
     let workflow_auth_token = workflow_provider
         .runtime_mcp_auth_token()
         .expect("workflow provider should expose runtime MCP auth")
         .to_string();
     let workflow_specs = runtime.runtime_tool_specs_for_auth_token(&workflow_auth_token);
     assert!(!workflow_specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
     }));
     assert!(matches!(
         runtime

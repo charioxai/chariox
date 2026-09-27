@@ -172,7 +172,6 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_reply_enabled: bool,
     event_context_enabled: bool,
     event_actions_enabled: bool,
     fresh_context: bool,
@@ -183,7 +182,6 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     }
     if let Some(run) = app.providers().get_run_for_agent(session_id, agent_id) {
         if run.workflow_tools_enabled()
-            && run.workflow_event_reply_enabled() == event_reply_enabled
             && run.workflow_event_context_enabled() == event_context_enabled
             && run.workflow_event_actions_enabled() == event_actions_enabled
         {
@@ -209,7 +207,6 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
         app,
         session_id,
         agent_id,
-        event_reply_enabled,
         event_context_enabled,
         event_actions_enabled,
         fresh_context,
@@ -223,7 +220,6 @@ fn workflow_provider_request(
     app: &DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_reply_enabled: bool,
     event_context_enabled: bool,
     event_actions_enabled: bool,
     fresh_context: bool,
@@ -240,7 +236,6 @@ fn workflow_provider_request(
         agent.provider_account_profile(),
         agent.model().unwrap_or("default"),
     )
-    .with_workflow_event_reply(event_reply_enabled)
     .with_workflow_event_context(event_context_enabled)
     .with_workflow_event_actions(event_actions_enabled)
     .with_agent_id(agent.id().to_string())

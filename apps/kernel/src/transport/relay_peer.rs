@@ -1311,7 +1311,6 @@ mod tests {
                 "workflow_run_id": "run",
                 "workflow_node_run_id": "node",
                 "delivery_token": "test-turn",
-                "event_reply_enabled": false,
                 "event_context_enabled": false,
                 "event_actions_enabled": false
             },

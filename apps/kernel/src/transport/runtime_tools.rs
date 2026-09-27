@@ -39,8 +39,6 @@ pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
 pub const AGENT_APP_ACTION_TOOL: &str = "agent_app_action";
 pub const AGENT_APP_ACTION_TOOL_QUALIFIED: &str = "chariox.agent_app_action";
-pub const REPLY_TO_EVENT_TOOL: &str = "reply_to_event";
-pub const REPLY_TO_EVENT_TOOL_QUALIFIED: &str = "chariox.reply_to_event";
 pub const EVENT_CONTEXT_TOOL: &str = "event_context";
 pub const EVENT_CONTEXT_TOOL_QUALIFIED: &str = "chariox.event_context";
 /// Invoke an explicitly provider-declared action for the current event.

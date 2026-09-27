@@ -2006,6 +2006,15 @@ Workflow trigger and deployment direction:
   can reinstall into. Linux App storage is root-owned: the storage helper's
   `delete` request (a new helper operation) removes it; an installation still
   leased is busy.
+- protocol 364: the workflow event reply surface is removed; replies go
+  through an App's granted connection (protocol 359). `CreateWorkflowEventBinding`,
+  workflow event bindings and publication `event-bindings` templates drop
+  `reply_mode`; `RemoteWorkflowTurnContext` drops `event_reply_enabled`; the
+  `reply_to_event` runtime tool is gone. `notification.reply` is an ordinary
+  event action: the `event_action` tool passes its `input` to the generator
+  unchanged, gated only by the binding's `action_ids`. Older peers and
+  persisted bindings that still carry the removed fields are read with them
+  ignored.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

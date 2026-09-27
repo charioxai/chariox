@@ -44,17 +44,6 @@ pub struct AgentAppActionArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReplyToEventArgs {
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idempotency_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_token: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventContextArgs {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,21 +177,6 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
-            name: REPLY_TO_EVENT_TOOL_QUALIFIED.to_string(),
-            description: "Reply through the notification provider that delivered the current event. Omitting mode uses the event binding's configured reply mode; explicitly choose `thread` or `channel` when the binding permits it. This is only available for event-triggered workflow runs with reply permission enabled.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "required": ["text"],
-                "properties": {
-                    "text": {"type": "string", "minLength": 1, "maxLength": 40000},
-                    "mode": {"type": "string", "enum": ["thread", "channel"]},
-                    "idempotency_key": {"type": "string"},
-                    "delivery_token": {"type": "string"}
-                },
-                "additionalProperties": false
-            }),
-        },
-        RuntimeToolSpec {
             name: EVENT_CONTEXT_TOOL_QUALIFIED.to_string(),
             description: "Request bounded context from the provider that delivered the current event. The request is scoped to that event's workspace, channel, and thread; conversation history and participant profiles are not added unless you explicitly request them. This is only available for compatible event-triggered workflow runs.".to_string(),
             input_schema: serde_json::json!({
@@ -236,27 +210,19 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     ]
 }
 
-/// Return the workflow contract tools without the provider reply action.
+/// Return the workflow contract tools without the event-scoped provider tools.
 ///
-/// Replying is opt-in at the event binding level. Keeping the action out of the
-/// provider tool list for ordinary workflows avoids adding unrelated capability
-/// prose to every provider context while the dispatcher remains the final guard.
-pub fn workflow_runtime_tool_specs_without_event_reply() -> Vec<RuntimeToolSpec> {
+/// Event context and actions are opt-in per provider run. Keeping them out of
+/// the provider tool list for ordinary workflows avoids adding unrelated
+/// capability prose to every provider context while the dispatcher remains the
+/// final guard.
+pub fn workflow_runtime_tool_specs_without_event_tools() -> Vec<RuntimeToolSpec> {
     workflow_runtime_tool_specs()
         .into_iter()
         .filter(|spec| {
-            spec.name != REPLY_TO_EVENT_TOOL_QUALIFIED
-                && spec.name != EVENT_CONTEXT_TOOL_QUALIFIED
-                && spec.name != EVENT_ACTION_TOOL_QUALIFIED
+            spec.name != EVENT_CONTEXT_TOOL_QUALIFIED && spec.name != EVENT_ACTION_TOOL_QUALIFIED
         })
         .collect()
-}
-
-pub fn workflow_reply_to_event_tool_spec() -> RuntimeToolSpec {
-    workflow_runtime_tool_specs()
-        .into_iter()
-        .find(|spec| spec.name == REPLY_TO_EVENT_TOOL_QUALIFIED)
-        .expect("workflow runtime tool list must contain reply_to_event")
 }
 
 pub fn workflow_event_context_tool_spec() -> RuntimeToolSpec {
@@ -292,11 +258,6 @@ pub fn canonical_workflow_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_agent_app_action"
         | "mcp__chariox__agent_app_action"
         | "mcp__chariox__chariox_agent_app_action" => Some(AGENT_APP_ACTION_TOOL),
-        REPLY_TO_EVENT_TOOL
-        | REPLY_TO_EVENT_TOOL_QUALIFIED
-        | "chariox_reply_to_event"
-        | "mcp__chariox__reply_to_event"
-        | "mcp__chariox__chariox_reply_to_event" => Some(REPLY_TO_EVENT_TOOL),
         EVENT_CONTEXT_TOOL
         | EVENT_CONTEXT_TOOL_QUALIFIED
         | "chariox_event_context"

@@ -145,4 +145,9 @@ pub use workspace::*;
 /// Version 363 adds `delete_data` to `UninstallApp` and `data_kept` to App
 /// installation summaries: an uninstalled installation keeps its data for a
 /// reinstall unless the owner deletes it.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 363;
+/// Version 364 removes the workflow event reply surface: event bindings, their
+/// create request and publication binding templates lose the reply mode, the
+/// relay workflow turn context loses its reply capability, and the reply
+/// runtime tool is gone. `notification.reply` is an ordinary event action
+/// gated only by the binding's `action_ids`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 364;

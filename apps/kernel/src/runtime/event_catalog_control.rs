@@ -80,7 +80,6 @@ pub(crate) struct WorkflowEventBindingContract {
     pub(crate) event_type: String,
     pub(crate) event_type_version: u32,
     pub(crate) action_ids: Vec<String>,
-    pub(crate) reply_mode: Option<String>,
 }
 
 impl From<&crate::local::CreateWorkflowEventBindingRequest> for WorkflowEventBindingContract {
@@ -93,7 +92,6 @@ impl From<&crate::local::CreateWorkflowEventBindingRequest> for WorkflowEventBin
             event_type: request.event_type.clone(),
             event_type_version: request.event_type_version,
             action_ids: request.action_ids.clone(),
-            reply_mode: request.reply_mode.clone(),
         }
     }
 }
@@ -108,7 +106,6 @@ impl From<&crate::session::WorkflowEventBinding> for WorkflowEventBindingContrac
             event_type: binding.event_type.clone(),
             event_type_version: binding.event_type_version,
             action_ids: binding.action_ids.clone(),
-            reply_mode: binding.reply_mode.clone(),
         }
     }
 }
@@ -587,7 +584,6 @@ fn validate_event_binding_detail(
         event_type,
         event_type_version,
         action_ids,
-        reply_mode,
         ..
     } = contract;
     if detail.summary.generator_id != *generator_id || detail.summary.version != *generator_version
@@ -627,13 +623,6 @@ fn validate_event_binding_detail(
                 "action `{action_id}` is not declared by `{generator_id}@{generator_version}`"
             )));
         };
-        if action_id == "notification.reply"
-            && !matches!(reply_mode.as_deref(), Some("thread" | "channel"))
-        {
-            return Err(connection_error(
-                "notification.reply requires reply_mode thread or channel".to_string(),
-            ));
-        }
         required_scopes.extend(action.required_scopes.iter().cloned());
     }
     Ok(required_scopes.into_iter().collect())
@@ -709,7 +698,7 @@ pub(crate) async fn validate_registered_event_connection(
 
 /// Ensure a workflow runtime action has a live management target before the
 /// synchronous action path reads the projection. This is deliberately shared
-/// by reply and event-context actions so registry-issued targets are resolved
+/// by event-action and event-context tools so registry-issued targets are resolved
 /// after a kernel restart as well as during connection/binding setup.
 pub(crate) async fn ensure_event_generator_management_target_for_workflow_run(
     runtime_state: &KernelRuntimeState,
@@ -2094,7 +2083,6 @@ mod tests {
             event_type: event_type.to_string(),
             event_type_version: 1,
             action_ids,
-            reply_mode: None,
         }
     }
 

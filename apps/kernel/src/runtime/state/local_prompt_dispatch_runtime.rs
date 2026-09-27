@@ -340,7 +340,6 @@ mod tests {
                                 false,
                                 false,
                                 false,
-                                false,
                                 None,
                             )
                             .map(|(provider_run_id, _)| provider_run_id)
@@ -496,7 +495,6 @@ mod tests {
                 false,
                 false,
                 false,
-                false,
                 None,
             )
             .expect("workflow provider should start");
@@ -609,7 +607,6 @@ mod tests {
             .workflow_ensure_provider_run(
                 session.id(),
                 workflow_agent.id(),
-                false,
                 false,
                 false,
                 false,

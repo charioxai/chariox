@@ -222,7 +222,7 @@ impl KernelRuntimeState {
                     .remote_execution()
                     .is_some();
                 if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
-                    let (event_reply_enabled, event_context_enabled, event_actions_enabled) = owned
+                    let (event_context_enabled, event_actions_enabled) = owned
                         .workflow_event_capabilities_for_prompt(&session_id, &prepared.prompt)?;
                     let fresh_context = owned.workflow_prompt_requires_fresh_provider_context(
                         &session_id,
@@ -232,7 +232,6 @@ impl KernelRuntimeState {
                     let (_provider_run_id, _) = owned.workflow_ensure_provider_run(
                         &session_id,
                         &target_agent_id,
-                        event_reply_enabled,
                         event_context_enabled,
                         event_actions_enabled,
                         fresh_context,
