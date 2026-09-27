@@ -85,7 +85,7 @@ impl ValidationCommandLease {
             command_index,
             scratch_path: scratch_path.to_path_buf(),
             owner_token: owner_token(operation_id, attempt, command_index),
-            boot_id,
+            boot_id: boot_id.to_string(),
             process: None,
             output_pipe_unsettled: false,
         })
