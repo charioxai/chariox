@@ -1734,6 +1734,25 @@ Workflow trigger and deployment direction:
   is unchanged, but the receipt's original-prompt semantics require both home
   and worker kernels to support relay peer protocol 62. Local-daemon client
   minimum versions do not change.
+- relay peer protocol 63 adds
+  `AcknowledgeLeasedProjectEnvironmentSetupDefinition` and
+  `LeasedProjectEnvironmentSetupDefinitionAcknowledged`. When a leased worker
+  generates a utility-origin Project definition whose persistence belongs to
+  the home kernel, it keeps the setup attempt in `Preparing` and returns the
+  definition in the existing setup status. The home persists the definition
+  before acknowledging it. The request binds the leased-agent ID, operation ID,
+  attempt, project ID, home session and agent IDs, and the definition digest;
+  the response must echo the operation, attempt, project, and digest. The home
+  checks the owner-scoped setup target and active binding. The worker accepts
+  the acknowledgment only for its active attempt and lease, matching home
+  session/agent and project, and a digest equal to both the staged definition's
+  recomputed digest and its status digest. An identical acknowledgment is
+  idempotent; a mismatch or conflicting repeat is rejected. Worker validation
+  starts only after the matching acknowledgment; if it does not arrive within
+  the existing 30-second wait, setup fails before validation. Both home and
+  worker kernels must support relay peer protocol 63 or newer; a missing or
+  older worker version is incompatible and requires rebinding. Local-daemon
+  request/response shapes and client minimum versions do not change.
 - protocol 350 adds optional `disk_layer_mb` and `disk_home_mb` to the Linux
   slice settings in the existing user-config response and coordinates the
   signed managed auto-stop quiescence HTTP contract. Quiescence adds no
