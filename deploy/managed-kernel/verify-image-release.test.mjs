@@ -267,7 +267,10 @@ test("Path-1 verification rejects a signed release with no data-volume admission
   const fixture = await createReleaseFixture(context, { dataVolumeArtifactNames: [] })
   const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
   assert.notEqual(result.status, 0)
-  assert.match(result.stderr, /Error: Path-1 releases must include data-volume admission and both ordering drop-ins/)
+  assert.match(
+    result.stderr,
+    /^verify-image-release\.mjs: Path-1 releases must include data-volume admission and both ordering drop-ins/,
+  )
 })
 
 test("Path-1 verification rejects a signed release with a partial data-volume artifact set", async (context) => {
@@ -276,7 +279,10 @@ test("Path-1 verification rejects a signed release with a partial data-volume ar
   })
   const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
   assert.notEqual(result.status, 0)
-  assert.match(result.stderr, /Error: release contains an incomplete Path-1 data-volume admission artifact set/)
+  assert.match(
+    result.stderr,
+    /^verify-image-release\.mjs: release contains an incomplete Path-1 data-volume admission artifact set/,
+  )
 })
 
 test("Path-1 verification accepts signed direct ExecStart commands and static bootstrap PATHs", async (context) => {
