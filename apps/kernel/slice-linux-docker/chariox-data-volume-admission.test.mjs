@@ -52,6 +52,7 @@ function fakeAdmission({
   let filesystemUuid = initialFilesystem ? UUID : ""
   let mounted = false
   let binding
+  let observation
   const calls = []
   const commands = {
     run(command, args) {
@@ -116,6 +117,8 @@ function fakeAdmission({
     ensureMountpoint: () => true,
     holders: () => hasHolder,
     dockerOwner: () => ({ uid: 1001, gid: 1001 }),
+    clearObservation: () => { observation = undefined },
+    writeObservation: (value) => { observation = value },
   }
   return {
     commands,
@@ -124,6 +127,7 @@ function fakeAdmission({
     simulateReboot() { mounted = false },
     setFilesystemUse(value) { busyFilesystem = value },
     get binding() { return binding },
+    get observation() { return observation },
   }
 }
 
@@ -177,6 +181,15 @@ test("fresh matching blank volume is formatted once, bound, mounted, and quota-v
   assert.equal(fake.binding.expectedDataVolumeSerial, SERIAL)
   assert.equal(fake.binding.expectedDataVolumeSizeGb, 10)
   assert.equal(fake.binding.filesystemUuid, UUID)
+  assert.deepEqual(fake.observation, {
+    schemaVersion: 1,
+    dataVolumeSerial: SERIAL,
+    dataVolumeSizeGb: 10,
+    filesystemUuid: UUID,
+    devicePath: "/dev/sdb",
+    majorMinor: "8:16",
+    mountTarget: DATA_ROOT,
+  })
   assert.equal(fake.calls.filter(([command]) => command === "/usr/sbin/mkfs.xfs").length, 1)
   assert.equal(fake.calls.filter(([command]) => command === "/usr/bin/systemd-mount").length, 1)
   assert.ok(fake.calls.some(([command]) => command === "/usr/sbin/xfs_quota"))
@@ -217,6 +230,7 @@ test("rejects a mounted volume while any process is using its filesystem", () =>
   admitDataVolume(fake)
   fake.setFilesystemUse(true)
   assert.throws(() => admitDataVolume(fake), /filesystem is in use by a process/)
+  assert.equal(fake.observation, undefined)
   assert.equal(fake.calls.filter(([command]) => command === "/usr/sbin/mkfs.xfs").length, 1)
 })
 

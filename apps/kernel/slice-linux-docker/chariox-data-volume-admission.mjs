@@ -164,6 +164,7 @@ function applyDockerRootOwnership(io, commands) {
 }
 
 export function admitDataVolume({ commands = systemCommands, io = systemIo } = {}) {
+  io.clearObservation()
   const input = io.readStorageInput()
   if (!input) fail("Path-1 admission requires a protected storage bootstrap input")
   const wantedBytes = expectedVolumeBytes(input.sizeGb)
@@ -220,6 +221,15 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
   }
   verifyXfsQuotaAndOverlay(commands, DATA_ROOT)
   applyDockerRootOwnership(io, commands)
+  io.writeObservation({
+    schemaVersion: 1,
+    dataVolumeSerial: device.serial,
+    dataVolumeSizeGb: device.sizeBytes / HETZNER_BYTES_PER_GB,
+    filesystemUuid: verifiedBinding.filesystemUuid,
+    devicePath: device.path,
+    majorMinor: device.majorMinor,
+    mountTarget: DATA_ROOT,
+  })
   return {
     admitted: true,
     serial: input.serial,

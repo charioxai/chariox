@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs"
 import { dirname } from "node:path"
@@ -19,6 +20,7 @@ export const PROTECTED_BOOTSTRAP_ROOT = "/etc/chariox/bootstrap"
 export const MANAGED_BOOTSTRAP_PATH = `${PROTECTED_BOOTSTRAP_ROOT}/managed-bootstrap.json`
 export const WORKER_BOOTSTRAP_PATH = `${PROTECTED_BOOTSTRAP_ROOT}/disposable-worker-bootstrap.json`
 export const BINDING_PATH = "/var/lib/chariox-data-volume/volume-binding.json"
+export const ADMISSION_OBSERVATION_PATH = "/run/chariox-data-volume-observation/observation.json"
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER
 const MAX_BOOTSTRAP_BYTES = 96 * 1024
@@ -155,6 +157,59 @@ function validateBindingDirectory() {
   }
 }
 
+function validateObservationDirectory() {
+  const runtime = lstatSync("/run")
+  if (
+    runtime.isSymbolicLink() || !runtime.isDirectory() || runtime.uid !== ROOT_UID ||
+    (runtime.mode & 0o7777 & 0o022) !== 0
+  ) {
+    fail("data-volume observation runtime directory is unsafe")
+  }
+  const directory = dirname(ADMISSION_OBSERVATION_PATH)
+  let metadata = maybeLstat(directory)
+  if (!metadata) {
+    mkdirSync(directory, { mode: 0o755 })
+    metadata = lstatSync(directory)
+  }
+  const mode = metadata.mode & 0o7777
+  if (
+    metadata.isSymbolicLink() || !metadata.isDirectory() || metadata.uid !== ROOT_UID ||
+    (mode & 0o022) !== 0
+  ) {
+    fail("data-volume observation directory is unsafe")
+  }
+  if (mode !== 0o755) chmodSync(directory, 0o755)
+}
+
+function validateObservationFile(path) {
+  const metadata = maybeLstat(path)
+  if (!metadata) return undefined
+  if (
+    metadata.isSymbolicLink() || !metadata.isFile() || metadata.uid !== ROOT_UID ||
+    metadata.gid !== 0 || (metadata.mode & 0o7777) !== 0o644 || metadata.size > 4096
+  ) {
+    fail("data-volume admission observation must be a root-owned read-only regular file")
+  }
+  return metadata
+}
+
+function validateObservation(value) {
+  if (
+    !value || typeof value !== "object" || Array.isArray(value) ||
+    value.schemaVersion !== 1 || typeof value.dataVolumeSerial !== "string" ||
+    !/^[1-9][0-9]{0,15}$/.test(value.dataVolumeSerial) ||
+    !Number.isSafeInteger(value.dataVolumeSizeGb) ||
+    value.dataVolumeSizeGb < MIN_VOLUME_SIZE_GB || value.dataVolumeSizeGb > MAX_VOLUME_SIZE_GB ||
+    typeof value.filesystemUuid !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.filesystemUuid) ||
+    typeof value.devicePath !== "string" || !value.devicePath.startsWith("/dev/") ||
+    typeof value.majorMinor !== "string" || !/^\d+:\d+$/.test(value.majorMinor) ||
+    value.mountTarget !== DATA_ROOT
+  ) {
+    fail("data-volume admission observation fields are invalid")
+  }
+}
+
 export const systemIo = {
   readStorageInput() {
     const gid = charioxGroupId()
@@ -187,6 +242,35 @@ export const systemIo = {
     try { fsyncSync(fd) } finally { closeSync(fd) }
     renameSync(temporary, BINDING_PATH)
     const directoryFd = openSync(parent, constants.O_RDONLY)
+    try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
+  },
+  clearObservation() {
+    validateObservationDirectory()
+    const metadata = validateObservationFile(ADMISSION_OBSERVATION_PATH)
+    if (!metadata) return
+    unlinkSync(ADMISSION_OBSERVATION_PATH)
+    const directoryFd = openSync(dirname(ADMISSION_OBSERVATION_PATH), constants.O_RDONLY)
+    try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
+  },
+  writeObservation(value) {
+    validateObservationDirectory()
+    validateObservation(value)
+    const path = ADMISSION_OBSERVATION_PATH
+    const temporary = `${path}.new-${process.pid}`
+    const linuxBootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(linuxBootId)) {
+      fail("Linux boot ID is invalid while recording data-volume admission")
+    }
+    const bytes = `${JSON.stringify({
+      ...value,
+      linuxBootId,
+    })}\n`
+    writeFileSync(temporary, bytes, { mode: 0o644, flag: "wx" })
+    chmodSync(temporary, 0o644)
+    const fd = openSync(temporary, constants.O_RDONLY | constants.O_NOFOLLOW)
+    try { fsyncSync(fd) } finally { closeSync(fd) }
+    renameSync(temporary, path)
+    const directoryFd = openSync(dirname(path), constants.O_RDONLY)
     try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
   },
   ensureMountpoint() {

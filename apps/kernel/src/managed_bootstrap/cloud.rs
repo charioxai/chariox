@@ -238,6 +238,7 @@ mod tests {
     #[test]
     fn confirm_and_pre_reimage_report_wires_match_cloud_contract() {
         let evidence = ManagedKernelFreshnessEvidence {
+            schema_version: None,
             linux_boot_id: "01234567-89ab-cdef-0123-456789abcdef".to_string(),
             os_machine_id: "a".repeat(32),
             runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
@@ -248,6 +249,8 @@ mod tests {
                 old_processes_absent: true,
                 old_state_absent: true,
             },
+            data_volume_serial: None,
+            data_volume_size_gb: None,
         };
         let confirm = ConfirmRequest {
             token: format!("mkboot_{}", "t".repeat(40)),
