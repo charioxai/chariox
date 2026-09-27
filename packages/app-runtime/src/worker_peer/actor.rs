@@ -40,7 +40,14 @@ struct Actor {
     publishing: BTreeMap<String, super::publication::Pending>,
     active: BTreeMap<String, Active>,
     handlers: JoinSet<(String, std::result::Result<serde_json::Value, RemoteError>)>,
+    /// Calls that expired or were cancelled, until the worker's terminal
+    /// response for each arrives. The SDK answers every call it holds with one,
+    /// even when its handler ignores cancellation; none within the grace means
+    /// the worker's event loop is blocked.
+    cancelled: BTreeMap<String, Instant>,
 }
+
+const UNRESPONSIVE_GRACE: Duration = Duration::from_secs(5);
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run<T>(
@@ -84,6 +91,7 @@ where
         publishing: BTreeMap::new(),
         active: BTreeMap::new(),
         handlers: JoinSet::new(),
+        cancelled: BTreeMap::new(),
     };
     let mut tick = tokio::time::interval(Duration::from_millis(10));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -226,6 +234,8 @@ impl Actor {
                         Ok(message)
                     };
                     let _ = pending.reply.send(result);
+                } else {
+                    self.cancelled.remove(id);
                 }
                 Ok(())
             }
@@ -413,6 +423,7 @@ impl Actor {
                 .expect("collected live pending call");
             pending.live.store(false, Ordering::Release);
             let _ = pending.reply.send(Err(PeerError::Deadline));
+            self.cancelled.insert(id.clone(), now + UNRESPONSIVE_GRACE);
             self.send(
                 Message::Cancel {
                     version: WIRE_VERSION,
@@ -447,6 +458,9 @@ impl Actor {
                 "DEADLINE_EXCEEDED",
                 "App broker reply deadline exceeded",
             )?;
+        }
+        if self.cancelled.values().any(|grace| now >= *grace) {
+            return Err(PeerError::Unresponsive);
         }
         Ok(())
     }

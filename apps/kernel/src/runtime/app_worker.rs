@@ -172,17 +172,27 @@ impl AppWorkerOwner {
         chariox_app_runtime::worker_process::WorkerError,
     > {
         self.stop();
+        let mut unresponsive = false;
         if let Some(task) = self.peer_task.take() {
             // Admitted writer/effect reservations survive cancellation. Drain
             // them before releasing this owner and joining the native process.
-            let _ = self.runtime.block_on(task.join());
+            unresponsive = matches!(
+                self.runtime.block_on(task.join()),
+                Err(chariox_app_runtime::worker_peer::PeerError::Unresponsive)
+            );
         }
-        let result = self
+        let mut result = self
             .process
             .take()
             .ok_or(chariox_app_runtime::worker_process::WorkerError::Supervisor)?
             .shutdown_blocking();
         self.live.take();
+        // A blocked worker is terminated here; its exit names that cause.
+        if let Ok(exit) = &mut result {
+            if unresponsive {
+                exit.failure = Some(chariox_app_runtime::worker_process::WorkerError::Unresponsive);
+            }
+        }
         result
     }
 }

@@ -28,6 +28,13 @@ the actor's 10 ms maintenance interval. Queued calls cancelled before their
 first write are skipped. Started writes finish within the framing budget before
 the cancellation frame follows, preserving framing.
 
+The SDK answers every call it holds with one terminal response, even when the
+App's handler ignores the cancellation. A call that expired or was cancelled and
+gets no response within 5 seconds means the worker's event loop is blocked: the
+peer closes with `app_peer_unresponsive`, the supervisor terminates the worker
+and records it failed (`app_worker_unresponsive`), and it stays stopped until an
+explicit start.
+
 Outgoing IDs are never reused during the peer lifetime. Retired or unknown
 responses are ignored consistently with the JavaScript SDK and never recreate a
 call. No unbounded tombstone set is retained. A transport slot retires when its

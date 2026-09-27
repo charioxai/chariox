@@ -43,6 +43,10 @@ pub enum PeerError {
     Io,
     #[error("app_peer_broker_failed")]
     Broker,
+    /// A cancelled call got no response within the grace period: the
+    /// worker's event loop is blocked, and the supervisor terminates it.
+    #[error("app_peer_unresponsive")]
+    Unresponsive,
 }
 pub type Result<T> = std::result::Result<T, PeerError>;
 

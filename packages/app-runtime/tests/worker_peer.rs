@@ -697,3 +697,39 @@ async fn stalled_partial_write_closes_both_halves_and_releases_waiting_callers()
 
 #[path = "worker_peer/publication.rs"]
 mod publication;
+
+#[tokio::test]
+async fn a_worker_that_never_answers_a_cancelled_call_is_unresponsive() {
+    let (host, stream) = tokio::io::duplex(4096);
+    let (peer, _events, task) = WorkerPeer::start(
+        Channel::new(host, "1".into(), Sender::Worker).unwrap(),
+        null_broker(),
+        PeerLimits::default(),
+    )
+    .unwrap();
+    let mut worker = worker(stream);
+    // A worker that answers its cancelled call, even late, stays connected.
+    let slot = peer.reserve(Duration::from_millis(30)).unwrap();
+    let call = tokio::spawn(slot.request("tools.invoke", json!({}), None));
+    let answered = receive(&mut worker).await;
+    assert_eq!(
+        timeout(BUDGET, call).await.unwrap().unwrap().unwrap_err(),
+        PeerError::Deadline
+    );
+    assert!(matches!(receive(&mut worker).await, Message::Cancel { .. }));
+    worker
+        .send(&response(&id(&answered), json!("late")), BUDGET)
+        .await
+        .unwrap();
+    // One whose event loop is blocked answers nothing: after the grace
+    // period the peer closes and the supervisor terminates the worker.
+    let slot = peer.reserve(Duration::from_millis(30)).unwrap();
+    let call = tokio::spawn(slot.request("events.deliver", json!({}), None));
+    let _ignored = receive(&mut worker).await;
+    let _ = timeout(BUDGET, call).await;
+    assert_eq!(
+        timeout(Duration::from_secs(8), task.join()).await.unwrap(),
+        Err(PeerError::Unresponsive)
+    );
+    assert!(peer.is_closed());
+}

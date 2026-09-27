@@ -200,6 +200,9 @@ pub enum WorkerError {
     Supervisor,
     #[error("app_worker_sdk_unavailable")]
     SdkUnavailable,
+    /// The worker stopped answering: a cancelled call got no response.
+    #[error("app_worker_unresponsive")]
+    Unresponsive,
 }
 
 #[derive(Debug)]
