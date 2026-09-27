@@ -478,8 +478,11 @@ mod tests {
         assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 350);
         assert_eq!(
             serde_json::to_string(&release).expect("release payload should serialize"),
-            r#"{"accountId":"account-1","action":"auto_stop_quiescence_release_ack","challengeId":"challenge-1","environmentId":"environment-1","kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","outcome":"keep_running","protocolVersion":1,"resultSequence":1,"signature":"sha256:d2a9120425277132c10100e4c96ab3ee8172f8296ca6cae8c99502ec","stopOperationId":"stop-operation-1"}"#,
+            r#"{"accountId":"account-1","action":"auto_stop_quiescence_release_ack","challengeId":"challenge-1","environmentId":"environment-1","kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","outcome":"keep_running","protocolVersion":1,"resultSequence":1,"signature":"sha256:d2a9120425277132c10100e4c96ab3ee8172ae79ff82f8296ca6cae8c99502ec","stopOperationId":"stop-operation-1"}"#,
         );
+        assert!(release["signature"]
+            .as_str()
+            .is_some_and(|signature| signature.starts_with("sha256:") && signature.len() == 71));
         assert!(release.get("result_sequence").is_none());
     }
 }
