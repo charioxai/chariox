@@ -71,12 +71,20 @@ def current_path(root, profile):
     return root / (hashlib.sha256(profile.encode()).hexdigest() + ".json")
 
 
-def profile_processes(profile):
+def profile_processes(profile, retired_supervisor=None):
     result = []
     for path in Path("/proc").glob("[0-9]*/cmdline"):
         try:
+            pid = int(path.parent.name)
+            # The launcher carries the browser's argv but is not a browser.
+            if pid == os.getpid():
+                continue
+            # A verified retirement receipt proves this owner's children exited.
+            # The owner itself may still be finishing upload cleanup.
+            if retired_supervisor and pid == retired_supervisor["pid"] and same_process(retired_supervisor):
+                continue
             if f"--user-data-dir={profile}".encode() in path.read_bytes().split(b"\0"):
-                result.append(int(path.parent.name))
+                result.append(pid)
         except (FileNotFoundError, ProcessLookupError):
             continue
     return result
@@ -217,7 +225,7 @@ def stop_locked(root, profile, settlement_timeout=12):
         if receipt.exists():
             if read_json(receipt) != record:
                 raise RuntimeError("browser retirement proof does not match its owner")
-            if profile_processes(profile):
+            if profile_processes(profile, record["supervisor"]):
                 raise RuntimeError("an unowned browser still uses the profile")
             reap_uploads()
             print(json.dumps(record))
@@ -236,7 +244,7 @@ def stop_locked(root, profile, settlement_timeout=12):
             time.sleep(0.05)
     if read_json(receipt) != record:
         raise RuntimeError("browser retirement proof does not match its owner")
-    if profile_processes(profile):
+    if profile_processes(profile, record["supervisor"]):
         raise RuntimeError("an unowned browser still uses the profile")
     reap_uploads()
     print(json.dumps(record))

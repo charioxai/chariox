@@ -65,7 +65,8 @@ open({str(escaped_file)!r}, "w").write(str(p.pid))
 time.sleep(60)
 '''
         result = subprocess.run([sys.executable, str(HERE / "browser-lifecycle.py"), "start", self.profile,
-                                 str(self.root / "browser.log"), sys.executable, "-c", code],
+                                 str(self.root / "browser.log"), sys.executable, "-c", code,
+                                 f"--user-data-dir={self.profile}"],
                                 text=True, capture_output=True, timeout=8)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout), int(self.wait_file(port_file)), int(self.wait_file(escaped_file))
@@ -79,6 +80,16 @@ time.sleep(60)
         return entry
 
     def test_retirement_reaps_escaped_descendants_and_preserves_unrelated_group(self):
+        unowned = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                    f"--user-data-dir={self.profile}"], start_new_session=True)
+        self.processes.append(unowned)
+        self.assertIn(unowned.pid, self.lifecycle.profile_processes(self.profile))
+        forged = {**self.lifecycle.identity(unowned.pid), "start": "0"}
+        self.assertIn(unowned.pid, self.lifecycle.profile_processes(self.profile, forged))
+        with self.assertRaisesRegex(RuntimeError, "unowned browser process"):
+            self.lifecycle.start(self.profile, str(self.root / "browser.log"), [sys.executable, "-c", "pass"])
+        unowned.terminate()
+        unowned.wait(timeout=3)
         unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
         self.processes.append(unrelated)
         record, port, escaped = self.start_browser()
