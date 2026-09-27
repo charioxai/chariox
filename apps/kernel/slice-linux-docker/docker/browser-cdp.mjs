@@ -66,6 +66,25 @@ async function withSocket(callback) {
 }
 
 async function closeBrowser() {
+  if (args[0] === "--owned-profile") {
+    const { BrowserCdpClient } = await import("./browser-controller-cdp.mjs");
+    const { execFile } = await import("node:child_process");
+    const { fileURLToPath } = await import("node:url");
+    const client = new BrowserCdpClient({ requestTimeoutMs: 1500 });
+    try {
+      const connection = await client.openConnection();
+      const processes = await connection.send("SystemInfo.getProcessInfo");
+      const pid = processes.processInfo?.find(process => process.type === "browser")?.id;
+      if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("owned browser PID is unavailable");
+      await new Promise((resolve, reject) => execFile("python3", [
+        fileURLToPath(new URL("./browser-lifecycle.py", import.meta.url)), "verify", args[1], String(pid), "9222",
+      ], { timeout: 1000, killSignal: "SIGKILL", maxBuffer: 4096 }, error => error ? reject(new Error("browser lifetime identity changed")) : resolve()));
+      // This connection cannot switch to a newly launched browser after the
+      // verified listening process exits. Never rediscover before closing.
+      await connection.send("Browser.close").catch(() => {});
+    } finally { await client.close(); }
+    return;
+  }
   try {
     await withSocket(async (send) => {
       await send("Browser.close");

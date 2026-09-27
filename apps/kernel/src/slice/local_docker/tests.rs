@@ -571,7 +571,7 @@ exit 0
     )
     .expect("slice screen script should be readable");
     assert!(screen.contains("slice_selkies stop >/dev/null"));
-    assert!(screen.contains("node \"$ROOT/browser-cdp.mjs\" close-browser"));
+    assert!(screen.contains("python3 \"$ROOT/browser-lifecycle.py\" stop \"$CHROME_PROFILE\""));
     assert!(screen.contains("stop_process_pattern \"websockify.*$NOVNC_PORT\""));
     assert!(screen.contains("$HOME/.chariox/browser/chromium"));
 

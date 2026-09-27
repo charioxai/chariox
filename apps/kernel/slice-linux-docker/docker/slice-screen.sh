@@ -201,7 +201,9 @@ require_screen_available() {
 
 launch_chromium() {
   local -a chrome_startup_target_args=()
+  local -a chrome_launcher=(nohup chromium)
   if ! process_running "chromium.*$CHROME_PROFILE"; then
+    chrome_launcher=(python3 "$ROOT/browser-lifecycle.py" start "$CHROME_PROFILE" "$LOGS/chromium-gui.log" chromium)
     clear_chromium_profile_locks
     if chromium_has_restorable_session; then
       chrome_startup_target_args+=(--restore-last-session)
@@ -213,7 +215,7 @@ launch_chromium() {
     chrome_startup_target_args=(-- "$CHROME_URL")
   fi
 
-  nohup chromium \
+  chrome_launcher+=( \
     --user-data-dir="$CHROME_PROFILE" \
     --password-store=basic \
     --no-first-run \
@@ -223,12 +225,17 @@ launch_chromium() {
     --disable-gpu \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
-    "${chrome_startup_target_args[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
+    "${chrome_startup_target_args[@]}" )
+  if [[ "${chrome_launcher[0]}" == "python3" ]]; then
+    "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1
+  else
+    "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
+  fi
 }
 
 start_desktop() {
   if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
-    stop_desktop || true
+    stop_desktop
   fi
   # Stop an owned previous Selkies process even when switching to noVNC.
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
@@ -240,8 +247,6 @@ start_desktop() {
   stop_process_pattern "x11vnc.*$VNC_PORT"
   stop_process_pattern '(^|/)openbox([[:space:]]|$)'
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
-  stop_process_pattern "chromium.*$CHROME_PROFILE"
-  stop_process_pattern "/usr/lib/chromium/chromium"
   stop_process_pattern "Xvfb $DISPLAY_ID"
   rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
@@ -263,7 +268,7 @@ start_desktop() {
     nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
   fi
 
-  launch_chromium
+  launch_chromium || return $?
 
   sleep 2
   require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"
@@ -310,29 +315,11 @@ status() {
 }
 
 stop_desktop() {
+  python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >/dev/null || return $?
   local streamer_exit=0
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
     slice_selkies stop >/dev/null || streamer_exit=$?
   fi
-  if process_running "chromium.*$CHROME_PROFILE"; then
-    node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
-  fi
-  local attempt
-  for attempt in $(seq 1 80); do
-    if ! process_running "chromium.*$CHROME_PROFILE"; then
-      break
-    fi
-    sleep 0.1
-  done
-  pkill -TERM -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
-  for attempt in $(seq 1 30); do
-    if ! process_running "chromium.*$CHROME_PROFILE"; then
-      break
-    fi
-    sleep 0.1
-  done
-  stop_process_pattern "chromium.*$CHROME_PROFILE"
-  stop_process_pattern "/usr/lib/chromium/chromium"
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
   stop_process_pattern "websockify.*$NOVNC_PORT"
   stop_process_pattern "x11vnc.*$DISPLAY_ID"

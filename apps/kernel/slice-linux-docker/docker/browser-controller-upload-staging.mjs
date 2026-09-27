@@ -1,15 +1,20 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, rm, utimes } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, utimes } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { assertNotCancelled } from "./browser-controller-actions.mjs";
 
 const MAX_BYTES = 1024 * 1024 * 1024;
 const MAX_FILES = 128;
-const MAX_LEASES = 128;
 const COPY_CHUNK_BYTES = 64 * 1024;
-const COPY_TIMEOUT_MS = 5_000;
+export function uploadCopyTimeoutMs(bytes) {
+  // Slow VPS storage receives a byte-scaled allowance, still capped and
+  // subordinate to the caller's cancellation/deadline.
+  return Math.min(120_000, 5_000 + Math.ceil(bytes * 1000 / (4 * 1024 * 1024)));
+}
 
 function denied(message) {
   return Object.assign(new Error(message), { code: "browser_upload_staging_unavailable" });
@@ -45,48 +50,22 @@ export class BrowserUploadStaging {
     return root;
   }
 
-  async transaction(operation) {
+  async transaction(request) {
     const root = await this.directory();
-    const lock = path.join(root, "lock");
-    try { await mkdir(lock, { mode: 0o700 }); }
-    catch { throw denied("upload staging is busy or requires cleanup after an interrupted operation"); }
-    try {
-      const ledgerPath = path.join(root, "ledger.json");
-      let ledger;
-      try {
-        const handle = await open(ledgerPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        try {
-          const status = await handle.stat();
-          if (!status.isFile() || status.uid !== process.getuid() || (status.mode & 0o777) !== 0o600
-            || status.size > 65536) throw denied("invalid upload staging ledger");
-          ledger = JSON.parse(await handle.readFile("utf8"));
-        } finally { await handle.close(); }
-      } catch (error) {
-        if (error.code !== "ENOENT") throw denied("upload staging ledger requires reconciliation");
-        if ((await readdir(root)).some(name => name !== "lock")) throw denied("upload staging ledger is missing with retained files");
-        ledger = [];
-      }
-      if (!Array.isArray(ledger) || ledger.length > MAX_LEASES || ledger.some(entry =>
-        !entry || !/^[a-f0-9-]{36}$/.test(entry.id) || !/^[a-f0-9]{64}$/.test(entry.browser)
-        || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || entry.bytes > MAX_BYTES
-        || !Number.isSafeInteger(entry.count) || entry.count < 1 || entry.count > 20)) {
-        throw denied("upload staging ledger requires reconciliation");
-      }
-      const result = await operation(root, ledger);
-      const replacement = path.join(root, `ledger-${randomUUID()}.tmp`);
-      try {
-        const handle = await open(replacement, "wx", 0o600);
-        try { await handle.writeFile(JSON.stringify(ledger)); await handle.sync(); }
-        finally { await handle.close(); }
-        await rename(replacement, ledgerPath);
-        const directory = await open(root, constants.O_RDONLY);
-        try { await directory.sync(); } finally { await directory.close(); }
-      } finally { await rm(replacement, { force: true }); }
-      return result;
-    } finally { await rm(lock, { recursive: true }); }
+    await new Promise((resolve, reject) => {
+      const child = execFile("python3", [fileURLToPath(new URL("./browser-upload-store.py", import.meta.url)), root],
+        { timeout: 2000, killSignal: "SIGKILL", maxBuffer: 8192 }, (error, _output, stderr) => {
+          if (!error) resolve();
+          else reject(denied(stderr.includes("quota is full") ? "upload staging quota is full; verified browser retirement is required"
+            : "upload staging transaction unavailable; retained data requires reconciliation"));
+        });
+      child.stdin.on("error", () => {});
+      child.stdin.end(JSON.stringify(request));
+    });
+    return root;
   }
 
-  async prepare({ files, metadata, browserIdentity, signal }) {
+  async prepare({ files, metadata, browserIdentity, signal, connection }) {
     if (!Array.isArray(files) || files.length < 1 || files.length > 20
       || !Array.isArray(metadata) || metadata.length !== files.length
       || metadata.some(item => !item || !Number.isSafeInteger(item.size) || item.size < 0)
@@ -96,32 +75,25 @@ export class BrowserUploadStaging {
     if (typeof browserIdentity !== "string" || !/^wss?:\/\/[^\s]+\/devtools\/browser\/[A-Za-z0-9-]+$/.test(browserIdentity)) {
       throw denied("upload staging requires an observed physical browser identity");
     }
-    const deadline = this.now() + COPY_TIMEOUT_MS;
+    const bytes = metadata.reduce((sum, item) => sum + item.size, 0);
+    const deadline = this.now() + uploadCopyTimeoutMs(bytes);
     const check = () => {
       assertNotCancelled(signal);
       if (this.now() >= deadline) throw denied("upload staging exceeded its bounded copy deadline");
     };
     check();
-    const bytes = metadata.reduce((sum, item) => sum + item.size, 0);
     const id = randomUUID();
     const browser = createHash("sha256").update(browserIdentity).digest("hex");
-    const root = await this.transaction((root, ledger) => {
-      if (ledger.length >= MAX_LEASES || ledger.reduce((sum, item) => sum + item.bytes, bytes) > this.maximumBytes
-        || ledger.reduce((sum, item) => sum + item.count, files.length) > this.maximumFiles) {
-        throw denied("upload staging quota is full; retained browser File objects require verified browser retirement before cleanup");
-      }
-      ledger.push({ id, browser, bytes, count: files.length });
-      return root;
-    });
+    const processes = await connection?.send("SystemInfo.getProcessInfo").catch(() => undefined);
+    const browserPid = processes?.processInfo?.find(item => item.type === "browser")?.id;
+    const root = await this.transaction({ action: "reserve", entry: { id, browser, bytes, count: files.length },
+      maximumBytes: this.maximumBytes, maximumFiles: this.maximumFiles,
+      browserPid, browserPort: Number(new URL(browserIdentity).port) });
     const leaseRoot = path.join(root, id);
     let exposed = false;
     const discard = async () => {
       if (exposed) return;
-      await this.transaction(async (_root, ledger) => {
-        await rm(leaseRoot, { recursive: true, force: true });
-        const index = ledger.findIndex(entry => entry.id === id);
-        if (index !== -1) ledger.splice(index, 1);
-      });
+      await this.transaction({ action: "discard", id });
     };
     try {
       await mkdir(leaseRoot, { mode: 0o700 });
@@ -137,9 +109,9 @@ export class BrowserUploadStaging {
           if (openedPath !== files[index]) throw denied("upload source path changed after authorization");
           const before = await source.stat({ bigint: true });
           const approved = metadata[index];
-          if (!before.isFile() || Number(before.dev) !== approved.dev || Number(before.ino) !== approved.ino
-            || Number(before.size) !== approved.size || Number(before.mtimeNs / 1000000n) !== Math.trunc(approved.mtimeMs)
-            || Number(before.ctimeNs / 1000000n) !== Math.trunc(approved.ctimeMs)) throw denied("upload source changed after authorization");
+          if (!before.isFile() || before.dev !== approved.dev || before.ino !== approved.ino
+            || Number(before.size) !== approved.size || before.mtimeNs !== approved.mtimeNs
+            || before.ctimeNs !== approved.ctimeNs) throw denied("upload source changed after authorization");
           const slot = path.join(leaseRoot, String(index));
           await mkdir(slot, { mode: 0o700 });
           const destination = path.join(slot, path.basename(files[index]));
@@ -167,12 +139,16 @@ export class BrowserUploadStaging {
             check();
             await output.sync();
           } finally { await output.close(); }
-          await utimes(destination, new Date(approved.mtimeMs), new Date(approved.mtimeMs));
+          const lastModified = new Date(Number(approved.mtimeNs / 1000000n));
+          await utimes(destination, lastModified, lastModified);
           staged.push(destination);
         } finally { await source.close(); }
       }
       check();
-      return { files: staged, markExposed() { exposed = true; }, discard };
+      return { files: staged, markExposed: async () => {
+        await this.transaction({ action: "expose", id });
+        exposed = true;
+      }, discard };
     } catch (error) {
       await discard();
       if (error.code === "browser_action_cancelled" || error.code === "browser_upload_staging_unavailable") throw error;

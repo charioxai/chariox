@@ -2,13 +2,25 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, realpath, rm, symlink, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 import { uploadBrowserFiles } from "./browser-controller-files.mjs";
-import { BrowserUploadStaging } from "./browser-controller-upload-staging.mjs";
+import { BrowserUploadStaging, uploadCopyTimeoutMs } from "./browser-controller-upload-staging.mjs";
 
-// Production is the Linux headed slice. Mac fixtures explicitly substitute
-// this seam; Linux runs exercise actual procfs descriptor resolution.
-const platformFixture = process.platform === "linux" ? {} : { descriptorPath: (_source, file) => realpath(file) };
+// Procfs identity and kernel-held flock are Linux runtime contracts.
+const test = (name, run) => nodeTest(name, { skip: process.platform !== "linux" }, run);
+const platformFixture = {};
+
+async function approvedMetadata(file) {
+  const metadata = await stat(file, { bigint: true });
+  return { ...metadata, size: Number(metadata.size) };
+}
+
+nodeTest("upload copy deadline scales with approved bytes and remains bounded", () => {
+  assert.equal(uploadCopyTimeoutMs(0), 5000);
+  assert.equal(uploadCopyTimeoutMs(4 * 1024 * 1024), 6000);
+  assert.equal(uploadCopyTimeoutMs(256 * 1024 * 1024), 69000);
+  assert.equal(uploadCopyTimeoutMs(512 * 1024 * 1024), 120000);
+});
 
 test("upload cannot expose an outside-root replacement during renderer awaits", async (t) => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "chariox-upload-binding-")));
@@ -48,7 +60,7 @@ async function fixture(t, limits = {}) {
   await writeFile(file, "approved");
   const options = { root: path.join(root, "staging"), ...platformFixture, ...limits };
   return { root, file, options, async prepare(identity = "browser-a", extra = {}) {
-    return new BrowserUploadStaging(options).prepare({ files: [file], metadata: [await stat(file)],
+    return new BrowserUploadStaging(options).prepare({ files: [file], metadata: [await approvedMetadata(file)],
       browserIdentity: `ws://127.0.0.1:9222/devtools/browser/${identity}`, ...extra });
   } };
 }
@@ -56,7 +68,7 @@ async function fixture(t, limits = {}) {
 test("exposed bytes survive replacement, restart and identity churn within a durable quota", async t => {
   const fixtureData = await fixture(t, { maximumBytes: 8 });
   const lease = await fixtureData.prepare();
-  lease.markExposed();
+  await lease.markExposed();
   await lease.discard();
   await writeFile(fixtureData.file, "modified");
   assert.equal(await readFile(lease.files[0], "utf8"), "approved");
@@ -80,13 +92,22 @@ test("unexposed reservations are removed and release durable file quota", async 
 
 test("source replacement before descriptor opening fails and releases reservation", async t => {
   const fixtureData = await fixture(t);
-  const metadata = [await stat(fixtureData.file)];
+  const metadata = [await approvedMetadata(fixtureData.file)];
   await rm(fixtureData.file);
   const outside = path.join(fixtureData.root, "outside.txt");
   await writeFile(outside, "outside");
   await symlink(outside, fixtureData.file);
   await assert.rejects(fixtureData.prepare("browser-a", { metadata }), /staging failed/);
   assert.deepEqual(JSON.parse(await readFile(path.join(fixtureData.options.root, "ledger.json"), "utf8")), []);
+});
+
+test("upload authorization compares exact nanoseconds without float millisecond rounding", async t => {
+  const data = await fixture(t);
+  const approved = await approvedMetadata(data.file);
+  const lease = await data.prepare("browser-a", { metadata: [{ ...approved, mtimeMs: Number(approved.mtimeMs) + 1 }] });
+  assert.equal(await readFile(lease.files[0], "utf8"), "approved");
+  await lease.discard();
+  await assert.rejects(data.prepare("browser-a", { metadata: [{ ...approved, mtimeNs: approved.mtimeNs + 1n }] }), /source changed/);
 });
 
 test("cancellation and copy deadline fail before native dispatch", async t => {
@@ -120,6 +141,10 @@ test("upload staging is included in the slice image, recovery overlay and native
   assert.ok(dockerfile.includes(`docker/${name} /opt/chariox-slice/${name}`));
   assert.ok(provisioner.includes(`docker/${name}" "$SLICE_NAME:/opt/chariox-slice/${name}"`));
   assert.match(packager, /const SLICE_BUILD_CONTEXT_SOURCES = \[[\s\S]*?"apps\/kernel"/);
+  for (const helper of ["browser-lifecycle.py", "browser-upload-store.py"]) {
+    assert.ok(dockerfile.includes(`docker/${helper} /opt/chariox-slice/${helper}`));
+    assert.ok(provisioner.includes(`docker/${helper}" "$SLICE_NAME:/opt/chariox-slice/${helper}"`));
+  }
 });
 
 for (const phase of ["DOM.resolveNode", "DOM.setFileInputFiles"]) {

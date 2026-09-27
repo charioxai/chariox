@@ -31,7 +31,7 @@ test("managed Chromium never promotes an insecure origin to a secure context", a
 test("desktop startup and URL fallback share one Chromium launch configuration", async () => {
   const source = await readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8");
   assert.equal((source.match(/nohup chromium/g) ?? []).length, 1);
-  assert.match(source, /launch_chromium\n/);
+  assert.match(source, /launch_chromium \|\| return \$\?/);
   assert.match(source, /launch_chromium "\$1"/);
   assert.match(source, /chrome_startup_target_args\+=\(--new-window -- "\$@"\)/);
   assert.match(source, /chrome_startup_target_args=\(-- "\$CHROME_URL"\)/);

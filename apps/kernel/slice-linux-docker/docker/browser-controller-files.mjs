@@ -196,7 +196,7 @@ export async function uploadBrowserFiles({
     let metadata;
     try {
       resolved = await fileSystem.realpath(candidate);
-      metadata = await fileSystem.stat(resolved);
+      metadata = await fileSystem.stat(resolved, { bigint: true });
     } catch (error) {
       throw invalidUpload(`browser upload file is unavailable: ${String(error?.code ?? "filesystem_error")}`);
     }
@@ -206,19 +206,20 @@ export async function uploadBrowserFiles({
         "browser upload file is outside configured roots",
       );
     }
-    if (!metadata.isFile() || !Number.isSafeInteger(metadata.size) || metadata.size < 0) {
+    const size = Number(metadata.size);
+    if (!metadata.isFile() || !Number.isSafeInteger(size) || size < 0) {
       throw invalidUpload("browser uploads require regular files with a bounded size");
     }
-    totalBytes += metadata.size;
+    totalBytes += size;
     if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
       throw invalidUpload(`browser upload exceeds ${MAX_UPLOAD_TOTAL_BYTES} total bytes`);
     }
     files.push(resolved);
-    metadataByFile.push(metadata);
+    metadataByFile.push({ ...metadata, size });
   }
 
   const staged = await stageUploads({ files, metadata: metadataByFile,
-    browserIdentity: connection.browserInstanceId, signal }).catch(error => {
+    browserIdentity: connection.browserInstanceId, signal, connection }).catch(error => {
     if (error?.code === "browser_action_cancelled") throw error;
     throw new BrowserFileTransferError("browser_upload_staging_unavailable",
       error?.code === "browser_upload_staging_unavailable" ? error.message : "upload staging could not prepare private files");
@@ -251,7 +252,10 @@ export async function uploadBrowserFiles({
     assertNotCancelled(signal);
     // Dispatch may have succeeded even if its reply is lost. Retain these
     // browser-owned File backing bytes across CDP/controller reconnects.
-    staged.markExposed();
+    await staged.markExposed();
+    await assertContext();
+    await assertCurrentDocument(connection, sessionId, targetId, documentId);
+    assertNotCancelled(signal);
     await connection.send(
       "DOM.setFileInputFiles",
       { objectId, files: staged.files },

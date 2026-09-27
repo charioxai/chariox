@@ -17,6 +17,8 @@ const requiredOverlayDestinations = [
   ["provider isolation wrapper", "/opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh"],
   ["screen validator", "/opt/chariox-slice/validate-screen.sh"],
   ["browser CDP helper", "/opt/chariox-slice/browser-cdp.mjs"],
+  ["browser quota store", "/opt/chariox-slice/browser-upload-store.py"],
+  ["browser lifecycle owner", "/opt/chariox-slice/browser-lifecycle.py"],
   ["Selkies lifecycle", "/opt/chariox-slice/slice-selkies.py"],
   ["Selkies streaming", "/opt/chariox-slice/slice-selkies-stream.py"],
   ["Selkies viewer module", "/opt/chariox-slice/selkies_viewers.py"],
