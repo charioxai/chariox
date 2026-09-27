@@ -18,7 +18,7 @@ pub(crate) struct AppLogBroker {
     installation: String,
     admission: Arc<Semaphore>,
     window: Arc<Mutex<(u64, u32)>>,
-    /// Writes refused since the last admitted one.
+    /// Writes refused since the drop count was last noted.
     dropped: Arc<std::sync::atomic::AtomicU32>,
 }
 
@@ -54,14 +54,15 @@ impl AppLogBroker {
         error(code, true)
     }
 
-    fn admit(&self, now_ms: u64) -> bool {
+    /// Whether a write is admitted, and whether it is the first of its second.
+    fn admit(&self, now_ms: u64) -> (bool, bool) {
         let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
         let second = now_ms / 1000;
         if window.0 != second {
             *window = (second, 0);
         }
         window.1 += 1;
-        window.1 <= PER_SECOND
+        (window.1 <= PER_SECOND, window.1 == 1)
     }
 
     pub(crate) async fn dispatch(&self, request: BrokerRequest) -> Result<Value, RemoteError> {
@@ -70,7 +71,8 @@ impl AppLogBroker {
         }
         let write: Write =
             serde_json::from_value(request.params).map_err(|_| error("INVALID_ARGUMENT", false))?;
-        if !self.admit(crate::session::unix_epoch_ms()) {
+        let (admitted, first) = self.admit(crate::session::unix_epoch_ms());
+        if !admitted {
             return Err(self.drop_write("RATE_LIMITED"));
         }
         let permit = self
@@ -78,7 +80,12 @@ impl AppLogBroker {
             .clone()
             .try_acquire_owned()
             .map_err(|_| self.drop_write("APP_BUSY"))?;
-        let dropped = self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
+        // Drops are noted at most once a second, before that second's first write.
+        let dropped = if first {
+            self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
+        } else {
+            0
+        };
         let service = self.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -132,10 +139,15 @@ mod tests {
             "todo".into(),
             Arc::new(Semaphore::new(1)),
         );
-        assert!((0..PER_SECOND).all(|_| broker.admit(10_000)));
-        assert!(!broker.admit(10_500));
-        assert!(broker.admit(11_000), "a new second admits again");
-        // Refused writes are noted before the next admitted one.
+        assert_eq!(broker.admit(10_000), (true, true));
+        assert!((1..PER_SECOND).all(|_| broker.admit(10_000) == (true, false)));
+        assert_eq!(broker.admit(10_500), (false, false));
+        assert_eq!(
+            broker.admit(11_000),
+            (true, true),
+            "a new second admits again"
+        );
+        // Refused writes are noted before the next second's first write.
         broker.drop_write("RATE_LIMITED");
         broker.drop_write("APP_BUSY");
         let dropped = broker.dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
