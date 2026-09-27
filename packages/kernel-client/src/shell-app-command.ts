@@ -244,10 +244,13 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
     not_found: action === "automation"
       ? "Not found: check the App installation, session, workflow or automation."
       : action === "inbox" ? "Not found: check the App installation and route."
+      : action === "connection" ? "Not found: check the App installation and the connection id."
       : "App installation not found.",
     invalid_request: action === "inbox"
       ? "Invalid App request: the event must be one the App declares as incoming, and a payload must match its schema."
-      : "Invalid App request.",
+      : action === "connection"
+        ? "Invalid App request: the App's signed manifest must declare this generator under capabilities.connections."
+        : "Invalid App request.",
     busy: "App requests are busy. Try again shortly.",
     storage_unavailable: "App storage is unavailable.",
     conflict: "The request conflicts with the App's current state (for example a stale revision). Refresh and try again.",
