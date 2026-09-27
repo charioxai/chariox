@@ -9,7 +9,6 @@ Type=oneshot
 User=root
 Group=root
 ExecStart=/usr/bin/node /usr/lib/chariox/current/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-data-volume-admission.mjs
-RemainAfterExit=yes
 TimeoutStartSec=120
 StateDirectory=chariox-data-volume
 StateDirectoryMode=0700

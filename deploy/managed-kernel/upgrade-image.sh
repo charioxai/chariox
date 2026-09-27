@@ -789,9 +789,11 @@ else
   for unit in chariox-managed-bootstrap.service chariox-rootless-docker.service chariox-slice-broker.service; do
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$unit" "$pending_release/etc/systemd/system/$unit"
   done
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+  if [ "$managed_provider_topology" = path1 ]; then
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+  fi
   path1_unit=chariox-path1-managed-bootstrap.service
   if [ -f "$image_root/etc/systemd/system/$path1_unit" ]; then
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$path1_unit" "$pending_release/etc/systemd/system/$path1_unit"

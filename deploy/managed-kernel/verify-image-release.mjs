@@ -507,6 +507,18 @@ async function verifyImageRelease(
             fail(`Path-1 data-volume admission service is missing ${required}`)
           }
         }
+        const sliceRoot = artifactPath(
+          rootfs,
+          "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker",
+        )
+        for (const sourceFile of [
+          "chariox-data-volume-admission.mjs",
+          "slice-data-volume-device.mjs",
+          "slice-data-volume-protected-io.mjs",
+          "slice-disk-quota-xfs-readback.mjs",
+        ]) {
+          await readRegularFile(join(sliceRoot, sourceFile), `Path-1 admission source ${sourceFile}`, 256 * 1024)
+        }
         const admissionBefore = dataAdmissionLines.filter((line) => line.startsWith("Before="))
         if (admissionBefore.length !== 1 || [
           "chariox-slice-disk-quota-allocator.service",
@@ -527,10 +539,17 @@ async function verifyImageRelease(
           for (const directive of [
             "Requires=chariox-data-volume-admission.service",
             "After=chariox-data-volume-admission.service",
+            "After=var-lib-chariox\\x2ddocker-data.mount",
+            "BindsTo=var-lib-chariox\\x2ddocker-data.mount",
+            "AssertPathIsMountPoint=/var/lib/chariox-docker/data",
           ]) {
             if (dropInLines.filter((line) => line === directive).length !== 1) {
               fail(`Path-1 ${label} must declare ${directive}`)
             }
+          }
+          if (artifactName === "chariox-rootless-docker.path1-data-volume.conf"
+            && dropInLines.filter((line) => line === "Environment=CHARIOX_PATH1_DATA_VOLUME_REQUIRED=1").length !== 1) {
+            fail("Path-1 rootless Docker must require admitted data-volume quota storage")
           }
         }
       }

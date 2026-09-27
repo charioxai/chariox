@@ -128,14 +128,21 @@ fi
 require_regular_file "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-slice-broker.service"
-require_regular_file "$image_root/etc/systemd/system/chariox-data-volume-admission.service"
-require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
-require_regular_file "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+if [ "$managed_provider_topology" = path1 ]; then
+  require_regular_file "$image_root/etc/systemd/system/chariox-data-volume-admission.service"
+  require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
+  require_regular_file "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+fi
 require_directory "$image_root/usr/lib/chariox/slice-build-context"
 rootless_context=usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker
-for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf chariox-slice-disk-quota-allocator.service chariox-data-volume-admission.mjs slice-disk-quota-admission.mjs slice-disk-quota-allocator.mjs slice-disk-quota-client.mjs slice-disk-quota-contract.mjs slice-disk-quota-service.mjs slice-disk-quota-state-store.mjs slice-disk-quota-xfs-backend.mjs slice-disk-quota-xfs-readback.mjs probe-slice-disk-quota-backend.mjs; do
+for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf chariox-slice-disk-quota-allocator.service slice-disk-quota-admission.mjs slice-disk-quota-allocator.mjs slice-disk-quota-client.mjs slice-disk-quota-contract.mjs slice-disk-quota-service.mjs slice-disk-quota-state-store.mjs slice-disk-quota-xfs-backend.mjs probe-slice-disk-quota-backend.mjs; do
   require_regular_file "$image_root/$rootless_context/$rootless_file"
 done
+if [ "$managed_provider_topology" = path1 ]; then
+  for rootless_file in chariox-data-volume-admission.mjs slice-data-volume-device.mjs slice-data-volume-protected-io.mjs slice-disk-quota-xfs-readback.mjs; do
+    require_regular_file "$image_root/$rootless_context/$rootless_file"
+  done
+fi
 
 install_lock=${CHARIOX_IMAGE_INSTALL_LOCK:-/run/lock/chariox-managed-image-install.lock}
 exec 9>"$install_lock"
@@ -525,9 +532,11 @@ if [ ! -e "$published_release" ]; then
   fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$pending_release/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service" "$pending_release/etc/systemd/system/chariox-rootless-docker.service"
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+  if [ "$managed_provider_topology" = path1 ]; then
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+  fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
   verify_selected_release "$pending_release" "$expected_release_digest" "$trusted_public_key"

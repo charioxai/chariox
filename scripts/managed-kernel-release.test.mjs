@@ -238,6 +238,8 @@ async function makeFixture(root, variant = "", { dockerfileContents } = {}) {
     ...await Promise.all([
       "chariox-slice-disk-quota-allocator.service",
       "chariox-data-volume-admission.mjs",
+      "slice-data-volume-device.mjs",
+      "slice-data-volume-protected-io.mjs",
       "slice-disk-quota-admission.mjs",
       "slice-disk-quota-allocator.mjs",
       "slice-disk-quota-client.mjs",
@@ -399,6 +401,8 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-user-manager.conf",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.service",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-data-volume-admission.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-data-volume-device.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-data-volume-protected-io.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-disk-quota-xfs-readback.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
@@ -418,6 +422,12 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   ]) {
     assert.ok(packagedPaths.includes(requiredPath), `missing packaged path ${requiredPath}`)
   }
+  const packagedRootlessService = await readFile(
+    join(releaseRoot, "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh"),
+    "utf8",
+  )
+  assert.match(packagedRootlessService, /CHARIOX_PATH1_DATA_VOLUME_REQUIRED:-0/)
+  assert.match(packagedRootlessService, /Path-1 rootless Docker requires its admitted XFS project-quota mount/)
 
   const manifestBytes = await readFile(join(releaseRoot, "usr/lib/chariox/release-manifest.json"))
   const manifest = JSON.parse(manifestBytes)
@@ -675,6 +685,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
   ]) {
     assert.ok(admissionUnit.includes(required), `data-volume admission unit is missing ${required}`)
   }
+  assert.doesNotMatch(admissionUnit, /^RemainAfterExit=/m)
   for (const [relativePath, label] of [
     ["chariox-rootless-docker.service.d/50-chariox-data-volume.conf", "rootless Docker"],
     ["chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", "quota allocator"],
@@ -683,6 +694,9 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     for (const directive of [
       "Requires=chariox-data-volume-admission.service",
       "After=chariox-data-volume-admission.service",
+      "After=var-lib-chariox\\x2ddocker-data.mount",
+      "BindsTo=var-lib-chariox\\x2ddocker-data.mount",
+      "AssertPathIsMountPoint=/var/lib/chariox-docker/data",
     ]) {
       assert.equal(
         dropIn.split(/\r?\n/).filter((line) => line === directive).length,
@@ -691,9 +705,15 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
       )
     }
   }
+  const rootlessDataVolumeDropIn = await readFile(
+    join(output, "rootfs/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"),
+    "utf8",
+  )
+  assert.ok(rootlessDataVolumeDropIn.includes("Environment=CHARIOX_PATH1_DATA_VOLUME_REQUIRED=1"))
 
   const releaseRoot = join(output, "rootfs")
-  assert.equal(runVerifier(releaseRoot, packaged.stdout.trim(), fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey).status, 0)
+  const path1Verifier = runVerifier(releaseRoot, packaged.stdout.trim(), fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
+  assert.equal(path1Verifier.status, 0, path1Verifier.stderr)
   const manifestPath = join(releaseRoot, "usr/lib/chariox/release-manifest.json")
   const signaturePath = join(releaseRoot, "usr/lib/chariox/release-manifest.sig")
   const originalManifestBytes = await readFile(manifestPath)
@@ -1735,15 +1755,19 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   const systemctl = (await readFile(join(harness.state, "systemctl"), "utf8")).trim().split("\n")
   assert.deepEqual(systemctl, [
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
   ])
