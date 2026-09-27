@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 
-import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto"
+import { createHash, createPrivateKey, createPublicKey, randomUUID, sign } from "node:crypto"
 import { spawn, spawnSync } from "node:child_process"
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
-import { tmpdir } from "node:os"
+import {
+  acquireManagedReleaseBuilderLease,
+  hashManagedReleaseSource,
+  isStateDirectoryExternal,
+  isTerminalBuildHistoryRecord,
+  parseBuildHistoryList,
+  reconcileManagedReleaseBuild,
+  validateBuildMetadata,
+} from "./managed-release-settlement.mjs"
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const BUILD_TARGET = "x86_64-unknown-linux-gnu"
@@ -28,6 +36,7 @@ const MAX_BUILDKIT_MEMORY_BYTES = 16 * 1024 ** 3
 const MAX_BUILDKIT_MEMORY_WITH_SWAP_BYTES = 32 * 1024 ** 3
 const MIN_BUILDKIT_MEMORY_BYTES = 4 * 1024 ** 3
 const BUILD_CANCELLATION_GRACE_MS = 15_000
+const BUILD_HISTORY_READ_TIMEOUT_MS = 15_000
 
 function usage() {
   return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --builder <name> --output <new-directory> [--preflight-timeout-seconds <1-60>] [--build-timeout-seconds <1-14400>]"
@@ -428,6 +437,54 @@ async function verifyManagedBuilder(options) {
   return { name: builder.name, nodes }
 }
 
+async function listManagedBuildHistory(options, deadlineMs) {
+  const output = await dockerOutput(
+    ["buildx", "history", "ls", "--builder", options.builder, "--format", "json", "--no-trunc"],
+    options,
+    "docker buildx history ls",
+    deadlineMs,
+  )
+  return parseBuildHistoryList(output)
+}
+
+async function inspectManagedBuildHistory(options, reference, deadlineMs) {
+  const output = await dockerOutput(
+    ["buildx", "history", "inspect", "--builder", options.builder, "--format", "json", reference],
+    options,
+    "docker buildx history inspect",
+    deadlineMs,
+  )
+  try {
+    const record = JSON.parse(output)
+    if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error()
+    return record
+  } catch {
+    throw new Error("docker buildx history inspect output is malformed")
+  }
+}
+
+async function readBuildReference(metadataPath, builder) {
+  try {
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8"))
+    return validateBuildMetadata(metadata, builder.name, builder.nodes)
+  } catch {
+    return null
+  }
+}
+
+async function reconcileInvocation(barrier, builder, options) {
+  if (await hashManagedReleaseSource(barrier.sourceDirectory) !== barrier.sourceDigest) {
+    return { settled: false, reason: "retained source does not match its invocation digest" }
+  }
+  const deadlineMs = Date.now() + BUILD_HISTORY_READ_TIMEOUT_MS
+  return reconcileManagedReleaseBuild({
+    barrier,
+    currentBuilderFingerprint: builder,
+    historyList: () => listManagedBuildHistory(options, deadlineMs),
+    historyInspect: (reference) => inspectManagedBuildHistory(options, reference, deadlineMs),
+  })
+}
+
 function assertBuilderUnchanged(before, after) {
   if (JSON.stringify(before) !== JSON.stringify(after)) {
     throw new Error("managed builder identity or resource limits changed during the release build")
@@ -510,7 +567,6 @@ async function build(options) {
   if (commit !== options["source-commit"]) throw new Error("source commit did not resolve exactly")
   const tree = git(repository, ["rev-parse", `${commit}^{tree}`]).trim()
   const signingKey = await requirePrivateKey(options["builder-signing-key"])
-  if (await stat(options.output).then(() => true, () => false)) throw new Error("output must not exist")
 
   const dockerEnvironment = Object.fromEntries(
     ["PATH", "HOME", "DOCKER_HOST"].flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []),
@@ -522,22 +578,70 @@ async function build(options) {
     dockerEnvironment,
     preflightDeadlineMs: Date.now() + options["preflight-timeout-seconds"] * 1000,
   })
-
-  const scratch = await mkdtemp(join(tmpdir(), "chariox-managed-build."))
-  const source = join(scratch, "source")
-  const pending = join(dirname(options.output), `.new-${basename(options.output)}-${process.pid}`)
-  const exported = join(scratch, "artifacts")
+  const lease = await acquireManagedReleaseBuilderLease({ builderName: verifiedBuilder.name })
+  let priorBarrier = null
+  let invocationBarrier = null
+  let invocationBarrierWritten = false
+  let invocationSettled = false
+  let preserveInvocationArtifacts = false
+  let runDirectory
+  let pending
   try {
-    await mkdir(source, { mode: 0o700 })
+    if (!isStateDirectoryExternal(lease.stateDirectory, repository)) {
+      throw new Error("managed release state must be outside the source repository")
+    }
+    priorBarrier = await lease.readBarrier()
+    if (priorBarrier) {
+      const priorSettlement = await reconcileInvocation(priorBarrier, verifiedBuilder, {
+        ...options,
+        dockerEnvironment,
+      })
+      if (!priorSettlement.settled) {
+        throw new Error(`managed release builder has an unresolved prior build: ${priorSettlement.reason}`)
+      }
+      await lease.removeBarrier()
+      await lease.removeRunArtifacts(priorBarrier)
+      priorBarrier = null
+    }
+
+    if (await stat(options.output).then(() => true, () => false)) throw new Error("output must not exist")
     await mkdir(dirname(options.output), { recursive: true })
-    await rm(pending, { recursive: true, force: true })
+    const invocationId = randomUUID()
+    runDirectory = await lease.createRunDirectory(invocationId)
+    const source = join(runDirectory, "source")
+    const metadataPath = join(runDirectory, "build-metadata.json")
+    const exported = join(runDirectory, "artifacts")
+    pending = join(dirname(options.output), `.new-${basename(options.output)}-${invocationId}`)
+    await mkdir(source, { mode: 0o700 })
     await mkdir(pending, { mode: 0o755 })
     await materializeGitTree(repository, commit, source)
+    const sourceDigest = await hashManagedReleaseSource(source)
+    const historyBaseline = await listManagedBuildHistory({ ...options, dockerEnvironment }, Date.now() + options["preflight-timeout-seconds"] * 1000)
+    invocationBarrier = {
+      schemaVersion: 1,
+      invocationId,
+      builderName: verifiedBuilder.name,
+      builderFingerprint: verifiedBuilder,
+      sourceCommit: commit,
+      sourceTree: tree,
+      sourceDigest,
+      sourceDirectory: source,
+      runDirectory,
+      outputPath: options.output,
+      pendingDirectory: pending,
+      startedAt: new Date().toISOString(),
+      historyBaseline,
+      buildRef: null,
+    }
+    invocationBarrierWritten = true
+    await lease.writeBarrier(invocationBarrier)
+
     const dockerBuild = await runCommand(
       "docker",
       [
         "buildx", "build", "--builder", verifiedBuilder.name,
         "--pull", "--platform", "linux/amd64", "--target", ARTIFACT_STAGE,
+        "--metadata-file", metadataPath,
         "--file", join(source, BUILDER_DOCKERFILE),
         "--output", `type=local,dest=${exported}`,
         source,
@@ -549,7 +653,32 @@ async function build(options) {
         gracefulCancellation: true,
       },
     )
-    if (dockerBuild.timedOut) throw new Error("locked managed release build timed out")
+
+    const metadataReference = await readBuildReference(metadataPath, verifiedBuilder)
+    if (metadataReference) {
+      invocationBarrier = { ...invocationBarrier, buildRef: metadataReference }
+      await lease.writeBarrier(invocationBarrier)
+    }
+    let settlement
+    try {
+      settlement = await reconcileInvocation(invocationBarrier, verifiedBuilder, {
+        ...options,
+        dockerEnvironment,
+      })
+    } catch (error) {
+      settlement = { settled: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+    if (!settlement.settled) {
+      preserveInvocationArtifacts = true
+      throw new Error(`managed release build settlement is unresolved: ${settlement.reason}`)
+    }
+    invocationSettled = true
+    if (invocationBarrier.buildRef === null) {
+      invocationBarrier = { ...invocationBarrier, buildRef: settlement.buildRef }
+      await lease.writeBarrier(invocationBarrier)
+    }
+
+    if (dockerBuild.timedOut) throw new Error("locked managed release build timed out after remote settlement")
     if (dockerBuild.interruptedSignal) {
       throw new Error(`locked managed release build interrupted by ${dockerBuild.interruptedSignal}`)
     }
@@ -558,6 +687,10 @@ async function build(options) {
     if (dockerBuild.status !== 0) {
       throw new Error(`locked managed release artifact export failed with status ${dockerBuild.status ?? "unknown"}`)
     }
+    if (!new Set(["completed", "success"]).has(String(settlement.status).toLowerCase())) {
+      throw new Error("managed release Buildx history did not report a successful build")
+    }
+
     const builderAfterBuild = await verifyManagedBuilder({
       ...options,
       dockerEnvironment,
@@ -603,8 +736,19 @@ async function build(options) {
     })
     await rename(pending, options.output)
   } finally {
-    await rm(pending, { recursive: true, force: true })
-    await rm(scratch, { recursive: true, force: true })
+    try {
+      if (!preserveInvocationArtifacts) {
+        if (invocationBarrierWritten && invocationSettled) {
+          await lease.removeBarrier()
+          await lease.removeRunArtifacts(invocationBarrier)
+        } else if (!invocationBarrierWritten) {
+          if (pending) await rm(pending, { recursive: true, force: true })
+          if (runDirectory) await rm(runDirectory, { recursive: true, force: true })
+        }
+      }
+    } finally {
+      await lease.release()
+    }
   }
 }
 
