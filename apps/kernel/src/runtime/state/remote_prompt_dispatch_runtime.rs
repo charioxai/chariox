@@ -2128,10 +2128,10 @@ mod tests {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-1",
-                "worktree-1",
-            ))
+            .create_session(
+                crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+                    .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+            )
             .expect("session should be created");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
