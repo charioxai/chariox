@@ -100,7 +100,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         },
     );
     run.mark_running();
-    let (queued_before, workflow_before) = runtime
+    let (queued_before, workflow_before, attachment_id) = runtime
         .with_app_side_effect(|app| {
             app.providers_mut().insert_run_for_test(run.clone());
             app.sessions_mut()
@@ -166,10 +166,28 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
             Ok::<_, DaemonError>((
                 app.prompt_owner_peek_next_queued_prompt(&session_id, &agent_id)?,
                 workflow_before,
+                attachment.id().to_string(),
             ))
         })
         .await
         .unwrap();
+    // The public submission seam allocates the canonical active prompt id for a
+    // newly started prompt. Keep the id returned by that seam rather than using
+    // the fixture's pre-submission label when checking durable settlement.
+    let failed_prompt_id = {
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("the failed prompt should be active before substitution")
+            .id()
+            .to_string()
+    };
     if claude_hook {
         let result = runtime
             .pump_owned_provider_output(&session_id, run.id(), Vec::new(), true)
@@ -248,22 +266,191 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         assert_eq!(live_runs[0].model(), "opencode/deepseek-v4-pro");
         return;
     }
-    let queued = runtime
-        .owned
-        .prompt_state_owner
-        .peek_next_queued_prompt(&session, &agent_id)
-        .unwrap();
+    let queued_before = queued_before.expect("non-workflow queued prompt should be admitted");
+    let failed_run = runtime.owned.provider_store.get_run(run.id()).unwrap();
     assert_eq!(
-        serde_json::to_value(queued).unwrap(),
-        serde_json::to_value(queued_before).unwrap(),
-        "existing work remains queued without replaying failed work"
+        failed_run.state(),
+        crate::provider::ProviderRunState::Ended,
+        "the failed prompt's provider run must be terminal before substitution"
     );
+
+    let settlement = runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(&session_id, &agent_id, &failed_prompt_id)
+        .unwrap()
+        .expect("failed prompt must have durable settlement history");
+    assert_eq!(
+        settlement
+            .metadata
+            .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+            .and_then(serde_json::Value::as_str),
+        Some("failed"),
+        "the exhausted prompt must settle as failed"
+    );
+    assert_eq!(
+        settlement.provider_run_id.as_deref(),
+        Some(run.id()),
+        "settlement must remain owned by the failed provider run"
+    );
+
     let (active, pending) = runtime
         .owned
         .prompt_state_owner
         .state_parts(&session, &agent_id);
-    assert!(active.is_none());
-    assert_eq!(pending.len(), 1);
+    assert!(
+        pending.is_empty(),
+        "substitution must consume the queued prompt"
+    );
+    let active = active.expect("queued prompt must be promoted exactly once");
+    assert_eq!(active.status(), crate::session::PromptStatus::Running);
+    assert_eq!(
+        active.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+        "the replacement must be admitted through the normal dispatch phase"
+    );
+    assert_ne!(
+        active.id(),
+        queued_before.id(),
+        "promotion must allocate a fresh active prompt identity"
+    );
+    assert_eq!(active.target_agent_id(), queued_before.target_agent_id());
+    assert_eq!(
+        active.source_attachment_id(),
+        queued_before.source_attachment_id()
+    );
+    assert_eq!(active.prompt(), queued_before.prompt());
+    assert_eq!(active.attachments(), queued_before.attachments());
+    assert_eq!(active.created_at_ms(), queued_before.created_at_ms());
+    assert!(active.pending_prompt_id().is_none());
+
+    let live_runs = runtime
+        .owned
+        .provider_store
+        .list_runs()
+        .into_iter()
+        .filter(|candidate| {
+            candidate.agent_instance_id() == Some(agent_id.as_str())
+                && candidate.state() != crate::provider::ProviderRunState::Ended
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        live_runs.len(),
+        1,
+        "substitution must bind exactly one live provider run"
+    );
+    let replacement_run = &live_runs[0];
+    assert_ne!(replacement_run.id(), run.id());
+    assert_eq!(replacement_run.adapter_key(), "opencode");
+    assert_eq!(replacement_run.model(), "opencode/deepseek-v4-pro");
+    assert_eq!(
+        active.durable_delivery_provider_run_id(),
+        Some(replacement_run.id()),
+        "replacement prompt must bind to the substitute run"
+    );
+
+    let output_records = runtime.owned.terminal_stream.output_records();
+    let provider_errors = output_records
+        .iter()
+        .filter(|record| {
+            record.provider_run_id == run.id()
+                && record.kind == crate::terminal::TerminalOutputKind::ProviderError
+                && record.bytes == b"insufficient balance"
+        })
+        .count();
+    assert_eq!(
+        provider_errors, 1,
+        "the failed prompt must expose one actionable provider error"
+    );
+    let replacement_echoes = output_records
+        .iter()
+        .filter(|record| {
+            record.provider_run_id == replacement_run.id()
+                && record.prompt_id.as_deref() == Some(active.id())
+                && record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+        })
+        .count();
+    assert_eq!(
+        replacement_echoes, 1,
+        "the queued prompt must be delivered to the replacement exactly once"
+    );
+
+    let completion_records = runtime
+        .owned
+        .terminal_stream
+        .drain_completion_records(&session_id, &attachment_id);
+    let failed_completions = completion_records
+        .iter()
+        .filter(|record| {
+            record.provider_run_id == run.id()
+                && record.message_id == format!("prompt-complete:{failed_prompt_id}")
+        })
+        .count();
+    assert_eq!(
+        failed_completions, 1,
+        "the failed prompt must retain one terminal completion"
+    );
+
+    let expected_merge_key = format!("prompt:{}", active.id());
+    // Promotion schedules this history append on `spawn_blocking`; wait for
+    // the authoritative operational event rather than racing the writer.
+    let mut operational_history = Vec::new();
+    for _ in 0..100 {
+        operational_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&session_id, Some(&agent_id))
+            .unwrap();
+        let replacement_count = operational_history
+            .iter()
+            .filter(|event| {
+                event
+                    .metadata
+                    .get("merge_key")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(expected_merge_key.as_str())
+            })
+            .count();
+        if replacement_count > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let replacement_history = operational_history
+        .iter()
+        .filter(|event| {
+            event
+                .metadata
+                .get("merge_key")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected_merge_key.as_str())
+        })
+        .count();
+    assert_eq!(
+        replacement_history, 1,
+        "the replacement prompt must have one canonical history entry"
+    );
+    let replacement_event = operational_history
+        .iter()
+        .find(|event| {
+            event
+                .metadata
+                .get("merge_key")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected_merge_key.as_str())
+        })
+        .expect("the replacement operational history event should be present");
+    assert_eq!(
+        replacement_event.kind,
+        crate::history::HistoryEventKind::UserPrompt,
+        "replacement history must be a user-prompt event"
+    );
+    assert_eq!(
+        replacement_event.prompt_id.as_deref(),
+        Some(active.id()),
+        "replacement history must retain the promoted prompt identity"
+    );
 }
 
 async fn runtime_with_substitutes(

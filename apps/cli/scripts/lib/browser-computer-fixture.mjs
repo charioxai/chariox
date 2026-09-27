@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto"
 import http from "node:http"
+import { parseFixtureMail } from "./browser-computer-fixture-mail.mjs"
 
 const DEFAULT_ACCOUNT = "agent@chariox.test"
 const MAX_REQUEST_BODY_BYTES = 1_048_576
@@ -13,11 +15,23 @@ export async function startBrowserComputerFixture({
   if (!nonEmptyString(account)) throw new Error("browser/computer fixture account is required")
 
   const sessions = new Map()
+  const pendingOAuthStates = new Set()
+  const oauthGrants = new Map()
   const messages = []
   const uploads = []
   const server = http.createServer(async (request, response) => {
     try {
-      await routeRequest({ request, response, account, password, sessions, messages, uploads })
+      await routeRequest({
+        request,
+        response,
+        account,
+        password,
+        sessions,
+        pendingOAuthStates,
+        oauthGrants,
+        messages,
+        uploads,
+      })
     } catch (error) {
       send(response, 500, `fixture error: ${error?.message ?? String(error)}`, {
         "content-type": "text/plain; charset=utf-8",
@@ -34,11 +48,26 @@ export async function startBrowserComputerFixture({
     origin,
     messages,
     uploads,
+    invalidateSessions: () => {
+      const invalidated = sessions.size
+      sessions.clear()
+      return invalidated
+    },
     close: async () => await closeServer(server),
   }
 }
 
-async function routeRequest({ request, response, account, password, sessions, messages, uploads }) {
+async function routeRequest({
+  request,
+  response,
+  account,
+  password,
+  sessions,
+  pendingOAuthStates,
+  oauthGrants,
+  messages,
+  uploads,
+}) {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`)
   const cookies = parseCookies(request.headers.cookie ?? "")
   const authenticated = sessions.get(cookies.chariox_fixture_session) === account
@@ -77,10 +106,56 @@ async function routeRequest({ request, response, account, password, sessions, me
       sendHtml(response, loginPage("Invalid credentials"), 401)
       return
     }
-    const sessionId = `fixture-${Date.now()}-${sessions.size + 1}`
+    const sessionId = `fixture-${randomUUID()}`
     sessions.set(sessionId, account)
     send(response, 303, "", {
       location: "/mail/inbox",
+      "set-cookie": `chariox_fixture_session=${sessionId}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax`,
+    })
+    return
+  }
+  if (url.pathname === "/oauth/start" && request.method === "GET") {
+    const state = `fixture-state-${randomUUID()}`
+    pendingOAuthStates.add(state)
+    sendHtml(response, oauthStartPage(state))
+    return
+  }
+  if (url.pathname === "/oauth/authorize" && request.method === "GET") {
+    const state = url.searchParams.get("state") ?? ""
+    if (!pendingOAuthStates.has(state)) {
+      send(response, 400, "invalid OAuth state", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
+    sendHtml(response, oauthAuthorizePage(state, account))
+    return
+  }
+  if (url.pathname === "/oauth/authorize" && request.method === "POST") {
+    const form = new URLSearchParams(await readBody(request))
+    const state = form.get("state") ?? ""
+    if (!pendingOAuthStates.delete(state)) {
+      send(response, 400, "invalid OAuth state", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
+    const code = `fixture-code-${randomUUID()}`
+    oauthGrants.set(code, { state, account })
+    send(response, 303, "", {
+      location: `/oauth/callback?${new URLSearchParams({ code, state })}`,
+    })
+    return
+  }
+  if (url.pathname === "/oauth/callback" && request.method === "GET") {
+    const code = url.searchParams.get("code") ?? ""
+    const state = url.searchParams.get("state") ?? ""
+    const grant = oauthGrants.get(code)
+    if (!grant || grant.state !== state) {
+      send(response, 400, "invalid OAuth callback", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
+    oauthGrants.delete(code)
+    const sessionId = `fixture-${randomUUID()}`
+    sessions.set(sessionId, grant.account)
+    send(response, 200, oauthCallbackPage(grant), {
+      "content-type": "text/html; charset=utf-8",
       "set-cookie": `chariox_fixture_session=${sessionId}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax`,
     })
     return
@@ -100,16 +175,33 @@ async function routeRequest({ request, response, account, password, sessions, me
       send(response, 403, "not authenticated", { "content-type": "text/plain; charset=utf-8" })
       return
     }
-    const form = new URLSearchParams(await readBody(request))
+    let form
+    try {
+      form = await parseFixtureMail(await readBodyBytes(request), request.headers["content-type"] ?? "")
+    } catch (error) {
+      send(response, error.code === "FIXTURE_BODY_TOO_LARGE" ? 413 : 400, "invalid fixture mail", {
+        "content-type": "text/plain; charset=utf-8",
+      })
+      return
+    }
     const message = {
       id: `message-${messages.length + 1}`,
       from: account,
-      to: form.get("to") ?? "",
-      subject: form.get("subject") ?? "",
-      body: form.get("body") ?? "",
+      ...form,
       sentAt: new Date().toISOString(),
     }
     messages.push(message)
+    send(response, 303, "", { location: `/mail/sent/${message.id}` })
+    return
+  }
+  const sentMessageMatch = /^\/mail\/sent\/([^/]+)$/.exec(url.pathname)
+  if (sentMessageMatch && request.method === "GET") {
+    if (!authenticated) return redirectToLogin(response)
+    const message = messages.find((candidate) => candidate.id === sentMessageMatch[1])
+    if (!message) {
+      send(response, 404, "message not found", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
     sendHtml(response, sentPage(message))
     return
   }
@@ -256,6 +348,44 @@ function loginPage(error = "") {
   `)
 }
 
+function oauthStartPage(state) {
+  const expectedState = scriptJson(state)
+  return html("Fixture OAuth client", `
+    <h1>Fixture OAuth client</h1>
+    <p id="oauth-status">signed out</p>
+    <a id="oauth-sign-in" href="/oauth/authorize?state=${encodeURIComponent(state)}" target="_blank" rel="opener">Sign in with Fixture</a>
+    <script>
+      const expectedState = ${expectedState};
+      window.addEventListener("message", (event) => {
+        if (event.origin !== window.location.origin || event.data?.type !== "fixture-oauth" || event.data?.state !== expectedState) return;
+        document.querySelector("#oauth-status").textContent = "CHARIOX_FIXTURE_OAUTH_AUTHENTICATED " + event.data.account;
+      });
+    </script>
+  `)
+}
+
+function oauthAuthorizePage(state, account) {
+  return html("Fixture OAuth authorization", `
+    <h1>Fixture OAuth authorization</h1>
+    <p>Continue as ${escapeHtml(account)}</p>
+    <form method="post" action="/oauth/authorize">
+      <input type="hidden" name="state" value="${escapeHtml(state)}">
+      <button id="oauth-authorize" type="submit">Authorize Fixture account</button>
+    </form>
+  `)
+}
+
+function oauthCallbackPage({ state, account }) {
+  const payload = scriptJson({ type: "fixture-oauth", state, account })
+  return html("Fixture OAuth callback", `
+    <h1 id="oauth-callback">CHARIOX_FIXTURE_OAUTH_CALLBACK</h1>
+    <button id="oauth-complete" type="button" onclick="window.close()">Complete sign-in</button>
+    <script>
+      window.opener?.postMessage(${payload}, window.location.origin);
+    </script>
+  `)
+}
+
 function inboxPage(account, messages) {
   const rows = messages.map((message) => `<li data-message-id="${escapeHtml(message.id)}">${escapeHtml(message.subject)}</li>`).join("")
   return html("Fixture inbox", `
@@ -269,19 +399,23 @@ function inboxPage(account, messages) {
 function composePage() {
   return html("Fixture compose", `
     <h1>Fixture compose</h1>
-    <form method="post" action="/mail/send">
+    <form method="post" action="/mail/send" enctype="multipart/form-data">
       <label>To <input id="to" name="to"></label>
       <label>Subject <input id="subject" name="subject"></label>
       <label>Body <textarea id="body" name="body"></textarea></label>
+      <label>Attachment <input id="attachment" type="file" name="attachment" multiple></label>
       <button id="send" type="submit">Send</button>
     </form>
   `)
 }
 
 function sentPage(message) {
+  const attachments = (message.attachments ?? []).map(file =>
+    `<li>${escapeHtml(file.name)} (${file.sizeBytes} bytes)</li>`).join("")
   return html("Fixture message sent", `
     <h1 id="sent-marker">CHARIOX_FIXTURE_MESSAGE_SENT</h1>
     <p id="sent-subject">${escapeHtml(message.subject)}</p>
+    <ul id="sent-attachments">${attachments}</ul>
     <a href="/mail/inbox">Inbox</a>
   `)
 }
@@ -353,14 +487,20 @@ function send(response, status, body, headers = {}) {
 }
 
 async function readBody(request) {
+  return (await readBodyBytes(request)).toString("utf8")
+}
+
+async function readBodyBytes(request) {
   const chunks = []
   let sizeBytes = 0
   for await (const chunk of request) {
     sizeBytes += chunk.length
-    if (sizeBytes > MAX_REQUEST_BODY_BYTES) throw new Error("fixture request body exceeds 1 MiB")
+    if (sizeBytes > MAX_REQUEST_BODY_BYTES) {
+      throw Object.assign(new Error("fixture request body exceeds 1 MiB"), { code: "FIXTURE_BODY_TOO_LARGE" })
+    }
     chunks.push(Buffer.from(chunk))
   }
-  return Buffer.concat(chunks).toString("utf8")
+  return Buffer.concat(chunks)
 }
 
 function parseCookies(header) {

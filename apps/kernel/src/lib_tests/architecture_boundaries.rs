@@ -252,18 +252,133 @@ fn cfg_item_end(source: &str, item_start: usize) -> Option<usize> {
 }
 
 fn matching_brace(source: &str, open_brace: usize) -> Option<usize> {
+    // Brace matching must ignore braces that live inside string, byte-string,
+    // raw-string, or char literals and inside comments; test fixtures embed
+    // deliberately unbalanced braces (e.g. malformed JSON response bodies), and
+    // a naive byte counter would stop stripping a `#[cfg(test)]` item early.
+    let bytes = source.as_bytes();
     let mut depth = 0usize;
-    for (offset, byte) in source.as_bytes()[open_brace..].iter().enumerate() {
-        match byte {
-            b'{' => depth += 1,
+    let mut i = open_brace;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                let mut nesting = 1usize;
+                while i < bytes.len() && nesting > 0 {
+                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                        nesting += 1;
+                        i += 2;
+                    } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        nesting -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'r' | b'b'
+                if raw_string_hashes(bytes, i).is_some()
+                    && char_before_is_not_identifier(bytes, i) =>
+            {
+                let hashes = raw_string_hashes(bytes, i).expect("raw string prefix");
+                i = skip_raw_string(bytes, i, hashes);
+            }
+            b'"' => i = skip_quoted(bytes, i, b'"'),
+            b'\'' if is_char_literal(bytes, i) => i = skip_quoted(bytes, i, b'\''),
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
             b'}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return Some(open_brace + offset);
+                    return Some(i);
                 }
+                i += 1;
             }
-            _ => {}
+            _ => i += 1,
         }
     }
     None
+}
+
+fn char_before_is_not_identifier(bytes: &[u8], i: usize) -> bool {
+    if i == 0 {
+        return true;
+    }
+    let prev = bytes[i - 1];
+    !(prev.is_ascii_alphanumeric() || prev == b'_')
+}
+
+/// Returns the number of `#` in a raw-string opener starting at `i` (`r"`,
+/// `br"`, `r#"`, `br##"`, ...), or `None` if `i` is not a raw-string prefix.
+fn raw_string_hashes(bytes: &[u8], i: usize) -> Option<usize> {
+    let mut cursor = i;
+    if bytes.get(cursor) == Some(&b'b') {
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'r') {
+        return None;
+    }
+    cursor += 1;
+    let mut hashes = 0usize;
+    while bytes.get(cursor) == Some(&b'#') {
+        hashes += 1;
+        cursor += 1;
+    }
+    if bytes.get(cursor) == Some(&b'"') {
+        Some(hashes)
+    } else {
+        None
+    }
+}
+
+fn skip_raw_string(bytes: &[u8], i: usize, hashes: usize) -> usize {
+    // Advance past the opening `"`.
+    let mut cursor = i;
+    while bytes.get(cursor) != Some(&b'"') {
+        cursor += 1;
+    }
+    cursor += 1;
+    loop {
+        if cursor >= bytes.len() {
+            return cursor;
+        }
+        if bytes[cursor] == b'"' {
+            let closes = (1..=hashes).all(|offset| bytes.get(cursor + offset) == Some(&b'#'));
+            if closes {
+                return cursor + hashes + 1;
+            }
+        }
+        cursor += 1;
+    }
+}
+
+fn is_char_literal(bytes: &[u8], i: usize) -> bool {
+    // Distinguish a char literal (`'{'`, `'\n'`, `'\u{7f}'`) from a lifetime
+    // tick (`'a`). A char literal escapes with `\` or closes within a couple of
+    // bytes; a lifetime is followed by an identifier and no closing quote.
+    match bytes.get(i + 1) {
+        Some(b'\\') => true,
+        Some(_) => bytes.get(i + 2) == Some(&b'\''),
+        None => false,
+    }
+}
+
+fn skip_quoted(bytes: &[u8], open: usize, delimiter: u8) -> usize {
+    let mut cursor = open + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor += 2,
+            byte if byte == delimiter => return cursor + 1,
+            _ => cursor += 1,
+        }
+    }
+    cursor
 }

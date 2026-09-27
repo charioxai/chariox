@@ -6,6 +6,15 @@ use crate::transport::flow_control;
 
 use super::super::KernelAgentService;
 
+fn merge_remote_provider_termination(
+    worker_provider_termination: Option<crate::provider::ProviderRunTermination>,
+    explicit_provider_termination: Option<crate::provider::ProviderRunTermination>,
+) -> Option<crate::provider::ProviderRunTermination> {
+    // Normal completion supplies no local diagnostic, so retain the authenticated worker value;
+    // an explicit caller diagnostic remains authoritative when one is supplied.
+    explicit_provider_termination.or(worker_provider_termination)
+}
+
 pub(super) enum KernelPromptCompletionAdmission {
     Remote {
         session_id: String,
@@ -30,6 +39,7 @@ pub(super) struct KernelPromptOwnerCompletion {
     pub(super) remote_provider_run_id: Option<String>,
     pub(super) next_queued_prompt: Option<PromptQueueItem>,
     pub(super) settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
+    pub(super) provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 
 impl<'a> KernelAgentService<'a> {
@@ -45,6 +55,7 @@ impl<'a> KernelAgentService<'a> {
             provider_run_id,
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Completed,
+            None,
         )
     }
 
@@ -60,6 +71,24 @@ impl<'a> KernelAgentService<'a> {
             provider_run_id,
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            None,
+        )
+    }
+
+    pub(crate) fn fail_active_prompt_with_termination(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        self.complete_active_prompt_for_kernel(
+            session_id,
+            agent_id,
+            provider_run_id,
+            None,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            provider_termination,
         )
     }
 
@@ -70,6 +99,7 @@ impl<'a> KernelAgentService<'a> {
         provider_run_id: Option<&str>,
         next_queued_prompt: Option<&PromptQueueItem>,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) -> Result<PromptCompletion, DaemonError> {
         let admission = self.prepare_prompt_completion_admission(
             session_id,
@@ -80,12 +110,21 @@ impl<'a> KernelAgentService<'a> {
         let completion = match admission {
             KernelPromptCompletionAdmission::Remote { .. } => {
                 let mut completed = self.complete_remote_prompt_from_admission(admission)?;
-                completed.settlement_status = settlement_status;
+                completed.provider_termination = merge_remote_provider_termination(
+                    completed.provider_termination,
+                    provider_termination.clone(),
+                );
+                completed.settlement_status = if completed.provider_termination.is_some() {
+                    crate::git_observer::CompletedTurnSettlementStatus::Failed
+                } else {
+                    settlement_status
+                };
                 self.finish_remote_prompt_completion(completed)?
             }
             KernelPromptCompletionAdmission::Local { .. } => {
                 let mut completed = self.complete_local_prompt_from_admission(admission)?;
                 completed.settlement_status = settlement_status;
+                completed.provider_termination = provider_termination;
                 self.finish_local_prompt_completion(completed)?
             }
         };
@@ -152,6 +191,7 @@ impl<'a> KernelAgentService<'a> {
             remote_provider_run_id: None,
             next_queued_prompt,
             settlement_status: crate::git_observer::CompletedTurnSettlementStatus::Completed,
+            provider_termination: None,
         })
     }
 
@@ -188,7 +228,7 @@ impl<'a> KernelAgentService<'a> {
             );
         self.app
             .completed_git_turn_snapshot_store()
-            .record_prompt_settlement(
+            .record_prompt_settlement_with_termination(
                 &completion.session_id,
                 &completion.agent_id,
                 completion_provider_run_id
@@ -198,6 +238,7 @@ impl<'a> KernelAgentService<'a> {
                 settled_at_ms,
                 started_at_ms,
                 completion.settlement_status,
+                completion.provider_termination.clone(),
             );
         if !flow_control::prompt_completion_recorded(
             self.app,
@@ -395,10 +436,10 @@ impl<'a> KernelAgentService<'a> {
             }
         };
         self.update_metaagent_event_prompt_delivery(&record.event_id, delivery_status, None);
-        if let Err(error) = self
-            .finish_compat_prompt_dispatch(submitted.dispatch)
-            .and_then(|_| self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch))
-        {
+        if let Err(error) = self.finish_compat_prompt_submission_dispatches(
+            submitted.dispatch,
+            submitted.remote_dispatch,
+        ) {
             self.update_metaagent_event_prompt_delivery(
                 &record.event_id,
                 crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
@@ -528,10 +569,10 @@ impl<'a> KernelAgentService<'a> {
             }
         };
         self.update_metaagent_event_prompt_delivery(&record.event_id, delivery_status, None);
-        if let Err(error) = self
-            .finish_compat_prompt_dispatch(submitted.dispatch)
-            .and_then(|_| self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch))
-        {
+        if let Err(error) = self.finish_compat_prompt_submission_dispatches(
+            submitted.dispatch,
+            submitted.remote_dispatch,
+        ) {
             self.update_metaagent_event_prompt_delivery(
                 &record.event_id,
                 crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
@@ -642,5 +683,73 @@ impl<'a> KernelAgentService<'a> {
                 }),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_remote_provider_termination;
+    use crate::app::{DaemonApp, KernelAgentService, KernelRemotePromptDispatch};
+    use crate::config::DaemonConfig;
+    use crate::provider::ProviderRunTermination;
+    use crate::session::PromptOrigin;
+
+    #[test]
+    fn remote_completion_keeps_worker_termination_without_explicit_diagnostic() {
+        let worker = ProviderRunTermination::process_exit(23, 17_600);
+
+        assert_eq!(
+            merge_remote_provider_termination(Some(worker.clone()), None),
+            Some(worker),
+        );
+    }
+
+    #[test]
+    fn explicit_remote_termination_overrides_worker_termination() {
+        let explicit = ProviderRunTermination::signal("SIGTERM", 17_601);
+
+        assert_eq!(
+            merge_remote_provider_termination(
+                Some(ProviderRunTermination::process_exit(23, 17_600)),
+                Some(explicit.clone()),
+            ),
+            Some(explicit),
+        );
+    }
+
+    #[test]
+    fn completion_generated_remote_prompt_uses_the_post_lock_handoff_once() {
+        let mut app =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap");
+        let dispatch = KernelRemotePromptDispatch {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            worker_kernel_id: "worker-kernel-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            relay_url: None,
+            relay_token: None,
+            source_attachment_id: "attachment-1".to_string(),
+            prompt: "completion event".to_string(),
+            hidden_system_context: String::new(),
+            attachments: Vec::new(),
+            workspace_live_sync_mode: None,
+            prompt_origin: PromptOrigin::Chariox,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            workflow_context: None,
+        };
+
+        KernelAgentService::new(&mut app)
+            .finish_compat_prompt_submission_dispatches(None, Some(dispatch))
+            .expect("completion event should defer remote delivery");
+
+        let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
+        assert_eq!(deferred.len(), 1, "completion should enqueue one send");
+        assert_eq!(deferred[0].prompt, "completion event");
+        assert!(app
+            .take_deferred_workflow_remote_prompt_dispatches()
+            .is_empty());
     }
 }

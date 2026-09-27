@@ -54,6 +54,42 @@ pub(super) async fn resolve_session_lane_key(
                 &request.attachment_id,
             )
         }
+        LocalDaemonRequest::StartRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::BindRoomEnvironmentSlice(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::StopRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::RetryRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::CancelRoomEnvironmentAction(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
@@ -97,19 +133,12 @@ pub(super) async fn resolve_session_lane_key(
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
         LocalDaemonRequest::DeleteSession(request) => {
-            if let Some(session_id) = session_projection
-                .resolve_session_ref_id(&request.session_ref, request.workspace_id.as_deref())
-            {
-                return Ok(session_id);
-            }
-            if let Some(result) = session_projection.resolve_session_ref_id_from_warmed_list(
-                &request.session_ref,
-                request.workspace_id.as_deref(),
-            ) {
-                return result;
-            }
+            // Ended sessions are absent from the projection but remain deletable by exact ID.
             store
-                .resolve_session_ref_id(&request.session_ref, request.workspace_id.as_deref())
+                .resolve_session_ref_id_for_delete(
+                    &request.session_ref,
+                    request.workspace_id.as_deref(),
+                )
                 .await
         }
         LocalDaemonRequest::DetachFromSession(request) => {

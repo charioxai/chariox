@@ -44,6 +44,7 @@ pub fn export_development_context(
             "development context archive parent changed while preparing the export",
         ));
     }
+    let managed_publication_export = managed_publication_export_path(&canonical_archive_parent);
 
     let staging_root =
         create_unique_private_directory(&canonical_archive_parent, ".tmp-chariox-managed-context")?;
@@ -73,6 +74,7 @@ pub fn export_development_context(
             &mut repository_ids,
             &mut target_directories,
             &mut manifest_budget,
+            managed_publication_export,
         )?;
         checkout_bytes = checkout_bytes.saturating_add(estimate.checkout_bytes);
         materialized_entries = materialized_entries.saturating_add(estimate.materialized_entries);
@@ -99,7 +101,14 @@ pub fn export_development_context(
     }
 
     let manifest = DevelopmentContextManifest {
-        schema_version: DEVELOPMENT_CONTEXT_SCHEMA_VERSION,
+        schema_version: if repositories
+            .iter()
+            .any(|repository| !repository.workspace_kind.is_git())
+        {
+            DIRECTORY_CONTEXT_SCHEMA_VERSION
+        } else {
+            DEVELOPMENT_CONTEXT_SCHEMA_VERSION
+        },
         project_id: request.project_id,
         repositories,
     };
@@ -234,6 +243,7 @@ fn export_repository(
     repository_ids: &mut BTreeSet<String>,
     target_directories: &mut BTreeSet<String>,
     manifest_budget: &mut ManifestMemoryBudget,
+    managed_publication_export: bool,
 ) -> Result<
     (
         DevelopmentRepositoryManifest,
@@ -241,6 +251,21 @@ fn export_repository(
     ),
     DaemonError,
 > {
+    match fs::symlink_metadata(worktree.join(".git")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return super::directory::export_directory(
+                selection,
+                worktree,
+                staging_root,
+                repository_ids,
+                target_directories,
+                manifest_budget,
+                managed_publication_export,
+            );
+        }
+        Err(error) => return Err(context_io_error("inspect Git workspace metadata", error)),
+        Ok(_) => {}
+    }
     ensure_worktree_root(worktree)?;
     let source_before = repository_source_state(worktree)?;
     let source_estimate = inspect_export_repository(worktree)?;
@@ -254,14 +279,19 @@ fn export_repository(
                 .is_some_and(|branch| !branch.is_empty())
     });
     let logical_name = repository_logical_name(worktree, origin_url.as_deref());
+    let source_basename = source_repository_basename(worktree)?;
     let repository_id = unique_repository_id(
         origin_url.as_deref(),
         &head_sha,
         &logical_name,
         repository_ids,
     );
-    let target_directory =
-        unique_target_directory(&logical_name, &repository_id, target_directories);
+    let target_directory = target_directory_for_export(
+        &source_basename,
+        &repository_id,
+        target_directories,
+        managed_publication_export,
+    )?;
     manifest_budget.consume(
         head_sha
             .len()
@@ -321,6 +351,8 @@ fn export_repository(
 
     Ok((
         DevelopmentRepositoryManifest {
+            workspace_kind: DevelopmentWorkspaceKind::Git,
+            directories: Vec::new(),
             repository_id: repository_id.clone(),
             source_binding_sha256: source_repository_binding_sha256(
                 &DevelopmentSourceRepositoryBinding {
@@ -372,7 +404,7 @@ fn repository_source_state(worktree: &Path) -> Result<RepositorySourceState, Dae
     })
 }
 
-fn repository_logical_name(worktree: &Path, origin_url: Option<&str>) -> String {
+pub(super) fn repository_logical_name(worktree: &Path, origin_url: Option<&str>) -> String {
     let candidate = origin_url
         .and_then(|origin| origin.trim_end_matches('/').rsplit('/').next())
         .map(|name| name.trim_end_matches(".git"))
@@ -382,7 +414,16 @@ fn repository_logical_name(worktree: &Path, origin_url: Option<&str>) -> String 
     sanitize_directory_name(candidate)
 }
 
-fn unique_repository_id(
+pub(super) fn source_repository_basename(worktree: &Path) -> Result<String, DaemonError> {
+    let basename = worktree
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| context_error("source repository basename is not valid UTF-8"))?;
+    validate_repository_basename(basename)?;
+    Ok(basename.to_string())
+}
+
+pub(super) fn unique_repository_id(
     origin_url: Option<&str>,
     head_sha: &str,
     logical_name: &str,
@@ -408,26 +449,113 @@ fn unique_repository_id(
     unreachable!("repository id suffix space is unbounded")
 }
 
-fn unique_target_directory(
-    logical_name: &str,
+pub(super) fn unique_target_directory(
+    source_basename: &str,
     repository_id: &str,
     occupied: &mut BTreeSet<String>,
-) -> String {
-    let base = sanitize_directory_name(logical_name);
-    if occupied.insert(base.to_ascii_lowercase()) {
-        return base;
+) -> Result<String, DaemonError> {
+    validate_repository_basename(source_basename)?;
+    if occupied.insert(source_basename.to_lowercase()) {
+        return Ok(source_basename.to_string());
     }
-    let hashed = format!("{base}-{}", &repository_id[5..13]);
-    if occupied.insert(hashed.to_ascii_lowercase()) {
-        return hashed;
+    let base = sanitize_directory_name(source_basename);
+    let suffix = repository_id
+        .strip_prefix("repo-")
+        .unwrap_or(repository_id)
+        .chars()
+        .take(8)
+        .collect::<String>();
+    let hashed = format!("{base}-{suffix}");
+    if occupied.insert(hashed.to_lowercase()) {
+        return Ok(hashed);
     }
-    for suffix in 2_u32.. {
-        let candidate = format!("{hashed}-{suffix}");
-        if occupied.insert(candidate.to_ascii_lowercase()) {
-            return candidate;
+    for ordinal in 2_u32.. {
+        let candidate = format!("{hashed}-{ordinal}");
+        if occupied.insert(candidate.to_lowercase()) {
+            return Ok(candidate);
         }
     }
     unreachable!("target directory suffix space is unbounded")
+}
+
+pub(super) fn target_directory_for_export(
+    source_basename: &str,
+    repository_id: &str,
+    occupied: &mut BTreeSet<String>,
+    managed_publication_export: bool,
+) -> Result<String, DaemonError> {
+    if managed_publication_export {
+        return unique_managed_target_directory(source_basename, occupied);
+    }
+    unique_target_directory(source_basename, repository_id, occupied)
+}
+
+pub(super) fn unique_managed_target_directory(
+    source_basename: &str,
+    occupied: &mut BTreeSet<String>,
+) -> Result<String, DaemonError> {
+    validate_managed_repository_basename(source_basename)?;
+    if !occupied.insert(source_basename.to_ascii_lowercase()) {
+        return Err(context_error(format!(
+            "source repository basename `{source_basename}` collides with another selected managed repository"
+        )));
+    }
+    Ok(source_basename.to_string())
+}
+
+fn managed_publication_export_path(archive_parent: &Path) -> bool {
+    [
+        "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
+        "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var_os(name).filter(|value| !value.is_empty()))
+    .map(PathBuf::from)
+    .any(|root| archive_parent.starts_with(root))
+}
+
+pub(super) fn validate_repository_basename(value: &str) -> Result<(), DaemonError> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || value.len() > 255
+        || path.components().count() != 1
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(context_error(
+            "source repository basename is unsafe or invalid",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_managed_repository_basename(value: &str) -> Result<(), DaemonError> {
+    validate_repository_basename(value)?;
+    let lower = value.to_ascii_lowercase();
+    const RESERVED: &[&str] = &[
+        ".chariox",
+        ".provider-account",
+        "managed-context-workspaces",
+        "managed-context",
+        "managed-runtime-auth",
+        "provider-home",
+        "kernels",
+        "state",
+        "sessions",
+        "daemon",
+        "machine",
+        "managed",
+    ];
+    if RESERVED.iter().any(|reserved| *reserved == lower)
+        || lower.starts_with(".chariox-empty-context-")
+    {
+        return Err(context_error(
+            "source repository basename is reserved by managed runtime state",
+        ));
+    }
+    Ok(())
 }
 
 fn sanitize_directory_name(value: &str) -> String {

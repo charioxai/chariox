@@ -5,6 +5,7 @@ import {
   applyProviderPreferenceDefaults,
   parseArgs,
   resolveConfiguredCloudRelayApiUrl,
+  terminalPairingLinkFromArgs,
 } from "./cli-options.js"
 
 test("parseArgs applies terminal pairing links", () => {
@@ -28,6 +29,12 @@ test("parseArgs applies terminal pairing links", () => {
   })
 })
 
+test("terminal pairing bootstrap retrieves only the pairing-link argument", () => {
+  const link = "chariox-terminal-pair-v1.fixture"
+  assert.equal(terminalPairingLinkFromArgs(["--session", "session-1", "--pairing-link", link]), link)
+  assert.equal(terminalPairingLinkFromArgs(["--session", "session-1"]), null)
+})
+
 test("parseArgs rejects invalid option combinations", () => {
   assert.throws(
     () => parseArgs(["--relay-url", "wss://relay.example.test"]),
@@ -37,6 +44,24 @@ test("parseArgs rejects invalid option combinations", () => {
     () => parseArgs(["--create-session", "--session", "session-1"]),
     /--create-session cannot be used together with --session/,
   )
+})
+
+test("parseArgs reads a relay token from an explicit environment variable without argv exposure", () => {
+  const previous = process.env.CHARIOX_DRILL_C_RELAY_TOKEN
+  process.env.CHARIOX_DRILL_C_RELAY_TOKEN = "scoped-test-token"
+  try {
+    const args = [
+      "--relay-url", "ws://127.0.0.1:47000",
+      "--relay-token-env", "CHARIOX_DRILL_C_RELAY_TOKEN",
+      "--target-daemon-id", "kernel-home",
+    ]
+    assert.equal(parseArgs(args).relayToken, "scoped-test-token")
+    assert.equal(args.includes("scoped-test-token"), false)
+    assert.throws(() => parseArgs([...args, "--relay-token", "argv-token"]), /cannot be combined/)
+  } finally {
+    if (previous === undefined) delete process.env.CHARIOX_DRILL_C_RELAY_TOKEN
+    else process.env.CHARIOX_DRILL_C_RELAY_TOKEN = previous
+  }
 })
 
 test("parseArgs help lists remote runtime once next to kernel health", () => {

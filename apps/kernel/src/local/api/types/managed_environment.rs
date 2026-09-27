@@ -12,6 +12,12 @@ pub struct GetManagedEnvironmentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetManagedEnvironmentReimagePreflightRequest {
+    pub environment_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PrepareManagedEnvironmentContextTransferRequest {
     pub environment_id: String,
 }
@@ -31,6 +37,8 @@ pub struct CreateManagedEnvironmentRequest {
     pub name: String,
     pub region: String,
     pub compute_class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_repository_root: Option<String>,
     pub auto_stop_policy: ManagedEnvironmentAutoStopPolicy,
     pub context_plan: ManagedEnvironmentContextPlanInput,
 }
@@ -41,6 +49,37 @@ pub struct RequestManagedEnvironmentLifecycleRequest {
     pub environment_id: String,
     pub action: ManagedEnvironmentLifecycleAction,
     pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestManagedEnvironmentReimageRequest {
+    pub environment_id: String,
+    pub expected_generation: u64,
+    pub expected_provider_server_id: String,
+    pub expected_provider_image_id: String,
+    pub expected_provider_profile_id: String,
+    pub expected_provider_profile_digest: String,
+    pub expected_runtime_release_digest: String,
+    pub expected_runtime_source_commit: String,
+    pub expected_runtime_source_tree: String,
+    pub context_plan: ManagedEnvironmentContextPlanInput,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObserveManagedEnvironmentPreReimageRequest {
+    pub environment_id: String,
+    pub expected_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentPreReimageObservationAcknowledgement {
+    pub environment_id: String,
+    pub generation: u64,
+    pub observed_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +211,7 @@ pub struct ManagedEnvironmentSummary {
     pub name: String,
     pub region: String,
     pub compute_class: String,
+    pub managed_repository_root: String,
     pub desired_state: ManagedEnvironmentDesiredState,
     pub observed_state: ManagedEnvironmentObservedState,
     pub desired_revision: u64,
@@ -182,6 +222,16 @@ pub struct ManagedEnvironmentSummary {
     pub context_plan: ManagedEnvironmentContextPlan,
     pub context_manifest_digest: Option<String>,
     pub auto_stop_policy: ManagedEnvironmentAutoStopPolicy,
+    #[serde(default)]
+    pub running_agent_count: Option<u8>,
+    #[serde(default)]
+    pub last_activity_reported_at: Option<String>,
+    #[serde(default)]
+    pub last_activity_changed_at: Option<String>,
+    #[serde(default)]
+    pub auto_stop_warning_at: Option<String>,
+    #[serde(default)]
+    pub auto_stop_deadline_at: Option<String>,
     pub last_error_code: Option<String>,
     pub last_error_message: Option<String>,
     pub created_at: String,
@@ -263,6 +313,7 @@ pub enum ManagedEnvironmentOperationKind {
     Stop,
     Restart,
     Delete,
+    Reimage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,4 +330,106 @@ pub enum ManagedEnvironmentOperationStatus {
 pub struct ManagedEnvironmentResult {
     pub environment: ManagedEnvironmentSummary,
     pub operation: ManagedEnvironmentOperationSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedEnvironmentReimageReceiptStatus {
+    Pending,
+    ProviderApplied,
+    Reenrolling,
+    FreshEquivalent,
+    FailedClosed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentReimageReceipt {
+    pub receipt_id: String,
+    pub environment_id: String,
+    pub operation_id: String,
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub status: ManagedEnvironmentReimageReceiptStatus,
+    pub fresh_equivalent: bool,
+    pub provider_server_id: String,
+    pub previous_provider_image_id: Option<String>,
+    pub provider_image_id: String,
+    pub provider_profile_id: String,
+    pub provider_profile_digest: String,
+    pub runtime_release_digest: String,
+    pub old_machine_id: Option<String>,
+    pub new_machine_id: Option<String>,
+    pub old_kernel_id: Option<String>,
+    pub new_kernel_id: Option<String>,
+    pub old_relay_realm_id: Option<String>,
+    pub new_relay_realm_id: Option<String>,
+    pub old_relay_target_id: Option<String>,
+    pub new_relay_target_id: Option<String>,
+    pub old_bootstrap_grant_id: Option<String>,
+    pub new_bootstrap_grant_id: Option<String>,
+    pub old_credential_ids: serde_json::Value,
+    pub new_credential_ids: serde_json::Value,
+    pub runtime_evidence: serde_json::Value,
+    pub source_evidence: serde_json::Value,
+    pub residue_checks: serde_json::Value,
+    pub revocations: serde_json::Value,
+    pub billing_observation: serde_json::Value,
+    pub resource_observation: serde_json::Value,
+    pub cleanup_state: serde_json::Value,
+    pub rollback_state: serde_json::Value,
+    pub receipt_digest: Option<String>,
+    pub failure_code: Option<String>,
+    pub failure_message: Option<String>,
+    pub requested_at: String,
+    pub completed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentReimageResult {
+    pub environment: ManagedEnvironmentSummary,
+    pub operation: ManagedEnvironmentOperationSummary,
+    pub receipt: ManagedEnvironmentReimageReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentReimagePreflight {
+    pub environment_id: String,
+    pub retained: ManagedEnvironmentReimagePreflightRetained,
+    pub desired_release: ManagedEnvironmentReimagePreflightDesiredRelease,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentReimagePreflightRetained {
+    pub provider_server_id: String,
+    pub generation: u64,
+    pub desired_revision: u64,
+    pub observed_revision: u64,
+    pub runtime_machine_id: String,
+    pub runtime_kernel_id: String,
+    pub runtime_relay_realm_id: String,
+    pub runtime_release_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentReimagePreflightDesiredRelease {
+    pub provider_id: ManagedEnvironmentReimageProviderId,
+    pub provider_image_id: String,
+    pub provider_profile_id: String,
+    pub provider_profile_digest: String,
+    pub runtime_release_digest: String,
+    pub runtime_source_commit: String,
+    pub runtime_source_tree: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedEnvironmentReimageProviderId {
+    Hetzner,
 }

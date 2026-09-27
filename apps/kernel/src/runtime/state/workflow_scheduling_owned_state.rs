@@ -203,6 +203,7 @@ impl KernelRuntimeOwnedState {
             &request.session_id,
             request.workflow_ref.as_deref(),
         )?;
+        let activity_mutation = self.begin_managed_activity_mutation();
         let queue = self.session_store.write().update_workflow_prompt_queue(
             &request.session_id,
             &workflow_ref,
@@ -210,6 +211,11 @@ impl KernelRuntimeOwnedState {
             request.alias,
             request.priority,
             request.enabled,
+        )?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            &request.session_id,
+            "workflow_prompt_queue_updated",
+            activity_mutation,
         )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowPromptQueueUpdated { queue, session })
@@ -248,11 +254,17 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::UpdateQueuedWorkflowPromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
         let queued_prompt = self.session_store.write().update_queued_workflow_prompt(
             &request.session_id,
             &request.queue_item_ref,
             request.prompt,
             request.queue_ref.as_deref(),
+        )?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            &request.session_id,
+            "workflow_queued_prompt_updated",
+            activity_mutation,
         )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::QueuedWorkflowPromptUpdated {
@@ -265,10 +277,16 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::RemoveQueuedWorkflowPromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
         let queued_prompt = self
             .session_store
             .write()
             .remove_queued_workflow_prompt(&request.session_id, &request.queue_item_ref)?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            &request.session_id,
+            "workflow_queued_prompt_removed",
+            activity_mutation,
+        )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::QueuedWorkflowPromptRemoved {
             queued_prompt,
@@ -284,10 +302,16 @@ impl KernelRuntimeOwnedState {
             &request.session_id,
             request.workflow_ref.as_deref(),
         )?;
+        let activity_mutation = self.begin_managed_activity_mutation();
         let queued_prompts = self.session_store.write().clear_workflow_queue(
             &request.session_id,
             &workflow_ref,
             &request.queue_ref,
+        )?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            &request.session_id,
+            "workflow_prompt_queue_cleared",
+            activity_mutation,
         )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowPromptQueueCleared {

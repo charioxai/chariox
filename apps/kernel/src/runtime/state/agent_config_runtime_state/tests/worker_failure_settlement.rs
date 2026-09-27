@@ -4,15 +4,39 @@ use crate::transport::relay_peer::{RelayPeerEvent, RemoteGitTurnContext};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn leased_worker_failure_settles_and_retains_completion_while_home_is_offline() {
-    assert_offline_worker_failure_settlement(false).await;
+    assert_offline_worker_failure_settlement(
+        false,
+        "You've hit your session limit",
+        crate::provider::ProviderRunTermination::process_exit(17, 42),
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn leased_worker_launch_failure_settles_without_contacting_home() {
-    assert_offline_worker_failure_settlement(true).await;
+    assert_offline_worker_failure_settlement(
+        true,
+        "You've hit your session limit",
+        crate::provider::ProviderRunTermination::process_exit(17, 42),
+    )
+    .await;
 }
 
-async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn leased_worker_signal_termination_survives_failed_turn_reconnect() {
+    assert_offline_worker_failure_settlement(
+        false,
+        "provider process was interrupted",
+        crate::provider::ProviderRunTermination::signal("SIGTERM", 43),
+    )
+    .await;
+}
+
+async fn assert_offline_worker_failure_settlement(
+    launch_failure: bool,
+    diagnostic: &str,
+    provider_termination: crate::provider::ProviderRunTermination,
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncWriteExt;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -34,7 +58,6 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
     config.relay_url = Some(format!("ws://{address}"));
     config.relay_token = Some("offline-relay".to_string());
     let (app, runtime, _, _) = agent_config_runtime_with_config(config).await;
-    let diagnostic = "You've hit your session limit";
     let (leased_agent, provider_run_id) = {
         let mut app = app.lock().await;
         let lease = RemoteLeaseRuntime::new(&mut app)
@@ -120,6 +143,7 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
                 &crate::app::StartedProviderLaunch {
                     run,
                     previous_active_run_id: None,
+                    provider_credential_env: Default::default(),
                 },
                 &DaemonError::LocalTransport {
                     operation: "provider launch",
@@ -129,11 +153,12 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
             .await;
     } else {
         runtime
-            .fail_owned_provider_prompt(
+            .fail_owned_provider_prompt_with_termination(
                 &leased_agent.backing_session_id,
                 &provider_run_id,
                 diagnostic,
                 true,
+                Some(provider_termination.clone()),
             )
             .await
             .expect(
@@ -179,6 +204,11 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
         completions[0].home_prompt_id.as_deref(),
         Some("home-prompt-1")
     );
+    assert_eq!(
+        completions[0].provider_termination,
+        (!launch_failure).then_some(provider_termination.clone()),
+        "provider termination must survive worker completion projection"
+    );
     let (_, replay) = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection_with_recovery(
             &leased_agent.id,
@@ -195,4 +225,9 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
     assert_eq!(retried.len(), 1);
     assert_eq!(retried[0].home_prompt_id, completions[0].home_prompt_id);
     assert_eq!(retried[0].message_id, completions[0].message_id);
+    assert_eq!(
+        retried[0].provider_termination,
+        (!launch_failure).then_some(provider_termination),
+        "provider termination must survive unacknowledged completion replay"
+    );
 }

@@ -5,6 +5,7 @@ import {
   createRelayKeypair,
   decryptRelayPayload,
   relayPublicKeyFromPrivateKey,
+  RelayClientIdentity,
 } from "./relay-crypto.js"
 import {
   buildRelaySubscribeFrame,
@@ -32,6 +33,118 @@ test("relay requests preserve the request id as the kernel command id", () => {
     JSON.parse(decryptRelayPayload(daemon.privateKey, normalized.frame.encrypted_request)),
     {
       command_id: "request-1",
+      request,
+    },
+  )
+})
+
+test("relay requests use the persistent CLI public key and decrypt with that same identity", () => {
+  const privateKey = createRelayKeypair().privateKey
+  const identity = new RelayClientIdentity(privateKey)
+  const daemon = createRelayKeypair()
+  const normalized = normalizeRelayRequest(
+    "request-identity",
+    { GetDaemonHealth: null },
+    { daemon_id: "daemon-1", daemon_alias: null },
+    daemon.publicKeyBase64,
+    identity,
+  )
+
+  assert.equal(normalized.frame.encrypted_request.sender_public_key, identity.publicKeyBase64)
+  assert.deepEqual(
+    JSON.parse(decryptRelayPayload(daemon.privateKey, normalized.frame.encrypted_request)),
+    { command_id: "request-identity", request: { GetDaemonHealth: null } },
+  )
+  assert.equal(typeof normalized.decryptResponse, "function")
+  assert.equal(Object.keys(identity).includes("privateKey"), false)
+  assert.throws(() => identity.decrypt({
+    ...normalized.frame.encrypted_request,
+    sender_public_key: "foreign-server-key",
+  }, daemon.publicKeyBase64), /sender identity mismatch/)
+  privateKey.fill(0)
+})
+
+for (const persistent of [false, true]) {
+  test(`relay responses pin the ${persistent ? "persistent" : "ephemeral"} caller key to the daemon sender`, () => {
+    const clientKeypair = createRelayKeypair()
+    const identity = persistent ? new RelayClientIdentity(clientKeypair.privateKey) : null
+    const daemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+    const foreignDaemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+    const normalized = normalizeRelayRequest(
+      `request-${persistent ? "persistent" : "ephemeral"}-sender-pin`,
+      { GetDaemonHealth: null },
+      { daemon_id: "daemon-1", daemon_alias: null },
+      daemon.publicKeyBase64,
+      identity,
+    )
+    const clientPublicKey = normalized.frame.encrypted_request.sender_public_key
+    const responseText = JSON.stringify({ accepted: true })
+    const validResponse = daemon.encrypt(clientPublicKey, responseText)
+    const wrongSenderResponse = foreignDaemon.encrypt(clientPublicKey, responseText)
+
+    assert.equal(normalized.decryptResponse(validResponse), responseText)
+    assert.throws(() => normalized.decryptResponse(wrongSenderResponse), /relay sender identity mismatch/)
+    clientKeypair.privateKey.fill(0)
+  })
+}
+
+test("reconnected relay requests keep the same paired caller identity", () => {
+  const privateKey = createRelayKeypair().privateKey
+  const identity = new RelayClientIdentity(privateKey)
+  const firstDaemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const reconnectedDaemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const first = normalizeRelayRequest(
+    "request-before-reconnect",
+    { GetDaemonHealth: null },
+    { daemon_id: "daemon-1", daemon_alias: null },
+    firstDaemon.publicKeyBase64,
+    identity,
+  )
+  const reconnected = normalizeRelayRequest(
+    "request-after-reconnect",
+    { GetDaemonHealth: null },
+    { daemon_id: "daemon-1", daemon_alias: null },
+    reconnectedDaemon.publicKeyBase64,
+    identity,
+  )
+
+  assert.equal(first.frame.encrypted_request.sender_public_key, identity.publicKeyBase64)
+  assert.equal(reconnected.frame.encrypted_request.sender_public_key, identity.publicKeyBase64)
+  assert.notEqual(first.frame.encrypted_request.nonce, reconnected.frame.encrypted_request.nonce)
+  const firstRecipient = first.frame.encrypted_request.sender_public_key
+  const reconnectedRecipient = reconnected.frame.encrypted_request.sender_public_key
+  assert.equal(first.decryptResponse(firstDaemon.encrypt(firstRecipient, "first-generation")), "first-generation")
+  assert.throws(
+    () => reconnected.decryptResponse(firstDaemon.encrypt(reconnectedRecipient, "stale-generation")),
+    /relay sender identity mismatch/,
+  )
+  assert.equal(
+    reconnected.decryptResponse(reconnectedDaemon.encrypt(reconnectedRecipient, "reconnected-generation")),
+    "reconnected-generation",
+  )
+  privateKey.fill(0)
+})
+
+test("relay requests do not double-envelope an already normalized command", () => {
+  const daemon = createRelayKeypair()
+  const request = {
+    ImportSliceProviderAuth: {
+      slice_ref: "workspace-slice-5pwn7",
+      provider: "codex",
+      account_profile: "default",
+    },
+  }
+  const normalized = normalizeRelayRequest(
+    "relay-request-1",
+    { command_id: "web-command-1", request },
+    { daemon_id: "home-kernel", daemon_alias: null },
+    daemon.publicKeyBase64,
+  )
+
+  assert.deepEqual(
+    JSON.parse(decryptRelayPayload(daemon.privateKey, normalized.frame.encrypted_request)),
+    {
+      command_id: "web-command-1",
       request,
     },
   )
@@ -79,7 +192,11 @@ test("buildRelaySubscribeFrame omits absent subscription scope", () => {
 test("buildRelayUnsubscribeFrame derives the client public key", () => {
   const keypair = createRelayKeypair()
 
-  assert.deepEqual(buildRelayUnsubscribeFrame("request-1", "subscription-1", keypair.privateKey), {
+  assert.deepEqual(buildRelayUnsubscribeFrame(
+    "request-1",
+    "subscription-1",
+    relayPublicKeyFromPrivateKey(keypair.privateKey),
+  ), {
     kind: "client_unsubscribe",
     request_id: "request-1",
     subscription_id: "subscription-1",

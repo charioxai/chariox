@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::{connect, Message};
+use tokio_tungstenite::tungstenite::{
+    client::connect_with_config, protocol::WebSocketConfig, Message,
+};
 
 use crate::error::DaemonError;
 
@@ -11,10 +13,19 @@ use super::notifications::{parse_notification, rpc_error_message};
 use super::socket_io::{read_socket_nonblocking, set_socket_timeouts};
 use super::{CodexClient, CodexNotification, CodexSocket};
 
+const CODEX_WEBSOCKET_MAX_MESSAGE_SIZE: usize = 64 << 20;
+
+fn codex_websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(CODEX_WEBSOCKET_MAX_MESSAGE_SIZE))
+        .max_frame_size(Some(CODEX_WEBSOCKET_MAX_MESSAGE_SIZE))
+}
+
 impl CodexClient {
     pub fn connect_initialized(&self) -> Result<CodexSocket, DaemonError> {
-        let (mut socket, _) = connect(self.endpoint.as_str())
-            .map_err(|error| self.protocol_error("codex_connect", error.to_string()))?;
+        let (mut socket, _) =
+            connect_with_config(self.endpoint.as_str(), Some(codex_websocket_config()), 3)
+                .map_err(|error| self.protocol_error("codex_connect", error.to_string()))?;
         set_socket_timeouts(
             &mut socket,
             Some(Duration::from_secs(10)),
@@ -321,8 +332,14 @@ fn codex_request_timeout(method: &str) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::{codex_read_should_retry, codex_request_timeout, CodexClient};
-    use crate::provider::CodexNotification;
+    use super::super::CodexThreadStartResponse;
+    use super::{
+        codex_read_should_retry, codex_request_timeout, CodexClient,
+        CODEX_WEBSOCKET_MAX_MESSAGE_SIZE,
+    };
+    use crate::provider::{
+        AgentExecutionMode, AgentPermissionLevel, CodexNotification, ProviderWriteAccessMode,
+    };
     use serde_json::{json, Value};
     use std::net::TcpListener;
     use std::thread;
@@ -353,6 +370,150 @@ mod tests {
             Duration::from_secs(120)
         );
         assert_eq!(codex_request_timeout("turn/start"), Duration::from_secs(30));
+    }
+
+    fn thread_resume_with_history(
+        history_bytes: usize,
+    ) -> Result<CodexThreadStartResponse, crate::error::DaemonError> {
+        const OBSERVED_HISTORY_BYTES: usize = 23_600_000;
+        assert!(history_bytes <= CODEX_WEBSOCKET_MAX_MESSAGE_SIZE + 1);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind websocket fixture");
+        let address = listener.local_addr().expect("resolve websocket fixture");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept websocket fixture");
+            let mut socket = accept(stream).expect("upgrade websocket fixture");
+
+            let initialize = socket.read().expect("read initialize request");
+            let Message::Text(initialize) = initialize else {
+                panic!("expected initialize request text frame");
+            };
+            let initialize: Value =
+                serde_json::from_str(&initialize).expect("parse initialize request");
+            assert_eq!(
+                initialize.get("method").and_then(Value::as_str),
+                Some("initialize")
+            );
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": initialize.get("id").cloned().expect("initialize id"),
+                        "result": {},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send initialize response");
+
+            let initialized = socket.read().expect("read initialized notification");
+            let Message::Text(initialized) = initialized else {
+                panic!("expected initialized notification text frame");
+            };
+            let initialized: Value =
+                serde_json::from_str(&initialized).expect("parse initialized notification");
+            assert_eq!(
+                initialized.get("method").and_then(Value::as_str),
+                Some("initialized")
+            );
+
+            let resume = socket.read().expect("read thread/resume request");
+            let Message::Text(resume) = resume else {
+                panic!("expected thread/resume request text frame");
+            };
+            let resume: Value = serde_json::from_str(&resume).expect("parse thread/resume request");
+            assert_eq!(
+                resume.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+
+            // Keep this fixture bounded at the observed history size for the acceptance case,
+            // and at one byte over the explicit transport policy for the rejection case.
+            let history = "h".repeat(history_bytes);
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": resume.get("id").cloned().expect("resume id"),
+                "result": {
+                    "thread": { "id": "thread-large-history" },
+                    "model": "gpt-5.6",
+                    "history": history,
+                },
+            })
+            .to_string();
+            assert!(response.len() > 16 * 1024 * 1024);
+            if history_bytes == OBSERVED_HISTORY_BYTES {
+                assert!(
+                    (23_000_000..=24_000_000).contains(&response.len()),
+                    "fixture response should stay near the observed 23.6 MiB failure: {} bytes",
+                    response.len()
+                );
+            }
+            if history_bytes > CODEX_WEBSOCKET_MAX_MESSAGE_SIZE {
+                assert!(
+                    response.len() > CODEX_WEBSOCKET_MAX_MESSAGE_SIZE,
+                    "oversized fixture response must exceed the configured policy: {} bytes",
+                    response.len()
+                );
+            }
+            assert!(
+                response.len() <= CODEX_WEBSOCKET_MAX_MESSAGE_SIZE + 2 * 1024 * 1024,
+                "fixture response must remain bounded: {} bytes",
+                response.len()
+            );
+            let _ = socket.send(Message::Text(response.into()));
+        });
+
+        let endpoint = format!("ws://{address}");
+        let client = CodexClient::new("provider-run-large-history", endpoint)
+            .expect("client should construct");
+        let result = client.connect_initialized().and_then(|mut socket| {
+            let mut next_request_id = 1;
+            let result = client.thread_resume(
+                &mut socket,
+                &mut next_request_id,
+                "thread-resume-large-history",
+                None,
+                Some("gpt-5.6"),
+                ProviderWriteAccessMode::Unrestricted,
+                AgentExecutionMode::Build,
+                AgentPermissionLevel::Yolo,
+                None,
+                &mut Vec::new(),
+            );
+            drop(socket);
+            result
+        });
+        server.join().expect("join websocket fixture");
+
+        result
+    }
+
+    #[test]
+    fn codex_thread_resume_accepts_large_history_frame_within_message_budget() {
+        let result = thread_resume_with_history(23_600_000);
+
+        let resumed = result.expect("valid history below the aggregate limit should be admitted");
+        assert_eq!(resumed.thread.id, "thread-large-history");
+        assert_eq!(resumed.model, "gpt-5.6");
+    }
+
+    #[test]
+    fn codex_thread_resume_rejects_history_above_bounded_message_budget() {
+        let result = thread_resume_with_history(CODEX_WEBSOCKET_MAX_MESSAGE_SIZE + 1);
+        let error = match result {
+            Ok(_) => panic!("history above the transport policy must be rejected"),
+            Err(error) => error,
+        };
+
+        let message = error.to_string();
+        assert!(
+            message.contains("Message too long"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains(&CODEX_WEBSOCKET_MAX_MESSAGE_SIZE.to_string()),
+            "error should expose the configured 64 MiB bound: {message}"
+        );
     }
 
     #[test]

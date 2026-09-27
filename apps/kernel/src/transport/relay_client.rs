@@ -60,14 +60,15 @@ use envelope_io::{
     send_outgoing_event_envelope,
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
-use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext};
+use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
-use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
 pub(crate) use peer_client::{
+    enqueue_peer_request_via_connected_relay_with_timeout,
     send_peer_request_to_known_kernel_via_relay,
-    send_peer_request_to_known_kernel_via_relay_with_timeout,
+    send_peer_request_to_known_kernel_via_relay_with_timeout, RelayPeerResponseWaiter,
 };
+use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
 pub use peer_client::{
     send_peer_request_via_connected_relay, send_peer_request_via_connected_relay_with_timeout,
     send_peer_request_via_temporary_connection,
@@ -75,6 +76,8 @@ pub use peer_client::{
 };
 use peer_events::{handle_daemon_peer_event, pump_leased_projection_events};
 use peer_requests::handle_daemon_peer_request;
+#[cfg(test)]
+pub(crate) use peer_requests::send_authenticated_peer_request_for_test;
 pub(crate) use remote_inventory::refresh_remote_inventory_projection;
 use remote_inventory::{
     abort_inventory_refresh_task, clear_remote_inventory_projection,
@@ -87,9 +90,13 @@ use subscriptions::{
 
 pub use connection_state::RelayClientState;
 pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
-pub(crate) use connection_state::RelayDisplayTunnelTarget;
 #[cfg(test)]
-pub use connector::run_daemon_relay_connector;
+pub(crate) use connection_state::TestPeerRequestObservation;
+pub(crate) use connection_state::{RelayDisplayTunnelTarget, RelayDisplayTunnelTargetKind};
+#[cfg(test)]
+pub use connector::{
+    run_daemon_relay_connector, run_daemon_relay_connector_with_router_and_static_relay,
+};
 pub use connector::{
     run_daemon_relay_connector_with_router, run_daemon_relay_connector_with_static_relay,
 };
@@ -108,6 +115,25 @@ pub(crate) async fn resolve_pending_peer_response_for_test(
             from_daemon_id,
             encrypted_response: Some(encrypted_response),
             error: None,
+        },
+    )
+    .await;
+}
+
+#[cfg(test)]
+pub(crate) async fn resolve_pending_peer_error_for_test(
+    state: &Arc<RwLock<RelayClientState>>,
+    request_id: String,
+    from_daemon_id: String,
+    error: RelayError,
+) {
+    resolve_pending_peer_response(
+        state,
+        request_id,
+        RelayPeerResponseEnvelope {
+            from_daemon_id,
+            encrypted_response: None,
+            error: Some(error),
         },
     )
     .await;

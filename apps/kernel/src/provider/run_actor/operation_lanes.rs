@@ -10,6 +10,8 @@ use crate::runtime::projection::{ActorQueueSnapshot, ProviderRunActorHealthSnaps
 pub(crate) struct ProviderRunOperationLanes {
     pub(super) lanes: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
     health: Arc<ProviderRunActorHealthCounters>,
+    #[cfg(test)]
+    acquire_probes: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Notify>>>>,
 }
 
 pub(crate) struct ProviderRunOperationPermit {
@@ -25,6 +27,19 @@ struct ProviderRunActorHealthCounters {
 }
 
 impl ProviderRunOperationLanes {
+    #[cfg(test)]
+    pub(crate) fn notify_on_next_acquire_for_tests(
+        &self,
+        provider_run_id: &str,
+    ) -> Arc<tokio::sync::Notify> {
+        let probe = Arc::new(tokio::sync::Notify::new());
+        self.acquire_probes
+            .lock()
+            .expect("provider run acquire probe map poisoned")
+            .insert(provider_run_id.to_string(), Arc::clone(&probe));
+        probe
+    }
+
     pub(crate) async fn acquire(&self, provider_run_id: &str) -> ProviderRunOperationPermit {
         let semaphore = {
             let mut lanes = self
@@ -37,6 +52,15 @@ impl ProviderRunOperationLanes {
                     .or_insert_with(|| Arc::new(Semaphore::new(1))),
             )
         };
+        #[cfg(test)]
+        if let Some(probe) = self
+            .acquire_probes
+            .lock()
+            .expect("provider run acquire probe map poisoned")
+            .remove(provider_run_id)
+        {
+            probe.notify_one();
+        }
         let permit = semaphore
             .acquire_owned()
             .await

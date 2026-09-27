@@ -20,6 +20,16 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let command_trace = CommandTrace::from_command(&command);
         log_command_received(&command_trace);
+        if let Err(error) =
+            crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+                &self.config_projection.snapshot(),
+                &request,
+            )
+        {
+            let result = Err(error);
+            log_command_completed(&command_trace, &result);
+            return result;
+        }
         let focus_refresh = focus_projection_refresh(&request);
         let caller_user_id = match authorize_session_membership(
             &self.runtime_state,

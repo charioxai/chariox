@@ -2,13 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn codex_tool_output_text_does_not_classify_as_terminal_failure() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-codex-tool-output");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -106,13 +104,11 @@ async fn codex_tool_output_text_does_not_classify_as_terminal_failure() {
 
 #[tokio::test]
 async fn structured_terminal_failure_settles_and_persists_single_provider_error() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-terminal-failure");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -183,6 +179,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             crate::provider::ProviderPromptSignalBatch {
                 notices: vec![raw_error.to_string(), raw_error.to_string()],
                 terminal_failure: Some(raw_error.to_string()),
+                explicit_provider_error: true,
                 prompt_completed: true,
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
@@ -259,17 +256,26 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             .settlement_status,
         crate::git_observer::CompletedTurnSettlementStatus::Failed
     );
+    let termination = agent_activity
+        .last_completed_turn
+        .as_ref()
+        .and_then(|turn| turn.provider_termination.as_ref())
+        .expect("structured provider error should retain termination evidence");
+    assert_eq!(
+        termination.category,
+        crate::provider::ProviderRunTerminationCategory::ExplicitProviderError
+    );
+    assert!(termination.reason.contains("Unsupported parameter"));
+    assert!(termination.timestamp_ms > 0);
 }
 
 #[tokio::test]
 async fn opencode_network_terminal_failure_retires_the_failed_resume_session() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-opencode-network");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-opencode-network-error",
-            "worktree-opencode-network-error",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -322,6 +328,7 @@ async fn opencode_network_terminal_failure_retires_the_failed_resume_session() {
             vec![attachment.id().to_string()],
             crate::provider::ProviderPromptSignalBatch {
                 terminal_failure: Some("Provider finish_reason: network_error".to_string()),
+                explicit_provider_error: true,
                 prompt_completed: true,
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
@@ -356,14 +363,130 @@ async fn opencode_network_terminal_failure_retires_the_failed_resume_session() {
 }
 
 #[tokio::test]
-async fn structured_submit_resume_failure_clears_agent_and_session_state() {
+async fn opencode_empty_idle_failure_retires_resume_without_explicit_termination_evidence() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-opencode-idle");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-opencode-empty-idle-error",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
+        .expect("attachment should attach");
+    let resume_state = crate::provider::ProviderResumeState::from_opencode_session_id(
+        "empty-idle-opencode-session",
+    );
+    app.agents
+        .set_agent_runtime_profile(
+            agent.id(),
+            "opencode",
+            Some("opencode/x-preview-f-free".to_string()),
+            Some("high".to_string()),
+            resume_state.clone(),
+        )
+        .expect("agent should retain the provider session");
+    let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "provider-run-opencode-empty-idle-error",
+        session.id().to_string(),
+        Some(agent.id().to_string()),
+        "opencode".to_string(),
+    );
+    run.set_resume_state(resume_state);
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "retry after an empty OpenCode assistant turn\n",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+    let terminal_failure =
+        "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.";
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some(terminal_failure.to_string()),
+                prompt_completed: true,
+                explicit_provider_error: false,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("non-explicit empty-idle failure should settle");
+
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should exist")
+            .provider_resume_state()
+            .opencode_session_id(),
+        None,
+        "an empty idle assistant poisons the resumed OpenCode session",
+    );
+    let settled_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(settled_session
+        .active_prompt_for_agent(agent.id())
+        .is_none());
+    let agent_activities = runtime.agent_activity_for_session(&settled_session);
+    let agent_activity = agent_activities
+        .get(agent.id())
+        .expect("agent activity should be projected");
+    let completed_turn = agent_activity
+        .last_completed_turn
+        .as_ref()
+        .expect("failed empty-idle turn should remain visible");
+    assert_eq!(
+        completed_turn.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+    );
+    assert_eq!(
+        completed_turn.provider_termination, None,
+        "non-explicit OpenCode failures settle the prompt without durable provider termination evidence",
+    );
+    let retired_run = runtime
+        .owned
+        .provider_store
+        .get_run(run.id())
+        .expect("provider run should remain inspectable");
+    assert_eq!(
+        retired_run.state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    assert!(retired_run
+        .terminal_diagnostic()
+        .is_some_and(|diagnostic| diagnostic.contains(terminal_failure)));
+}
+
+#[tokio::test]
+async fn structured_submit_resume_failure_clears_agent_and_session_state() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-submit-resume");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -565,13 +688,11 @@ async fn structured_submit_resume_failure_clears_agent_and_session_state() {
 
 #[tokio::test]
 async fn structured_prompt_acknowledgement_retries_until_profile_and_delivery_are_durable() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-ack-retry");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-ack-retry",
-            "worktree-ack-retry",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -770,13 +891,11 @@ async fn structured_prompt_acknowledgement_retries_until_profile_and_delivery_ar
 
 #[tokio::test]
 async fn structured_output_resume_retries_without_losing_the_finished_batch() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-output-resume");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-output-resume-retry",
-            "worktree-output-resume-retry",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1014,14 +1133,12 @@ async fn structured_output_resume_retries_without_losing_the_finished_batch() {
 }
 
 #[tokio::test]
-async fn first_output_timeout_projects_error_and_closes_prompt() {
+async fn first_output_silence_preserves_prompt_without_provider_error() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-first-output-silence");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1099,25 +1216,25 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
             true,
         )
         .await
-        .expect("provider output pump should reap silent timeout");
+        .expect("provider output pump should observe the quiet turn");
 
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "silent provider timeout must close the active prompt"
+        session_state.active_prompt_for_agent(agent.id()).is_some(),
+        "elapsed silence alone must not close the active prompt"
     );
     let run = runtime
         .owned
         .provider_store
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "quiet execution is not a provider failure"
+    );
     let provider_errors = runtime
         .owned
         .terminal_stream
@@ -1127,13 +1244,8 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
         .collect::<Vec<_>>();
     assert_eq!(
         provider_errors.len(),
-        1,
-        "an unprojected terminal failure should surface exactly one provider error"
-    );
-    assert!(
-        String::from_utf8_lossy(&provider_errors[0].bytes)
-            .contains("Provider prompt produced no output"),
-        "the visible provider error should preserve the terminal diagnostic"
+        0,
+        "quiet execution must not emit a fabricated provider error"
     );
     let durable_errors = runtime
         .owned
@@ -1145,30 +1257,28 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
         .collect::<Vec<_>>();
     assert_eq!(
         durable_errors.len(),
-        1,
-        "the provider error should be durable across reload"
+        0,
+        "quiet execution must not persist a fabricated provider error"
     );
     let notices = runtime
         .owned
         .terminal_stream
         .drain_notice_records(session.id(), attachment.id());
     assert!(
-        notices.iter().any(|record| record
-            .message
-            .contains("Provider prompt produced no output")),
-        "timeout diagnostic should be visible to attached clients"
+        !notices
+            .iter()
+            .any(|record| record.message.contains("Chariox closed this turn")),
+        "clients must not be told a quiet turn failed"
     );
 }
 
 #[tokio::test]
-async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
+async fn quiet_provider_after_output_preserves_active_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-quiet-output");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1238,46 +1348,44 @@ async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
             true,
         )
         .await
-        .expect("provider output pump should reap inactive provider turn");
+        .expect("provider output pump should observe the quiet turn");
 
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "inactive provider timeout must close the active prompt"
+        session_state.active_prompt_for_agent(agent.id()).is_some(),
+        "silence after output must not close a provider turn"
     );
     let run = runtime
         .owned
         .provider_store
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "silence after output is not a provider failure"
+    );
     let notices = runtime
         .owned
         .terminal_stream
         .drain_notice_records(session.id(), attachment.id());
     assert!(
-        notices
+        !notices
             .iter()
-            .any(|record| record.message.contains("after its last activity")),
-        "inactivity timeout diagnostic should be visible to attached clients"
+            .any(|record| record.message.contains("Chariox closed this turn")),
+        "a quiet turn must not produce a terminal failure notice"
     );
 }
 
 #[tokio::test]
-async fn provider_inactivity_timeout_waits_for_an_active_structured_tool() {
+async fn quiet_provider_preserves_running_and_completed_tool_turns() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-quiet-tool");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-active-tool",
-            "worktree-active-tool",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1353,9 +1461,14 @@ async fn provider_inactivity_timeout_waits_for_an_active_structured_tool() {
         .last_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
 
     runtime
-        .reap_provider_inactivity_timeouts(session.id())
+        .pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
         .await
-        .expect("active tool should suppress the inactivity timeout");
+        .expect("running tool should remain active during silence");
     assert!(runtime
         .owned
         .session_snapshot(session.id())
@@ -1388,26 +1501,29 @@ async fn provider_inactivity_timeout_waits_for_an_active_structured_tool() {
         .last_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
 
     runtime
-        .reap_provider_inactivity_timeouts(session.id())
+        .pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
         .await
-        .expect("completed tool should restore the inactivity timeout");
+        .expect("completed tool does not complete the provider turn");
     assert!(runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist")
         .active_prompt_for_agent(agent.id())
-        .is_none());
+        .is_some());
 }
 
 #[tokio::test]
-async fn provider_inactivity_timeout_retires_managed_process() {
+async fn quiet_provider_keeps_managed_process_alive() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-quiet-managed");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-managed-timeout",
-            "worktree-managed-timeout",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1474,7 +1590,7 @@ async fn provider_inactivity_timeout_retires_managed_process() {
             true,
         )
         .await
-        .expect("provider output pump should reap inactive provider turn");
+        .expect("provider output pump should preserve quiet execution");
 
     assert_eq!(
         runtime
@@ -1483,26 +1599,25 @@ async fn provider_inactivity_timeout_retires_managed_process() {
             .get_run(run.id())
             .expect("provider run should remain addressable")
             .state(),
-        crate::provider::ProviderRunState::Ended,
+        crate::provider::ProviderRunState::Running,
     );
     assert!(
-        !crate::runtime::process_health::process_running(pid),
-        "terminal timeout must stop the managed provider child"
+        crate::runtime::process_health::process_running(pid),
+        "silence must not stop the managed provider child"
     );
-    let tracking = runtime.owned.provider_process_tracking.snapshot();
-    assert!(tracking.run_processes.is_empty());
-    assert!(tracking.processes.is_empty());
+    runtime
+        .fail_owned_provider_prompt(session.id(), run.id(), "test cleanup", true)
+        .await
+        .expect("test provider should be cleaned up");
 }
 
 #[tokio::test]
 async fn meta_mode_activation_registers_pending_provider_reload_when_agent_busy() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-meta-reload");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-meta-reload",
-            "worktree-meta-reload",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1557,15 +1672,13 @@ async fn meta_mode_activation_registers_pending_provider_reload_when_agent_busy(
 }
 
 #[tokio::test]
-async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
+async fn metaagent_receives_required_failed_turn_event_on_provider_failure() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-meta-failure");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-meta-failure",
-            "worktree-meta-failure",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
@@ -1669,14 +1782,14 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     runtime
-        .pump_owned_provider_output(
+        .fail_owned_provider_prompt(
             session.id(),
             worker_run.id(),
-            vec![attachment.id().to_string()],
+            "provider reported a terminal failure",
             true,
         )
         .await
-        .expect("provider output pump should reap silent timeout");
+        .expect("explicit provider failure should settle the turn");
 
     let events =
         runtime
@@ -1687,7 +1800,7 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
     assert_eq!(events[0].source_agent_id.as_deref(), Some(agent.id()));
     assert!(events[0]
         .summary
-        .contains("Provider prompt produced no output"));
+        .contains("provider reported a terminal failure"));
     let session_state = runtime
         .owned
         .session_snapshot(session.id())

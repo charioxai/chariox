@@ -64,6 +64,7 @@ docker_image = "chariox-slice-linux-custom:local"
 	build_image = "never"
 	extension_dockerfile = "~/.chariox/slices/extensions/Dockerfile"
 	allow_unconfined_seccomp = true
+	allow_provider_sandbox_compatibility = true
 	memory_mb = 4096
 cpus = "2.5"
 idle_timeout_minutes = 45
@@ -84,6 +85,10 @@ screen_height = 900
         Some(SliceImageBuildPolicy::Never)
     );
     assert_eq!(config.slices.linux.allow_unconfined_seccomp, Some(true));
+    assert_eq!(
+        config.slices.linux.allow_provider_sandbox_compatibility,
+        Some(true)
+    );
     assert_eq!(config.slices.linux.memory_mb, Some(4096));
     assert_eq!(config.slices.linux.cpus.as_deref(), Some("2.5"));
     assert_eq!(config.slices.linux.screen_width, Some(1440));
@@ -101,6 +106,48 @@ fn user_config_defaults_to_versioned_slice_image() {
     assert_ne!(
         DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
         "chariox-slice-linux:local"
+    );
+    assert_eq!(
+        config.slices.linux.memory_mb,
+        Some(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB)
+    );
+}
+
+#[test]
+fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
+    let mut config = DaemonConfig::new("daemon", "machine", "tester");
+
+    config
+        .set_user_config_value("slices.linux.allow_provider_sandbox_compatibility", "true")
+        .expect("provider sandbox compatibility should be settable");
+    assert_eq!(
+        config
+            .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        Some(true)
+    );
+
+    let entry = DaemonConfig::user_config_schema()
+        .into_iter()
+        .find(|entry| entry.path == "slices.linux.allow_provider_sandbox_compatibility")
+        .expect("provider sandbox compatibility schema entry should exist");
+    assert!(entry.settable);
+    assert!(entry.unsettable);
+    assert!(entry.description.contains("seccomp, AppArmor"));
+    assert!(entry.description.contains("masked system paths"));
+
+    config
+        .unset_user_config_value("slices.linux.allow_provider_sandbox_compatibility")
+        .expect("provider sandbox compatibility should be unsettable");
+    assert_eq!(
+        config
+            .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        None
     );
 }
 
@@ -135,6 +182,25 @@ backend = "process_memory"
         config.credential_vault.backend,
         CredentialVaultBackend::ProcessMemory
     );
+}
+
+#[test]
+fn user_config_rejects_root_level_credential_vault_path() {
+    let mut config = CharioxUserConfig::default();
+    config.credential_vault.path = "/managed-vault.json".to_string();
+
+    let error = config
+        .validate()
+        .expect_err("root-level Vault paths must protect their derived companion files");
+    assert!(error
+        .to_string()
+        .contains("direct child of filesystem root"));
+
+    config.credential_vault.path = "/tmp/../managed-vault.json".to_string();
+    let error = config
+        .validate()
+        .expect_err("root-equivalent Vault paths must not bypass the root check");
+    assert!(error.to_string().contains("parent-directory components"));
 }
 
 #[test]

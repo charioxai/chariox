@@ -31,7 +31,7 @@ export type TranscriptHistoryStitchEntry = ExternalProviderObservedMutableTransc
   attachments?: SessionHistoryPromptAttachment[]
   providerRunId?: string | null
   historyTurnCompletedAtMs?: number | null
-  historyTurnLifecycle?: "open" | "completed" | "cancelled"
+  historyTurnLifecycle?: "open" | "completed" | "cancelled" | "failed"
   historyDeferred?: boolean
   historyEntryIndex?: number
   historyFragmentStart?: number

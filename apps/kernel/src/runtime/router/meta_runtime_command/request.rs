@@ -2,8 +2,8 @@ use super::result::meta_command_error;
 use super::spawn_args::parse_meta_agent_spawn_args;
 use super::*;
 use crate::local::{
-    CreateSliceBackupRequest, ListSlicesRequest, SliceStateSaveMode, SliceStateSaveRequest,
-    SliceStateSaveScope, SliceStateStatusRequest,
+    CreateSliceBackupRequest, ListSlicesRequest, RestoreSliceBackupRequest, SliceStateSaveMode,
+    SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
 };
 
 pub(super) fn meta_agent_request(
@@ -134,16 +134,39 @@ pub(super) fn meta_slice_request(args: &[String]) -> Result<LocalDaemonRequest, 
         }
         Some("save" | "save-state") => meta_slice_save_request(args),
         Some("backup") => {
-            let Some(slice_ref) = args.get(1) else {
-                return Err(meta_command_error("usage: slice backup <slice-ref> [name]"));
+            if args.get(1).map(String::as_str) == Some("restore") {
+                let (Some(slice_ref), Some(backup_ref)) = (args.get(2), args.get(3)) else {
+                    return Err(meta_command_error(
+                        "usage: slice backup restore <slice-ref> <backup-ref>",
+                    ));
+                };
+                if args.len() != 4 {
+                    return Err(meta_command_error(
+                        "usage: slice backup restore <slice-ref> <backup-ref>",
+                    ));
+                }
+                return Ok(LocalDaemonRequest::RestoreSliceBackup(
+                    RestoreSliceBackupRequest {
+                        slice_ref: slice_ref.clone(),
+                        backup_ref: backup_ref.clone(),
+                    },
+                ));
+            }
+            let create_offset = usize::from(args.get(1).map(String::as_str) == Some("create"));
+            let Some(slice_ref) = args.get(1 + create_offset) else {
+                return Err(meta_command_error(
+                    "usage: slice backup [create] <slice-ref> [name]",
+                ));
             };
-            if args.len() > 3 {
-                return Err(meta_command_error("usage: slice backup <slice-ref> [name]"));
+            if args.len() > 3 + create_offset {
+                return Err(meta_command_error(
+                    "usage: slice backup [create] <slice-ref> [name]",
+                ));
             }
             Ok(LocalDaemonRequest::CreateSliceBackup(
                 CreateSliceBackupRequest {
                     slice_ref: slice_ref.clone(),
-                    name: args.get(2).cloned(),
+                    name: args.get(2 + create_offset).cloned(),
                 },
             ))
         }

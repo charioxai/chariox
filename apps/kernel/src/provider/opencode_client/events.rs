@@ -26,7 +26,7 @@ pub enum OpenCodeEvent {
     },
     SessionStatus {
         session_id: String,
-        kind: String,
+        status: OpenCodeSessionStatus,
     },
     PermissionAsked {
         request: OpenCodePermissionRequest,
@@ -146,7 +146,7 @@ pub(super) fn parse_sse_event(payload: &str, provider_run_id: &str) -> Option<Op
                 serde_json::from_value(raw.properties).ok()?;
             Some(OpenCodeEvent::SessionStatus {
                 session_id: properties.session_id,
-                kind: properties.status.kind,
+                status: properties.status,
             })
         }
         "permission.asked" => {

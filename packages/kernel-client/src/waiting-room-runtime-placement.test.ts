@@ -79,6 +79,7 @@ test("waiting room managed machines replace duplicate runtime machines and bind 
     managedEnvironments: [{
       environmentId: "environment-1",
       name: "Managed build",
+      managedRepositoryRoot: "/home/chariox",
       desiredState: "running" as const,
       observedState: "ready",
       desiredRevision: 2,

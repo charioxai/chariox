@@ -1,4 +1,6 @@
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
+import type { SliceDisplayBackend } from "@chariox/kernel-client/kernel-types"
+import type { RoomViewerOpenResult, RoomViewerTarget } from "./room-command-handler.js"
 import type {
   SliceBackupRecord,
   SliceDisplayEndpoint,
@@ -14,6 +16,7 @@ export type SliceCreateOptions = {
   backend?: "local_docker" | "ssh_docker"
   os?: string
   displayMode?: "headless" | "headed"
+  displayBackend?: SliceDisplayBackend
   workspaceId?: string | null
   worktreeId?: string | null
   workspaceMount?: string | null
@@ -37,6 +40,13 @@ export type SliceCommandHandlerDeps = {
   currentWorkspaceTarget: () => string
   currentWorktreeTarget: () => string
   focusedAgentId: () => string | null
+  isAttached?: () => boolean
+  sessionId?: () => string
+  attachmentId?: () => string | null
+  createViewerPublicKey?: () => Promise<string>
+  isRelayConnection?: () => boolean
+  sendRoomEnvironmentRequest?: <TResponse>(request: unknown) => Promise<TResponse>
+  openRoomViewer?: (target: RoomViewerTarget) => Promise<RoomViewerOpenResult | null>
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
@@ -50,11 +60,15 @@ export type SliceCommandHandlerDeps = {
   importSliceProviderAuth?: (sliceRef: string, provider: string, accountProfile: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
   removeSliceProviderAuth?: (sliceRef: string, provider: string, accountProfile: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
   startSliceProviderLogin?: (sliceRef: string, provider: string, accountProfile: string) => Promise<{ slice: SliceRecord; login: SliceProviderLogin }>
-  getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
+  getSliceDisplayEndpoint?: (
+    sliceRef: string,
+    room?: { sessionId: string; attachmentId: string; viewerPublicKey: string },
+  ) => Promise<SliceDisplayEndpoint>
   getSliceLogs?: (sliceRef: string, tailLines?: number | null) => Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }>
   listSliceAudit?: (sliceRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
   saveSliceState?: (sliceRef: string, mode?: "restart_agents" | "shutdown" | null, scope?: "this_slice" | "future_slices" | null) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }>
   getSliceStateStatus?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>
   resetSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>
   createSliceBackup?: (sliceRef: string, name?: string | null) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>
+  restoreSliceBackup?: (sliceRef: string, backupRef: string) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord }>
 }

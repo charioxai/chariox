@@ -14,6 +14,47 @@ pub(super) struct CodexPermissionPolicy {
     pub(super) config_overrides: BTreeMap<String, Value>,
 }
 
+pub(super) fn read_only_codex_permission_grant(
+    requested_permissions: &Value,
+    project_root: Option<&Path>,
+) -> Value {
+    let Some(requested) = requested_permissions.as_object() else {
+        return json!({});
+    };
+    let mut granted = serde_json::Map::new();
+    let Some(root) = project_root
+        .filter(|root| root.is_absolute())
+        .and_then(|root| root.canonicalize().ok())
+        .filter(|root| root.is_dir())
+    else {
+        return json!({});
+    };
+    if let Some(read) = requested
+        .get("fileSystem")
+        .and_then(Value::as_object)
+        .and_then(|file_system| file_system.get("read"))
+        .and_then(Value::as_array)
+    {
+        let paths = read
+            .iter()
+            .filter_map(|entry| {
+                let path = Path::new(entry.as_str()?);
+                let resolved = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    root.join(path)
+                };
+                let canonical = resolved.canonicalize().ok()?;
+                canonical.starts_with(&root).then_some(canonical)
+            })
+            .collect::<Vec<_>>();
+        if !paths.is_empty() {
+            granted.insert("fileSystem".to_string(), json!({ "read": paths }));
+        }
+    }
+    Value::Object(granted)
+}
+
 pub(super) fn codex_permission_policy(
     write_access_mode: ProviderWriteAccessMode,
     execution_mode: AgentExecutionMode,

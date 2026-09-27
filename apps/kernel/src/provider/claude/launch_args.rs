@@ -73,6 +73,51 @@ fn claude_launch_args_from_parts(
         }
     }
 
+    append_claude_execution_config_args(&mut args, execution_mode, permission_level);
+
+    Ok(args)
+}
+
+pub(crate) fn claude_args_with_execution_config(
+    args: &[String],
+    execution_mode: AgentExecutionMode,
+    permission_level: AgentPermissionLevel,
+) -> Vec<String> {
+    let mut args = claude_args_without_execution_config(args);
+    append_claude_execution_config_args(&mut args, execution_mode, permission_level);
+    args
+}
+
+fn claude_args_without_execution_config(args: &[String]) -> Vec<String> {
+    let mut sanitized = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--permission-mode" {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with("--permission-mode=")
+            || matches!(
+                arg.as_str(),
+                "--allow-dangerously-skip-permissions" | "--dangerously-skip-permissions"
+            )
+        {
+            continue;
+        }
+        sanitized.push(arg.clone());
+    }
+    sanitized
+}
+
+fn append_claude_execution_config_args(
+    args: &mut Vec<String>,
+    execution_mode: AgentExecutionMode,
+    permission_level: AgentPermissionLevel,
+) {
     match (execution_mode, permission_level) {
         (AgentExecutionMode::Plan, _) => {
             args.extend(["--permission-mode".to_string(), "plan".to_string()]);
@@ -88,8 +133,6 @@ fn claude_launch_args_from_parts(
             ]);
         }
     }
-
-    Ok(args)
 }
 
 pub(super) fn normalized_claude_model(model: &str) -> String {

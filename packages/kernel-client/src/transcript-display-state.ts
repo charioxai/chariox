@@ -37,7 +37,7 @@ export type TranscriptDisplayEntry = TranscriptTurnDisplayEntry & TranscriptRole
   readonly turnTracking?: "none" | string | null
 }
 
-export type TranscriptHistoryTurnLifecycle = "open" | "completed" | "cancelled"
+export type TranscriptHistoryTurnLifecycle = "open" | "completed" | "cancelled" | "failed"
 
 export type TranscriptBlobDescription = CollapsedTranscriptBlobDescription
 

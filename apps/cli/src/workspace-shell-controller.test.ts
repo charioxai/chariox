@@ -84,14 +84,17 @@ test("submitWorkspaceShellCommand records shell output and refreshes selected wo
   let selectedWorkflowNodeId: string | null | "unset" = "unset"
   let transcriptRebuilt = false
   let footerFlash: { message: string; tone: "info" | "error" } | null = null
+  const openRoomViewer = async () => ({ url: "https://cloud.test/view", opened: true })
 
   const result = await submitWorkspaceShellCommand("@ workflow list", {
     client: {} as LocalIpcClient,
     clientId: "cli-1",
+    openRoomViewer,
     executeShellLine: async (line, context, deps, write) => {
       assert.equal(line, "workflow list")
       assert.equal(context, initialContext)
       assert.equal(deps.clientId, "cli-1")
+      assert.equal(deps.openRoomViewer, openRoomViewer)
       write?.("Workflow list\n")
       return { ok: true, context: nextContext }
     },

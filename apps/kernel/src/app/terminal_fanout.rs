@@ -442,18 +442,19 @@ fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
 mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::HistoryArchiveMode;
-    use crate::session::{CreateSessionRequest, PromptStatus};
+    use crate::session::PromptStatus;
     use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
     fn user_prompt_history_enqueues_archive_outbox_when_external_archive_enabled() {
+        let worktree = crate::test_support::TestWorktree::new("terminal-fanout-archive-outbox");
         let mut config = DaemonConfig::for_tests();
         config.user_config.history.archive.mode = HistoryArchiveMode::External;
         config.user_config.history.archive.url = Some("http://127.0.0.1:9".to_string());
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -486,9 +487,10 @@ mod tests {
 
     #[test]
     fn user_prompt_history_does_not_write_the_legacy_jsonl_store() {
+        let worktree = crate::test_support::TestWorktree::new("terminal-fanout-legacy-history");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -516,9 +518,10 @@ mod tests {
 
     #[test]
     fn spawned_user_prompt_history_append_does_not_publish_session_projection() {
+        let worktree = crate::test_support::TestWorktree::new("terminal-fanout-history-projection");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -573,12 +576,10 @@ mod tests {
 
     #[test]
     fn provider_output_fanout_history_uses_active_turn_trace_id() {
+        let worktree = crate::test_support::TestWorktree::new("terminal-fanout-active-turn");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-app-fanout-turn",
-                "worktree-app-fanout-turn",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -649,12 +650,10 @@ mod tests {
 
     #[test]
     fn direct_history_append_uses_active_turn_trace_id() {
+        let worktree = crate::test_support::TestWorktree::new("terminal-fanout-direct-history");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-direct-history-turn",
-                "worktree-direct-history-turn",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(

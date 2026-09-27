@@ -40,7 +40,12 @@ pub(super) fn authorize_entry<'a>(
         || entry.source_key_thumbprint != caller.key_thumbprint
         || entry.owner_user_id != caller.owner_user_id
         || entry.realm_id != caller.realm_id
-        || entry.target_environment_id != caller.target_environment_id
+        || caller
+            .target_environment_id
+            .as_deref()
+            .is_some_and(|target_environment_id| {
+                entry.target_environment_id != target_environment_id
+            })
         || entry.target_kernel_id != caller.target_kernel_id
         || entry.target_key_thumbprint != caller.target_key_thumbprint
     {
@@ -275,12 +280,19 @@ fn validate_launch_target_development(
             for repository in repositories {
                 validate_identifier(&repository.repository_id, "launch target repository")?;
                 validate_identifier(&repository.target_directory, "launch target directory")?;
-                if !matches!(repository.head_sha.len(), 40 | 64)
-                    || !repository
-                        .head_sha
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit())
-                {
+                let valid_head = match repository.workspace_kind {
+                    crate::managed_context::development::DevelopmentWorkspaceKind::Git => {
+                        matches!(repository.head_sha.len(), 40 | 64)
+                            && repository
+                                .head_sha
+                                .bytes()
+                                .all(|byte| byte.is_ascii_hexdigit())
+                    }
+                    crate::managed_context::development::DevelopmentWorkspaceKind::Directory => {
+                        repository.head_sha.is_empty()
+                    }
+                };
+                if !valid_head {
                     return Err(transfer_error(
                         "managed context launch target HEAD is invalid",
                     ));

@@ -5,6 +5,7 @@ use crate::local::{
     ExternalProviderSessionCapabilities, ImportExternalProviderAgentRequest,
     ImportExternalProviderSessionRequest,
 };
+use crate::test_support::TestWorktree;
 use std::env;
 use std::fs;
 use std::io::Write;

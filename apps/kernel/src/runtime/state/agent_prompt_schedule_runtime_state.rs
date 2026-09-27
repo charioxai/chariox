@@ -1,5 +1,10 @@
 use super::*;
 
+enum AgentPromptScheduleDispatchOutcome {
+    Admitted,
+    Coalesced,
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn create_agent_prompt_schedule(
         &self,
@@ -56,11 +61,20 @@ impl KernelRuntimeState {
         for dispatch in dispatches {
             let result = self.dispatch_agent_prompt_schedule(&dispatch).await;
             let update = match result {
-                Ok(()) => self
+                Ok(AgentPromptScheduleDispatchOutcome::Admitted) => self
                     .owned
                     .session_store
                     .write()
                     .mark_agent_prompt_schedule_dispatched(
+                        &dispatch.session_id,
+                        &dispatch.schedule_id,
+                        now_ms,
+                    ),
+                Ok(AgentPromptScheduleDispatchOutcome::Coalesced) => self
+                    .owned
+                    .session_store
+                    .write()
+                    .mark_agent_prompt_schedule_coalesced(
                         &dispatch.session_id,
                         &dispatch.schedule_id,
                         now_ms,
@@ -113,7 +127,29 @@ impl KernelRuntimeState {
     async fn dispatch_agent_prompt_schedule(
         &self,
         dispatch: &crate::session::AgentPromptScheduleDispatch,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<AgentPromptScheduleDispatchOutcome, DaemonError> {
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        if !session
+            .agent_prompt_schedules()
+            .iter()
+            .any(|schedule| schedule.id() == dispatch.schedule_id)
+        {
+            return Ok(AgentPromptScheduleDispatchOutcome::Coalesced);
+        }
+        let (active, queued) = self
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &dispatch.agent_id);
+        // A recurrence represents one outstanding request, whether queued or
+        // already running. The dispatch claim prevents overlapping ticks from
+        // admitting another occurrence before this submission settles.
+        if active
+            .iter()
+            .chain(queued.iter())
+            .any(|prompt| prompt.agent_prompt_schedule_id() == Some(dispatch.schedule_id.as_str()))
+        {
+            return Ok(AgentPromptScheduleDispatchOutcome::Coalesced);
+        }
         let source_attachment_id = self
             .owned
             .ensure_agent_prompt_schedule_attachment(&dispatch.session_id)?;
@@ -132,6 +168,7 @@ impl KernelRuntimeState {
             &dispatch.prompt,
             crate::session::PromptStatus::Queued,
         )
+        .with_agent_prompt_schedule(&dispatch.schedule_id)
         .with_hidden_system_context(crate::prompt_assembly::attach_prompt_manifest_entry(
             scheduled_context,
             &scheduled_manifest_entry,
@@ -163,7 +200,7 @@ impl KernelRuntimeState {
         if let Some(remote_dispatch) = submission.remote_dispatch.take() {
             self.spawn_remote_prompt_dispatch(remote_dispatch);
         }
-        Ok(())
+        Ok(AgentPromptScheduleDispatchOutcome::Admitted)
     }
 }
 

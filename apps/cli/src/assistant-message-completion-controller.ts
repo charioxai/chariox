@@ -31,7 +31,6 @@ export function createAssistantMessageCompletionController(
   const markCompleted = (agentId: string | null | undefined) => {
     const completionAgentId = agentId ?? deps.visibleTranscriptAgentId()
     const currentEntries = completionAgentId
-      && deps.splitAgentResponseMode()
       && completionAgentId !== deps.visibleTranscriptAgentId()
       ? cloneCompactTranscriptDisplayEntries(deps.currentAgentPaneEntries(completionAgentId))
       : cloneCompactTranscriptDisplayEntries(deps.entries())

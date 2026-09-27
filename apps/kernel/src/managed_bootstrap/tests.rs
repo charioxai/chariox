@@ -11,14 +11,158 @@ use sha2::{Digest, Sha256};
 
 use super::cloud::{
     BootstrapCloudClient, ConfirmRequest, ConfirmResponse, ExchangeRequest, ExchangeResponse,
-    ManagedCloudRelayProfile,
+    ManagedCloudRelayProfile, RuntimeIdentityReportResponse,
 };
+use super::freshness::{ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks, ManagedKernelRuntimeIdentityReport};
 use super::prepare_managed_kernel;
 use super::release::verify_release;
-use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus};
+use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus, ManagedBootstrapEnvelope};
 use super::supervisor::run_kernel_once;
-use super::ManagedKernelContextPlan;
+use super::{
+    expected_data_volume_identity, validate_pre_reimage_observation_binding,
+    validate_rebuild_volume_evidence, ConfirmedManagedKernelRegistration,
+    ManagedKernelContextPlan, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV,
+};
+use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
+
+mod disposable_worker;
+
+#[test]
+fn path1_rebuild_freshness_must_match_the_protected_volume_identity() {
+    let config = BootstrapConfig {
+        process_home: PathBuf::new(),
+        chariox_home: PathBuf::new(),
+        envelope_path: PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH),
+        receipt_path: PathBuf::new(),
+        manifest_path: PathBuf::new(),
+        signature_path: PathBuf::new(),
+        public_key_path: PathBuf::new(),
+        kernel_binary: PathBuf::new(),
+        kernel_host: "127.0.0.1".to_string(),
+        kernel_port: 1,
+    };
+    let envelope = ManagedBootstrapEnvelope {
+        schema_version: 3,
+        cloud_api_url: "https://cloud.example.test".to_string(),
+        environment_id: "environment-1".to_string(),
+        token: format!("mkboot_{}", "x".repeat(40)),
+        expires_at: "2026-09-27T00:00:00Z".to_string(),
+        runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        managed_repository_root: None,
+        provider_rebuild_action_id: Some("12345".to_string()),
+        expected_data_volume_serial: Some("12345".to_string()),
+        expected_data_volume_size_gb: Some(20),
+    };
+    let evidence = ManagedKernelFreshnessEvidence {
+        schema_version: Some(3),
+        linux_boot_id: "01234567-89ab-cdef-0123-456789abcdef".to_string(),
+        os_machine_id: "b".repeat(32),
+        runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        runtime_source_commit: "c".repeat(40),
+        runtime_source_tree: "d".repeat(40),
+        residue_checks: ManagedKernelResidueChecks {
+            old_services_absent: true,
+            old_processes_absent: true,
+            old_state_absent: true,
+        },
+        data_volume_serial: Some("12345".to_string()),
+        data_volume_size_gb: Some(20),
+    };
+
+    assert_eq!(expected_data_volume_identity(&envelope).unwrap(), Some(("12345", 20)));
+    validate_rebuild_volume_evidence(&config, Some(&envelope), &evidence)
+        .expect("protected volume identity is matched");
+    let mut wrong_serial = evidence.clone();
+    wrong_serial.data_volume_serial = Some("54321".to_string());
+    assert!(validate_rebuild_volume_evidence(&config, Some(&envelope), &wrong_serial).is_err());
+    let mut wrong_size = evidence;
+    wrong_size.data_volume_size_gb = Some(30);
+    assert!(validate_rebuild_volume_evidence(&config, Some(&envelope), &wrong_size).is_err());
+}
+
+#[test]
+fn pre_reimage_observation_binding_requires_exact_confirmed_generation_and_current_identity() {
+    let receipt = BootstrapReceipt {
+        schema_version: 1,
+        status: BootstrapReceiptStatus::Confirmed,
+        environment_id: "environment-1".to_string(),
+        machine_id: "machine-1".to_string(),
+        kernel_id: "kernel-1".to_string(),
+        generation: 4,
+        relay_public_key: "relay-public-key".to_string(),
+        runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        managed_repository_root: None,
+        confirmed_at: Some("2026-09-22T00:00:00Z".to_string()),
+        context_plan: None,
+        provider_rebuild_action_id: None,
+        freshness_evidence: None,
+    };
+    let registration = ConfirmedManagedKernelRegistration {
+        environment_id: receipt.environment_id.clone(),
+        machine_id: receipt.machine_id.clone(),
+        kernel_id: receipt.kernel_id.clone(),
+        context_plan: None,
+    };
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = receipt.kernel_id.clone();
+    config.host_machine_id = receipt.machine_id.clone();
+    config.relay_public_key = receipt.relay_public_key.clone();
+    config.cloud_relay = Some(PersistedCloudRelayProfile {
+        api_url: "https://cloud.example.test".to_string(),
+        user_id: "owner-1".to_string(),
+        machine_id: Some(receipt.machine_id.clone()),
+        machine_credential: Some(format!("mcred_{}", "b".repeat(40))),
+        relay_url: "wss://relay.example.test".to_string(),
+        ..PersistedCloudRelayProfile::default()
+    });
+
+    validate_pre_reimage_observation_binding(&config, &registration, &receipt, "environment-1", 4)
+        .expect("exact current managed generation");
+    assert!(validate_pre_reimage_observation_binding(
+        &config,
+        &registration,
+        &receipt,
+        "environment-2",
+        4,
+    )
+    .is_err());
+    assert!(validate_pre_reimage_observation_binding(
+        &config,
+        &registration,
+        &receipt,
+        "environment-1",
+        3,
+    )
+    .is_err());
+
+    let mut stale_registration = registration;
+    stale_registration.kernel_id = "kernel-old".to_string();
+    assert!(validate_pre_reimage_observation_binding(
+        &config,
+        &stale_registration,
+        &receipt,
+        "environment-1",
+        4,
+    )
+    .is_err());
+}
+
+#[test]
+fn legacy_initial_bootstrap_receipt_defaults_to_generation_one() {
+    let receipt: BootstrapReceipt = serde_json::from_value(serde_json::json!({
+        "schemaVersion": 1,
+        "status": "confirmed",
+        "environmentId": "environment-1",
+        "machineId": "machine-1",
+        "kernelId": "kernel-1",
+        "relayPublicKey": "relay-public-key",
+        "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+        "confirmedAt": "2026-09-22T00:00:00Z"
+    }))
+    .expect("legacy receipt shape");
+    assert_eq!(receipt.generation, 1);
+}
 
 struct FakeCloud {
     exchange_response: ExchangeResponse,
@@ -97,6 +241,20 @@ impl BootstrapCloudClient for FakeCloud {
         Ok(ConfirmResponse {
             confirmed: true,
             observed_state: "awaiting_context".to_string(),
+            managed_repository_root: self.exchange_response.managed_repository_root.clone(),
+        })
+    }
+
+    fn report_runtime_identity(
+        &self,
+        _api_url: &str,
+        request: &ManagedKernelRuntimeIdentityReport,
+    ) -> Result<RuntimeIdentityReportResponse, DaemonError> {
+        Ok(RuntimeIdentityReportResponse {
+            accepted: true,
+            environment_id: request.environment_id.clone(),
+            generation: request.generation,
+            observed_at: request.observed_at.clone(),
         })
     }
 }
@@ -119,6 +277,7 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
         .expect("read receipt")
         .expect("receipt exists");
     assert_eq!(receipt.status, BootstrapReceiptStatus::Exchanged);
+    assert_eq!(receipt.generation, 1);
     assert_eq!(
         receipt
             .context_plan
@@ -139,12 +298,15 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
         .confirm_after_child_marker
         .lock()
         .expect("confirmation marker") = Some(fixture.kernel_started_marker.clone());
+    let previous_topology = std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
 
     run_kernel_once(
         &fixture.config,
         &prepared.release,
         &mut prepared.confirmation,
         &cloud,
+        ManagedProviderTopology::SharedHost,
     )
     .expect("kernel child should start before relay-ready confirmation");
     assert!(prepared.confirmation.is_none());
@@ -203,7 +365,86 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
     );
     assert_eq!(cloud.confirm_calls.lock().expect("confirm calls").len(), 1);
 
+    restore_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous_topology);
     restore_env("CHARIOX_HOME", previous_home);
+    fixture.cleanup();
+}
+
+#[test]
+fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("schema-two-repository-root");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "cloudApiUrl": "https://cloud.example.test",
+            "environmentId": "managed-env-1",
+            "token": fixture.token,
+            "expiresAt": (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
+            "runtimeReleaseDigest": fixture.release_digest,
+            "managedRepositoryRoot": "/srv/managed workspaces",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut response = fixture.exchange_response();
+    response.generation = 4;
+    response.managed_repository_root = Some("/srv/managed workspaces".to_string());
+    let cloud = FakeCloud::new(response);
+
+    let prepared = prepare_managed_kernel(&fixture.config, &cloud, fixture.now)
+        .expect("schema two bootstrap should exchange");
+    assert!(prepared.confirmation.is_some());
+    let receipt = BootstrapReceipt::read(&fixture.config.receipt_path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.schema_version, 2);
+    assert_eq!(receipt.generation, 4);
+    assert_eq!(
+        receipt.managed_repository_root().unwrap(),
+        "/srv/managed workspaces"
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("CHARIOX_HOME", value),
+        None => std::env::remove_var("CHARIOX_HOME"),
+    }
+    fixture.cleanup();
+}
+
+#[test]
+fn schema_two_bootstrap_rejects_a_cloud_repository_root_mismatch() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("schema-two-repository-root-mismatch");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "cloudApiUrl": "https://cloud.example.test",
+            "environmentId": "managed-env-1",
+            "token": fixture.token,
+            "expiresAt": (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
+            "runtimeReleaseDigest": fixture.release_digest,
+            "managedRepositoryRoot": "/srv/expected",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut response = fixture.exchange_response();
+    response.managed_repository_root = Some("/srv/different".to_string());
+    let cloud = FakeCloud::new(response);
+
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+
+    match previous_home {
+        Some(value) => std::env::set_var("CHARIOX_HOME", value),
+        None => std::env::remove_var("CHARIOX_HOME"),
+    }
     fixture.cleanup();
 }
 
@@ -600,11 +841,14 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "User=chariox",
         "Group=chariox",
         "SupplementaryGroups=chariox-slice",
-        "Environment=CHARIOX_HOME=/var/lib/chariox/home",
-        "Environment=HOME=/var/lib/chariox/home",
-        "Environment=CHARIOX_CAPABILITY_ISOLATION_ROOT=/var/lib/chariox/home/managed-context/kernel",
+        "Environment=CHARIOX_HOME=/home/chariox/.chariox",
+        "Environment=HOME=/home/chariox",
+        "Environment=CHARIOX_CAPABILITY_ISOLATION_ROOT=/home/chariox/.chariox/managed-context/kernel",
+        "Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1",
+        "Environment=CHARIOX_MANAGED_SLICE_SERVICE_ROOT=/var/lib/chariox-slice-share",
+        "Environment=CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT=/var/lib/chariox-slice-share/slices",
         "Environment=CHARIOX_SLICE_ROOT=/var/lib/chariox-slice-share/slices",
-        "Environment=CHARIOX_MANAGED_VAULT_PATH=/var/lib/chariox/home/.chariox/vault/vault.json",
+        "Environment=CHARIOX_MANAGED_VAULT_PATH=/home/chariox/.chariox/vault/vault.json",
         "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
         "Environment=PATH=/usr/local/bin:/usr/bin:/bin",
         "After=chariox-rootless-docker.service",
@@ -621,7 +865,7 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "ProtectKernelTunables=false",
         "StateDirectory=chariox",
         "StateDirectoryMode=0700",
-        "ReadWritePaths=/var/lib/chariox /var/lib/chariox-slice-share",
+        "ReadWritePaths=/home/chariox /var/lib/chariox /var/lib/chariox-slice-share",
         "UMask=0007",
     ] {
         assert!(
@@ -636,6 +880,56 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
 }
 
 #[test]
+fn disposable_worker_systemd_unit_runs_path1_without_provider_isolation() {
+    let unit = include_str!(
+        "../../../../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"
+    );
+    for required in [
+        "User=chariox",
+        "Group=chariox",
+        "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
+        "Environment=HOME=/home/chariox",
+        "Environment=CHARIOX_HOME=/home/chariox/.chariox",
+        "Environment=CHARIOX_MANAGED_PROVIDER_HOME=/var/lib/chariox/provider-home",
+        "Environment=CHARIOX_MANAGED_VAULT_PATH=/home/chariox/.chariox/vault/vault.json",
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "After=network-online.target chariox-rootless-docker.service",
+        "Requires=chariox-rootless-docker.service",
+        "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker",
+        // Managed-machine automatic shutdown triggers stay on the Path-1 unit.
+        "Conflicts=chariox-managed-bootstrap.service",
+        "KillMode=control-group",
+    ] {
+        assert!(
+            unit.contains(required),
+            "missing disposable worker contract: {required}"
+        );
+    }
+    assert!(!unit.contains("CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH="));
+    // Path 1 executes providers directly in the disposable VM. The VM is the
+    // provider boundary, so this unit must not carry Bubblewrap/provider
+    // isolation or the managed shared-host systemd hardening restrictions.
+    for forbidden in [
+        "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+        "CHARIOX_MANAGED_PROVIDER_BWRAP",
+        "bwrap",
+        "NoNewPrivileges=",
+        "ProtectSystem=",
+        "ProtectHome=",
+        "RestrictSUIDSGID=",
+        "RestrictAddressFamilies=",
+        "SupplementaryGroups=chariox-slice",
+        "/var/lib/chariox/home",
+    ] {
+        assert!(
+            !unit.contains(forbidden),
+            "Path-1 disposable worker must not carry: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
     let unit = include_str!("../../../../deploy/managed-kernel/chariox-rootless-docker.service");
     for required in [
@@ -644,16 +938,18 @@ fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
         "Environment=HOME=/var/lib/chariox-docker/home",
         "Environment=XDG_RUNTIME_DIR=/run/chariox-docker",
         "Environment=DOCKER_HOST=unix:///run/chariox-docker/docker.sock",
-        "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh",
+        "ExecStartPre=+/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh prepare",
+        "ExecStart=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh start",
+        "ExecStartPost=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh ready",
+        "ExecStopPost=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh stop",
         "RuntimeDirectory=chariox-docker",
         "RuntimeDirectoryMode=0700",
         "StateDirectory=chariox-docker",
         "StateDirectoryMode=0700",
-        "Delegate=yes",
         "ProtectSystem=strict",
-        "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=cgroupfs",
         "ProtectKernelTunables=false",
-        "RestrictSUIDSGID=false",
+        "RestrictSUIDSGID=true",
+        "NoNewPrivileges=true",
         "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share/.broker-private /var/lib/chariox-slice-share/slices/development /run/chariox-docker",
     ] {
         assert!(
@@ -665,7 +961,12 @@ fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
     assert!(!unit.contains("User=root"));
     assert!(!unit.contains("SupplementaryGroups=chariox-slice"));
     assert!(!unit.contains("/var/lib/chariox/home"));
-    assert!(!unit.contains("RestrictSUIDSGID=true"));
+    let engine = include_str!("../../slice-linux-docker/chariox-rootless-engine.service");
+    assert!(engine.contains("ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=systemd"));
+    assert!(engine.contains("Delegate=cpu cpuset io memory pids"));
+    assert!(engine.contains("Restart=no"));
+    assert!(!engine.contains("/var/run/docker.sock"));
+    assert!(!engine.lines().any(|line| line.starts_with("User=")));
 }
 
 #[test]
@@ -705,27 +1006,29 @@ fn managed_systemd_unit_remains_eligible_after_one_time_envelope_removal() {
     assert!(!unit.contains("ConditionPathExists=/var/lib/chariox/managed-bootstrap.json"));
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     root: PathBuf,
-    config: BootstrapConfig,
+    pub(super) config: BootstrapConfig,
     now: chrono::DateTime<Utc>,
-    release_digest: String,
+    pub(super) release_digest: String,
     token: String,
     kernel_started_marker: PathBuf,
 }
 
 impl Fixture {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-bootstrap-{label}-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
-        let home = root.join("home");
+        let process_home = root.join("home");
+        let chariox_home = process_home.join(".chariox");
+        fs::create_dir_all(&process_home).expect("create process HOME");
         let kernel_binary = root.join("bin").join("chariox-kernel");
         fs::create_dir_all(kernel_binary.parent().expect("kernel parent"))
             .expect("create kernel parent");
-        let kernel_fixture = b"#!/bin/sh\nreceipt=\"$CHARIOX_HOME/managed/bootstrap-receipt.json\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$CHARIOX_HOME/managed/kernel-started\"\ntest -s \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nrm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nsleep 1\n";
+        let kernel_fixture = b"#!/bin/sh\nreceipt=\"${CHARIOX_DISPOSABLE_WORKER_RECEIPT:-$CHARIOX_HOME/managed/bootstrap-receipt.json}\"\nmarker=\"${CHARIOX_KERNEL_STARTED_MARKER:-$CHARIOX_HOME/managed/kernel-started}\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$marker\"\ntest -s \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nrm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nsleep 1\n";
         fs::write(&kernel_binary, kernel_fixture).expect("write kernel fixture");
         #[cfg(unix)]
         {
@@ -781,9 +1084,10 @@ impl Fixture {
         .expect("write envelope");
         Self {
             config: BootstrapConfig {
-                chariox_home: home.clone(),
+                process_home,
+                chariox_home: chariox_home.clone(),
                 envelope_path,
-                receipt_path: home.join("managed").join("bootstrap-receipt.json"),
+                receipt_path: chariox_home.join("managed").join("bootstrap-receipt.json"),
                 manifest_path,
                 signature_path,
                 public_key_path,
@@ -795,7 +1099,7 @@ impl Fixture {
             now,
             release_digest,
             token,
-            kernel_started_marker: home.join("managed").join("kernel-started"),
+            kernel_started_marker: chariox_home.join("managed").join("kernel-started"),
         }
     }
 
@@ -803,7 +1107,9 @@ impl Fixture {
         ExchangeResponse {
             environment_id: String::new(),
             kernel_id: String::new(),
+            generation: 1,
             runtime_release_digest: String::new(),
+            managed_repository_root: None,
             context_plan: ManagedKernelContextPlan::empty_for_tests("managed_ctx_bootstrap"),
             cloud_relay: ManagedCloudRelayProfile {
                 api_url: "https://cloud.example.test".to_string(),
@@ -845,7 +1151,7 @@ impl Fixture {
         format!("sha256:{:x}", Sha256::digest(&manifest))
     }
 
-    fn cleanup(self) {
+    pub(super) fn cleanup(self) {
         let _ = fs::remove_dir_all(self.root);
     }
 }
@@ -855,4 +1161,489 @@ fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
         Some(value) => std::env::set_var(name, value),
         None => std::env::remove_var(name),
     }
+}
+
+#[cfg(unix)]
+struct EnvironmentRestoreGuard {
+    previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+#[cfg(unix)]
+impl EnvironmentRestoreGuard {
+    fn capture(names: impl IntoIterator<Item = &'static str>) -> Self {
+        Self {
+            previous: names
+                .into_iter()
+                .map(|name| (name, std::env::var_os(name)))
+                .collect(),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EnvironmentRestoreGuard {
+    fn drop(&mut self) {
+        for (name, value) in self.previous.drain(..) {
+            restore_env(name, value);
+        }
+    }
+}
+
+#[cfg(unix)]
+struct AttestedReleaseFixture {
+    root: PathBuf,
+    config: BootstrapConfig,
+    release_digest: String,
+    release_root: PathBuf,
+    attestation_path: PathBuf,
+    attestation_signature_path: PathBuf,
+    receipt_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl AttestedReleaseFixture {
+    fn new(
+        label: &str,
+        attestation_source_commit: &str,
+        attestation_source_tree: &str,
+        target: &str,
+    ) -> Self {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-release-evidence-{label}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let install_root = root.join("installed");
+        let chariox_root = install_root.join("usr/lib/chariox");
+        let kernel_facade = install_root.join("usr/local/bin/chariox-kernel");
+        let kernel_bytes = b"#!/bin/sh\nverified-kernel\n";
+        let kernel_digest = format!("sha256:{:x}", Sha256::digest(kernel_bytes));
+        let supervisor_bytes = b"#!/bin/sh\nverified-bootstrap\n";
+        let supervisor_digest = format!("sha256:{:x}", Sha256::digest(supervisor_bytes));
+        let source_commit = "a".repeat(40);
+        let source_tree = "b".repeat(40);
+        let attestation = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "sourceCommit": attestation_source_commit,
+            "sourceTree": attestation_source_tree,
+            "target": target,
+            "artifacts": [
+                { "name": "chariox-kernel", "sha256": kernel_digest },
+                { "name": "chariox-managed-bootstrap", "sha256": supervisor_digest },
+                { "name": "chariox-relay", "sha256": format!("sha256:{}", "d".repeat(64)) },
+            ],
+        }))
+        .expect("encode build attestation");
+        let builder_key = SigningKey::from_bytes(&[8_u8; 32]);
+        let attestation_signature = builder_key.sign(&attestation);
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "sourceCommit": source_commit,
+            "sourceTree": source_tree,
+            "artifacts": [
+                {
+                    "name": "chariox-kernel",
+                    "path": kernel_facade.display().to_string(),
+                    "sha256": kernel_digest,
+                },
+                {
+                    "name": "chariox-managed-bootstrap",
+                    "path": "/usr/local/bin/chariox-managed-bootstrap",
+                    "sha256": supervisor_digest,
+                },
+                {
+                    "name": "chariox-build-attestation",
+                    "path": "/usr/lib/chariox/build-attestation.json",
+                    "sha256": format!("sha256:{:x}", Sha256::digest(&attestation)),
+                },
+                {
+                    "name": "chariox-build-attestation-signature",
+                    "path": "/usr/lib/chariox/build-attestation.sig",
+                    "sha256": format!(
+                        "sha256:{:x}",
+                        Sha256::digest(
+                            base64::engine::general_purpose::STANDARD
+                                .encode(attestation_signature.to_bytes())
+                                .as_bytes()
+                        )
+                    ),
+                },
+                {
+                    "name": "chariox-builder-public-key",
+                    "path": "/usr/lib/chariox/builder-public-key",
+                    "sha256": format!(
+                        "sha256:{:x}",
+                        Sha256::digest(
+                            base64::engine::general_purpose::STANDARD
+                                .encode(builder_key.verifying_key().to_bytes())
+                                .as_bytes()
+                        )
+                    ),
+                },
+            ],
+        }))
+        .expect("encode release manifest");
+        let release_digest = format!("sha256:{:x}", Sha256::digest(&manifest));
+        let release_name = release_digest
+            .strip_prefix("sha256:")
+            .expect("release digest prefix");
+        let release_root = chariox_root.join("releases").join(release_name);
+        let release_chariox_root = release_root.join("usr/lib/chariox");
+        let release_kernel = release_root.join("usr/local/bin/chariox-kernel");
+        let release_supervisor = release_root.join("usr/local/bin/chariox-managed-bootstrap");
+        fs::create_dir_all(&release_chariox_root).expect("create release metadata directory");
+        fs::create_dir_all(release_kernel.parent().expect("release kernel parent"))
+            .expect("create release kernel directory");
+        fs::create_dir_all(kernel_facade.parent().expect("kernel facade parent"))
+            .expect("create kernel facade directory");
+        fs::write(&release_kernel, kernel_bytes).expect("write kernel artifact");
+        fs::write(&release_supervisor, supervisor_bytes).expect("write supervisor artifact");
+        fs::write(
+            release_chariox_root.join("build-attestation.json"),
+            &attestation,
+        )
+        .expect("write build attestation");
+        fs::write(
+            release_chariox_root.join("build-attestation.sig"),
+            base64::engine::general_purpose::STANDARD.encode(attestation_signature.to_bytes()),
+        )
+        .expect("write build attestation signature");
+        fs::write(
+            release_chariox_root.join("builder-public-key"),
+            base64::engine::general_purpose::STANDARD
+                .encode(builder_key.verifying_key().to_bytes()),
+        )
+        .expect("write builder public key");
+        let release_signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let release_signature = release_signing_key.sign(&manifest);
+        fs::write(
+            release_chariox_root.join("release-manifest.json"),
+            &manifest,
+        )
+        .expect("write release manifest");
+        fs::write(
+            release_chariox_root.join("release-manifest.sig"),
+            base64::engine::general_purpose::STANDARD.encode(release_signature.to_bytes()),
+        )
+        .expect("write release signature");
+        fs::write(
+            release_chariox_root.join("release-public-key"),
+            base64::engine::general_purpose::STANDARD
+                .encode(release_signing_key.verifying_key().to_bytes()),
+        )
+        .expect("write release public key");
+        symlink(
+            format!("releases/{release_name}"),
+            chariox_root.join("current"),
+        )
+        .expect("link current release");
+        for (target, facade) in [
+            (
+                "current/usr/lib/chariox/release-manifest.json",
+                chariox_root.join("release-manifest.json"),
+            ),
+            (
+                "current/usr/lib/chariox/release-manifest.sig",
+                chariox_root.join("release-manifest.sig"),
+            ),
+            (
+                "current/usr/lib/chariox/release-public-key",
+                chariox_root.join("release-public-key"),
+            ),
+        ] {
+            symlink(target, facade).expect("link release facade");
+        }
+        symlink(
+            "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel",
+            &kernel_facade,
+        )
+        .expect("link kernel facade");
+
+        let process_home = root.join("home");
+        let chariox_home = process_home.join(".chariox");
+        let receipt_path = chariox_home.join("managed/bootstrap-receipt.json");
+        fs::create_dir_all(receipt_path.parent().expect("receipt parent"))
+            .expect("create receipt parent");
+        fs::write(
+            &receipt_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "status": "confirmed",
+                "environmentId": "managed-env-1",
+                "machineId": "managed-machine-1",
+                "kernelId": "managed-kernel-1",
+                "relayPublicKey": "relay-public-key",
+                "runtimeReleaseDigest": release_digest,
+                "confirmedAt": "2026-09-20T00:00:00Z",
+            }))
+            .expect("encode bootstrap receipt"),
+        )
+        .expect("write bootstrap receipt");
+
+        Self {
+            config: BootstrapConfig {
+                process_home,
+                chariox_home,
+                envelope_path: root.join("managed-bootstrap.json"),
+                receipt_path: receipt_path.clone(),
+                manifest_path: chariox_root.join("release-manifest.json"),
+                signature_path: chariox_root.join("release-manifest.sig"),
+                public_key_path: chariox_root.join("release-public-key"),
+                kernel_binary: kernel_facade,
+                kernel_host: "127.0.0.1".to_string(),
+                kernel_port: 43118,
+            },
+            root,
+            release_digest,
+            release_root,
+            attestation_path: release_chariox_root.join("build-attestation.json"),
+            attestation_signature_path: release_chariox_root.join("build-attestation.sig"),
+            receipt_path,
+        }
+    }
+
+    fn cleanup(self) {
+        let _ = fs::remove_dir_all(self.root);
+    }
+}
+
+#[cfg(unix)]
+fn set_release_evidence_env(fixture: &AttestedReleaseFixture) {
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
+    std::env::set_var("HOME", &fixture.config.process_home);
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    std::env::set_var(
+        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+        &fixture.config.receipt_path,
+    );
+    std::env::set_var(
+        "CHARIOX_MANAGED_RELEASE_MANIFEST",
+        &fixture.config.manifest_path,
+    );
+    std::env::set_var(
+        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+        &fixture.config.signature_path,
+    );
+    std::env::set_var(
+        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+        &fixture.config.public_key_path,
+    );
+    std::env::set_var(
+        "CHARIOX_MANAGED_KERNEL_BINARY",
+        &fixture.config.kernel_binary,
+    );
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const RELEASE_EVIDENCE_ENV_NAMES: [&str; 8] = [
+    "HOME",
+    "CHARIOX_HOME",
+    "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+    "CHARIOX_MANAGED_RELEASE_MANIFEST",
+    "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+    "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+    "CHARIOX_MANAGED_KERNEL_BINARY",
+    MANAGED_PROVIDER_TOPOLOGY_ENV,
+];
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt() {
+    let _env = crate::env_lock::lock();
+    let fixture = AttestedReleaseFixture::new(
+        "valid",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let _restore = EnvironmentRestoreGuard::capture(RELEASE_EVIDENCE_ENV_NAMES);
+    set_release_evidence_env(&fixture);
+
+    std::env::remove_var(MANAGED_PROVIDER_TOPOLOGY_ENV);
+    let missing_topology = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("release evidence must reject an unspecified provider topology");
+    assert!(missing_topology
+        .to_string()
+        .contains("must be explicitly set to path1 or shared_host"));
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
+
+    let evidence = super::authoritative_managed_release_evidence_from_env()
+        .expect("valid managed release evidence should verify")
+        .expect("confirmed managed receipt should produce release evidence");
+    assert_eq!(evidence.runtime_release_digest, fixture.release_digest);
+    assert_eq!(evidence.source_commit, "a".repeat(40));
+    assert_eq!(evidence.source_tree, "b".repeat(40));
+    assert_eq!(evidence.target, "x86_64-unknown-linux-gnu");
+    assert_eq!(
+        evidence.active_release_path,
+        fixture.release_root.display().to_string()
+    );
+    assert!(evidence.manifest_signature_verified);
+    assert!(evidence.manifest_digest_verified);
+    assert!(evidence.kernel_artifact_verified);
+    assert!(evidence.bootstrap_receipt_verified);
+
+    fixture.cleanup();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn path1_release_evidence_requires_the_external_builder_key() {
+    use std::os::unix::fs::symlink;
+
+    let _env = crate::env_lock::lock();
+    let fixture = AttestedReleaseFixture::new(
+        "external-builder-key",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let _restore = EnvironmentRestoreGuard::capture(
+        RELEASE_EVIDENCE_ENV_NAMES
+            .into_iter()
+            .chain([super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV]),
+    );
+    set_release_evidence_env(&fixture);
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
+    std::env::remove_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV);
+    assert!(super::authoritative_managed_release_evidence_from_env().is_err());
+
+    let packaged_key = fixture
+        .release_root
+        .join("usr/lib/chariox/builder-public-key");
+    let external_key = fixture.root.join("etc/chariox/trusted-builder-public-key");
+    fs::create_dir_all(external_key.parent().expect("external key parent"))
+        .expect("create external key directory");
+    fs::copy(&packaged_key, &external_key).expect("persist external key");
+    std::env::set_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV, &external_key);
+    super::authoritative_managed_release_evidence_from_env()
+        .expect("matching external builder key")
+        .expect("confirmed release evidence");
+
+    let other_key = SigningKey::from_bytes(&[9_u8; 32]);
+    fs::write(
+        &external_key,
+        base64::engine::general_purpose::STANDARD.encode(other_key.verifying_key().to_bytes()),
+    )
+    .expect("replace external key");
+    let mismatch = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("mismatched builder trust must fail");
+    assert!(mismatch.to_string().contains("does not match"));
+
+    fs::remove_file(&external_key).expect("remove test key");
+    symlink(&packaged_key, &external_key).expect("link external key to package");
+    assert!(super::authoritative_managed_release_evidence_from_env().is_err());
+    std::env::set_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV, &packaged_key);
+    let image_key = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("key inside release image must fail");
+    assert!(image_key
+        .to_string()
+        .contains("outside the managed release image"));
+
+    fixture.cleanup();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn managed_release_evidence_fails_closed_for_attestation_target_source_signature_artifact_receipt_and_layout_mismatch(
+) {
+    let _env = crate::env_lock::lock();
+    for (label, source_commit, source_tree, target, expected) in [
+        (
+            "source-mismatch",
+            "c",
+            "b",
+            "x86_64-unknown-linux-gnu",
+            "source identity or target",
+        ),
+        (
+            "tree-mismatch",
+            "a",
+            "c",
+            "x86_64-unknown-linux-gnu",
+            "source identity or target",
+        ),
+        (
+            "target-mismatch",
+            "a",
+            "b",
+            "aarch64-unknown-linux-gnu",
+            "source identity or target",
+        ),
+    ] {
+        let source = format!("{source_commit}{source_commit}").repeat(20);
+        let tree = format!("{source_tree}{source_tree}").repeat(20);
+        let fixture = AttestedReleaseFixture::new(label, &source, &tree, target);
+        let _restore = EnvironmentRestoreGuard::capture(RELEASE_EVIDENCE_ENV_NAMES);
+        set_release_evidence_env(&fixture);
+        let error = super::authoritative_managed_release_evidence_from_env()
+            .expect_err("attestation identity mismatch must fail closed");
+        assert!(error.to_string().contains(expected));
+        fixture.cleanup();
+    }
+
+    let receipt_fixture = AttestedReleaseFixture::new(
+        "receipt-mismatch",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let _restore = EnvironmentRestoreGuard::capture(RELEASE_EVIDENCE_ENV_NAMES);
+    set_release_evidence_env(&receipt_fixture);
+    fs::write(
+        &receipt_fixture.receipt_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "environmentId": "managed-env-1",
+            "machineId": "managed-machine-1",
+            "kernelId": "managed-kernel-1",
+            "relayPublicKey": "relay-public-key",
+            "runtimeReleaseDigest": format!("sha256:{}", "0".repeat(64)),
+            "confirmedAt": "2026-09-20T00:00:00Z",
+        }))
+        .expect("encode stale receipt"),
+    )
+    .expect("write stale receipt");
+    let receipt_error = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("receipt digest mismatch must fail closed");
+    assert!(
+        receipt_error.to_string().contains("release path")
+            || receipt_error.to_string().contains("digest")
+    );
+    receipt_fixture.cleanup();
+
+    let fixture = AttestedReleaseFixture::new(
+        "tamper",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let _restore = EnvironmentRestoreGuard::capture(RELEASE_EVIDENCE_ENV_NAMES);
+    set_release_evidence_env(&fixture);
+    fs::write(&fixture.attestation_signature_path, "invalid")
+        .expect("tamper attestation signature");
+    let signature_error = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("attestation signature mismatch must fail closed");
+    assert!(signature_error.to_string().contains("artifact digest"));
+    fs::write(&fixture.attestation_path, "tampered").expect("tamper attestation");
+    let artifact_error = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("pinned attestation mismatch must fail closed");
+    assert!(artifact_error.to_string().contains("artifact digest"));
+    fixture.cleanup();
+
+    let legacy = Fixture::new("unversioned-evidence");
+    let layout_error = super::release::verify_release_evidence(
+        &legacy.config.manifest_path,
+        &legacy.config.signature_path,
+        &legacy.config.public_key_path,
+        &legacy.release_digest,
+        &legacy.config.kernel_binary,
+        None,
+    )
+    .expect_err("unversioned release layout must not produce authoritative evidence");
+    assert!(layout_error.to_string().contains("active versioned layout"));
+    legacy.cleanup();
 }

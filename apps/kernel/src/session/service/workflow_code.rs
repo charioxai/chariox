@@ -10,6 +10,37 @@ use crate::workflow_code::{
 };
 
 impl SessionService {
+    /// Rebuilds a bound workflow and commits its resulting session snapshot while the caller's
+    /// session-store write guard is still held. A failed commit restores the exact pre-rebuild
+    /// session before another session writer can observe or extend the uncommitted definition.
+    pub(crate) fn rebuild_workflow_code_definition_with_commit(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        expected_workflow_revision: u64,
+        definition: &WorkflowCodeDefinition,
+        source: crate::session::WorkflowCodeSourceDescriptor,
+        commit: impl FnOnce(
+            &crate::session::RuntimeSession,
+            &WorkflowCodeApplyReport,
+        ) -> Result<(), DaemonError>,
+    ) -> Result<(WorkflowCodeApplyReport, crate::session::RuntimeSession), DaemonError> {
+        let session_before_rebuild = self.get_session(session_id)?;
+        let result = self.rebuild_workflow_code_definition(
+            session_id,
+            workflow_ref,
+            expected_workflow_revision,
+            definition,
+            source,
+        )?;
+        let rebuilt_session = self.get_session(session_id)?;
+        if let Err(error) = commit(&rebuilt_session, &result) {
+            self.store.insert(session_before_rebuild);
+            return Err(error);
+        }
+        Ok((result, rebuilt_session))
+    }
+
     pub(crate) fn rebuild_workflow_code_definition(
         &mut self,
         session_id: &str,

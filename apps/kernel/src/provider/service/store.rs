@@ -20,6 +20,162 @@ pub struct ProviderProcessServiceStore {
     inner: Arc<Mutex<ProviderProcessService>>,
 }
 
+#[cfg(test)]
+mod manifest_revision_tests {
+    use super::*;
+
+    fn manifest(available: bool) -> crate::extension::RemoteExtensionManifest {
+        crate::extension::RemoteExtensionManifest {
+            room_browser_available: available,
+            ..Default::default()
+        }
+    }
+
+    fn fixture() -> ProviderProcessServiceStore {
+        let mut service = ProviderProcessService::new();
+        service.insert_run_for_test(RuntimeProviderRun::from_control_capability_inference(
+            "run",
+            "room".to_string(),
+            Some("agent".to_string()),
+            "codex".to_string(),
+        ));
+        ProviderProcessServiceStore::new(service)
+    }
+
+    #[test]
+    fn stale_manifest_compare_update_preserves_newer_snapshot() {
+        let store = fixture();
+        let before = store.get_run("run").unwrap();
+        assert_eq!(before.remote_extension_manifest_revision(), 0);
+        let pushed = store
+            .update_run_remote_extension_manifest("run", manifest(true))
+            .unwrap();
+        assert_eq!(pushed.remote_extension_manifest_revision(), 1);
+        assert!(store
+            .compare_update_run_remote_extension_manifest(
+                "run",
+                before.remote_extension_manifest_revision(),
+                manifest(false),
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(store.get_run("run").unwrap(), pushed);
+        let accepted = store
+            .compare_update_run_remote_extension_manifest(
+                "run",
+                pushed.remote_extension_manifest_revision(),
+                manifest(false),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted.remote_extension_manifest_revision(), 2);
+        assert!(!accepted.remote_extension_manifest().room_browser_available);
+    }
+
+    #[test]
+    fn equal_and_aba_manifest_updates_invalidate_old_revisions() {
+        let store = fixture();
+        store
+            .update_run_remote_extension_manifest("run", manifest(false))
+            .unwrap();
+        store
+            .update_run_remote_extension_manifest("run", manifest(true))
+            .unwrap();
+        let current = store
+            .update_run_remote_extension_manifest("run", manifest(false))
+            .unwrap();
+        assert_eq!(current.remote_extension_manifest_revision(), 3);
+        for stale in 0..3 {
+            assert!(store
+                .compare_update_run_remote_extension_manifest("run", stale, manifest(true),)
+                .unwrap()
+                .is_none());
+        }
+        assert_eq!(store.get_run("run").unwrap(), current);
+    }
+
+    #[test]
+    fn manifest_revision_is_not_serialized_or_accepted_from_serialized_input() {
+        let store = fixture();
+        let updated = store
+            .update_run_remote_extension_manifest("run", manifest(true))
+            .unwrap();
+        let mut serialized = serde_json::to_value(&updated).unwrap();
+        assert!(serialized
+            .get("remote_extension_manifest_revision")
+            .is_none());
+        serialized["remote_extension_manifest_revision"] = serde_json::json!(900);
+        let restored: RuntimeProviderRun = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.remote_extension_manifest_revision(), 0);
+        assert_eq!(
+            restored.remote_extension_manifest(),
+            updated.remote_extension_manifest()
+        );
+    }
+
+    #[test]
+    fn competing_manifest_compare_updates_have_exactly_one_winner() {
+        let store = fixture();
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let tasks = [false, true].map(|available| {
+            let store = store.clone();
+            let start = Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                store
+                    .compare_update_run_remote_extension_manifest("run", 0, manifest(available))
+                    .unwrap()
+                    .is_some()
+            })
+        });
+        start.wait();
+        let wins = tasks
+            .into_iter()
+            .map(|task| usize::from(task.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(wins, 1);
+        assert_eq!(
+            store
+                .get_run("run")
+                .unwrap()
+                .remote_extension_manifest_revision(),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_run_manifest_compare_update_returns_error() {
+        assert!(matches!(
+            fixture().compare_update_run_remote_extension_manifest("missing", 0, manifest(true),),
+            Err(DaemonError::ProviderRunNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn snapshot_restore_cannot_roll_manifest_revision_back() {
+        let store = fixture();
+        let mut snapshot = store.get_run("run").unwrap();
+        snapshot.mark_running();
+        store.write().insert_run_for_test(snapshot.clone());
+        let pushed = store
+            .update_run_remote_extension_manifest("run", manifest(true))
+            .unwrap();
+        let restored = store
+            .restore_run_snapshot_after_restart_failure(snapshot)
+            .unwrap();
+        assert_eq!(restored.remote_extension_manifest_revision(), 2);
+        assert!(store
+            .compare_update_run_remote_extension_manifest(
+                "run",
+                pushed.remote_extension_manifest_revision(),
+                manifest(true),
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(store.get_run("run").unwrap(), restored);
+    }
+}
+
 impl std::fmt::Debug for ProviderProcessServiceStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderProcessServiceStore")
@@ -165,6 +321,10 @@ impl ProviderProcessServiceStore {
         self.read().structured_prompt_io_in_flight(provider_run_id)
     }
 
+    pub(crate) fn structured_runtime_state_bound(&self, provider_run_id: &str) -> bool {
+        self.read().structured_runtime_state_bound(provider_run_id)
+    }
+
     pub fn record_run_activity(&self, run_id: &str) -> Result<(), DaemonError> {
         self.write().record_run_activity(run_id)
     }
@@ -188,6 +348,41 @@ impl ProviderProcessServiceStore {
             .update_run_execution_config(run_id, execution_mode, permission_level)
     }
 
+    pub(crate) fn update_run_preparation_environment(
+        &self,
+        run_id: &str,
+        home: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .update_run_preparation_environment(run_id, home, path)
+    }
+
+    pub(crate) fn update_run_read_only_discovery(
+        &self,
+        run_id: &str,
+        enabled: bool,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write().update_run_read_only_discovery(run_id, enabled)
+    }
+
+    pub(crate) fn restore_run_snapshot_after_restart_failure(
+        &self,
+        snapshot: RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .restore_run_snapshot_after_restart_failure(snapshot)
+    }
+
+    pub(crate) fn mark_run_ended_provider_only(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<ProviderRunEndedOutcome, DaemonError> {
+        self.write()
+            .mark_run_ended_provider_only(session_id, run_id)
+    }
+
     pub(crate) fn update_run_remote_extension_manifest(
         &self,
         run_id: &str,
@@ -195,6 +390,19 @@ impl ProviderProcessServiceStore {
     ) -> Result<RuntimeProviderRun, DaemonError> {
         self.write()
             .update_run_remote_extension_manifest(run_id, manifest)
+    }
+
+    pub(crate) fn compare_update_run_remote_extension_manifest(
+        &self,
+        run_id: &str,
+        expected_revision: u64,
+        manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
+        self.write().compare_update_run_remote_extension_manifest(
+            run_id,
+            expected_revision,
+            manifest,
+        )
     }
 
     pub(crate) fn enable_workflow_tools(
@@ -233,6 +441,19 @@ impl ProviderProcessServiceStore {
 
     pub fn initialize_runtime(&self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
         let binding = ProviderProcessService::initialize_runtime_binding(run)?;
+        if let Some(binding) = binding {
+            self.write().apply_runtime_binding(run.id(), binding)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn initialize_runtime_with_credentials(
+        &self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<(), DaemonError> {
+        let binding =
+            ProviderProcessService::initialize_runtime_binding_with_credentials(run, credentials)?;
         if let Some(binding) = binding {
             self.write().apply_runtime_binding(run.id(), binding)?;
         }
@@ -289,6 +510,7 @@ impl ProviderProcessServiceStore {
         provider_run_id: String,
         agent_id: String,
         prompt_id: String,
+        origin_prompt_id: &str,
         run: &RuntimeProviderRun,
         prompt: &str,
         hidden_system_context: &str,
@@ -301,6 +523,7 @@ impl ProviderProcessServiceStore {
             provider_run_id,
             agent_id,
             prompt_id,
+            origin_prompt_id,
             run,
             prompt,
             hidden_system_context,
@@ -316,12 +539,14 @@ impl ProviderProcessServiceStore {
         visible_user_prompt: &str,
         hidden_system_context: &str,
         timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
         self.write().run_structured_utility_prompt(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
+            policy,
         )
     }
 

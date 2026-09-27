@@ -287,6 +287,57 @@ fn terminal_secret_input_requires_pty_injection() {
 }
 
 #[test]
+fn provider_secret_input_requires_provider_policy() {
+    let _guard = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_TEST_PROVIDER_TOKEN", "provider-secret");
+    let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+        id: "claude_setup_token".to_string(),
+        description: None,
+        source: UserCredentialSourceConfig::Env {
+            name: "CHARIOX_TEST_PROVIDER_TOKEN".to_string(),
+        },
+        allowed_hosts: Vec::new(),
+        allowed_uses: vec![UserCredentialUse::Provider],
+        injection: UserCredentialInjectionConfig::Provider,
+        metadata: None,
+    }]);
+
+    assert_eq!(
+        service
+            .provider_secret_input("claude_setup_token")
+            .expect("provider secret should resolve")
+            .as_str(),
+        "provider-secret"
+    );
+    std::env::remove_var("CHARIOX_TEST_PROVIDER_TOKEN");
+}
+
+#[test]
+fn provider_secret_input_rejects_terminal_policy_before_secret_read() {
+    let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_TEST_PROVIDER_TOKEN_MISSING");
+    let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+        id: "terminal_only".to_string(),
+        description: None,
+        source: UserCredentialSourceConfig::Env {
+            name: "CHARIOX_TEST_PROVIDER_TOKEN_MISSING".to_string(),
+        },
+        allowed_hosts: Vec::new(),
+        allowed_uses: vec![UserCredentialUse::Pty],
+        injection: UserCredentialInjectionConfig::Pty,
+        metadata: None,
+    }]);
+
+    let error = service
+        .provider_secret_input("terminal_only")
+        .expect_err("provider launch should require provider policy");
+    assert!(error.to_string().contains("not allowed for Provider"));
+    assert!(!error
+        .to_string()
+        .contains("CHARIOX_TEST_PROVIDER_TOKEN_MISSING"));
+}
+
+#[test]
 fn browser_secret_input_requires_browser_use() {
     let _guard = crate::env_lock::lock();
     std::env::set_var("CHARIOX_TEST_BROWSER_PASSWORD", "browser-secret");
@@ -337,6 +388,56 @@ fn browser_secret_input_requires_browser_injection() {
         .to_string()
         .contains("not configured for browser input"));
     std::env::remove_var("CHARIOX_TEST_BROWSER_PASSWORD");
+}
+
+#[test]
+fn computer_secret_input_requires_explicit_computer_policy() {
+    let _guard = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_TEST_COMPUTER_PASSWORD", "computer-secret");
+    let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+        id: "desktop_password".to_string(),
+        description: None,
+        source: UserCredentialSourceConfig::Env {
+            name: "CHARIOX_TEST_COMPUTER_PASSWORD".to_string(),
+        },
+        allowed_hosts: Vec::new(),
+        allowed_uses: vec![UserCredentialUse::Computer],
+        injection: UserCredentialInjectionConfig::Computer,
+        metadata: None,
+    }]);
+
+    assert_eq!(
+        service
+            .computer_secret_input("desktop_password")
+            .expect("computer secret should resolve"),
+        "computer-secret"
+    );
+    std::env::remove_var("CHARIOX_TEST_COMPUTER_PASSWORD");
+}
+
+#[test]
+fn computer_secret_input_rejects_browser_policy_before_secret_read() {
+    let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_TEST_COMPUTER_SECRET_MISSING");
+    let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+        id: "browser_only".to_string(),
+        description: None,
+        source: UserCredentialSourceConfig::Env {
+            name: "CHARIOX_TEST_COMPUTER_SECRET_MISSING".to_string(),
+        },
+        allowed_hosts: Vec::new(),
+        allowed_uses: vec![UserCredentialUse::Browser],
+        injection: UserCredentialInjectionConfig::Browser,
+        metadata: None,
+    }]);
+
+    let error = service
+        .computer_secret_input("browser_only")
+        .expect_err("computer input should require computer policy");
+    assert!(error.to_string().contains("not allowed for Computer"));
+    assert!(!error
+        .to_string()
+        .contains("CHARIOX_TEST_COMPUTER_SECRET_MISSING"));
 }
 
 #[test]

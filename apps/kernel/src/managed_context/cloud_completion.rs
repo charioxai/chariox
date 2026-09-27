@@ -67,14 +67,103 @@ pub(crate) async fn complete_managed_context_import(
     )
     .await
     .map_err(cloud_completion_error)?;
-    if !response.ready
-        || response.observed_state != "ready"
-        || response.context_manifest_digest != context_manifest_digest
+    validate_completion_response(
+        &response,
+        context_manifest_digest,
+        "Cloud returned an invalid managed context completion result",
+    )
+}
+
+pub(crate) fn validate_disposable_worker_completion_binding(
+    config: &DaemonConfig,
+    target_environment_id: &str,
+    target_kernel_id: &str,
+    target_key_thumbprint: &str,
+    plan: &ManagedContextPlanBinding,
+) -> Result<(), DaemonError> {
+    crate::managed_bootstrap::worker::confirmed_disposable_worker_home_caller(config)
+        .map_err(|error| {
+            completion_error(
+                format!("confirmed disposable worker binding is unavailable: {error}"),
+                false,
+            )
+        })?
+        .ok_or_else(|| completion_error("target is not a confirmed disposable worker", false))?;
+    if target_environment_id.trim().is_empty()
+        || target_kernel_id != config.daemon_id
+        || target_key_thumbprint
+            != crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)
     {
         return Err(completion_error(
-            "Cloud returned an invalid managed context completion result",
+            "managed context completion does not match the disposable worker binding",
             false,
         ));
+    }
+    crate::managed_context::package::validate_plan_binding(plan)
+        .map_err(|_| completion_error("managed context completion plan is invalid", false))
+}
+
+pub(crate) async fn complete_disposable_managed_context_import(
+    config: &DaemonConfig,
+    target_environment_id: &str,
+    plan: &ManagedContextPlanBinding,
+    context_manifest_digest: &str,
+) -> Result<(), DaemonError> {
+    validate_disposable_worker_completion_binding(
+        config,
+        target_environment_id,
+        &config.daemon_id,
+        &crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+        plan,
+    )?;
+    let profile = config.cloud_relay.as_ref().ok_or_else(|| {
+        completion_error("managed worker Cloud relay profile is unavailable", false)
+    })?;
+    let machine_id = profile.machine_id.as_deref().ok_or_else(|| {
+        completion_error(
+            "managed worker Cloud Machine identity is unavailable",
+            false,
+        )
+    })?;
+    let machine_credential = profile.machine_credential.as_deref().ok_or_else(|| {
+        completion_error(
+            "managed worker Cloud Machine credential is unavailable",
+            false,
+        )
+    })?;
+    let response: CompleteManagedContextResponse = post_cloud_json(
+        profile.api_url.clone(),
+        "/v1/managed-kernels/context/complete",
+        serde_json::json!({
+            "accountId": profile.account_id,
+            "environmentId": target_environment_id,
+            "machineId": machine_id,
+            "kernelId": config.daemon_id,
+            "machineCredential": machine_credential,
+            "contextId": plan.context_id,
+            "planDigest": plan.plan_digest,
+            "contextManifestDigest": context_manifest_digest,
+        }),
+    )
+    .await
+    .map_err(cloud_completion_error)?;
+    validate_completion_response(
+        &response,
+        context_manifest_digest,
+        "Cloud returned an invalid disposable worker context completion result",
+    )
+}
+
+fn validate_completion_response(
+    response: &CompleteManagedContextResponse,
+    expected_context_manifest_digest: &str,
+    rejection_message: &str,
+) -> Result<(), DaemonError> {
+    if !response.ready
+        || response.observed_state != "ready"
+        || response.context_manifest_digest != expected_context_manifest_digest
+    {
+        return Err(completion_error(rejection_message, false));
     }
     Ok(())
 }
@@ -197,5 +286,40 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn cloud_completion_rejects_not_ready_or_manifest_digest_mismatch() {
+        let expected_digest = format!("sha256:{}", "a".repeat(64));
+        let valid = CompleteManagedContextResponse {
+            ready: true,
+            observed_state: "ready".to_string(),
+            context_manifest_digest: expected_digest.clone(),
+        };
+        assert!(validate_completion_response(&valid, &expected_digest, "invalid").is_ok());
+
+        for response in [
+            CompleteManagedContextResponse {
+                ready: false,
+                observed_state: "provisioning".to_string(),
+                context_manifest_digest: expected_digest.clone(),
+            },
+            CompleteManagedContextResponse {
+                ready: true,
+                observed_state: "ready".to_string(),
+                context_manifest_digest: format!("sha256:{}", "b".repeat(64)),
+            },
+        ] {
+            let error = validate_completion_response(&response, &expected_digest, "invalid")
+                .expect_err("invalid completion response must be rejected");
+            assert!(matches!(
+                error,
+                DaemonError::ManagedContext {
+                    code: "managed_context_cloud_completion_rejected",
+                    retryable: false,
+                    ..
+                }
+            ));
+        }
     }
 }

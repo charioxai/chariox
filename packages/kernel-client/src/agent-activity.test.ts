@@ -529,6 +529,13 @@ test("agent activity projection exposes completed turn action metadata", () => {
       external_provider_session_id: " thread-1 ",
       external_provider_turn_id: " user-1 ",
       completed_at_ms: 500,
+      settlement_status: "failed",
+      provider_termination: {
+        category: "process_exit",
+        reason: "provider process exited with status 137",
+        timestamp_ms: 499,
+        secret_future_field: "must not survive projection",
+      },
       duration_ms: 120,
       changed_paths: ["src/a.ts", 42, "src/b.ts"],
       undo_available: false,
@@ -547,6 +554,12 @@ test("agent activity projection exposes completed turn action metadata", () => {
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-1",
     completedAtMs: 500,
+    settlementStatus: "failed",
+    providerTermination: {
+      category: "process_exit",
+      reason: "provider process exited with status 137",
+      timestampMs: 499,
+    },
     durationMs: 120,
     changedPaths: ["src/a.ts", "src/b.ts"],
     undoAvailable: false,
@@ -563,6 +576,12 @@ test("agent activity projection exposes completed turn action metadata", () => {
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-1",
     completedAtMs: 500,
+    settlementStatus: "failed",
+    providerTermination: {
+      category: "process_exit",
+      reason: "provider process exited with status 137",
+      timestampMs: 499,
+    },
     durationMs: 120,
     changedPaths: ["src/a.ts", "src/b.ts"],
     undoAvailable: false,
@@ -582,6 +601,8 @@ test("agent activity projection exposes completed turn action metadata", () => {
     providerRunId: "run-2",
     agentId: "agent-1",
     completedAtMs: 600,
+    settlementStatus: null,
+    providerTermination: null,
     durationMs: null,
     changedPaths: [],
     undoAvailable: false,
@@ -594,6 +615,21 @@ test("agent activity projection exposes completed turn action metadata", () => {
   }), null)
   assert.equal(readAgentRuntimeCompletedTurn({
     last_completed_turn: {
+      turn_id: "turn-invalid-termination",
+      prompt_id: "prompt-invalid-termination",
+      provider_run_id: "run-invalid-termination",
+      agent_id: "agent-1",
+      completed_at_ms: 700,
+      settlement_status: "failed",
+      provider_termination: {
+        category: "process_exit",
+        reason: `unsafe\n${"x".repeat(300)}`,
+        timestamp_ms: 699,
+      },
+    },
+  })?.providerTermination, null)
+  assert.equal(readAgentRuntimeCompletedTurn({
+    last_completed_turn: {
       turn_id: "",
       prompt_id: "prompt-1",
       provider_run_id: "run-1",
@@ -601,6 +637,40 @@ test("agent activity projection exposes completed turn action metadata", () => {
       completed_at_ms: 500,
     },
   }), null)
+})
+
+test("agent activity projection accepts every provider termination category", () => {
+  const categories = [
+    "process_exit",
+    "signal",
+    "explicit_provider_error",
+    "runtime_failure",
+    "transport_failure",
+    "unknown",
+  ] as const
+
+  for (const [index, category] of categories.entries()) {
+    const reason = `termination-${category}`
+    assert.deepEqual(readAgentRuntimeCompletedTurn({
+      last_completed_turn: {
+        turn_id: `turn-${category}`,
+        prompt_id: `prompt-${category}`,
+        provider_run_id: `run-${category}`,
+        agent_id: "agent-1",
+        completed_at_ms: 800 + index,
+        settlement_status: "failed",
+        provider_termination: {
+          category,
+          reason,
+          timestamp_ms: 799 + index,
+        },
+      },
+    })?.providerTermination, {
+      category,
+      reason,
+      timestampMs: 799 + index,
+    })
+  }
 })
 
 test("completed turn reconciliation preserves local already-undone state for the same turn", () => {
@@ -643,6 +713,8 @@ test("completed turn reconciliation does not preserve already-undone state acros
 test("completed turn reconciliation keeps incoming snapshots unless current is already undone", () => {
   const current = completedTurnAction({
     completedAtMs: 100,
+    settlementStatus: "completed",
+    providerTermination: null,
     undoAvailable: false,
     undoUnavailableReason: "not latest turn",
   })
@@ -765,6 +837,8 @@ function completedTurnAction(
     completedAtMs: 100,
     durationMs: 50,
     changedPaths: [],
+    settlementStatus: "completed",
+    providerTermination: null,
     undoAvailable: false,
     undoUnavailableReason: null,
     ...overrides,

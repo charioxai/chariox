@@ -113,6 +113,11 @@ impl AgentPromptSchedule {
         }
     }
 
+    pub(crate) fn mark_dispatch_coalesced(&mut self, now_ms: u64) {
+        self.dispatch_in_flight = false;
+        self.next_run_at_ms = now_ms.saturating_add(self.interval_seconds.saturating_mul(1_000));
+    }
+
     pub(crate) fn mark_dispatch_failed(&mut self, now_ms: u64, error: String) {
         self.dispatch_in_flight = false;
         self.last_triggered_at_ms = Some(now_ms);

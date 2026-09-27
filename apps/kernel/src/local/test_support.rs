@@ -137,6 +137,21 @@ impl LocalRouterTestHarness {
         self.router.runtime_state()
     }
 
+    pub(crate) fn spawn_test_task<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.runtime.spawn(future)
+    }
+
+    pub(crate) fn block_on_test_task<F>(&self, future: F) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        self.runtime.block_on(future)
+    }
+
     pub(crate) fn pump_transport_runtime(&self) {
         self.runtime.block_on(self.router.pump_transport_runtime());
     }

@@ -20,6 +20,7 @@ export type BackgroundPollerStartupControllerDeps = {
   pollOutput: () => Promise<unknown> | unknown
   pollNotices: () => Promise<unknown> | unknown
   pollSessionState: () => Promise<unknown> | unknown
+  pollRoomEnvironmentActivity: () => Promise<unknown> | unknown
   startConnectionWatchdog: () => void
   stopConnectionWatchdog: () => void
   logViewDebug: (message: string, fields?: Record<string, unknown>) => void
@@ -59,6 +60,7 @@ export function createBackgroundPollerStartupController(
       }
       deps.setLastTranscriptScrollTop(deps.transcriptScrollTop())
       deps.addResizeListener()
+      void deps.pollRoomEnvironmentActivity()
       if (deps.supportsKernelEventStream()) {
         deps.logger?.info("starting kernel event stream")
         void deps.syncKernelEventSubscription()

@@ -3,10 +3,146 @@ set -eu
 
 MARKER_VALUE=managed-remote-kernels-image-builder-v1
 MARKER_PATH=/.chariox-managed-image-builder
+path1_data_volume_dropins_bypassed=0
 
 fail() {
   echo "prepare-hetzner-image.sh: $*" >&2
   exit 1
+}
+
+assert_path1_unit_has_no_dropins() {
+  drop_in_paths=$(systemctl show --property=DropInPaths --value "$1") \
+    || fail "could not inspect effective systemd drop-ins for $1"
+  [ -z "$drop_in_paths" ] \
+    || fail "Path-1 service $1 has systemd drop-ins: $drop_in_paths"
+}
+
+assert_path1_builder_storage_pristine() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  for builder_unit in \
+    chariox-data-volume-admission.service \
+    chariox-slice-disk-quota-allocator.service \
+    chariox-rootless-docker.service; do
+    builder_state=$(systemctl show --property=ActiveState --value "$builder_unit") \
+      || fail "could not inspect image-builder unit state for $builder_unit"
+    [ "$builder_state" = inactive ] \
+      || fail "image-builder storage unit $builder_unit is not inactive"
+  done
+  builder_data_root=/var/lib/chariox-docker/data
+  if [ -e "$builder_data_root" ] || [ -L "$builder_data_root" ]; then
+    [ -d "$builder_data_root" ] && [ ! -L "$builder_data_root" ] \
+      || fail "image-builder Docker data-root is not a real directory"
+    if mountpoint --quiet "$builder_data_root"; then
+      fail "image-builder Docker data-root is already mounted"
+    else
+      builder_mount_status=$?
+      [ "$builder_mount_status" -eq 32 ] \
+        || fail "could not inspect the image-builder Docker data-root mount"
+    fi
+  fi
+  builder_binding_state=/var/lib/chariox-data-volume
+  if [ -e "$builder_binding_state" ] || [ -L "$builder_binding_state" ]; then
+    [ -d "$builder_binding_state" ] && [ ! -L "$builder_binding_state" ] \
+      || fail "image-builder data-volume state is not a real directory"
+    builder_binding_entry=$(find "$builder_binding_state" -mindepth 1 -print -quit) \
+      || fail "could not inspect image-builder data-volume binding state"
+    [ -z "$builder_binding_entry" ] \
+      || fail "image-builder data-volume state already exists; refusing to reuse its binding"
+  fi
+  builder_observation_state=/run/chariox-data-volume-observation
+  if [ -e "$builder_observation_state" ] || [ -L "$builder_observation_state" ]; then
+    [ -d "$builder_observation_state" ] && [ ! -L "$builder_observation_state" ] \
+      || fail "image-builder data-volume observation state is not a real directory"
+    builder_observation_entry=$(find "$builder_observation_state" -mindepth 1 -print -quit) \
+      || fail "could not inspect image-builder data-volume observation state"
+    [ -z "$builder_observation_entry" ] \
+      || fail "image-builder has an existing data-volume observation; refusing to reuse it"
+  fi
+}
+
+restore_path1_dropin() {
+  builder_link=$1
+  builder_target=$2
+  builder_label=$3
+  builder_parent=${builder_link%/*}
+  [ -d "$builder_parent" ] && [ ! -L "$builder_parent" ] \
+    || { echo "prepare-hetzner-image.sh: $builder_label drop-in directory is unsafe" >&2; return 1; }
+  if [ -L "$builder_link" ]; then
+    builder_actual_target=$(readlink "$builder_link") \
+      || { echo "prepare-hetzner-image.sh: could not inspect $builder_label drop-in" >&2; return 1; }
+    [ "$builder_actual_target" = "$builder_target" ] \
+      || { echo "prepare-hetzner-image.sh: $builder_label drop-in changed during image preparation" >&2; return 1; }
+  elif [ -e "$builder_link" ]; then
+    echo "prepare-hetzner-image.sh: $builder_label drop-in path became obstructed" >&2
+    return 1
+  else
+    ln -s "$builder_target" "$builder_link" \
+      || { echo "prepare-hetzner-image.sh: could not restore $builder_label drop-in" >&2; return 1; }
+  fi
+}
+
+restore_path1_data_volume_dropins() {
+  [ "$path1_data_volume_dropins_bypassed" -eq 1 ] || return 0
+  builder_restore_status=0
+  restore_path1_dropin \
+    /etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf \
+    ../../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf \
+    "rootless Docker" || builder_restore_status=1
+  restore_path1_dropin \
+    /etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf \
+    ../../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf \
+    "quota allocator" || builder_restore_status=1
+  systemctl daemon-reload || builder_restore_status=1
+  if [ "$builder_restore_status" -eq 0 ]; then
+    path1_data_volume_dropins_bypassed=0
+    return 0
+  fi
+  return 1
+}
+
+cleanup_path1_data_volume_bypass() {
+  builder_cleanup_status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$path1_data_volume_dropins_bypassed" -eq 1 ]; then
+    builder_services_stopped=1
+    systemctl stop chariox-rootless-docker.service || builder_services_stopped=0
+    systemctl stop chariox-slice-disk-quota-allocator.service || builder_services_stopped=0
+    systemctl stop chariox-data-volume-admission.service || builder_services_stopped=0
+    for builder_unit in \
+      chariox-rootless-docker.service \
+      chariox-slice-disk-quota-allocator.service \
+      chariox-data-volume-admission.service; do
+      if systemctl is-active --quiet "$builder_unit"; then
+        builder_services_stopped=0
+      fi
+    done
+    if [ "$builder_services_stopped" -eq 1 ]; then
+      restore_path1_data_volume_dropins || builder_cleanup_status=1
+    else
+      echo "prepare-hetzner-image.sh: Path-1 drop-ins remain bypassed because image-builder storage services could not be stopped" >&2
+      builder_cleanup_status=1
+    fi
+  fi
+  exit "$builder_cleanup_status"
+}
+
+bypass_path1_data_volume_dropins() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  builder_rootless_dropin=/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf
+  builder_allocator_dropin=/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf
+  builder_rootless_target=../../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf
+  builder_allocator_target=../../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf
+  [ -L "$builder_rootless_dropin" ] \
+    && [ "$(readlink "$builder_rootless_dropin")" = "$builder_rootless_target" ] \
+    || fail "signed rootless Docker data-volume drop-in is missing or changed"
+  [ -L "$builder_allocator_dropin" ] \
+    && [ "$(readlink "$builder_allocator_dropin")" = "$builder_allocator_target" ] \
+    || fail "signed quota allocator data-volume drop-in is missing or changed"
+  path1_data_volume_dropins_bypassed=1
+  trap cleanup_path1_data_volume_bypass EXIT
+  trap 'exit 1' HUP INT TERM
+  rm -- "$builder_rootless_dropin" "$builder_allocator_dropin"
+  systemctl daemon-reload
 }
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -25,6 +161,26 @@ release_digest=$2
 trusted_public_key=$3
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 provider_versions=$script_root/provider-versions.env
+
+case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}" in
+  path1)
+    managed_provider_topology=path1
+    managed_bootstrap_service=chariox-path1-managed-bootstrap.service
+    other_managed_bootstrap_service=chariox-managed-bootstrap.service
+    [ -n "${CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:-}" ] \
+      || fail "Path-1 preparation requires CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY outside the release rootfs"
+    [ -f "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" ] \
+      && [ ! -L "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" ] \
+      || fail "trusted builder public key must be a regular file"
+    ;;
+  shared_host|legacy_shared_host)
+    managed_provider_topology=shared_host
+    managed_bootstrap_service=chariox-managed-bootstrap.service
+    other_managed_bootstrap_service=chariox-path1-managed-bootstrap.service
+    ;;
+  '') fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host" ;;
+  *) fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host" ;;
+esac
 
 printf '%s\n' "$release_digest" | grep -Eq '^sha256:[0-9a-f]{64}$' \
   || fail "release digest must be a SHA-256 digest"
@@ -58,7 +214,10 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
+# Bubblewrap remains installed for Docker-slice inner defense and explicit
+# shared-host images; Path 1 does not use it as the provider boundary.
 apt-get install -y --no-install-recommends \
+  dbus-user-session \
   acl \
   bash \
   bubblewrap \
@@ -67,6 +226,7 @@ apt-get install -y --no-install-recommends \
   ca-certificates \
   cloud-init \
   curl \
+  docker-buildx \
   docker.io \
   fuse-overlayfs \
   gh \
@@ -77,6 +237,7 @@ apt-get install -y --no-install-recommends \
   lsof \
   nodejs \
   npm \
+  psmisc \
   pkg-config \
   protobuf-compiler \
   ripgrep \
@@ -87,6 +248,7 @@ apt-get install -y --no-install-recommends \
   uidmap \
   unzip \
   util-linux \
+  xfsprogs \
   zstd
 
 systemctl disable --now docker.service docker.socket >/dev/null 2>&1 || true
@@ -101,8 +263,51 @@ docker_socket_state=$(systemctl is-active docker.socket || true)
 
 node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
 [ "$node_major" -eq 22 ] || fail "Ubuntu image did not provide the required Node.js 22 runtime"
+docker buildx version >/dev/null || fail "Docker Buildx is unavailable"
 
-"$script_root/install-image.sh" "$release_rootfs" "$release_digest" "$trusted_public_key"
+"$script_root/install-image.sh" \
+  "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
+assert_path1_builder_storage_pristine
+if [ "$managed_provider_topology" = path1 ]; then
+  assert_path1_unit_has_no_dropins "$managed_bootstrap_service"
+  assert_path1_unit_has_no_dropins chariox-disposable-worker-bootstrap.service
+  runtime_builder_key=/etc/chariox/trusted-builder-public-key
+  [ -f "$runtime_builder_key" ] && [ ! -L "$runtime_builder_key" ] \
+    || fail "Path-1 image is missing its independent runtime builder key"
+  [ "$(stat -c '%u:%a' "$runtime_builder_key")" = "0:644" ] \
+    || fail "Path-1 runtime builder key ownership or mode is unsafe"
+  cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key" \
+    || fail "Path-1 runtime builder key differs from the independent input"
+fi
+# The general installer journals even a no-op home migration. A fresh image
+# must not carry that runtime bookkeeping into every future machine.
+migration_journal=/var/lib/chariox/home-migration.json
+migration_complete=/var/lib/chariox/home-migration-complete
+if [ -e "$migration_journal" ] || [ -L "$migration_journal" ] \
+  || [ -e "$migration_complete" ] || [ -L "$migration_complete" ]; then
+  for migration_file in "$migration_journal" "$migration_complete"; do
+    [ -f "$migration_file" ] && [ ! -L "$migration_file" ] \
+      && [ "$(stat -c '%u:%a' "$migration_file")" = "0:600" ] \
+      || fail "image installer left unsafe migration state"
+  done
+  printf 'complete\n' | cmp -s - "$migration_complete" \
+    || fail "image installer left incomplete migration state"
+  jq -e \
+    --arg stateRoot /var/lib/chariox \
+    --arg legacyHome /var/lib/chariox/home \
+    --arg managedHome /home/chariox \
+    --arg managedState /home/chariox/.chariox \
+    --argjson uid "$(id -u chariox)" \
+    --argjson gid "$(id -g chariox)" \
+    'keys == ["charioxGid", "charioxUid", "entries", "legacyHome", "managedHome", "managedState", "required", "rootIdentity", "schemaVersion", "stateRoot"]
+      and .schemaVersion == 1 and .stateRoot == $stateRoot
+      and .legacyHome == $legacyHome and .managedHome == $managedHome
+      and .managedState == $managedState and .charioxUid == $uid
+      and .charioxGid == $gid and .required == false and .rootIdentity == null and .entries == []' \
+    "$migration_journal" >/dev/null \
+    || fail "image installer left a nonempty migration journal"
+  rm -f -- "$migration_journal" "$migration_complete"
+fi
 provider_toolchain_source=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/toolchain
 provider_toolchain_root=/opt/chariox-provider-toolchain
 for toolchain_file in package.json package-lock.json; do
@@ -163,7 +368,9 @@ provider_tool_as_chariox() {
   || fail "installed Claude Code version does not match"
 [ "$(provider_tool_as_chariox pnpm --version)" = "11.22.0" ] \
   || fail "installed pnpm version does not match"
-sh "$script_root/verify-provider-runtime-bind.sh"
+if [ "$managed_provider_topology" = shared_host ]; then
+  sh "$script_root/verify-provider-runtime-bind.sh"
+fi
 rm -rf "$provider_probe_home"
 trap - 0 HUP INT TERM
 [ -x /usr/share/docker.io/contrib/dockerd-rootless.sh ] \
@@ -197,6 +404,13 @@ configure_subid_range /etc/subgid --add-subgids
 [ "$(stat -c %d /var/lib/chariox-slice-share/.broker-private/output)" = \
   "$(stat -c %d /var/lib/chariox-slice-share)" ] \
   || fail "broker output staging is not on the managed share filesystem"
+rootless_docker_config=/var/lib/chariox-docker/home/.config/docker/daemon.json
+remove_seeded_rootless_quota_config=0
+if [ ! -e "$rootless_docker_config" ] && [ ! -L "$rootless_docker_config" ]; then
+  remove_seeded_rootless_quota_config=1
+fi
+bypass_path1_data_volume_dropins
+assert_path1_builder_storage_pristine
 systemctl start chariox-rootless-docker.service
 rootless_docker_ready=0
 for _attempt in $(seq 1 30); do
@@ -212,9 +426,23 @@ slice_base_image=node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b73
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker pull "$slice_base_image" >/dev/null
+# Exercise BuildKit's client-side registry-auth resolution through the real
+# broker entrypoint. A Docker pull alone only tests daemon-side resolution.
+broker_namespace=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh
+{
+  printf '%s\n' '# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32'
+  printf 'FROM %s\n' "$slice_base_image"
+} |
+runuser -u chariox-docker -- env \
+  DOCKER_BUILDKIT=1 \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  "$broker_namespace" docker build --pull --tag chariox-broker-network-check:local - >/dev/null
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker image inspect "$slice_base_image" >/dev/null
+runuser -u chariox-docker -- env \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  docker image rm chariox-broker-network-check:local >/dev/null
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker image rm "$slice_base_image" >/dev/null
@@ -222,21 +450,90 @@ if runuser -u chariox -- env DOCKER_HOST=unix:///run/chariox-docker/docker.sock 
   fail "managed kernel user can access the rootless Docker daemon"
 fi
 systemctl stop chariox-rootless-docker.service
-rm -rf /var/lib/chariox-docker/data /var/lib/chariox-docker/home/.docker
+systemctl stop chariox-slice-disk-quota-allocator.service
+if systemctl is-active --quiet chariox-slice-disk-quota-allocator.service; then
+  fail "slice disk quota allocator remained active while freezing the image"
+fi
+assert_path1_builder_storage_pristine
+restore_path1_data_volume_dropins
+if [ -e /var/lib/chariox-docker/data ] || [ -L /var/lib/chariox-docker/data ]; then
+  [ -d /var/lib/chariox-docker/data ] && [ ! -L /var/lib/chariox-docker/data ] \
+    || fail "Docker data-root is not a real directory"
+  if find /var/lib/chariox-docker/data -mindepth 1 -print -quit | grep -q .; then
+    fail "Docker data-root contains volume data; refusing to erase it while preparing the image"
+  fi
+fi
+rm -rf /var/lib/chariox-docker/home/.docker
+if [ "$remove_seeded_rootless_quota_config" -eq 1 ] \
+  && [ -f "$rootless_docker_config" ] \
+  && cmp -s "$rootless_docker_config" - <<'EOF'
+{"features":{"containerd-snapshotter":false},"storage-driver":"overlay2"}
+EOF
+then
+  rm -f -- "$rootless_docker_config"
+  rmdir /var/lib/chariox-docker/home/.config/docker /var/lib/chariox-docker/home/.config 2>/dev/null || true
+fi
 install -d -o chariox-docker -g chariox-docker -m 0700 /var/lib/chariox-docker/home
 systemctl is-enabled --quiet chariox-rootless-docker.service \
   || fail "rootless Docker service was not enabled"
 if systemctl is-enabled --quiet chariox-slice-broker.service; then
   fail "slice Docker broker must be published only by managed bootstrap prestart"
 fi
-systemctl is-enabled --quiet chariox-managed-bootstrap.service \
+systemctl is-enabled --quiet "$managed_bootstrap_service" \
   || fail "managed bootstrap service was not enabled"
-if systemctl is-active --quiet chariox-managed-bootstrap.service; then
-  fail "managed bootstrap service started while the image was being built"
+if systemctl is-enabled --quiet "$other_managed_bootstrap_service"; then
+  fail "a non-selected managed bootstrap service was also enabled"
+fi
+if systemctl is-enabled --quiet chariox-disposable-worker-bootstrap.service; then
+  fail "disposable worker bootstrap service must not be enabled in a managed-home image"
+fi
+for bootstrap_service in "$managed_bootstrap_service" "$other_managed_bootstrap_service" chariox-disposable-worker-bootstrap.service; do
+  if systemctl is-active --quiet "$bootstrap_service"; then
+    fail "bootstrap service $bootstrap_service started while the image was being built"
+  fi
+done
+
+for state_directory in \
+  /var/lib/chariox-slice-disk-quota \
+  /var/lib/chariox-data-volume \
+  /run/chariox-data-volume-observation; do
+  if [ -e "$state_directory" ] || [ -L "$state_directory" ]; then
+    [ -d "$state_directory" ] && [ ! -L "$state_directory" ] \
+      || fail "managed image runtime state path is not a real directory: $state_directory"
+    state_entry=$(find "$state_directory" -mindepth 1 -print -quit) \
+      || fail "could not inspect managed image runtime state path: $state_directory"
+    [ -z "$state_entry" ] \
+      || fail "managed image contains persisted quota, data-volume binding, or observation state: $state_directory"
+  fi
+done
+if [ -e /etc/chariox/bootstrap ] || [ -L /etc/chariox/bootstrap ]; then
+  [ -d /etc/chariox/bootstrap ] && [ ! -L /etc/chariox/bootstrap ] \
+    || fail "protected bootstrap path is not a real directory"
+  if find /etc/chariox/bootstrap -mindepth 1 -print -quit | grep -q .; then
+    fail "protected bootstrap input must not be captured in the image"
+  fi
 fi
 
-if find /var/lib/chariox -mindepth 1 ! -path /var/lib/chariox/home -print -quit | grep -q .; then
+if find /var/lib/chariox -mindepth 1 -print -quit | grep -q .; then
   fail "managed runtime state entered the image"
+fi
+if [ -L /home/chariox ] || [ ! -d /home/chariox ]; then
+  fail "managed service-account home is missing or linked"
+fi
+if [ "$(stat -c %a /home/chariox)" != 700 ] || [ "$(stat -c %U /home/chariox)" != chariox ]; then
+  fail "managed service-account home permissions are unsafe"
+fi
+if find /home/chariox -mindepth 1 ! -path /home/chariox/.chariox -print -quit | grep -q .; then
+  fail "managed user data entered the image"
+fi
+if [ -L /home/chariox/.chariox ] || [ ! -d /home/chariox/.chariox ]; then
+  fail "managed kernel state directory is missing or linked"
+fi
+if [ "$(stat -c %a /home/chariox/.chariox)" != 700 ] || [ "$(stat -c %U /home/chariox/.chariox)" != chariox ]; then
+  fail "managed kernel state directory permissions are unsafe"
+fi
+if find /home/chariox/.chariox -mindepth 1 -print -quit | grep -q .; then
+  fail "managed kernel state entered the image"
 fi
 if find /var/lib/chariox-docker -mindepth 1 ! -path /var/lib/chariox-docker/home -print -quit | grep -q . \
   || find /var/lib/chariox-docker/home -mindepth 1 -print -quit | grep -q .; then
@@ -256,6 +553,25 @@ if find /var/lib/chariox-slice-share -mindepth 1 \
 fi
 
 apt-get clean
+managed_sshd_config=/etc/ssh/sshd_config.d/00-chariox-managed.conf
+install -d -o root -g root -m 0755 /etc/ssh/sshd_config.d
+managed_sshd_tmp=$(mktemp)
+{
+  printf '%s\n' 'PasswordAuthentication no'
+  printf '%s\n' 'KbdInteractiveAuthentication no'
+  printf '%s\n' 'PermitRootLogin prohibit-password'
+} >"$managed_sshd_tmp"
+install -o root -g root -m 0644 "$managed_sshd_tmp" "$managed_sshd_config"
+rm -f "$managed_sshd_tmp"
+passwd --lock root
+chage -d "$(date -u +%Y-%m-%d)" -M 99999 -I -1 -E -1 root
+sshd_effective=$(sshd -T)
+printf '%s\n' "$sshd_effective" | grep -Fxq 'passwordauthentication no' \
+  || fail "managed image must disable SSH password authentication"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'kbdinteractiveauthentication no' \
+  || fail "managed image must disable interactive SSH authentication"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin prohibit-password' \
+  || fail "managed image must restrict root SSH to public keys"
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed

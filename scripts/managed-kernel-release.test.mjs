@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, relative, sep } from "node:path"
+import { basename, join, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { once } from "node:events"
@@ -14,22 +14,45 @@ const builder = join(repositoryRoot, "scripts/build-managed-kernel-release.mjs")
 const installer = join(repositoryRoot, "deploy/managed-kernel/install-image.sh")
 const verifier = join(repositoryRoot, "deploy/managed-kernel/verify-image-release.mjs")
 const service = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
+const path1Service = join(repositoryRoot, "deploy/managed-kernel/chariox-path1-managed-bootstrap.service")
+const workerService = join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")
 const rootlessDockerService = join(repositoryRoot, "deploy/managed-kernel/chariox-rootless-docker.service")
 const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-slice-broker.service")
+const dataVolumeAdmissionService = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service")
+const rootlessDockerDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf")
+const quotaAllocatorDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf")
 const sourceDateEpoch = "946684800"
 
-test("managed prebuilt slice runtime creates its release directory", async () => {
+function parseUnitSections(source) {
+  const sections = new Map()
+  let section
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue
+    const header = /^\[([^\]]+)\]$/.exec(line)
+    if (header) {
+      section = header[1]
+      if (!sections.has(section)) sections.set(section, [])
+      continue
+    }
+    if (section) sections.get(section).push(line)
+  }
+  return sections
+}
+
+test("managed prebuilt slice runtime materializes its runtime output directory", async () => {
   const dockerfile = await readFile(
     join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
     "utf8",
   )
-  const start = dockerfile.indexOf('RUN if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]')
+  const start = dockerfile.indexOf("RUN mkdir -p /opt/chariox-runtime-bin")
   const end = dockerfile.indexOf("\n\nFROM ", start)
   assert.notEqual(start, -1, "prebuilt runtime branch is missing")
   assert.notEqual(end, -1, "prebuilt runtime branch has no stage boundary")
 
   const fixture = await mkdtemp(join(tmpdir(), "chariox-prebuilt-slice-"))
   const prebuilt = join(fixture, "prebuilt")
+  const runtimeBin = join(fixture, "runtime-bin")
   try {
     await mkdir(prebuilt, { recursive: true })
     for (const name of ["chariox-kernel", "chariox-relay"]) {
@@ -41,14 +64,15 @@ test("managed prebuilt slice runtime creates its release directory", async () =>
       .slice(start + "RUN ".length, end)
       .replaceAll("\\\n", " ")
       .replaceAll("/opt/chariox-prebuilt", prebuilt)
+      .replaceAll("/opt/chariox-runtime-bin", runtimeBin)
     const result = spawnSync("/bin/sh", ["-c", command], {
       cwd: fixture,
       encoding: "utf8",
       env: { ...process.env, CHARIOX_PREBUILT_RUNTIME: "1" },
     })
     assert.equal(result.status, 0, result.stderr)
-    assert.equal(await readFile(join(fixture, "target/release/chariox-kernel"), "utf8"), "chariox-kernel\n")
-    assert.equal(await readFile(join(fixture, "target/release/chariox-relay"), "utf8"), "chariox-relay\n")
+    assert.equal(await readFile(join(runtimeBin, "chariox-kernel"), "utf8"), "chariox-kernel\n")
+    assert.equal(await readFile(join(runtimeBin, "chariox-relay"), "utf8"), "chariox-relay\n")
   } finally {
     await rm(fixture, { recursive: true, force: true })
   }
@@ -75,6 +99,33 @@ async function withTimeout(promise, message, timeoutMs = 10_000) {
   } finally {
     clearTimeout(timer)
   }
+}
+
+function processGroupId(pid) {
+  const result = spawnSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" })
+  assert.equal(result.status, 0, result.stderr)
+  const pgid = Number(result.stdout.trim())
+  assert.ok(Number.isSafeInteger(pgid) && pgid > 0, `invalid installer PGID for ${pid}`)
+  return pgid
+}
+
+function killProcessGroup(pgid) {
+  if (!pgid) return
+  try { process.kill(-pgid, "SIGKILL") } catch {}
+}
+
+function processGroupSnapshot(pgid) {
+  const result = spawnSync("ps", ["-eo", "pid=,ppid=,pgid=,sid=,stat=,args="], { encoding: "utf8" })
+  return result.stdout.split("\n").filter((line) => line.trim().split(/\s+/)[2] === String(pgid))
+}
+
+async function waitForProcessGroupExit(pgid, label, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (processGroupSnapshot(pgid).length === 0) return
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
+  }
+  throw new Error(`${label} PGID ${pgid} did not exit: ${processGroupSnapshot(pgid).join(" | ")}`)
 }
 
 function rawPublicKey(publicKey) {
@@ -117,8 +168,16 @@ function runPackager(options, umask = "022", extraEnvironment = {}) {
   )
 }
 
-function runVerifier(rootfs, digest, trustedPublicKey) {
-  return spawnSync(process.execPath, [verifier, rootfs, digest, trustedPublicKey], { encoding: "utf8" })
+function runVerifier(rootfs, digest, trustedPublicKey, topology, trustedBuilderPublicKey) {
+  return spawnSync(
+    process.execPath,
+    [verifier, rootfs, digest, trustedPublicKey, ...(topology ? [topology] : []), ...(trustedBuilderPublicKey ? [trustedBuilderPublicKey] : [])],
+    { encoding: "utf8" },
+  )
+}
+
+function installerArguments(rootfs, digest, fixture, topology = "shared_host") {
+  return [rootfs, digest, fixture.trustedPublicKey, topology]
 }
 
 async function snapshotTree(root, current = root) {
@@ -161,7 +220,7 @@ async function treeDigest(root) {
   return `sha256:${hash.digest("hex")}`
 }
 
-async function makeFixture(root, variant = "") {
+async function makeFixture(root, variant = "", { dockerfileContents } = {}) {
   const kernel = join(root, "chariox-kernel")
   const supervisor = join(root, "chariox-managed-bootstrap")
   const relay = join(root, "chariox-relay")
@@ -183,19 +242,50 @@ async function makeFixture(root, variant = "") {
     ["adapters/rust/Cargo.toml", "[package]\nname = \"adapter-fixture\"\n"],
     ["apps/aegs-dummy/Cargo.toml", "[package]\nname = \"aegs-fixture\"\n"],
     ["apps/kernel/Cargo.toml", "[package]\nname = \"kernel-fixture\"\n"],
-    ["apps/kernel/slice-linux-docker/docker/Dockerfile", "FROM fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"],
+    ["apps/kernel/slice-linux-docker/docker/Dockerfile", dockerfileContents ?? "FROM fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"],
     [
       "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
       await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")),
     ],
     ["apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh", "#!/bin/sh\nexec \"$@\"\n"],
+    ...await Promise.all(["managed-rootless-service.sh", "chariox-rootless-engine.service", "chariox-rootless-user-manager.conf"].map(async (name) => {
+      const path = `apps/kernel/slice-linux-docker/${name}`
+      return [path, await readFile(join(repositoryRoot, path))]
+    })),
+    ...await Promise.all([
+      "chariox-slice-disk-quota-allocator.service",
+      "chariox-data-volume-admission.mjs",
+      "slice-data-volume-device.mjs",
+      "slice-data-volume-protected-io.mjs",
+      "slice-disk-quota-admission.mjs",
+      "slice-disk-quota-allocator.mjs",
+      "slice-disk-quota-client.mjs",
+      "slice-disk-quota-contract.mjs",
+      "slice-disk-quota-service.mjs",
+      "slice-disk-quota-state-store.mjs",
+      "slice-disk-quota-xfs-backend.mjs",
+      "slice-disk-quota-xfs-readback.mjs",
+      "probe-slice-disk-quota-backend.mjs",
+    ].map(async (name) => {
+      const path = `apps/kernel/slice-linux-docker/${name}`
+      return [path, await readFile(join(repositoryRoot, path))]
+    })),
     ["apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", "#!/bin/sh\nSLICE_BUILD_IMAGE=fixture\n"],
     ["apps/kernel/slice-linux-docker/managed-publication-access.sh", "#!/bin/sh\nexit 0\n"],
+    [
+      "apps/kernel/slice-linux-docker/managed-publication-acl.awk",
+      await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-publication-acl.awk")),
+    ],
     ["apps/kernel/slice-linux-docker/toolchain/package-lock.json", "{\"lockfileVersion\":3}\n"],
     ["apps/kernel/src/transport/relay_peer.rs", "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 1;\n"],
     ["apps/relay/Cargo.toml", "[package]\nname = \"relay-fixture\"\n"],
     ["deploy/managed-kernel/chariox-managed-bootstrap.service", await readFile(service)],
+    ["deploy/managed-kernel/chariox-path1-managed-bootstrap.service", await readFile(path1Service)],
+    ["deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", await readFile(workerService)],
     ["deploy/managed-kernel/chariox-rootless-docker.service", await readFile(rootlessDockerService)],
+    ["apps/kernel/slice-linux-docker/chariox-data-volume-admission.service", await readFile(dataVolumeAdmissionService)],
+    ["apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf", await readFile(rootlessDockerDataVolumeDropIn)],
+    ["apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf", await readFile(quotaAllocatorDataVolumeDropIn)],
     ["deploy/managed-kernel/chariox-slice-broker.service", await readFile(sliceBrokerService)],
     ["examples/workflow-code/example.md", "workflow fixture\n"],
     ["packages/aegs-sdk/Cargo.toml", "[package]\nname = \"sdk-fixture\"\n"],
@@ -206,7 +296,7 @@ async function makeFixture(root, variant = "") {
     const destination = join(sourceRepository, path)
     await mkdir(join(destination, ".."), { recursive: true })
     await writeFile(destination, contents, {
-      mode: path.endsWith("enter-rootless-docker-namespace.sh") || path.endsWith("provision-linux-docker-slice.sh") || path.endsWith("managed-publication-access.sh") ? 0o755 : 0o644,
+      mode: path.endsWith(".sh") ? 0o755 : 0o644,
     })
   }
   const git = (args) => spawnSync("git", args, {
@@ -267,11 +357,17 @@ async function makeFixture(root, variant = "") {
     builderPublicKey: builderKeys.publicKey,
     builderPrivateKey: builderKeys.privateKey,
     publicKey,
+    releasePrivateKey: privateKey,
     sourceRepository,
     sourceCommit,
     sourceTree,
     serviceBytes: sourceFiles.get("deploy/managed-kernel/chariox-managed-bootstrap.service"),
+    path1ServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-path1-managed-bootstrap.service"),
+    workerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"),
     rootlessDockerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-rootless-docker.service"),
+    dataVolumeAdmissionServiceBytes: sourceFiles.get("apps/kernel/slice-linux-docker/chariox-data-volume-admission.service"),
+    rootlessDockerDataVolumeDropInBytes: sourceFiles.get("apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf"),
+    quotaAllocatorDataVolumeDropInBytes: sourceFiles.get("apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf"),
     sliceBrokerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-slice-broker.service"),
   }
 }
@@ -303,7 +399,12 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   const packagedPaths = snapshot.filter((entry) => entry.type === "file").map((entry) => entry.path)
   for (const requiredPath of [
     "etc/systemd/system/chariox-managed-bootstrap.service",
+    "etc/systemd/system/chariox-path1-managed-bootstrap.service",
+    "etc/systemd/system/chariox-disposable-worker-bootstrap.service",
     "etc/systemd/system/chariox-rootless-docker.service",
+    "etc/systemd/system/chariox-data-volume-admission.service",
+    "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+    "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
     "etc/systemd/system/chariox-slice-broker.service",
     "usr/lib/chariox/release-manifest.json",
     "usr/lib/chariox/release-manifest.sig",
@@ -312,8 +413,18 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/build-attestation.sig",
     "usr/lib/chariox/builder-public-key",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-engine.service",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-user-manager.conf",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.service",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-data-volume-admission.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-data-volume-device.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-data-volume-protected-io.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/slice-disk-quota-xfs-readback.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-acl.awk",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/.managed-release",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-kernel",
@@ -328,6 +439,12 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   ]) {
     assert.ok(packagedPaths.includes(requiredPath), `missing packaged path ${requiredPath}`)
   }
+  const packagedRootlessService = await readFile(
+    join(releaseRoot, "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh"),
+    "utf8",
+  )
+  assert.match(packagedRootlessService, /CHARIOX_PATH1_DATA_VOLUME_REQUIRED:-0/)
+  assert.match(packagedRootlessService, /Path-1 rootless Docker requires its admitted XFS project-quota mount/)
 
   const manifestBytes = await readFile(join(releaseRoot, "usr/lib/chariox/release-manifest.json"))
   const manifest = JSON.parse(manifestBytes)
@@ -345,9 +462,34 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         sha256: digest(fixture.serviceBytes),
       },
       {
+        name: "chariox-path1-managed-bootstrap.service",
+        path: "/etc/systemd/system/chariox-path1-managed-bootstrap.service",
+        sha256: digest(fixture.path1ServiceBytes),
+      },
+      {
+        name: "chariox-disposable-worker-bootstrap.service",
+        path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service",
+        sha256: digest(fixture.workerServiceBytes),
+      },
+      {
         name: "chariox-rootless-docker.service",
         path: "/etc/systemd/system/chariox-rootless-docker.service",
         sha256: digest(fixture.rootlessDockerServiceBytes),
+      },
+      {
+        name: "chariox-data-volume-admission.service",
+        path: "/etc/systemd/system/chariox-data-volume-admission.service",
+        sha256: digest(fixture.dataVolumeAdmissionServiceBytes),
+      },
+      {
+        name: "chariox-rootless-docker.path1-data-volume.conf",
+        path: "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+        sha256: digest(fixture.rootlessDockerDataVolumeDropInBytes),
+      },
+      {
+        name: "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+        path: "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+        sha256: digest(fixture.quotaAllocatorDataVolumeDropInBytes),
       },
       {
         name: "chariox-slice-broker.service",
@@ -388,6 +530,26 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     await readFile(join(releaseRoot, "etc/systemd/system/chariox-managed-bootstrap.service")),
     fixture.serviceBytes,
   )
+  assert.deepEqual(
+    await readFile(join(releaseRoot, "etc/systemd/system/chariox-path1-managed-bootstrap.service")),
+    fixture.path1ServiceBytes,
+  )
+  assert.deepEqual(
+    await readFile(join(releaseRoot, "etc/systemd/system/chariox-disposable-worker-bootstrap.service")),
+    fixture.workerServiceBytes,
+  )
+  assert.deepEqual(
+    await readFile(join(releaseRoot, "etc/systemd/system/chariox-data-volume-admission.service")),
+    fixture.dataVolumeAdmissionServiceBytes,
+  )
+  assert.deepEqual(
+    await readFile(join(releaseRoot, "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf")),
+    fixture.rootlessDockerDataVolumeDropInBytes,
+  )
+  assert.deepEqual(
+    await readFile(join(releaseRoot, "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf")),
+    fixture.quotaAllocatorDataVolumeDropInBytes,
+  )
   assert.match(
     await readFile(
       join(releaseRoot, "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh"),
@@ -424,6 +586,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     0o755,
   )
   assert.equal(snapshot.find((entry) => entry.path.endsWith("/prebuilt/chariox-kernel")).mode, 0o755)
+  assert.equal(snapshot.find((entry) => entry.path.endsWith("/managed-rootless-service.sh")).mode, 0o755)
   assert.equal(snapshot.find((entry) => entry.path.endsWith("/prebuilt/chariox-relay")).mode, 0o755)
   assert.equal(
     snapshot
@@ -431,6 +594,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         entry.type === "file" &&
         !entry.path.startsWith("usr/local/bin/") &&
         !entry.path.endsWith("/enter-rootless-docker-namespace.sh") &&
+        !entry.path.endsWith("/managed-rootless-service.sh") &&
         !entry.path.endsWith("/provision-linux-docker-slice.sh") &&
         !entry.path.endsWith("/managed-publication-access.sh") &&
         !entry.path.endsWith("/prebuilt/chariox-kernel") &&
@@ -445,6 +609,491 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   const rerun = runPackager({ ...fixture, output: firstOutput })
   assert.equal(rerun.status, 1)
   assert.match(rerun.stderr, /output directory must be empty/)
+})
+
+test("Path-1 bootstrap and data-volume artifacts are signed and selected by image install", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-path1-managed-home-install-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+
+  const path1UnitPath = join(output, "rootfs/etc/systemd/system/chariox-path1-managed-bootstrap.service")
+  const path1UnitExists = await lstat(path1UnitPath).then(() => true, () => false)
+  assert.equal(path1UnitExists, true, "signed release must contain the dedicated Path-1 unit")
+  const path1Unit = await readFile(path1UnitPath, "utf8")
+  assert.doesNotMatch(path1Unit, /^UMask=/m, "Path-1 must inherit systemd's ordinary system-unit umask")
+  for (const required of [
+    "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
+    "Environment=HOME=/home/chariox",
+    "Environment=CHARIOX_HOME=/home/chariox/.chariox",
+    "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+    "Wants=network-online.target",
+    "Requires=chariox-rootless-docker.service",
+    "After=network-online.target chariox-rootless-docker.service",
+    "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
+    "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
+  ]) {
+    assert.ok(path1Unit.includes(required), `Path-1 unit is missing ${required}`)
+  }
+  assert.equal(
+    path1Unit.split(/\r?\n/).find((line) => line.startsWith("Requires="))?.slice("Requires=".length).trim().split(/\s+/)[0],
+    "chariox-rootless-docker.service",
+    "release verifier must accept the required unit as the first Requires value",
+  )
+  assert.doesNotMatch(path1Unit, /^Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/m)
+  for (const forbidden of [
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
+    "CHARIOX_MANAGED_PROVIDER_HOME",
+    "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+    "CHARIOX_SLICE_ROOT",
+    "bwrap",
+    "--disposable-worker",
+    "NoNewPrivileges=",
+    "PrivateTmp=",
+    "PrivateUsers=",
+    "PrivateDevices=",
+    "PrivateNetwork=",
+    "ProtectSystem=",
+    "ProtectHome=",
+    "ProtectKernel",
+    "RestrictNamespaces=",
+    "RestrictAddressFamilies=",
+    "RestrictSUIDSGID=",
+    "ReadWritePaths=",
+    "ReadOnlyPaths=",
+    "InaccessiblePaths=",
+    "BindPaths=",
+    "BindReadOnlyPaths=",
+    "RootDirectory=",
+    "RootImage=",
+    "SystemCallFilter=",
+    "CapabilityBoundingSet=",
+    "StateDirectory=",
+    "SupplementaryGroups=",
+  ]) {
+    assert.ok(!path1Unit.includes(forbidden), `Path-1 unit must not contain ${forbidden}`)
+  }
+  const workerUnitPath = join(output, "rootfs/etc/systemd/system/chariox-disposable-worker-bootstrap.service")
+  const workerUnit = await readFile(workerUnitPath, "utf8")
+  for (const required of [
+    "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+    "Wants=network-online.target",
+    "Requires=chariox-rootless-docker.service",
+    "After=network-online.target chariox-rootless-docker.service",
+    "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
+    "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker",
+  ]) {
+    assert.ok(workerUnit.includes(required), `Path-1 worker unit is missing ${required}`)
+  }
+  assert.equal(
+    workerUnit.split(/\r?\n/).find((line) => line.startsWith("Requires="))?.slice("Requires=".length).trim().split(/\s+/)[0],
+    "chariox-rootless-docker.service",
+    "release verifier must accept the required worker unit as the first Requires value",
+  )
+  assert.doesNotMatch(workerUnit, /^Environment=CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH=/m)
+
+  const admissionUnit = await readFile(
+    join(output, "rootfs/etc/systemd/system/chariox-data-volume-admission.service"),
+    "utf8",
+  )
+  const admissionSections = parseUnitSections(admissionUnit)
+  for (const required of [
+    "Type=oneshot",
+    "User=root",
+    "Group=root",
+    "ExecStart=/usr/bin/node /usr/lib/chariox/current/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-data-volume-admission.mjs",
+  ]) {
+    assert.ok((admissionSections.get("Service") ?? []).includes(required), `data-volume admission [Service] is missing ${required}`)
+  }
+  const admissionUnitDirectives = admissionSections.get("Unit") ?? []
+  assert.ok(admissionUnitDirectives.includes("RequiresMountsFor=/var/lib/chariox-docker/data"))
+  const admissionBefore = admissionUnitDirectives.filter((line) => line.startsWith("Before="))
+  assert.equal(admissionBefore.length, 1, "data-volume admission must have one [Unit] Before directive")
+  assert.equal(
+    admissionBefore[0].slice("Before=".length).trim().split(/\s+/)[0],
+    "chariox-slice-disk-quota-allocator.service",
+    "release verifier must parse the first data-volume admission Before value",
+  )
+  assert.doesNotMatch(admissionUnit, /^RemainAfterExit=/m)
+  for (const [relativePath, label] of [
+    ["chariox-rootless-docker.service.d/50-chariox-data-volume.conf", "rootless Docker"],
+    ["chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", "quota allocator"],
+  ]) {
+    const dropIn = await readFile(join(output, "rootfs/etc/systemd/system", relativePath), "utf8")
+    const sections = parseUnitSections(dropIn)
+    for (const directive of [
+      "Requires=chariox-data-volume-admission.service",
+      "After=chariox-data-volume-admission.service",
+      "After=var-lib-chariox\\x2ddocker-data.mount",
+      "BindsTo=var-lib-chariox\\x2ddocker-data.mount",
+      "AssertPathIsMountPoint=/var/lib/chariox-docker/data",
+    ]) {
+      assert.equal(
+        (sections.get("Unit") ?? []).filter((line) => line === directive).length,
+        1,
+        `Path-1 ${label} drop-in must declare ${directive}`,
+      )
+    }
+  }
+  const rootlessDataVolumeDropIn = await readFile(
+    join(output, "rootfs/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"),
+    "utf8",
+  )
+  const rootlessDataVolumeSections = parseUnitSections(rootlessDataVolumeDropIn)
+  const requiredDataVolumeEnvironment = "Environment=CHARIOX_PATH1_DATA_VOLUME_REQUIRED=1"
+  assert.equal(
+    (rootlessDataVolumeSections.get("Service") ?? []).filter((line) => line === requiredDataVolumeEnvironment).length,
+    1,
+    "Path-1 rootless Docker must enable admitted data-volume quota enforcement in [Service]",
+  )
+  assert.equal(
+    [...rootlessDataVolumeSections.values()].flat().filter((line) => line === requiredDataVolumeEnvironment).length,
+    1,
+    "Path-1 rootless Docker data-volume environment must appear exactly once",
+  )
+
+  const releaseRoot = join(output, "rootfs")
+  const path1Verifier = runVerifier(releaseRoot, packaged.stdout.trim(), fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
+  assert.equal(path1Verifier.status, 0, path1Verifier.stderr)
+  const manifestPath = join(releaseRoot, "usr/lib/chariox/release-manifest.json")
+  const signaturePath = join(releaseRoot, "usr/lib/chariox/release-manifest.sig")
+  const originalManifestBytes = await readFile(manifestPath)
+  const originalSignature = await readFile(signaturePath)
+  const incompleteDataVolumeManifest = JSON.parse(originalManifestBytes)
+  incompleteDataVolumeManifest.artifacts = incompleteDataVolumeManifest.artifacts.filter(
+    (artifact) => artifact.name !== "chariox-data-volume-admission.service",
+  )
+  const incompleteDataVolumeManifestBytes = Buffer.from(JSON.stringify(incompleteDataVolumeManifest))
+  await writeFile(manifestPath, incompleteDataVolumeManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, incompleteDataVolumeManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const incompleteDataVolumeDigest = `sha256:${createHash("sha256").update(incompleteDataVolumeManifestBytes).digest("hex")}`
+  const incompleteDataVolume = runVerifier(
+    releaseRoot,
+    incompleteDataVolumeDigest,
+    fixture.trustedPublicKey,
+    "path1",
+    fixture.trustedBuilderPublicKey,
+  )
+  assert.equal(incompleteDataVolume.status, 1)
+  assert.match(incompleteDataVolume.stderr, /incomplete Path-1 data-volume admission artifact set/)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  const dataVolumeArtifactPaths = [
+    "etc/systemd/system/chariox-data-volume-admission.service",
+    "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+    "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+  ]
+  const originalDataVolumeArtifacts = await Promise.all(
+    dataVolumeArtifactPaths.map(async (relativePath) => [
+      relativePath,
+      await readFile(join(releaseRoot, relativePath)),
+    ]),
+  )
+  const noVolumeManifest = JSON.parse(originalManifestBytes)
+  const dataVolumeArtifactNames = new Set([
+    "chariox-data-volume-admission.service",
+    "chariox-rootless-docker.path1-data-volume.conf",
+    "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+  ])
+  noVolumeManifest.artifacts = noVolumeManifest.artifacts.filter(
+    (artifact) => !dataVolumeArtifactNames.has(artifact.name),
+  )
+  for (const relativePath of dataVolumeArtifactPaths) await rm(join(releaseRoot, relativePath))
+  const noVolumeManifestBytes = Buffer.from(JSON.stringify(noVolumeManifest))
+  await writeFile(manifestPath, noVolumeManifestBytes)
+  await writeFile(signaturePath, sign(null, noVolumeManifestBytes, fixture.releasePrivateKey).toString("base64"))
+  const noVolumeDigest = `sha256:${createHash("sha256").update(noVolumeManifestBytes).digest("hex")}`
+  const oldSharedHostRelease = runVerifier(
+    releaseRoot,
+    noVolumeDigest,
+    fixture.trustedPublicKey,
+    "shared_host",
+  )
+  assert.equal(oldSharedHostRelease.status, 0, oldSharedHostRelease.stderr)
+  const path1WithoutDataVolume = runVerifier(
+    releaseRoot,
+    noVolumeDigest,
+    fixture.trustedPublicKey,
+    "path1",
+    fixture.trustedBuilderPublicKey,
+  )
+  assert.equal(path1WithoutDataVolume.status, 1)
+  assert.match(path1WithoutDataVolume.stderr, /Path-1 releases must include data-volume admission and both ordering drop-ins/)
+  const oldSharedHostHarnessRoot = join(root, "old-shared-host-harness")
+  await mkdir(oldSharedHostHarnessRoot)
+  const oldSharedHostHarness = await createInstallerHarness(oldSharedHostHarnessRoot)
+  const oldSharedHostInstall = spawnSync(
+    installer,
+    installerArguments(releaseRoot, noVolumeDigest, fixture),
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${oldSharedHostHarness.bin}:${process.env.PATH}`,
+        HARNESS_STATE: oldSharedHostHarness.state,
+        CHARIOX_IMAGE_INSTALL_ROOT: oldSharedHostHarness.installRoot,
+        CHARIOX_IMAGE_INSTALL_LOCK: join(oldSharedHostHarness.state, "install.lock"),
+      },
+    },
+  )
+  assert.equal(oldSharedHostInstall.status, 0, oldSharedHostInstall.stderr)
+  const oldSharedHostReleasePath = join(
+    oldSharedHostHarness.installRoot,
+    "usr/lib/chariox/releases",
+    noVolumeDigest.slice("sha256:".length),
+  )
+  for (const relativePath of dataVolumeArtifactPaths) {
+    assert.equal(
+      await lstat(join(oldSharedHostReleasePath, relativePath)).then(() => true, () => false),
+      false,
+      `legacy shared-host release must omit undeclared ${relativePath}`,
+    )
+    assert.equal(
+      await lstat(join(oldSharedHostHarness.installRoot, relativePath)).then(() => true, () => false),
+      false,
+      `legacy shared-host install must not activate ${relativePath}`,
+    )
+  }
+  for (const [relativePath, contents] of originalDataVolumeArtifacts) {
+    await writeFile(join(releaseRoot, relativePath), contents)
+  }
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  const assertPath1ArtifactRejected = async (unitPath, artifactName, originalUnit, changedUnit, error) => {
+    await writeFile(unitPath, changedUnit)
+    const manifest = JSON.parse(originalManifestBytes)
+    const artifact = manifest.artifacts.find((entry) => entry.name === artifactName)
+    artifact.sha256 = `sha256:${createHash("sha256").update(changedUnit).digest("hex")}`
+    const manifestBytes = Buffer.from(JSON.stringify(manifest))
+    await writeFile(manifestPath, manifestBytes)
+    await writeFile(signaturePath, sign(null, manifestBytes, fixture.releasePrivateKey).toString("base64"))
+    const digest = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`
+    const result = runVerifier(
+      releaseRoot,
+      digest,
+      fixture.trustedPublicKey,
+      "path1",
+      fixture.trustedBuilderPublicKey,
+    )
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, error)
+    await writeFile(unitPath, originalUnit)
+    await writeFile(manifestPath, originalManifestBytes)
+    await writeFile(signaturePath, originalSignature)
+  }
+  const admissionWithoutAllocatorOrdering = admissionUnit.replace(
+    "Before=chariox-slice-disk-quota-allocator.service chariox-rootless-docker.service chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service",
+    "Before=chariox-rootless-docker.service chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service",
+  )
+  assert.notEqual(admissionWithoutAllocatorOrdering, admissionUnit)
+  await assertPath1ArtifactRejected(
+    join(releaseRoot, "etc/systemd/system/chariox-data-volume-admission.service"),
+    "chariox-data-volume-admission.service",
+    admissionUnit,
+    admissionWithoutAllocatorOrdering,
+    /Path-1 data-volume admission must precede quota allocation, Docker, and both supervisors/,
+  )
+  await assertPath1ArtifactRejected(
+    path1UnitPath,
+    "chariox-path1-managed-bootstrap.service",
+    path1Unit,
+    path1Unit.replace("Requires=chariox-rootless-docker.service\n", ""),
+    /storage-capable Path-1 supervisors must require rootless Docker/,
+  )
+  await assertPath1ArtifactRejected(
+    workerUnitPath,
+    "chariox-disposable-worker-bootstrap.service",
+    workerUnit,
+    workerUnit.replace("Requires=chariox-rootless-docker.service\n", ""),
+    /storage-capable Path-1 supervisors must require rootless Docker/,
+  )
+  await assertPath1ArtifactRejected(
+    path1UnitPath,
+    "chariox-path1-managed-bootstrap.service",
+    path1Unit,
+    path1Unit.replace(
+      "After=network-online.target chariox-rootless-docker.service\n",
+      "After=network-online.target\n",
+    ),
+    /selected Path-1 managed bootstrap service must start after rootless Docker/,
+  )
+  await assertPath1ArtifactRejected(
+    workerUnitPath,
+    "chariox-disposable-worker-bootstrap.service",
+    workerUnit,
+    workerUnit.replace(
+      "After=network-online.target chariox-rootless-docker.service\n",
+      "After=network-online.target\n",
+    ),
+    /selected Path-1 disposable-worker service must start after rootless Docker/,
+  )
+  await assertPath1ArtifactRejected(
+    path1UnitPath,
+    "chariox-path1-managed-bootstrap.service",
+    path1Unit,
+    path1Unit.replace(
+      "Environment=CHARIOX_HOME=/home/chariox/.chariox\n",
+      "Environment=CHARIOX_HOME=/home/chariox/.chariox\nEnvironment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json\n",
+    ),
+    /selected Path-1 managed bootstrap service must use the protected bootstrap path/,
+  )
+  await assertPath1ArtifactRejected(
+    workerUnitPath,
+    "chariox-disposable-worker-bootstrap.service",
+    workerUnit,
+    workerUnit.replace(
+      "Environment=CHARIOX_HOME=/home/chariox/.chariox\n",
+      "Environment=CHARIOX_HOME=/home/chariox/.chariox\nEnvironment=CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH=/var/lib/chariox/disposable-worker-bootstrap.json\n",
+    ),
+    /selected Path-1 disposable-worker service must use the protected bootstrap path/,
+  )
+  const mismatchedManifestObject = JSON.parse(originalManifestBytes)
+  mismatchedManifestObject.artifacts = mismatchedManifestObject.artifacts.filter(
+    (artifact) => artifact.name !== "chariox-path1-managed-bootstrap.service",
+  )
+  await rm(path1UnitPath)
+  const mismatchedManifestBytes = Buffer.from(JSON.stringify(mismatchedManifestObject))
+  await writeFile(manifestPath, mismatchedManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, mismatchedManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const mismatchedDigest = `sha256:${createHash("sha256").update(mismatchedManifestBytes).digest("hex")}`
+  const mismatched = runVerifier(releaseRoot, mismatchedDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
+  assert.equal(mismatched.status, 1)
+  assert.match(mismatched.stderr, /does not declare the selected path1 managed bootstrap service/)
+  await writeFile(path1UnitPath, path1Unit)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  const disconnectedBrokerService = path1Unit.replace(
+    "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service\n",
+    "",
+  )
+  await writeFile(path1UnitPath, disconnectedBrokerService)
+  const disconnectedBrokerManifestObject = JSON.parse(originalManifestBytes)
+  const disconnectedBrokerArtifact = disconnectedBrokerManifestObject.artifacts.find(
+    (artifact) => artifact.name === "chariox-path1-managed-bootstrap.service",
+  )
+  disconnectedBrokerArtifact.sha256 = `sha256:${createHash("sha256").update(disconnectedBrokerService).digest("hex")}`
+  const disconnectedBrokerManifestBytes = Buffer.from(JSON.stringify(disconnectedBrokerManifestObject))
+  await writeFile(manifestPath, disconnectedBrokerManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, disconnectedBrokerManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const disconnectedBrokerDigest = `sha256:${createHash("sha256").update(disconnectedBrokerManifestBytes).digest("hex")}`
+  const disconnectedBroker = runVerifier(releaseRoot, disconnectedBrokerDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
+  assert.equal(disconnectedBroker.status, 1)
+  assert.match(disconnectedBroker.stderr, /must restart the one-shot broker before launch/)
+  await writeFile(path1UnitPath, path1Unit)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  const wrongTopologyService = path1Unit.replace(
+    "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
+    "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host",
+  )
+  await writeFile(path1UnitPath, wrongTopologyService)
+  const wrongTopologyManifestObject = JSON.parse(originalManifestBytes)
+  const path1Artifact = wrongTopologyManifestObject.artifacts.find(
+    (artifact) => artifact.name === "chariox-path1-managed-bootstrap.service",
+  )
+  path1Artifact.sha256 = `sha256:${createHash("sha256").update(wrongTopologyService).digest("hex")}`
+  const wrongTopologyManifestBytes = Buffer.from(JSON.stringify(wrongTopologyManifestObject))
+  await writeFile(manifestPath, wrongTopologyManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, wrongTopologyManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const wrongTopologyDigest = `sha256:${createHash("sha256").update(wrongTopologyManifestBytes).digest("hex")}`
+  const wrongTopology = runVerifier(releaseRoot, wrongTopologyDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
+  assert.equal(wrongTopology.status, 1)
+  assert.match(wrongTopology.stderr, /missing or overrides Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1/)
+  await writeFile(path1UnitPath, path1Unit)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  const restrictedUmaskService = path1Unit.replace(
+    "KillMode=control-group",
+    "KillMode=control-group\nUMask=0007",
+  )
+  await writeFile(path1UnitPath, restrictedUmaskService)
+  const restrictedUmaskManifestObject = JSON.parse(originalManifestBytes)
+  const restrictedUmaskArtifact = restrictedUmaskManifestObject.artifacts.find(
+    (artifact) => artifact.name === "chariox-path1-managed-bootstrap.service",
+  )
+  restrictedUmaskArtifact.sha256 = `sha256:${createHash("sha256").update(restrictedUmaskService).digest("hex")}`
+  const restrictedUmaskManifestBytes = Buffer.from(JSON.stringify(restrictedUmaskManifestObject))
+  await writeFile(manifestPath, restrictedUmaskManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, restrictedUmaskManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const restrictedUmaskDigest = `sha256:${createHash("sha256").update(restrictedUmaskManifestBytes).digest("hex")}`
+  const restrictedUmask = runVerifier(releaseRoot, restrictedUmaskDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
+  assert.equal(restrictedUmask.status, 1)
+  assert.match(restrictedUmask.stderr, /contains UMask=/)
+  await writeFile(path1UnitPath, path1Unit)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.diagnostic("signed release and topology checks passed; installer execution requires Linux root ownership")
+    return
+  }
+
+  const harness = await createInstallerHarness(root)
+  const env = {
+    ...process.env,
+    PATH: `${harness.bin}:${process.env.PATH}`,
+    HARNESS_STATE: harness.state,
+    CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+    CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+    CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: fixture.trustedBuilderPublicKey,
+  }
+  const path1InstallerArgs = installerArguments(
+    join(output, "rootfs"),
+    packaged.stdout.trim(),
+    fixture,
+    "path1",
+  )
+  const installed = spawnSync(installer, path1InstallerArgs, { encoding: "utf8", env })
+  assert.equal(installed.status, 0, installed.stderr)
+  assert.equal(
+    await readFile(join(harness.installRoot, "etc/systemd/system/chariox-path1-managed-bootstrap.service"), "utf8"),
+    path1Unit,
+  )
+  for (const [relativePath, expectedBytes] of [
+    ["etc/systemd/system/chariox-data-volume-admission.service", fixture.dataVolumeAdmissionServiceBytes],
+    [
+      "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+      fixture.rootlessDockerDataVolumeDropInBytes,
+    ],
+    [
+      "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+      fixture.quotaAllocatorDataVolumeDropInBytes,
+    ],
+  ]) {
+    const installedArtifact = join(harness.installRoot, relativePath)
+    assert.equal((await lstat(installedArtifact)).isSymbolicLink(), true, `${relativePath} must be release-backed`)
+    assert.deepEqual(await readFile(installedArtifact), expectedBytes)
+  }
+  const systemctlCalls = await readFile(join(harness.state, "systemctl"), "utf8")
+  assert.match(systemctlCalls, /enable chariox-path1-managed-bootstrap\.service/)
+  assert.doesNotMatch(systemctlCalls, /enable chariox-managed-bootstrap\.service/)
 })
 
 test("release identity rejects unattested binaries and verifier rejects tampering", async (context) => {
@@ -476,6 +1125,34 @@ test("release identity rejects unattested binaries and verifier rejects tamperin
   const serviceTamper = runVerifier(changedRoot, serviceRelease.stdout.trim(), fixture.trustedPublicKey)
   assert.equal(serviceTamper.status, 1)
   assert.match(serviceTamper.stderr, /chariox-managed-bootstrap\.service is corrupted/)
+
+  const dataVolumeOutput = join(root, "data-volume")
+  const dataVolumeRelease = runPackager({ ...fixture, output: dataVolumeOutput })
+  assert.equal(dataVolumeRelease.status, 0, dataVolumeRelease.stderr)
+  const dataVolumeRoot = join(dataVolumeOutput, "rootfs")
+  for (const [relativePath, artifactName] of [
+    ["etc/systemd/system/chariox-data-volume-admission.service", "chariox-data-volume-admission.service"],
+    [
+      "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+      "chariox-rootless-docker.path1-data-volume.conf",
+    ],
+    [
+      "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+      "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+    ],
+  ]) {
+    const artifactPath = join(dataVolumeRoot, relativePath)
+    const originalArtifact = await readFile(artifactPath)
+    await writeFile(artifactPath, "tampered data-volume artifact\n")
+    const artifactTamper = runVerifier(
+      dataVolumeRoot,
+      dataVolumeRelease.stdout.trim(),
+      fixture.trustedPublicKey,
+    )
+    assert.equal(artifactTamper.status, 1)
+    assert.ok(artifactTamper.stderr.includes(`${artifactName} is corrupted`), artifactTamper.stderr)
+    await writeFile(artifactPath, originalArtifact)
+  }
 
   const contextOutput = join(root, "context")
   const contextRelease = runPackager({ ...fixture, output: contextOutput })
@@ -622,90 +1299,115 @@ test("managed release materialization ignores ambient Git attributes and tar opt
   )
 })
 
+test("managed kernel builder rejects malformed explicit builder names", () => {
+  for (const name of ["bad/name", "b".repeat(64)]) {
+    const result = spawnSync(process.execPath, [builder, "--builder", name], { encoding: "utf8" })
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /builder name must be 1 to 63/)
+  }
+})
+
 test("managed kernel builder archives the exact commit and emits a signed binary attestation", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-builder-"))
   context.after(() => rm(root, { recursive: true, force: true }))
-  const fixture = await makeFixture(root)
+  const dockerfileContents = await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"))
+  const dockerfileText = dockerfileContents.toString("utf8")
+  const artifactTargetStart = dockerfileText.indexOf("FROM scratch AS managed-release-artifacts")
+  const artifactTargetEnd = dockerfileText.indexOf("\nFROM ", artifactTargetStart + 1)
+  assert.notEqual(artifactTargetStart, -1)
+  assert.notEqual(artifactTargetEnd, -1)
+  assert.deepEqual(dockerfileText.slice(artifactTargetStart, artifactTargetEnd).trim().split("\n"), [
+    "FROM scratch AS managed-release-artifacts",
+    "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
+    "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
+    "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+  ])
+  const fixture = await makeFixture(root, "", { dockerfileContents })
   const bin = join(root, "builder-bin")
   const trace = join(root, "builder-trace")
-  const extractionState = join(root, "builder-extraction-state")
   const output = join(root, "builder-output")
+  const temp = join(root, "builder-temp")
+  await mkdir(temp)
   await mkdir(bin)
   await writeHarnessCommand(join(bin, "docker"), `#!/bin/sh
 set -eu
 [ -z "\${RUSTC_WRAPPER:-}" ]
 [ -z "\${CARGO:-}" ]
 [ -z "\${RUSTFLAGS:-}" ]
-case "$1" in
-  build)
-    case " $* " in *" --pull --platform linux/amd64 --target rust-builder "*) ;; *) exit 31 ;; esac
-    case " $* " in *" --tag chariox-managed-builder:"*"-"*"-"*) ;; *) exit 31 ;; esac
-    for source do :; done
+case "$1 $2" in
+  "buildx build")
+    case " $* " in *" --pull --platform linux/amd64 --target managed-release-artifacts "*) ;; *) exit 31 ;; esac
+    case " $* " in *" --output type=local,dest="*) ;; *) exit 31 ;; esac
+    case " $* " in *" --load "*|*" --tag "*) exit 31 ;; esac
+    source=
+    for argument do source=$argument; done
     dockerfile=
+    destination=
     previous=
     for argument do
       if [ "$previous" = "--file" ]; then dockerfile=$argument; fi
+      if [ "$previous" = "--output" ]; then
+        case "$argument" in type=local,dest=*) destination=\${argument#type=local,dest=} ;; *) exit 31 ;; esac
+      fi
       previous=$argument
     done
     [ -f "$dockerfile" ]
     [ "$dockerfile" = "$source/apps/kernel/slice-linux-docker/docker/Dockerfile" ]
     [ ! -e "$source/.git" ]
     [ ! -e "$source/working-tree-only" ]
-    printf '%s\n' "$*" > '${trace}'
-    ;;
-  run)
-    case " $* " in *" --rm --pull=never --platform linux/amd64 --entrypoint cat sha256:"*) ;; *) exit 32 ;; esac
-    previous=
-    image=
-    for argument do
-      if [ "$previous" = "cat" ]; then image=$argument; fi
-      previous=$argument
-      source_path=$argument
-    done
-    [ "$image" = "sha256:1111111111111111111111111111111111111111111111111111111111111111" ]
-    case "$source_path" in
-      *chariox-kernel)
-        printf 'tag replaced after first immutable read\n' > '${extractionState}'
-        printf 'kernel from archived commit\n'
-        ;;
-      *chariox-managed-bootstrap)
-        [ -f '${extractionState}' ]
-        printf 'supervisor from archived commit\n'
-        ;;
-      *chariox-relay)
-        [ -f '${extractionState}' ]
-        printf 'relay from archived commit\n'
-        ;;
-      *) exit 32 ;;
+    grep -F 'FROM scratch AS managed-release-artifacts' "$dockerfile" >/dev/null
+    ! grep -F 'working tree drift' "$dockerfile" >/dev/null
+    printf '%s\n' "$*" >> '${trace}'
+    case " $* " in *" --builder fail-builder "*) exit 39 ;; esac
+    export_case=normal
+    case " $* " in
+      *" --builder missing-artifact "*) export_case=missing ;;
+      *" --builder extra-artifact "*) export_case=extra ;;
+      *" --builder symlink-export-directory "*) export_case=symlink-directory ;;
+      *" --builder symlink-export-artifact "*) export_case=symlink-artifact ;;
     esac
+    [ -n "$destination" ]
+    [ ! -e "$destination" ]
+    if [ "$export_case" = symlink-directory ]; then
+      ln -s '${fixture.sourceRepository}' "$destination"
+      exit 0
+    fi
+    mkdir "$destination"
+    printf 'kernel from archived commit\n' > "$destination/chariox-kernel"
+    printf 'supervisor from archived commit\n' > "$destination/chariox-managed-bootstrap"
+    printf 'relay from archived commit\n' > "$destination/chariox-relay"
+    if [ "$export_case" = missing ]; then rm "$destination/chariox-relay"; fi
+    if [ "$export_case" = extra ]; then printf 'unexpected\n' > "$destination/unexpected-member"; fi
+    if [ "$export_case" = symlink-artifact ]; then
+      rm "$destination/chariox-relay"
+      ln -s "$dockerfile" "$destination/chariox-relay"
+    fi
     ;;
-  image)
-    case "$2" in
-      inspect) printf '%s\n' 'sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
-      rm) ;;
-      *) exit 33 ;;
-    esac
-    ;;
-  rm) ;;
   *) exit 33 ;;
 esac
 `)
   await writeFile(join(fixture.sourceRepository, "working-tree-only"), "must not enter the build\n")
+  await writeFile(
+    join(fixture.sourceRepository, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
+    Buffer.concat([dockerfileContents, Buffer.from("# working tree drift\n")]),
+  )
   await writeFile(join(fixture.sourceRepository, ".git/info/attributes"), "* export-ignore\n")
-  const result = spawnSync(
+  const runBuilder = (destination, builderName) => spawnSync(
     process.execPath,
     [
       builder,
       "--source-repository", fixture.sourceRepository,
       "--source-commit", fixture.sourceCommit,
       "--builder-signing-key", fixture.signingKey,
-      "--output", output,
+      ...(builderName ? ["--builder", builderName] : []),
+      "--output", destination,
     ],
     {
       encoding: "utf8",
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
+        TMPDIR: temp,
         RUSTC_WRAPPER: "/tmp/hostile-rustc-wrapper",
         CARGO: "/tmp/hostile-cargo",
         RUSTFLAGS: "-C link-arg=/tmp/hostile",
@@ -713,27 +1415,91 @@ esac
       },
     },
   )
+  const result = runBuilder(output)
   assert.equal(result.status, 0, result.stderr)
-  assert.match(await readFile(trace, "utf8"), /--target rust-builder/)
-  assert.match(
-    await readFile(trace, "utf8"),
-    /--file .*\/apps\/kernel\/slice-linux-docker\/docker\/Dockerfile/,
-  )
+  const defaultBuildArguments = (await readFile(trace, "utf8")).trim().split("\n")[0].split(" ")
+  assert.deepEqual(defaultBuildArguments.slice(0, 2), ["buildx", "build"])
+  assert.equal(defaultBuildArguments.includes("--builder"), false)
+  assert.equal(defaultBuildArguments.includes("--load"), false)
+  assert.equal(defaultBuildArguments.includes("--tag"), false)
+  assert.equal(defaultBuildArguments[defaultBuildArguments.indexOf("--target") + 1], "managed-release-artifacts")
+  assert.match(defaultBuildArguments[defaultBuildArguments.indexOf("--output") + 1], /^type=local,dest=/)
+  assert.deepEqual((await readdir(output)).sort(), [
+    "build-attestation.json", "build-attestation.sig", "builder-public-key",
+    "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
+  ])
+  const artifactContents = new Map([
+    ["chariox-kernel", "kernel from archived commit\n"],
+    ["chariox-managed-bootstrap", "supervisor from archived commit\n"],
+    ["chariox-relay", "relay from archived commit\n"],
+  ])
+  for (const [name, contents] of artifactContents) {
+    assert.equal(await readFile(join(output, name), "utf8"), contents)
+    assert.equal((await lstat(join(output, name))).mode & 0o777, 0o755)
+  }
   const attestationBytes = await readFile(join(output, "build-attestation.json"))
   const attestation = JSON.parse(attestationBytes)
   assert.equal(attestation.sourceCommit, fixture.sourceCommit)
   assert.equal(attestation.sourceTree, fixture.sourceTree)
   assert.equal(attestation.target, "x86_64-unknown-linux-gnu")
-  assert.deepEqual(
-    attestation.artifacts.map((artifact) => artifact.name),
-    ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"],
-  )
+  assert.deepEqual(attestation.artifacts, [...artifactContents].map(([name, contents]) => ({
+    name,
+    sha256: `sha256:${createHash("sha256").update(contents).digest("hex")}`,
+  })))
   const signature = Buffer.from(await readFile(join(output, "build-attestation.sig"), "utf8"), "base64")
   assert.equal(verify(null, attestationBytes, fixture.publicKey, signature), true)
   assert.equal(
     await readFile(join(output, "builder-public-key"), "utf8"),
     rawPublicKey(fixture.publicKey).toString("base64"),
   )
+
+  const namedBuilderOutput = join(root, "builder-output-with-named-builder")
+  const namedBuilderResult = runBuilder(namedBuilderOutput, "capped-release-builder")
+  assert.equal(namedBuilderResult.status, 0, namedBuilderResult.stderr)
+  const buildInvocations = (await readFile(trace, "utf8")).trim().split("\n")
+  assert.equal(buildInvocations.length, 2)
+  assert.match(buildInvocations[1], /^buildx build --builder capped-release-builder /)
+  assert.match(buildInvocations[1], /--target managed-release-artifacts/)
+  assert.match(buildInvocations[1], /--output type=local,dest=/)
+  assert.doesNotMatch(buildInvocations[1], /--load|--tag|\brun\b|image inspect/)
+
+  const failedOutput = join(root, "builder-output-failure")
+  const failed = runBuilder(failedOutput, "fail-builder")
+  assert.equal(failed.status, 1)
+  assert.match(failed.stderr, /artifact export failed with status 39/)
+  assert.equal(await lstat(failedOutput).then(() => true, () => false), false)
+  assert.equal((await readdir(root)).some((name) => name.startsWith(".new-builder-output-failure-")), false)
+  assert.deepEqual(await readdir(temp), [])
+
+  const rejectedExports = [
+    ["missing-artifact", /unexpected file set/],
+    ["extra-artifact", /unexpected file set/],
+    ["symlink-export-directory", /artifact export is not a directory/],
+    ["symlink-export-artifact", /did not export regular chariox-relay/],
+  ]
+  for (const [builderName, message] of rejectedExports) {
+    const destination = join(root, `builder-output-${builderName}`)
+    const rejected = runBuilder(destination, builderName)
+    assert.equal(rejected.status, 1, `${builderName}: ${rejected.stderr}`)
+    assert.match(rejected.stderr, message)
+    assert.equal(await lstat(destination).then(() => true, () => false), false)
+    assert.equal((await readdir(root)).some((name) => name.startsWith(`.new-${basename(destination)}-`)), false)
+    assert.deepEqual(await readdir(temp), [])
+    assert.equal((await lstat(fixture.sourceRepository)).isDirectory(), true)
+  }
+
+  const existingOutput = join(root, "builder-output-preserved")
+  await mkdir(existingOutput)
+  await writeFile(join(existingOutput, "sentinel"), "preserve existing output\n")
+  const traceBeforeExistingOutput = await readFile(trace, "utf8")
+  const existing = runBuilder(existingOutput, "capped-release-builder")
+  assert.equal(existing.status, 1)
+  assert.match(existing.stderr, /output must not exist/)
+  assert.deepEqual(await readdir(existingOutput), ["sentinel"])
+  assert.equal(await readFile(join(existingOutput, "sentinel"), "utf8"), "preserve existing output\n")
+  assert.equal(await readFile(trace, "utf8"), traceBeforeExistingOutput)
+  assert.equal((await readdir(root)).some((name) => name.startsWith(".new-builder-output-preserved-")), false)
+  assert.deepEqual(await readdir(temp), [])
 })
 
 test("managed kernel release requires a matching trusted builder attestation", async (context) => {
@@ -784,10 +1550,70 @@ async function createInstallerHarness(root) {
   const bin = join(root, "bin")
   const state = join(root, "command-state")
   const installRoot = join(root, "installed")
+  const chownLog = join(root, "chown.log")
+  const chownPreload = join(root, "chown-preload.mjs")
+  const migrationFaultMarker = join(root, "migration-fault.marker")
   await mkdir(bin, { recursive: true })
   await mkdir(state, { recursive: true })
+  await writeFile(
+    chownPreload,
+    `import fs from "node:fs"
+import { syncBuiltinESMExports } from "node:module"
+import { dirname } from "node:path"
+
+const logPath = ${JSON.stringify(chownLog)}
+const originalChown = fs.promises.chown.bind(fs.promises)
+const originalRename = fs.promises.rename.bind(fs.promises)
+fs.promises.chown = async (path, uid, gid) => {
+  await fs.promises.appendFile(logPath, String(path) + "\\t" + String(uid) + "\\t" + String(gid) + "\\n")
+  if (Number(uid) === 0 && Number(gid) === 0) return originalChown(path, uid, gid)
+}
+async function publishFaultMarker(value) {
+  const marker = process.env.HARNESS_MIGRATION_FAULT_MARKER
+  if (!marker) return
+  const temporary = marker + ".tmp." + process.pid
+  const file = await fs.promises.open(temporary, "wx", 0o600)
+  try {
+    await file.writeFile(value + "\\n")
+    await file.sync()
+  } finally {
+    await file.close()
+  }
+  await originalRename(temporary, marker)
+  const directory = await fs.promises.open(dirname(marker), "r")
+  try {
+    await directory.sync()
+  } finally {
+    await directory.close()
+  }
+}
+let faultInjected = false
+fs.promises.rename = async (source, destination) => {
+  const result = await originalRename(source, destination)
+  const rootRename = process.env.HARNESS_MIGRATION_KILL_AFTER_ROOT_RENAME === "1"
+    && source === process.env.HARNESS_MIGRATION_LEGACY_HOME
+    && destination === process.env.HARNESS_MIGRATION_MANAGED_HOME
+  const controlMove = process.env.HARNESS_MIGRATION_KILL_AFTER_CONTROL_PATH
+    && destination === process.env.HARNESS_MIGRATION_KILL_AFTER_CONTROL_PATH
+  if (!faultInjected && (rootRename || controlMove)) {
+    faultInjected = true
+    await publishFaultMarker(rootRename ? "root-renamed" : "control-moved")
+    process.kill(process.pid, "SIGSTOP")
+  }
+  return result
+}
+syncBuiltinESMExports()
+`,
+  )
   await writeHarnessCommand(join(bin, "id"), `#!/bin/sh
-if [ "\${1:-}" = "-u" ]; then echo 0; exit 0; fi
+if [ "\${1:-}" = "-u" ]; then
+  if [ "\${2:-}" = chariox-docker ]; then echo 997; elif [ "\${2:-}" = chariox ]; then echo 998; else echo 0; fi
+  exit 0
+fi
+if [ "\${1:-}" = "-g" ]; then
+  if [ "\${2:-}" = chariox-docker ]; then echo 997; elif [ "\${2:-}" = chariox ]; then echo 998; else echo 0; fi
+  exit 0
+fi
 if [ "\${1:-}" = "-gn" ]; then
   [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ] && echo chariox && exit 0
   [ "\${2:-}" = "chariox-docker" ] && [ -f "$HARNESS_STATE/user-chariox-docker" ] && echo chariox-docker && exit 0
@@ -799,13 +1625,23 @@ exit 1
 `)
   await writeHarnessCommand(join(bin, "getent"), `#!/bin/sh
 if [ "\${1:-}" = "group" ] && [ -f "$HARNESS_STATE/group-\${2:-}" ]; then echo "\${2}:x:998:"; exit 0; fi
-if [ "\${1:-}" = "passwd" ] && [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ]; then echo 'chariox:x:998:998::/var/lib/chariox/home:/usr/sbin/nologin'; exit 0; fi
+if [ "\${1:-}" = "passwd" ] && [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ]; then
+  home=/home/chariox
+  [ -f "$HARNESS_STATE/user-chariox-home" ] && home=$(cat "$HARNESS_STATE/user-chariox-home")
+  echo "chariox:x:998:998::\${home}:/usr/sbin/nologin"
+  exit 0
+fi
 if [ "\${1:-}" = "passwd" ] && [ "\${2:-}" = "chariox-docker" ] && [ -f "$HARNESS_STATE/user-chariox-docker" ]; then echo 'chariox-docker:x:997:997::/var/lib/chariox-docker/home:/usr/sbin/nologin'; exit 0; fi
 exit 2
 `)
   await writeHarnessCommand(join(bin, "groupadd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/group-$name\"\n")
-  await writeHarnessCommand(join(bin, "useradd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/user-$name\"\n")
-  await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nexit 0\n")
+  await writeHarnessCommand(join(bin, "useradd"), "#!/bin/sh\nprevious=\nfor value in \"$@\"; do if [ \"$previous\" = --home-dir ]; then printf '%s' \"$value\" > \"$HARNESS_STATE/user-$name-home\"; fi; previous=$value; name=$value; done\ntouch \"$HARNESS_STATE/user-$name\"\n")
+  await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nif [ \"\${1:-}\" = --home ] && [ \"\${3:-}\" = chariox ]; then printf '%s' \"$2\" > \"$HARNESS_STATE/user-chariox-home\"; fi\nexit 0\n")
+  await writeHarnessCommand(join(bin, "loginctl"), `#!/bin/sh
+[ "$*" = "enable-linger chariox-docker" ] || exit 1
+[ "\${HARNESS_LOGINCTL_FAIL:-0}" = 0 ] || exit 1
+printf '%s\\n' "$*" >> "$HARNESS_STATE/loginctl"
+`)
   await writeHarnessCommand(join(bin, "setfacl"), "#!/bin/sh\nexit 0\n")
   await writeHarnessCommand(join(bin, "systemctl"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$HARNESS_STATE/systemctl"
@@ -832,6 +1668,15 @@ exec /usr/bin/find "$@"
 if [ -n "\${HARNESS_MUTATE_SOURCE:-}" ]; then
   printf '%s\n' 'mutated after staging' > "$HARNESS_MUTATE_SOURCE"
 fi
+export NODE_OPTIONS="--import=${chownPreload} \${NODE_OPTIONS:-}"
+case "\${1:-}:\${2:-}" in
+  *managed-kernel-home-migration.mjs:apply)
+    if [ "\${HARNESS_MIGRATION_REPLACE_SOURCE:-0}" = 1 ]; then
+      /bin/mv -- "\${HARNESS_MIGRATION_LEGACY_HOME:?}" "\${HARNESS_MIGRATION_LEGACY_HOME:?}.original"
+      /bin/mkdir "\${HARNESS_MIGRATION_LEGACY_HOME:?}"
+    fi
+    ;;
+esac
 exec "${process.execPath}" "$@"
 `)
   await writeHarnessCommand(join(bin, "install"), `#!/usr/bin/env node
@@ -840,6 +1685,11 @@ const args = process.argv.slice(2)
 const filtered = []
 for (let index = 0; index < args.length; index += 1) {
   if (args[index] === "-o" || args[index] === "-g") { index += 1; continue }
+  if (args[index] === "-m" && args[index + 1] === "2710") {
+    filtered.push("-m", "0710")
+    index += 1
+    continue
+  }
   filtered.push(args[index])
 }
 const result = spawnSync("/usr/bin/install", filtered, { stdio: "inherit" })
@@ -849,10 +1699,14 @@ process.exit(result.status ?? 1)
 if [ "$1" = -Tf ]; then echo 'mv -T is not portable' >&2; exit 64; fi
 exec /bin/mv "$@"
 `)
-  return { bin, state, installRoot }
+  return { bin, state, installRoot, chownLog, migrationFaultMarker }
 }
 
 test("managed image installer verifies, installs twice, and rejects seeded runtime state", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
@@ -868,10 +1722,10 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
   }
   await writeFile(join(output, "rootfs/usr/local/bin/unsigned-extra"), "must not publish\n")
-  const args = [join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey]
+  const args = installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture)
   const badDigest = spawnSync(
     installer,
-    [args[0], `sha256:${"0".repeat(64)}`, args[2]],
+    installerArguments(args[0], `sha256:${"0".repeat(64)}`, fixture),
     { encoding: "utf8", env },
   )
   assert.equal(badDigest.status, 1)
@@ -889,11 +1743,37 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     env: { ...env, HARNESS_MUTATE_SOURCE: sourceKernel },
   })
   assert.equal(first.status, 0, first.stderr)
+  const contextPath = "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker"
+  for (const [link, source] of [
+    ["etc/systemd/user/chariox-rootless-engine.service", "chariox-rootless-engine.service"],
+    ["etc/systemd/system/user@997.service.d/50-chariox-docker.conf", "chariox-rootless-user-manager.conf"],
+  ]) {
+    assert.deepEqual(await readFile(join(harness.installRoot, link)), await readFile(join(args[0], contextPath, source)))
+  }
+  assert.equal(await readFile(join(harness.state, "loginctl"), "utf8"), "enable-linger chariox-docker\n")
   const deterministicRelease = join(
     harness.installRoot,
     "usr/lib/chariox/releases",
     packaged.stdout.trim().slice("sha256:".length),
   )
+  for (const [relativePath, expectedBytes] of [
+    ["etc/systemd/system/chariox-data-volume-admission.service", fixture.dataVolumeAdmissionServiceBytes],
+    [
+      "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+      fixture.rootlessDockerDataVolumeDropInBytes,
+    ],
+    [
+      "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+      fixture.quotaAllocatorDataVolumeDropInBytes,
+    ],
+  ]) {
+    assert.deepEqual(await readFile(join(deterministicRelease, relativePath)), expectedBytes)
+    assert.equal(
+      await lstat(join(harness.installRoot, relativePath)).then(() => true, () => false),
+      false,
+      `shared-host installation must not activate ${relativePath}`,
+    )
+  }
   for (const relativePath of ["usr", "usr/local", "usr/lib", "etc", "etc/systemd"]) {
     assert.equal(
       (await stat(join(deterministicRelease, relativePath))).mode & 0o777,
@@ -931,8 +1811,16 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   await rm(`${currentLink}.new`)
 
   await writeFile(join(deterministicRelease, "usr/local/bin/chariox-kernel"), "corrupt release\n")
-  const repairedRelease = spawnSync(installer, args, { encoding: "utf8", env })
-  assert.equal(repairedRelease.status, 0, repairedRelease.stderr)
+  const corruptRelease = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(corruptRelease.status, 1)
+  assert.match(corruptRelease.stderr, /existing digest-named managed release is invalid; refusing to replace immutable release/)
+  assert.equal(
+    await readFile(join(deterministicRelease, "usr/local/bin/chariox-kernel"), "utf8"),
+    "corrupt release\n",
+  )
+  await rm(deterministicRelease, { recursive: true })
+  const operatorClearedRelease = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(operatorClearedRelease.status, 0, operatorClearedRelease.stderr)
   assert.equal(
     await readFile(join(deterministicRelease, "usr/local/bin/chariox-kernel"), "utf8"),
     "kernel fixture\n",
@@ -941,8 +1829,13 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
 
   await rm(deterministicRelease, { recursive: true, force: true })
   await writeFile(deterministicRelease, "interrupted regular-file publication\n")
-  const repairedObstruction = spawnSync(installer, args, { encoding: "utf8", env })
-  assert.equal(repairedObstruction.status, 0, repairedObstruction.stderr)
+  const obstructedPublication = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(obstructedPublication.status, 1)
+  assert.match(obstructedPublication.stderr, /existing digest-named managed release is invalid; refusing to replace immutable release/)
+  assert.equal(await readFile(deterministicRelease, "utf8"), "interrupted regular-file publication\n")
+  await rm(deterministicRelease)
+  const operatorClearedObstruction = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(operatorClearedObstruction.status, 0, operatorClearedObstruction.stderr)
   assert.equal((await stat(deterministicRelease)).isDirectory(), true)
   assert.equal((await lstat(currentLink)).ino, firstCurrentInode)
   assert.equal(await readFile(join(harness.installRoot, "usr/local/bin/chariox-kernel"), "utf8"), "kernel fixture\n")
@@ -958,6 +1851,9 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     await readFile(join(harness.installRoot, "etc/systemd/system/chariox-managed-bootstrap.service"), "utf8"),
     fixture.serviceBytes.toString("utf8"),
   )
+  const installedWorkerService = join(harness.installRoot, "etc/systemd/system/chariox-disposable-worker-bootstrap.service")
+  assert.equal((await lstat(installedWorkerService)).isSymbolicLink(), true)
+  assert.equal(await readFile(installedWorkerService, "utf8"), fixture.workerServiceBytes.toString("utf8"))
   const installedBrokerService = join(harness.installRoot, "etc/systemd/system/chariox-slice-broker.service")
   assert.equal((await lstat(installedBrokerService)).isSymbolicLink(), true)
   assert.equal(await readFile(installedBrokerService, "utf8"), fixture.sliceBrokerServiceBytes.toString("utf8"))
@@ -972,15 +1868,19 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   const systemctl = (await readFile(join(harness.state, "systemctl"), "utf8")).trim().split("\n")
   assert.deepEqual(systemctl, [
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
   ])
@@ -992,12 +1892,329 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(failedTraversal.status, 1)
   assert.match(failedTraversal.stderr, /managed kernel state root could not be inspected/)
 
-  const seededIdentity = join(harness.installRoot, "var/lib/chariox/home/daemon-machine-identity.json")
+  const seededIdentity = join(harness.installRoot, "var/lib/chariox/daemon-machine-identity.json")
   await writeFile(seededIdentity, "should never enter an image")
   const rejected = spawnSync(installer, args, { encoding: "utf8", env })
   assert.equal(rejected.status, 1)
-  assert.match(rejected.stderr, /managed kernel state root is not pristine/)
+  assert.match(rejected.stderr, /managed kernel state root contains an unrecognized entry/)
   assert.equal(await readFile(seededIdentity, "utf8"), "should never enter an image")
+})
+
+test("managed image installer migrates legacy home state without clobbering canonical state", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
+  const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-migration-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  const harness = await createInstallerHarness(root)
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyState = join(legacyHome, ".chariox")
+  await mkdir(join(legacyHome, "repositories/repo-1"), { recursive: true })
+  await mkdir(join(legacyState, "vault"), { recursive: true })
+  await mkdir(join(legacyHome, "managed"), { recursive: true })
+  await mkdir(join(legacyHome, "kernels/active"), { recursive: true })
+  await writeFile(join(legacyHome, "repositories/repo-1/HEAD"), "legacy-repository\n")
+  await writeFile(join(legacyState, "vault/vault.json"), "legacy-vault\n")
+  await writeFile(join(legacyHome, "managed/bootstrap-receipt.json"), "legacy-receipt\n")
+  await writeFile(join(legacyHome, "kernels/active/kernel-1.json"), "legacy-presence\n")
+  await chmod(legacyHome, 0o755)
+  await chmod(legacyState, 0o755)
+  const env = {
+    ...process.env,
+    PATH: harness.bin + ":" + process.env.PATH,
+    HARNESS_STATE: harness.state,
+    CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+    CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+  }
+  const args = installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture)
+  const migrated = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(migrated.status, 0, migrated.stderr)
+  assert.equal(await lstat(legacyHome).then(() => true, () => false), false)
+  assert.equal(
+    await readFile(join(harness.installRoot, "home/chariox/repositories/repo-1/HEAD"), "utf8"),
+    "legacy-repository\n",
+  )
+  assert.equal(
+    await readFile(join(harness.installRoot, "home/chariox/.chariox/vault/vault.json"), "utf8"),
+    "legacy-vault\n",
+  )
+  assert.equal(
+    await readFile(join(harness.installRoot, "var/lib/chariox/managed/bootstrap-receipt.json"), "utf8"),
+    "legacy-receipt\n",
+  )
+  assert.equal(
+    await readFile(join(harness.installRoot, "var/lib/chariox/kernels/active/kernel-1.json"), "utf8"),
+    "legacy-presence\n",
+  )
+  assert.equal((await stat(join(harness.installRoot, "home/chariox"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed"))).uid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed"))).gid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed/bootstrap-receipt.json"))).uid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed/bootstrap-receipt.json"))).gid, 0)
+  assert.equal(
+    (await stat(join(harness.installRoot, "var/lib/chariox/managed/bootstrap-receipt.json"))).mode & 0o777,
+    0o600,
+  )
+  const migrationChowns = await readFile(harness.chownLog, "utf8")
+  assert.match(migrationChowns, new RegExp(`${harness.installRoot}/home/chariox\\t998\\t998`))
+  assert.match(migrationChowns, new RegExp(`${harness.installRoot}/home/chariox/.chariox\\t998\\t998`))
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active"))).uid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active"))).gid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active/kernel-1.json"))).uid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active/kernel-1.json"))).gid, 0)
+  assert.equal(
+    (await stat(join(harness.installRoot, "var/lib/chariox/kernels/active/kernel-1.json"))).mode & 0o777,
+    0o600,
+  )
+
+  await mkdir(legacyHome, { recursive: true })
+  await writeFile(join(legacyHome, "must-remain-untouched"), "collision\n")
+  const collision = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(collision.status, 1)
+  assert.match(collision.stderr, /legacy managed kernel home identity changed during migration/)
+  assert.equal(await readFile(join(legacyHome, "must-remain-untouched"), "utf8"), "collision\n")
+  assert.equal(
+    await readFile(join(harness.installRoot, "home/chariox/repositories/repo-1/HEAD"), "utf8"),
+    "legacy-repository\n",
+  )
+})
+
+test("managed image installer resumes interrupted home migration by identity", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
+  const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-migration-recovery-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  const rootfs = join(output, "rootfs")
+  const digest = packaged.stdout.trim()
+
+  const createLegacyCase = async (name) => {
+    const caseRoot = join(root, name)
+    await mkdir(caseRoot, { recursive: true })
+    const harness = await createInstallerHarness(caseRoot)
+    const stateRoot = join(harness.installRoot, "var/lib/chariox")
+    const legacyHome = join(stateRoot, "home")
+    const managedHome = join(harness.installRoot, "home/chariox")
+    const completion = join(stateRoot, "home-migration-complete")
+    await mkdir(join(legacyHome, "repositories/repo-1"), { recursive: true })
+    await mkdir(join(legacyHome, "managed"), { recursive: true })
+    await mkdir(join(legacyHome, "kernels/active"), { recursive: true })
+    await writeFile(join(legacyHome, "repositories/repo-1/HEAD"), "legacy-repository\n")
+    await writeFile(join(legacyHome, "managed/bootstrap-receipt.json"), "legacy-receipt\n")
+    await writeFile(join(legacyHome, "kernels/active/kernel-1.json"), "legacy-presence\n")
+    const env = {
+      ...process.env,
+      PATH: `${harness.bin}:${process.env.PATH}`,
+      HARNESS_STATE: harness.state,
+      CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+      CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+    }
+    return {
+      harness,
+      stateRoot,
+      legacyHome,
+      managedHome,
+      completion,
+      faultMarker: harness.migrationFaultMarker,
+      journal: join(stateRoot, "home-migration.json"),
+      controlPath: join(stateRoot, "kernels/active"),
+      args: installerArguments(rootfs, digest, fixture),
+      env,
+    }
+  }
+
+  const assertMigrated = async (migrationCase) => {
+    assert.equal(await lstat(migrationCase.legacyHome).then(() => true, () => false), false)
+    assert.equal(
+      await readFile(join(migrationCase.managedHome, "repositories/repo-1/HEAD"), "utf8"),
+      "legacy-repository\n",
+    )
+    assert.equal(
+      await readFile(join(migrationCase.stateRoot, "managed/bootstrap-receipt.json"), "utf8"),
+      "legacy-receipt\n",
+    )
+    assert.equal(
+      await readFile(join(migrationCase.controlPath, "kernel-1.json"), "utf8"),
+      "legacy-presence\n",
+    )
+    assert.equal(await readFile(migrationCase.completion, "utf8"), "complete\n")
+    assert.equal((await stat(migrationCase.journal)).uid, 0)
+    assert.equal((await stat(migrationCase.journal)).mode & 0o777, 0o600)
+  }
+
+  const rootRenameCase = await createLegacyCase("after-root-rename")
+  const rootRenameProcess = spawn(installer, rootRenameCase.args, {
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...rootRenameCase.env,
+      HARNESS_MIGRATION_KILL_AFTER_ROOT_RENAME: "1",
+      HARNESS_MIGRATION_LEGACY_HOME: rootRenameCase.legacyHome,
+      HARNESS_MIGRATION_MANAGED_HOME: rootRenameCase.managedHome,
+      HARNESS_MIGRATION_FAULT_MARKER: rootRenameCase.faultMarker,
+    },
+  })
+  let rootRenameStderr = ""
+  rootRenameProcess.stderr.on("data", (chunk) => { rootRenameStderr += chunk.toString() })
+  const rootRenameExit = once(rootRenameProcess, "exit")
+  const rootRenamePgid = processGroupId(rootRenameProcess.pid)
+  context.after(() => killProcessGroup(rootRenamePgid))
+  try {
+    await waitForPath(rootRenameCase.faultMarker)
+  } catch (error) {
+    killProcessGroup(rootRenamePgid)
+    throw new Error(`${error.message}: ${rootRenameStderr}`)
+  }
+  assert.equal(await readFile(rootRenameCase.faultMarker, "utf8"), "root-renamed\n")
+  killProcessGroup(rootRenamePgid)
+  let rootRenameResult
+  try {
+    rootRenameResult = await withTimeout(
+      rootRenameExit,
+      "root-rename migration interruption timed out",
+    )
+  } catch (error) {
+    killProcessGroup(rootRenamePgid)
+    const state = await Promise.all([
+      lstat(rootRenameCase.managedHome).then(() => "managed", () => "no-managed"),
+      lstat(rootRenameCase.legacyHome).then(() => "legacy", () => "no-legacy"),
+      lstat(rootRenameCase.journal).then(() => "journal", () => "no-journal"),
+      lstat(rootRenameCase.completion).then(() => "complete", () => "no-complete"),
+    ])
+    throw new Error(`${error.message}: ${state.join(",")}; pid=${rootRenameProcess.pid}; stderr=${rootRenameStderr}`)
+  }
+  await waitForProcessGroupExit(rootRenamePgid, "root-rename migration")
+  const [rootRenameCode] = rootRenameResult
+  assert.notEqual(rootRenameCode, 0)
+  assert.equal(await lstat(rootRenameCase.journal).then(() => true, () => false), true)
+  assert.equal(await lstat(rootRenameCase.completion).then(() => true, () => false), false)
+  const rootRenameRetry = spawnSync(installer, rootRenameCase.args, {
+    encoding: "utf8",
+    env: rootRenameCase.env,
+    timeout: 20_000,
+    killSignal: "SIGKILL",
+  })
+  assert.equal(rootRenameRetry.status, 0, rootRenameRetry.stderr)
+  await assertMigrated(rootRenameCase)
+
+  const controlMoveCase = await createLegacyCase("after-control-move")
+  const controlMoveProcess = spawn(installer, controlMoveCase.args, {
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...controlMoveCase.env,
+      HARNESS_MIGRATION_KILL_AFTER_CONTROL_PATH: controlMoveCase.controlPath,
+      HARNESS_MIGRATION_FAULT_MARKER: controlMoveCase.faultMarker,
+    },
+  })
+  let controlMoveStderr = ""
+  controlMoveProcess.stderr.on("data", (chunk) => { controlMoveStderr += chunk.toString() })
+  const controlMoveExit = once(controlMoveProcess, "exit")
+  const controlMovePgid = processGroupId(controlMoveProcess.pid)
+  context.after(() => killProcessGroup(controlMovePgid))
+  try {
+    await waitForPath(controlMoveCase.faultMarker)
+  } catch (error) {
+    killProcessGroup(controlMovePgid)
+    throw new Error(`${error.message}: ${controlMoveStderr}`)
+  }
+  assert.equal(await readFile(controlMoveCase.faultMarker, "utf8"), "control-moved\n")
+  killProcessGroup(controlMovePgid)
+  let controlMoveResult
+  try {
+    controlMoveResult = await withTimeout(
+      controlMoveExit,
+      "control-state migration interruption timed out",
+    )
+  } catch (error) {
+    killProcessGroup(controlMovePgid)
+    const state = await Promise.all([
+      lstat(controlMoveCase.managedHome).then(() => "managed", () => "no-managed"),
+      lstat(controlMoveCase.legacyHome).then(() => "legacy", () => "no-legacy"),
+      lstat(controlMoveCase.journal).then(() => "journal", () => "no-journal"),
+      lstat(controlMoveCase.controlPath).then(() => "control", () => "no-control"),
+      lstat(controlMoveCase.completion).then(() => "complete", () => "no-complete"),
+    ])
+    throw new Error(`${error.message}: ${state.join(",")}; pid=${controlMoveProcess.pid}; stderr=${controlMoveStderr}`)
+  }
+  await waitForProcessGroupExit(controlMovePgid, "control-state migration")
+  const [controlMoveCode] = controlMoveResult
+  assert.notEqual(controlMoveCode, 0)
+  assert.equal(await lstat(controlMoveCase.journal).then(() => true, () => false), true)
+  assert.equal(await lstat(controlMoveCase.completion).then(() => true, () => false), false)
+  const controlMoveRetry = spawnSync(installer, controlMoveCase.args, {
+    encoding: "utf8",
+    env: controlMoveCase.env,
+    timeout: 20_000,
+    killSignal: "SIGKILL",
+  })
+  assert.equal(controlMoveRetry.status, 0, controlMoveRetry.stderr)
+  await assertMigrated(controlMoveCase)
+
+  const replacementCase = await createLegacyCase("source-replacement")
+  const replacement = spawnSync(installer, replacementCase.args, {
+    encoding: "utf8",
+    env: {
+      ...replacementCase.env,
+      HARNESS_MIGRATION_REPLACE_SOURCE: "1",
+      HARNESS_MIGRATION_LEGACY_HOME: replacementCase.legacyHome,
+    },
+    timeout: 20_000,
+    killSignal: "SIGKILL",
+  })
+  assert.equal(replacement.status, 1)
+  assert.match(replacement.stderr, /identity changed during migration/)
+  assert.equal(await lstat(replacementCase.managedHome).then(() => true, () => false), false)
+  assert.equal(await lstat(replacementCase.legacyHome).then(() => true, () => false), true)
+  assert.equal(await lstat(`${replacementCase.legacyHome}.original`).then(() => true, () => false), true)
+  assert.equal(
+    await readFile(join(`${replacementCase.legacyHome}.original`, "repositories/repo-1/HEAD"), "utf8"),
+    "legacy-repository\n",
+  )
+
+  const ownershipCaseRoot = join(root, "ownership-recovery")
+  await mkdir(ownershipCaseRoot, { recursive: true })
+  const ownershipHarness = await createInstallerHarness(ownershipCaseRoot)
+  const ownershipStateRoot = join(ownershipHarness.installRoot, "var/lib/chariox")
+  const ownershipHome = join(ownershipHarness.installRoot, "home/chariox")
+  const ownershipState = join(ownershipHome, ".chariox")
+  await mkdir(ownershipStateRoot, { recursive: true })
+  await mkdir(ownershipState, { recursive: true })
+  await writeFile(join(ownershipHome, "user-file"), "must-survive\n")
+  await chmod(ownershipHome, 0o755)
+  await chmod(ownershipState, 0o755)
+  const ownershipEnv = {
+    ...process.env,
+    PATH: `${ownershipHarness.bin}:${process.env.PATH}`,
+    HARNESS_STATE: ownershipHarness.state,
+    CHARIOX_IMAGE_INSTALL_ROOT: ownershipHarness.installRoot,
+    CHARIOX_IMAGE_INSTALL_LOCK: join(ownershipHarness.state, "install.lock"),
+  }
+  const ownershipResult = spawnSync(
+    installer,
+    installerArguments(rootfs, digest, fixture),
+    { encoding: "utf8", env: ownershipEnv, timeout: 20_000, killSignal: "SIGKILL" },
+  )
+  assert.equal(ownershipResult.status, 0, ownershipResult.stderr)
+  assert.equal(await readFile(join(ownershipHome, "user-file"), "utf8"), "must-survive\n")
+  assert.equal((await stat(ownershipHome)).mode & 0o777, 0o700)
+  assert.equal((await stat(ownershipState)).mode & 0o777, 0o700)
+  const ownershipChowns = await readFile(ownershipHarness.chownLog, "utf8")
+  assert.match(ownershipChowns, new RegExp(`${ownershipHome}\\t998\\t998`))
+  assert.match(ownershipChowns, new RegExp(`${ownershipState}\\t998\\t998`))
 })
 
 test("managed image installer rejects a linked artifact ancestor before host mutation", async (context) => {
@@ -1016,7 +2233,7 @@ test("managed image installer rejects a linked artifact ancestor before host mut
   const harness = await createInstallerHarness(root)
   const result = spawnSync(
     installer,
-    [rootfs, packaged.stdout.trim(), fixture.trustedPublicKey],
+    installerArguments(rootfs, packaged.stdout.trim(), fixture),
     {
       encoding: "utf8",
       env: {
@@ -1034,6 +2251,10 @@ test("managed image installer rejects a linked artifact ancestor before host mut
 })
 
 test("managed image installer atomically pivots current to a different release", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-pivot-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const firstRoot = join(root, "first-fixture")
@@ -1058,12 +2279,23 @@ test("managed image installer atomically pivots current to a different release",
     CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
   }
-  const installRelease = (output, packaged, fixture, environment = env) => spawnSync(installer, [
-    join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey,
-  ], { encoding: "utf8", env: environment })
+  const installRelease = (output, packaged, fixture, environment = env) =>
+    spawnSync(
+      installer,
+      installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture),
+      { encoding: "utf8", env: environment },
+    )
   const first = installRelease(firstOutput, firstPackage, firstFixture)
   assert.equal(first.status, 0, first.stderr)
   const current = join(harness.installRoot, "usr/lib/chariox/current")
+  assert.equal(await readlink(current), `releases/${firstPackage.stdout.trim().slice(7)}`)
+
+  const failedLinger = installRelease(secondOutput, secondPackage, secondFixture, {
+    ...env,
+    HARNESS_LOGINCTL_FAIL: "1",
+  })
+  assert.equal(failedLinger.status, 1)
+  assert.match(failedLinger.stderr, /restored previous current release/)
   assert.equal(await readlink(current), `releases/${firstPackage.stdout.trim().slice(7)}`)
 
   const failedSecond = installRelease(secondOutput, secondPackage, secondFixture, {
@@ -1084,6 +2316,10 @@ test("managed image installer atomically pivots current to a different release",
 })
 
 test("a terminated managed image install releases the lock for a concurrent install", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-lock-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
@@ -1098,7 +2334,7 @@ test("a terminated managed image install releases the lock for a concurrent inst
     CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
   }
-  const args = [join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey]
+  const args = installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture)
   const first = spawn(installer, args, { env: { ...env, HARNESS_FLOCK_ID: "first" } })
   context.after(() => {
     first.kill("SIGKILL")
@@ -1130,14 +2366,16 @@ test("managed image installer has no runtime start or network path", async () =>
   const contents = await readFile(installer, "utf8")
   assert.match(contents, /if \[ "\$\(id -u\)" -ne 0 \]/)
   assert.match(contents, /node "\$script_root\/verify-image-release\.mjs"/)
-  assert.match(contents, /managed kernel state root is not pristine/)
+  assert.match(contents, /managed kernel state root contains an unrecognized entry/)
   assert.match(contents, /groupadd --system chariox/)
   assert.match(contents, /groupadd --system chariox-docker/)
   assert.match(contents, /groupadd --system chariox-slice/)
-  assert.match(contents, /useradd --system --gid chariox --home-dir \/var\/lib\/chariox\/home/)
+  assert.match(contents, /useradd --system --gid chariox --home-dir \/home\/chariox/)
   assert.match(contents, /useradd --system --gid chariox-docker --home-dir \/var\/lib\/chariox-docker\/home/)
   assert.match(contents, /systemctl daemon-reload/)
-  assert.match(contents, /systemctl enable chariox-managed-bootstrap\.service/)
+  assert.match(contents, /path1\)[\s\S]*selected_bootstrap_service=chariox-path1-managed-bootstrap\.service/)
+  assert.match(contents, /shared_host\) selected_bootstrap_service=chariox-managed-bootstrap\.service/)
+  assert.match(contents, /systemctl enable "\$selected_bootstrap_service"/)
   const lockIndex = contents.indexOf("flock 9")
   for (const mutation of ["state_entry=$(find", "groupadd --system", "useradd --system", "usermod --append", "\ninstall -d", "releases_root="]) {
     assert.ok(lockIndex >= 0 && lockIndex < contents.indexOf(mutation), `${mutation} must remain behind the install lock`)

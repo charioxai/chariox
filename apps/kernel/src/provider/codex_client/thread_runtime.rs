@@ -77,6 +77,7 @@ impl CodexClient {
         let mut params = json!({
             "approvalPolicy": policy.approval_policy,
             "approvalsReviewer": "user",
+            "ephemeral": false,
             "sandbox": policy.sandbox,
             "personality": "pragmatic",
             "persistExtendedHistory": true,
@@ -113,6 +114,7 @@ impl CodexClient {
         execution_mode: AgentExecutionMode,
         permission_level: AgentPermissionLevel,
         developer_instructions: Option<&str>,
+        buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
         let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         crate::logging::info_with_fields(
@@ -154,7 +156,13 @@ impl CodexClient {
         {
             params["developerInstructions"] = json!(developer_instructions);
         }
-        self.send_request(socket, next_request_id, "thread/resume", params)
+        self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "thread/resume",
+            params,
+            buffered_notifications,
+        )
     }
 
     pub fn turn_start(
@@ -301,6 +309,16 @@ impl CodexClient {
     ) -> Result<BTreeMap<String, Value>, DaemonError> {
         let mut overrides = policy.config_overrides.clone();
         overrides.extend(self.provider_config_overrides.clone());
+        if self.read_only_discovery_permissions {
+            // Provider overrides are flat Codex config paths. Remove any
+            // caller-provided MCP configuration as well as the normal runtime
+            // binding below, then explicitly replace the process-level MCP
+            // table. The managed Codex process may have been launched with
+            // MCP entries in its argv before this discovery thread starts.
+            overrides.retain(|key, _| key != "mcp_servers" && !key.starts_with("mcp_servers."));
+            overrides.insert("mcp_servers".to_string(), json!({}));
+            return Ok(overrides);
+        }
         let provider_mcp_servers = codex_provider_facing_mcp_proxy_configs(
             &self.mcp_servers,
             self.runtime_mcp_server_url.as_deref(),

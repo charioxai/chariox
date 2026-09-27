@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -12,11 +12,36 @@ use crate::error::DaemonError;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_KEY_BYTES: u64 = 1024;
 const MAX_SIGNATURE_BYTES: u64 = 1024;
+const MAX_ATTESTATION_BYTES: u64 = 16 * 1024;
+const MAX_SERVICE_UNIT_BYTES: u64 = 32 * 1024;
+const MANAGED_BOOTSTRAP_PATH: &str = "/usr/local/bin/chariox-managed-bootstrap";
+const MANAGED_BOOTSTRAP_SERVICE_PATH: &str =
+    "/etc/systemd/system/chariox-managed-bootstrap.service";
+const RETIRED_SERVICE_NAMES: &[&str] = &[
+    "chariox-disposable-worker-bootstrap.service",
+    "chariox-kernel.service",
+    "chariox-relay.service",
+];
+const BUILD_ATTESTATION_PATH: &str = "/usr/lib/chariox/build-attestation.json";
+const BUILD_ATTESTATION_SIGNATURE_PATH: &str = "/usr/lib/chariox/build-attestation.sig";
+const BUILDER_PUBLIC_KEY_PATH: &str = "/usr/lib/chariox/builder-public-key";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VerifiedRelease {
     pub(super) digest: String,
     pub(super) kernel_binary: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VerifiedReleaseEvidence {
+    pub(super) digest: String,
+    pub(super) source_commit: String,
+    pub(super) source_tree: String,
+    pub(super) target: String,
+    pub(super) active_release_path: PathBuf,
+    pub(super) manifest_signature_verified: bool,
+    pub(super) manifest_digest_verified: bool,
+    pub(super) kernel_artifact_verified: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +58,23 @@ struct ReleaseManifest {
 struct ReleaseArtifact {
     name: String,
     path: PathBuf,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BuildAttestation {
+    schema_version: u32,
+    source_commit: String,
+    source_tree: String,
+    target: String,
+    artifacts: Vec<BuildArtifact>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BuildArtifact {
+    name: String,
     sha256: String,
 }
 
@@ -116,11 +158,269 @@ pub(super) fn verify_release(
     })
 }
 
+pub(super) fn verify_release_evidence(
+    manifest_path: &Path,
+    signature_path: &Path,
+    public_key_path: &Path,
+    expected_digest: &str,
+    expected_kernel_binary: &Path,
+    trusted_builder_public_key_path: Option<&Path>,
+) -> Result<VerifiedReleaseEvidence, DaemonError> {
+    let verified = verify_release(
+        manifest_path,
+        signature_path,
+        public_key_path,
+        expected_digest,
+        expected_kernel_binary,
+    )?;
+    let resolved = resolve_release_paths(
+        manifest_path,
+        signature_path,
+        public_key_path,
+        expected_kernel_binary,
+        expected_digest,
+    )?;
+    let active_release_path = resolved
+        .active_release_root
+        .ok_or_else(|| release_error("installed release has no active versioned layout"))?;
+    let manifest_bytes =
+        read_bounded_regular_file(&resolved.manifest, MAX_MANIFEST_BYTES, "release manifest")?;
+    let manifest: ReleaseManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|_| release_error("release manifest is invalid"))?;
+    let source_commit = manifest
+        .source_commit
+        .clone()
+        .ok_or_else(|| release_error("release manifest source identity is unavailable"))?;
+    let source_tree = manifest
+        .source_tree
+        .clone()
+        .ok_or_else(|| release_error("release manifest source identity is unavailable"))?;
+    let attestation = read_pinned_release_artifact(
+        &manifest,
+        "chariox-build-attestation",
+        BUILD_ATTESTATION_PATH,
+        &active_release_path,
+    )?;
+    let attestation_signature = read_pinned_release_artifact(
+        &manifest,
+        "chariox-build-attestation-signature",
+        BUILD_ATTESTATION_SIGNATURE_PATH,
+        &active_release_path,
+    )?;
+    let builder_public_key = read_pinned_release_artifact(
+        &manifest,
+        "chariox-builder-public-key",
+        BUILDER_PUBLIC_KEY_PATH,
+        &active_release_path,
+    )?;
+    let attestation_bytes =
+        read_bounded_regular_file(&attestation, MAX_ATTESTATION_BYTES, "build attestation")?;
+    let signature_bytes = read_bounded_regular_file(
+        &attestation_signature,
+        MAX_SIGNATURE_BYTES,
+        "build attestation signature",
+    )?;
+    let public_key_bytes =
+        read_bounded_regular_file(&builder_public_key, MAX_KEY_BYTES, "builder public key")?;
+    let packaged_verifying_key = decode_verifying_key(&public_key_bytes)?;
+    let verifying_key = if let Some(trusted_path) = trusted_builder_public_key_path {
+        if !trusted_path.is_absolute()
+            || trusted_path == Path::new("/")
+            || trusted_path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(release_error(
+                "trusted builder public key path must be absolute and normalized",
+            ));
+        }
+        let metadata = fs::symlink_metadata(trusted_path)
+            .map_err(|error| release_io_error("trusted builder public key", error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(release_error(
+                "trusted builder public key must not be a symlink",
+            ));
+        }
+        if !metadata.is_file() || metadata.len() > MAX_KEY_BYTES {
+            return Err(release_error(
+                "trusted builder public key is not a bounded regular file",
+            ));
+        }
+        let trusted_path = fs::canonicalize(trusted_path)
+            .map_err(|error| release_io_error("trusted builder public key", error))?;
+        let managed_image_root = resolved
+            .managed_image_root
+            .as_deref()
+            .ok_or_else(|| release_error("installed release has no managed image root"))?;
+        if trusted_path.starts_with(managed_image_root) {
+            return Err(release_error(
+                "trusted builder public key must be outside the managed release image",
+            ));
+        }
+        let trusted_bytes =
+            read_bounded_regular_file(&trusted_path, MAX_KEY_BYTES, "trusted builder public key")?;
+        let trusted_key = decode_verifying_key(&trusted_bytes)?;
+        if trusted_key.to_bytes() != packaged_verifying_key.to_bytes() {
+            return Err(release_error(
+                "trusted builder public key does not match the signed release key",
+            ));
+        }
+        trusted_key
+    } else {
+        packaged_verifying_key
+    };
+    let signature = decode_signature(&signature_bytes)?;
+    verifying_key
+        .verify(&attestation_bytes, &signature)
+        .map_err(|_| release_error("build attestation signature is invalid"))?;
+    let attestation: BuildAttestation = serde_json::from_slice(&attestation_bytes)
+        .map_err(|_| release_error("build attestation is invalid"))?;
+    if attestation.schema_version != 1
+        || !is_git_object_id(&attestation.source_commit)
+        || !is_git_object_id(&attestation.source_tree)
+        || attestation.source_commit != source_commit
+        || attestation.source_tree != source_tree
+        || attestation.target != expected_release_target()
+        || attestation.artifacts.len() != 3
+    {
+        return Err(release_error(
+            "build attestation source identity or target is invalid",
+        ));
+    }
+    for (artifact, expected_name) in attestation.artifacts.iter().zip([
+        "chariox-kernel",
+        "chariox-managed-bootstrap",
+        "chariox-relay",
+    ]) {
+        if artifact.name != expected_name {
+            return Err(release_error(
+                "build attestation artifact order or identity is invalid",
+            ));
+        }
+        validate_digest(&artifact.sha256)?;
+    }
+    let kernel_artifact = &attestation.artifacts[0];
+    let manifest_kernel = manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "chariox-kernel")
+        .ok_or_else(|| release_error("release manifest does not contain the kernel artifact"))?;
+    if kernel_artifact.sha256 != manifest_kernel.sha256 {
+        return Err(release_error(
+            "build attestation kernel artifact does not match the signed release",
+        ));
+    }
+    let manifest_supervisor = manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "chariox-managed-bootstrap")
+        .ok_or_else(|| {
+            release_error("release manifest does not contain the managed bootstrap artifact")
+        })?;
+    let _supervisor = read_pinned_release_artifact(
+        &manifest,
+        "chariox-managed-bootstrap",
+        MANAGED_BOOTSTRAP_PATH,
+        &active_release_path,
+    )?;
+    if manifest_supervisor.path != Path::new(MANAGED_BOOTSTRAP_PATH)
+        || manifest_supervisor.sha256 != attestation.artifacts[1].sha256
+    {
+        return Err(release_error(
+            "build attestation supervisor artifact does not match the signed release",
+        ));
+    }
+    Ok(VerifiedReleaseEvidence {
+        digest: verified.digest,
+        source_commit,
+        source_tree,
+        target: attestation.target,
+        active_release_path,
+        manifest_signature_verified: true,
+        manifest_digest_verified: true,
+        kernel_artifact_verified: true,
+    })
+}
+
+pub(super) fn verify_managed_bootstrap_service_binding(
+    release: &VerifiedReleaseEvidence,
+    service_unit_path: &Path,
+    service_wants_path: &Path,
+) -> Result<(), DaemonError> {
+    let manifest_path = release
+        .active_release_path
+        .join("usr/lib/chariox/release-manifest.json");
+    let manifest_bytes =
+        read_bounded_regular_file(&manifest_path, MAX_MANIFEST_BYTES, "release manifest")?;
+    let manifest: ReleaseManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|_| release_error("release manifest is invalid"))?;
+    let service = read_pinned_release_artifact(
+        &manifest,
+        "chariox-managed-bootstrap.service",
+        MANAGED_BOOTSTRAP_SERVICE_PATH,
+        &release.active_release_path,
+    )?;
+    let service_bytes = read_bounded_regular_file(
+        &service,
+        MAX_SERVICE_UNIT_BYTES,
+        "managed bootstrap service",
+    )?;
+    let service_text = std::str::from_utf8(&service_bytes)
+        .map_err(|_| release_error("managed bootstrap service is not UTF-8"))?;
+    if !service_text
+        .lines()
+        .any(|line| line.trim() == "ExecStart=/usr/local/bin/chariox-managed-bootstrap")
+        || service_text.lines().any(|line| {
+            line.trim() == "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
+        })
+    {
+        return Err(release_error(
+            "managed bootstrap service is not bound to the managed bootstrap binary",
+        ));
+    }
+    require_release_symlink(service_unit_path, &service)?;
+    require_release_symlink(service_wants_path, &service)?;
+    let service_dir = service_unit_path
+        .parent()
+        .ok_or_else(|| release_error("managed bootstrap service path has no directory"))?;
+    let wants_dir = service_wants_path
+        .parent()
+        .ok_or_else(|| release_error("managed bootstrap wants path has no directory"))?;
+    for name in RETIRED_SERVICE_NAMES {
+        for path in [service_dir.join(name), wants_dir.join(name)] {
+            if fs::symlink_metadata(&path).is_ok() {
+                return Err(release_error("retired Chariox service residue is present"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_release_symlink(path: &Path, expected: &Path) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| release_io_error("managed bootstrap service binding", error))?;
+    if !metadata.file_type().is_symlink() {
+        return Err(release_error(
+            "managed bootstrap service binding is not a release symlink",
+        ));
+    }
+    let actual = fs::canonicalize(path)
+        .map_err(|error| release_io_error("managed bootstrap service binding", error))?;
+    if actual != expected {
+        return Err(release_error(
+            "managed bootstrap service is not bound to the active release",
+        ));
+    }
+    Ok(())
+}
+
 struct ResolvedReleasePaths {
     manifest: PathBuf,
     signature: PathBuf,
     public_key: PathBuf,
     kernel: PathBuf,
+    active_release_root: Option<PathBuf>,
+    managed_image_root: Option<PathBuf>,
 }
 
 fn resolve_release_paths(
@@ -145,6 +445,8 @@ fn resolve_release_paths(
             signature: signature.to_path_buf(),
             public_key: public_key.to_path_buf(),
             kernel: kernel.to_path_buf(),
+            active_release_root: None,
+            managed_image_root: None,
         });
     }
     if !symlinked.iter().all(|value| *value) {
@@ -183,12 +485,59 @@ fn resolve_release_paths(
             "installed release path is outside the pinned release",
         ));
     }
+    let managed_image_root = fs::canonicalize(
+        manifest
+            .parent()
+            .ok_or_else(|| release_error("release manifest path has no parent"))?,
+    )
+    .map_err(|error| release_io_error("release image root", error))?;
     Ok(ResolvedReleasePaths {
         manifest: resolved[0].clone(),
         signature: resolved[1].clone(),
         public_key: resolved[2].clone(),
         kernel: resolved[3].clone(),
+        active_release_root: Some(release_root),
+        managed_image_root: Some(managed_image_root),
     })
+}
+
+fn read_pinned_release_artifact(
+    manifest: &ReleaseManifest,
+    name: &str,
+    expected_path: &str,
+    release_root: &Path,
+) -> Result<PathBuf, DaemonError> {
+    let mut artifacts = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.name == name);
+    let artifact = artifacts
+        .next()
+        .ok_or_else(|| release_error(&format!("release manifest does not contain {name}")))?;
+    if artifacts.next().is_some() || artifact.path != Path::new(expected_path) {
+        return Err(release_error(&format!(
+            "release manifest {name} artifact is ambiguous"
+        )));
+    }
+    validate_digest(&artifact.sha256)?;
+    let relative = expected_path
+        .strip_prefix('/')
+        .ok_or_else(|| release_error("release artifact path is invalid"))?;
+    let path = release_root.join(relative);
+    if digest_regular_file(&path)? != artifact.sha256 {
+        return Err(release_error(&format!(
+            "release manifest {name} artifact digest does not match the signed release"
+        )));
+    }
+    Ok(path)
+}
+
+fn expected_release_target() -> &'static str {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "x86_64-unknown-linux-gnu"
+    } else {
+        "unsupported"
+    }
 }
 
 fn release_root_for_manifest(path: &Path) -> Option<PathBuf> {

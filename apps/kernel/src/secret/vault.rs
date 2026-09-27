@@ -1030,7 +1030,7 @@ fn unseal_transferred_vault_key(
         purpose,
         &aad,
     )?;
-    let plaintext = Zeroizing::new(decrypted.plaintext);
+    let plaintext = decrypted.plaintext;
     let key: [u8; KEY_LEN] = plaintext.as_slice().try_into().map_err(|_| {
         secret_error("transferred Vault unlock key has an invalid length".to_string())
     })?;

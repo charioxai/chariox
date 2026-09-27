@@ -5,9 +5,12 @@ impl KernelRuntimeOwnedState {
         &self,
         session: crate::session::RuntimeSession,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
         let session_id = session.id().to_string();
         self.session_store.restore_session(session);
-        self.session_snapshot(&session_id)
+        activity_mutation.record();
+        let session = self.session_snapshot(&session_id)?;
+        Ok(session)
     }
 
     pub(super) fn register_runtime_interaction(
@@ -54,9 +57,6 @@ impl KernelRuntimeOwnedState {
             });
         }
         session.add_active_interaction(interaction.clone());
-        self.restore_session_and_publish_projection(session)?;
-        self.terminal_stream
-            .notify_terminal_projection_change(session_id);
         self.pending_interactions.write().insert(
             interaction.id().to_string(),
             super::PendingInteraction {
@@ -64,6 +64,12 @@ impl KernelRuntimeOwnedState {
                 responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
             },
         );
+        if let Err(error) = self.restore_session_and_publish_projection(session) {
+            self.pending_interactions.write().remove(interaction.id());
+            return Err(error);
+        }
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "registered runtime interaction",

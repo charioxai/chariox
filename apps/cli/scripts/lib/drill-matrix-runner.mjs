@@ -619,7 +619,7 @@ function collectArtifactHintsFromTextLine(hints, line) {
 }
 
 function isArtifactKey(key) {
-  return /artifact|rootDir|manifestPath/i.test(key)
+  return /artifact|evidence|rootDir|manifestPath/i.test(key)
 }
 
 function looksLikeArtifactPath(value) {

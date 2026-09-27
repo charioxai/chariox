@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 
-import { createHash, createPrivateKey, createPublicKey, randomBytes, sign } from "node:crypto"
+import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const BUILD_TARGET = "x86_64-unknown-linux-gnu"
-const BUILDER_STAGE = "rust-builder"
+const ARTIFACT_STAGE = "managed-release-artifacts"
 const BUILDER_DOCKERFILE = "apps/kernel/slice-linux-docker/docker/Dockerfile"
+const ARTIFACTS = ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"]
 const REQUIRED_OPTIONS = ["source-repository", "source-commit", "builder-signing-key", "output"]
+const BUILDER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 
 function usage() {
-  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --output <new-directory>"
+  return "usage: build-managed-kernel-release --source-repository <git-worktree> --source-commit <40-hex-commit> --builder-signing-key <ed25519-key> --output <new-directory> [--builder <name>]"
 }
 
 function parseOptions(argv) {
@@ -23,10 +26,13 @@ function parseOptions(argv) {
     const value = argv[index + 1]
     if (!option?.startsWith("--") || !value || value.startsWith("--")) throw new Error(usage())
     const name = option.slice(2)
-    if (!REQUIRED_OPTIONS.includes(name) || options.has(name)) throw new Error(usage())
-    options.set(name, name === "source-commit" ? value : resolve(value))
+    if (![...REQUIRED_OPTIONS, "builder"].includes(name) || options.has(name)) throw new Error(usage())
+    if (name === "builder" && !BUILDER_NAME_PATTERN.test(value)) {
+      throw new Error("builder name must be 1 to 63 ASCII letters, digits, dots, underscores, or hyphens")
+    }
+    options.set(name, name === "source-commit" || name === "builder" ? value : resolve(value))
   }
-  if (options.size !== REQUIRED_OPTIONS.length) throw new Error(usage())
+  if (!REQUIRED_OPTIONS.every((name) => options.has(name))) throw new Error(usage())
   return Object.fromEntries(options)
 }
 
@@ -111,7 +117,7 @@ async function build(options) {
   const scratch = await mkdtemp(join(tmpdir(), "chariox-managed-build."))
   const source = join(scratch, "source")
   const pending = join(dirname(options.output), `.new-${basename(options.output)}-${process.pid}`)
-  const builderTag = `chariox-managed-builder:${tree}-${process.pid}-${randomBytes(8).toString("hex")}`
+  const exported = join(scratch, "artifacts")
   const dockerEnvironment = Object.fromEntries(
     ["PATH", "HOME", "DOCKER_HOST"].flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []),
   )
@@ -124,9 +130,10 @@ async function build(options) {
     const dockerBuild = spawnSync(
       "docker",
       [
-        "build", "--pull", "--platform", "linux/amd64", "--target", BUILDER_STAGE,
+        "buildx", "build", ...(options.builder ? ["--builder", options.builder] : []),
+        "--pull", "--platform", "linux/amd64", "--target", ARTIFACT_STAGE,
         "--file", join(source, BUILDER_DOCKERFILE),
-        "--tag", builderTag,
+        "--output", `type=local,dest=${exported}`,
         source,
       ],
       {
@@ -134,37 +141,21 @@ async function build(options) {
         env: dockerEnvironment,
       },
     )
-    if (dockerBuild.status !== 0) throw new Error(`locked managed release builder image failed with status ${dockerBuild.status}`)
-    const inspected = spawnSync(
-      "docker",
-      ["image", "inspect", "--format", "{{.Id}}", builderTag],
-      { encoding: "utf8", env: dockerEnvironment },
-    )
-    if (inspected.status !== 0) throw new Error(`managed release builder image inspection failed: ${inspected.stderr.trim()}`)
-    const builderImage = inspected.stdout.trim()
-    if (!/^sha256:[a-f0-9]{64}$/.test(builderImage)) {
-      throw new Error("managed release builder image ID is invalid")
+    if (dockerBuild.status !== 0) throw new Error(`locked managed release artifact export failed with status ${dockerBuild.status}`)
+    const exportMetadata = await lstat(exported)
+    if (exportMetadata.isSymbolicLink() || !exportMetadata.isDirectory()) {
+      throw new Error("managed release artifact export is not a directory")
     }
-    for (const name of ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"]) {
+    const exportedNames = (await readdir(exported)).sort()
+    if (exportedNames.length !== ARTIFACTS.length || exportedNames.some((name, index) => name !== ARTIFACTS[index])) {
+      throw new Error("managed release artifact export contains an unexpected file set")
+    }
+    for (const name of ARTIFACTS) {
+      const exportedBinary = join(exported, name)
+      const metadata = await lstat(exportedBinary)
+      if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error(`build did not export regular ${name}`)
       const sourceBinary = join(pending, name)
-      const output = await open(sourceBinary, "wx", 0o755)
-      let copied
-      try {
-        copied = spawnSync(
-          "docker",
-          [
-            "run", "--rm", "--pull=never", "--platform", "linux/amd64", "--entrypoint", "cat",
-            builderImage,
-            `/opt/chariox-source/target/release/${name}`,
-          ],
-          { encoding: "utf8", env: dockerEnvironment, stdio: ["ignore", output.fd, "pipe"] },
-        )
-      } finally {
-        await output.close()
-      }
-      if (copied.status !== 0) throw new Error(`copy ${name} from managed builder failed: ${copied.stderr.trim()}`)
-      const metadata = await lstat(sourceBinary)
-      if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error(`build did not produce ${name}`)
+      await copyFile(exportedBinary, sourceBinary, constants.COPYFILE_EXCL)
       await chmod(sourceBinary, 0o755)
     }
     const attestation = Buffer.from(JSON.stringify({
@@ -190,7 +181,6 @@ async function build(options) {
     })
     await rename(pending, options.output)
   } finally {
-    spawnSync("docker", ["image", "rm", "-f", builderTag], { stdio: "ignore", env: dockerEnvironment })
     await rm(pending, { recursive: true, force: true })
     await rm(scratch, { recursive: true, force: true })
   }

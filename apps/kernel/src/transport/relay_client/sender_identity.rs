@@ -7,6 +7,47 @@ use crate::runtime::terminal_pairings::public_key_thumbprint;
 
 use super::request_errors::relay_error;
 
+/// Import consent must prove possession of the initiating client's paired key.
+/// Ordinary browser requests retain their existing ephemeral-key behavior.
+pub(super) fn is_browser_import_request(request: &crate::local::LocalDaemonRequest) -> bool {
+    use crate::local::LocalDaemonRequest;
+    matches!(
+        request,
+        LocalDaemonRequest::PrepareBrowserImport(_)
+            | LocalDaemonRequest::ApproveBrowserImport(_)
+            | LocalDaemonRequest::ClaimBrowserImportSource(_)
+            | LocalDaemonRequest::AuthorizeBrowserImportSource(_)
+            | LocalDaemonRequest::CancelBrowserImport(_)
+    )
+}
+
+pub(super) fn validate_browser_import_sender(
+    request: &crate::local::LocalDaemonRequest,
+    caller_identity: Option<&RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<(), RelayError> {
+    if !is_browser_import_request(request) {
+        return Ok(());
+    }
+    require_browser_import_sender(caller_identity, encrypted_request).map(|_| ())
+}
+
+pub(super) fn require_browser_import_sender<'a>(
+    caller_identity: Option<&'a RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<&'a RelayCallerIdentity, RelayError> {
+    let identity = caller_identity
+        .filter(|identity| identity.subject_kind == RelaySubjectKind::Client)
+        .ok_or_else(|| unauthorized("browser import requires an authenticated client identity"))?;
+    validate_identity_expiry(identity, "client")?;
+    let thumbprint = identity
+        .public_key_thumbprint
+        .as_deref()
+        .ok_or_else(|| unauthorized("browser import requires a sender-bound client identity"))?;
+    validate_sender_key(thumbprint, encrypted_request, "client")?;
+    Ok(identity)
+}
+
 pub(super) fn validate_bound_service_sender(
     caller_identity: Option<&RelayCallerIdentity>,
     encrypted_request: &EncryptedRelayPayload,

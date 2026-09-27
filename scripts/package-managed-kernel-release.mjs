@@ -26,6 +26,7 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
   "Cargo.lock",
   "adapters/rust",
   "apps/aegs-dummy",
+  "apps/browser-session-import",
   "apps/kernel",
   "apps/relay",
   "examples/workflow-code",
@@ -228,6 +229,7 @@ async function normalizeTree(root, timestamp) {
         path.endsWith("/slice-linux-docker/prebuilt/chariox-kernel") ||
         path.endsWith("/slice-linux-docker/prebuilt/chariox-relay") ||
         path.endsWith("/enter-rootless-docker-namespace.sh") ||
+        path.endsWith("/managed-rootless-service.sh") ||
         path.endsWith("/provision-linux-docker-slice.sh") ||
         path.endsWith("/managed-publication-access.sh")
       await chmod(path, executable ? 0o755 : 0o644)
@@ -364,9 +366,29 @@ async function packageRelease(options) {
     rootfs,
     "etc/systemd/system/chariox-managed-bootstrap.service",
   )
+  const path1ServiceDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-path1-managed-bootstrap.service",
+  )
+  const workerServiceDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-disposable-worker-bootstrap.service",
+  )
   const rootlessDockerServiceDestination = join(
     rootfs,
     "etc/systemd/system/chariox-rootless-docker.service",
+  )
+  const dataVolumeAdmissionServiceDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-data-volume-admission.service",
+  )
+  const rootlessDataVolumeDropInDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+  )
+  const quotaAllocatorDataVolumeDropInDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
   )
   const sliceBrokerServiceDestination = join(
     rootfs,
@@ -378,11 +400,41 @@ async function packageRelease(options) {
     "deploy/managed-kernel/chariox-managed-bootstrap.service",
     "managed bootstrap service cannot be read from source commit",
   )
+  const path1ServiceBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "deploy/managed-kernel/chariox-path1-managed-bootstrap.service",
+    "Path-1 managed-home bootstrap service cannot be read from source commit",
+  )
+  const workerServiceBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service",
+    "disposable worker bootstrap service cannot be read from source commit",
+  )
   const rootlessDockerServiceBytes = gitBlob(
     repositoryRoot,
     sourceIdentity.commit,
     "deploy/managed-kernel/chariox-rootless-docker.service",
     "rootless Docker service cannot be read from source commit",
+  )
+  const dataVolumeAdmissionServiceBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service",
+    "data-volume admission service cannot be read from source commit",
+  )
+  const rootlessDataVolumeDropInBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf",
+    "Path-1 rootless Docker data-volume drop-in cannot be read from source commit",
+  )
+  const quotaAllocatorDataVolumeDropInBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+    "Path-1 quota allocator data-volume drop-in cannot be read from source commit",
   )
   const sliceBrokerServiceBytes = gitBlob(
     repositoryRoot,
@@ -392,7 +444,12 @@ async function packageRelease(options) {
   )
   if (
     serviceBytes.length > 64 * 1024 ||
+    path1ServiceBytes.length > 64 * 1024 ||
+    workerServiceBytes.length > 64 * 1024 ||
     rootlessDockerServiceBytes.length > 64 * 1024 ||
+    dataVolumeAdmissionServiceBytes.length > 64 * 1024 ||
+    rootlessDataVolumeDropInBytes.length > 64 * 1024 ||
+    quotaAllocatorDataVolumeDropInBytes.length > 64 * 1024 ||
     sliceBrokerServiceBytes.length > 64 * 1024
   ) {
     throw new Error("managed service unit is too large")
@@ -401,7 +458,12 @@ async function packageRelease(options) {
   await installFile(options.kernel, kernelDestination, 0o755)
   await installFile(options.supervisor, supervisorDestination, 0o755)
   await installBytes(serviceBytes, serviceDestination, 0o644)
+  await installBytes(path1ServiceBytes, path1ServiceDestination, 0o644)
+  await installBytes(workerServiceBytes, workerServiceDestination, 0o644)
   await installBytes(rootlessDockerServiceBytes, rootlessDockerServiceDestination, 0o644)
+  await installBytes(dataVolumeAdmissionServiceBytes, dataVolumeAdmissionServiceDestination, 0o644)
+  await installBytes(rootlessDataVolumeDropInBytes, rootlessDataVolumeDropInDestination, 0o644)
+  await installBytes(quotaAllocatorDataVolumeDropInBytes, quotaAllocatorDataVolumeDropInDestination, 0o644)
   await installBytes(sliceBrokerServiceBytes, sliceBrokerServiceDestination, 0o644)
   await installSliceBuildContext(repositoryRoot, sliceBuildContext, sourceIdentity.commit)
   await replaceFile(options.kernel, sliceKernelDestination, 0o755)
@@ -435,9 +497,29 @@ async function packageRelease(options) {
   if (`sha256:${createHash("sha256").update(serviceBytes).digest("hex")}` !== packagedServiceDigest) {
     throw new Error("managed bootstrap service changed while the release was packaged")
   }
+  const packagedPath1ServiceDigest = await sha256File(path1ServiceDestination)
+  if (`sha256:${createHash("sha256").update(path1ServiceBytes).digest("hex")}` !== packagedPath1ServiceDigest) {
+    throw new Error("Path-1 managed-home bootstrap service changed while the release was packaged")
+  }
+  const packagedWorkerServiceDigest = await sha256File(workerServiceDestination)
+  if (`sha256:${createHash("sha256").update(workerServiceBytes).digest("hex")}` !== packagedWorkerServiceDigest) {
+    throw new Error("disposable worker bootstrap service changed while the release was packaged")
+  }
   const packagedRootlessDockerServiceDigest = await sha256File(rootlessDockerServiceDestination)
   if (`sha256:${createHash("sha256").update(rootlessDockerServiceBytes).digest("hex")}` !== packagedRootlessDockerServiceDigest) {
     throw new Error("rootless Docker service changed while the release was packaged")
+  }
+  const packagedDataVolumeAdmissionServiceDigest = await sha256File(dataVolumeAdmissionServiceDestination)
+  if (`sha256:${createHash("sha256").update(dataVolumeAdmissionServiceBytes).digest("hex")}` !== packagedDataVolumeAdmissionServiceDigest) {
+    throw new Error("data-volume admission service changed while the release was packaged")
+  }
+  const packagedRootlessDataVolumeDropInDigest = await sha256File(rootlessDataVolumeDropInDestination)
+  if (`sha256:${createHash("sha256").update(rootlessDataVolumeDropInBytes).digest("hex")}` !== packagedRootlessDataVolumeDropInDigest) {
+    throw new Error("Path-1 rootless Docker data-volume drop-in changed while the release was packaged")
+  }
+  const packagedQuotaAllocatorDataVolumeDropInDigest = await sha256File(quotaAllocatorDataVolumeDropInDestination)
+  if (`sha256:${createHash("sha256").update(quotaAllocatorDataVolumeDropInBytes).digest("hex")}` !== packagedQuotaAllocatorDataVolumeDropInDigest) {
+    throw new Error("Path-1 quota allocator data-volume drop-in changed while the release was packaged")
   }
   const packagedSliceBrokerServiceDigest = await sha256File(sliceBrokerServiceDestination)
   if (`sha256:${createHash("sha256").update(sliceBrokerServiceBytes).digest("hex")}` !== packagedSliceBrokerServiceDigest) {
@@ -499,9 +581,34 @@ async function packageRelease(options) {
           sha256: packagedServiceDigest,
         },
         {
+          name: "chariox-path1-managed-bootstrap.service",
+          path: "/etc/systemd/system/chariox-path1-managed-bootstrap.service",
+          sha256: packagedPath1ServiceDigest,
+        },
+        {
+          name: "chariox-disposable-worker-bootstrap.service",
+          path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service",
+          sha256: packagedWorkerServiceDigest,
+        },
+        {
           name: "chariox-rootless-docker.service",
           path: "/etc/systemd/system/chariox-rootless-docker.service",
           sha256: packagedRootlessDockerServiceDigest,
+        },
+        {
+          name: "chariox-data-volume-admission.service",
+          path: "/etc/systemd/system/chariox-data-volume-admission.service",
+          sha256: packagedDataVolumeAdmissionServiceDigest,
+        },
+        {
+          name: "chariox-rootless-docker.path1-data-volume.conf",
+          path: "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+          sha256: packagedRootlessDataVolumeDropInDigest,
+        },
+        {
+          name: "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+          path: "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+          sha256: packagedQuotaAllocatorDataVolumeDropInDigest,
         },
         {
           name: "chariox-slice-broker.service",

@@ -8,6 +8,8 @@ use crate::session::unix_epoch_ms;
 const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
 const CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS: u64 = 2_500;
 const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
+const CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX: &str = "startup-workspace-trust:";
+const CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX: &str = "startup-workspace-trust-denied:";
 
 pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
@@ -121,6 +123,46 @@ pub(super) fn write_claude_headless_submit_retry(
 
 pub(super) fn write_claude_headless_startup_wait_marker(context_file: &str) {
     write_claude_native_marker(context_file, &format!("startup-wait:{}", unix_epoch_ms()));
+}
+
+pub(super) fn claude_headless_workspace_trust_interaction_id(context_file: &str) -> Option<String> {
+    claude_native_marker(context_file)
+        .and_then(|marker| {
+            marker
+                .strip_prefix(CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|interaction_id| !interaction_id.is_empty())
+}
+
+pub(super) fn claude_headless_workspace_trust_interaction_marker(marker: &str) -> bool {
+    marker.starts_with(CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX)
+}
+
+pub(super) fn claude_headless_workspace_trust_denied(context_file: &str) -> bool {
+    claude_native_marker(context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with(CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX))
+}
+
+pub(super) fn write_claude_headless_workspace_trust_interaction_marker(
+    context_file: &str,
+    interaction_id: &str,
+) {
+    write_claude_native_marker(
+        context_file,
+        &format!("{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}{interaction_id}"),
+    );
+}
+
+pub(super) fn write_claude_headless_workspace_trust_denied_marker(
+    context_file: &str,
+    interaction_id: &str,
+) {
+    write_claude_native_marker(
+        context_file,
+        &format!("{CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX}{interaction_id}"),
+    );
 }
 
 pub(super) fn claude_headless_bypass_selection_pending(context_file: &str) -> bool {

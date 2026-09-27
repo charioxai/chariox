@@ -16,11 +16,12 @@ use super::RemoteLeaseRuntime;
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct RemoteRuntimeProjectionOutcome {
     pub(crate) accepted: bool,
     pub(crate) completions: Vec<PromptCompletion>,
     pub(crate) provider_failure: Option<RemoteProviderFailure>,
+    pub(crate) remote_dispatches: Vec<crate::app::KernelRemotePromptDispatchIntent>,
 }
 
 #[derive(Debug)]
@@ -79,17 +80,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let mut pumped_output_records = Vec::new();
         let mut settled_quiet = false;
         if pump_output {
-            settled_quiet =
-                self.settle_quiet_leased_prompt_if_needed(&leased_agent, provider_run_id)?;
             pumped_output_records = provider_output::pump_terminal_output_for_attachment(
                 self.app,
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_attachment_id,
             )?;
-            if !settled_quiet {
-                settled_quiet =
-                    self.settle_quiet_leased_prompt_if_needed(&leased_agent, provider_run_id)?;
-            }
+            settled_quiet =
+                self.settle_quiet_leased_prompt_if_needed(&leased_agent, provider_run_id)?;
         }
         let mut output_chunks = pumped_output_records
             .into_iter()
@@ -190,6 +187,31 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .map(|record| record.message)
             .collect::<Vec<_>>();
+        let termination_prompt_id = self
+            .app
+            .leased_workflow_turns
+            .values()
+            .find(|binding| {
+                binding.leased_agent_id == leased_agent.id
+                    && binding.provider_run_id == provider_run_id
+                    && home_prompt_id.as_deref() == Some(binding.home_prompt_id.as_str())
+            })
+            .map(|binding| binding.backing_prompt_id.as_str())
+            .or(home_prompt_id.as_deref());
+        let provider_termination = self
+            .app
+            .completed_git_turn_snapshot_store()
+            .latest_projection_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .filter(|turn| {
+                turn.provider_run_id == provider_run_id
+                    && termination_prompt_id
+                        .as_deref()
+                        .is_none_or(|prompt_id| turn.prompt_id == prompt_id)
+            })
+            .and_then(|turn| turn.provider_termination);
         let mut completions = self
             .app
             .terminal
@@ -207,6 +229,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 message_id: record.message_id,
                 completed_at_ms: record.completed_at_ms,
                 home_prompt_id: home_prompt_id.clone(),
+                provider_termination: provider_termination.clone(),
             })
             .collect::<Vec<_>>();
         completions.retain(|completion| {
@@ -288,7 +311,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 });
             }
         }
-        let mut backing_prompt_active = backing_active_prompt.is_some();
+        let backing_prompt_active = backing_active_prompt.is_some();
         let backing_active_prompt_id = backing_active_prompt
             .as_ref()
             .map(|prompt| prompt.id().to_string());
@@ -323,8 +346,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             // with the home kernel.
             completions.retain(|completion| !completion.message_id.starts_with("prompt-complete:"));
         }
-        let has_settleable_output_history =
-            current_batch_has_provider_output && !requires_explicit_completion;
         let provider_run_ended = provider_run
             .as_ref()
             .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
@@ -357,6 +378,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             message_id: completion.message_id.clone(),
                             completed_at_ms: completion.completed_at_ms,
                             home_prompt_id: completion.home_prompt_id.clone(),
+                            provider_termination: completion.provider_termination.clone(),
                         });
                 }
             }
@@ -424,34 +446,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         message_id: replay.message_id.clone(),
                         completed_at_ms: replay.completed_at_ms,
                         home_prompt_id: replay.home_prompt_id.clone(),
+                        provider_termination: replay.provider_termination.clone(),
                     });
                 }
             }
-        }
-        let should_complete_from_history = completions.is_empty()
-            && prompts.is_empty()
-            && backing_active_prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.workflow_run_id().is_none())
-            && has_settleable_output_history;
-        if should_complete_from_history {
-            let _ = self.app.complete_active_prompt(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-                Some(provider_run_id),
-            )?;
-            let _generated_prompt_completions = self
-                .app
-                .terminal
-                .drain_completion_records(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_attachment_id,
-                )
-                .into_iter()
-                .filter(|record| record.provider_run_id == provider_run_id)
-                .collect::<Vec<_>>();
-            backing_prompt_active = false;
-            settled_quiet = true;
         }
         if !prompts.is_empty() {
             if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
@@ -472,7 +470,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && !((requires_explicit_completion || provider_run_failed)
                 && explicit_completion_already_projected)
             && (settled_quiet
-                || has_settleable_output_history
                 || (requires_explicit_completion && provider_run_has_projected_output)
                 || provider_run_ended
                 || provider_run_failed)
@@ -496,6 +493,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     message_id,
                     completed_at_ms: crate::session::unix_epoch_ms(),
                     home_prompt_id: home_prompt_id.clone(),
+                    provider_termination: None,
                 });
             }
         }
@@ -534,6 +532,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             message_id: completion.message_id.clone(),
                             completed_at_ms: completion.completed_at_ms,
                             home_prompt_id: completion.home_prompt_id.clone(),
+                            provider_termination: completion.provider_termination.clone(),
                         });
                 }
                 if agent.active_home_prompt_id.as_deref() == home_prompt_id.as_deref() {
@@ -567,6 +566,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     message_id: replay.message_id.clone(),
                     completed_at_ms: replay.completed_at_ms,
                     home_prompt_id: replay.home_prompt_id.clone(),
+                    provider_termination: replay.provider_termination.clone(),
                 });
             }
         }
@@ -897,6 +897,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .iter()
             .map(|completion| completion.completed_at_ms)
             .max();
+        let projected_termination = matching_completions
+            .iter()
+            .filter_map(|completion| completion.provider_termination.as_ref())
+            .max_by_key(|termination| termination.timestamp_ms)
+            .cloned();
         for completion in &matching_completions {
             self.app.record_assistant_message_completion_for_agent(
                 session_id,
@@ -940,10 +945,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .app
                         .provider_run_projection
                         .get(&projected_provider_run_id);
-                    let provider_diagnostic = failed_provider
+                    let provider_diagnostic = projected_termination
                         .as_ref()
-                        .and_then(|run| run.terminal_diagnostic().map(str::to_string))
-                        .filter(|message| !message.trim().is_empty());
+                        .map(|termination| termination.reason.clone())
+                        .or_else(|| {
+                            failed_provider
+                                .as_ref()
+                                .and_then(|run| run.terminal_diagnostic().map(str::to_string))
+                                .filter(|message| !message.trim().is_empty())
+                        });
                     let failure_details = failed_provider
                         .as_ref()
                         .zip(provider_diagnostic.as_ref())
@@ -994,9 +1004,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     self.record_projected_prompt_settlement(
                         session_id,
                         agent_id,
-                        active_prompt.id(),
+                        &active_prompt,
                         provider_run_id,
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
+                        projected_termination.clone(),
                     );
                     let completed = if let Some((adapter_key, message)) = failure_details {
                         let session = self.app.sessions.get_session(session_id)?;
@@ -1023,6 +1034,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         self.app
                             .prompt_owner_complete_active_prompt_only(session_id, agent_id)?
                     };
+                    crate::transport::flow_control::clear_prompt_activity(
+                        self.app,
+                        provider_run_id,
+                    );
+                    let _ = crate::app::KernelSessionReadService::new(self.app)
+                        .session_snapshot(session_id);
                     outcome.completions.push(PromptCompletion {
                         completed,
                         started_next: None,
@@ -1033,13 +1050,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
             self.record_projected_prompt_settlement(
                 session_id,
                 agent_id,
-                active_prompt.id(),
+                &active_prompt,
                 provider_run_id,
                 projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
+                projected_termination.clone(),
             );
             let completed = self
                 .app
                 .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
+            // A matching worker completion settles the same flow-control turn
+            // started by native prompt projection. Clear it before publishing
+            // the home snapshot, otherwise completed prompts remain WORKING.
+            crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
             if let Ok(agent) = self.app.agents.get_agent(agent_id) {
                 if agent.remote_execution().is_some() {
                     let _ = self
@@ -1050,26 +1072,109 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
-            crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
-                self.app,
-                session_id,
-                &completed,
-                Some(provider_run_id),
-            )?;
+            if let Some(termination) = projected_termination.as_ref() {
+                let _ = self
+                    .app
+                    .agents()
+                    .mark_unexpected_provider_exit_error(agent_id, true);
+                if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
+                    completed.workflow_run_id(),
+                    completed.workflow_node_run_id(),
+                ) {
+                    let failure = crate::session::WorkflowFailureEvent::new(
+                        crate::session::WorkflowFailureKind::ProviderFailure,
+                        workflow_node_run_id,
+                        Vec::new(),
+                        termination.reason.clone(),
+                    );
+                    let _ = self.app.sessions_mut().record_workflow_failure_event(
+                        session_id,
+                        workflow_run_id,
+                        failure,
+                    );
+                    self.app.sessions_mut().fail_workflow_node_run(
+                        session_id,
+                        workflow_run_id,
+                        workflow_node_run_id,
+                    )?;
+                }
+            } else {
+                crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
+                    self.app,
+                    session_id,
+                    &completed,
+                    Some(provider_run_id),
+                )?;
+            }
             if let Some(remote_execution) = remote_execution {
                 if self
                     .app
                     .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
                     .is_none()
                 {
-                    let started_next = self.app.advance_next_queued_prompt_remote(
-                        session_id,
-                        agent_id,
-                        &remote_execution.worker_kernel_id,
-                        &remote_execution.leased_agent_id,
-                        remote_execution.relay_url.as_deref(),
-                        remote_execution.relay_token.as_deref(),
-                    )?;
+                    let expected_next = self
+                        .app
+                        .agent_runtime_projection_store()
+                        .next_queued_prompt(session_id, agent_id);
+                    let queued_head = expected_next.clone().or(self
+                        .app
+                        .prompt_owner_peek_next_queued_prompt(session_id, agent_id)?);
+                    // Preserve the ordered ordinary queue intent. Workflow heads
+                    // use their own deferred dispatch after the app lock is released.
+                    let started_next = if queued_head.as_ref().is_some_and(|prompt| {
+                        crate::app::workflow_runtime::is_workflow_prompt_source(
+                            prompt.source_attachment_id(),
+                        )
+                    }) {
+                        self.app
+                            .advance_next_queued_prompt_remote_with_workflow_dispatch(
+                                session_id,
+                                agent_id,
+                                &remote_execution.worker_kernel_id,
+                                &remote_execution.leased_agent_id,
+                                remote_execution.relay_url.as_deref(),
+                                remote_execution.relay_token.as_deref(),
+                                expected_next.as_ref(),
+                            )?
+                    } else {
+                        let admitted = crate::app::KernelAgentService::new(self.app)
+                            .admit_next_queued_remote_prompt(
+                                session_id,
+                                agent_id,
+                                expected_next.as_ref(),
+                            )?;
+                        if let Some((prompt, dispatch_intent)) = admitted {
+                            outcome.remote_dispatches.push(dispatch_intent);
+                            Some(prompt)
+                        } else {
+                            // Admission may have skipped a detached ordinary
+                            // queue head and stopped at a workflow prompt. Re-read
+                            // the authoritative queue after admission so the
+                            // selected candidate, rather than the stale head,
+                            // decides which dispatch path owns it.
+                            let selected_next = self
+                                .app
+                                .prompt_owner_peek_next_queued_prompt(session_id, agent_id)?;
+                            if selected_next.as_ref().is_some_and(|prompt| {
+                                crate::app::workflow_runtime::is_workflow_prompt_source(
+                                    prompt.source_attachment_id(),
+                                )
+                            }) {
+                                self.app
+                                    .advance_next_queued_prompt_remote_with_workflow_dispatch(
+                                        session_id,
+                                        agent_id,
+                                        &remote_execution.worker_kernel_id,
+                                        &remote_execution.leased_agent_id,
+                                        remote_execution.relay_url.as_deref(),
+                                        remote_execution.relay_token.as_deref(),
+                                        selected_next.as_ref(),
+                                    )?
+                            } else {
+                                None
+                            }
+                        }
+                    };
                     if started_next.is_none() {
                         self.app.sync_focused_provider_run_if_idle(session_id)?;
                     }
@@ -1097,20 +1202,38 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &self,
         session_id: &str,
         agent_id: &str,
-        prompt_id: &str,
+        prompt: &PromptQueueItem,
         provider_run_id: &str,
         settled_at_ms: u64,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) {
+        let settlement_status = if provider_termination.is_some() {
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        } else {
+            crate::git_observer::CompletedTurnSettlementStatus::Completed
+        };
         self.app
             .operational_history_store()
             .record_prompt_settlement(
                 self.app.history_archive_enabled(),
                 session_id,
                 agent_id,
-                prompt_id,
+                prompt.id(),
                 Some(provider_run_id),
                 settled_at_ms,
-                "completed",
+                settlement_status.as_str(),
+            );
+        self.app
+            .completed_git_turn_snapshot_store()
+            .record_prompt_settlement_with_termination(
+                session_id,
+                agent_id,
+                provider_run_id,
+                prompt,
+                settled_at_ms,
+                Some(prompt.created_at_ms()),
+                settlement_status,
+                provider_termination,
             );
     }
 
@@ -1233,7 +1356,10 @@ fn leased_provider_requires_explicit_completion(
     provider: &str,
     worker_provider_run: Option<&crate::provider::RuntimeProviderRun>,
 ) -> bool {
-    if worker_provider_run.is_some_and(crate::provider::provider_run_uses_claude_native_bridge) {
+    if worker_provider_run.is_some_and(|run| {
+        crate::provider::provider_run_uses_structured_prompt_io(run)
+            || crate::provider::provider_run_uses_claude_native_bridge(run)
+    }) {
         return true;
     }
     let adapter_key = crate::provider::adapter_key_for_provider(provider);
@@ -2181,7 +2307,7 @@ mod explicit_completion_tests {
     }
 
     #[test]
-    fn claude_headless_leased_runs_require_explicit_completion() {
+    fn claude_headless_and_structured_leased_runs_require_explicit_completion() {
         let headless = provider_run(
             "provider-run-headless-claude",
             "session-1",
@@ -2202,7 +2328,7 @@ mod explicit_completion_tests {
             "claude",
             Some(&headless),
         ));
-        assert!(!leased_provider_requires_explicit_completion(
+        assert!(leased_provider_requires_explicit_completion(
             "claude",
             Some(&structured),
         ));
@@ -2415,5 +2541,241 @@ mod explicit_completion_tests {
             .drain_leased_runtime_projection(&leased_agent.id, provider_run.id(), false)
             .expect("duplicate projection check should succeed");
         assert!(duplicate.is_none());
+    }
+
+    #[test]
+    fn detached_ordinary_queue_head_does_not_strand_following_workflow_prompt() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let (provider_run_id, active_outcome) = RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt(&leased_agent.id, "active prompt", Vec::new())
+            .expect("active leased prompt should submit");
+        let active_prompt_id = match active_outcome {
+            PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            PromptSubmissionOutcome::Queued { .. } => {
+                panic!("initial leased prompt should start")
+            }
+        };
+        app.agents
+            .bind_remote_execution(
+                &leased_agent.backing_agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: lease.id.clone(),
+                    leased_agent_id: leased_agent.id.clone(),
+                    active_worker_provider_run_id: Some(provider_run_id.clone()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home projection agent should bind to its remote worker");
+
+        let detached_source = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &leased_agent.backing_session_id,
+                "detached-queue-source",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("temporary queue source should attach");
+        let detached_prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            detached_source.id(),
+            &leased_agent.backing_agent_id,
+            "stale ordinary prompt",
+            PromptStatus::Queued,
+        );
+        let PromptSubmissionOutcome::Queued {
+            prompt: detached_prompt,
+        } = app
+            .prompt_owner_submit_prepared_prompt(
+                &leased_agent.backing_session_id,
+                detached_prompt,
+                false,
+            )
+            .expect("ordinary prompt should queue behind the active turn")
+        else {
+            panic!("ordinary prompt should remain queued");
+        };
+        crate::app::KernelSessionService::new(&mut app)
+            .detach(detached_source.id())
+            .expect("queue source should detach while preserving its queued item");
+
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(
+                &leased_agent.backing_session_id,
+                Some("queued-follow-up".to_string()),
+            )
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(
+                &leased_agent.backing_session_id,
+                workflow.id(),
+                &leased_agent.backing_agent_id,
+            )
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                &leased_agent.backing_session_id,
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                &leased_agent.backing_session_id,
+                workflow.id(),
+                endpoint.id(),
+                Some("workflow prompt".to_string()),
+            )
+            .expect("workflow run should be created");
+        let workflow_node_run_id = workflow_run.node_runs()[0].id().to_string();
+        let workflow_delivery_token = format!("workflow-ack:{workflow_node_run_id}");
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                &leased_agent.backing_session_id,
+                workflow_run.id(),
+                &workflow_node_run_id,
+                workflow_delivery_token,
+                "workflow prompt".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should be prepared");
+        app.sessions_mut()
+            .start_workflow_node_run(
+                &leased_agent.backing_session_id,
+                workflow_run.id(),
+                &workflow_node_run_id,
+            )
+            .expect("workflow node should start before queueing its turn");
+        let PromptSubmissionOutcome::Queued {
+            prompt: queued_workflow,
+        } = app
+            .prompt_owner_submit_workflow_prompt(
+                &leased_agent.backing_session_id,
+                &crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+                &leased_agent.backing_agent_id,
+                workflow_run.id(),
+                &workflow_node_run_id,
+                "workflow prompt",
+            )
+            .expect("workflow prompt should queue behind the stale ordinary item")
+        else {
+            panic!("workflow prompt should remain queued");
+        };
+        assert_eq!(queued_workflow.workflow_run_id(), Some(workflow_run.id()));
+        assert_eq!(
+            app.prompt_owner_peek_next_queued_prompt(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("queue head should load")
+            .expect("detached ordinary head should remain queued")
+            .id(),
+            detached_prompt.id(),
+        );
+
+        let projected = RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                &provider_run_id,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![RelayProjectedCompletion {
+                    message_id: "active-prompt-complete".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some(active_prompt_id),
+                    provider_termination: None,
+                }],
+            )
+            .expect("completion should skip the detached head and advance the workflow");
+
+        assert!(projected.remote_dispatches.is_empty());
+        let started_next = projected.completions[0]
+            .started_next
+            .as_ref()
+            .expect("workflow prompt should be activated instead of leaving the agent idle");
+        assert_eq!(started_next.workflow_run_id(), Some(workflow_run.id()));
+        assert_eq!(
+            started_next.workflow_node_run_id(),
+            Some(workflow_node_run_id.as_str())
+        );
+        assert_eq!(started_next.status(), PromptStatus::Running);
+        let active = app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("active prompt should load")
+            .expect("workflow prompt should own the active slot");
+        assert_eq!(active.id(), started_next.id());
+        assert_eq!(active.workflow_run_id(), Some(workflow_run.id()));
+        assert_ne!(active.id(), detached_prompt.id());
+        assert_eq!(
+            app.prompt_owner_peek_next_queued_prompt(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("queue should load after promotion"),
+            None,
+            "neither the stale ordinary prompt nor workflow prompt should remain queued"
+        );
+
+        let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
+        assert_eq!(
+            deferred.len(),
+            1,
+            "workflow turn should enqueue exactly one send"
+        );
+        assert_eq!(deferred[0].prompt_id, active.id());
+        assert_eq!(
+            deferred[0]
+                .workflow_context
+                .as_ref()
+                .map(|context| context.workflow_run_id.as_str()),
+            Some(workflow_run.id())
+        );
+        assert!(
+            app.take_deferred_workflow_remote_prompt_dispatches()
+                .is_empty(),
+            "dispatch should have only one durable post-lock handoff"
+        );
     }
 }

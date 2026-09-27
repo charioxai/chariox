@@ -676,7 +676,7 @@ async function main() {
         getSessionStateRequest,
         timeoutMs: Math.min(options.timeoutMs, 30_000),
         pollMs: options.pollMs,
-      }).catch(() => {})
+      })
 
       const transcript = await providerTranscript({ historyDir, agentId: agent.id, sinceMs: generatedStartedAt })
       assertNoSecretLeak(transcript, userSecret, provider)

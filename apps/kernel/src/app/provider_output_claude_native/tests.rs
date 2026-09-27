@@ -24,6 +24,139 @@ impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
     }
 }
 
+#[derive(Clone)]
+struct StartupTrustBridge {
+    interactions: std::sync::Arc<std::sync::Mutex<Vec<RuntimeInteraction>>>,
+    resolution: std::sync::Arc<(
+        std::sync::Mutex<Option<crate::provider::ProviderNativeInteractionResolution>>,
+        std::sync::Condvar,
+    )>,
+}
+
+impl Default for StartupTrustBridge {
+    fn default() -> Self {
+        Self {
+            interactions: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            resolution: std::sync::Arc::new((
+                std::sync::Mutex::new(None),
+                std::sync::Condvar::new(),
+            )),
+        }
+    }
+}
+
+impl StartupTrustBridge {
+    fn wait_for_interaction(&self) -> RuntimeInteraction {
+        for _ in 0..500 {
+            if let Some(interaction) = self
+                .interactions
+                .lock()
+                .expect("startup trust interactions should not be poisoned")
+                .first()
+                .cloned()
+            {
+                return interaction;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("workspace trust interaction was not projected");
+    }
+
+    fn resolve(&self, choice_id: &str, reply: &str) {
+        let (lock, wake) = &*self.resolution;
+        *lock
+            .lock()
+            .expect("startup trust resolution should not be poisoned") =
+            Some(crate::provider::ProviderNativeInteractionResolution {
+                status: "answered".to_string(),
+                choice_id: Some(choice_id.to_string()),
+                reply: Some(reply.to_string()),
+            });
+        wake.notify_all();
+    }
+
+    fn resolve_default_no(&self) {
+        let (lock, wake) = &*self.resolution;
+        *lock
+            .lock()
+            .expect("startup trust resolution should not be poisoned") =
+            Some(crate::provider::ProviderNativeInteractionResolution {
+                status: "timed_out".to_string(),
+                choice_id: Some("deny".to_string()),
+                reply: Some("deny".to_string()),
+            });
+        wake.notify_all();
+    }
+}
+
+impl ProviderNativeInteractionBridge for StartupTrustBridge {
+    fn request_blocking(
+        &self,
+        _session_id: &str,
+        interaction: RuntimeInteraction,
+    ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+        self.interactions
+            .lock()
+            .expect("startup trust interactions should not be poisoned")
+            .push(interaction);
+        let (lock, wake) = &*self.resolution;
+        let mut resolution = lock
+            .lock()
+            .expect("startup trust resolution should not be poisoned");
+        while resolution.is_none() {
+            resolution = wake
+                .wait(resolution)
+                .expect("startup trust resolution wait should not be poisoned");
+        }
+        Ok(resolution
+            .take()
+            .expect("startup trust resolution should be available"))
+    }
+}
+
+fn startup_readiness_run(
+    session_id: &str,
+    agent_id: &str,
+    provider_run_id: &str,
+    context_file: &std::path::Path,
+    events_file: &std::path::Path,
+    pty_command: String,
+) -> RuntimeProviderRun {
+    let request = crate::provider::LaunchProviderRequest::new(
+        session_id,
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id(agent_id)
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    RuntimeProviderRun::new(
+        provider_run_id,
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: format!("{provider_run_id}-process"),
+            pty_target: Some(provider_run_id.to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec!["-lc".to_string(), pty_command],
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    )
+}
+
 #[test]
 fn repeated_claude_permission_render_is_stored_once() {
     let root = std::env::temp_dir().join(format!(
@@ -364,6 +497,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
             &run,
             &ClaudeNativePromptInjection {
                 id: "prompt-1",
+                origin_prompt_id: "prompt-1",
                 prompt: "do the work",
                 hidden_system_context: "",
                 attachments: &attachments,
@@ -434,13 +568,11 @@ fn hook_permission_tombstone_only_consumes_matching_rendered_frame() {
 
 #[test]
 fn rendered_permission_resolution_does_not_reinject_native_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-permission");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-claude-permission",
-            "worktree-claude-permission",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -540,12 +672,15 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
     assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         "claude-headless",
         false,
+        false,
     );
 }
 
 #[test]
 fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() {
-    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude", false);
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude", false, false,
+    );
 }
 
 #[test]
@@ -553,22 +688,31 @@ fn late_claude_transcript_drain_does_not_complete_the_next_prompt() {
     assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         "claude-headless",
         true,
+        false,
+    );
+}
+
+#[test]
+fn managed_headless_stop_projects_transcript_from_sandbox_account_path() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude-headless",
+        false,
+        true,
     );
 }
 
 fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
     provider: &str,
     advance_next_prompt_before_late_drain: bool,
+    managed_account_binding: bool,
 ) {
     use std::io::Write as _;
 
+    let worktree = crate::test_support::TestWorktree::new("claude-native-headless-stop");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-claude-headless-stop",
-            "worktree-claude-headless-stop",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -578,9 +722,10 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         ))
         .expect("attachment should attach");
     let root = std::env::temp_dir().join(format!(
-        "chariox-claude-headless-stop-test-{}-{}-{}-{}",
+        "chariox-claude-headless-stop-test-{}-{}-{}-{}-{}",
         provider,
         advance_next_prompt_before_late_drain,
+        managed_account_binding,
         std::process::id(),
         timestamp_millis()
     ));
@@ -606,7 +751,11 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         &events_file,
         serde_json::json!({
             "hook_event_name": "Stop",
-            "transcript_path": transcript_file.display().to_string(),
+            "transcript_path": if managed_account_binding {
+                "/home/chariox/.provider-account/root-1/session.jsonl".to_string()
+            } else {
+                transcript_file.display().to_string()
+            },
         })
         .to_string(),
     )
@@ -630,7 +779,21 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
             process_label: "test-claude-headless-stop".to_string(),
             pty_target: None,
             pty_program: None,
-            pty_args: Vec::new(),
+            pty_args: managed_account_binding
+                .then(|| {
+                    vec![
+                        "--bind".to_string(),
+                        root.canonicalize()
+                            .expect("account fixture should resolve")
+                            .display()
+                            .to_string(),
+                        "/home/chariox/.provider-account/root-1".to_string(),
+                        "--setenv".to_string(),
+                        crate::provider::MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+                        "1".to_string(),
+                    ]
+                })
+                .unwrap_or_default(),
             pty_env: std::collections::BTreeMap::from([
                 (
                     "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
@@ -1043,13 +1206,11 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
 
 #[test]
 fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-submit-ack");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-submit-wait-ack",
-            "worktree-submit-wait-ack",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1219,6 +1380,609 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
 }
 
 #[test]
+fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-trust-approval");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-startup-trust-approval",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-startup-trust-approval-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let capture_file = root.join("pty-input.log");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
+    let run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "provider-run-startup-trust-approval",
+        &context_file,
+        &events_file,
+        format!("tee {} >/dev/null", capture_file.display()),
+    );
+    let context_file = context_file.display().to_string();
+    let mut run = run;
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "startup-gated-task-unique",
+            Vec::new(),
+        )
+        .expect("queued task should become active")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    let dispatch = KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: agent.id().to_string(),
+        prompt_id: prompt.id().to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: attachment.id().to_string(),
+        prompt: prompt.prompt().to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Chariox,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    let bridge = StartupTrustBridge::default();
+    let trust_frame =
+        "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder";
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            session.id(),
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            trust_frame,
+        )
+        .expect("startup trust should enter the native interaction path");
+
+    let interaction = bridge.wait_for_interaction();
+    assert_eq!(interaction.kind(), RuntimeInteractionKind::Permission);
+    assert_eq!(interaction.default_on_timeout(), Some("deny"));
+    assert!(interaction
+        .message()
+        .contains("queued task will not be sent"));
+    assert_eq!(interaction.choices().len(), 2);
+    let marker = claude_native_marker(&context_file).expect("trust marker should be present");
+    assert!(marker.starts_with("startup-workspace-trust:"), "{marker}");
+    assert!(
+        !marker.starts_with("startup-wait:"),
+        "trust must not default to No"
+    );
+    assert!(fs::read_to_string(&context_file)
+        .expect("context file should remain readable")
+        .is_empty());
+
+    let pending = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .expect("unapproved startup trust should remain pending");
+    assert_eq!(pending, ClaudeNativeDispatchAttempt::AwaitingInjection);
+    assert!(claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|value| value.starts_with("startup-workspace-trust:")));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        fs::read_to_string(&capture_file)
+            .unwrap_or_default()
+            .is_empty(),
+        "no PTY bytes may be sent before trust approval"
+    );
+
+    bridge.resolve("allow_once", "allow");
+    let mut approved = false;
+    for _ in 0..500 {
+        let _ = ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+            .expect("approval should be consumed through dispatch");
+        if claude_native_marker(&context_file)
+            .as_deref()
+            .is_some_and(|value| value.starts_with("startup-wait:"))
+        {
+            approved = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(approved, "explicit approval should reach startup wait");
+
+    std::thread::sleep(std::time::Duration::from_millis(4_100));
+    fs::write(
+        root.join("permission-recent.txt"),
+        "Claude Code ❯ ⏵⏵ mode (shift+tab to cycle)",
+    )
+    .expect("composer fixture should be written");
+    let typed = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .expect("approved task should be typed through dispatch");
+    assert_eq!(typed, ClaudeNativeDispatchAttempt::AwaitingInjection);
+    assert!(claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|value| value.starts_with("submit-wait:")));
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let submitted = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .expect("approved task should submit exactly once");
+    assert_eq!(submitted, ClaudeNativeDispatchAttempt::AwaitingInjection);
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("injected:{}", prompt.id()).as_str())
+    );
+
+    let retry = read_claude_headless_submit_retry(&context_file);
+    assert_eq!(retry.prompt_id, prompt.id());
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": retry.visible_prompt,
+        })
+        .to_string(),
+    )
+    .expect("provider acknowledgement should be written");
+    let completed = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .expect("provider acknowledgement should complete dispatch");
+    assert_eq!(completed, ClaudeNativeDispatchAttempt::Completed);
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("accepted:{}", prompt.id()).as_str())
+    );
+    let repeated = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .expect("completed dispatch should remain idempotent");
+    assert_eq!(repeated, ClaudeNativeDispatchAttempt::Completed);
+
+    for _ in 0..100 {
+        if let Ok(captured) = fs::read_to_string(&capture_file) {
+            if captured.matches("startup-gated-task-unique").count() == 1 {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let captured = fs::read_to_string(&capture_file).expect("PTY should capture dispatched task");
+    assert_eq!(
+        captured.matches("startup-gated-task-unique").count(),
+        1,
+        "the real PTY dispatch must contain the task exactly once: {captured:?}"
+    );
+    app.pty
+        .remove_process(run.id())
+        .expect("test provider PTY should stop");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-early-exit");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-startup-early-exit-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "provider-run-startup-early-exit",
+        &context_file,
+        &events_file,
+        "exit 1".to_string(),
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    for _ in 0..100 {
+        if matches!(
+            app.pty.poll_process_state(run.id()),
+            Ok(crate::pty::PtyProcessState::Exited { .. })
+        ) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let dispatch = KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: agent.id().to_string(),
+        prompt_id: "early-exit-prompt".to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: "early-exit-attachment".to_string(),
+        prompt: "early-exit-task-should-not-send".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Chariox,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    let error = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .expect_err("an exited provider must fail before native dispatch");
+    assert!(error
+        .to_string()
+        .contains("exited before acknowledging the queued task"));
+    assert!(error.to_string().contains("no task text was dispatched"));
+    assert!(fs::read_to_string(&context_file)
+        .expect("context file should remain readable")
+        .is_empty());
+    let _ = app.pty.remove_process(run.id());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-startup-trust-rejection-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-startup-trust-rejection",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let (other_session, _other_default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-unrelated-agent",
+            root.display().to_string(),
+        ))
+        .expect("unrelated session should be created");
+    let other_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(other_session.id(), "dev-stub")
+                .with_alias("unrelated-test-agent")
+                .with_model("test-model"),
+        )
+        .expect("self-contained unrelated test agent should be created");
+    let other_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            other_session.id(),
+            "client-unrelated-agent",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("unrelated attachment should attach");
+    app.record_native_prompt_started_with_attachments(
+        other_session.id(),
+        other_attachment.id(),
+        other_attachment.id(),
+        other_agent.id(),
+        "unrelated-agent-task",
+        Vec::new(),
+    )
+    .expect("unrelated agent prompt should remain active");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
+    let capture_file = root.join("pty-input.log");
+    let trust_frame =
+        "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder";
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "provider-run-startup-trust-rejection",
+        &context_file,
+        &events_file,
+        format!(
+            "printf '%s' '{}'; tee {} >/dev/null",
+            trust_frame,
+            capture_file.display()
+        ),
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    let _prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "rejected-startup-trust-task",
+            Vec::new(),
+        )
+        .expect("rejected task should become active")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    let bridge = StartupTrustBridge::default();
+    let bridge_ref: std::sync::Arc<dyn ProviderNativeInteractionBridge> =
+        std::sync::Arc::new(bridge.clone());
+    app.providers()
+        .set_native_interaction_bridge(bridge_ref.clone());
+    crate::app::provider_output::ProviderOutputPump::new(&mut app)
+        .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+            session_id: session.id(),
+            provider_run_id: run.id(),
+            recipient_attachment_ids: vec![attachment.id().to_string()],
+            initial_liveness_already_checked: false,
+        })
+        .expect("trust prompt should be projected by the normal output pump");
+    let interaction = bridge.wait_for_interaction();
+    assert_eq!(interaction.default_on_timeout(), Some("deny"));
+    bridge.resolve_default_no();
+    let mut settled = false;
+    for _ in 0..500 {
+        crate::app::provider_output::ProviderOutputPump::new(&mut app)
+            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                session_id: session.id(),
+                provider_run_id: run.id(),
+                recipient_attachment_ids: vec![attachment.id().to_string()],
+                initial_liveness_already_checked: false,
+            })
+            .expect("trust rejection should use the normal failure path");
+        let primary_active = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .expect("primary prompt should remain queryable");
+        if primary_active.is_none() {
+            settled = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        settled,
+        "rejected startup trust should settle its own prompt"
+    );
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(other_session.id(), other_agent.id())
+        .expect("unrelated agent should remain queryable")
+        .is_some());
+    let rejected_run = app
+        .providers()
+        .get_run(run.id())
+        .expect("rejected provider run should remain inspectable");
+    let diagnostic = rejected_run
+        .terminal_diagnostic()
+        .expect("rejection should preserve a terminal diagnostic");
+    assert!(
+        diagnostic.contains("workspace trust was denied"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains(root.to_string_lossy().as_ref()));
+    assert!(!fs::read_to_string(&capture_file)
+        .unwrap_or_default()
+        .contains("rejected-startup-trust-task"));
+    let _ = app.pty.remove_process(run.id());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn claude_headless_dispatch_observes_ask_user_question_queue_acknowledgement() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-ask-user");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-ask-user-question-ack",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("session should attach");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-headless-ask-user-question-ack-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let transcript_file = root.join("transcript.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(
+        &transcript_file,
+        [
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "ask-user-question",
+                "message": {
+                    "id": "msg-ask-user-question",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu-ask-user-question",
+                        "name": "AskUserQuestion",
+                        "input": { "question": "Which topology should the aggregate use?" }
+                    }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "user",
+                "uuid": "ask-user-question-response",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu-ask-user-question",
+                        "content": "The user answered the questions:"
+                    }]
+                },
+                "toolUseResult": {
+                    "answers": {
+                        "Which topology should the aggregate use?":
+                            "Use HOME=/home/chariox and continue the aggregate."
+                    }
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "queue-operation",
+                "operation": "enqueue",
+                "content": "Use HOME=/home/chariox and continue the aggregate."
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .expect("transcript fixture should be written");
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "transcript_path": transcript_file.display().to_string(),
+        })
+        .to_string(),
+    )
+    .expect("transcript hook fixture should be written");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-ask-user-question-ack",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-headless-ask-user-question-ack".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.record_native_prompt_started_with_attachments(
+        session.id(),
+        attachment.id(),
+        attachment.id(),
+        agent.id(),
+        "Inspect the aggregate and ask for the topology decision.",
+        Vec::new(),
+    )
+    .expect("active prompt should start");
+
+    let steering_prompt_id = "steering-topology-decision";
+    let steering_prompt = "Use HOME=/home/chariox and continue the aggregate.";
+    write_claude_native_marker(&context_file, &format!("injected:{steering_prompt_id}"));
+    write_claude_headless_submit_retry(
+        &context_file,
+        steering_prompt_id,
+        0,
+        unix_epoch_ms(),
+        steering_prompt,
+    );
+    let dispatch = KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: agent.id().to_string(),
+        prompt_id: steering_prompt_id.to_string(),
+        target_active_prompt_id: app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_prompt_for_agent(agent.id())
+            .map(|prompt| prompt.id().to_string()),
+        source_attachment_id: attachment.id().to_string(),
+        prompt: steering_prompt.to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Chariox,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: true,
+    };
+
+    let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .expect("AskUserQuestion queue acknowledgement should be processed");
+
+    assert_eq!(outcome, ClaudeNativeDispatchAttempt::Completed);
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("accepted:{steering_prompt_id}").as_str()),
+        "the dispatch loop must observe Claude's matching queue record without waiting for the output pump"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn claude_native_dispatch_marker_extracts_steering_identity() {
     assert_eq!(
         claude_native_dispatch_prompt_id("injected:steering-prompt-1"),
@@ -1296,6 +2060,7 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
                         "id": "msg_1",
                         "model": "claude-sonnet-4-6",
                         "role": "assistant",
+                        "stop_reason": "tool_use",
                         "content": [
                             { "type": "thinking", "thinking": "considering" },
                             { "type": "text", "text": "hello" },
@@ -1325,6 +2090,7 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
     assert_eq!(drain.session_id.as_deref(), Some("claude-session-1"));
     assert_eq!(drain.model.as_deref(), Some("claude/claude-sonnet-4-6"));
     assert_eq!(drain.assistant_message_ids, vec!["msg_1"]);
+    assert!(drain.terminal_assistant_message_ids.is_empty());
     assert_eq!(drain.chunks.len(), 4);
     assert_eq!(drain.chunks[0].kind, TerminalOutputKind::ProviderReasoning);
     assert_eq!(drain.chunks[0].text, "considering");
@@ -1338,7 +2104,193 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
     assert!(second.chunks.is_empty());
     assert!(second.assistant_message_ids.is_empty());
 
+    let mut transcript_text = fs::read_to_string(&transcript).expect("fixture should read");
+    transcript_text.push('\n');
+    transcript_text.push_str(
+        &serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-final",
+            "message": {
+                "id": "msg_final",
+                "model": "claude-sonnet-4-6",
+                "role": "assistant",
+                "stop_reason": "stop_sequence",
+                "content": [{ "type": "text", "text": "done" }]
+            }
+        })
+        .to_string(),
+    );
+    transcript_text.push('\n');
+    fs::write(&transcript, transcript_text).expect("terminal fixture should append");
+
+    let terminal = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+    assert_eq!(terminal.assistant_message_ids, vec!["msg_final"]);
+    assert_eq!(terminal.terminal_assistant_message_ids, vec!["msg_final"]);
+
+    let after_terminal =
+        drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+    assert!(after_terminal.terminal_assistant_message_ids.is_empty());
+
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_drain_classifies_session_limit_without_success_completion() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-session-limit-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl");
+    fs::write(
+        &transcript,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-session-limit",
+            "sessionId": "claude-session-limit",
+            "message": {
+                "id": "message-session-limit",
+                "model": "claude-opus-4-8",
+                "role": "assistant",
+                "stop_reason": "stop_sequence",
+                "content": [{
+                    "type": "text",
+                    "text": "You've hit your session limit · resets 10:40pm (UTC)"
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(drain.assistant_message_ids, vec!["message-session-limit"]);
+    assert_eq!(
+        drain.terminal_assistant_message_ids,
+        vec!["message-session-limit"]
+    );
+    assert!(drain
+        .terminal_failure
+        .as_deref()
+        .is_some_and(|failure| failure.contains("substitutable resource limit")));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_session_limit_projects_error_and_preserves_diagnostic() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-transcript-limit");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-claude-transcript-limit",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-limit-projection-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let transcript_file = root.join("session.jsonl");
+    fs::write(&context_file, "").expect("context should be created");
+    fs::write(
+        &transcript_file,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-session-limit",
+            "sessionId": "claude-session-limit",
+            "message": {
+                "id": "message-session-limit",
+                "model": "claude-opus-4-8",
+                "role": "assistant",
+                "stop_reason": "stop_sequence",
+                "content": [{
+                    "type": "text",
+                    "text": "You've hit your session limit · resets 10:40pm (UTC)"
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("transcript should be written");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-claude-transcript-limit",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "claude-transcript-limit".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.display().to_string(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+
+    let failure = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .drain_claude_transcript(
+            session.id(),
+            run.id(),
+            &context_file.display().to_string(),
+            &transcript_file.display().to_string(),
+        )
+        .expect("transcript should drain")
+        .expect("session limit should be terminal");
+
+    assert!(failure.contains("substitutable resource limit"));
+    let output = app
+        .terminal()
+        .output_records()
+        .into_iter()
+        .find(|record| record.kind == TerminalOutputKind::ProviderError)
+        .expect("session limit should be projected as provider error");
+    assert!(String::from_utf8_lossy(&output.bytes).contains("session limit"));
+    assert!(!crate::transport::flow_control::prompt_completion_recorded(
+        &app,
+        run.id()
+    ));
+    assert!(app
+        .providers()
+        .get_run(run.id())
+        .expect("run should remain available")
+        .terminal_diagnostic()
+        .is_some_and(|diagnostic| diagnostic.contains("session limit")));
+    assert_eq!(
+        app.attachments().list_session_attachment_ids(session.id()),
+        vec![attachment.id().to_string()]
+    );
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

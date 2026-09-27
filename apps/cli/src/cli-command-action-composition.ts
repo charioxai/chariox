@@ -1,11 +1,17 @@
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
+import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import { formatAgentLabel } from "./agent-label.js"
+import {
+  defaultRoomScreenshotOutputRoot,
+  downloadRoomEnvironmentScreenshot,
+} from "./room-screenshot-api.js"
 import {
   aliasAgent,
   cycleAgentFocus as cycleAgentFocusApi,
@@ -162,6 +168,7 @@ import {
   listSlices,
   removeSliceProviderAuth,
   resetSliceState,
+  restoreSliceBackup,
   saveSliceState,
   startSliceProviderLogin,
   startSlice,
@@ -216,6 +223,7 @@ export type CliCommandActionCompositionDeps = {
   currentExecutionMode: AnyFn
   currentPermissionLevel: AnyFn
   refreshWaitingRoomData: AnyFn
+  reimageManagedEnvironment?: AnyFn
   remoteMachinesState: AnyFn
   setRemoteMachinesState: AnyFn
   reconcileWaitingRoom: AnyFn
@@ -332,6 +340,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentExecutionMode,
     currentPermissionLevel,
     refreshWaitingRoomData,
+    reimageManagedEnvironment,
     remoteMachinesState,
     setRemoteMachinesState,
     reconcileWaitingRoom,
@@ -410,7 +419,15 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     refreshSplitPaneFocusRepaint,
   } = deps
 
-  return createCommandActionHandlers({
+  const openRoomViewer = async (target: { sessionId: string; agentId: string; sliceId: string }) => {
+    const apiUrl = relayCloudProfile(preferencesState())?.apiUrl
+      ?? resolveConfiguredCloudRelayApiUrl(preferencesState())
+    if (!apiUrl) return null
+    const url = buildHostedCloudViewUrl(apiUrl, target)
+    return { url, opened: await openExternalUrl(url) }
+  }
+  const relayIdentity = client.getRelayClientIdentity()
+  const handlers = createCommandActionHandlers({
     ...(resolveConfiguredCloudRelayApiUrl(preferencesState())
       ? { cloudRelayApiUrl: resolveConfiguredCloudRelayApiUrl(preferencesState()) }
       : {}),
@@ -435,9 +452,29 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
-    isRelayConnection: () => Boolean(options.relayUrl),
+    isRelayConnection: () => client.isRelayTransport(),
+    ...(relayIdentity
+      ? { createViewerPublicKey: async () => relayIdentity.publicKeyBase64 }
+      : {}),
     flashFooter,
     appendNotice,
+    sendRoomEnvironmentRequest: (request) => client.send(request),
+    reconnectRoomEventStream: async () => {
+      if (!client.supportsKernelEvents()) return false
+      await client.restartKernelEventStream()
+      return true
+    },
+    openRoomViewer,
+    captureRoomScreenshot: async () => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("Room screenshot capture requires an active attachment")
+      return downloadRoomEnvironmentScreenshot({
+        sessionId: sessionState().id,
+        attachmentId: attachment.id,
+        outputRoot: defaultRoomScreenshotOutputRoot(),
+        send: (request) => client.send(request),
+      })
+    },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     appendCloudNotice,
     formatError,
@@ -524,13 +561,16 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       pairKernelCloudRelayMachine(client, machineId, alias),
     issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
     issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) =>
-      issueKernelCloudRelayClientToken(
+    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) => {
+      const relayIdentity = createCliRelayIdentityStore().getOrCreate()
+      return issueKernelCloudRelayClientToken(
         client,
         targetDaemonAlias,
         options.clientId ?? "chariox-cli",
         tokenOptions?.sessionId ?? null,
-      ),
+        relayIdentity.publicKeyThumbprint,
+      )
+    },
     createCloudSessionInvite: (sessionId, inviteOptions) =>
       createCloudSessionInvite(client, sessionId, inviteOptions),
     acceptCloudSessionInvite: (inviteToken) => acceptCloudSessionInvite(client, inviteToken),
@@ -542,6 +582,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkspaceLiveSyncMode: (sessionId, mode) => setWorkspaceLiveSyncMode(client, sessionId, mode),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
+    ...(reimageManagedEnvironment ? { reimageManagedEnvironment } : {}),
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),
@@ -591,7 +632,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       setSlicesState(await listSlices(client))
       return result
     },
-    getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
+    getSliceDisplayEndpoint: async (sliceRef, room) => getSliceDisplayEndpoint(client, sliceRef, room),
     getSliceLogs: async (sliceRef, tailLines) => getSliceLogs(client, sliceRef, tailLines),
     listSliceAudit: async (sliceRef, limit) => listSliceAudit(client, sliceRef, limit),
     saveSliceState: async (sliceRef, mode, scope) => {
@@ -607,6 +648,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     createSliceBackup: async (sliceRef, name) => {
       const result = await createSliceBackup(client, sliceRef, name)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    restoreSliceBackup: async (sliceRef, backupRef) => {
+      const result = await restoreSliceBackup(client, sliceRef, backupRef)
       setSlicesState(await listSlices(client))
       return result
     },
@@ -920,4 +966,5 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     refreshSplitPaneFocusRepaint,
     formatSessionList: (sessions, currentSessionId) => formatSessionList(sessions, currentSessionId ?? undefined),
   })
+  return { ...handlers, openRoomViewer }
 }

@@ -3,9 +3,10 @@ use super::*;
 #[test]
 fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
     let harness = LocalRouterTestHarness::new();
+    let worktree = crate::test_support::TestWorktree::new("workflow-dispatch-routing");
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -304,9 +305,10 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
 
 fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node_inner() {
     let harness = LocalRouterTestHarness::new();
+    let worktree = crate::test_support::TestWorktree::new("workflow-dispatch-join");
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -575,9 +577,10 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
 #[test]
 fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
     let harness = LocalRouterTestHarness::new();
+    let worktree = crate::test_support::TestWorktree::new("workflow-dispatch-claim-retry");
     let (interactive_session, interactive_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+            worktree.session_request(),
         ))
         .expect("interactive session should be created")
     {
@@ -645,7 +648,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
 
     let workflow_session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+            worktree.session_request(),
         ))
         .expect("workflow session should be created")
     {
@@ -790,9 +793,10 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
 #[test]
 fn workflow_run_cancel_retries_other_runs_blocked_on_released_claim() {
     let harness = LocalRouterTestHarness::new();
+    let worktree = crate::test_support::TestWorktree::new("workflow-dispatch-cancel-retry");
     let first_session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+            worktree.session_request(),
         ))
         .expect("first workflow session should be created")
     {
@@ -850,7 +854,7 @@ fn workflow_run_cancel_retries_other_runs_blocked_on_released_claim() {
 
     let blocked_session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+            worktree.session_request(),
         ))
         .expect("blocked workflow session should be created")
     {

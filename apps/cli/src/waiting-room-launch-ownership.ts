@@ -33,6 +33,7 @@ function waitingRoomLaunchIntentSignature(state: WaitingRoomState): string {
     state.sliceSelectionId,
     state.managedComputeClass,
     state.managedRegion,
+    state.managedRepositoryRoot,
     state.managedKernelContext,
     state.managedContextSourceTargetId,
     state.managedDevelopmentMode,

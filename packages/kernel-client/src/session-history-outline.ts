@@ -54,10 +54,10 @@ export type SessionHistoryOutlineTurnCompletionLike = {
   readonly completed_at_ms?: number | null | undefined
 }
 
-export type SessionHistoryOutlineTurnLifecycle = "open" | "completed" | "cancelled"
+export type SessionHistoryOutlineTurnLifecycle = "open" | "completed" | "cancelled" | "failed"
 
 export type SessionHistoryOutlineTurnLifecycleLike = {
-  readonly lifecycle: "open" | "completed" | "cancelled" | string
+  readonly lifecycle: SessionHistoryOutlineTurnLifecycle | string
 }
 
 export type SessionHistoryOutlineTurnKeyLike = {
@@ -199,7 +199,7 @@ export function sessionHistoryOutlineTurnCompletedAtMs(
 export function sessionHistoryOutlineTurnLifecycle(
   turn: SessionHistoryOutlineTurnLifecycleLike,
 ): SessionHistoryOutlineTurnLifecycle {
-  if (turn.lifecycle === "completed" || turn.lifecycle === "cancelled") {
+  if (turn.lifecycle === "completed" || turn.lifecycle === "cancelled" || turn.lifecycle === "failed") {
     return turn.lifecycle
   }
   return "open"

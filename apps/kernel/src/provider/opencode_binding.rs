@@ -6,7 +6,7 @@ use rand::distributions::{Alphanumeric, DistString};
 
 use super::{
     opencode_client::OpenCodeConfiguredDefaults, workspace_write_fence_active, OpenCodeClient,
-    OpenCodeMessage, ProviderResumeState, RuntimeProviderRun,
+    OpenCodeMessage, ProviderResumeState, ProviderUtilityExecutionPolicy, RuntimeProviderRun,
 };
 use crate::provider::opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState};
 use crate::terminal::TerminalOutputKind;
@@ -68,7 +68,9 @@ pub(crate) fn initialize_opencode_runtime(
     let selection = resolve_initial_selection(run, &client)?;
 
     let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
-    let session_permission = if run.requires_workspace_live_sync() {
+    let session_permission = if run.read_only_discovery() {
+        Some(opencode_read_only_permission_rules())
+    } else if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(
             allow_native_writes,
             run.permission_level(),
@@ -158,6 +160,9 @@ fn ensure_configured_mcp_servers_connected(
     run: &RuntimeProviderRun,
     client: &OpenCodeClient,
 ) -> Result<(), DaemonError> {
+    if run.read_only_discovery() {
+        return Ok(());
+    }
     let mut names = Vec::new();
     if run.runtime_mcp_server_url().is_some() {
         names.push("chariox".to_string());
@@ -303,6 +308,56 @@ fn opencode_permission_rules(
     ])
 }
 
+fn opencode_read_only_permission_rules() -> serde_json::Value {
+    serde_json::json!([
+        { "permission": "*", "pattern": "*", "action": "deny" },
+        { "permission": "read", "pattern": "*", "action": "allow" },
+        { "permission": "glob", "pattern": "*", "action": "allow" },
+        { "permission": "grep", "pattern": "*", "action": "allow" },
+        { "permission": "list", "pattern": "*", "action": "allow" },
+        {
+            "permission": "edit",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "write",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "multiedit",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "apply_patch",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "external_directory",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "bash",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "doom_loop",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "task",
+            "pattern": "*",
+            "action": "deny"
+        }
+    ])
+}
+
 fn opencode_permission_action(
     permission_level: crate::provider::AgentPermissionLevel,
 ) -> &'static str {
@@ -371,7 +426,7 @@ pub(super) fn abort_opencode_session(
     let mut idle_since = None;
     loop {
         match client.snapshot(state.session_id()) {
-            Ok(snapshot) if snapshot.status == "idle" => {
+            Ok(snapshot) if snapshot.status.kind == "idle" => {
                 let signature = snapshot
                     .messages
                     .iter()
@@ -385,7 +440,9 @@ pub(super) fn abort_opencode_session(
                 {
                     let allow_native_writes =
                         opencode_workspace_live_sync_native_writes_allowed(run);
-                    let session_permission = if run.requires_workspace_live_sync() {
+                    let session_permission = if run.read_only_discovery() {
+                        Some(opencode_read_only_permission_rules())
+                    } else if run.requires_workspace_live_sync() {
                         Some(opencode_workspace_live_sync_permission_rules(
                             allow_native_writes,
                             run.permission_level(),
@@ -418,7 +475,7 @@ pub(super) fn abort_opencode_session(
                     message: format!(
                         "OpenCode session `{}` remained `{}` after abort",
                         state.session_id(),
-                        snapshot.status,
+                        snapshot.status.kind,
                     ),
                 });
             }
@@ -441,7 +498,7 @@ mod tests {
     use super::{
         next_opencode_message_id, opencode_permission_rules,
         opencode_prompt_should_allow_native_bash, opencode_prompt_should_disable_native_writes,
-        opencode_workspace_live_sync_native_writes_allowed,
+        opencode_read_only_permission_rules, opencode_workspace_live_sync_native_writes_allowed,
         opencode_workspace_live_sync_permission_rules, resolve_sync_selection,
         submit_opencode_prompt, OpenCodeConfiguredDefaults, OpenCodeMessage, OpenCodeRuntimeState,
     };
@@ -512,6 +569,55 @@ mod tests {
                 }
             ])
         );
+    }
+
+    #[test]
+    fn project_environment_discovery_permission_rules_deny_every_mutating_capability() {
+        let rules = opencode_read_only_permission_rules();
+        // OpenCode applies the last matching rule. Unknown MCP tool names must
+        // inherit deny, while explicitly permitted inspection remains usable.
+        let effective_action = |permission: &str| {
+            rules
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|rule| rule["permission"] == permission || rule["permission"] == "*")
+                .unwrap()["action"]
+                .as_str()
+                .unwrap()
+        };
+        assert_eq!(effective_action("mutating-tool_delete"), "deny");
+        assert_eq!(effective_action("chariox_runtime_request"), "deny");
+        for permission in ["read", "glob", "grep", "list"] {
+            assert_eq!(effective_action(permission), "allow");
+        }
+        for permission in [
+            "edit",
+            "write",
+            "multiedit",
+            "apply_patch",
+            "external_directory",
+            "bash",
+            "doom_loop",
+            "task",
+        ] {
+            let action = rules
+                .as_array()
+                .and_then(|rules| {
+                    rules.iter().find(|rule| {
+                        rule.get("permission").and_then(serde_json::Value::as_str)
+                            == Some(permission)
+                    })
+                })
+                .and_then(|rule| rule.get("action"))
+                .and_then(serde_json::Value::as_str);
+            assert_eq!(
+                action,
+                Some("deny"),
+                "discovery utility must deny OpenCode {permission}"
+            );
+        }
     }
 
     #[test]
@@ -928,6 +1034,20 @@ pub(super) fn submit_opencode_prompt(
     state: &mut OpenCodeRuntimeState,
     envelope: &crate::prompt_assembly::PromptEnvelope,
 ) -> Result<(), DaemonError> {
+    submit_opencode_prompt_with_policy(
+        run,
+        state,
+        envelope,
+        ProviderUtilityExecutionPolicy::ExistingRun,
+    )
+}
+
+fn submit_opencode_prompt_with_policy(
+    run: &RuntimeProviderRun,
+    state: &mut OpenCodeRuntimeState,
+    envelope: &crate::prompt_assembly::PromptEnvelope,
+    policy: ProviderUtilityExecutionPolicy,
+) -> Result<(), DaemonError> {
     let client = OpenCodeClient::new(run.id(), state.base_url())?;
     if let Ok(messages) = client.messages(state.session_id()) {
         state.baseline_existing_messages(&messages);
@@ -942,8 +1062,8 @@ pub(super) fn submit_opencode_prompt(
         Some(run.model()),
         run.variant(),
         run.execution_mode(),
-        opencode_prompt_should_disable_native_writes(run),
-        opencode_prompt_should_allow_native_bash(run),
+        policy.is_read_only_discovery() || opencode_prompt_should_disable_native_writes(run),
+        !policy.is_read_only_discovery() && opencode_prompt_should_allow_native_bash(run),
     )?;
     state.note_prompt_submitted(message_id);
     Ok(())
@@ -954,6 +1074,7 @@ pub(crate) fn run_opencode_utility_prompt(
     prompt: &str,
     hidden_system_context: &str,
     timeout: Duration,
+    policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, DaemonError> {
     let base_url = run
         .structured_endpoint()
@@ -966,7 +1087,9 @@ pub(crate) fn run_opencode_utility_prompt(
     let client = OpenCodeClient::new(run.id(), &base_url)?;
     client.wait_until_healthy(Duration::from_secs(30))?;
     let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
-    let session_permission = if run.requires_workspace_live_sync() {
+    let session_permission = if policy.is_read_only_discovery() {
+        Some(opencode_read_only_permission_rules())
+    } else if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(
             allow_native_writes,
             run.permission_level(),
@@ -990,7 +1113,7 @@ pub(crate) fn run_opencode_utility_prompt(
         Vec::new(),
         crate::prompt_assembly::PromptManifest::default(),
     );
-    if let Err(error) = submit_opencode_prompt(run, &mut state, &envelope) {
+    if let Err(error) = submit_opencode_prompt_with_policy(run, &mut state, &envelope, policy) {
         state.stop();
         return Err(error);
     }

@@ -1,4 +1,8 @@
 fn main() -> Result<(), chariox_kernel::DaemonError> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("chariox-managed-bootstrap {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if let Ok(log_path) = chariox_kernel::logging::init_process_logger("managed-bootstrap") {
         chariox_kernel::logging::info_with_fields(
             "managed_bootstrap.start",
@@ -6,5 +10,9 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             serde_json::json!({ "log_path": log_path.display().to_string() }),
         );
     }
-    chariox_kernel::managed_bootstrap::run_from_env()
+    if std::env::args().any(|arg| arg == "--disposable-worker") {
+        chariox_kernel::managed_bootstrap::worker::run_from_env()
+    } else {
+        chariox_kernel::managed_bootstrap::run_from_env()
+    }
 }

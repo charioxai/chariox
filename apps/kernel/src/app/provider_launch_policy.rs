@@ -188,34 +188,6 @@ pub(crate) fn workspace_live_sync_protected_roots(
     roots
 }
 
-pub(crate) fn registered_workflow_runtime_worktree_root(
-    session: &RuntimeSession,
-    agent_id: Option<&str>,
-    working_directory: Option<&Path>,
-) -> Option<PathBuf> {
-    let agent_id = agent_id?;
-    let working_directory = working_directory?;
-    let canonical_working_directory = working_directory.canonicalize().ok()?;
-    session
-        .workflow_runtime_instances()
-        .iter()
-        .filter(|instance| !instance.primary())
-        .find_map(|instance| {
-            let owns_agent = instance
-                .node_agent_ids()
-                .values()
-                .any(|runtime_agent_id| runtime_agent_id == agent_id);
-            if !owns_agent {
-                return None;
-            }
-            let root = PathBuf::from(instance.worktree_id());
-            let canonical_root = root.canonicalize().ok()?;
-            canonical_working_directory
-                .starts_with(canonical_root)
-                .then_some(root)
-        })
-}
-
 fn resolve_git_root(path: &Path) -> Option<PathBuf> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -241,6 +213,55 @@ fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_child_does_not_inherit_kernel_bootstrap_receipts() {
+        let mut child = std::process::Command::new("/bin/sh");
+        child
+            .env_clear()
+            .env(
+                "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+                "/kernel-only/worker-receipt",
+            )
+            .env(
+                "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+                "/kernel-only/managed-receipt",
+            )
+            .env("CHARIOX_FIXTURE_PUBLIC", "visible");
+        for name in default_provider_env_remove(&DaemonConfig::for_tests()) {
+            child.env_remove(name);
+        }
+        let status = child.args(["-c", "test -z \"${CHARIOX_DISPOSABLE_WORKER_RECEIPT+x}\" && test -z \"${CHARIOX_MANAGED_BOOTSTRAP_RECEIPT+x}\" && test \"$CHARIOX_FIXTURE_PUBLIC\" = visible"])
+            .status().unwrap();
+        assert!(
+            status.success(),
+            "provider child inherited a kernel bootstrap receipt binding"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ordinary_provider_child_retains_xdg_runtime_directory() {
+        let mut child = std::process::Command::new("/bin/sh");
+        child
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", "/ordinary-provider-runtime");
+        for name in default_provider_env_remove(&DaemonConfig::for_tests()) {
+            child.env_remove(name);
+        }
+        let status = child
+            .args([
+                "-c",
+                "test \"$XDG_RUNTIME_DIR\" = /ordinary-provider-runtime",
+            ])
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "ordinary provider launches must retain their XDG runtime directory"
+        );
+    }
 
     fn opencode_run_with_resume_state() -> RuntimeProviderRun {
         let mut run = RuntimeProviderRun::from_control_capability_inference(

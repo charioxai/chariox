@@ -3,9 +3,10 @@ use super::*;
 #[test]
 fn local_request_api_pauses_and_resumes_active_workflow_node_runs() {
     let harness = LocalRouterTestHarness::new();
+    let worktree = crate::test_support::TestWorktree::new("workflow-resume-api");
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-resume", "worktree-resume"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {

@@ -194,6 +194,7 @@ struct AttachedExternalObserverTarget {
     observed_cursor: ExternalProviderObservedCursor,
     cursor_source: AttachedExternalObserverCursorSource,
     needs_responsive_refresh: bool,
+    observation_generation: u64,
 }
 
 #[derive(Debug, Clone)]

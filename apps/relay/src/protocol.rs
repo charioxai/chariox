@@ -2,6 +2,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
 
+const TEMPORARY_PEER_DAEMON_MARKER: &str = ":peer-tmp:daemon-peer-tmp-";
+
+/// Returns the stable kernel daemon id for either a kernel registration or a
+/// production-shaped temporary peer registration. Temporary ids are generated
+/// as `<kernel>:peer-tmp:daemon-peer-tmp-<pid>-<unix_ms>-<counter>`.
+pub fn canonical_peer_daemon_id(daemon_id: &str) -> Option<&str> {
+    let (kernel_id, temporary_suffix) = match daemon_id.split_once(TEMPORARY_PEER_DAEMON_MARKER) {
+        Some((kernel_id, suffix)) => (kernel_id, Some(suffix)),
+        None => (daemon_id, None),
+    };
+    if kernel_id.trim().is_empty() || kernel_id.contains(":peer-tmp:") {
+        return None;
+    }
+    let Some(suffix) = temporary_suffix else {
+        return Some(kernel_id);
+    };
+    let mut parts = suffix.split('-');
+    let pid = parts.next()?;
+    let unix_ms = parts.next()?;
+    let counter = parts.next()?;
+    if parts.next().is_some()
+        || !is_canonical_positive_decimal::<u32>(pid)
+        || !is_canonical_positive_decimal::<u64>(unix_ms)
+        || !is_canonical_positive_decimal::<u64>(counter)
+    {
+        return None;
+    }
+    Some(kernel_id)
+}
+
+fn is_canonical_positive_decimal<T>(value: &str) -> bool
+where
+    T: std::str::FromStr + ToString + PartialEq + From<u8>,
+{
+    value
+        .parse::<T>()
+        .ok()
+        .is_some_and(|parsed| parsed != T::from(0) && parsed.to_string() == value)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelayConnectionRole {
@@ -368,6 +408,36 @@ pub enum RelayEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_peer_daemon_id_accepts_only_production_temporary_ids() {
+        assert_eq!(canonical_peer_daemon_id("home-kernel"), Some("home-kernel"));
+        assert_eq!(
+            canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7"),
+            Some("home-kernel")
+        );
+        for invalid in [
+            "",
+            ":peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123",
+            "home-kernel:peer-tmp:daemon-peer-tmp-0-1767225600123-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-0-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-0",
+            "home-kernel:peer-tmp:daemon-peer-tmp-04242-1767225600123-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-seven",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7-extra",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4294967296-1767225600123-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-18446744073709551616-7",
+        ] {
+            assert_eq!(
+                canonical_peer_daemon_id(invalid),
+                None,
+                "accepted {invalid}"
+            );
+        }
+    }
 
     #[test]
     fn serializes_daemon_registration_envelope() {

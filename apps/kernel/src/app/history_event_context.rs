@@ -72,6 +72,17 @@ impl HistoryEventContextResolver {
         let turn_id = external_turn_id
             .or_else(|| active_turn.map(|turn| turn.trace_id.clone()))
             .or_else(|| prompt_id.clone());
+        let workflow_run_id = overrides.workflow_run_id.map(str::to_string).or_else(|| {
+            active_prompt
+                .as_ref()
+                .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
+        });
+        let workflow_id = workflow_run_id.as_deref().and_then(|workflow_run_id| {
+            session
+                .as_ref()
+                .and_then(|session| session.workflow_run(workflow_run_id))
+                .map(|workflow_run| workflow_run.workflow_id().to_string())
+        });
         HistoryEventTurnContext {
             session_id: Some(entry.session_id.clone()),
             agent_id,
@@ -83,11 +94,8 @@ impl HistoryEventContextResolver {
             provider_session_id: provider_run
                 .as_ref()
                 .and_then(|run| run.provider_session_id().map(str::to_string)),
-            workflow_run_id: overrides.workflow_run_id.map(str::to_string).or_else(|| {
-                active_prompt
-                    .as_ref()
-                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
-            }),
+            workflow_id,
+            workflow_run_id,
             workflow_node_id: overrides
                 .workflow_node_run_id
                 .map(str::to_string)

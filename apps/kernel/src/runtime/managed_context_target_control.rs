@@ -99,6 +99,22 @@ mod tests {
     use crate::config::PersistedCloudRelayProfile;
     use crate::managed_bootstrap::ManagedKernelContextPlan;
 
+    struct EmptyLaunchTargetTestCleanup {
+        root: std::path::PathBuf,
+        repository_root_env: &'static str,
+        previous_repository_root: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EmptyLaunchTargetTestCleanup {
+        fn drop(&mut self) {
+            match self.previous_repository_root.take() {
+                Some(value) => std::env::set_var(self.repository_root_env, value),
+                None => std::env::remove_var(self.repository_root_env),
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
     #[test]
     fn launch_target_requires_exact_cloud_owner() {
         let mut config = DaemonConfig::for_tests();
@@ -115,15 +131,29 @@ mod tests {
     }
 
     #[test]
-    fn empty_launch_target_uses_a_stable_target_owned_workspace() {
+    fn empty_launch_target_uses_managed_workspace_without_publication_control_state() {
+        let _lock = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-empty-launch-target-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
+        let state_root = root.join("state");
+        let managed_workspace_root = root.join("user-workspaces");
+        std::fs::create_dir_all(&state_root).expect("create state root");
+        std::fs::create_dir_all(&managed_workspace_root).expect("create managed workspace root");
+        let repository_root_env = crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV;
+        let _cleanup = EmptyLaunchTargetTestCleanup {
+            root: root.clone(),
+            repository_root_env,
+            previous_repository_root: std::env::var_os(repository_root_env),
+        };
+        std::env::set_var(repository_root_env, &managed_workspace_root);
+
         let mut config = DaemonConfig::for_tests();
         config.daemon_id = "kernel-empty".to_string();
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(state_root.join("state.db").display().to_string());
+        config.publication_control_state_root = None;
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             user_id: "cloud-user-1".to_string(),
             ..PersistedCloudRelayProfile::default()
@@ -141,17 +171,20 @@ mod tests {
             .as_ref()
             .expect("context plan")
             .package_binding();
-        let response = execute_managed_context_target_request(
-            config.clone(),
-            Some(registration.clone()),
-            store.clone(),
-            "cloud-user-1",
+        let request = || {
             LocalDaemonRequest::GetManagedContextLaunchTarget(
                 crate::local::GetManagedContextLaunchTargetRequest {
                     context_id: plan.context_id.clone(),
                     plan_digest: plan.plan_digest.clone(),
                 },
-            ),
+            )
+        };
+        let response = execute_managed_context_target_request(
+            config.clone(),
+            Some(registration.clone()),
+            store.clone(),
+            "cloud-user-1",
+            request(),
         )
         .expect("empty launch target");
         let LocalDaemonResponse::ManagedContextLaunchTarget { target } = response else {
@@ -163,20 +196,26 @@ mod tests {
             panic!("expected empty development target")
         };
         let workspace = std::path::PathBuf::from(workspace_path);
+        let canonical_workspace_root =
+            std::fs::canonicalize(&managed_workspace_root).expect("canonical workspace root");
+        let canonical_state_root =
+            std::fs::canonicalize(&state_root).expect("canonical state root");
         assert!(workspace.is_dir());
-        assert!(workspace.starts_with(std::fs::canonicalize(&root).expect("canonical test root")));
+        assert!(
+            workspace.starts_with(&canonical_workspace_root),
+            "empty launch workspace must use the managed repository root"
+        );
+        assert!(
+            !workspace.starts_with(&canonical_state_root),
+            "empty launch workspace must remain outside protected state"
+        );
 
         let replay = execute_managed_context_target_request(
             config,
             Some(registration),
             store,
             "cloud-user-1",
-            LocalDaemonRequest::GetManagedContextLaunchTarget(
-                crate::local::GetManagedContextLaunchTargetRequest {
-                    context_id: plan.context_id,
-                    plan_digest: plan.plan_digest,
-                },
-            ),
+            request(),
         )
         .expect("replayed empty launch target");
         let LocalDaemonResponse::ManagedContextLaunchTarget { target } = replay else {
@@ -188,6 +227,5 @@ mod tests {
                 workspace_path: workspace.to_string_lossy().into_owned(),
             }
         );
-        let _ = std::fs::remove_dir_all(root);
     }
 }

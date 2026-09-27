@@ -1,11 +1,11 @@
 //! Codex runtime state and poll result types.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
 
 use crate::provider::{CodexNotification, CodexRunSelection, CodexSocket, ProviderRunTokenUsage};
 use crate::terminal::TerminalOutputKind;
 
+use super::backfill::CodexAuthoritativeBackfillGate;
 use super::transcript::{CodexTextTranscriptState, CodexToolTranscriptState};
 use super::turn::CodexTurnTracker;
 
@@ -39,12 +39,15 @@ pub struct CodexRuntimeState {
     developer_instructions_fingerprint: Option<String>,
     context_hot_reload_enabled: bool,
     turn_input_includes_hidden_context: bool,
+    /// Read-only discovery must keep its permission and MCP policy when the
+    /// event drain reconstructs a client for server requests.
+    read_only_discovery_permissions: bool,
     pub(super) socket: CodexSocket,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
     pub(super) active_turn_id: Option<String>,
     pub(super) turn_tracker: CodexTurnTracker,
-    pub(super) last_authoritative_backfill_at: Option<Instant>,
+    pub(super) authoritative_backfill_gate: CodexAuthoritativeBackfillGate,
     pub(super) text_items: BTreeMap<String, CodexTextTranscriptState>,
     pub(super) tool_items: BTreeMap<String, CodexToolTranscriptState>,
 }
@@ -67,13 +70,17 @@ impl std::fmt::Debug for CodexRuntimeState {
                 "turn_input_includes_hidden_context",
                 &self.turn_input_includes_hidden_context,
             )
+            .field(
+                "read_only_discovery_permissions",
+                &self.read_only_discovery_permissions,
+            )
             .field("next_request_id", &self.next_request_id)
             .field("buffered_notifications", &self.buffered_notifications)
             .field("active_turn_id", &self.active_turn_id)
             .field("turn_tracker", &self.turn_tracker)
             .field(
-                "last_authoritative_backfill_at",
-                &self.last_authoritative_backfill_at,
+                "authoritative_backfill_gate",
+                &self.authoritative_backfill_gate,
             )
             .field("text_items", &self.text_items)
             .field("tool_items", &self.tool_items)
@@ -95,12 +102,13 @@ impl CodexRuntimeState {
             developer_instructions_fingerprint: None,
             context_hot_reload_enabled: false,
             turn_input_includes_hidden_context: true,
+            read_only_discovery_permissions: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
             turn_tracker: CodexTurnTracker::default(),
-            last_authoritative_backfill_at: None,
+            authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
         }
@@ -120,12 +128,13 @@ impl CodexRuntimeState {
             developer_instructions_fingerprint: None,
             context_hot_reload_enabled: true,
             turn_input_includes_hidden_context,
+            read_only_discovery_permissions: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
             turn_tracker: CodexTurnTracker::default(),
-            last_authoritative_backfill_at: None,
+            authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
         }
@@ -159,6 +168,14 @@ impl CodexRuntimeState {
         self.turn_input_includes_hidden_context
     }
 
+    pub(super) fn read_only_discovery_permissions(&self) -> bool {
+        self.read_only_discovery_permissions
+    }
+
+    pub(super) fn set_read_only_discovery_permissions(&mut self, enabled: bool) {
+        self.read_only_discovery_permissions = enabled;
+    }
+
     pub(super) fn mark_thread_ready(
         &mut self,
         thread_id: impl Into<String>,
@@ -181,7 +198,7 @@ impl CodexRuntimeState {
         self.buffered_notifications.clear();
         self.active_turn_id = None;
         self.turn_tracker = CodexTurnTracker::default();
-        self.last_authoritative_backfill_at = None;
+        self.authoritative_backfill_gate.reset();
         self.text_items.clear();
         self.tool_items.clear();
     }

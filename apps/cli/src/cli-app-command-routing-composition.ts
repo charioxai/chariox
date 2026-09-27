@@ -5,6 +5,7 @@ import { createCommandCenterCommandExecutor } from "./command-center-command-exe
 type AnyFn = (...args: any[]) => any
 
 export type CliAppCommandRoutingCompositionDeps = Record<string, any> & {
+  anyTurnWork: AnyFn
   requestExit: AnyFn
   requestWaitingRoom: AnyFn
   handleAttachmentCommand: AnyFn
@@ -37,6 +38,7 @@ export function createCliAppCommandRoutingComposition(
     onKernel: commandHandlers.handleKernelCommand,
     onMachine: commandHandlers.handleMachineCommand,
     onSlice: commandHandlers.handleSliceCommand,
+    onRoom: commandHandlers.handleRoomCommand,
     onRelay: commandHandlers.handleRelayCommand,
     onCloud: commandHandlers.handleCloudCommand,
     onCollab: commandHandlers.handleCollabCommand,

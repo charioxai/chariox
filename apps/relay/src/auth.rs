@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
+use tokio::sync::watch;
 
 pub type RelayRealmId = String;
 pub type RelayIssuerId = String;
@@ -23,7 +24,7 @@ pub struct RelayRealm {
     pub created_at_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelaySubjectKind {
     Client,
@@ -90,7 +91,10 @@ pub struct VerifiedRelayIdentity {
     pub allowed_targets: Option<Vec<String>>,
     pub expires_at_ms: u64,
     pub token_id: Option<String>,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
+    pub machine_id: Option<String>,
+    pub client_id: Option<String>,
     pub public_key_thumbprint: Option<String>,
 }
 
@@ -105,7 +109,10 @@ impl VerifiedRelayIdentity {
             allowed_targets: None,
             expires_at_ms: u64::MAX,
             token_id: None,
+            account_id: None,
             user_id: (subject_kind == RelaySubjectKind::Client).then(|| "local".to_string()),
+            machine_id: None,
+            client_id: None,
             public_key_thumbprint: None,
         }
     }
@@ -134,23 +141,49 @@ pub enum RelayAuthError {
     ScopedTokensUnavailable,
 }
 
-/// Live, bounded denylist for scoped relay tokens. Cloud revocations are fed
-/// in keyed by token id (`jti`) or account id; each entry carries the moment
-/// past which it can be dropped (the underlying token would have expired
-/// anyway), keeping the registry bounded by outstanding-token count.
-#[derive(Debug, Clone, Default)]
+/// Live, bounded denylist for scoped relay tokens. Entries may target a token
+/// id (`jti`), an account, or an account-namespaced subject; each carries the
+/// moment past which it can be dropped (the underlying token would have
+/// expired anyway), keeping the registry bounded by outstanding-token count.
+#[derive(Debug, Clone)]
 pub struct RelayRevocationRegistry {
-    inner: std::sync::Arc<std::sync::Mutex<RevocationState>>,
+    inner: std::sync::Arc<RevocationRegistryInner>,
+}
+
+#[derive(Debug)]
+struct RevocationRegistryInner {
+    state: std::sync::Mutex<RevocationState>,
+    updates: watch::Sender<u64>,
 }
 
 #[derive(Debug, Default)]
 struct RevocationState {
     revoked_token_ids: BTreeMap<String, u64>,
     revoked_accounts: BTreeMap<String, u64>,
-    // The hosted control plane revokes paired identities by their client or
-    // machine subject id, so the registry mirrors those against a token's
-    // client_id / machine_id claims.
+    // Backward-compatible, unnamespaced subject revocations for direct callers.
     revoked_subjects: BTreeMap<String, u64>,
+    // Cloud tombstones are namespaced by account and exact subject kind. A
+    // MACHINE tombstone also matches a kernel token's machine_id claim.
+    revoked_scoped_subjects: BTreeMap<ScopedRevokedSubject, u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ScopedRevokedSubject {
+    account_id: String,
+    subject_kind: RelaySubjectKind,
+    subject: String,
+}
+
+impl Default for RelayRevocationRegistry {
+    fn default() -> Self {
+        let (updates, _) = watch::channel(0);
+        Self {
+            inner: std::sync::Arc::new(RevocationRegistryInner {
+                state: std::sync::Mutex::new(RevocationState::default()),
+                updates,
+            }),
+        }
+    }
 }
 
 impl RelayRevocationRegistry {
@@ -160,8 +193,15 @@ impl RelayRevocationRegistry {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, RevocationState> {
         self.inner
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn notify_update(&self) {
+        self.inner
+            .updates
+            .send_modify(|version| *version = version.wrapping_add(1));
     }
 
     /// Revoke a specific token by its `jti`; `expires_at_ms` should be the
@@ -170,6 +210,7 @@ impl RelayRevocationRegistry {
         self.lock()
             .revoked_token_ids
             .insert(token_id.into(), expires_at_ms);
+        self.notify_update();
     }
 
     /// Revoke every token bound to an account until `expires_at_ms` (use the
@@ -178,15 +219,38 @@ impl RelayRevocationRegistry {
         self.lock()
             .revoked_accounts
             .insert(account_id.into(), expires_at_ms);
+        self.notify_update();
     }
 
     /// Revoke every token whose `client_id` or `machine_id` matches this
-    /// subject id, mirroring how the hosted control plane revokes paired
-    /// client/machine identities.
+    /// unnamespaced subject id. New Cloud callers should use
+    /// [`Self::revoke_scoped_subject`].
     pub fn revoke_subject(&self, subject: impl Into<String>, expires_at_ms: u64) {
         self.lock()
             .revoked_subjects
             .insert(subject.into(), expires_at_ms);
+        self.notify_update();
+    }
+
+    /// Revoke one Cloud subject in its account namespace. This keeps identity
+    /// tombstones from becoming account-wide revocations while still allowing
+    /// an explicit account revocation through [`Self::revoke_account`].
+    pub fn revoke_scoped_subject(
+        &self,
+        account_id: impl Into<String>,
+        subject_kind: RelaySubjectKind,
+        subject: impl Into<String>,
+        expires_at_ms: u64,
+    ) {
+        self.lock().revoked_scoped_subjects.insert(
+            ScopedRevokedSubject {
+                account_id: account_id.into(),
+                subject_kind,
+                subject: subject.into(),
+            },
+            expires_at_ms,
+        );
+        self.notify_update();
     }
 
     /// Drop entries whose expiry has passed so the registry stays bounded.
@@ -201,28 +265,84 @@ impl RelayRevocationRegistry {
         state
             .revoked_subjects
             .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+        state
+            .revoked_scoped_subjects
+            .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
     }
 
     fn is_revoked(&self, claims: &RelayTokenClaims, now_ms: u64) -> bool {
+        self.is_identity_revoked(
+            Some(&claims.token_id),
+            claims.account_id.as_deref(),
+            claims.subject_kind,
+            &claims.subject,
+            claims.machine_id.as_deref(),
+            claims.client_id.as_deref(),
+            now_ms,
+        )
+    }
+
+    fn is_verified_identity_revoked(&self, identity: &VerifiedRelayIdentity, now_ms: u64) -> bool {
+        self.is_identity_revoked(
+            identity.token_id.as_deref(),
+            identity.account_id.as_deref(),
+            identity.subject_kind,
+            &identity.subject,
+            identity.machine_id.as_deref(),
+            identity.client_id.as_deref(),
+            now_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn is_identity_revoked(
+        &self,
+        token_id: Option<&str>,
+        account_id: Option<&str>,
+        subject_kind: RelaySubjectKind,
+        subject: &str,
+        machine_id: Option<&str>,
+        client_id: Option<&str>,
+        now_ms: u64,
+    ) -> bool {
         let state = self.lock();
         let active = |map: &BTreeMap<String, u64>, key: &str| {
             map.get(key)
                 .is_some_and(|expires_at_ms| *expires_at_ms > now_ms)
         };
-        if active(&state.revoked_token_ids, &claims.token_id) {
+        if token_id.is_some_and(|token_id| active(&state.revoked_token_ids, token_id)) {
             return true;
         }
-        if claims
-            .account_id
-            .as_deref()
-            .is_some_and(|account_id| active(&state.revoked_accounts, account_id))
-        {
+        if account_id.is_some_and(|account_id| active(&state.revoked_accounts, account_id)) {
             return true;
         }
-        [claims.client_id.as_deref(), claims.machine_id.as_deref()]
+        if [client_id, machine_id]
             .into_iter()
             .flatten()
             .any(|subject| active(&state.revoked_subjects, subject))
+        {
+            return true;
+        }
+        let Some(account_id) = account_id else {
+            return false;
+        };
+        let active_scoped = |subject_kind, subject: &str| {
+            state
+                .revoked_scoped_subjects
+                .get(&ScopedRevokedSubject {
+                    account_id: account_id.to_string(),
+                    subject_kind,
+                    subject: subject.to_string(),
+                })
+                .is_some_and(|expires_at_ms| *expires_at_ms > now_ms)
+        };
+        active_scoped(subject_kind, subject)
+            || client_id.is_some_and(|subject| active_scoped(RelaySubjectKind::Client, subject))
+            || machine_id.is_some_and(|subject| active_scoped(RelaySubjectKind::Machine, subject))
+    }
+
+    pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
+        self.inner.updates.subscribe()
     }
 }
 
@@ -271,6 +391,28 @@ impl RelayAuthVerifier {
         match self {
             Self::SharedToken(_) => None,
             Self::ScopedToken(verifier) => verifier.now_ms.is_none().then(current_unix_ms),
+        }
+    }
+
+    pub(crate) fn revocation_updates(&self) -> Option<watch::Receiver<u64>> {
+        match self {
+            Self::ScopedToken(verifier) => verifier
+                .revocations
+                .as_ref()
+                .map(RelayRevocationRegistry::subscribe),
+            Self::SharedToken(_) => None,
+        }
+    }
+
+    pub(crate) fn is_identity_revoked(&self, identity: &VerifiedRelayIdentity) -> bool {
+        match self {
+            Self::ScopedToken(verifier) => verifier.revocations.as_ref().is_some_and(|registry| {
+                registry.is_verified_identity_revoked(
+                    identity,
+                    verifier.now_ms.unwrap_or_else(current_unix_ms),
+                )
+            }),
+            Self::SharedToken(_) => false,
         }
     }
 }
@@ -616,7 +758,10 @@ fn identity_from_claims(claims: RelayTokenClaims) -> VerifiedRelayIdentity {
         allowed_targets: claims.allowed_targets,
         expires_at_ms: claims.expires_at_ms,
         token_id: Some(claims.token_id),
+        account_id: claims.account_id,
         user_id: claims.user_id,
+        machine_id: claims.machine_id,
+        client_id: claims.client_id,
         public_key_thumbprint: claims.public_key_thumbprint,
     }
 }

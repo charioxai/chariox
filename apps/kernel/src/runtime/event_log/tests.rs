@@ -6,6 +6,16 @@ use super::{
     EventLog, EventRetentionPolicy, LoggedEvent, ReplayOutcome, DEFAULT_EVENT_ID_RESERVATION_BLOCK,
 };
 
+async fn wait_for_persistent_write_settlement(log: &EventLog<String>) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while log.pending_persistent_writes_for_tests() != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("persistent writer should settle its bounded append attempt");
+}
+
 static CLONE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug)]
@@ -177,6 +187,300 @@ async fn persistent_event_store_replays_after_restart() {
             assert_eq!(events[0].event, "second");
         }
         ReplayOutcome::Gap(gap) => panic!("unexpected replay gap: {gap:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn persistent_event_store_recovers_after_transient_append_failure() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-event-store-recovery-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    let log = EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+        .expect("persistent event store should initialize");
+
+    std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
+    log.append("session:a", "failed".to_string())
+        .await
+        .expect_err("append failure must be visible before an event can be delivered");
+
+    std::fs::remove_dir(&events_path).expect("event store path should become writable again");
+    let recovered = log
+        .append("session:a", "recovered".to_string())
+        .await
+        .expect("restored storage should recover without reconstructing the event log");
+    let later = log
+        .append("session:a", "later".to_string())
+        .await
+        .expect("later event should preserve durable order");
+    log.flush_persistence_for_tests()
+        .await
+        .expect("recovered events should be durable");
+
+    let restarted =
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should restart after recovery");
+    match restarted.replay_after("session:a", 0).await {
+        ReplayOutcome::Gap(gap) => {
+            assert_eq!(gap.first_retained_event_id, Some(recovered.event_id));
+            assert_eq!(gap.latest_event_id, Some(later.event_id));
+        }
+        ReplayOutcome::Replayed(events) => panic!("failed event id should leave a gap: {events:?}"),
+    }
+    match restarted
+        .replay_after("session:a", recovered.event_id)
+        .await
+    {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_id, later.event_id);
+            assert_eq!(events[0].event, "later");
+        }
+        ReplayOutcome::Gap(gap) => panic!("recovered events should replay in order: {gap:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn persistent_event_store_failure_does_not_stall_replay_for_other_streams() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-event-store-concurrent-failure-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    let log = std::sync::Arc::new(
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should initialize"),
+    );
+    let stable = log
+        .append("session:stable", "stable".to_string())
+        .await
+        .expect("stable event should append");
+    std::fs::remove_file(&events_path).expect("event store file should be replaceable");
+    std::fs::create_dir(&events_path).expect("event store path should become unwritable");
+
+    let gate = log.pause_next_persistent_append_for_tests();
+    let first_task = {
+        let log = std::sync::Arc::clone(&log);
+        tokio::spawn(async move { log.append("session:a", "first".to_string()).await })
+    };
+    gate.wait_until_entered().await;
+    let second_task = {
+        let log = std::sync::Arc::clone(&log);
+        tokio::spawn(async move { log.append("session:b", "second".to_string()).await })
+    };
+    tokio::task::yield_now().await;
+    assert!(
+        !second_task.is_finished(),
+        "persistent appends should retain documented global ordering"
+    );
+
+    let replay = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        log.replay_after("session:stable", stable.event_id),
+    )
+    .await
+    .expect("storage retries must not hold the global streams mutex");
+    assert!(matches!(replay, ReplayOutcome::Replayed(events) if events.is_empty()));
+
+    gate.release();
+    first_task
+        .await
+        .expect("first append task should join")
+        .expect_err("first stream append should expose sustained storage failure");
+    second_task
+        .await
+        .expect("second append task should join")
+        .expect_err("second stream append should expose sustained storage failure");
+    assert_eq!(log.pending_persistent_writes_for_tests(), 0);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn persistent_event_store_cancelled_failed_append_is_never_replay_visible() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-event-store-cancelled-failure-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    let log = std::sync::Arc::new(
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should initialize"),
+    );
+    std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
+
+    let gate = log.pause_next_persistent_append_for_tests();
+    let append_task = {
+        let log = std::sync::Arc::clone(&log);
+        tokio::spawn(async move { log.append("session:a", "must-not-replay".to_string()).await })
+    };
+    gate.wait_until_entered().await;
+    assert!(matches!(
+        log.replay_after("session:a", 0).await,
+        ReplayOutcome::Replayed(events) if events.is_empty()
+    ));
+    append_task.abort();
+    assert!(append_task
+        .await
+        .expect_err("append task should be cancelled")
+        .is_cancelled());
+    gate.release();
+    wait_for_persistent_write_settlement(&log).await;
+
+    match log.replay_after("session:a", 0).await {
+        ReplayOutcome::Gap(gap) => {
+            assert_eq!(gap.first_retained_event_id, None);
+            assert_eq!(gap.latest_event_id, None);
+        }
+        ReplayOutcome::Replayed(events) => {
+            panic!("failed cancelled append must not be replay visible: {events:?}")
+        }
+    }
+
+    std::fs::remove_dir(&events_path).expect("event store path should become writable again");
+    let recovered = log
+        .append("session:a", "recovered".to_string())
+        .await
+        .expect("same event log should recover after cancelled failure");
+    match log.replay_after("session:a", 0).await {
+        ReplayOutcome::Gap(gap) => {
+            assert_eq!(gap.first_retained_event_id, Some(recovered.event_id));
+            assert_eq!(gap.latest_event_id, Some(recovered.event_id));
+        }
+        ReplayOutcome::Replayed(events) => panic!("cancelled id should leave a gap: {events:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn persistent_event_store_cancelled_successful_append_reconciles_in_memory_and_on_restart() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-event-store-cancelled-success-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    let log = std::sync::Arc::new(
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should initialize"),
+    );
+    let anchor = log
+        .append("session:a", "anchor".to_string())
+        .await
+        .expect("anchor event should append");
+
+    let gate = log.pause_next_persistent_append_for_tests();
+    let append_task = {
+        let log = std::sync::Arc::clone(&log);
+        tokio::spawn(async move {
+            log.append("session:a", "durable-after-cancel".to_string())
+                .await
+        })
+    };
+    gate.wait_until_entered().await;
+    append_task.abort();
+    assert!(append_task
+        .await
+        .expect_err("append task should be cancelled")
+        .is_cancelled());
+    gate.release();
+    wait_for_persistent_write_settlement(&log).await;
+
+    match log.replay_after("session:a", anchor.event_id).await {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event, "durable-after-cancel");
+        }
+        ReplayOutcome::Gap(gap) => panic!("durable cancelled append should replay: {gap:?}"),
+    }
+    let restarted =
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should restart");
+    match restarted.replay_after("session:a", anchor.event_id).await {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event, "durable-after-cancel");
+        }
+        ReplayOutcome::Gap(gap) => panic!("durable cancelled append should restart: {gap:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn persistent_event_store_truncates_a_torn_tail_before_append() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-event-store-torn-tail-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    std::fs::create_dir_all(&root).expect("event store root should create");
+    std::fs::write(&counter_path, r#"{"high_water_event_id":7}"#)
+        .expect("event counter should seed");
+    let first = LoggedEvent {
+        event_id: 7,
+        stream_id: "session:a".to_string(),
+        stream_seq: 1,
+        recorded_at_ms: super::unix_epoch_ms(),
+        event: "first".to_string(),
+    };
+    let mut payload = super::logged_event_jsonl_payload(&first).expect("first event should encode");
+    payload.extend_from_slice(br#"{"event_id":8,"stream_id":"session:a""#);
+    std::fs::write(&events_path, payload).expect("torn event store should seed");
+
+    let log = EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+        .expect("persistent event store should tolerate a torn tail");
+    let recovered = log
+        .append("session:a", "second".to_string())
+        .await
+        .expect("append should replace the torn tail with a complete record");
+    log.flush_persistence_for_tests()
+        .await
+        .expect("repaired event store should flush");
+
+    let stored = std::fs::read_to_string(&events_path).expect("event store should remain readable");
+    assert!(stored.ends_with('\n'));
+    assert_eq!(stored.lines().count(), 2);
+    for line in stored.lines() {
+        serde_json::from_str::<LoggedEvent<String>>(line)
+            .expect("every retained event record should be complete");
+    }
+
+    let restarted =
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("repaired event store should restart");
+    match restarted.replay_after("session:a", first.event_id).await {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_id, recovered.event_id);
+            assert_eq!(events[0].event, "second");
+        }
+        ReplayOutcome::Gap(gap) => panic!("repaired event should replay: {gap:?}"),
     }
     let _ = std::fs::remove_dir_all(root);
 }

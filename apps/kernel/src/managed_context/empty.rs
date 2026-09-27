@@ -141,18 +141,23 @@ impl EmptyManagedContextCompletion {
 }
 
 pub(crate) fn empty_managed_context_workspace_path(
-    config: &DaemonConfig,
+    _config: &DaemonConfig,
     context_id: &str,
 ) -> Result<PathBuf, DaemonError> {
-    let state_root = config
-        .durable_state_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
-    Ok(state_root
-        .join("managed-context-empty-workspaces")
-        .join(format!("{:x}", Sha256::digest(context_id.as_bytes())))
-        .join("workspace"))
+    managed_user_empty_context_workspace_path(context_id)
+}
+
+pub(crate) fn managed_user_empty_context_workspace_path(
+    context_id: &str,
+) -> Result<PathBuf, DaemonError> {
+    Ok(managed_user_workspace_root()?.join(format!(
+        ".chariox-empty-context-{:x}",
+        Sha256::digest(context_id.as_bytes())
+    )))
+}
+
+pub(crate) fn managed_user_workspace_root() -> Result<PathBuf, DaemonError> {
+    crate::managed_bootstrap::managed_repository_root_from_env()
 }
 
 pub(crate) fn ensure_empty_managed_context_workspace(
@@ -164,28 +169,35 @@ pub(crate) fn ensure_empty_managed_context_workspace(
     let state_root = durable_state_path
         .parent()
         .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
-    let workspace_root = workspace
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| empty_context_error("empty workspace path has no managed root"))?;
     ensure_real_private_directory(state_root)?;
-    ensure_real_private_directory(workspace_root)?;
-    ensure_real_private_directory(
-        workspace
-            .parent()
-            .ok_or_else(|| empty_context_error("empty workspace path has no context root"))?,
-    )?;
+    let user_root = managed_user_workspace_root()?;
+    let canonical_user_root =
+        ensure_existing_real_directory(&user_root, "managed repository root")?;
     ensure_real_private_directory(&workspace)?;
-    let canonical_state_root = fs::canonicalize(state_root)
-        .map_err(|error| empty_context_io_error("resolve managed state root", error))?;
     let canonical_workspace = fs::canonicalize(&workspace)
         .map_err(|error| empty_context_io_error("resolve empty managed workspace", error))?;
-    if !canonical_workspace.starts_with(&canonical_state_root) {
+    let canonical_state_root = fs::canonicalize(state_root)
+        .map_err(|error| empty_context_io_error("resolve managed state root", error))?;
+    if !canonical_workspace.starts_with(&canonical_user_root)
+        || canonical_workspace.starts_with(&canonical_state_root)
+    {
         return Err(empty_context_error(
-            "empty managed workspace escapes the managed state root",
+            "empty managed workspace must remain separate from managed control state",
         ));
     }
     Ok(canonical_workspace)
+}
+
+fn ensure_existing_real_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| empty_context_io_error("inspect managed user workspace root", error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(empty_context_error(format!(
+            "{label} must be a real directory"
+        )));
+    }
+    fs::canonicalize(path)
+        .map_err(|error| empty_context_io_error("resolve managed user workspace root", error))
 }
 
 fn validate_empty_workspace(workspace: &Path) -> Result<(), DaemonError> {
@@ -513,6 +525,41 @@ mod tests {
         )
         .is_err());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_empty_workspace_path_keeps_user_workspace_separate_from_control_state() {
+        let _lock = crate::env_lock::lock();
+        let root = test_root("managed-user-workspace");
+        let mut config = test_config(&root, "machine-empty", "kernel-empty", "http://127.0.0.1:9");
+        config.publication_control_state_root = Some(root.join("control"));
+        let workspace = empty_managed_context_workspace_path(&config, "context-empty")
+            .expect("managed empty workspace path");
+        assert!(workspace.starts_with(Path::new("/home/chariox")));
+        assert!(!workspace.starts_with(&root));
+        assert!(!workspace
+            .to_string_lossy()
+            .contains("MANAGED_PROVIDER_HOME"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_empty_workspace_uses_the_bootstrap_repository_root() {
+        let _lock = crate::env_lock::lock();
+        let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+        std::env::set_var(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            "/srv/custom workspaces",
+        );
+        let workspace = managed_user_empty_context_workspace_path("context-empty")
+            .expect("managed empty workspace path");
+        assert!(workspace.starts_with("/srv/custom workspaces"));
+        match previous {
+            Some(value) => {
+                std::env::set_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV, value)
+            }
+            None => std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

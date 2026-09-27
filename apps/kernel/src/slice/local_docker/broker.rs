@@ -69,6 +69,11 @@ enum BrokerRequest<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<&'a str>,
     },
+    HomeArchiveVerify {
+        scope: &'a str,
+        id: &'a str,
+        path: &'a str,
+    },
 }
 
 #[cfg(unix)]
@@ -100,6 +105,13 @@ struct BrokerResponse {
     status: i32,
     stdout_base64: String,
     stderr_base64: String,
+    #[serde(default)]
+    disk_quota_evidence: Option<super::super::disk_quota_policy::SliceDiskQuotaEvidence>,
+}
+
+pub(super) struct BrokerExecution {
+    pub(super) output: Output,
+    pub(super) disk_quota_evidence: Option<super::super::disk_quota_policy::SliceDiskQuotaEvidence>,
 }
 
 #[cfg(unix)]
@@ -235,7 +247,7 @@ fn broker_is_configured() -> bool {
 }
 
 #[cfg(unix)]
-fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
+fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerExecution> {
     let request = Zeroizing::new(
         serde_json::to_vec(request)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
@@ -279,10 +291,13 @@ fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
         };
-        Ok(Output {
-            status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
-            stdout: decode(&response.stdout_base64)?,
-            stderr: decode(&response.stderr_base64)?,
+        Ok(BrokerExecution {
+            output: Output {
+                status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
+                stdout: decode(&response.stdout_base64)?,
+                stderr: decode(&response.stderr_base64)?,
+            },
+            disk_quota_evidence: response.disk_quota_evidence,
         })
     })();
     if result.is_err() {
@@ -291,26 +306,45 @@ fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
     result
 }
 
+#[cfg(unix)]
+fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
+    execute_with_disk_evidence(request).map(|response| response.output)
+}
+
+#[cfg(unix)]
+fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {
+    command
+        .get_envs()
+        .filter_map(|(name, value)| {
+            let name = name.to_str()?;
+            if !name.starts_with("CHARIOX_SLICE_")
+                && !matches!(
+                    name,
+                    "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID"
+                        | "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY"
+                        | "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID"
+                        | "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID"
+                        | "CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE"
+                )
+            {
+                return None;
+            }
+            Some((name.to_string(), value?.to_str()?.to_string()))
+        })
+        .collect()
+}
+
 pub(super) fn run_provisioner(
     command: &Command,
     action: &str,
     inputs: &[ProvisionerInput],
-) -> Option<io::Result<Output>> {
+) -> Option<io::Result<BrokerExecution>> {
     if !broker_is_configured() {
         return None;
     }
     #[cfg(unix)]
     {
-        let environment = command
-            .get_envs()
-            .filter_map(|(name, value)| {
-                let name = name.to_str()?;
-                if !name.starts_with("CHARIOX_SLICE_") {
-                    return None;
-                }
-                Some((name.to_string(), value?.to_str()?.to_string()))
-            })
-            .collect::<BTreeMap<_, _>>();
+        let environment = provisioner_environment(command);
         let files = inputs
             .iter()
             .map(|input| BrokerProvisionerFile {
@@ -322,7 +356,7 @@ pub(super) fn run_provisioner(
                 ),
             })
             .collect::<Vec<_>>();
-        Some(execute(&BrokerRequest::Provisioner {
+        Some(execute_with_disk_evidence(&BrokerRequest::Provisioner {
             action,
             environment: &environment,
             files: &files,
@@ -336,7 +370,7 @@ pub(super) fn capture_home_archive(
     container: &str,
     scope: &str,
     id: &str,
-) -> io::Result<Option<(std::path::PathBuf, u64)>> {
+) -> io::Result<Option<(std::path::PathBuf, u64, String)>> {
     if !broker_is_configured() {
         return Ok(None);
     }
@@ -366,7 +400,55 @@ pub(super) fn capture_home_archive(
                 "managed home archive digest is invalid",
             ));
         }
-        Ok(Some((captured.path.into(), captured.size_bytes)))
+        Ok(Some((
+            captured.path.into(),
+            captured.size_bytes,
+            captured.sha256,
+        )))
+    }
+    #[cfg(not(unix))]
+    unreachable!()
+}
+
+pub(super) fn verify_home_archive(
+    scope: &str,
+    id: &str,
+    path: &std::path::Path,
+) -> io::Result<Option<(u64, String)>> {
+    if !broker_is_configured() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        let path = path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "managed home archive path is not UTF-8",
+            )
+        })?;
+        let output = execute(&BrokerRequest::HomeArchiveVerify { scope, id, path })?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "managed home archive verification failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let verified: HomeArchiveCaptureResponse = serde_json::from_slice(&output.stdout)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if verified.path != path
+            || verified.size_bytes == 0
+            || verified.sha256.len() != 64
+            || !verified
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "managed home archive verification response is invalid",
+            ));
+        }
+        Ok(Some((verified.size_bytes, verified.sha256)))
     }
     #[cfg(not(unix))]
     unreachable!()
@@ -525,4 +607,58 @@ pub(super) fn broker_stream_is_close_on_exec(stream: &UnixStream) -> bool {
 pub(super) fn mark_broker_stream_close_on_exec(stream: &UnixStream) -> io::Result<()> {
     use std::os::fd::AsRawFd;
     set_close_on_exec(stream.as_raw_fd())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_provider_isolation_probe_survives_broker_filter() {
+        let mut command = Command::new("unused-provisioner");
+        command.env("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE", "1");
+        command.env("CHARIOX_MANAGED_UNKNOWN", "do-not-forward");
+        assert_eq!(
+            provisioner_environment(&command),
+            BTreeMap::from([(
+                "CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE".to_string(),
+                "1".to_string()
+            ),])
+        );
+    }
+
+    #[test]
+    fn managed_room_binding_survives_provisioner_request_serialization() {
+        let binding = [
+            ("CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID", "kernel-home"),
+            (
+                "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY",
+                "test-public-key",
+            ),
+            ("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", "room-1"),
+            ("CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", "slice-1"),
+        ];
+        let mut command = Command::new("unused-provisioner");
+        command.envs(binding).env("CHARIOX_SLICE_ID", "slice-1");
+        command.env("CHARIOX_ROOM_ENVIRONMENT_UNKNOWN", "do-not-forward");
+        command.env("UNRELATED_SECRET", "do-not-forward");
+        let environment = provisioner_environment(&command);
+        let request = serde_json::to_value(BrokerRequest::Provisioner {
+            action: "provision",
+            environment: &environment,
+            files: &[],
+        })
+        .unwrap();
+        for (name, value) in binding {
+            assert_eq!(request["environment"][name], value, "missing {name}");
+        }
+        assert_eq!(environment.len(), 5);
+        for (name, _) in binding {
+            command.env_remove(name);
+        }
+        assert_eq!(
+            provisioner_environment(&command),
+            BTreeMap::from([("CHARIOX_SLICE_ID".to_string(), "slice-1".to_string()),])
+        );
+    }
 }

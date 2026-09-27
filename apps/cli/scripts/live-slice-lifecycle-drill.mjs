@@ -88,7 +88,7 @@ async function currentDockerHost() {
   }
 }
 
-async function assertScreenEndpointReady(url) {
+async function assertScreenEndpointReady(url, expectedBackend) {
   const deadline = Date.now() + 90_000
   let lastError = null
   while (Date.now() < deadline) {
@@ -98,7 +98,14 @@ async function assertScreenEndpointReady(url) {
         throw new Error(`slice screen endpoint returned HTTP ${response.status}`)
       }
       const body = await response.text()
-      assert(body.includes('noVNC') || body.includes('vnc'), 'slice screen endpoint should serve the VNC viewer')
+      if (expectedBackend === 'novnc') {
+        assert(body.includes('noVNC') || body.includes('vnc'), 'slice screen endpoint should serve the noVNC viewer')
+      } else if (expectedBackend === 'selkies') {
+        const contentType = response.headers.get('content-type') ?? ''
+        assert(contentType.includes('text/html') || /<!doctype|<html/i.test(body), 'slice screen endpoint should serve the Selkies viewer')
+      } else {
+        throw new Error(`unsupported slice display backend ${expectedBackend}`)
+      }
       return
     } catch (error) {
       lastError = error
@@ -408,9 +415,10 @@ async function main() {
     assert(started.worker_kernel_id, 'started slice should discover a worker kernel')
     log('started', { slice: started.id, workerKernelId: started.worker_kernel_id })
 
-    const endpoint = variant(await client.send(getSliceDisplayEndpointRequest(created.id)), 'SliceDisplayEndpoint').endpoint
+    const endpoint = started.display_endpoint
+    assert(endpoint && endpoint.kind === 'selkies', `default headed slice should record the Selkies backend, got ${endpoint?.kind ?? 'none'}`)
     assert(endpoint.url, 'headed slice should expose a display endpoint URL')
-    await assertScreenEndpointReady(endpoint.url)
+    await assertScreenEndpointReady(endpoint.url, endpoint.kind)
     log('screen', { url: endpoint.url, access: endpoint.access })
 
     let imported = null

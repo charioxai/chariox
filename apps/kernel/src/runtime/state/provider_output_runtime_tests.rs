@@ -7,6 +7,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+mod inert_pty;
+use inert_pty::{spawn_inert_pty_for_run, InertPtyCleanup};
+
 async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
     let (
         config_projection,
@@ -143,16 +146,20 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod browser_import_execution_gate;
 mod cleanup_liveness;
 mod completion_settlement;
 mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
 mod history_projection;
+mod large_codex_resume;
+mod leased_output;
 mod prompt_cancellation;
 mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;
+mod structured_exit_diagnostic;
 mod structured_output;
 
 #[test]

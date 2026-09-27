@@ -40,6 +40,9 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+[ "$(docker_as_owner info --format '{{.CgroupDriver}} {{.CgroupVersion}} {{.MemoryLimit}} {{.CPUCfsQuota}} {{.PidsLimit}}')" = "systemd 2 true true true" ] \
+  || { echo "rootless Docker resource controls are not enforced" >&2; exit 1; }
+
 install -d -o chariox -g chariox-slice -m 0700 \
   "$root" \
   "$destination" \
@@ -104,7 +107,13 @@ start_holder() {
 
 start_holder
 docker_as_owner create --name "$container" --user 1001:1001 \
-  -v "$handle:/probe:rw" "$image" /bin/busybox sh -c 'printf mapped >> /probe/from-container' >/dev/null
+  --network=none --memory=64m --cpus=0.2 --pids-limit=32 \
+  -v "$handle:/probe:rw" "$image" /bin/busybox sh -c '
+    test "$(/bin/busybox cat /sys/fs/cgroup/memory.max)" = 67108864 &&
+    test "$(/bin/busybox cat /sys/fs/cgroup/cpu.max)" = "20000 100000" &&
+    test "$(/bin/busybox cat /sys/fs/cgroup/pids.max)" = 32 &&
+    printf mapped >> /probe/from-container
+  ' >/dev/null
 [ "$(docker_as_owner inspect --format '{{(index .Mounts 0).Source}}' "$container")" = "$handle" ]
 docker_as_owner start -a "$container"
 runuser -u chariox -- sh -c 'test "$(cat "$1")" = mapped' _ "$repository/from-container"

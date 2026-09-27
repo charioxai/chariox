@@ -12,11 +12,12 @@ use crate::auth::{
     VerifiedRelayIdentity,
 };
 use crate::protocol::{
-    ClientTarget, DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayEnvelope,
-    RelayError,
+    canonical_peer_daemon_id, ClientTarget, DaemonRegistration, EncryptedRelayPayload,
+    RelayCallerIdentity, RelayConnectionRole, RelayEnvelope, RelayError,
 };
 use crate::registry::{
-    DaemonKey, PendingClientRequest, PendingRequestKind, RelayRegistry, RelaySender,
+    ActiveEventRoute, DaemonKey, PendingClientRequest, PendingDaemonPeerRequest,
+    PendingRequestKind, RelayRegistry, RelayRouteIndex, RelaySender,
 };
 
 mod cleanup;
@@ -39,6 +40,7 @@ pub(super) async fn handle_client_packet_route_envelope(
     envelope: RelayEnvelope,
     registry: &Arc<RwLock<RelayRegistry>>,
     routes: &Arc<crate::registry::RelayRouteIndex>,
+    auth_verifier: &RelayAuthVerifier,
     peer_addr: SocketAddr,
     outgoing_tx: &RelaySender,
     relay_request_counter: &AtomicU64,
@@ -84,7 +86,8 @@ pub(super) async fn handle_client_packet_route_envelope(
                 )?;
                 return Ok(ConnectionAction::Continue);
             }
-            let Some(daemon_key) = resolve_target_daemon_key(registry, &realm_id, &target).await
+            let Some(daemon_key) =
+                resolve_registered_target_daemon_key(registry, &realm_id, &target).await
             else {
                 log_target_not_connected("client_request", registry, peer_addr, &realm_id, &target)
                     .await;
@@ -130,31 +133,35 @@ pub(super) async fn handle_client_packet_route_envelope(
                     kind: PendingRequestKind::Request,
                 },
             );
-            let daemon_sender = routes.daemon_sender(&daemon_key);
-            let Some(daemon_sender) = daemon_sender else {
-                routes.remove_pending_client(&relay_request_id);
-                log_daemon_sender_missing(
-                    "client_request",
-                    registry,
-                    peer_addr,
-                    &daemon_key,
-                    &relay_request_id,
-                )
-                .await;
-                send_envelope(
-                    outgoing_tx,
-                    &RelayEnvelope::ClientResponse {
-                        request_id,
-                        encrypted_response: None,
-                        error: Some(relay_error(
-                            "target_not_connected",
-                            "target daemon is not connected to relay",
-                            true,
-                        )),
-                    },
-                )?;
-                return Ok(ConnectionAction::Continue);
-            };
+            let daemon_sender =
+                match route_admitted_daemon_sender(registry, auth_verifier, &daemon_key).await {
+                    Ok(sender) => sender,
+                    Err(failure) => {
+                        routes.remove_pending_client(&relay_request_id);
+                        log_daemon_route_admission_failure(
+                            "client_request",
+                            registry,
+                            peer_addr,
+                            &daemon_key,
+                            &relay_request_id,
+                            failure,
+                        )
+                        .await;
+                        send_envelope(
+                            outgoing_tx,
+                            &RelayEnvelope::ClientResponse {
+                                request_id,
+                                encrypted_response: None,
+                                error: Some(relay_error(
+                                    "target_not_connected",
+                                    "target daemon is not connected to relay",
+                                    true,
+                                )),
+                            },
+                        )?;
+                        return Ok(ConnectionAction::Continue);
+                    }
+                };
             if send_envelope(
                 &daemon_sender,
                 &RelayEnvelope::DaemonRequest {
@@ -279,7 +286,8 @@ pub(super) async fn handle_client_packet_route_envelope(
                     "resume_from_event_id": resume_from_event_id,
                 }),
             );
-            let Some(daemon_key) = resolve_target_daemon_key(registry, &realm_id, &target).await
+            let Some(daemon_key) =
+                resolve_target_daemon_key(registry, auth_verifier, &realm_id, &target).await
             else {
                 log_target_not_connected(
                     "client_subscribe",
@@ -341,6 +349,8 @@ pub(super) async fn handle_client_packet_route_envelope(
                 let guard = registry.read().await;
                 if subscription_owned_by_other_client(&guard, routes, &subscription_id, peer_addr) {
                     (true, None)
+                } else if !daemon_route_is_admitted(&guard, auth_verifier, &daemon_key) {
+                    (false, None)
                 } else {
                     routes.insert_pending_client(
                         relay_request_id.clone(),
@@ -533,31 +543,35 @@ pub(super) async fn handle_client_packet_route_envelope(
                     },
                 },
             );
-            let daemon_sender = routes.daemon_sender(&daemon_key);
-            let Some(daemon_sender) = daemon_sender else {
-                routes.remove_pending_client(&relay_request_id);
-                log_daemon_sender_missing(
-                    "client_unsubscribe",
-                    registry,
-                    peer_addr,
-                    &daemon_key,
-                    &relay_request_id,
-                )
-                .await;
-                send_envelope(
-                    outgoing_tx,
-                    &RelayEnvelope::ClientResponse {
-                        request_id,
-                        encrypted_response: None,
-                        error: Some(relay_error(
-                            "target_not_connected",
-                            "target daemon is not connected to relay",
-                            true,
-                        )),
-                    },
-                )?;
-                return Ok(ConnectionAction::Continue);
-            };
+            let daemon_sender =
+                match route_admitted_daemon_sender(registry, auth_verifier, &daemon_key).await {
+                    Ok(sender) => sender,
+                    Err(failure) => {
+                        routes.remove_pending_client(&relay_request_id);
+                        log_daemon_route_admission_failure(
+                            "client_unsubscribe",
+                            registry,
+                            peer_addr,
+                            &daemon_key,
+                            &relay_request_id,
+                            failure,
+                        )
+                        .await;
+                        send_envelope(
+                            outgoing_tx,
+                            &RelayEnvelope::ClientResponse {
+                                request_id,
+                                encrypted_response: None,
+                                error: Some(relay_error(
+                                    "target_not_connected",
+                                    "target daemon is not connected to relay",
+                                    true,
+                                )),
+                            },
+                        )?;
+                        return Ok(ConnectionAction::Continue);
+                    }
+                };
             if send_envelope(
                 &daemon_sender,
                 &RelayEnvelope::DaemonUnsubscribe {
@@ -583,15 +597,156 @@ pub(super) async fn handle_client_packet_route_envelope(
     Ok(ConnectionAction::Continue)
 }
 
+pub(super) async fn route_daemon_peer_request(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<RelayRouteIndex>,
+    peer_addr: SocketAddr,
+    outgoing_tx: &RelaySender,
+    relay_request_counter: &AtomicU64,
+    requester_daemon_key: &DaemonKey,
+    target_daemon_key: DaemonKey,
+    request_id: String,
+    encrypted_request: EncryptedRelayPayload,
+) -> Result<(), std::io::Error> {
+    let relay_request_id = format!(
+        "relay-peer-request-{}",
+        relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    routes.insert_pending_daemon(
+        relay_request_id.clone(),
+        PendingDaemonPeerRequest {
+            requester_daemon_key: requester_daemon_key.clone(),
+            requester_request_id: request_id.clone(),
+            target_daemon_key: target_daemon_key.clone(),
+        },
+    );
+    let Some(daemon_sender) = routes.daemon_sender(&target_daemon_key) else {
+        routes.remove_pending_daemon(&relay_request_id);
+        log_daemon_sender_missing(
+            "daemon_peer_request",
+            registry,
+            peer_addr,
+            &target_daemon_key,
+            &relay_request_id,
+        )
+        .await;
+        send_envelope(
+            outgoing_tx,
+            &RelayEnvelope::DaemonPeerResponse {
+                request_id,
+                from_daemon_id: target_daemon_key.daemon_id,
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "target_not_connected",
+                    "target daemon is not connected to relay",
+                    true,
+                )),
+            },
+        )?;
+        return Ok(());
+    };
+    if send_envelope(
+        &daemon_sender,
+        &RelayEnvelope::DaemonIncomingPeerRequest {
+            relay_request_id: relay_request_id.clone(),
+            from_daemon_id: requester_daemon_key.daemon_id.clone(),
+            caller_identity: peer_request_identity(registry, peer_addr).await,
+            encrypted_request,
+        },
+    )
+    .is_err()
+    {
+        reject_peer_pending_on_target_backpressure(
+            registry,
+            outgoing_tx,
+            &relay_request_id,
+            request_id,
+            target_daemon_key.daemon_id,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn route_daemon_peer_event(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<RelayRouteIndex>,
+    peer_addr: SocketAddr,
+    requester_daemon_key: &DaemonKey,
+    target_daemon_key: &DaemonKey,
+    encrypted_event: EncryptedRelayPayload,
+) -> bool {
+    let Some(daemon_sender) = routes.daemon_sender(target_daemon_key) else {
+        return false;
+    };
+    if send_envelope(
+        &daemon_sender,
+        &RelayEnvelope::DaemonIncomingPeerEvent {
+            from_daemon_id: requester_daemon_key.daemon_id.clone(),
+            caller_identity: peer_identity(registry, peer_addr).await,
+            encrypted_event,
+        },
+    )
+    .is_ok()
+    {
+        return true;
+    }
+    log_daemon_sender_backpressure("daemon_peer_event", peer_addr, target_daemon_key);
+    false
+}
+
+pub(super) async fn route_daemon_event(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<RelayRouteIndex>,
+    current_daemon_key: &DaemonKey,
+    relay_request_counter: &AtomicU64,
+    subscription_id: String,
+    event_id: u64,
+    encrypted_event: EncryptedRelayPayload,
+) -> bool {
+    let client_sender = routes
+        .subscription(&subscription_id)
+        .filter(|route: &ActiveEventRoute| route.daemon_key == *current_daemon_key)
+        .map(|route| route.client_sender);
+    let Some(client_sender) = client_sender else {
+        return false;
+    };
+    if send_envelope(
+        &client_sender,
+        &RelayEnvelope::ClientEvent {
+            subscription_id: subscription_id.clone(),
+            event_id,
+            encrypted_event,
+        },
+    )
+    .is_ok()
+    {
+        return true;
+    }
+    close_slow_subscription(
+        registry,
+        routes,
+        &subscription_id,
+        current_daemon_key,
+        relay_request_counter,
+    )
+    .await;
+    false
+}
+
 pub(super) async fn resolve_target_daemon_key(
     registry: &Arc<RwLock<RelayRegistry>>,
+    auth_verifier: &RelayAuthVerifier,
     realm_id: &str,
     target: &ClientTarget,
 ) -> Option<DaemonKey> {
     let guard = registry.read().await;
     if let Some(daemon_id) = target.daemon_id.as_ref() {
         let key = DaemonKey::new(realm_id.to_string(), daemon_id.clone());
-        return guard.live_daemon_sender(&key).map(|_| key);
+        return guard
+            .live_daemon_sender(&key)
+            .filter(|_| daemon_route_is_admitted(&guard, auth_verifier, &key))
+            .map(|_| key);
     }
     let alias = target.daemon_alias.as_ref()?;
     let mut matches = guard
@@ -602,6 +757,7 @@ pub(super) async fn resolve_target_daemon_key(
                 && registration.daemon_alias.as_ref() == Some(alias)
                 && crate::registry::daemon_registration_is_kernel_target(registration)
                 && guard.live_daemon_sender(key).is_some()
+                && daemon_route_is_admitted(&guard, auth_verifier, key)
         })
         .map(|(key, _)| key.clone());
     let daemon_key = matches.next()?;
@@ -610,6 +766,161 @@ pub(super) async fn resolve_target_daemon_key(
     } else {
         Some(daemon_key)
     }
+}
+
+// Request-only target resolution. This deliberately does not authenticate the
+// registration; the caller must immediately use `route_admitted_daemon_sender`
+// for the full signature, expiry, and revocation check before forwarding.
+async fn resolve_registered_target_daemon_key(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    realm_id: &str,
+    target: &ClientTarget,
+) -> Option<DaemonKey> {
+    let guard = registry.read().await;
+    if let Some(daemon_id) = target.daemon_id.as_ref() {
+        let key = DaemonKey::new(realm_id.to_string(), daemon_id.clone());
+        return guard.daemons.contains_key(&key).then_some(key);
+    }
+    let alias = target.daemon_alias.as_ref()?;
+    let mut matches = guard
+        .daemons
+        .iter()
+        .filter(|(key, registration)| {
+            key.realm_id == realm_id
+                && registration.daemon_alias.as_ref() == Some(alias)
+                && crate::registry::daemon_registration_is_kernel_target(registration)
+        })
+        .map(|(key, _)| key.clone());
+    let daemon_key = matches.next()?;
+    if matches.next().is_some() {
+        None
+    } else {
+        Some(daemon_key)
+    }
+}
+
+// Revocation updates, token expiry, and connection cleanup run independently.
+// Recheck the registration token anywhere this predicate gates a fresh route.
+fn daemon_route_is_admitted(
+    registry: &RelayRegistry,
+    auth_verifier: &RelayAuthVerifier,
+    daemon_key: &DaemonKey,
+) -> bool {
+    let Some(registration) = registry.daemons.get(daemon_key) else {
+        return false;
+    };
+    let Some(peer) = registry
+        .daemon_peers
+        .get(daemon_key)
+        .and_then(|peer_addr| registry.peers.get(peer_addr))
+    else {
+        return false;
+    };
+    let Some(action) = peer.allowed_actions.first().copied() else {
+        return false;
+    };
+    auth_verifier
+        .verify(RelayAuthRequest {
+            token: &registration.auth_token,
+            action,
+            target: None,
+        })
+        .is_ok()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DaemonRouteAdmissionFailure {
+    SenderMissing,
+    TokenRevoked,
+    TokenExpired,
+    TokenRejected,
+}
+
+impl DaemonRouteAdmissionFailure {
+    pub(super) fn reason(self) -> &'static str {
+        match self {
+            Self::SenderMissing => "sender_missing",
+            Self::TokenRevoked => "token_revoked",
+            Self::TokenExpired => "token_expired",
+            Self::TokenRejected => "token_rejected",
+        }
+    }
+}
+
+pub(super) async fn route_admitted_daemon_sender(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    auth_verifier: &RelayAuthVerifier,
+    daemon_key: &DaemonKey,
+) -> Result<RelaySender, DaemonRouteAdmissionFailure> {
+    let guard = registry.read().await;
+    route_admitted_daemon_sender_locked(&guard, auth_verifier, daemon_key)
+}
+
+// Revocation updates, token expiry, and per-connection cleanup advance on
+// separate tasks. Perform one sender lookup under the registry lock, then
+// recheck the daemon's full signed registration token before admitting the
+// route. The sender is never used when signature, expiry, or revocation fails.
+fn route_admitted_daemon_sender_locked(
+    registry: &RelayRegistry,
+    auth_verifier: &RelayAuthVerifier,
+    daemon_key: &DaemonKey,
+) -> Result<RelaySender, DaemonRouteAdmissionFailure> {
+    let sender = registry
+        .live_daemon_sender(daemon_key)
+        .ok_or(DaemonRouteAdmissionFailure::SenderMissing)?;
+    let registration = registry
+        .daemons
+        .get(daemon_key)
+        .ok_or(DaemonRouteAdmissionFailure::SenderMissing)?;
+    let Some(peer) = registry
+        .daemon_peers
+        .get(daemon_key)
+        .and_then(|peer_addr| registry.peers.get(peer_addr))
+    else {
+        return Err(DaemonRouteAdmissionFailure::SenderMissing);
+    };
+    let Some(action) = peer.allowed_actions.first().copied() else {
+        return Err(DaemonRouteAdmissionFailure::TokenRejected);
+    };
+    auth_verifier
+        .verify(RelayAuthRequest {
+            token: &registration.auth_token,
+            action,
+            target: None,
+        })
+        .map_err(|error| match error {
+            RelayAuthError::TokenRevoked => DaemonRouteAdmissionFailure::TokenRevoked,
+            RelayAuthError::TokenExpired => DaemonRouteAdmissionFailure::TokenExpired,
+            _ => DaemonRouteAdmissionFailure::TokenRejected,
+        })?;
+    Ok(sender)
+}
+
+async fn log_daemon_route_admission_failure(
+    operation: &str,
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+    daemon_key: &DaemonKey,
+    relay_request_id: &str,
+    failure: DaemonRouteAdmissionFailure,
+) {
+    let guard = registry.read().await;
+    relay_log(
+        "warn",
+        "relay_daemon_route_admission_failed",
+        json!({
+            "operation": operation,
+            "peer_addr": peer_addr.to_string(),
+            "daemon_key": daemon_key_log_value(daemon_key),
+            "relay_request_id": relay_request_id,
+            "reason": failure.reason(),
+            "daemon_registered": guard.daemons.contains_key(daemon_key),
+            "peer_count": guard.peer_count(),
+            "daemon_count": guard.daemon_count(),
+            "pending_request_count": guard.pending_request_count(),
+            "subscription_count": guard.subscription_count(),
+        }),
+    );
 }
 
 pub(super) async fn log_target_not_connected(
@@ -764,6 +1075,36 @@ pub(super) async fn peer_identity(
         .peers
         .get(&peer_addr)
         .and_then(|peer| peer.identity.clone())
+}
+
+async fn peer_request_identity(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+) -> Option<RelayCallerIdentity> {
+    let guard = registry.read().await;
+    let peer = guard.peers.get(&peer_addr)?;
+    let mut identity = peer.identity.clone()?;
+    let registration = peer.daemon_registration.as_ref()?;
+    if identity.subject_kind == RelaySubjectKind::Kernel
+        && identity.token_id.is_some()
+        && identity.public_key_thumbprint.is_some()
+        && registration_daemon_is_exact_kernel_or_temporary_peer(
+            &registration.daemon_id,
+            &identity.subject,
+        )
+        && !registration.machine_id.trim().is_empty()
+    {
+        identity.subject = registration.machine_id.clone();
+        identity.subject_kind = RelaySubjectKind::Machine;
+    }
+    Some(identity)
+}
+
+fn registration_daemon_is_exact_kernel_or_temporary_peer(
+    registered_daemon_id: &str,
+    kernel_subject: &str,
+) -> bool {
+    canonical_peer_daemon_id(registered_daemon_id) == Some(kernel_subject)
 }
 
 pub(super) async fn peer_allows_action(
@@ -1015,6 +1356,13 @@ pub(super) fn validate_daemon_registration_identity(
     };
     if !subject_matches {
         return Err("relay token subject does not match daemon registration");
+    }
+    if identity
+        .machine_id
+        .as_deref()
+        .is_some_and(|machine_id| machine_id != registration.machine_id)
+    {
+        return Err("relay token machine does not match daemon registration");
     }
     if let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() {
         use sha2::{Digest, Sha256};

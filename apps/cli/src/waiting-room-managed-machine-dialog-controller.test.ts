@@ -59,6 +59,47 @@ test("managed-machine dialog refuses to open for an ordinary Machine", () => {
   assert.equal(controller.open(), false)
 })
 
+test("managed-machine dialog edits only the create-time repository root draft", () => {
+  let open = false
+  let renders = 0
+  let state = waitingRoomState({ managedRepositoryRoot: "/home/chariox" })
+  const controller = createWaitingRoomManagedMachineDialogController({
+    isOpen: () => open,
+    state: () => state,
+    sessions: () => [],
+    catalog: fallbackProviderCatalog,
+    remote: () => ({}),
+    setState: (next) => {
+      state = next
+    },
+    openOverlay: () => {
+      open = true
+    },
+    closeOverlay: () => {
+      open = false
+    },
+    renderOverlay: () => {
+      renders += 1
+    },
+  })
+
+  assert.equal(controller.open(), true)
+  assert.equal(controller.handleKey({ name: "down", eventType: "press" }), true)
+  assert.equal(controller.handleKey({ name: "down", eventType: "press" }), true)
+  assert.equal(state.focus, "managed-repository-root")
+  assert.equal(controller.handleKey({ name: "1", eventType: "press" }), true)
+  assert.equal(controller.handleKey({ name: "space", eventType: "press" }), true)
+  assert.equal(controller.handleKey({ name: "backspace", eventType: "press" }), true)
+  assert.equal(state.managedRepositoryRoot, "/home/chariox1")
+  assert.equal(controller.handleKey({ name: "u", ctrl: true, eventType: "press" }), true)
+  assert.equal(state.managedRepositoryRoot, "")
+  for (const name of "/srv/chariox/repos") {
+    assert.equal(controller.handleKey({ name, eventType: "press" }), true)
+  }
+  assert.equal(state.managedRepositoryRoot, "/srv/chariox/repos")
+  assert.ok(renders > 6)
+})
+
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "launch-machine",

@@ -233,12 +233,26 @@ impl CharioxUserConfig {
                     &value,
                 )?)
             }
+            "slices.linux.allow_provider_sandbox_compatibility" => {
+                self.slices.linux.allow_provider_sandbox_compatibility = Some(parse_config_bool(
+                    "slices.linux.allow_provider_sandbox_compatibility",
+                    &value,
+                )?)
+            }
             "slices.linux.memory_mb" => {
                 self.slices.linux.memory_mb =
                     Some(parse_config_u32("slices.linux.memory_mb", &value, true)?)
             }
             "slices.linux.cpus" => {
                 self.slices.linux.cpus = Some(non_empty_config_string("slices.linux.cpus", value)?)
+            }
+            "slices.linux.disk_layer_mb" => {
+                self.slices.linux.disk_layer_mb =
+                    Some(parse_config_u32("slices.linux.disk_layer_mb", &value, true)?)
+            }
+            "slices.linux.disk_home_mb" => {
+                self.slices.linux.disk_home_mb =
+                    Some(parse_config_u32("slices.linux.disk_home_mb", &value, true)?)
             }
             "slices.linux.idle_timeout_minutes" => {
                 self.slices.linux.idle_timeout_minutes = Some(parse_config_u32(
@@ -503,8 +517,13 @@ impl CharioxUserConfig {
             "slices.linux.allow_unconfined_seccomp" => {
                 self.slices.linux.allow_unconfined_seccomp = None
             }
+            "slices.linux.allow_provider_sandbox_compatibility" => {
+                self.slices.linux.allow_provider_sandbox_compatibility = None
+            }
             "slices.linux.memory_mb" => self.slices.linux.memory_mb = None,
             "slices.linux.cpus" => self.slices.linux.cpus = None,
+            "slices.linux.disk_layer_mb" => self.slices.linux.disk_layer_mb = None,
+            "slices.linux.disk_home_mb" => self.slices.linux.disk_home_mb = None,
             "slices.linux.idle_timeout_minutes" => self.slices.linux.idle_timeout_minutes = None,
             "slices.linux.screen_width" => self.slices.linux.screen_width = None,
             "slices.linux.screen_height" => self.slices.linux.screen_height = None,

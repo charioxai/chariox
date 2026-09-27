@@ -1,17 +1,18 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
 use tokio::sync::oneshot;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, OwnedMutexGuard};
 
 pub const DEFAULT_EVENT_ID_RESERVATION_BLOCK: u64 = 100_000;
 pub const DEFAULT_PERSISTENT_EVENT_MAX_BYTES: u64 = 50 * 1024 * 1024;
@@ -21,6 +22,11 @@ const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 1;
 const PERSISTENT_COMPACTION_TARGET_NUMERATOR: u64 = 3;
 const PERSISTENT_COMPACTION_TARGET_DENOMINATOR: u64 = 4;
 const PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY: usize = 32;
+const PERSISTENT_WRITE_MAX_ATTEMPTS: usize = 3;
+const PERSISTENT_WRITE_RETRY_BASE_DELAY_MS: u64 = 25;
+const PERSISTENCE_OUTCOME_PENDING: u8 = 0;
+const PERSISTENCE_OUTCOME_SUCCEEDED: u8 = 1;
+const PERSISTENCE_OUTCOME_FAILED: u8 = 2;
 #[cfg(test)]
 const PERSISTENT_WRITER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -131,8 +137,8 @@ impl<E: Clone + Serialize> EventLog<E> {
         event: E,
     ) -> io::Result<LoggedEvent<E>> {
         let stream_id = stream_id.into();
-        let event_id = self.event_ids.next()?;
-        let (logged, compact_snapshot) = {
+        let Some(persistence) = &self.persistence else {
+            let event_id = self.event_ids.next()?;
             let mut streams = self.streams.lock().await;
             let stream = streams.entry(stream_id.clone()).or_default();
             let logged = LoggedEvent {
@@ -149,32 +155,110 @@ impl<E: Clone + Serialize> EventLog<E> {
             stream.retained_jsonl_bytes = stream
                 .retained_jsonl_bytes
                 .saturating_add(logged_jsonl_bytes);
-            let compact_after_append =
-                apply_retention(&mut streams, self.retention, unix_epoch_ms());
-            let compact_snapshot = if compact_after_append {
-                match &self.persistence {
-                    Some(persistence)
-                        if persistence.should_compact_now_after_append(logged_jsonl_bytes)? =>
-                    {
-                        Some(retained_events_snapshot(&streams))
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            (logged, compact_snapshot)
+            apply_retention(&mut streams, self.retention, unix_epoch_ms());
+            return Ok(logged);
         };
-        if let Some(persistence) = &self.persistence {
-            persistence
-                .persist_event(&logged, compact_snapshot.as_deref())
-                .await?;
+
+        // Persistent appends are globally serialized so event ids, JSONL order, and
+        // compaction snapshots remain aligned. The owned permit travels through the
+        // writer acknowledgement, making that ordering cancellation-safe. The streams
+        // mutex is deliberately released before persistence and bounded retries so
+        // replay and unrelated stream inspection do not stall on storage failures.
+        let append_order_guard = Arc::clone(&persistence.append_order).lock_owned().await;
+        let write_permit = persistence
+            .write_tx
+            .reserve()
+            .await
+            .map_err(|_| io::Error::other("persistent event writer stopped"))?;
+        let event_id = self.event_ids.next()?;
+        let mut streams = self.streams.lock().await;
+        persistence.reconcile_completed_events(&mut streams);
+        let stream = streams.entry(stream_id.clone()).or_default();
+        let logged = LoggedEvent {
+            event_id,
+            stream_id: stream_id.clone(),
+            stream_seq: stream.next_stream_seq,
+            recorded_at_ms: unix_epoch_ms(),
+            event,
+        };
+        let append_jsonl = logged_event_jsonl_payload(&logged)?;
+        let logged_jsonl_bytes = append_jsonl.len() as u64;
+        stream.next_stream_seq += 1;
+        stream.retained.push_back(logged.clone());
+        stream.retained_jsonl_bytes = stream
+            .retained_jsonl_bytes
+            .saturating_add(logged_jsonl_bytes);
+        let pending = persistence.register_pending_event(&logged, logged_jsonl_bytes);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        write_permit.send(PersistentEventWrite::Append {
+            append_jsonl,
+            pending: PendingWriteCompletion::new(pending),
+            append_order_guard,
+            reply_tx,
+        });
+        drop(streams);
+
+        let (result, append_order_guard) = match reply_rx.await {
+            Ok(reply) => reply,
+            Err(_) => {
+                // A stopped writer drops both its pending completion and order permit.
+                // Reacquiring the permit ensures the failed provisional event is ready
+                // to reconcile before it can be observed or followed by another append.
+                let append_order_guard = Arc::clone(&persistence.append_order).lock_owned().await;
+                let mut streams = self.streams.lock().await;
+                persistence.reconcile_completed_events(&mut streams);
+                drop(streams);
+                drop(append_order_guard);
+                return Err(io::Error::other(
+                    "persistent event writer stopped before append",
+                ));
+            }
+        };
+
+        let mut streams = self.streams.lock().await;
+        persistence.reconcile_completed_events(&mut streams);
+        if let Err(error) = result {
+            drop(streams);
+            drop(append_order_guard);
+            return Err(error);
         }
+        let compact_after_append = apply_retention(&mut streams, self.retention, unix_epoch_ms());
+        let compact_snapshot = if compact_after_append && persistence.should_compact_now() {
+            Some(retained_events_snapshot(&streams))
+        } else {
+            None
+        };
+        drop(streams);
+        if compact_after_append {
+            if let Some(compact_snapshot) = compact_snapshot {
+                if let Err(error) = persistence.persist_compaction(&compact_snapshot).await {
+                    crate::logging::warn_with_fields(
+                        "daemon.event_log",
+                        "persistent event log compaction failed",
+                        serde_json::json!({
+                            "path": persistence.path.display().to_string(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
+        drop(append_order_guard);
         Ok(logged)
     }
 
     pub async fn replay_after(&self, stream_id: &str, cursor_event_id: u64) -> ReplayOutcome<E> {
-        let streams = self.streams.lock().await;
+        let mut streams = self.streams.lock().await;
+        let pending_event_id = match &self.persistence {
+            Some(persistence) => {
+                persistence.reconcile_completed_events(&mut streams);
+                if !persistence.has_pending_events() {
+                    apply_retention(&mut streams, self.retention, unix_epoch_ms());
+                }
+                persistence.pending_event_id()
+            }
+            None => None,
+        };
         let Some(stream) = streams.get(stream_id) else {
             return ReplayOutcome::Gap(ReplayGap {
                 stream_id: stream_id.to_string(),
@@ -184,7 +268,11 @@ impl<E: Clone + Serialize> EventLog<E> {
             });
         };
 
-        if stream.retained.is_empty()
+        let first_retained = stream
+            .retained
+            .iter()
+            .find(|event| Some(event.event_id) != pending_event_id);
+        if first_retained.is_none()
             && stream
                 .latest_event_id
                 .is_some_and(|latest| cursor_event_id < latest)
@@ -197,7 +285,7 @@ impl<E: Clone + Serialize> EventLog<E> {
             });
         }
 
-        if let Some(first_retained) = stream.retained.front() {
+        if let Some(first_retained) = first_retained {
             if cursor_event_id < first_retained.event_id {
                 return ReplayOutcome::Gap(ReplayGap {
                     stream_id: stream_id.to_string(),
@@ -212,7 +300,9 @@ impl<E: Clone + Serialize> EventLog<E> {
             stream
                 .retained
                 .iter()
-                .filter(|event| event.event_id > cursor_event_id)
+                .filter(|event| {
+                    event.event_id > cursor_event_id && Some(event.event_id) != pending_event_id
+                })
                 .cloned()
                 .collect(),
         )
@@ -224,6 +314,28 @@ impl<E: Clone + Serialize> EventLog<E> {
             Some(persistence) => persistence.flush_for_tests().await,
             None => Ok(()),
         }
+    }
+
+    #[cfg(test)]
+    fn pause_next_persistent_append_for_tests(&self) -> Arc<PersistentAppendTestGate> {
+        let persistence = self
+            .persistence
+            .as_ref()
+            .expect("persistent append test gate requires a persistent event store");
+        let gate = Arc::new(PersistentAppendTestGate::new());
+        *persistence
+            .append_test_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gate));
+        gate
+    }
+
+    #[cfg(test)]
+    fn pending_persistent_writes_for_tests(&self) -> usize {
+        self.persistence
+            .as_ref()
+            .map(PersistentEventStore::pending_write_count)
+            .unwrap_or(0)
     }
 }
 
@@ -250,6 +362,7 @@ where
     ) -> io::Result<Self> {
         let event_counter_path = event_counter_path.into();
         let event_store_path = event_store_path.into();
+        truncate_torn_jsonl_tail(&event_store_path)?;
         let (streams, compact_after_load) = load_retained_streams(&event_store_path, retention)?;
         if compact_after_load {
             let snapshot = retained_events_snapshot(&streams);
@@ -271,20 +384,107 @@ where
 struct PersistentEventStore {
     path: PathBuf,
     write_tx: mpsc::Sender<PersistentEventWrite>,
+    append_order: Arc<Mutex<()>>,
+    pending_event: StdMutex<Option<PendingPersistentEvent>>,
     skipped_compactions: AtomicU64,
     max_file_bytes_before_compaction: Option<u64>,
     estimated_file_bytes: AtomicU64,
-    last_error: Arc<StdMutex<Option<String>>>,
+    #[cfg(test)]
+    append_test_gate: Arc<StdMutex<Option<Arc<PersistentAppendTestGate>>>>,
 }
 
-#[derive(Debug)]
 enum PersistentEventWrite {
     Append {
         append_jsonl: Vec<u8>,
-        compact_jsonl: Option<Vec<u8>>,
+        pending: PendingWriteCompletion,
+        append_order_guard: OwnedMutexGuard<()>,
+        reply_tx: oneshot::Sender<(io::Result<()>, OwnedMutexGuard<()>)>,
+    },
+    Compact {
+        compact_jsonl: Vec<u8>,
+        reply_tx: oneshot::Sender<io::Result<()>>,
     },
     #[cfg(test)]
     Flush(oneshot::Sender<io::Result<()>>),
+}
+
+#[derive(Debug)]
+struct PendingPersistentEvent {
+    event_id: u64,
+    stream_id: String,
+    stream_seq: u64,
+    jsonl_bytes: u64,
+    outcome: Arc<AtomicU8>,
+}
+
+struct PendingWriteCompletion {
+    outcome: Arc<AtomicU8>,
+}
+
+impl PendingWriteCompletion {
+    fn new(outcome: Arc<AtomicU8>) -> Self {
+        Self { outcome }
+    }
+
+    fn complete(&self, succeeded: bool) {
+        self.outcome.store(
+            if succeeded {
+                PERSISTENCE_OUTCOME_SUCCEEDED
+            } else {
+                PERSISTENCE_OUTCOME_FAILED
+            },
+            Ordering::Release,
+        );
+    }
+}
+
+impl Drop for PendingWriteCompletion {
+    fn drop(&mut self) {
+        let _ = self.outcome.compare_exchange(
+            PERSISTENCE_OUTCOME_PENDING,
+            PERSISTENCE_OUTCOME_FAILED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct PersistentAppendTestGate {
+    entered: AtomicBool,
+    released: AtomicBool,
+}
+
+#[cfg(test)]
+impl PersistentAppendTestGate {
+    fn new() -> Self {
+        Self {
+            entered: AtomicBool::new(false),
+            released: AtomicBool::new(false),
+        }
+    }
+
+    async fn wait_until_entered(&self) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !self.entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("persistent writer should reach the append test gate");
+    }
+
+    fn release(&self) {
+        self.released.store(true, Ordering::Release);
+    }
+
+    fn wait_until_released(&self) {
+        self.entered.store(true, Ordering::Release);
+        while !self.released.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 impl PersistentEventStore {
@@ -295,81 +495,162 @@ impl PersistentEventStore {
             Err(error) => return Err(error),
         };
         let (write_tx, write_rx) = mpsc::channel(PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY);
-        let last_error = Arc::new(StdMutex::new(None));
-        spawn_persistent_event_writer(path.clone(), write_rx, Arc::clone(&last_error))?;
+        #[cfg(test)]
+        let append_test_gate = Arc::new(StdMutex::new(None));
+        spawn_persistent_event_writer(
+            path.clone(),
+            write_rx,
+            #[cfg(test)]
+            Arc::clone(&append_test_gate),
+        )?;
         Ok(Self {
             path,
             write_tx,
+            append_order: Arc::new(Mutex::new(())),
+            pending_event: StdMutex::new(None),
             skipped_compactions: AtomicU64::new(0),
             max_file_bytes_before_compaction: retention
                 .max_total_bytes
                 .map(|bytes| bytes.saturating_mul(PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER)),
             estimated_file_bytes: AtomicU64::new(estimated_file_bytes),
-            last_error,
+            #[cfg(test)]
+            append_test_gate,
         })
     }
 
-    async fn persist_event<E>(
+    fn register_pending_event<E>(
         &self,
         logged: &LoggedEvent<E>,
-        compact_snapshot: Option<&[LoggedEvent<E>]>,
-    ) -> io::Result<()>
+        jsonl_bytes: u64,
+    ) -> Arc<AtomicU8> {
+        let outcome = Arc::new(AtomicU8::new(PERSISTENCE_OUTCOME_PENDING));
+        let mut pending = self
+            .pending_event
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            pending.is_none(),
+            "global append ordering permits only one provisional event"
+        );
+        *pending = Some(PendingPersistentEvent {
+            event_id: logged.event_id,
+            stream_id: logged.stream_id.clone(),
+            stream_seq: logged.stream_seq,
+            jsonl_bytes,
+            outcome: Arc::clone(&outcome),
+        });
+        outcome
+    }
+
+    fn reconcile_completed_events<E>(&self, streams: &mut BTreeMap<String, EventStream<E>>) {
+        let completed = {
+            let mut pending = self
+                .pending_event
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if pending.as_ref().is_some_and(|event| {
+                event.outcome.load(Ordering::Acquire) != PERSISTENCE_OUTCOME_PENDING
+            }) {
+                pending.take()
+            } else {
+                None
+            }
+        };
+
+        if let Some(pending) = completed {
+            let succeeded =
+                pending.outcome.load(Ordering::Acquire) == PERSISTENCE_OUTCOME_SUCCEEDED;
+            let mut remove_stream = false;
+            if let Some(stream) = streams.get_mut(&pending.stream_id) {
+                if succeeded {
+                    stream.latest_event_id =
+                        Some(stream.latest_event_id.unwrap_or(0).max(pending.event_id));
+                    self.estimated_file_bytes
+                        .fetch_add(pending.jsonl_bytes, Ordering::AcqRel);
+                } else if let Some(position) = stream
+                    .retained
+                    .iter()
+                    .position(|event| event.event_id == pending.event_id)
+                {
+                    let removed = stream
+                        .retained
+                        .remove(position)
+                        .expect("located provisional event should remain present");
+                    debug_assert_eq!(removed.stream_seq, pending.stream_seq);
+                    stream.retained_jsonl_bytes = stream
+                        .retained_jsonl_bytes
+                        .saturating_sub(pending.jsonl_bytes);
+                    if stream.next_stream_seq == pending.stream_seq.saturating_add(1) {
+                        stream.next_stream_seq = pending.stream_seq;
+                    }
+                    remove_stream = stream.retained.is_empty() && stream.latest_event_id.is_none();
+                }
+            }
+            if remove_stream {
+                streams.remove(&pending.stream_id);
+            }
+        }
+    }
+
+    fn pending_event_id(&self) -> Option<u64> {
+        self.pending_event
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|event| event.event_id)
+    }
+
+    fn has_pending_events(&self) -> bool {
+        self.pending_event
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    #[cfg(test)]
+    fn pending_write_count(&self) -> usize {
+        self.pending_event
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(|event| event.outcome.load(Ordering::Acquire) == PERSISTENCE_OUTCOME_PENDING)
+            .map(|_| 1)
+            .unwrap_or(0)
+    }
+
+    async fn persist_compaction<E>(&self, compact_snapshot: &[LoggedEvent<E>]) -> io::Result<()>
     where
-        E: Clone + Serialize,
+        E: Serialize,
     {
-        self.check_last_error()?;
-        let append_jsonl = logged_event_jsonl_payload(logged)?;
-        let compact_jsonl = compact_snapshot
-            .map(logged_events_jsonl_payload)
-            .transpose()?;
-        let compact_jsonl_len = compact_jsonl.as_ref().map(|payload| payload.len() as u64);
-        let append_jsonl_len = append_jsonl.len() as u64;
+        let compact_jsonl = logged_events_jsonl_payload(compact_snapshot)?;
+        let compact_jsonl_len = compact_jsonl.len() as u64;
+        let (reply_tx, reply_rx) = oneshot::channel();
         self.write_tx
-            .send(PersistentEventWrite::Append {
-                append_jsonl,
+            .send(PersistentEventWrite::Compact {
                 compact_jsonl,
+                reply_tx,
             })
             .await
             .map_err(|_| io::Error::other("persistent event writer stopped"))?;
-        if let Some(compact_jsonl_len) = compact_jsonl_len {
-            self.estimated_file_bytes
-                .store(compact_jsonl_len, Ordering::Release);
-            self.skipped_compactions.store(0, Ordering::Release);
-        } else {
-            self.estimated_file_bytes
-                .fetch_add(append_jsonl_len, Ordering::AcqRel);
-        }
+        reply_rx
+            .await
+            .map_err(|_| io::Error::other("persistent event writer stopped before compaction"))??;
+        self.estimated_file_bytes
+            .store(compact_jsonl_len, Ordering::Release);
+        self.skipped_compactions.store(0, Ordering::Release);
         Ok(())
     }
 
-    fn should_compact_now_after_append(&self, append_bytes: u64) -> io::Result<bool> {
-        self.check_last_error()?;
+    fn should_compact_now(&self) -> bool {
         let skipped = self.skipped_compactions.fetch_add(1, Ordering::AcqRel) + 1;
         if skipped >= PERSISTENT_COMPACTION_SKIP_LIMIT {
-            return Ok(true);
+            return true;
         }
         if let Some(max_file_bytes) = self.max_file_bytes_before_compaction {
-            let file_bytes = self
-                .estimated_file_bytes
-                .load(Ordering::Acquire)
-                .saturating_add(append_bytes);
-            return Ok(file_bytes > max_file_bytes);
+            let file_bytes = self.estimated_file_bytes.load(Ordering::Acquire);
+            return file_bytes > max_file_bytes;
         }
-        Ok(false)
-    }
-
-    fn check_last_error(&self) -> io::Result<()> {
-        let guard = self
-            .last_error
-            .lock()
-            .map_err(|_| io::Error::other("persistent event writer error lock was poisoned"))?;
-        match guard.as_ref() {
-            Some(message) => Err(io::Error::other(format!(
-                "persistent event writer failed for {}: {message}",
-                self.path.display()
-            ))),
-            None => Ok(()),
-        }
+        false
     }
 
     #[cfg(test)]
@@ -389,68 +670,90 @@ impl PersistentEventStore {
 fn spawn_persistent_event_writer(
     path: PathBuf,
     write_rx: mpsc::Receiver<PersistentEventWrite>,
-    last_error: Arc<StdMutex<Option<String>>>,
+    #[cfg(test)] append_test_gate: Arc<StdMutex<Option<Arc<PersistentAppendTestGate>>>>,
 ) -> io::Result<()> {
     thread::Builder::new()
         .name("chariox-event-log-writer".to_string())
-        .spawn(move || run_persistent_event_writer(path, write_rx, last_error))
+        .spawn(move || {
+            run_persistent_event_writer(
+                path,
+                write_rx,
+                #[cfg(test)]
+                append_test_gate,
+            )
+        })
         .map(|_| ())
 }
 
 fn run_persistent_event_writer(
     path: PathBuf,
     mut write_rx: mpsc::Receiver<PersistentEventWrite>,
-    last_error: Arc<StdMutex<Option<String>>>,
+    #[cfg(test)] append_test_gate: Arc<StdMutex<Option<Arc<PersistentAppendTestGate>>>>,
 ) {
     while let Some(write) = write_rx.blocking_recv() {
-        let result = match write {
+        match write {
             PersistentEventWrite::Append {
                 append_jsonl,
+                pending,
+                append_order_guard,
+                reply_tx,
+            } => {
+                #[cfg(test)]
+                if let Some(gate) = append_test_gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
+                    gate.wait_until_released();
+                }
+                let result = retry_persistent_write(|| {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    append_logged_event_jsonl(&path, &append_jsonl)
+                });
+                if let Err(error) = &result {
+                    crate::logging::warn_with_fields(
+                        "daemon.event_log",
+                        "persistent event append failed after bounded retries",
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                            "attempts": PERSISTENT_WRITE_MAX_ATTEMPTS,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                pending.complete(result.is_ok());
+                let _ = reply_tx.send((result, append_order_guard));
+            }
+            PersistentEventWrite::Compact {
                 compact_jsonl,
-            } => persist_event_jsonl_payloads(&path, &append_jsonl, compact_jsonl.as_deref()),
+                reply_tx,
+            } => {
+                let result =
+                    retry_persistent_write(|| rewrite_logged_events_jsonl(&path, &compact_jsonl));
+                let _ = reply_tx.send(result);
+            }
             #[cfg(test)]
             PersistentEventWrite::Flush(reply_tx) => {
-                let result = persistent_writer_last_error(&last_error);
-                let _ = reply_tx.send(result);
-                continue;
+                let _ = reply_tx.send(Ok(()));
             }
-        };
-        if let Err(error) = result {
-            record_persistent_writer_error(&last_error, error);
         }
     }
 }
 
-fn persist_event_jsonl_payloads(
-    path: &Path,
-    append_jsonl: &[u8],
-    compact_jsonl: Option<&[u8]>,
-) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    append_logged_event_jsonl(path, append_jsonl)?;
-    if let Some(compact_jsonl) = compact_jsonl {
-        rewrite_logged_events_jsonl(path, compact_jsonl)?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn persistent_writer_last_error(last_error: &Arc<StdMutex<Option<String>>>) -> io::Result<()> {
-    let guard = last_error
-        .lock()
-        .map_err(|_| io::Error::other("persistent event writer error lock was poisoned"))?;
-    match guard.as_ref() {
-        Some(message) => Err(io::Error::other(message.clone())),
-        None => Ok(()),
-    }
-}
-
-fn record_persistent_writer_error(last_error: &Arc<StdMutex<Option<String>>>, error: io::Error) {
-    if let Ok(mut guard) = last_error.lock() {
-        if guard.is_none() {
-            *guard = Some(error.to_string());
+fn retry_persistent_write(mut write: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    let mut attempt = 0_usize;
+    loop {
+        attempt += 1;
+        match write() {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt < PERSISTENT_WRITE_MAX_ATTEMPTS => {
+                let retry_delay_ms =
+                    PERSISTENT_WRITE_RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << (attempt - 1));
+                thread::sleep(Duration::from_millis(retry_delay_ms));
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -618,9 +921,53 @@ where
 fn append_logged_event_jsonl(path: &Path, payload: &[u8]) -> io::Result<()> {
     let mut file = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(path)?;
+    truncate_torn_jsonl_file_tail(&mut file)?;
     file.write_all(payload)
+}
+
+fn truncate_torn_jsonl_tail(path: &Path) -> io::Result<()> {
+    let mut file = match fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    truncate_torn_jsonl_file_tail(&mut file)
+}
+
+fn truncate_torn_jsonl_file_tail(file: &mut fs::File) -> io::Result<()> {
+    const SCAN_CHUNK_BYTES: u64 = 8 * 1024;
+
+    let file_len = file.metadata()?.len();
+    if file_len == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut final_byte = [0_u8; 1];
+    file.read_exact(&mut final_byte)?;
+    if final_byte[0] == b'\n' {
+        return Ok(());
+    }
+
+    let mut search_end = file_len;
+    let mut buffer = vec![0_u8; SCAN_CHUNK_BYTES as usize];
+    while search_end > 0 {
+        let search_start = search_end.saturating_sub(SCAN_CHUNK_BYTES);
+        let read_len = (search_end - search_start) as usize;
+        file.seek(SeekFrom::Start(search_start))?;
+        file.read_exact(&mut buffer[..read_len])?;
+        if let Some(newline_offset) = buffer[..read_len].iter().rposition(|byte| *byte == b'\n') {
+            file.set_len(search_start + newline_offset as u64 + 1)?;
+            file.seek(SeekFrom::End(0))?;
+            return Ok(());
+        }
+        search_end = search_start;
+    }
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok(())
 }
 
 fn rewrite_logged_events<E>(path: &Path, events: &[LoggedEvent<E>]) -> io::Result<()>

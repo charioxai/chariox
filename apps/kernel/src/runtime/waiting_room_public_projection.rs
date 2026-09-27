@@ -58,6 +58,8 @@ pub(crate) struct WaitingRoomSessionSummaryProjectionStore {
 struct CachedSessionSummaries {
     session_revision: u64,
     metaagent_event_revision: u64,
+    external_working_generation: u64,
+    external_working_agents: BTreeMap<String, BTreeSet<String>>,
     projection_revision: u64,
     entries: HashMap<String, CachedSessionSummaryEntry>,
     summaries: Arc<[WaitingRoomPublicSessionSummary]>,
@@ -87,6 +89,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         runtime_sessions: &[Arc<RuntimeSession>],
         session_revision: u64,
         metaagent_events: &MetaagentEventStore,
+        external_working_generation: u64,
         external_working_agents: &BTreeMap<String, BTreeSet<String>>,
         caller_user_id: &str,
     ) -> ProjectedSessionSummaries {
@@ -98,6 +101,8 @@ impl WaitingRoomSessionSummaryProjectionStore {
         if let Some(cached) = state.get(caller_user_id).filter(|cached| {
             cached.session_revision == session_revision
                 && cached.metaagent_event_revision == metaagent_event_revision
+                && cached.external_working_generation == external_working_generation
+                && &cached.external_working_agents == external_working_agents
                 && cached_session_sources_match(cached, runtime_sessions, caller_user_id)
         }) {
             return ProjectedSessionSummaries {
@@ -182,6 +187,8 @@ impl WaitingRoomSessionSummaryProjectionStore {
             CachedSessionSummaries {
                 session_revision,
                 metaagent_event_revision,
+                external_working_generation,
+                external_working_agents: external_working_agents.clone(),
                 projection_revision,
                 entries,
                 summaries: Arc::clone(&summaries),
@@ -199,6 +206,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         runtime_sessions: &[Arc<RuntimeSession>],
         session_revision: u64,
         metaagent_events: &MetaagentEventStore,
+        external_working_generation: u64,
         external_working_agents: &BTreeMap<String, BTreeSet<String>>,
         runtime_projects: &[RuntimeProject],
         slices: &[SliceRecord],
@@ -216,6 +224,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
             runtime_sessions,
             session_revision,
             metaagent_events,
+            external_working_generation,
             external_working_agents,
             caller_user_id,
         );
@@ -389,6 +398,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     session_revision: u64,
     summary_projection: &WaitingRoomSessionSummaryProjectionStore,
     metaagent_events: &MetaagentEventStore,
+    external_working_generation: u64,
     external_working_agents: &BTreeMap<String, BTreeSet<String>>,
     runtime_projects: &[RuntimeProject],
     slices: &[SliceRecord],
@@ -406,6 +416,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
         runtime_sessions,
         session_revision,
         metaagent_events,
+        external_working_generation,
         external_working_agents,
         runtime_projects,
         slices,
@@ -1211,6 +1222,7 @@ mod tests {
             name: id.to_string(),
             owner_kernel_id: "daemon".to_string(),
             owner_machine_id: "machine".to_string(),
+            environment_session_id: None,
             session_id: Some("session-slice".to_string()),
             session_ids: vec!["session-slice".to_string()],
             agent_ids: vec![agent_id.to_string()],
@@ -1423,6 +1435,7 @@ mod tests {
             1,
             &projection,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             &[project.clone(), ordinary_active_project.clone()],
             &[],
@@ -1461,6 +1474,7 @@ mod tests {
             2,
             &projection,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             &[project.clone(), ordinary_active_project.clone()],
             &[],
@@ -1497,6 +1511,7 @@ mod tests {
             3,
             &projection,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             &[project, ordinary_active_project],
             &[],
@@ -1727,6 +1742,7 @@ mod tests {
                 2,
                 &projection,
                 &metaagent_events,
+                0,
                 &BTreeMap::new(),
                 &[],
                 &[],
@@ -1791,6 +1807,7 @@ mod tests {
             &sessions,
             7,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
@@ -1798,6 +1815,7 @@ mod tests {
             &sessions,
             7,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
@@ -1808,6 +1826,7 @@ mod tests {
             &sessions,
             8,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
@@ -1826,6 +1845,7 @@ mod tests {
             &touched_sessions,
             9,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
@@ -1869,6 +1889,7 @@ mod tests {
             &sessions,
             7,
             &metaagent_events,
+            1,
             &external_working_agents,
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
@@ -1884,12 +1905,65 @@ mod tests {
             &sessions,
             8,
             &metaagent_events,
+            2,
             &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         assert_eq!(settled.summaries[0].activity.working_agent_count, 0);
         assert_eq!(settled.summaries[0].activity.active_prompt_count, 0);
         assert!(!settled.summaries[0].agents[0].activity.working);
+        assert!(settled.revision > working.revision);
+    }
+
+    #[test]
+    fn session_summary_cache_keys_external_work_at_same_session_revision() {
+        let mut session = RuntimeSession::new(
+            "session-external-cache",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        session.set_agents(vec![AgentInstance::new(
+            "agent-external-cache",
+            "A1",
+            "session-external-cache",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        )]);
+        let sessions = vec![Arc::new(session)];
+        let metaagent_events = MetaagentEventStore::default();
+        let projection = WaitingRoomSessionSummaryProjectionStore::default();
+        let external_working_agents = BTreeMap::from([(
+            "session-external-cache".to_string(),
+            BTreeSet::from(["agent-external-cache".to_string()]),
+        )]);
+
+        let working = projection.project(
+            &sessions,
+            7,
+            &metaagent_events,
+            1,
+            &external_working_agents,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        let settled = projection.project(
+            &sessions,
+            7,
+            &metaagent_events,
+            2,
+            &BTreeMap::new(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+
+        assert_eq!(working.summaries[0].activity.working_agent_count, 1);
+        assert_eq!(settled.summaries[0].activity.working_agent_count, 0);
+        assert_eq!(settled.summaries[0].activity.active_prompt_count, 0);
         assert!(settled.revision > working.revision);
     }
 
@@ -1921,6 +1995,7 @@ mod tests {
                 revision,
                 &projection,
                 &metaagent_events,
+                0,
                 &BTreeMap::new(),
                 &[],
                 &[],
@@ -1960,6 +2035,7 @@ mod tests {
             9,
             &projection,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             &[],
             &[],
@@ -1994,6 +2070,7 @@ mod tests {
             10,
             &projection,
             &metaagent_events,
+            0,
             &BTreeMap::new(),
             &[],
             &[],

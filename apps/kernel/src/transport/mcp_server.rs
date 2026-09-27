@@ -311,26 +311,56 @@ async fn handle_json_rpc_value(
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
                 .await;
             match result {
-                Ok(result) => Ok(json_response(
-                    StatusCode::OK,
-                    serde_json::json!({
-                        "jsonrpc": JSON_RPC_VERSION,
-                        "id": id,
-                        "result": {
-                            "content": [{
-                                "type": "text",
-                                "text": result.payload.to_string(),
-                            }],
-                            "structuredContent": result.payload,
-                            "isError": !result.ok,
-                        }
-                    }),
-                )),
+                Ok(result) => {
+                    let (content, structured_content) = runtime_tool_content(result.payload);
+                    Ok(json_response(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "jsonrpc": JSON_RPC_VERSION,
+                            "id": id,
+                            "result": {
+                                "content": content,
+                                "structuredContent": structured_content,
+                                "isError": !result.ok,
+                            }
+                        }),
+                    ))
+                }
                 Err(error) => Ok(json_rpc_error_response(id, -32000, &error.to_string())),
             }
         }
         _ => Ok(json_rpc_error_response(id, -32601, "method not found")),
     }
+}
+
+fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
+    let image = payload.as_object_mut().and_then(|object| {
+        let mime_type = object
+            .get("mime_type")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("image/"))?
+            .to_string();
+        let data = object
+            .get("image_base64")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())?
+            .to_string();
+        object.remove("image_base64");
+        Some(serde_json::json!({
+            "type": "image",
+            "data": data,
+            "mimeType": mime_type,
+        }))
+    });
+    let text = serde_json::json!({
+        "type": "text",
+        "text": payload.to_string(),
+    });
+    let content = match image {
+        Some(image) => vec![image, text],
+        None => vec![text],
+    };
+    (content, payload)
 }
 
 fn parse_bearer_token(headers: &hyper::HeaderMap) -> Option<String> {

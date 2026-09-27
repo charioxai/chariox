@@ -75,6 +75,8 @@ impl SessionService {
         session_id: &str,
         schedule_id: &str,
     ) -> Result<AgentPromptSchedule, DaemonError> {
+        // Cancellation stops future admissions. Prompts already accepted by the
+        // normal queue remain available to complete or be cancelled explicitly.
         let session =
             self.store
                 .get_mut(session_id)
@@ -162,6 +164,33 @@ impl SessionService {
         schedule.mark_dispatch_failed(now_ms, error);
         Ok(Some(schedule.clone()))
     }
+
+    pub(crate) fn mark_agent_prompt_schedule_coalesced(
+        &mut self,
+        session_id: &str,
+        schedule_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<AgentPromptSchedule>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let Some(index) = session
+            .agent_prompt_schedules()
+            .iter()
+            .position(|schedule| schedule.id() == schedule_id)
+        else {
+            return Ok(None);
+        };
+        if session.agent_prompt_schedules()[index].kind() == AgentPromptScheduleKind::Once {
+            return Ok(session.remove_agent_prompt_schedule(schedule_id));
+        }
+        let schedule = &mut session.agent_prompt_schedules_mut()[index];
+        schedule.mark_dispatch_coalesced(now_ms);
+        Ok(Some(schedule.clone()))
+    }
 }
 
 #[cfg(test)]
@@ -204,6 +233,64 @@ mod tests {
         assert_eq!(
             service.next_scheduled_runtime_wake_at_ms(),
             Some(due_at_ms.saturating_add(1_000))
+        );
+    }
+
+    #[test]
+    fn coalesced_agent_prompt_schedule_advances_wake_without_counting_a_dispatch() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut service = SessionService::new(&config);
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .unwrap();
+        let schedule = service
+            .create_agent_prompt_schedule(
+                session.id(),
+                "agent-1",
+                AgentPromptScheduleKind::Recurring,
+                600,
+                Some("Check once.".to_string()),
+            )
+            .unwrap();
+        let due_at_ms = schedule.next_run_at_ms();
+        assert_eq!(
+            service
+                .claim_due_agent_prompt_schedules(due_at_ms)
+                .dispatches
+                .len(),
+            1
+        );
+        service
+            .mark_agent_prompt_schedule_dispatched(session.id(), schedule.id(), due_at_ms)
+            .unwrap();
+        let next_due_at_ms = due_at_ms + 600_000;
+        assert_eq!(
+            service
+                .claim_due_agent_prompt_schedules(next_due_at_ms)
+                .dispatches
+                .len(),
+            1
+        );
+        let coalesced = service
+            .mark_agent_prompt_schedule_coalesced(session.id(), schedule.id(), next_due_at_ms)
+            .unwrap()
+            .unwrap();
+        assert_eq!(coalesced.runs_dispatched(), 1);
+        assert_eq!(coalesced.last_triggered_at_ms(), Some(due_at_ms));
+        assert_eq!(
+            service.next_scheduled_runtime_wake_at_ms(),
+            Some(next_due_at_ms + 600_000)
+        );
+        assert!(service
+            .claim_due_agent_prompt_schedules(next_due_at_ms)
+            .dispatches
+            .is_empty());
+        assert_eq!(
+            service
+                .claim_due_agent_prompt_schedules(next_due_at_ms + 600_000)
+                .dispatches
+                .len(),
+            1
         );
     }
 }

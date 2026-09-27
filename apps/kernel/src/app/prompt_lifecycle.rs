@@ -184,6 +184,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 provider_run_id.to_string(),
                 agent_id,
                 prompt_id.to_string(),
+                prompt_id,
                 &provider_run,
                 prompt,
                 hidden_system_context,
@@ -313,6 +314,7 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) steering: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
@@ -331,6 +333,11 @@ pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) external_provider_session_id: Option<String>,
     pub(crate) external_provider_turn_id: Option<String>,
     pub(crate) workflow_context: Option<RemoteWorkflowTurnContext>,
+}
+
+/// Queued prompt delivery behavior that must occur only after worker ACK.
+pub(crate) struct KernelRemotePromptDispatchIntent {
+    pub(crate) dispatch: KernelRemotePromptDispatch,
 }
 
 pub(crate) struct KernelPromptCancellation {
@@ -363,6 +370,16 @@ pub(crate) struct KernelPromptAbortDispatch {
 }
 
 impl DaemonApp {
+    /// Hand a compatibility-created remote prompt to the runtime's existing
+    /// post-app-lock dispatch drain. The runtime owns the single relay send.
+    pub(crate) fn defer_remote_prompt_dispatch_after_app_side_effect(
+        &mut self,
+        dispatch: KernelRemotePromptDispatch,
+    ) {
+        self.pending_workflow_remote_prompt_dispatches
+            .push(dispatch);
+    }
+
     #[doc(hidden)]
     pub fn submit_prompt(
         &mut self,
@@ -567,6 +584,21 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn fail_active_prompt_with_termination(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        crate::app::KernelAgentService::new(self).fail_active_prompt_with_termination(
+            session_id,
+            agent_id,
+            provider_run_id,
+            provider_termination,
+        )
+    }
+
     #[doc(hidden)]
     pub fn cancel_active_prompt(
         &mut self,
@@ -716,6 +748,28 @@ impl DaemonApp {
             relay_token,
             None,
         )
+    }
+
+    pub(crate) fn advance_next_queued_prompt_remote_with_workflow_dispatch(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        worker_kernel_id: &str,
+        leased_agent_id: &str,
+        relay_url: Option<&str>,
+        relay_token: Option<&str>,
+        expected_next: Option<&crate::session::PromptQueueItem>,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        crate::app::KernelAgentService::new(self)
+            .advance_next_queued_prompt_remote_with_workflow_dispatch(
+                session_id,
+                agent_id,
+                worker_kernel_id,
+                leased_agent_id,
+                relay_url,
+                relay_token,
+                expected_next,
+            )
     }
 
     pub(crate) fn serialize_remote_prompt_attachments(

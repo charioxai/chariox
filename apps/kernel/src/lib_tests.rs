@@ -73,10 +73,10 @@ mod remote_leases;
 
 #[test]
 fn relay_leased_prompt_execution_profile_shape_is_versioned_and_required() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 288);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 350);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        25
+        63
     );
     let mut expected = serde_json::json!({
         "kind": "submit_leased_prompt",
@@ -104,7 +104,7 @@ fn relay_leased_prompt_execution_profile_shape_is_versioned_and_required() {
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 288);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 350);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -183,7 +183,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 288);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 350);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -200,9 +200,9 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
     let submit = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
         expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
-            provider: "codex".into(),
-            account_profile: "work".into(),
-            model: Some("gpt-5.5".into()),
+            provider: "codex".to_string(),
+            account_profile: "work".to_string(),
+            model: Some("gpt-5.5".to_string()),
             effort: None,
         },
         prompt: "edit a file".to_string(),
@@ -228,6 +228,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
             version_hash: "skill-hash-1".to_string(),
         }]),
         remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
+        provider_launch_credential: None,
     };
     let snapshot = serde_json::json!([spawn, submit]);
     assert_eq!(
@@ -272,7 +273,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        25
+        62
     );
 
     let launch_request =
@@ -317,6 +318,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,
             home_prompt_id: Some("home-prompt-1".to_string()),
+            provider_termination: None,
         }],
     };
     let mut snapshot =
@@ -353,7 +355,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
 fn relay_peer_provider_terminal_resize_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        25
+        62
     );
 
     let request = RelayPeerRequest::ResizeLeasedProviderTerminal {
@@ -392,7 +394,7 @@ fn relay_peer_provider_terminal_resize_shape_is_versioned() {
 fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        25
+        62
     );
     let request = RelayPeerRequest::UpdateLeasedAgentProfile {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -418,7 +420,7 @@ fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
 fn relay_peer_queued_prompt_steer_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        25
+        62
     );
 
     let request = RelayPeerRequest::SteerLeasedPrompt {
@@ -467,12 +469,13 @@ fn relay_peer_queued_prompt_steer_shape_is_versioned() {
 
 #[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 288);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 350);
 
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "kernel-home".to_string(),
         home_session_id: "session-1".to_string(),
         home_agent_id: "agent-1".to_string(),
+        home_prompt_id: Some("home-prompt-1".to_string()),
         leased_agent_id: "leased-agent-1".to_string(),
         worker_kernel_id: "kernel-worker".to_string(),
         worker_machine_id: "machine-worker".to_string(),
@@ -529,6 +532,11 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
         },
         final_artifact_states: final_artifact_states.clone(),
     };
+    let capability_request = RelayPeerRequest::ForwardCapabilityRuntimeTool {
+        context: context.clone(),
+        tool_name: crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL.to_string(),
+        arguments: serde_json::json!({"agent": "agent-2", "message": "Please check."}),
+    };
     let finalize_request = RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool {
         context,
         metadata,
@@ -539,7 +547,13 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
     };
     let finalize_response = RelayPeerResponse::WorkspaceLiveSyncRuntimeToolFinalized;
 
-    let snapshot = serde_json::json!([request, response, finalize_request, finalize_response]);
+    let snapshot = serde_json::json!([
+        request,
+        response,
+        finalize_request,
+        finalize_response,
+        capability_request
+    ]);
     assert_eq!(
         snapshot.pointer("/0/kind"),
         Some(&serde_json::json!(
@@ -549,6 +563,10 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/0/context/home_kernel_id"),
         Some(&serde_json::json!("kernel-home"))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/context/home_prompt_id"),
+        Some(&serde_json::json!("home-prompt-1"))
     );
     assert_eq!(
         snapshot.pointer("/0/metadata/invocation_id"),
@@ -580,11 +598,19 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
             "workspace_live_sync_runtime_tool_finalized"
         ))
     );
+    assert_eq!(
+        snapshot.pointer("/4/kind"),
+        Some(&serde_json::json!("forward_capability_runtime_tool"))
+    );
+    assert_eq!(
+        snapshot.pointer("/4/context/home_prompt_id"),
+        Some(&serde_json::json!("home-prompt-1"))
+    );
     let serialized = serde_json::to_string(&snapshot)
         .expect("workspace live sync relay runtime tool should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "8b7b15d322af3d317f09bbc6992600b472f97f4420a5e2483074378a991cb9f6"
+        "8381f1cbbca0b666edec4b6c4b84f59a6906729b51ec119913fc2df3a5c9c23c"
     );
 }

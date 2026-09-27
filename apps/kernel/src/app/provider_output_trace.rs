@@ -56,7 +56,10 @@ impl ProviderOutputTrace {
             json!({
                 "provider_run_id": provider_run_id,
                 "prompt_completed": poll_result.prompt_completed,
-                "terminal_failure": poll_result.terminal_failure.as_deref(),
+                "terminal_failure": poll_result
+                    .terminal_failure
+                    .as_deref()
+                    .map(crate::provider::sanitize_provider_diagnostic),
                 "completion_count": poll_result.completions.len(),
                 "notice_count": poll_result.notices.len(),
                 "chunk_count": poll_result.chunks.len(),

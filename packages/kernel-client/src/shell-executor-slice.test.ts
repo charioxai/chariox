@@ -24,6 +24,188 @@ import {
   makeWorkflowWatchdog,
 } from "./shell-executor.test-support.js"
 
+test("shared slice screen preserves the legacy noVNC endpoint request", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) return { Slice: { slice: screenSlice("novnc") } }
+    if ("GetSliceDisplayEndpoint" in request) {
+      return { SliceDisplayEndpoint: { endpoint: { slice_id: "slice-1", kind: "novnc", url: "http://127.0.0.1:6080", access: "local" } } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const result = await executeShellCommand(
+    parseShellCommand("slice screen linux-a"),
+    createDefaultShellContext(),
+    { client: fake.client },
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(result.message, "http://127.0.0.1:6080")
+  assert.deepEqual(fake.requests, [
+    { GetSlice: { slice_ref: "linux-a" } },
+    { GetSliceDisplayEndpoint: { slice_ref: "linux-a" } },
+  ])
+})
+
+test("shared slice screen routes Selkies through only the scoped Cloud viewer target", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) return { Slice: { slice: screenSlice("selkies") } }
+    if ("GetRoomEnvironmentSlice" in request) {
+      return { RoomEnvironmentSlice: { binding: roomSliceBinding() } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const targets: Array<{ sessionId: string; agentId: string; sliceId: string }> = []
+  const result = await executeShellCommand(
+    parseShellCommand("slice screen linux-a"),
+    createDefaultShellContext({ sessionId: "session-1", attachmentId: "attachment-1", agentId: "agent-1" }),
+    {
+      client: fake.client,
+      openRoomViewer: async (target) => {
+        targets.push(target)
+        return { url: "https://cloud.test/view?view_target=session-1%3Aagent-1%3Aslice-1", opened: true }
+      },
+    },
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(result.message, "https://cloud.test/view?view_target=session-1%3Aagent-1%3Aslice-1")
+  assert.deepEqual(targets, [{ sessionId: "session-1", agentId: "agent-1", sliceId: "slice-1" }])
+  assert.deepEqual(fake.requests, [
+    { GetSlice: { slice_ref: "linux-a" } },
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+  ])
+  assert.doesNotMatch(JSON.stringify([result, targets, fake.requests]), /relay\.invalid|viewer_public_key|stream_id|peer_public_key/)
+})
+
+test("shared slice screen scopes Selkies returned after stale slice metadata", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) {
+      return { Slice: { slice: { ...screenSlice("novnc"), display_endpoint: undefined } } }
+    }
+    if ("GetSliceDisplayEndpoint" in request) {
+      return { SliceDisplayEndpoint: { endpoint: {
+        slice_id: "slice-1",
+        kind: "selkies",
+        url: "wss://relay.invalid/secret",
+        access: "tunnel",
+      } } }
+    }
+    if ("GetRoomEnvironmentSlice" in request) {
+      return { RoomEnvironmentSlice: { binding: roomSliceBinding() } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const targets: Array<{ sessionId: string; agentId: string; sliceId: string }> = []
+  const result = await executeShellCommand(
+    parseShellCommand("slice screen linux-a"),
+    createDefaultShellContext({ sessionId: "session-1", attachmentId: "attachment-1", agentId: "agent-1" }),
+    {
+      client: fake.client,
+      openRoomViewer: async (target) => {
+        targets.push(target)
+        return { url: "https://cloud.test/view?view_target=session-1%3Aagent-1%3Aslice-1", opened: true }
+      },
+    },
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(result.message, "https://cloud.test/view?view_target=session-1%3Aagent-1%3Aslice-1")
+  assert.deepEqual(targets, [{ sessionId: "session-1", agentId: "agent-1", sliceId: "slice-1" }])
+  assert.deepEqual(fake.requests, [
+    { GetSlice: { slice_ref: "linux-a" } },
+    { GetSliceDisplayEndpoint: { slice_ref: "linux-a" } },
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+  ])
+  assert.doesNotMatch(JSON.stringify([result, targets, fake.requests]), /relay\.invalid|secret/)
+})
+
+test("shared slice screen rejects missing and mismatched Selkies Room scope", async (t) => {
+  const cases = [
+    { name: "no binding", binding: null, message: "Room Environment has no bound slice to view" },
+    { name: "wrong room", binding: roomSliceBinding({ session_id: "session-other" }), message: "Room Environment slice binding belongs to a different session" },
+    { name: "mismatched slice", binding: roomSliceBinding({ slice_id: "slice-other" }), message: "Room Environment is bound to slice slice-other, not slice-1" },
+  ]
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const fake = fakeClient((request) => {
+        if ("GetSlice" in request) return { Slice: { slice: screenSlice("selkies") } }
+        if ("GetRoomEnvironmentSlice" in request) return { RoomEnvironmentSlice: { binding: entry.binding } }
+        throw new Error(`unexpected request ${JSON.stringify(request)}`)
+      })
+      const result = await executeShellCommand(
+        parseShellCommand("slice screen linux-a"),
+        createDefaultShellContext({ sessionId: "session-1", attachmentId: "attachment-1", agentId: "agent-1" }),
+        { client: fake.client, openRoomViewer: async () => { throw new Error("must not open") } },
+      )
+      assert.equal(result.ok, false)
+      assert.equal(result.message, entry.message)
+    })
+  }
+})
+
+test("shared slice screen fails clearly when Selkies viewer support is unavailable", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) return { Slice: { slice: screenSlice("selkies") } }
+    if ("GetRoomEnvironmentSlice" in request) return { RoomEnvironmentSlice: { binding: roomSliceBinding() } }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const result = await executeShellCommand(
+    parseShellCommand("slice screen linux-a"),
+    createDefaultShellContext({ sessionId: "session-1", attachmentId: "attachment-1", agentId: "agent-1" }),
+    { client: fake.client },
+  )
+  assert.equal(result.ok, false)
+  assert.equal(result.message, "Chariox Cloud Web View is unavailable in this client")
+})
+
+function screenSlice(kind: "novnc" | "selkies") {
+  return {
+    id: "slice-1",
+    name: "linux-a",
+    display_endpoint: { slice_id: "slice-1", kind, url: "wss://relay.invalid/secret", access: "tunnel" },
+  }
+}
+
+function roomSliceBinding(overrides: Partial<{ session_id: string; slice_id: string; owner_kernel_id: string; worker_kernel_ref: string }> = {}) {
+  return {
+    session_id: "session-1",
+    slice_id: "slice-1",
+    owner_kernel_id: "kernel-owner",
+    worker_kernel_ref: "slice:linux-a",
+    ...overrides,
+  }
+}
+
+test("executeShellCommand restores a named slice backup through the shared request", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("RestoreSliceBackup" in request) {
+      return {
+        SliceBackupRestored: {
+          slice: { id: "slice-1", name: "linux-a", status: "stopped" },
+          backup: { id: "baseline", name: "baseline" },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+
+  const result = await executeShellCommand(
+    parseShellCommand("slice backup restore linux-a baseline"),
+    context,
+    { client: fake.client },
+  )
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{
+    RestoreSliceBackup: { slice_ref: "linux-a", backup_ref: "baseline" },
+  }])
+  assert.match(result.message ?? "", /restored slice backup linux-a/)
+  assert.match(result.message ?? "", /status=stopped/)
+})
+
 test("executeShellCommand renders slice doctor diagnostics", async () => {
   const fake = fakeClient((request) => {
     if ("GetSlice" in request) {

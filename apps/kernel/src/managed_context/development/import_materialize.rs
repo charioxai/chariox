@@ -7,6 +7,18 @@ pub(super) fn prepare_repository(
     remaining_project_checkout_bytes: u64,
     remaining_project_materialized_entries: u64,
 ) -> Result<RepositoryMaterializationEstimate, DaemonError> {
+    if !repository.workspace_kind.is_git() {
+        create_private_directory(destination)?;
+        return charge_overlay_materialization(
+            RepositoryMaterializationEstimate {
+                checkout_bytes: repository.directories.len() as u64 * 4096,
+                materialized_entries: repository.directories.len() as u64,
+            },
+            &repository.overlay,
+            remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
+            remaining_project_materialized_entries.min(MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY),
+        );
+    }
     let bundle = artifacts_root.join(&repository.bundle_path);
     let bundle_text = utf8_path(&bundle, "Git bundle")?;
     let destination_text = utf8_path(destination, "repository destination")?;
@@ -49,6 +61,34 @@ pub(super) fn materialize_prepared_repository(
     artifacts_root: &Path,
     destination: &Path,
 ) -> Result<(), DaemonError> {
+    if !repository.workspace_kind.is_git() {
+        for path in &repository.directories {
+            ensure_safe_materialized_parent(destination, &destination.join(path))?;
+        }
+        for entry in &repository.overlay {
+            let DevelopmentFileState::File {
+                object_path,
+                executable,
+                ..
+            } = &entry.worktree
+            else {
+                return Err(context_error("directory workspace has non-file content"));
+            };
+            write_materialized_file(
+                destination,
+                &entry.path,
+                &artifacts_root.join(object_path),
+                *executable,
+            )?;
+            verify_materialized_worktree_state(
+                destination,
+                &entry.path,
+                &entry.worktree,
+                artifacts_root,
+            )?;
+        }
+        return Ok(());
+    }
     if let Some(branch) = &repository.branch {
         git_output_isolated(destination, &["check-ref-format", "--branch", branch])?;
         git_output_isolated(

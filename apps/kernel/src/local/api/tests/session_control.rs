@@ -2,10 +2,12 @@ use super::*;
 
 #[test]
 fn project_lifecycle_archives_idle_sessions_and_restore_parks_them() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-project-lifecycle");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-project", "worktree-project")
+            worktree
+                .session_request()
                 .with_project_selection(SessionProjectSelection::New),
         ))
         .expect("named project session should be created")
@@ -53,11 +55,17 @@ fn project_lifecycle_archives_idle_sessions_and_restore_parks_them() {
 
 #[test]
 fn project_delete_cascades_when_last_session_removes_project_record() {
+    let workspace = crate::test_support::TestWorktree::new("session-control-project-delete");
+    let first_worktree = crate::test_support::TestWorktree::new("session-control-delete-first");
+    let second_worktree = crate::test_support::TestWorktree::new("session-control-delete-second");
     let harness = LocalRouterTestHarness::new();
     let first = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-delete", "worktree-delete-1")
-                .with_project_selection(SessionProjectSelection::New),
+            CreateSessionRequest::new(
+                workspace.path().display().to_string(),
+                first_worktree.path().display().to_string(),
+            )
+            .with_project_selection(SessionProjectSelection::New),
         ))
         .expect("named project session should be created")
     {
@@ -66,10 +74,13 @@ fn project_delete_cascades_when_last_session_removes_project_record() {
     };
     let second = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-delete", "worktree-delete-2")
-                .with_project_selection(SessionProjectSelection::Existing {
-                    project_id: first.project_id().to_string(),
-                }),
+            CreateSessionRequest::new(
+                workspace.path().display().to_string(),
+                second_worktree.path().display().to_string(),
+            )
+            .with_project_selection(SessionProjectSelection::Existing {
+                project_id: first.project_id().to_string(),
+            }),
         ))
         .expect("second project session should be created")
     {
@@ -105,10 +116,12 @@ fn project_delete_cascades_when_last_session_removes_project_record() {
 
 #[test]
 fn project_requests_enforce_owner_and_named_numbering() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-project-numbering");
     let harness = LocalRouterTestHarness::new();
     let create = |harness: &LocalRouterTestHarness| match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-numbering", "worktree-numbering")
+            worktree
+                .session_request()
                 .with_project_selection(SessionProjectSelection::New),
         ))
         .expect("named project session should be created")
@@ -156,11 +169,18 @@ fn project_requests_enforce_owner_and_named_numbering() {
 
 #[test]
 fn project_workspace_membership_updates_through_the_local_api() {
+    let primary_worktree =
+        crate::test_support::TestWorktree::new("session-control-project-primary");
+    let supporting_worktree =
+        crate::test_support::TestWorktree::new("session-control-project-supporting");
     let harness = LocalRouterTestHarness::new();
     let first = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-primary", "worktree-primary")
-                .with_project_selection(SessionProjectSelection::New),
+            CreateSessionRequest::new(
+                "workspace-primary",
+                primary_worktree.path().display().to_string(),
+            )
+            .with_project_selection(SessionProjectSelection::New),
         ))
         .expect("named project session should be created")
     {
@@ -190,10 +210,13 @@ fn project_workspace_membership_updates_through_the_local_api() {
 
     let supporting = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-supporting", "worktree-supporting")
-                .with_project_selection(SessionProjectSelection::Existing {
-                    project_id: first.project_id().to_string(),
-                }),
+            CreateSessionRequest::new(
+                "workspace-supporting",
+                supporting_worktree.path().display().to_string(),
+            )
+            .with_project_selection(SessionProjectSelection::Existing {
+                project_id: first.project_id().to_string(),
+            }),
         ))
         .expect("supporting Workspace should create a session in the Project")
     {
@@ -206,10 +229,15 @@ fn project_workspace_membership_updates_through_the_local_api() {
 
 #[test]
 fn archived_default_project_rejects_default_session_creation_until_restored() {
+    let first_worktree = crate::test_support::TestWorktree::new("session-control-archive-first");
+    let second_worktree = crate::test_support::TestWorktree::new("session-control-archive-second");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-default-archive", "worktree-default-archive"),
+            CreateSessionRequest::new(
+                "workspace-default-archive",
+                first_worktree.path().display().to_string(),
+            ),
         ))
         .expect("default project session should create")
     {
@@ -224,7 +252,10 @@ fn archived_default_project_rejects_default_session_creation_until_restored() {
 
     let error = harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-default-archive", "worktree-default-archive-2"),
+            CreateSessionRequest::new(
+                "workspace-default-archive",
+                second_worktree.path().display().to_string(),
+            ),
         ))
         .expect_err("archived default project should reject session creation");
     assert!(error
@@ -234,10 +265,11 @@ fn archived_default_project_rejects_default_session_creation_until_restored() {
 
 #[test]
 fn local_request_api_supports_session_attach_and_end() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-attach-end");
     let harness = LocalRouterTestHarness::new();
     let (session, _default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -290,10 +322,11 @@ fn local_request_api_supports_session_attach_and_end() {
 
 #[test]
 fn session_attach_clears_a_missing_active_provider_run() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-stale-run");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-stale-run", "worktree-stale-run"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -364,10 +397,11 @@ fn session_attach_clears_a_missing_active_provider_run() {
 
 #[test]
 fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-projected-run");
     let harness = LocalRouterTestHarness::new();
     let (session, focused_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-projected-run", "worktree-projected-run"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -482,10 +516,11 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
 
 #[test]
 fn local_request_api_resolves_and_deletes_sessions_by_ref() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-resolve-delete");
     let harness = LocalRouterTestHarness::new();
     let (session, _agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
+            worktree.session_request().with_alias("main"),
         ))
         .expect("session create should succeed")
     {
@@ -539,10 +574,11 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
 
 #[test]
 fn local_request_api_manages_session_invites_and_members() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-invites");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -618,10 +654,11 @@ fn local_request_api_manages_session_invites_and_members() {
 
 #[test]
 fn local_request_api_aliases_sessions() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-aliases");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -657,10 +694,11 @@ fn local_request_api_aliases_sessions() {
 
 #[test]
 fn local_request_api_spawns_and_focuses_agents() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-agent-focus");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -960,10 +998,11 @@ fn local_request_api_spawns_and_focuses_agents() {
 
 #[test]
 fn same_agent_profile_update_keeps_active_provider_run() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-active-provider");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -1019,10 +1058,11 @@ fn same_agent_profile_update_keeps_active_provider_run() {
 
 #[test]
 fn detaching_one_attachment_keeps_the_session_open_for_others() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-detach");
     let harness = LocalRouterTestHarness::new();
     let (session, _default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -1091,10 +1131,11 @@ fn detaching_one_attachment_keeps_the_session_open_for_others() {
 
 #[test]
 fn attaching_the_same_client_replaces_its_stale_attachment() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-reattach");
     let harness = LocalRouterTestHarness::new();
     let (session, _default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {

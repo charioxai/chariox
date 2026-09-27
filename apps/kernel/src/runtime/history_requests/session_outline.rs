@@ -698,6 +698,15 @@ fn outline_turn_lifecycle(
             .metadata
             .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
             .and_then(serde_json::Value::as_str)
+            == Some("failed")
+    }) {
+        return SessionHistoryOutlineTurnLifecycle::Failed;
+    }
+    if events.iter().any(|event| {
+        event
+            .metadata
+            .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+            .and_then(serde_json::Value::as_str)
             == Some("cancelled")
     }) {
         return SessionHistoryOutlineTurnLifecycle::Cancelled;

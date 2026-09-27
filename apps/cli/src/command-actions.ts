@@ -54,6 +54,10 @@ import {
   type SliceCommandHandlerDeps,
 } from "./slice-command-handlers.js"
 import {
+  handleRoomSlashCommand,
+  type RoomCommandHandlerDeps,
+} from "./room-command-handler.js"
+import {
   handleWorkspaceSlashCommand,
   handleWorktreeSlashCommand,
   type WorkspaceCommandHandlerDeps,
@@ -149,6 +153,10 @@ type CommandActionDeps =
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
+  sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
+  reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
+  openRoomViewer?: RoomCommandHandlerDeps["openViewer"]
+  captureRoomScreenshot?: RoomCommandHandlerDeps["captureScreenshot"]
   formatError: (error: unknown) => string
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
@@ -292,13 +300,46 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleSliceCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "slice" }>,
   ): Promise<void> => {
-    await handleSliceSlashCommand({ ...deps, currentWorkspaceTarget, currentWorktreeTarget }, command)
+    await handleSliceSlashCommand({
+      ...deps,
+      currentWorkspaceTarget,
+      currentWorktreeTarget,
+      sessionId: () => deps.sessionState().id,
+      attachmentId: () => deps.attachmentState()?.id ?? null,
+    }, command)
   }
 
   const handleKernelCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "kernel" }>,
   ): Promise<void> => {
     await handleKernelSlashCommand(deps, command)
+  }
+
+  const handleRoomCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "room" }>,
+  ): Promise<void> => {
+    if (!deps.sendRoomEnvironmentRequest) {
+      deps.flashFooter("Room environment controls are unavailable in this daemon", "error")
+      return
+    }
+    await handleRoomSlashCommand({
+      isAttached: deps.isAttached,
+      attachmentId: () => deps.attachmentState()?.id ?? null,
+      sessionId: () => deps.sessionState().id,
+      focusedAgentId: deps.focusedAgentId,
+      send: deps.sendRoomEnvironmentRequest,
+      ...(deps.isRelayConnection ? { isRelayConnection: deps.isRelayConnection } : {}),
+      ...(deps.createViewerPublicKey ? { createViewerPublicKey: deps.createViewerPublicKey } : {}),
+      ...(deps.reconnectRoomEventStream
+        ? { reconnectEventStream: deps.reconnectRoomEventStream }
+        : {}),
+      ...(deps.openRoomViewer ? { openViewer: deps.openRoomViewer } : {}),
+      ...(deps.captureRoomScreenshot
+        ? { captureScreenshot: deps.captureRoomScreenshot }
+        : {}),
+      appendNotice: deps.appendNotice,
+      flashFooter: deps.flashFooter,
+    }, command)
   }
 
   const handleMcpCommand = async (
@@ -437,6 +478,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleKernelCommand,
     handleMachineCommand,
     handleSliceCommand,
+    handleRoomCommand,
     handleRelayCommand,
     handleCloudCommand,
     handleCollabCommand,

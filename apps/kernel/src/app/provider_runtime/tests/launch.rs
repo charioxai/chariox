@@ -7,17 +7,18 @@ use crate::provider::{
     LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, ProviderRunState,
 };
 use crate::session::{
-    CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
-    SessionAgentDefaults,
+    PromptQueueItem, PromptStatus, PromptSubmissionOutcome, SessionAgentDefaults,
 };
 
 #[test]
 fn prompt_auto_launch_uses_agent_owner_and_resume_state() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("prompt-auto-launch-owner");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
-            CreateSessionRequest::new("workspace-1", "worktree-1")
+            worktree
+                .session_request()
                 .with_owner_user_id("cloud-user")
                 .with_agent_defaults(
                     SessionAgentDefaults::new("dev-stub")
@@ -55,9 +56,11 @@ fn prompt_auto_launch_uses_agent_owner_and_resume_state() {
 fn prompt_auto_launch_failure_does_not_leave_running_provider_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("prompt-auto-launch-failure");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
-            CreateSessionRequest::new("workspace-1", "worktree-1")
+            worktree
+                .session_request()
                 .with_agent_defaults(SessionAgentDefaults::new("dev-stub").with_model("sonnet")),
         )
         .expect("session create should succeed");
@@ -95,13 +98,11 @@ fn prompt_auto_launch_failure_does_not_leave_running_provider_run() {
 fn detached_provider_launch_profile_persistence_failure_cleans_up_runtime() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("detached-profile-failure");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(
-            CreateSessionRequest::new("workspace-profile-failure", "worktree-profile-failure")
-                .with_agent_defaults(
-                    SessionAgentDefaults::new("dev-stub").with_model("native-tui-idle"),
-                ),
-        )
+        .create_session(worktree.session_request().with_agent_defaults(
+            SessionAgentDefaults::new("dev-stub").with_model("native-tui-idle"),
+        ))
         .expect("session create should succeed");
     let agent_before_launch = app
         .agents
@@ -171,11 +172,9 @@ fn detached_provider_launch_profile_persistence_failure_cleans_up_runtime() {
 async fn provider_launch_failure_retries_durable_resume_invalidation_automatically() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("resume-clear-failure");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-resume-clear-failure",
-            "worktree-resume-clear-failure",
-        ))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let stale_resume = ProviderResumeState::from_codex_thread_id("stale-thread");
     app.agents
@@ -217,6 +216,7 @@ async fn provider_launch_failure_retries_durable_resume_invalidation_automatical
     let started = StartedProviderLaunch {
         run: run.clone(),
         previous_active_run_id: None,
+        provider_credential_env: Default::default(),
     };
     let resume_error = DaemonError::ProviderProtocol {
         provider_run_id: run.id().to_string(),
@@ -302,11 +302,9 @@ async fn provider_launch_failure_retries_durable_resume_invalidation_automatical
 fn provider_launch_failure_cleans_failed_run_after_resume_was_superseded() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("superseded-resume");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-superseded-resume",
-            "worktree-superseded-resume",
-        ))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let stale_resume = ProviderResumeState::from_codex_thread_id("stale-thread");
     let request = LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.5")
@@ -348,6 +346,7 @@ fn provider_launch_failure_cleans_failed_run_after_resume_was_superseded() {
     let started = StartedProviderLaunch {
         run: run.clone(),
         previous_active_run_id: None,
+        provider_credential_env: Default::default(),
     };
     let resume_error = DaemonError::ProviderProtocol {
         provider_run_id: run.id().to_string(),
@@ -385,9 +384,11 @@ fn provider_launch_failure_cleans_failed_run_after_resume_was_superseded() {
 fn provider_launch_failure_preserves_durable_active_prompt_for_retry() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("provider-retry");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
-            CreateSessionRequest::new("workspace-retry", "worktree-retry")
+            worktree
+                .session_request()
                 .with_agent_defaults(SessionAgentDefaults::new("dev-stub").with_model("sonnet")),
         )
         .expect("session create should succeed");
@@ -444,11 +445,9 @@ fn provider_launch_failure_preserves_durable_active_prompt_for_retry() {
 fn provider_activation_accepts_and_restores_projected_remote_predecessor() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("remote-predecessor");
     let (session, remote_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-remote-predecessor",
-            "worktree-remote-predecessor",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let local_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("local-popup"))
@@ -519,11 +518,13 @@ fn provider_activation_accepts_and_restores_projected_remote_predecessor() {
 fn provider_launch_rejects_agent_from_another_session() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let first_worktree = crate::test_support::TestWorktree::new("reject-agent-first");
+    let second_worktree = crate::test_support::TestWorktree::new("reject-agent-second");
     let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(first_worktree.session_request())
         .expect("first session create should succeed");
     let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+        .create_session(second_worktree.session_request())
         .expect("second session create should succeed");
 
     let error = app
@@ -560,11 +561,13 @@ fn provider_launch_rejects_agent_from_another_session() {
 fn detached_provider_launch_rejects_agent_from_another_session() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let first_worktree = crate::test_support::TestWorktree::new("detached-reject-first");
+    let second_worktree = crate::test_support::TestWorktree::new("detached-reject-second");
     let (_first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(first_worktree.session_request())
         .expect("first session create should succeed");
     let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+        .create_session(second_worktree.session_request())
         .expect("second session create should succeed");
 
     let error = app
@@ -594,14 +597,15 @@ fn detached_provider_launch_rejects_agent_from_another_session() {
 fn provider_launch_replaces_existing_chariox_run_for_target_agent() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("replace-target-agent");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let second_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-b")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("second agent should spawn");
 
@@ -679,8 +683,9 @@ fn provider_launch_replaces_existing_chariox_run_for_target_agent() {
 fn provider_launch_rejects_replacing_target_agent_with_active_prompt() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("replace-active-prompt");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -739,8 +744,9 @@ fn provider_launch_rejects_replacing_target_agent_with_active_prompt() {
 fn native_tui_provider_launch_reuses_compatible_starting_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("native-reuse");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
 
     let request =
@@ -775,8 +781,9 @@ fn native_tui_provider_launch_reuses_compatible_starting_run() {
 fn workflow_provider_launch_replaces_ordinary_run_before_tool_discovery() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("workflow-replace-ordinary");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
 
     let ordinary = app
@@ -809,8 +816,9 @@ fn workflow_provider_launch_replaces_ordinary_run_before_tool_discovery() {
 fn native_tui_provider_launch_rejects_parameter_mismatch_without_duplicate() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("native-mismatch");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
 
     let request =
@@ -856,8 +864,9 @@ fn native_tui_provider_launch_rejects_parameter_mismatch_without_duplicate() {
 fn prompt_submission_while_native_launch_is_starting_does_not_duplicate_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("native-prompt-starting");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(

@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::DaemonError;
 use crate::local::{
@@ -9,8 +10,10 @@ use crate::local::{
     ManagedEnvironmentKernelContextSelection, ManagedEnvironmentObservedState,
     ManagedEnvironmentOperationKind, ManagedEnvironmentOperationStatus,
     ManagedEnvironmentOperationSummary, ManagedEnvironmentProviderAccountSelection,
-    ManagedEnvironmentProviderAccounts, ManagedEnvironmentRepositoryRole,
-    ManagedEnvironmentRepositorySelection, ManagedEnvironmentResult, ManagedEnvironmentSummary,
+    ManagedEnvironmentProviderAccounts, ManagedEnvironmentReimageReceipt,
+    ManagedEnvironmentReimageReceiptStatus, ManagedEnvironmentReimageResult,
+    ManagedEnvironmentRepositoryRole, ManagedEnvironmentRepositorySelection,
+    ManagedEnvironmentResult, ManagedEnvironmentSummary,
 };
 use crate::managed_context::outbound_service::{
     ManagedContextTransferTarget, ManagedContextTransferTicket,
@@ -33,7 +36,7 @@ pub(super) struct EnvironmentsResponse {
 #[serde(rename_all = "camelCase")]
 pub(super) struct EnvironmentDetailsResponse {
     pub(super) environment: EnvironmentSummary,
-    #[allow(dead_code)]
+    #[serde(default)]
     pub(super) operations: Vec<OperationSummary>,
 }
 
@@ -42,6 +45,59 @@ pub(super) struct EnvironmentDetailsResponse {
 pub(super) struct EnvironmentResult {
     environment: EnvironmentSummary,
     operation: OperationSummary,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReimageResult {
+    environment: EnvironmentSummary,
+    operation: OperationSummary,
+    receipt: ReimageReceipt,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReimageReceipt {
+    receipt_id: String,
+    environment_id: String,
+    operation_id: String,
+    previous_generation: u64,
+    generation: u64,
+    status: ManagedEnvironmentReimageReceiptStatus,
+    fresh_equivalent: bool,
+    provider_server_id: String,
+    previous_provider_image_id: Option<String>,
+    provider_image_id: String,
+    provider_profile_id: String,
+    provider_profile_digest: String,
+    runtime_release_digest: String,
+    old_machine_id: Option<String>,
+    new_machine_id: Option<String>,
+    old_kernel_id: Option<String>,
+    new_kernel_id: Option<String>,
+    old_relay_realm_id: Option<String>,
+    new_relay_realm_id: Option<String>,
+    old_relay_target_id: Option<String>,
+    new_relay_target_id: Option<String>,
+    old_bootstrap_grant_id: Option<String>,
+    new_bootstrap_grant_id: Option<String>,
+    old_credential_ids: Value,
+    new_credential_ids: Value,
+    runtime_evidence: Value,
+    source_evidence: Value,
+    residue_checks: Value,
+    revocations: Value,
+    billing_observation: Value,
+    resource_observation: Value,
+    cleanup_state: Value,
+    rollback_state: Value,
+    receipt_digest: Option<String>,
+    failure_code: Option<String>,
+    failure_message: Option<String>,
+    requested_at: String,
+    completed_at: Option<String>,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +143,7 @@ pub(super) struct EnvironmentSummary {
     name: String,
     region: String,
     compute_class: String,
+    managed_repository_root: String,
     desired_state: ManagedEnvironmentDesiredState,
     observed_state: ManagedEnvironmentObservedState,
     desired_revision: u64,
@@ -98,10 +155,52 @@ pub(super) struct EnvironmentSummary {
     context_plan: ContextPlan,
     context_manifest_digest: Option<String>,
     auto_stop_policy: AutoStopPolicy,
+    #[serde(default, deserialize_with = "deserialize_running_agent_count")]
+    running_agent_count: Option<u8>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    last_activity_reported_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    last_activity_changed_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    auto_stop_warning_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    auto_stop_deadline_at: Option<String>,
     last_error_code: Option<String>,
     last_error_message: Option<String>,
     created_at: String,
     updated_at: String,
+}
+
+fn deserialize_running_agent_count<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<u8>::deserialize(deserializer)?;
+    match value {
+        Some(0 | 1) | None => Ok(value),
+        Some(_) => Err(serde::de::Error::custom("running agent count is invalid")),
+    }
+}
+
+fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if let Some(timestamp) = value.as_deref() {
+        let parsed = chrono::DateTime::parse_from_rfc3339(timestamp)
+            .map_err(|_| serde::de::Error::custom("managed activity timestamp is invalid"))?;
+        if parsed
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            != timestamp
+        {
+            return Err(serde::de::Error::custom(
+                "managed activity timestamp is not canonical",
+            ));
+        }
+    }
+    Ok(value)
 }
 
 #[derive(Deserialize)]
@@ -236,6 +335,7 @@ impl From<EnvironmentSummary> for ManagedEnvironmentSummary {
             name: value.name,
             region: value.region,
             compute_class: value.compute_class,
+            managed_repository_root: value.managed_repository_root,
             desired_state: value.desired_state,
             observed_state: value.observed_state,
             desired_revision: value.desired_revision,
@@ -246,6 +346,11 @@ impl From<EnvironmentSummary> for ManagedEnvironmentSummary {
             context_plan: value.context_plan.into(),
             context_manifest_digest: value.context_manifest_digest,
             auto_stop_policy: value.auto_stop_policy.into(),
+            running_agent_count: value.running_agent_count,
+            last_activity_reported_at: value.last_activity_reported_at,
+            last_activity_changed_at: value.last_activity_changed_at,
+            auto_stop_warning_at: value.auto_stop_warning_at,
+            auto_stop_deadline_at: value.auto_stop_deadline_at,
             last_error_code: value.last_error_code,
             last_error_message: value.last_error_message,
             created_at: value.created_at,
@@ -371,6 +476,63 @@ impl From<EnvironmentResult> for ManagedEnvironmentResult {
         Self {
             environment: value.environment.into(),
             operation: value.operation.into(),
+        }
+    }
+}
+
+impl From<ReimageReceipt> for ManagedEnvironmentReimageReceipt {
+    fn from(value: ReimageReceipt) -> Self {
+        Self {
+            receipt_id: value.receipt_id,
+            environment_id: value.environment_id,
+            operation_id: value.operation_id,
+            previous_generation: value.previous_generation,
+            generation: value.generation,
+            status: value.status,
+            fresh_equivalent: value.fresh_equivalent,
+            provider_server_id: value.provider_server_id,
+            previous_provider_image_id: value.previous_provider_image_id,
+            provider_image_id: value.provider_image_id,
+            provider_profile_id: value.provider_profile_id,
+            provider_profile_digest: value.provider_profile_digest,
+            runtime_release_digest: value.runtime_release_digest,
+            old_machine_id: value.old_machine_id,
+            new_machine_id: value.new_machine_id,
+            old_kernel_id: value.old_kernel_id,
+            new_kernel_id: value.new_kernel_id,
+            old_relay_realm_id: value.old_relay_realm_id,
+            new_relay_realm_id: value.new_relay_realm_id,
+            old_relay_target_id: value.old_relay_target_id,
+            new_relay_target_id: value.new_relay_target_id,
+            old_bootstrap_grant_id: value.old_bootstrap_grant_id,
+            new_bootstrap_grant_id: value.new_bootstrap_grant_id,
+            old_credential_ids: value.old_credential_ids,
+            new_credential_ids: value.new_credential_ids,
+            runtime_evidence: value.runtime_evidence,
+            source_evidence: value.source_evidence,
+            residue_checks: value.residue_checks,
+            revocations: value.revocations,
+            billing_observation: value.billing_observation,
+            resource_observation: value.resource_observation,
+            cleanup_state: value.cleanup_state,
+            rollback_state: value.rollback_state,
+            receipt_digest: value.receipt_digest,
+            failure_code: value.failure_code,
+            failure_message: value.failure_message,
+            requested_at: value.requested_at,
+            completed_at: value.completed_at,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl From<ReimageResult> for ManagedEnvironmentReimageResult {
+    fn from(value: ReimageResult) -> Self {
+        Self {
+            environment: value.environment.into(),
+            operation: value.operation.into(),
+            receipt: value.receipt.into(),
         }
     }
 }

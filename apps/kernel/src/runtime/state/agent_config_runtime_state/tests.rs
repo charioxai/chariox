@@ -17,6 +17,9 @@ mod worker_failure_settlement;
 #[path = "tests/substitute_launch_identity.rs"]
 mod substitute_launch_identity;
 
+#[path = "tests/room_browser_manifest_sync.rs"]
+mod room_browser_manifest_sync;
+
 #[test]
 fn remote_extension_manifest_pending_revoke_uses_explicit_intent_not_hash_change() {
     let previous = crate::extension::RemoteExtensionManifestSyncStatus::synced(
@@ -411,6 +414,7 @@ async fn assert_remote_agent_profile_response(
             active_home_prompt_id: None,
             active_home_prompt_started_at_ms: None,
             applied_home_steer_ids: Vec::new(),
+            home_steer_receipts: Vec::new(),
             replayable_completion: None,
             created_at_ms: 1,
         },
@@ -708,6 +712,7 @@ async fn assert_remote_agent_profile_response(
             active_home_prompt_id: None,
             active_home_prompt_started_at_ms: None,
             applied_home_steer_ids: Vec::new(),
+            home_steer_receipts: Vec::new(),
             replayable_completion: None,
             created_at_ms: 1,
         },

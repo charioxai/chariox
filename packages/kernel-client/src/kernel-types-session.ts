@@ -22,6 +22,7 @@ import type {
   WorkflowScheduleDefinition,
   WorkflowWatchdogDefinition,
 } from "./kernel-types-workflow.js"
+import type { ProjectEnvironmentDefinition } from "./kernel-types-project-environment.js"
 
 export type RuntimeSession = {
   id: string
@@ -90,6 +91,7 @@ export type RuntimeProject = {
   created_at_ms: number
   updated_at_ms: number
   archived_at_ms?: number | null
+  environment_definition?: ProjectEnvironmentDefinition | null
 }
 
 export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"

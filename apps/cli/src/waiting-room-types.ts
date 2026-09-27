@@ -15,6 +15,7 @@ export type WaitingRoomFocus =
   | "launch-kernel"
   | "managed-compute"
   | "managed-region"
+  | "managed-repository-root"
   | "managed-kernel-context"
   | "managed-development"
   | "managed-repositories"
@@ -83,6 +84,7 @@ export type WaitingRoomState = {
   selectedKernelRef?: string
   managedComputeClass?: string
   managedRegion?: string
+  managedRepositoryRoot?: string
   managedKernelContext?: "empty" | "source_kernel"
   managedContextSourceTargetId?: string
   managedDevelopmentMode?: "empty" | "current_project"

@@ -1,4 +1,5 @@
 import type { KernelTransportControlRequest } from "./kernel-transport-requests.js"
+import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
 
 export type KernelSubscriptionScope = "session" | "waiting_room_inventory"
 
@@ -7,7 +8,8 @@ export type KernelSubscriptionState = {
   attachmentId: string
   scope: KernelSubscriptionScope
   relaySubscriptionId: string | null
-  relayPrivateKey: Buffer | null
+  relayPublicKey: string | null
+  relayDecryptEvent: ((payload: EncryptedRelayPayload) => string) | null
 }
 
 export type KernelSubscriptionStart = {
@@ -37,7 +39,8 @@ export function createKernelSessionSubscriptionStart(input: {
       attachmentId: input.attachmentId,
       scope: "session",
       relaySubscriptionId: input.relaySubscriptionId,
-      relayPrivateKey: null,
+      relayPublicKey: null,
+      relayDecryptEvent: null,
     },
     resumeFromEventId,
     resetLastReceivedEventId: resumeFromEventId == null,
@@ -57,7 +60,8 @@ export function createWaitingRoomInventorySubscriptionStart(input: {
       attachmentId: WAITING_ROOM_INVENTORY_SUBSCRIPTION_ID,
       scope: "waiting_room_inventory",
       relaySubscriptionId: input.relaySubscriptionId,
-      relayPrivateKey: null,
+      relayPublicKey: null,
+      relayDecryptEvent: null,
     },
     resumeFromEventId,
     resetLastReceivedEventId: resumeFromEventId == null,

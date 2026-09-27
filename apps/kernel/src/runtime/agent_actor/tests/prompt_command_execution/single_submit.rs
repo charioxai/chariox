@@ -2,12 +2,10 @@ use super::*;
 
 #[tokio::test]
 async fn prompt_submit_uses_owned_runtime_state_without_app_lock_for_local_prompt() {
+    let worktree = TestWorktree::new("owned-submit");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-submit",
-            "worktree-owned-submit",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -115,12 +113,10 @@ async fn prompt_submit_uses_owned_runtime_state_without_app_lock_for_local_promp
 
 #[tokio::test]
 async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
+    let worktree = TestWorktree::new("meta-slash-submit");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-meta-slash-submit",
-            "worktree-meta-slash-submit",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -353,12 +349,10 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
 
 #[tokio::test]
 async fn rejected_meta_slash_does_not_activate_meta_mode_or_create_a_task() {
+    let worktree = TestWorktree::new("meta-slash-rejected");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-meta-slash-rejected",
-            "worktree-meta-slash-rejected",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
     let session_snapshot = crate::app::KernelSessionReadService::new(&app)
@@ -423,18 +417,16 @@ async fn rejected_meta_slash_does_not_activate_meta_mode_or_create_a_task() {
 
 #[tokio::test]
 async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_without_app_lock() {
+    let worktree = TestWorktree::new("owned-submit-pty");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-submit-pty",
-            "worktree-owned-submit-pty",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("pty-agent")
-                .with_worktree("worktree-owned-submit-pty"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("second agent should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -517,18 +509,16 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
 
 #[tokio::test]
 async fn prompt_submit_routes_leading_agent_alias_and_focuses_target() {
+    let worktree = TestWorktree::new("alias-route");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-alias-route",
-            "worktree-alias-route",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let reviewer = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("Reviewer")
-                .with_worktree("worktree-alias-route"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("reviewer should be created");
     app.focus_agent(session.id(), default_agent.id())
@@ -598,12 +588,10 @@ async fn prompt_submit_routes_leading_agent_alias_and_focuses_target() {
 
 #[tokio::test]
 async fn prompt_submit_rejects_unknown_leading_agent_alias_without_changing_focus() {
+    let worktree = TestWorktree::new("missing-alias-route");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-missing-alias-route",
-            "worktree-missing-alias-route",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(

@@ -2,12 +2,10 @@ use super::*;
 
 #[tokio::test]
 async fn prompt_cancel_queued_uses_owned_runtime_state_without_app_lock() {
+    let worktree = TestWorktree::new("owned-cancel-queued");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-cancel-queued",
-            "worktree-owned-cancel-queued",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -121,12 +119,10 @@ async fn prompt_cancel_queued_uses_owned_runtime_state_without_app_lock() {
 
 #[tokio::test]
 async fn prompt_update_queued_changes_queue_entry_without_settling_active_prompt() {
+    let worktree = TestWorktree::new("owned-update-queued");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-update-queued",
-            "worktree-owned-update-queued",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -251,12 +247,10 @@ async fn prompt_update_queued_changes_queue_entry_without_settling_active_prompt
 
 #[tokio::test]
 async fn prompt_steer_queued_removes_queue_entry_without_settling_active_prompt() {
+    let worktree = TestWorktree::new("owned-steer-queued");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-steer-queued",
-            "worktree-owned-steer-queued",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(

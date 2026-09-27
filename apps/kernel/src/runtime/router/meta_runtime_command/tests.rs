@@ -78,6 +78,19 @@ fn meta_slice_parser_routes_save_and_stop_lifecycle_requests() {
     let stop = meta_slice_request(&["stop".to_string(), "slice-1".to_string()])
         .expect("slice stop should parse");
     assert!(matches!(stop, LocalDaemonRequest::StopSlice(_)));
+
+    let restore = meta_slice_request(&[
+        "backup".to_string(),
+        "restore".to_string(),
+        "slice-1".to_string(),
+        "baseline".to_string(),
+    ])
+    .expect("slice backup restore should parse");
+    let LocalDaemonRequest::RestoreSliceBackup(restore) = restore else {
+        panic!("unexpected restore request");
+    };
+    assert_eq!(restore.slice_ref, "slice-1");
+    assert_eq!(restore.backup_ref, "baseline");
 }
 
 #[test]

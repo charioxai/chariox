@@ -53,6 +53,27 @@ test("assistant completion controller finalizes an off-focus split pane", () => 
   assert.deepEqual(harness.calls.slice(-3), ["busy:agent-2", "turn:confirm", "turn:schedule"])
 })
 
+test("assistant completion controller keeps an off-focus individual pane owned by its agent", () => {
+  const harness = completionHarness({
+    split: false,
+    visibleAgentId: "agent-1",
+    entries: turnEntries("visible agent prompt"),
+    paneEntries: {
+      "agent-2": turnEntries("completed agent prompt"),
+    },
+    collapsedTurnIdsByAgent: { "agent-2": [1] },
+  })
+
+  harness.controller.markCompleted("agent-2")
+
+  assert.deepEqual(harness.agentTranscriptEntries, [{
+    agentId: "agent-2",
+    entries: ["completed agent prompt", "click to expand", "tool output", "done"],
+    turnIds: [1],
+  }])
+  assert.deepEqual(harness.setEntryBatches, [])
+})
+
 test("assistant completion controller still clears busy state and confirms without an agent", () => {
   const harness = completionHarness({
     visibleAgentId: null,

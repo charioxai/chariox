@@ -23,6 +23,9 @@ pub(super) struct CodexTurnTracker {
     assistant_item_completed: bool,
     assistant_content_after_tool_activity: bool,
     last_activity_at: Option<Instant>,
+    // Unlike quiet timing, this changes only when completion evidence becomes
+    // newly eligible, so ordinary activity cannot replenish retry attempts.
+    completion_recovery_version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,21 +62,36 @@ impl CodexTurnTracker {
     }
 
     pub(super) fn note_tool_completed(&mut self, tool_id: &str) {
+        let had_completed_tool_candidate = self.has_completed_tool_candidate();
         self.note_activity();
         if !tool_id.is_empty() {
             self.active_tool_ids.remove(tool_id);
         }
         self.assistant_content_after_tool_activity = false;
+        if !had_completed_tool_candidate && self.has_completed_tool_candidate() {
+            self.bump_completion_recovery_version();
+        }
     }
 
     pub(super) fn note_terminal(&mut self, signal: CodexTerminalSignal) {
+        let is_new_candidate = self
+            .pending_terminal
+            .as_ref()
+            .is_none_or(|pending| pending.signal != signal);
         self.note_activity();
         self.pending_terminal = Some(CodexPendingTerminal { signal });
+        if is_new_candidate {
+            self.bump_completion_recovery_version();
+        }
     }
 
     pub(super) fn note_legacy_completion_hint(&mut self) {
+        let is_new_candidate = !self.legacy_completion_hint;
         self.note_activity();
         self.legacy_completion_hint = true;
+        if is_new_candidate {
+            self.bump_completion_recovery_version();
+        }
     }
 
     pub(super) fn has_legacy_completion_hint(&self) -> bool {
@@ -89,15 +107,23 @@ impl CodexTurnTracker {
     }
 
     pub(super) fn note_assistant_content(&mut self) {
+        let had_terminal_assistant_candidate = self.has_terminal_assistant_evidence();
         self.note_activity();
         self.assistant_content_observed = true;
         if self.tool_started {
             self.assistant_content_after_tool_activity = true;
         }
+        if !had_terminal_assistant_candidate && self.has_terminal_assistant_evidence() {
+            self.bump_completion_recovery_version();
+        }
     }
 
     pub(super) fn note_assistant_item_completed(&mut self) {
+        let had_terminal_assistant_candidate = self.has_terminal_assistant_evidence();
         self.assistant_item_completed = true;
+        if !had_terminal_assistant_candidate && self.has_terminal_assistant_evidence() {
+            self.bump_completion_recovery_version();
+        }
     }
 
     pub(super) fn has_pending_terminal(&self) -> bool {
@@ -135,6 +161,18 @@ impl CodexTurnTracker {
             && self
                 .last_activity_at
                 .is_some_and(|last_activity_at| last_activity_at.elapsed() >= quiet_for)
+    }
+
+    pub(super) fn completion_recovery_version(&self) -> Option<u64> {
+        (self.completion_recovery_version != 0).then_some(self.completion_recovery_version)
+    }
+
+    fn has_completed_tool_candidate(&self) -> bool {
+        self.tool_started && self.active_tool_count() == 0
+    }
+
+    fn bump_completion_recovery_version(&mut self) {
+        self.completion_recovery_version = self.completion_recovery_version.saturating_add(1);
     }
 
     #[cfg(test)]

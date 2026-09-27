@@ -997,6 +997,20 @@ function pageEntry(
   }
 }
 
+test("failed outline hydration preserves settled failure on prompt and output", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{ ...outlineTurn(10, "prompt-1", "run the check", "partial progress"), lifecycle: "failed" }],
+    next_cursor: null,
+  })
+
+  assert.deepEqual(entries.map((entry) => entry.role), ["user", "assistant"])
+  for (const entry of entries) {
+    assert.equal(entry.historyTurnLifecycle, "failed")
+    assert.equal(entry.historyTurnCompletedAtMs, 11)
+  }
+})
+
 function outlineTurn(
   entryIndex: number,
   promptId: string,

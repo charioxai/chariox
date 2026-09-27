@@ -16,6 +16,7 @@ pub(crate) struct EnvironmentEventLog {
     events: VecDeque<EnvironmentEvent>,
     capacity: usize,
     next_event_id: u64,
+    oldest_unrecoverable_cursor: u64,
 }
 
 impl EnvironmentEventLog {
@@ -27,6 +28,7 @@ impl EnvironmentEventLog {
             events: VecDeque::new(),
             capacity,
             next_event_id: 1,
+            oldest_unrecoverable_cursor: 0,
         })
     }
 
@@ -40,6 +42,15 @@ impl EnvironmentEventLog {
         runtime_generation: u64,
         kind: EnvironmentEventKind,
     ) {
+        if matches!(kind, EnvironmentEventKind::PointersChanged)
+            && self.events.back().is_some_and(|event| {
+                event.environment_id == environment_id
+                    && event.runtime_generation == runtime_generation
+                    && matches!(event.kind, EnvironmentEventKind::PointersChanged)
+            })
+        {
+            self.events.pop_back();
+        }
         self.events.push_back(EnvironmentEvent {
             event_id: self.next_event_id,
             environment_id: environment_id.to_string(),
@@ -48,18 +59,15 @@ impl EnvironmentEventLog {
         });
         self.next_event_id += 1;
         while self.events.len() > self.capacity {
-            self.events.pop_front();
+            if let Some(event) = self.events.pop_front() {
+                self.oldest_unrecoverable_cursor = event.event_id;
+            }
         }
     }
 
     pub(crate) fn replay(&self, cursor: u64) -> EnvironmentReplayPlan {
         let current_cursor = self.cursor();
-        let oldest_event_id = self
-            .events
-            .front()
-            .map(|event| event.event_id)
-            .unwrap_or(self.next_event_id);
-        if cursor > current_cursor || cursor.saturating_add(1) < oldest_event_id {
+        if cursor > current_cursor || cursor < self.oldest_unrecoverable_cursor {
             return EnvironmentReplayPlan::SnapshotRequired;
         }
         EnvironmentReplayPlan::Events {

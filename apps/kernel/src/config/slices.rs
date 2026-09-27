@@ -4,6 +4,7 @@ use super::{validate_non_empty, validate_optional_nonzero};
 use crate::error::DaemonError;
 
 pub const DEFAULT_LINUX_SLICE_DOCKER_IMAGE: &str = "chariox-slice-linux:0.1.0";
+pub const DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB: u32 = 2_048;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserSlicesConfig {
@@ -42,9 +43,15 @@ pub struct UserLinuxSliceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_unconfined_seccomp: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_provider_sandbox_compatibility: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_mb: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpus: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_layer_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_home_mb: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,8 +67,11 @@ impl Default for UserLinuxSliceConfig {
             build_image: Some(SliceImageBuildPolicy::Auto),
             extension_dockerfile: None,
             allow_unconfined_seccomp: Some(false),
-            memory_mb: None,
+            allow_provider_sandbox_compatibility: Some(false),
+            memory_mb: Some(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
             cpus: None,
+            disk_layer_mb: None,
+            disk_home_mb: None,
             idle_timeout_minutes: Some(30),
             screen_width: Some(1280),
             screen_height: Some(800),
@@ -87,6 +97,8 @@ impl UserLinuxSliceConfig {
         if let Some(cpus) = &self.cpus {
             validate_non_empty("slices.linux.cpus", cpus)?;
         }
+        validate_optional_nonzero("slices.linux.disk_layer_mb", self.disk_layer_mb)?;
+        validate_optional_nonzero("slices.linux.disk_home_mb", self.disk_home_mb)?;
         Ok(())
     }
 }

@@ -31,6 +31,46 @@ pub(super) async fn relay_client_test_guard() -> tokio::sync::MutexGuard<'static
     LOCK.get_or_init(|| Mutex::new(())).lock().await
 }
 
+pub(super) struct RelayTestHome {
+    previous: Option<std::ffi::OsString>,
+    path: std::path::PathBuf,
+    _env_guard: crate::env_lock::EnvGuard,
+}
+
+impl RelayTestHome {
+    // Acquire the relay test guard first, matching the other relay fixtures.
+    pub(super) fn new() -> Self {
+        let env_guard = crate::env_lock::lock();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "chariox-relay-trust-{}-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&path).expect("isolated relay home should be created");
+        let previous = std::env::var_os("CHARIOX_HOME");
+        unsafe { std::env::set_var("CHARIOX_HOME", &path) };
+        Self {
+            previous,
+            path,
+            _env_guard: env_guard,
+        }
+    }
+}
+
+impl Drop for RelayTestHome {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var("CHARIOX_HOME", value),
+                None => std::env::remove_var("CHARIOX_HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 pub(super) fn run_async_with_large_test_stack<F, Fut>(name: &'static str, test: F)
 where
     F: FnOnce() -> Fut + Send + 'static,

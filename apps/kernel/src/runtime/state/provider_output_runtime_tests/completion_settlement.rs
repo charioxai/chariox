@@ -2,13 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-managed-activity-settlement",
-            "worktree-managed-activity-settlement",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -89,15 +87,405 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
     assert!(runtime.managed_activity_change_sequence() > before_settlement);
 }
 
+#[test]
+fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
+    assert_workflow_completion_failure_and_restart("workflow.runtime.updated", false);
+}
+
+#[test]
+fn workflow_prompt_state_append_failure_retains_retry_ownership() {
+    assert_workflow_completion_failure_and_restart("session.prompt_state.updated", false);
+}
+
+#[test]
+fn codex_workflow_completion_retries_without_replaying_turn_completed() {
+    assert_workflow_completion_failure_and_restart("workflow.runtime.updated", true);
+}
+
+#[test]
+fn authoritative_provider_finish_survives_delayed_workflow_completion_retry() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test executor should start");
+    executor.block_on(assert_workflow_completion_failure_is_retryable(
+        "workflow.runtime.updated",
+        true,
+        true,
+    ));
+}
+
+fn assert_workflow_completion_failure_and_restart(event_kind: &str, codex: bool) {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test executor should start");
+    let (config, session_id, agent_id, _worktree) = executor.block_on(
+        assert_workflow_completion_failure_is_retryable(event_kind, codex, false),
+    );
+    // Drop all first-kernel async owners without a shutdown cleanup that could
+    // rewrite prompt state and hide a failed composite commit.
+    drop(executor);
+    let restored = DaemonApp::bootstrap(config).expect("kernel state should restore");
+    let restored_session = restored
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    assert!(
+        restored_session
+            .active_prompt_for_agent(&agent_id)
+            .is_none(),
+        "restart must not resurrect the completed provider prompt"
+    );
+}
+
+async fn assert_workflow_completion_failure_is_retryable(
+    event_kind: &str,
+    codex: bool,
+    verify_original_finish: bool,
+) -> (
+    crate::config::DaemonConfig,
+    String,
+    String,
+    crate::test_support::TestWorktree,
+) {
+    let worktree = crate::test_support::TestWorktree::new("workflow-settlement-append-retry");
+    let config = crate::config::DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let run = if codex {
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-codex-completion-retry",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "test-codex-completion-retry".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("ws://test-codex-completion-retry".to_string()),
+            },
+        );
+        run.mark_running();
+        spawn_inert_pty_for_run(&mut app, run.id());
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        run
+    } else {
+        app.launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch")
+    };
+    app.update_provider_run_projection(run.clone());
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("settlement-retry".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be added");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("finish durably".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "finish durably".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should prepare");
+    app.sessions_mut()
+        .start_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
+        .expect("workflow node should start");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        agent.id(),
+        "finish durably".to_string(),
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("workflow prompt should start")
+    else {
+        panic!("workflow prompt should start immediately");
+    };
+    let prompt = app
+        .mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run.id().to_string()),
+            run.provider_session_id().map(str::to_string),
+        )
+        .expect("workflow prompt should be delivered");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+    let app = Arc::new(Mutex::new(app));
+    let _pty_cleanup = codex.then(|| InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().to_string(),
+    });
+    let runtime = owned_runtime_state(&app).await;
+    if verify_original_finish {
+        runtime
+            .ensure_managed_activity_tracking("completion-original-finish")
+            .expect("activity tracking should activate before runtime mutations");
+    }
+    runtime
+        .owned
+        .persist_workflow_runtime_session(session.id(), "completion_failure_test_baseline")
+        .expect("running workflow baseline should persist");
+    runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("baseline projection should publish");
+    if verify_original_finish {
+        assert!(
+            !runtime
+                .reconcile_provider_run_exit(session.id(), run.id())
+                .await
+                .expect("provider liveness preflight should succeed"),
+            "fixture provider must remain live before authoritative completion"
+        );
+        let live_session = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        let live_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&live_session, agent.id())
+            .expect("liveness preflight must preserve the active prompt");
+        assert_eq!(live_prompt.id(), prompt.id());
+        assert!(
+            !live_prompt.delivery_pending(),
+            "liveness preflight must preserve delivery acknowledgement: {live_prompt:?}"
+        );
+    }
+    let projection_sequence = runtime.owned.session_projection.change_sequence();
+    let activity_sequence = runtime.managed_activity_change_sequence();
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("durable database should open for failure injection");
+    connection
+        .execute_batch(&format!(
+            "CREATE TRIGGER fail_workflow_prompt_completion
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = '{event_kind}'
+               AND ('{event_kind}' = 'session.prompt_state.updated'
+                 OR json_extract(NEW.payload_json, '$.reason') = 'workflow_prompt_completed')
+             BEGIN
+               SELECT RAISE(FAIL, 'injected workflow prompt completion failure');
+             END;"
+        ))
+        .expect("workflow completion failure trigger should install");
+
+    let finish_observed_from_ms = crate::session::unix_epoch_ms();
+    let error = if verify_original_finish {
+        runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                Vec::new(),
+                crate::provider::ProviderPromptSignalBatch {
+                    prompt_completed: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err(&format!(
+                "failed workflow append must reject the actual provider-end batch: prompt={:?}, turn={:?}, run={:?}",
+                runtime.owned.prompt_state_owner.active_prompt_for_agent(
+                    &runtime.owned.session_store.get_session(session.id()).unwrap(), agent.id()),
+                runtime.owned.active_turns.get(run.id()),
+                runtime.owned.provider_store.get_run(run.id()),
+            ))
+    } else {
+        runtime
+            .settle_owned_provider_prompt(session.id(), run.id(), true, false, !codex)
+            .await
+            .expect_err("failed workflow append must reject provider settlement")
+    };
+    let finish_observed_by_ms = crate::session::unix_epoch_ms();
+    assert!(
+        error
+            .to_string()
+            .contains("injected workflow prompt completion failure"),
+        "{error}"
+    );
+    let retained = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should remain available");
+    let retained_prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&retained, agent.id())
+        .expect("failed completion must retain the active prompt");
+    assert_eq!(retained_prompt.id(), prompt.id());
+    assert_eq!(retained_prompt.status(), prompt.status());
+    let durable_prompt_events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind(crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
+        .expect("durable prompt events should load");
+    assert_eq!(
+        durable_prompt_events
+            .last()
+            .expect("delivered prompt should be durable")
+            .payload["active_prompt"]["id"],
+        prompt.id(),
+        "a rejected composite completion must retain its durable prompt ownership"
+    );
+    assert_eq!(
+        retained
+            .workflow_run(workflow_run.id())
+            .expect("workflow run should remain retryable")
+            .node_runs()[0]
+            .status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+    assert_eq!(runtime.managed_running_agent_count(), 1);
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence,
+        "a rejected completion must not publish a terminal projection"
+    );
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(session.id(), agent.id(), prompt.id())
+        .expect("settlement history should load")
+        .is_none());
+
+    connection
+        .execute_batch("DROP TRIGGER fail_workflow_prompt_completion;")
+        .expect("workflow completion failure trigger should clear");
+    if verify_original_finish {
+        // Separate the first authoritative end from the later durable commit.
+        // This delay is part of the failure scenario, not a provider quiet-time signal.
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    }
+    let settled = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), !codex, false, !codex)
+        .await
+        .expect("the retained completion should retry after storage recovery");
+    assert!(settled.had_active_prompt);
+    assert!(!settled.started_next_prompt);
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .expect("session should remain available"),
+            agent.id(),
+        )
+        .is_none());
+    assert_eq!(runtime.managed_running_agent_count(), 0);
+    if verify_original_finish {
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("idle must have a durable activity observation");
+        assert_eq!(idle.running_agent_count, 0);
+        assert!(
+            (finish_observed_from_ms..=finish_observed_by_ms).contains(&idle.changed_at_ms),
+            "idle time {} must retain the authoritative finish observation {}..={}, not the retry commit time",
+            idle.changed_at_ms,
+            finish_observed_from_ms,
+            finish_observed_by_ms,
+        );
+    }
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(session.id(), agent.id(), prompt.id())
+        .expect("settlement history should load")
+        .is_some());
+    let completion_events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("workflow.runtime.updated")
+        .expect("workflow events should load")
+        .into_iter()
+        .filter(|event| event.payload["reason"] == "workflow_prompt_completed")
+        .count();
+    assert_eq!(
+        completion_events, 1,
+        "completion should commit exactly once"
+    );
+    drop(connection);
+    drop(runtime);
+    drop(app);
+    (
+        config,
+        session.id().to_string(),
+        agent.id().to_string(),
+        worktree,
+    )
+}
+
 #[tokio::test]
 async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-metaagent");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-metaagent-settlement-fifo",
-            "worktree-metaagent-settlement-fifo",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let agent = app
         .agents_mut()
@@ -197,13 +585,11 @@ async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn(
 
 #[tokio::test]
 async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-duplicate");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-stale-poll-workflow-promotion",
-            "worktree-stale-poll-workflow-promotion",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -447,13 +833,11 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
 
 #[tokio::test]
 async fn provider_settlement_rotates_context_before_promoting_queued_workflow() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-rotation");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-runtime-fresh-queue",
-            "worktree-runtime-fresh-queue",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -586,13 +970,11 @@ async fn provider_settlement_rotates_context_before_promoting_queued_workflow() 
 
 #[tokio::test]
 async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_interval() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-quiet");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -625,6 +1007,10 @@ async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_in
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    let in_flight_tool = runtime.owned.runtime_tool_call_activity.begin(
+        [run.id().to_string()],
+        runtime.owned.provider_output_deadlines.clone(),
+    );
     let first_settlement = runtime
         .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
         .await
@@ -640,6 +1026,20 @@ async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_in
         .is_some());
 
     tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let blocked = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await
+        .expect("in-flight MCP request must not settle its originating prompt");
+    assert!(blocked.had_active_prompt);
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist")
+        .active_prompt_for_agent(agent.id())
+        .is_some());
+    drop(in_flight_tool);
+    assert!(runtime.owned.provider_output_deadlines.contains(run.id()));
     let settled = runtime
         .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
         .await
@@ -671,18 +1071,134 @@ async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_in
 }
 
 #[tokio::test]
+async fn stopped_sender_cannot_finish_an_already_admitted_agent_message() {
+    let worktree = crate::test_support::TestWorktree::new("agent-message-stop-race");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let recipient = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .expect("recipient should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-stop-race",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("sender should attach");
+    let sender_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "sender-model",
+            )
+            .with_agent_id(sender.id()),
+        )
+        .expect("sender run should launch");
+    app.update_provider_run_projection(sender_run.clone());
+    let recipient_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "recipient-model",
+            )
+            .with_agent_id(recipient.id()),
+        )
+        .expect("recipient run should launch");
+    app.update_provider_run_projection(recipient_run);
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(sender.id()),
+            "sender task",
+            Vec::new(),
+        )
+        .expect("sender prompt should start")
+    else {
+        panic!("sender prompt must start immediately");
+    };
+    let origin_prompt_id = prompt.id().to_string();
+    let auth_token = sender_run
+        .runtime_mcp_auth_token()
+        .expect("sender should have MCP auth")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let idempotency_gate = runtime.owned.agent_message_idempotency.lock().await;
+    let runtime_for_call = runtime.clone();
+    let recipient_id = recipient.id().to_string();
+    let call = tokio::spawn(async move {
+        runtime_for_call
+            .dispatch_authenticated_runtime_tool_call(
+                &auth_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": recipient_id,
+                    "message": "must not arrive after stop",
+                    "origin_prompt_id": origin_prompt_id,
+                    "idempotency_key": "stop-race",
+                }),
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while runtime
+            .owned
+            .runtime_tool_call_activity
+            .active_count(sender_run.id())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("runtime MCP handler should be in flight");
+
+    runtime
+        .settle_owned_provider_prompt(session.id(), sender_run.id(), false, false, true)
+        .await
+        .expect("forced sender settlement should complete");
+    drop(idempotency_gate);
+    let result = call
+        .await
+        .expect("MCP handler should finish")
+        .expect("MCP transport should respond");
+    assert!(
+        !result.ok,
+        "stopped sender must not deliver: {:?}",
+        result.payload
+    );
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should remain");
+    assert!(snapshot.active_prompt_for_agent(recipient.id()).is_none());
+    assert!(snapshot
+        .queued_prompts_for_agent(recipient.id())
+        .is_none_or(|queued| queued.is_empty()));
+}
+
+#[tokio::test]
 async fn detached_session_completes_active_and_two_queued_prompts_without_transient_backlog() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-detached");
     let owner_user_id = "user-detached-queue";
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(
-            crate::session::CreateSessionRequest::new(
-                "workspace-detached-queue",
-                "worktree-detached-queue",
-            )
-            .with_owner_user_id(owner_user_id),
-        )
+        .create_session(worktree.session_request().with_owner_user_id(owner_user_id))
         .expect("session should be created");
     let agent = app
         .agents_mut()
@@ -894,13 +1410,11 @@ async fn detached_session_completes_active_and_two_queued_prompts_without_transi
 
 #[tokio::test]
 async fn failed_prompt_dispatch_persists_terminal_prompt_settlement() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-dispatch-failure");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-dispatch-failure-settlement",
-            "worktree-dispatch-failure-settlement",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -998,13 +1512,11 @@ async fn failed_prompt_dispatch_persists_terminal_prompt_settlement() {
 
 #[tokio::test]
 async fn failed_prompt_dispatch_advances_the_next_queued_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-dispatch-queue");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-dispatch-failure-queue-advance",
-            "worktree-dispatch-failure-queue-advance",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1101,13 +1613,11 @@ async fn failed_prompt_dispatch_advances_the_next_queued_prompt() {
 
 #[tokio::test]
 async fn provider_completion_signal_preserves_external_active_prompt_and_queue() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-external");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-external-settlement",
-            "worktree-external-settlement",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1156,13 +1666,11 @@ async fn provider_completion_signal_preserves_external_active_prompt_and_queue()
 
 #[tokio::test]
 async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-external-failure");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-external-terminal-failure",
-            "worktree-external-terminal-failure",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1244,13 +1752,11 @@ async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() 
 
 #[tokio::test]
 async fn provider_completion_with_output_waits_for_a_quiet_poll_before_settling() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-drain");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1355,13 +1861,11 @@ async fn provider_completion_with_output_waits_for_a_quiet_poll_before_settling(
 
 #[tokio::test]
 async fn provider_output_records_carry_active_external_prompt_origin() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-external-origin");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1439,13 +1943,18 @@ async fn provider_output_records_carry_active_external_prompt_origin() {
     );
 }
 
-fn spawn_shared_worktree_agent(app: &mut DaemonApp, session_id: &str, alias: &str) -> String {
+fn spawn_shared_worktree_agent(
+    app: &mut DaemonApp,
+    session_id: &str,
+    alias: &str,
+    worktree_path: &std::path::Path,
+) -> String {
     crate::app::KernelSessionService::new(app)
         .spawn_agent(
             crate::agent::CreateAgentRequest::new(session_id, "dev-stub")
                 .with_alias(alias)
                 .with_model("test-model")
-                .with_worktree("worktree-blocked-retry-fifo"),
+                .with_worktree(worktree_path.to_string_lossy().into_owned()),
         )
         .expect("shared-worktree agent should spawn")
         .id()
@@ -1540,16 +2049,16 @@ async fn settle_and_promote_next_queued_prompt(
 
 #[tokio::test]
 async fn failed_workflow_dispatch_retries_a_node_blocked_on_its_released_claim() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-blocked-retry");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-failed-dispatch-retry",
-            "worktree-blocked-retry-fifo",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
-    let holder = spawn_shared_worktree_agent(&mut app, session.id(), "failed-holder");
-    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "blocked-worker");
+    let holder =
+        spawn_shared_worktree_agent(&mut app, session.id(), "failed-holder", worktree.path());
+    let worker =
+        spawn_shared_worktree_agent(&mut app, session.id(), "blocked-worker", worktree.path());
 
     let (holder_run, holder_node) =
         invoke_single_node_workflow(&mut app, session.id(), "wf-failed-holder", &holder);
@@ -1636,17 +2145,296 @@ async fn failed_workflow_dispatch_retries_a_node_blocked_on_its_released_claim()
 }
 
 #[tokio::test]
-async fn blocked_claim_retry_queued_behind_work_advances_in_fifo_order() {
+async fn failed_workflow_turn_retries_queued_work_after_provider_replacement_in_fifo_order() {
+    let worktree =
+        crate::test_support::TestWorktree::new("output-settlement-workflow-failure-fifo");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-blocked-retry-fifo",
-            "worktree-blocked-retry-fifo",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
-    let holder = spawn_shared_worktree_agent(&mut app, session.id(), "holder");
-    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "worker");
+    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "worker", worktree.path());
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-workflow-failure-fifo",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let failed_provider_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(&worker),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(failed_provider_run.clone());
+
+    let (failed_workflow_run, failed_node) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-failed", &worker);
+    let failed_prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), &worker)
+        .expect("failed workflow prompt state should load")
+        .expect("failed workflow prompt should be active");
+    assert_eq!(
+        failed_prompt.workflow_run_id(),
+        Some(failed_workflow_run.id())
+    );
+
+    let crate::session::PromptSubmissionOutcome::Queued {
+        prompt: first_queued_user_prompt,
+    } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(&worker),
+            "first queued user turn\n",
+            Vec::new(),
+        )
+        .expect("first user prompt should queue behind the workflow turn")
+    else {
+        panic!("first user prompt should queue behind the active workflow turn");
+    };
+    let (queued_workflow_run, queued_node) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-next", &worker);
+    let before_failure = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    let queued_workflow_invocation_prompt = queued_workflow_run
+        .invocation_prompt()
+        .expect("queued workflow run should retain its endpoint prompt")
+        .to_string();
+    assert_eq!(queued_workflow_invocation_prompt, "run");
+    let rendered_workflow_turn_prompt = before_failure
+        .workflow_run(queued_workflow_run.id())
+        .expect("queued workflow run should exist")
+        .node_runs()
+        .iter()
+        .find(|node| node.id() == queued_node)
+        .and_then(|node| node.turn_envelope())
+        .and_then(|envelope| envelope.rendered_prompt())
+        .expect("blocked workflow node should retain its queued prompt text")
+        .to_string();
+    assert!(rendered_workflow_turn_prompt.contains(&format!(
+        "<endpoint-prompt>\n{queued_workflow_invocation_prompt}\n</endpoint-prompt>"
+    )));
+    assert!(matches!(
+        before_failure
+            .workflow_run(queued_workflow_run.id())
+            .expect("queued workflow run should exist")
+            .node_runs()
+            .iter()
+            .find(|node| node.id() == queued_node)
+            .map(|node| node.status()),
+        Some(crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim),
+    ));
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .fail_owned_provider_prompt(
+            session.id(),
+            failed_provider_run.id(),
+            "provider produced no output before timeout",
+            false,
+        )
+        .await
+        .expect("failed workflow turn should settle and retry eligible work");
+
+    let replacement_provider_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(session.id(), &worker)
+        .expect("replacement provider run should be available");
+    assert_ne!(replacement_provider_run.id(), failed_provider_run.id());
+    assert_eq!(
+        replacement_provider_run.state(),
+        crate::provider::ProviderRunState::Running
+    );
+    let failed_claim_id = runtime.owned.workflow_dispatch_claim_id(
+        session.id(),
+        failed_workflow_run.id(),
+        &failed_node,
+    );
+    let queued_claim_id = runtime.owned.workflow_dispatch_claim_id(
+        session.id(),
+        queued_workflow_run.id(),
+        &queued_node,
+    );
+    assert!(
+        !runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&failed_claim_id),
+        "the failed workflow must release its workspace claim"
+    );
+    assert!(
+        !runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&queued_claim_id),
+        "a queued workflow prompt must not retain a workspace claim"
+    );
+
+    let recovered_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let recovered_user_prompt = recovered_session
+        .active_prompt_for_agent(&worker)
+        .expect("first queued user prompt should be active");
+    // Promotion replaces the temporary pending ID with the canonical active prompt ID.
+    assert_eq!(
+        recovered_user_prompt.prompt(),
+        first_queued_user_prompt.prompt()
+    );
+    assert_eq!(
+        recovered_user_prompt.target_agent_id(),
+        first_queued_user_prompt.target_agent_id()
+    );
+    assert_eq!(
+        recovered_user_prompt.source_attachment_id(),
+        first_queued_user_prompt.source_attachment_id()
+    );
+    assert_eq!(recovered_user_prompt.workflow_run_id(), None);
+    assert_eq!(recovered_user_prompt.workflow_node_run_id(), None);
+    let (_, worker_queue) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&recovered_session, &worker);
+    assert_eq!(worker_queue.len(), 1);
+    assert_eq!(
+        worker_queue[0].workflow_run_id(),
+        Some(queued_workflow_run.id())
+    );
+    assert_eq!(
+        worker_queue[0].workflow_node_run_id(),
+        Some(queued_node.as_str())
+    );
+    assert_eq!(
+        worker_queue[0].prompt(),
+        queued_workflow_invocation_prompt,
+        "the provider queue retains the visible endpoint prompt, not the full node envelope"
+    );
+    let queued_workflow_hidden_context = worker_queue[0].hidden_system_context().to_string();
+    assert!(queued_workflow_hidden_context.contains("<workflow-runtime-instructions>"));
+    assert_eq!(
+        worker_queue
+            .iter()
+            .filter(|prompt| prompt.workflow_run_id() == Some(queued_workflow_run.id()))
+            .count(),
+        1,
+        "the recovered workflow prompt must be queued exactly once"
+    );
+
+    let settlement = runtime
+        .settle_owned_provider_prompt(
+            session.id(),
+            replacement_provider_run.id(),
+            true,
+            false,
+            true,
+        )
+        .await
+        .expect("the older user turn should settle through provider runtime");
+    assert!(settlement.had_active_prompt);
+
+    let mut final_session = None;
+    for _ in 0..50 {
+        let session_snapshot = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should exist");
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session_snapshot, &worker);
+        let node_running = session_snapshot
+            .workflow_run(queued_workflow_run.id())
+            .and_then(|run| run.node_runs().iter().find(|node| node.id() == queued_node))
+            .is_some_and(|node| node.status() == crate::session::WorkflowNodeRunStatus::Running);
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session_snapshot, &worker);
+        let workflow_prompt_delivered = active.as_ref().is_some_and(|prompt| {
+            prompt.workflow_run_id() == Some(queued_workflow_run.id())
+                && prompt.workflow_node_run_id() == Some(queued_node.as_str())
+                && !prompt.delivery_pending()
+        });
+        if workflow_prompt_delivered && node_running && queued.is_empty() {
+            final_session = Some(session_snapshot);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let final_session = final_session
+        .expect("provider settlement should dispatch the queued workflow exactly once");
+    let final_active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&final_session, &worker)
+        .expect("recovered workflow prompt should be active");
+    assert!(
+        !final_active.delivery_pending(),
+        "the recovered workflow prompt should be acknowledged by its provider"
+    );
+    assert_eq!(
+        final_active.workflow_run_id(),
+        Some(queued_workflow_run.id())
+    );
+    assert_eq!(
+        final_active.workflow_node_run_id(),
+        Some(queued_node.as_str())
+    );
+    assert_eq!(final_active.prompt(), queued_workflow_invocation_prompt);
+    assert_eq!(
+        final_active.hidden_system_context(),
+        queued_workflow_hidden_context
+    );
+    let (_, final_queue) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&final_session, &worker);
+    assert!(final_queue.is_empty());
+    let recovered_node = final_session
+        .workflow_run(queued_workflow_run.id())
+        .expect("recovered workflow run should preserve its identity")
+        .node_runs()
+        .iter()
+        .find(|node| node.id() == queued_node)
+        .expect("recovered workflow node should preserve its identity");
+    assert_eq!(
+        recovered_node.status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+    assert_eq!(
+        recovered_node
+            .turn_envelope()
+            .expect("recovered workflow turn should be dispatched")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Dispatched
+    );
+}
+
+#[tokio::test]
+async fn blocked_claim_retry_queued_behind_work_advances_in_fifo_order() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-blocked-fifo");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let holder = spawn_shared_worktree_agent(&mut app, session.id(), "holder", worktree.path());
+    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "worker", worktree.path());
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),

@@ -144,6 +144,62 @@ test("waiting room activation prepares a selected remote owner before creating t
   assert.equal(harness.createdLaunches[0]?.launch.workerKernelRef ?? null, null)
 })
 
+test("waiting room waits for kernel-owned Project setup before attaching an ordinary session", async () => {
+  let releaseSetup = () => {}
+  let setupStarted = () => {}
+  const setupGate = new Promise<void>((resolve) => { releaseSetup = resolve })
+  const enteredSetup = new Promise<void>((resolve) => { setupStarted = resolve })
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        projectSelection: { kind: "existing", project_id: "project-1" },
+      },
+    },
+    sessionOverrides: { project_id: "project-1" },
+    prepareProjectEnvironment: async () => {
+      harness.calls.push("prepareProjectEnvironment")
+      setupStarted()
+      await setupGate
+    },
+  })
+
+  const pending = harness.controller.activate()
+  await enteredSetup
+  assert.deepEqual(harness.attachedSessions, [])
+  releaseSetup()
+  await pending
+  assert.deepEqual(harness.calls.slice(0, 4), [
+    "createSession", "prepareProjectEnvironment", "attachBinding", "flash:info:created session Review in /worktree · workspace live sync config default",
+  ])
+})
+
+test("waiting room deletes an ordinary session whose Project setup fails", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        projectSelection: { kind: "existing", project_id: "project-1" },
+      },
+    },
+    sessionOverrides: { project_id: "project-1" },
+    prepareProjectEnvironment: async () => { throw new Error("validation failed") },
+  })
+
+  await harness.controller.activate()
+  assert.deepEqual(harness.attachedSessions, [])
+  assert.deepEqual(harness.deletedSessions, [{ sessionId: "created-session", workspacePath: "/workspace" }])
+  assert.match(harness.calls.at(-1) ?? "", /flash:error:validation failed/)
+})
+
 test("waiting room activation creates and starts new headed slices before session creation", async () => {
   const launch: WaitingRoomLaunchConfig = {
     provider: "opencode",
@@ -174,6 +230,53 @@ test("waiting room activation creates and starts new headed slices before sessio
     "attachBinding",
     "flash:info:created session Review in /worktree · slice slice-created · workspace live sync config default",
   ])
+})
+
+test("waiting room activation deletes a newly created slice when session creation cannot reach its worker", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "codex",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headed" },
+      },
+    },
+    createError: new Error("target daemon is not connected to relay"),
+    deleteSlice: async () => {},
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.deletedSlices, ["slice-created"])
+  assert.deepEqual(harness.calls.slice(-3), [
+    "deleteSlice:slice-created",
+    "warn",
+    "flash:error:target daemon is not connected to relay",
+  ])
+})
+
+test("waiting room activation preserves a selected existing slice when session creation fails", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "codex",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceRef: "slice-existing",
+      },
+    },
+    createError: new Error("target daemon is not connected to relay"),
+    deleteSlice: async () => {},
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.deletedSlices, [])
 })
 
 test("waiting room activation sends the selected multi-repository Project to a new slice", async () => {
@@ -519,6 +622,7 @@ test("waiting room activation never falls back to a local session for managed la
           kind: "new",
           computeClass: "agent-small",
           region: "hel1",
+          managedRepositoryRoot: "/home/chariox",
           autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
           contextPlan: {
             sourceTargetId: null,
@@ -550,6 +654,7 @@ test("waiting room activation creates the session on the prepared managed kernel
       kind: "new",
       computeClass: "agent-small",
       region: "hel1",
+      managedRepositoryRoot: "/home/chariox",
       autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
       contextPlan: {
         sourceTargetId: null,
@@ -577,6 +682,9 @@ test("waiting room activation creates the session on the prepared managed kernel
         launch: preparedLaunch,
         assertActive: () => {
           harness.calls.push("assertManagedLaunchActive")
+        },
+        prepareProject: async () => {
+          harness.calls.push("prepareProject")
         },
         commit: async () => {
           harness.calls.push("commitManagedLaunch")
@@ -613,6 +721,8 @@ test("waiting room activation creates the session on the prepared managed kernel
     "assertManagedLaunchActive",
     "assertManagedLaunchActive",
     "createSession",
+    "assertManagedLaunchActive",
+    "prepareProject",
     "assertManagedLaunchActive",
     "attachBinding",
     "assertManagedLaunchActive",
@@ -656,6 +766,7 @@ test("waiting room activation removes a managed session cancelled during creatio
       assertActive: () => {
         if (!active) throw new Error("managed launch cancelled")
       },
+      prepareProject: async () => {},
       commit: async () => {
         harness.calls.push("commitManagedLaunch")
       },
@@ -716,6 +827,7 @@ test("waiting room activation undoes target attachment before rolling back its c
       assertActive: () => {
         if (!active) throw new Error("managed launch cancelled")
       },
+      prepareProject: async () => {},
       commit: async () => {
         harness.calls.push("commitManagedLaunch")
       },
@@ -757,10 +869,12 @@ function createHarness(options: {
   importSession?: RuntimeSession
   loadOlderExternalProviderSessions?: () => Promise<number>
   browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
+  deleteSlice?: (sliceRef: string) => Promise<void>
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
   prepareManagedSessionLaunch?: (
     launch: WaitingRoomLaunchConfig,
   ) => Promise<WaitingRoomPreparedManagedLaunch>
+  prepareProjectEnvironment?: (session: RuntimeSession) => Promise<void>
   waitingRoomState?: Partial<WaitingRoomState>
   remoteState?: WaitingRoomRemoteState
 }) {
@@ -784,6 +898,7 @@ function createHarness(options: {
   }> = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
   const deletedSessions: Array<{ sessionId: string; workspacePath: string }> = []
+  const deletedSlices: string[] = []
   const importedExternalSessions: string[] = []
   let promptText = ""
   let workspaceTarget = "/workspace"
@@ -865,6 +980,15 @@ function createHarness(options: {
       calls.push(`startSlice:${sliceRef}`)
       return sliceRecord(sliceRef, "headed")
     },
+    ...(options.deleteSlice
+      ? {
+        deleteSlice: async (sliceRef: string) => {
+          calls.push(`deleteSlice:${sliceRef}`)
+          deletedSlices.push(sliceRef)
+          await options.deleteSlice?.(sliceRef)
+        },
+      }
+      : {}),
     updateSlices: (slice) => {
       calls.push(`updateSlice:${slice.id}`)
     },
@@ -884,6 +1008,7 @@ function createHarness(options: {
         },
       }
       : {}),
+    prepareProjectEnvironment: options.prepareProjectEnvironment ?? (async () => {}),
     attachBinding: async (session, createdSession, launch) => {
       calls.push("attachBinding")
       attachedSessions.push({ sessionId: session.id, createdSession, launch })
@@ -917,6 +1042,7 @@ function createHarness(options: {
     createdSlices,
     importedExternalSessions,
     deletedSessions,
+    deletedSlices,
     warnings,
     controller,
     setTargets: (workspacePath: string, worktreePath: string) => {

@@ -62,6 +62,9 @@ pub struct IssueCloudRelayClientTokenRequest {
     pub client_id: String,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// When present, the issued client token is bound to this CLI relay key.
+    #[serde(default)]
+    pub public_key_thumbprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

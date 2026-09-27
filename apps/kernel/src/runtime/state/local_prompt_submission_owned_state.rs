@@ -10,13 +10,38 @@ impl KernelRuntimeOwnedState {
         &self,
         prepared: &crate::app::KernelPreparedPromptSubmission,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
-        self.submit_local_prepared_prompt_for_provider_run(prepared, None)
+        self.submit_local_prepared_prompt_with_queue_policy(prepared, true)
+    }
+
+    pub(super) fn submit_local_prepared_prompt_with_queue_policy(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+        allow_queue: bool,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        self.submit_local_prepared_prompt_for_provider_run_with_queue_policy(
+            prepared,
+            None,
+            allow_queue,
+        )
     }
 
     pub(super) fn submit_local_prepared_prompt_for_provider_run(
         &self,
         prepared: &crate::app::KernelPreparedPromptSubmission,
         expected_provider_run_id: Option<&str>,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        self.submit_local_prepared_prompt_for_provider_run_with_queue_policy(
+            prepared,
+            expected_provider_run_id,
+            true,
+        )
+    }
+
+    fn submit_local_prepared_prompt_for_provider_run_with_queue_policy(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+        expected_provider_run_id: Option<&str>,
+        allow_queue: bool,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         let session_id = prepared.session_id.clone();
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
@@ -98,9 +123,9 @@ impl KernelRuntimeOwnedState {
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
-        let outcome =
-            self.prompt_state_owner
-                .submit_prepared_prompt(&session, prompt, force_queue)?;
+        let outcome = self
+            .prompt_state_owner
+            .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
         self.agent_store
             .clear_local_prompt_error(&target_agent_id)?;
         let outcome_agent_id = match &outcome {

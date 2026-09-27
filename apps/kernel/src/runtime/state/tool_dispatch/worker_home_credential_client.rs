@@ -1,9 +1,9 @@
-use chariox_relay::protocol::ClientTarget;
 use std::time::Duration;
 
 use super::*;
 
 const REMOTE_CREDENTIAL_PROMPT_RESPONSE_BUFFER: Duration = Duration::from_secs(15);
+const REMOTE_COMPUTER_SECRET_RESPONSE_TIMEOUT: Duration = Duration::from_secs(345);
 
 impl KernelRuntimeState {
     pub(super) async fn try_dispatch_remote_home_credential_runtime_tool_call(
@@ -30,20 +30,18 @@ impl KernelRuntimeState {
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         let response_timeout =
             remote_home_credential_tool_response_timeout(&relay_config, tool_name, &arguments);
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(home_kernel_id),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::InvokeHomeCredentialTool {
-                context,
-                tool_name: tool_name.to_string(),
-                arguments,
-            },
-            response_timeout,
-        )
-        .await?;
+        let response = self
+            .send_worker_home_runtime_request(
+                &relay_config,
+                &home_kernel_id,
+                RelayPeerRequest::InvokeHomeCredentialTool {
+                    context,
+                    tool_name: tool_name.to_string(),
+                    arguments,
+                },
+                response_timeout,
+            )
+            .await?;
         match response {
             RelayPeerResponse::HomeCredentialToolHandled { result } => Ok(Some(result)),
             other => Err(DaemonError::LocalTransport {
@@ -58,7 +56,7 @@ impl KernelRuntimeState {
         provider_run: &crate::provider::RuntimeProviderRun,
         credential_id: &str,
         injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
-    ) -> Result<Option<String>, DaemonError> {
+    ) -> Result<Option<zeroize::Zeroizing<String>>, DaemonError> {
         let Some(context) = self
             .remote_credential_context_for_provider_run(provider_run)
             .await
@@ -67,22 +65,21 @@ impl KernelRuntimeState {
         };
         let home_kernel_id = context.home_kernel_id.clone();
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(home_kernel_id),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::ResolveHomeCredentialSecret {
-                context,
-                credential_id: credential_id.to_string(),
-                injection,
-            },
-        )
-        .await?;
+        let response = self
+            .send_worker_home_runtime_request(
+                &relay_config,
+                &home_kernel_id,
+                RelayPeerRequest::ResolveHomeCredentialSecret {
+                    context,
+                    credential_id: credential_id.to_string(),
+                    injection,
+                },
+                Duration::from_millis(relay_config.relay_request_timeout_ms),
+            )
+            .await?;
         match response {
             RelayPeerResponse::HomeCredentialSecretResolved { secret_input, .. } => {
-                Ok(Some(secret_input))
+                Ok(Some(secret_input.into_zeroizing()))
             }
             other => Err(DaemonError::LocalTransport {
                 operation: "remote credential secret",
@@ -149,6 +146,11 @@ fn remote_home_credential_tool_response_timeout(
     arguments: &serde_json::Value,
 ) -> Duration {
     let default_timeout = Duration::from_millis(config.relay_request_timeout_ms);
+    if tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL {
+        // The home may need both the 30-second Computer approval and the
+        // 300-second encrypted-vault unlock interaction before it can act.
+        return std::cmp::max(default_timeout, REMOTE_COMPUTER_SECRET_RESPONSE_TIMEOUT);
+    }
     if tool_name != crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL {
         return default_timeout;
     }
@@ -203,5 +205,16 @@ mod tests {
             }),
         );
         assert_eq!(timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn computer_secret_waits_for_home_approval_and_vault_unlock() {
+        let config = config_with_timeout(60_000);
+        let timeout = remote_home_credential_tool_response_timeout(
+            &config,
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL,
+            &serde_json::json!({"credential_id": "desktop-login"}),
+        );
+        assert_eq!(timeout, Duration::from_secs(345));
     }
 }

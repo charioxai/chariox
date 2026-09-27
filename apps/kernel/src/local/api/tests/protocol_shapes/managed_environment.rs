@@ -2,8 +2,28 @@ use super::*;
 use crate::local::*;
 
 #[test]
+fn managed_reimage_receipt_read_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    let request =
+        LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
+            environment_id: "environment-1".to_string(),
+        });
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({
+            "GetManagedEnvironmentReimageReceipt": { "environmentId": "environment-1" }
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::to_value(&request).unwrap())
+            .unwrap(),
+        request
+    );
+}
+
+#[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 288);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -46,6 +66,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
     let environment = managed_environment_summary(policy.clone(), context_input.clone());
     let mut source_environment =
         managed_environment_summary(policy.clone(), source_context_input.clone());
+    source_environment.managed_repository_root = "/srv/chariox/repos".to_string();
     source_environment.context_plan.source = Some(ManagedEnvironmentContextSource {
         source_target_id: "source-target-1".to_string(),
         relay_realm_id: "realm-1".to_string(),
@@ -70,6 +91,90 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         created_at: "2026-08-21T00:00:00.000Z".to_string(),
         updated_at: "2026-08-21T00:00:00.000Z".to_string(),
     };
+    let reimage_operation = ManagedEnvironmentOperationSummary {
+        operation_id: "operation-reimage-1".to_string(),
+        environment_id: "environment-1".to_string(),
+        requested_by_user_id: "user-1".to_string(),
+        kind: ManagedEnvironmentOperationKind::Reimage,
+        idempotency_key: "reimage-1".to_string(),
+        request_digest: format!("sha256:{}", "d".repeat(64)),
+        desired_revision: 2,
+        status: ManagedEnvironmentOperationStatus::Pending,
+        attempt: 0,
+        retryable: false,
+        failure_code: None,
+        failure_message: None,
+        completed_at: None,
+        created_at: "2026-08-21T00:00:00.000Z".to_string(),
+        updated_at: "2026-08-21T00:00:00.000Z".to_string(),
+    };
+    let reimage_receipt = ManagedEnvironmentReimageReceipt {
+        receipt_id: "receipt-reimage-1".to_string(),
+        environment_id: "environment-1".to_string(),
+        operation_id: "operation-reimage-1".to_string(),
+        previous_generation: 1,
+        generation: 2,
+        status: ManagedEnvironmentReimageReceiptStatus::Pending,
+        fresh_equivalent: false,
+        provider_server_id: "123456789".to_string(),
+        previous_provider_image_id: Some("987654321".to_string()),
+        provider_image_id: "987654321".to_string(),
+        provider_profile_id: "hetzner-path1".to_string(),
+        provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+        runtime_release_digest: format!("sha256:{}", "e".repeat(64)),
+        old_machine_id: Some("managed-machine-1".to_string()),
+        new_machine_id: None,
+        old_kernel_id: Some("managed-kernel-1".to_string()),
+        new_kernel_id: None,
+        old_relay_realm_id: Some("realm-1".to_string()),
+        new_relay_realm_id: Some("realm-2".to_string()),
+        old_relay_target_id: Some("target-1".to_string()),
+        new_relay_target_id: None,
+        old_bootstrap_grant_id: Some("grant-1".to_string()),
+        new_bootstrap_grant_id: None,
+        old_credential_ids: serde_json::json!(["credential-1"]),
+        new_credential_ids: serde_json::json!([]),
+        runtime_evidence: serde_json::json!({"generation": 2}),
+        source_evidence: serde_json::json!({
+            "providerProfileId": "hetzner-path1",
+            "providerProfileDigest": format!("sha256:{}", "b".repeat(64)),
+            "providerImageId": "987654321",
+            "runtimeReleaseDigest": format!("sha256:{}", "e".repeat(64)),
+            "runtimeSourceCommit": "c".repeat(40),
+            "runtimeSourceTree": "d".repeat(40),
+        }),
+        residue_checks: serde_json::json!({"oldGenerationFenced": true}),
+        revocations: serde_json::json!({"machineId": "managed-machine-1"}),
+        billing_observation: serde_json::json!({"provider": "hetzner"}),
+        resource_observation: serde_json::json!({"providerServerId": "123456789"}),
+        cleanup_state: serde_json::json!({"oldGenerationFenced": true}),
+        rollback_state: serde_json::json!({"state": "fail_closed"}),
+        receipt_digest: None,
+        failure_code: None,
+        failure_message: None,
+        requested_at: "2026-08-21T00:00:00.000Z".to_string(),
+        completed_at: None,
+        created_at: "2026-08-21T00:00:00.000Z".to_string(),
+        updated_at: "2026-08-21T00:00:00.000Z".to_string(),
+    };
+    // The receipt payload below is already covered by the fixed managed-control
+    // snapshot hash. Lock the new read-only response wrapper to that same payload.
+    let receipt_read_response = LocalDaemonResponse::ManagedEnvironmentReimageReceipt {
+        receipt: reimage_receipt.clone(),
+    };
+    assert_eq!(
+        serde_json::to_value(&receipt_read_response).unwrap(),
+        serde_json::json!({
+            "ManagedEnvironmentReimageReceipt": { "receipt": reimage_receipt.clone() }
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(
+            serde_json::to_value(&receipt_read_response).unwrap()
+        )
+        .unwrap(),
+        receipt_read_response
+    );
     let transfer_ticket = crate::managed_context::outbound_service::ManagedContextTransferTicket {
         environment_id: "environment-1".to_string(),
         context_plan: crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
@@ -94,14 +199,16 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
             name: "Managed agent".to_string(),
             region: "hel1".to_string(),
             compute_class: "agent-small".to_string(),
+            managed_repository_root: None,
             auto_stop_policy: policy.clone(),
-            context_plan: context_input,
+            context_plan: context_input.clone(),
         }),
         LocalDaemonRequest::CreateManagedEnvironment(CreateManagedEnvironmentRequest {
             client_request_id: "create-source-1".to_string(),
             name: "Managed source agent".to_string(),
             region: "fsn1".to_string(),
             compute_class: "agent-medium".to_string(),
+            managed_repository_root: Some("/srv/chariox/repos".to_string()),
             auto_stop_policy: ManagedEnvironmentAutoStopPolicy {
                 minimum_runtime_seconds: 300,
                 idle_delay_seconds: None,
@@ -165,6 +272,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         },
         LocalDaemonResponse::ManagedEnvironment {
             environment: source_environment.clone(),
+            operations: vec![operation.clone()],
         },
         LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared {
             ticket: transfer_ticket,
@@ -179,6 +287,28 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
             result: ManagedEnvironmentResult {
                 environment: source_environment,
                 operation,
+            },
+        },
+        LocalDaemonRequest::RequestManagedEnvironmentReimage(
+            RequestManagedEnvironmentReimageRequest {
+                environment_id: "environment-1".to_string(),
+                expected_generation: 1,
+                expected_provider_server_id: "123456789".to_string(),
+                expected_provider_image_id: "987654321".to_string(),
+                expected_provider_profile_id: "hetzner-path1".to_string(),
+                expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+                expected_runtime_release_digest: format!("sha256:{}", "e".repeat(64)),
+                expected_runtime_source_commit: "c".repeat(40),
+                expected_runtime_source_tree: "d".repeat(40),
+                context_plan: context_input,
+                idempotency_key: "reimage-1".to_string(),
+            },
+        ),
+        LocalDaemonResponse::ManagedEnvironmentReimageRequested {
+            result: ManagedEnvironmentReimageResult {
+                environment: environment.clone(),
+                operation: reimage_operation,
+                receipt: reimage_receipt,
             },
         },
         serde_json::json!({
@@ -206,6 +336,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
                 ManagedEnvironmentOperationKind::Stop,
                 ManagedEnvironmentOperationKind::Restart,
                 ManagedEnvironmentOperationKind::Delete,
+                ManagedEnvironmentOperationKind::Reimage,
             ],
             "operationStatuses": [
                 ManagedEnvironmentOperationStatus::Pending,
@@ -219,6 +350,16 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/1/CreateManagedEnvironment/contextPlan/kernelContext"),
         Some(&serde_json::json!("empty"))
+    );
+    assert!(
+        snapshot
+            .pointer("/1/CreateManagedEnvironment/managedRepositoryRoot")
+            .is_none(),
+        "omitted roots preserve the Cloud default"
+    );
+    assert_eq!(
+        snapshot.pointer("/2/CreateManagedEnvironment/managedRepositoryRoot"),
+        Some(&serde_json::json!("/srv/chariox/repos"))
     );
     assert_eq!(
         snapshot.pointer(
@@ -241,17 +382,274 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         Some(&serde_json::json!("pending"))
     );
     assert_eq!(
+        snapshot.pointer("/15/RequestManagedEnvironmentReimage/expectedGeneration"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(
+        snapshot.pointer("/15/RequestManagedEnvironmentReimage/contextPlan/kernelContext"),
+        Some(&serde_json::json!("empty"))
+    );
+    assert_eq!(
+        snapshot.pointer("/16/ManagedEnvironmentReimageRequested/result/receipt/providerProfileId"),
+        Some(&serde_json::json!("hetzner-path1"))
+    );
+    assert_eq!(
         snapshot.pointer("/10/ManagedEnvironmentCatalog/catalog/environments/0/runtimeKernelId"),
         Some(&serde_json::json!("managed-kernel-1"))
     );
     assert_eq!(
+        snapshot
+            .pointer("/10/ManagedEnvironmentCatalog/catalog/environments/0/managedRepositoryRoot"),
+        Some(&serde_json::json!("/home/chariox"))
+    );
+    assert_eq!(
+        snapshot
+            .pointer("/10/ManagedEnvironmentCatalog/catalog/environments/1/managedRepositoryRoot"),
+        Some(&serde_json::json!("/srv/chariox/repos"))
+    );
+    assert_eq!(
+        snapshot
+            .pointer("/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityChangedAt"),
+        Some(&serde_json::json!("2026-08-21T00:00:00.000Z"))
+    );
+    assert_eq!(
+        snapshot.pointer("/11/ManagedEnvironment/operations/0/operationId"),
+        Some(&serde_json::json!("operation-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/11/ManagedEnvironment/operations/0/desiredRevision"),
+        Some(&serde_json::json!(1))
+    );
+    assert!(snapshot
+        .pointer("/11/ManagedEnvironment/environment/operations")
+        .is_none());
+    let shutdown_projection = serde_json::json!({
+        "activity": {
+            "runningAgentCount": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/runningAgentCount"
+            ),
+            "lastActivityReportedAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityReportedAt"
+            ),
+            "lastActivityChangedAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityChangedAt"
+            ),
+            "autoStopWarningAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/autoStopWarningAt"
+            ),
+            "autoStopDeadlineAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/autoStopDeadlineAt"
+            ),
+        },
+        "operation": {
+            "operationId": snapshot.pointer("/11/ManagedEnvironment/operations/0/operationId"),
+            "environmentId": snapshot.pointer("/11/ManagedEnvironment/operations/0/environmentId"),
+            "kind": snapshot.pointer("/11/ManagedEnvironment/operations/0/kind"),
+            "status": snapshot.pointer("/11/ManagedEnvironment/operations/0/status"),
+            "desiredRevision": snapshot.pointer("/11/ManagedEnvironment/operations/0/desiredRevision"),
+            "completedAt": snapshot.pointer("/11/ManagedEnvironment/operations/0/completedAt"),
+        },
+    });
+    let shutdown_serialized = serde_json::to_string(&shutdown_projection)
+        .expect("managed shutdown observation wire projection");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(shutdown_serialized.as_bytes())),
+        "2888395f73d8e8e3c194da971e09e5ae407f3a6fec2124acf2d3ec76aad6435f"
+    );
+    let legacy_response = serde_json::json!({
+        "ManagedEnvironment": {
+            "environment": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0"
+            ).unwrap()
+        }
+    });
+    let LocalDaemonResponse::ManagedEnvironment { operations, .. } =
+        serde_json::from_value(legacy_response).expect("legacy managed environment response")
+    else {
+        panic!("legacy managed environment response variant");
+    };
+    assert!(operations.is_empty(), "missing history remains unavailable");
+    assert_eq!(
         snapshot.pointer("/12/ManagedEnvironmentContextTransferPrepared/ticket/target/kernelId"),
         Some(&serde_json::json!("managed-kernel-1"))
     );
-    let serialized = serde_json::to_string(&snapshot).expect("managed environment shape");
+    assert_eq!(
+        snapshot.pointer(
+            "/5/PrepareManagedEnvironmentGitCredentialEnrollment/gitCredentials/credentialIds/0"
+        ),
+        Some(&serde_json::json!("github-work"))
+    );
+    let mut previous_shape = snapshot.clone();
+    remove_managed_repository_root_fields(&mut previous_shape);
+    remove_shutdown_observation_fields(&mut previous_shape);
+    let previous_serialized = serde_json::to_string(&previous_shape)
+        .expect("managed environment shape without the protocol 342 addition");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(previous_serialized.as_bytes())),
+        "53f9fb27de875d36256fc9c44092350d6e69dfbbe6b0b2649a2d850d6bc9c46d"
+    );
+    let root_projection = serde_json::json!({
+        "omittedCreateRoot": snapshot.pointer("/1/CreateManagedEnvironment/managedRepositoryRoot"),
+        "customCreateRoot": snapshot.pointer("/2/CreateManagedEnvironment/managedRepositoryRoot"),
+        "defaultSummaryRoot": snapshot.pointer(
+            "/10/ManagedEnvironmentCatalog/catalog/environments/0/managedRepositoryRoot"
+        ),
+        "customSummaryRoot": snapshot.pointer(
+            "/10/ManagedEnvironmentCatalog/catalog/environments/1/managedRepositoryRoot"
+        ),
+    });
+    let root_serialized =
+        serde_json::to_string(&root_projection).expect("managed repository root protocol shape");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(root_serialized.as_bytes())),
+        "5d6eccb89e50875e842c507c6147a78c938014c77feeee063bb584c00be69404"
+    );
+}
+
+#[test]
+fn local_daemon_reimage_request_rejects_missing_context_plan() {
+    let request = serde_json::json!({
+        "RequestManagedEnvironmentReimage": {
+            "environmentId": "environment-1",
+            "expectedGeneration": 1,
+            "expectedProviderServerId": "123456789",
+            "expectedProviderImageId": "987654321",
+            "expectedProviderProfileId": "hetzner-path1",
+            "expectedProviderProfileDigest": format!("sha256:{}", "b".repeat(64)),
+            "expectedRuntimeReleaseDigest": format!("sha256:{}", "e".repeat(64)),
+            "expectedRuntimeSourceCommit": "c".repeat(40),
+            "expectedRuntimeSourceTree": "d".repeat(40),
+            "idempotencyKey": "reimage-1",
+        }
+    });
+
+    let error = serde_json::from_value::<LocalDaemonRequest>(request)
+        .expect_err("reimage contextPlan must be required");
+    assert!(error.to_string().contains("contextPlan"));
+}
+
+#[test]
+fn local_daemon_reimage_request_rejects_repository_root_override() {
+    let request = serde_json::json!({
+        "RequestManagedEnvironmentReimage": {
+            "environmentId": "environment-1",
+            "expectedGeneration": 1,
+            "expectedProviderServerId": "123456789",
+            "expectedProviderImageId": "987654321",
+            "expectedProviderProfileId": "hetzner-path1",
+            "expectedProviderProfileDigest": format!("sha256:{}", "b".repeat(64)),
+            "expectedRuntimeReleaseDigest": format!("sha256:{}", "e".repeat(64)),
+            "expectedRuntimeSourceCommit": "c".repeat(40),
+            "expectedRuntimeSourceTree": "d".repeat(40),
+            "contextPlan": {
+                "sourceTargetId": null,
+                "kernelContext": "empty",
+                "developmentSetup": { "kind": "empty" },
+                "providerAccounts": { "kind": "none" },
+                "gitCredentials": { "kind": "none" },
+            },
+            "managedRepositoryRoot": "/tmp/override",
+            "idempotencyKey": "reimage-1",
+        }
+    });
+
+    let error = serde_json::from_value::<LocalDaemonRequest>(request)
+        .expect_err("reimage must not accept a repository-root override");
+    assert!(error.to_string().contains("managedRepositoryRoot"));
+}
+
+#[test]
+fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    let preflight = ManagedEnvironmentReimagePreflight {
+        environment_id: "environment-1".to_string(),
+        retained: ManagedEnvironmentReimagePreflightRetained {
+            provider_server_id: "123456789".to_string(),
+            generation: 3,
+            desired_revision: 7,
+            observed_revision: 7,
+            runtime_machine_id: "managed-machine-3".to_string(),
+            runtime_kernel_id: "managed-kernel-3".to_string(),
+            runtime_relay_realm_id: "managed-realm-3".to_string(),
+            runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        },
+        desired_release: ManagedEnvironmentReimagePreflightDesiredRelease {
+            provider_id: ManagedEnvironmentReimageProviderId::Hetzner,
+            provider_image_id: "987654321".to_string(),
+            provider_profile_id: "hetzner-path1".to_string(),
+            provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+            runtime_release_digest: format!("sha256:{}", "c".repeat(64)),
+            runtime_source_commit: "d".repeat(40),
+            runtime_source_tree: "e".repeat(40),
+        },
+    };
+    let snapshot = serde_json::json!([
+        LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(
+            GetManagedEnvironmentReimagePreflightRequest {
+                environment_id: "environment-1".to_string(),
+            },
+        ),
+        LocalDaemonResponse::ManagedEnvironmentReimagePreflight {
+            preflight: preflight.clone(),
+        },
+    ]);
+
+    assert_eq!(
+        snapshot.pointer("/0/GetManagedEnvironmentReimagePreflight/environmentId"),
+        Some(&serde_json::json!("environment-1"))
+    );
+    assert_eq!(
+        snapshot
+            .pointer("/1/ManagedEnvironmentReimagePreflight/preflight/retained/providerServerId"),
+        Some(&serde_json::json!("123456789"))
+    );
+    assert_eq!(
+        snapshot.pointer(
+            "/1/ManagedEnvironmentReimagePreflight/preflight/desiredRelease/providerImageId"
+        ),
+        Some(&serde_json::json!("987654321"))
+    );
+    assert!(snapshot
+        .pointer("/1/ManagedEnvironmentReimagePreflight/preflight/retained/providerImageId")
+        .is_none());
+    let serialized = serde_json::to_string(&snapshot).expect("reimage preflight shape");
+    // Hash serde_json::Value's sorted object keys, not a JS insertion-order reconstruction.
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "9bac614e7957a4134505790e4217ec84f6ec4be2f54806434c8a004726a4f9fe"
+        "c9c26926c17a881930bfc262d29c55db1bee1450aa51eea49ea94aa98f623d5c"
+    );
+}
+
+#[test]
+fn local_daemon_pre_reimage_observation_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    let snapshot = serde_json::json!([
+        LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
+            ObserveManagedEnvironmentPreReimageRequest {
+                environment_id: "environment-1".to_string(),
+                expected_generation: 1,
+            },
+        ),
+        LocalDaemonResponse::ManagedEnvironmentPreReimageObserved {
+            acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement {
+                environment_id: "environment-1".to_string(),
+                generation: 1,
+                observed_at: "2026-09-22T01:02:03.000Z".to_string(),
+            },
+        },
+    ]);
+    assert_eq!(
+        snapshot.pointer("/0/ObserveManagedEnvironmentPreReimage/expectedGeneration"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/ManagedEnvironmentPreReimageObserved/acknowledgement/observedAt"),
+        Some(&serde_json::json!("2026-09-22T01:02:03.000Z"))
+    );
+    let serialized = serde_json::to_string(&snapshot).expect("pre-reimage observation shape");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        "f4b1b31a6a0aa345f55c9bb1705095d9c0aed67846c93540f02c2eefd2dd2816"
     );
 }
 
@@ -266,6 +664,7 @@ fn managed_environment_summary(
         name: "Managed agent".to_string(),
         region: "hel1".to_string(),
         compute_class: "agent-small".to_string(),
+        managed_repository_root: "/home/chariox".to_string(),
         desired_state: ManagedEnvironmentDesiredState::Running,
         observed_state: ManagedEnvironmentObservedState::Requested,
         desired_revision: 1,
@@ -285,9 +684,62 @@ fn managed_environment_summary(
         },
         context_manifest_digest: None,
         auto_stop_policy: policy,
+        running_agent_count: Some(0),
+        last_activity_reported_at: Some("2026-08-21T00:00:00.000Z".to_string()),
+        last_activity_changed_at: Some("2026-08-21T00:00:00.000Z".to_string()),
+        auto_stop_warning_at: None,
+        auto_stop_deadline_at: Some("2026-08-21T00:15:00.000Z".to_string()),
         last_error_code: None,
         last_error_message: None,
         created_at: "2026-08-21T00:00:00.000Z".to_string(),
         updated_at: "2026-08-21T00:00:00.000Z".to_string(),
+    }
+}
+
+fn remove_managed_repository_root_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                remove_managed_repository_root_fields(item);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            fields.remove("managedRepositoryRoot");
+            for item in fields.values_mut() {
+                remove_managed_repository_root_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn remove_shutdown_observation_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                remove_shutdown_observation_fields(item);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for key in [
+                "runningAgentCount",
+                "lastActivityReportedAt",
+                "lastActivityChangedAt",
+                "autoStopWarningAt",
+                "autoStopDeadlineAt",
+            ] {
+                fields.remove(key);
+            }
+            if let Some(managed) = fields
+                .get_mut("ManagedEnvironment")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                managed.remove("operations");
+            }
+            for item in fields.values_mut() {
+                remove_shutdown_observation_fields(item);
+            }
+        }
+        _ => {}
     }
 }

@@ -407,6 +407,7 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
       backend: "local_docker",
       os: "linux",
       display_mode: "headed",
+      display_backend: "selkies",
       workspace_id: "/repo",
       worktree_id: "/repo",
       workspace_mount: "/repo",

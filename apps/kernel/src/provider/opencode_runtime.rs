@@ -1,6 +1,8 @@
 mod drain;
 mod parts;
 mod permission;
+#[cfg(test)]
+mod retry_status_tests;
 mod snapshot;
 mod state;
 mod transcript;
@@ -41,7 +43,7 @@ mod tests {
         OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
     };
 
-    fn test_run() -> RuntimeProviderRun {
+    pub(super) fn test_run() -> RuntimeProviderRun {
         RuntimeProviderRun::new(
             "provider-run-1",
             &LaunchProviderRequest::new(
@@ -122,6 +124,7 @@ mod tests {
                 timeout_sec: Some(5),
                 version_hash: Some("hash-1".to_string()),
             }],
+            ..RemoteExtensionManifest::default()
         };
         let payload = render_tool_transcript_update(
             &OpenCodePart {
@@ -564,7 +567,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -658,7 +661,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -701,7 +704,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -792,7 +795,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -815,7 +818,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -1003,7 +1006,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -1082,7 +1085,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -1107,7 +1110,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "busy".to_string(),
+                status: "busy".into(),
             },
         )
         .expect("busy status should send");
@@ -1118,7 +1121,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -1156,7 +1159,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -1184,7 +1187,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("final idle status should send");
@@ -1288,7 +1291,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -1410,7 +1413,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");
@@ -1447,7 +1450,7 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
+                status: "idle".into(),
             },
         )
         .expect("idle status should send");

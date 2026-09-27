@@ -71,6 +71,30 @@ test("remote machine mutation commands patch cached machines without refreshing 
   assert.equal(harness.footers.at(2)?.message, "forgot remote machine New Name")
 })
 
+test("remote machine reimage command requires an explicit second confirmation", async () => {
+  const harness = remoteMachineHarness()
+  const calls: Array<[string, "prepare" | "confirm" | "cancel"]> = []
+  harness.deps.reimageManagedEnvironment = async (environmentId, action) => {
+    calls.push([environmentId, action])
+    return { message: `${action}:${environmentId}`, tone: "info" }
+  }
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("reimage", "environment-1"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("reimage", "environment-1", "confirm"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("reimage", "environment-1", "cancel"))
+
+  assert.deepEqual(calls, [
+    ["environment-1", "prepare"],
+    ["environment-1", "confirm"],
+    ["environment-1", "cancel"],
+  ])
+  assert.deepEqual(harness.notices.slice(-3), [
+    "prepare:environment-1",
+    "confirm:environment-1",
+    "cancel:environment-1",
+  ])
+})
+
 function command(...args: string[]) {
   return { kind: "machine" as const, args, raw: `/machine ${args.join(" ")}` }
 }

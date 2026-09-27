@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::protocol::RelayConnectionRole;
 use crate::registry::PeerHandle;
+use crate::revocation_sync::apply_revocations_document;
 
 fn peer_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
@@ -84,6 +85,314 @@ fn server_revocation_registry_gates_the_attached_verifier() {
             .expect_err("revoked token is rejected by the server verifier"),
         RelayAuthError::TokenRevoked
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
+    let mut old_kernel = scoped_claim(
+        "old-kernel-jti",
+        "kernel-old",
+        RelaySubjectKind::Kernel,
+        "realm-a",
+        vec![RelayAction::DaemonRegister],
+        None,
+    );
+    old_kernel.account_id = Some("account-1".to_string());
+    old_kernel.machine_id = Some("machine-old".to_string());
+    let mut replacement = scoped_claim(
+        "replacement-jti",
+        "kernel-replacement",
+        RelaySubjectKind::Kernel,
+        "realm-a",
+        vec![RelayAction::DaemonRegister],
+        None,
+    );
+    replacement.account_id = Some("account-1".to_string());
+    replacement.machine_id = Some("machine-replacement".to_string());
+    let mut controller = scoped_claim(
+        "controller-jti",
+        "controller-client",
+        RelaySubjectKind::Client,
+        "realm-a",
+        vec![RelayAction::ClientConnect],
+        Some(vec!["kernel-replacement"]),
+    );
+    controller.account_id = Some("account-1".to_string());
+    controller.client_id = Some("controller-client".to_string());
+    let mut old_machine_client = scoped_claim(
+        "old-machine-client-jti",
+        "old-machine-client",
+        RelaySubjectKind::Client,
+        "realm-a",
+        vec![RelayAction::ClientConnect],
+        Some(vec!["kernel-replacement"]),
+    );
+    old_machine_client.account_id = Some("account-1".to_string());
+    old_machine_client.machine_id = Some("machine-old".to_string());
+    old_machine_client.client_id = Some("old-machine-client".to_string());
+
+    let server = Arc::new(RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: None,
+        },
+        RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+            BTreeMap::from([
+                ("old-kernel-token".to_string(), old_kernel),
+                ("replacement-token".to_string(), replacement),
+                ("controller-token".to_string(), controller),
+                ("old-machine-client-token".to_string(), old_machine_client),
+            ]),
+            BTreeMap::new(),
+            Some(10),
+        )),
+    ));
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let registry = server.registry();
+    let running_server = Arc::clone(&server);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        running_server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+
+    let (mut old_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("old kernel should connect");
+    let (mut replacement_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("replacement kernel should connect");
+    for (socket, registration) in [
+        (
+            &mut old_socket,
+            test_registration_with_token(
+                "kernel-old",
+                "machine-old",
+                "Linux",
+                10,
+                "old-kernel-token",
+            ),
+        ),
+        (
+            &mut replacement_socket,
+            test_registration_with_token(
+                "kernel-replacement",
+                "machine-replacement",
+                "Linux",
+                20,
+                "replacement-token",
+            ),
+        ),
+    ] {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                    .expect("registration should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("registration should send");
+    }
+    sleep(Duration::from_millis(50)).await;
+
+    let (mut controller_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("controller should connect");
+    controller_socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::ClientConnect {
+                auth_token: "controller-token".to_string(),
+                target: crate::protocol::ClientTarget {
+                    daemon_id: Some("kernel-replacement".to_string()),
+                    daemon_alias: None,
+                },
+            })
+            .expect("client connect should serialize")
+            .into(),
+        ))
+        .await
+        .expect("client connect should send");
+    match controller_socket.next().await {
+        Some(Ok(Message::Text(text))) => assert!(matches!(
+            serde_json::from_str::<RelayEnvelope>(&text).expect("connect should decode"),
+            RelayEnvelope::ClientConnected { .. }
+        )),
+        other => panic!("unexpected controller connect response: {other:?}"),
+    }
+    let (mut old_machine_client_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("old-machine-issued client should connect before revocation");
+    old_machine_client_socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::ClientConnect {
+                auth_token: "old-machine-client-token".to_string(),
+                target: crate::protocol::ClientTarget {
+                    daemon_id: Some("kernel-replacement".to_string()),
+                    daemon_alias: None,
+                },
+            })
+            .expect("client connect should serialize")
+            .into(),
+        ))
+        .await
+        .expect("old-machine-issued client connect should send");
+    match old_machine_client_socket.next().await {
+        Some(Ok(Message::Text(text))) => assert!(matches!(
+            serde_json::from_str::<RelayEnvelope>(&text).expect("connect should decode"),
+            RelayEnvelope::ClientConnected { .. }
+        )),
+        other => panic!("unexpected old-machine-issued client response: {other:?}"),
+    }
+
+    let revocations = serde_json::json!({
+        "revocations": [
+            {
+                "accountId": "account-1",
+                "subjectKind": "MACHINE",
+                "subject": "machine-old"
+            },
+            {
+                "accountId": "account-1",
+                "subjectKind": "KERNEL",
+                "subject": "kernel-old"
+            }
+        ]
+    })
+    .to_string();
+    assert_eq!(
+        apply_revocations_document(&revocations, &server.revocations(), 10)
+            .expect("revocations should apply"),
+        2
+    );
+
+    loop {
+        match timeout(Duration::from_millis(500), old_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if let RelayEnvelope::Close { reason } =
+                    serde_json::from_str::<RelayEnvelope>(&text).expect("close should decode")
+                {
+                    assert_eq!(reason, "relay token revoked");
+                    break;
+                }
+            }
+            Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) => {}
+            Ok(other) => panic!("old kernel closed without revocation notice: {other:?}"),
+            Err(_) => panic!("old kernel was not evicted after revocation"),
+        }
+    }
+    loop {
+        match timeout(Duration::from_millis(500), old_machine_client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if let RelayEnvelope::Close { reason } =
+                    serde_json::from_str::<RelayEnvelope>(&text).expect("close should decode")
+                {
+                    assert_eq!(reason, "relay token revoked");
+                    break;
+                }
+            }
+            Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) => {}
+            Ok(other) => {
+                panic!("old-machine-issued client closed without revocation notice: {other:?}")
+            }
+            Err(_) => panic!("old-machine-issued client was not evicted after revocation"),
+        }
+    }
+    sleep(Duration::from_millis(50)).await;
+
+    let connected_subjects = registry
+        .read()
+        .await
+        .peers
+        .values()
+        .filter_map(|peer| {
+            peer.identity
+                .as_ref()
+                .map(|identity| identity.subject.clone())
+        })
+        .collect::<Vec<_>>();
+    assert!(!connected_subjects
+        .iter()
+        .any(|subject| subject == "kernel-old"));
+    assert!(!connected_subjects
+        .iter()
+        .any(|subject| subject == "old-machine-client"));
+    assert!(connected_subjects
+        .iter()
+        .any(|subject| subject == "kernel-replacement"));
+    assert!(connected_subjects
+        .iter()
+        .any(|subject| subject == "controller-client"));
+    for (label, socket) in [
+        ("replacement kernel", &mut replacement_socket),
+        ("controller", &mut controller_socket),
+    ] {
+        match timeout(Duration::from_millis(100), socket.next()).await {
+            Err(_) | Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) => {}
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let envelope = serde_json::from_str::<RelayEnvelope>(&text)
+                    .expect("surviving text frame should decode");
+                assert!(
+                    !matches!(envelope, RelayEnvelope::Close { .. }),
+                    "{label} was collateral damage from old-kernel revocation"
+                );
+            }
+            Ok(other) => panic!("{label} closed after unrelated revocation: {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        server
+            .auth_verifier()
+            .verify(RelayAuthRequest {
+                token: "old-kernel-token",
+                action: RelayAction::DaemonRegister,
+                target: None,
+            })
+            .expect_err("old kernel must be denied on new admission"),
+        RelayAuthError::TokenRevoked
+    );
+    assert_eq!(
+        server
+            .auth_verifier()
+            .verify(RelayAuthRequest {
+                token: "old-machine-client-token",
+                action: RelayAction::ClientConnect,
+                target: Some("kernel-replacement"),
+            })
+            .expect_err("old-machine-issued client must be denied on new admission"),
+        RelayAuthError::TokenRevoked
+    );
+    server
+        .auth_verifier()
+        .verify(RelayAuthRequest {
+            token: "replacement-token",
+            action: RelayAction::DaemonRegister,
+            target: None,
+        })
+        .expect("replacement remains admitted");
+    server
+        .auth_verifier()
+        .verify(RelayAuthRequest {
+            token: "controller-token",
+            action: RelayAction::ClientConnect,
+            target: Some("kernel-replacement"),
+        })
+        .expect("controller remains admitted");
+
+    let _ = controller_socket.close(None).await;
+    let _ = replacement_socket.close(None).await;
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("server task should join");
 }
 
 #[tokio::test(flavor = "current_thread")]

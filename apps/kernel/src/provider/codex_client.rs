@@ -22,6 +22,10 @@ mod thread_runtime;
 
 mod mcp_config;
 
+#[cfg(test)]
+#[path = "codex_client/permission_regression_tests.rs"]
+mod permission_regression_tests;
+
 use json_rpc::JsonRpcMessage;
 #[cfg(test)]
 use notifications::parse_notification;
@@ -47,6 +51,11 @@ pub struct CodexClient {
     provider_config_overrides: BTreeMap<String, Value>,
     write_access_mode: ProviderWriteAccessMode,
     workspace_live_sync_roots: Vec<PathBuf>,
+    discovery_read_root: Option<PathBuf>,
+    /// Discovery utility turns use the tracked launch mode for Codex's
+    /// read-only sandbox, but must not inherit its ordinary permission reply
+    /// policy. This flag is intentionally client-local and never serialized.
+    read_only_discovery_permissions: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +81,8 @@ impl CodexClient {
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
+            discovery_read_root: None,
+            read_only_discovery_permissions: false,
         })
     }
 
@@ -120,6 +131,22 @@ impl CodexClient {
 
     pub fn with_workspace_live_sync_roots(mut self, roots: &[PathBuf]) -> Self {
         self.workspace_live_sync_roots = roots.to_vec();
+        self
+    }
+
+    pub(crate) fn with_read_only_discovery_permissions(mut self) -> Self {
+        self.read_only_discovery_permissions = true;
+        // Discovery never needs provider MCPs. Clear both the direct and
+        // runtime bindings so an accidental server request cannot reach a
+        // mutating tool even if it arrives after thread/start.
+        self.runtime_mcp_server_url = None;
+        self.runtime_mcp_auth_token = None;
+        self.mcp_servers.clear();
+        self
+    }
+
+    pub(crate) fn with_discovery_read_root(mut self, root: Option<&std::path::Path>) -> Self {
+        self.discovery_read_root = root.map(std::path::Path::to_path_buf);
         self
     }
 
@@ -365,7 +392,7 @@ mod tests {
             )
             .expect("params should build");
 
-        assert_eq!(params.get("ephemeral"), None);
+        assert_eq!(params.get("ephemeral"), Some(&json!(false)));
         assert_eq!(params.get("persistExtendedHistory"), Some(&json!(true)));
         assert_eq!(params.get("serviceName"), Some(&json!("chariox")));
         assert_eq!(params.get("cwd"), Some(&json!("/tmp/worktree")));
@@ -510,6 +537,71 @@ mod tests {
                 "scope": "turn"
             })
         );
+    }
+
+    #[test]
+    fn pr364_read_only_discovery_client_denies_unscoped_permission_requests() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
+            .with_read_only_discovery_permissions();
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/permissions/requestApproval".to_string()),
+            params: Some(json!({
+                "permissions": {
+                    "network": true,
+                    "fileSystem": {
+                        "read": ["/repo/selected"],
+                        "write": ["/repo/selected/output"]
+                    }
+                }
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.permissions_approval_response(&message),
+            json!({
+                "permissions": {},
+                "scope": "turn"
+            })
+        );
+    }
+
+    #[test]
+    fn read_only_discovery_thread_config_omits_runtime_and_granted_mcp_bindings() {
+        let mut server =
+            CharioxMcpServerConfig::stdio("mutating-tool", "project-mcp", vec!["serve".into()]);
+        server.required = true;
+        let mut provider_overrides = std::collections::BTreeMap::new();
+        provider_overrides.insert(
+            "mcp_servers.injected.command".to_string(),
+            json!("arbitrary-mcp"),
+        );
+        provider_overrides.insert("features.multi_agent".to_string(), json!(false));
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
+            .with_mcp_servers(&[server])
+            .with_provider_config_overrides(&provider_overrides)
+            .with_read_only_discovery_permissions();
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Required,
+        );
+
+        let overrides = client
+            .thread_config_overrides(&policy)
+            .expect("read-only discovery config should render");
+
+        assert_eq!(overrides.get("features.multi_agent"), Some(&json!(false)));
+        assert_eq!(overrides.get("mcp_servers"), Some(&json!({})));
+        assert!(overrides
+            .keys()
+            .all(|key| key == "mcp_servers" || !key.starts_with("mcp_servers.")));
     }
 
     #[test]

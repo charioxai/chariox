@@ -1,4 +1,10 @@
-import type { DaemonHealthResponse, DebugBundleExportedResponse } from "./kernel-types.js"
+import type {
+  DaemonHealthResponse,
+  DebugBundleExportedResponse,
+  KernelResourceTelemetryResponse,
+} from "./kernel-types.js"
+
+export const kernelResourceTelemetryMinimumProtocolVersion = 336
 
 export function deleteKernelRequest() {
   return { DeleteKernel: null }
@@ -11,6 +17,17 @@ export function getDaemonHealthRequest(): GetDaemonHealthRequest {
 }
 
 export type GetDaemonHealthResponse = DaemonHealthResponse
+
+export type GetKernelResourceTelemetryRequest = { GetKernelResourceTelemetry: null }
+
+export function getKernelResourceTelemetryRequest(_options: {
+  kernelRef?: string | null
+  machineRef?: string | null
+} = {}): GetKernelResourceTelemetryRequest {
+  return { GetKernelResourceTelemetry: null }
+}
+
+export type GetKernelResourceTelemetryResponse = KernelResourceTelemetryResponse
 
 export type ExportDebugBundleRequest = {
   ExportDebugBundle: {

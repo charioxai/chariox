@@ -9,7 +9,9 @@ use super::approval_bodies::{
     file_change_approval_body,
 };
 use super::json_rpc::JsonRpcMessage;
-use super::permission::workspace_live_sync_codex_permission_grant;
+use super::permission::{
+    read_only_codex_permission_grant, workspace_live_sync_codex_permission_grant,
+};
 use super::runtime_mcp::call_runtime_mcp_tool;
 use super::{CodexClient, CodexSocket};
 
@@ -68,6 +70,13 @@ impl CodexClient {
     }
 
     fn respond_to_mcp_elicitation(&self, message: &JsonRpcMessage) -> Value {
+        if self.read_only_discovery_permissions {
+            return json!({
+                "action": "decline",
+                "content": null,
+                "_meta": null,
+            });
+        }
         let approve = message.params.as_ref().is_some_and(|params| {
             params.get("serverName").and_then(Value::as_str) == Some("chariox")
                 && params
@@ -98,6 +107,12 @@ impl CodexClient {
             .and_then(|params| params.get("permissions"))
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if self.read_only_discovery_permissions {
+            return json!({
+                "permissions": read_only_codex_permission_grant(&requested_permissions, self.discovery_read_root.as_deref()),
+                "scope": "turn",
+            });
+        }
         match self.write_access_mode {
             ProviderWriteAccessMode::Unrestricted
             | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => json!({
@@ -128,6 +143,9 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
         let params = message
             .params
             .as_ref()
@@ -154,6 +172,9 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
         let params = message
             .params
             .as_ref()
@@ -180,6 +201,9 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
         let params = message
             .params
             .as_ref()
@@ -206,6 +230,9 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
         let params = message
             .params
             .as_ref()
@@ -316,6 +343,15 @@ impl CodexClient {
     }
 
     fn respond_to_dynamic_tool_call(&self, message: &JsonRpcMessage) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": "MCP tool calls are disabled during read-only discovery",
+                }],
+                "success": false,
+            }));
+        }
         let params = message.params.as_ref().ok_or_else(|| {
             self.protocol_error("codex_dynamic_tool_call", "missing params".to_string())
         })?;
@@ -395,4 +431,65 @@ fn codex_permission_interaction(
         None,
         None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{CodexClient, JsonRpcMessage};
+
+    #[test]
+    fn read_only_discovery_rejects_mutating_mcp_tool_calls_without_contacting_runtime() {
+        let client = CodexClient::new("run-1", "not-a-runtime-mcp-endpoint")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("not-a-runtime-mcp-endpoint"), Some("token-123"))
+            .with_read_only_discovery_permissions();
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/tool/call".to_string()),
+            params: Some(json!({
+                "tool": "workspace_live_sync_write_artifact",
+                "arguments": {"path": "/repo/output", "content": "mutate"}
+            })),
+            result: None,
+            error: None,
+        };
+
+        let response = client
+            .respond_to_dynamic_tool_call(&message)
+            .expect("discovery should return a protocol-level MCP rejection");
+
+        assert_eq!(response.get("success"), Some(&json!(false)));
+        assert_eq!(
+            response["contentItems"][0]["text"],
+            "MCP tool calls are disabled during read-only discovery"
+        );
+    }
+
+    #[test]
+    fn read_only_discovery_declines_mcp_elicitation() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_read_only_discovery_permissions();
+        let message = JsonRpcMessage {
+            id: Some(json!(2)),
+            method: Some("mcpServer/elicitation/request".to_string()),
+            params: Some(json!({
+                "serverName": "chariox",
+                "_meta": {"codex_approval_kind": "mcp_tool_call"}
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.respond_to_mcp_elicitation(&message),
+            json!({
+                "action": "decline",
+                "content": null,
+                "_meta": null,
+            })
+        );
+    }
 }

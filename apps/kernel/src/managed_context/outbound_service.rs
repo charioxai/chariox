@@ -32,7 +32,10 @@ use crate::runtime::workspace_git_common::same_fs_path;
 use crate::runtime::workspace_worktrees::list_workspace_worktrees;
 use crate::secret::export_transferred_vault_snapshot;
 use crate::transport::relay_client::RelayClientState;
-use crate::transport::relay_peer::RelayManagedContextImportReceipt;
+use crate::transport::relay_peer::{
+    RelayManagedContextImportReceipt, RelayManagedContextImportedRepository,
+    RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
+};
 
 const OUTBOUND_ARTIFACT_SCHEMA_VERSION: u32 = 2;
 const MAX_OUTBOUND_ARTIFACT_STATE_BYTES: u64 = 128 * 1024;
@@ -62,6 +65,143 @@ pub struct ManagedContextTransferTicket {
     pub target: ManagedContextTransferTarget,
 }
 
+/// Public local-daemon receipt projection. Relay receipt structs intentionally
+/// retain their snake_case wire format; this adapter is the one public
+/// camelCase boundary consumed by Cloud and browser clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextOutboundImportReceipt {
+    pub transfer_id: String,
+    pub archive_sha256: String,
+    pub plan_digest: String,
+    pub development: ManagedContextOutboundDevelopmentImportReceipt,
+    pub kernel_context: ManagedContextOutboundKernelContextImportReceipt,
+    pub receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ManagedContextOutboundDevelopmentImportReceipt {
+    Empty,
+    FromSource {
+        project_id: String,
+        destination_root: String,
+        primary_repository_id: String,
+        repositories: Vec<ManagedContextOutboundImportedRepository>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextOutboundImportedRepository {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_context::development::DevelopmentWorkspaceKind::is_git"
+    )]
+    pub workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind,
+    pub repository_id: String,
+    pub role: crate::managed_context::development::DevelopmentRepositoryRole,
+    pub target_directory: String,
+    pub workspace_path: String,
+    pub head_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ManagedContextOutboundKernelContextImportReceipt {
+    Empty,
+    FromKernel {
+        context_id: String,
+        source_kernel_id: String,
+        source_key_thumbprint: String,
+        snapshot_sha256: String,
+        extension_count: usize,
+        dependency_count: usize,
+    },
+}
+
+impl From<RelayManagedContextImportReceipt> for ManagedContextOutboundImportReceipt {
+    fn from(receipt: RelayManagedContextImportReceipt) -> Self {
+        Self {
+            transfer_id: receipt.transfer_id,
+            archive_sha256: receipt.archive_sha256,
+            plan_digest: receipt.plan_digest,
+            development: receipt.development.into(),
+            kernel_context: receipt.kernel_context.into(),
+            receipt_sha256: receipt.receipt_sha256,
+        }
+    }
+}
+
+impl From<RelayManagedDevelopmentContextImportReceipt>
+    for ManagedContextOutboundDevelopmentImportReceipt
+{
+    fn from(receipt: RelayManagedDevelopmentContextImportReceipt) -> Self {
+        match receipt {
+            RelayManagedDevelopmentContextImportReceipt::Empty => Self::Empty,
+            RelayManagedDevelopmentContextImportReceipt::FromSource {
+                project_id,
+                destination_root,
+                primary_repository_id,
+                repositories,
+            } => Self::FromSource {
+                project_id,
+                destination_root,
+                primary_repository_id,
+                repositories: repositories.into_iter().map(Into::into).collect(),
+            },
+        }
+    }
+}
+
+impl From<RelayManagedContextImportedRepository> for ManagedContextOutboundImportedRepository {
+    fn from(repository: RelayManagedContextImportedRepository) -> Self {
+        Self {
+            workspace_kind: repository.workspace_kind,
+            repository_id: repository.repository_id,
+            role: repository.role,
+            target_directory: repository.target_directory,
+            workspace_path: repository.destination_path,
+            head_sha: repository.head_sha,
+        }
+    }
+}
+
+impl From<RelayManagedKernelContextImportReceipt>
+    for ManagedContextOutboundKernelContextImportReceipt
+{
+    fn from(receipt: RelayManagedKernelContextImportReceipt) -> Self {
+        match receipt {
+            RelayManagedKernelContextImportReceipt::Empty => Self::Empty,
+            RelayManagedKernelContextImportReceipt::FromKernel {
+                context_id,
+                source_kernel_id,
+                source_key_thumbprint,
+                snapshot_sha256,
+                extension_count,
+                dependency_count,
+            } => Self::FromKernel {
+                context_id,
+                source_kernel_id,
+                source_key_thumbprint,
+                snapshot_sha256,
+                extension_count,
+                dependency_count,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedContextOutboundOperationPhase {
@@ -81,7 +221,7 @@ pub struct ManagedContextOutboundOperationStatus {
     pub accepted_bytes: u64,
     pub package_size_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub receipt: Option<RelayManagedContextImportReceipt>,
+    pub receipt: Option<ManagedContextOutboundImportReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,9 +231,16 @@ pub struct ManagedContextOutboundOperationStatus {
 }
 
 #[derive(Clone)]
+struct PreparedGitEnrollmentTicket {
+    ticket: ManagedContextTransferTicket,
+    prepared_at_ms: u64,
+}
+
+#[derive(Clone)]
 pub(crate) struct ManagedContextOutboundOperationStore {
     state: Arc<Mutex<BTreeMap<String, ManagedContextOutboundOperationStatus>>>,
     active: Arc<Mutex<BTreeSet<String>>>,
+    prepared_git_enrollment_tickets: Arc<Mutex<BTreeMap<String, PreparedGitEnrollmentTicket>>>,
     transfer_slots: Arc<Semaphore>,
     artifact_lock: Arc<Mutex<()>>,
     artifact_parent: Option<Arc<PathBuf>>,
@@ -104,6 +251,7 @@ impl Default for ManagedContextOutboundOperationStore {
         Self {
             state: Arc::new(Mutex::new(BTreeMap::new())),
             active: Arc::new(Mutex::new(BTreeSet::new())),
+            prepared_git_enrollment_tickets: Arc::new(Mutex::new(BTreeMap::new())),
             transfer_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_OUTBOUND_TRANSFERS)),
             artifact_lock: Arc::new(Mutex::new(())),
             artifact_parent: None,
@@ -140,6 +288,82 @@ impl ManagedContextOutboundOperationStore {
             .expect("managed-context outbound operation lock")
             .get(context_id)
             .cloned()
+    }
+
+    pub(crate) fn remember_prepared_git_enrollment_ticket(
+        &self,
+        ticket: &ManagedContextTransferTicket,
+    ) -> Result<(), DaemonError> {
+        self.remember_prepared_git_enrollment_ticket_at(ticket, crate::session::unix_epoch_ms())
+    }
+
+    fn remember_prepared_git_enrollment_ticket_at(
+        &self,
+        ticket: &ManagedContextTransferTicket,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        if !ticket.context_plan.is_git_credential_enrollment() {
+            return Err(outbound_service_error(
+                "only Git credential enrollment tickets can be remembered",
+                false,
+            ));
+        }
+        let context_id = ticket.context_plan.context_id();
+        let active_context_ids = self.active_context_ids();
+        let mut prepared = self
+            .prepared_git_enrollment_tickets
+            .lock()
+            .expect("prepared Git enrollment ticket lock");
+        if let Some(existing) = prepared.get(context_id) {
+            if existing.ticket != *ticket {
+                return Err(outbound_service_error(
+                    "prepared Git enrollment context was reused with another ticket",
+                    false,
+                ));
+            }
+            return Ok(());
+        }
+        if prepared.len() >= MAX_OUTBOUND_OPERATIONS {
+            let oldest_context_id = prepared
+                .iter()
+                .filter(|(context_id, _)| !active_context_ids.contains(*context_id))
+                .min_by_key(|(context_id, entry)| (entry.prepared_at_ms, *context_id))
+                .map(|(context_id, _)| context_id.clone())
+                .ok_or_else(|| {
+                    outbound_service_error(
+                        "too many prepared Git credential enrollments are active",
+                        true,
+                    )
+                })?;
+            prepared.remove(&oldest_context_id);
+        }
+        prepared.insert(
+            context_id.to_string(),
+            PreparedGitEnrollmentTicket {
+                ticket: ticket.clone(),
+                prepared_at_ms: now_ms,
+            },
+        );
+        Ok(())
+    }
+
+    fn prepared_git_enrollment_ticket(
+        &self,
+        requested: &ManagedContextTransferTicket,
+    ) -> Result<ManagedContextTransferTicket, DaemonError> {
+        let context_id = requested.context_plan.context_id();
+        self.prepared_git_enrollment_tickets
+            .lock()
+            .expect("prepared Git enrollment ticket lock")
+            .get(context_id)
+            .filter(|entry| entry.ticket == *requested)
+            .map(|entry| entry.ticket.clone())
+            .ok_or_else(|| {
+                outbound_service_error(
+                    "Git credential enrollment ticket was not prepared by this kernel",
+                    false,
+                )
+            })
     }
 
     fn start(
@@ -245,6 +469,22 @@ impl ManagedContextOutboundOperationStore {
             .lock()
             .expect("managed-context outbound active lock")
             .remove(context_id);
+        let terminal = self
+            .state
+            .lock()
+            .expect("managed-context outbound operation lock")
+            .get(context_id)
+            .is_some_and(|status| {
+                status.phase == ManagedContextOutboundOperationPhase::Completed
+                    || (status.phase == ManagedContextOutboundOperationPhase::Failed
+                        && !status.retryable)
+            });
+        if terminal {
+            self.prepared_git_enrollment_tickets
+                .lock()
+                .expect("prepared Git enrollment ticket lock")
+                .remove(context_id);
+        }
     }
 
     fn active_context_ids(&self) -> BTreeSet<String> {
@@ -274,6 +514,11 @@ pub(crate) fn start_managed_context_outbound_operation(
     ticket: ManagedContextTransferTicket,
 ) -> Result<ManagedContextOutboundOperationStatus, DaemonError> {
     validate_ticket(&config, &ticket)?;
+    let prepared_git_enrollment_ticket = ticket
+        .context_plan
+        .is_git_credential_enrollment()
+        .then(|| store.prepared_git_enrollment_ticket(&ticket))
+        .transpose()?;
     let plan = ticket.context_plan.package_binding();
     let (status, permit) = store.start(&plan.context_id, &plan.plan_digest)?;
     let Some(permit) = permit else {
@@ -284,33 +529,38 @@ pub(crate) fn start_managed_context_outbound_operation(
     tokio::spawn(async move {
         let _permit = permit;
         let _active = active;
-        let authoritative_ticket = match fetch_authoritative_ticket(&config, &ticket).await {
-            Ok(authoritative) if authoritative == ticket => authoritative,
-            Ok(_) => {
-                let error = outbound_service_error(
-                    "caller-supplied managed-context ticket does not match Cloud",
-                    false,
-                );
-                let retirement_error =
-                    retire_matching_artifact_after_terminal_preflight(&config, &store, &ticket)
-                        .err();
-                store.update(&context_id, |status| {
-                    fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
-                });
-                return;
-            }
-            Err(error) => {
-                let retirement_error = if error_is_retryable(&error) {
-                    None
-                } else {
-                    retire_matching_artifact_after_terminal_preflight(&config, &store, &ticket)
-                        .err()
-                };
-                store.update(&context_id, |status| {
-                    fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
-                });
-                return;
-            }
+        let authoritative_ticket = match prepared_git_enrollment_ticket {
+            Some(authoritative) => authoritative,
+            None => match authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+                .await
+            {
+                Ok(authoritative) if authoritative == ticket => authoritative,
+                Ok(_) => {
+                    let error = outbound_service_error(
+                        "caller-supplied managed-context ticket does not match Cloud",
+                        false,
+                    );
+                    let retirement_error =
+                        retire_matching_artifact_after_terminal_preflight(&config, &store, &ticket)
+                            .err();
+                    store.update(&context_id, |status| {
+                        fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let retirement_error = if error_is_retryable(&error) {
+                        None
+                    } else {
+                        retire_matching_artifact_after_terminal_preflight(&config, &store, &ticket)
+                            .err()
+                    };
+                    store.update(&context_id, |status| {
+                        fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
+                    });
+                    return;
+                }
+            },
         };
         let task_store = store.clone();
         let task_context_id = context_id.clone();
@@ -379,13 +629,13 @@ pub(crate) fn start_managed_context_outbound_operation(
                     status.phase = ManagedContextOutboundOperationPhase::Completed;
                     status.accepted_bytes = result.package_size_bytes;
                     status.package_size_bytes = result.package_size_bytes;
-                    status.receipt = Some(result.receipt);
+                    status.receipt = Some(result.receipt.into());
                     status.failure_code = None;
                     status.failure_message = None;
                     status.retryable = false;
                 }),
                 Err(error) => task_store.update(&task_context_id, |status| {
-                    status.receipt = Some(result.receipt);
+                    status.receipt = Some(result.receipt.into());
                     fail_status(status, &error);
                 }),
             },
@@ -442,6 +692,17 @@ async fn fetch_authoritative_ticket(
             retryable,
         )
     })
+}
+
+async fn authoritative_ticket_for_outbound_operation(
+    config: &DaemonConfig,
+    store: &ManagedContextOutboundOperationStore,
+    requested: &ManagedContextTransferTicket,
+) -> Result<ManagedContextTransferTicket, DaemonError> {
+    if requested.context_plan.is_git_credential_enrollment() {
+        return store.prepared_git_enrollment_ticket(requested);
+    }
+    fetch_authoritative_ticket(config, requested).await
 }
 
 fn retire_matching_artifact_after_terminal_preflight(
@@ -1430,6 +1691,29 @@ mod tests {
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
 
+    fn git_enrollment_test_ticket(
+        config: &DaemonConfig,
+        context_id: &str,
+        target_public_key: &str,
+    ) -> ManagedContextTransferTicket {
+        ManagedContextTransferTicket {
+            environment_id: "environment-1".to_string(),
+            context_plan: ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+                context_id,
+                "realm-1",
+                &config.daemon_id,
+                &public_key_thumbprint(&config.relay_public_key),
+            ),
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm-1".to_string(),
+                machine_id: "target-machine".to_string(),
+                kernel_id: "target-kernel".to_string(),
+                key_thumbprint: public_key_thumbprint(target_public_key),
+                relay_public_key: target_public_key.to_string(),
+            },
+        }
+    }
+
     #[test]
     fn provider_account_component_budget_rejects_before_retaining_the_next_account() {
         fn materialization(profile_id: &str) -> ProviderAccountMaterialization {
@@ -1725,9 +2009,13 @@ mod tests {
             String::from_utf8(request).expect("request UTF-8")
         });
         assert_eq!(
-            fetch_authoritative_ticket(&config, &ticket)
-                .await
-                .expect("authoritative ticket"),
+            authoritative_ticket_for_outbound_operation(
+                &config,
+                &ManagedContextOutboundOperationStore::default(),
+                &ticket,
+            )
+            .await
+            .expect("authoritative ticket"),
             ticket
         );
         let request = fixture.join().expect("Cloud fixture thread");
@@ -1735,6 +2023,200 @@ mod tests {
         assert!(request.contains("\"machineId\":\"source-machine-test\""));
         assert!(request.contains("\"kernelId\":"));
         assert!(request.contains("\"machineCredential\":\"mcred_"));
+    }
+
+    #[tokio::test]
+    async fn prepared_git_enrollment_ticket_does_not_require_a_source_machine_credential() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: "http://127.0.0.1:1".to_string(),
+            realm_id: "realm-1".to_string(),
+            machine_id: Some("source-machine-test".to_string()),
+            machine_credential: None,
+            ..PersistedCloudRelayProfile::default()
+        });
+        let source_thumbprint = public_key_thumbprint(&config.relay_public_key);
+        let target_private_key = relay_crypto::generate_private_key_base64();
+        let target_public_key =
+            relay_crypto::public_key_from_private_key_base64(&target_private_key)
+                .expect("target public key");
+        let ticket = ManagedContextTransferTicket {
+            environment_id: "environment-1".to_string(),
+            context_plan: ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+                "context-1",
+                "realm-1",
+                &config.daemon_id,
+                &source_thumbprint,
+            ),
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm-1".to_string(),
+                machine_id: "target-machine".to_string(),
+                kernel_id: "target-kernel".to_string(),
+                key_thumbprint: public_key_thumbprint(&target_public_key),
+                relay_public_key: target_public_key,
+            },
+        };
+        let store = ManagedContextOutboundOperationStore::default();
+        store
+            .remember_prepared_git_enrollment_ticket(&ticket)
+            .expect("remember prepared Git enrollment ticket");
+
+        assert_eq!(
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+                .await
+                .expect("prepared Git enrollment ticket"),
+            ticket
+        );
+
+        let context_id = ticket.context_plan.context_id().to_string();
+        let plan_digest = ticket.context_plan.package_binding().plan_digest.clone();
+        let (_, permit) = store
+            .start(&context_id, &plan_digest)
+            .expect("start prepared operation");
+        drop(permit);
+        store.update(&context_id, |status| {
+            status.phase = ManagedContextOutboundOperationPhase::Completed;
+        });
+        store.finish(&context_id);
+        assert!(
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn unprepared_or_modified_git_enrollment_ticket_is_rejected() {
+        let config = DaemonConfig::for_tests();
+        let source_thumbprint = public_key_thumbprint(&config.relay_public_key);
+        let target_private_key = relay_crypto::generate_private_key_base64();
+        let target_public_key =
+            relay_crypto::public_key_from_private_key_base64(&target_private_key)
+                .expect("target public key");
+        let ticket = ManagedContextTransferTicket {
+            environment_id: "environment-1".to_string(),
+            context_plan: ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+                "context-1",
+                "realm-1",
+                &config.daemon_id,
+                &source_thumbprint,
+            ),
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm-1".to_string(),
+                machine_id: "target-machine".to_string(),
+                kernel_id: "target-kernel".to_string(),
+                key_thumbprint: public_key_thumbprint(&target_public_key),
+                relay_public_key: target_public_key,
+            },
+        };
+        let store = ManagedContextOutboundOperationStore::default();
+        assert!(
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+                .await
+                .is_err()
+        );
+
+        store
+            .remember_prepared_git_enrollment_ticket(&ticket)
+            .expect("remember prepared ticket");
+        let mut modified = ticket;
+        modified.target.kernel_id = "attacker-kernel".to_string();
+        assert!(
+            authoritative_ticket_for_outbound_operation(&config, &store, &modified)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn modified_prepared_git_enrollment_cannot_claim_the_operation_id() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            realm_id: "realm-1".to_string(),
+            machine_id: Some("source-machine-test".to_string()),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let target_private_key = relay_crypto::generate_private_key_base64();
+        let target_public_key =
+            relay_crypto::public_key_from_private_key_base64(&target_private_key)
+                .expect("target public key");
+        let ticket = git_enrollment_test_ticket(&config, "context-1", &target_public_key);
+        let store = ManagedContextOutboundOperationStore::default();
+        store
+            .remember_prepared_git_enrollment_ticket(&ticket)
+            .expect("remember prepared ticket");
+
+        let attacker_private_key = relay_crypto::generate_private_key_base64();
+        let attacker_public_key =
+            relay_crypto::public_key_from_private_key_base64(&attacker_private_key)
+                .expect("attacker public key");
+        let mut modified = ticket.clone();
+        modified.target.kernel_id = "attacker-kernel".to_string();
+        modified.target.relay_public_key = attacker_public_key.clone();
+        modified.target.key_thumbprint = public_key_thumbprint(&attacker_public_key);
+        validate_ticket(&config, &modified).expect("modified ticket remains internally valid");
+
+        let profile_path = std::env::temp_dir().join(format!(
+            "chariox-managed-git-enrollment-profile-{}-{}.json",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let provider_accounts =
+            crate::account_profile::ProviderAccountProfileRegistry::open(profile_path.clone())
+                .expect("provider account registry");
+        let error = start_managed_context_outbound_operation(
+            config,
+            Arc::new(RwLock::new(RelayClientState::default())),
+            store.clone(),
+            provider_accounts,
+            modified,
+        )
+        .expect_err("modified ticket must be rejected before operation start");
+
+        assert!(error
+            .to_string()
+            .contains("was not prepared by this kernel"));
+        assert!(store.get(ticket.context_plan.context_id()).is_none());
+        assert_eq!(
+            store
+                .prepared_git_enrollment_ticket(&ticket)
+                .expect("legitimate ticket remains prepared"),
+            ticket
+        );
+        let _ = fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn prepared_git_enrollment_cache_evicts_the_oldest_abandoned_ticket() {
+        let config = DaemonConfig::for_tests();
+        let target_private_key = relay_crypto::generate_private_key_base64();
+        let target_public_key =
+            relay_crypto::public_key_from_private_key_base64(&target_private_key)
+                .expect("target public key");
+        let store = ManagedContextOutboundOperationStore::default();
+        let first = git_enrollment_test_ticket(&config, "context-000", &target_public_key);
+        for index in 0..MAX_OUTBOUND_OPERATIONS {
+            let ticket = git_enrollment_test_ticket(
+                &config,
+                &format!("context-{index:03}"),
+                &target_public_key,
+            );
+            store
+                .remember_prepared_git_enrollment_ticket_at(&ticket, 1_000 + index as u64)
+                .expect("fill prepared ticket cache");
+        }
+        let replacement =
+            git_enrollment_test_ticket(&config, "context-replacement", &target_public_key);
+
+        store
+            .remember_prepared_git_enrollment_ticket_at(
+                &replacement,
+                1_000 + MAX_OUTBOUND_OPERATIONS as u64,
+            )
+            .expect("bounded cache should accept a fresh ticket");
+
+        assert!(store.prepared_git_enrollment_ticket(&first).is_err());
+        assert!(store.prepared_git_enrollment_ticket(&replacement).is_ok());
     }
 
     #[test]

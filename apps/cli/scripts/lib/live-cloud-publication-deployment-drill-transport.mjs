@@ -15,6 +15,7 @@ import {
   rustBinaryPath,
   rustManifestPath,
 } from '../../../../scripts/rust-workspace.mjs'
+import { preflightChromiumSandbox } from './chromium-sandbox-preflight.mjs'
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..')
 
@@ -291,30 +292,36 @@ export async function runHumanHttpDashboardBrowserScreenshot({ url, artifactsDir
   if (!chromePath) throw new Error('Chrome executable was not found for browser screenshot validation')
   const debuggingPort = await freePort()
   const userDataDir = path.join(artifactsDir, `${slug}-chrome-profile`)
+  const runtimeDir = path.join(artifactsDir, `${slug}-chrome-runtime`)
   const screenshotPath = path.join(artifactsDir, `${slug}-browser-final-dashboard.png`)
   await rm(userDataDir, { recursive: true, force: true })
-  await mkdir(userDataDir, { recursive: true })
-  const chrome = startProcess(
-    chromePath,
-    [
-      '--headless=new',
-      '--disable-gpu',
-      '--disable-background-networking',
-      '--disable-extensions',
-      '--window-size=1440,1000',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--no-sandbox',
-      '--remote-debugging-address=127.0.0.1',
-      `--remote-debugging-port=${debuggingPort}`,
-      `--user-data-dir=${userDataDir}`,
-      'about:blank',
-    ],
-    process.env,
-    'chrome-cloud-publication-dashboard',
-  )
+  await rm(runtimeDir, { recursive: true, force: true })
+  let chrome = null
   let cdp = null
   try {
+    const chromeEnv = await preflightChromiumSandbox({
+      executable: chromePath,
+      profileDirectory: userDataDir,
+      runtimeDirectory: runtimeDir,
+    })
+    chrome = startProcess(
+      chromePath,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--disable-background-networking',
+        '--disable-extensions',
+        '--window-size=1440,1000',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--remote-debugging-address=127.0.0.1',
+        `--remote-debugging-port=${debuggingPort}`,
+        `--user-data-dir=${userDataDir}`,
+        'about:blank',
+      ],
+      chromeEnv,
+      'chrome-cloud-publication-dashboard',
+    )
     const target = await waitForChromeTarget(debuggingPort, chrome)
     cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
     await cdp.send('Page.enable')
@@ -332,11 +339,12 @@ export async function runHumanHttpDashboardBrowserScreenshot({ url, artifactsDir
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
     return { promptUrl: url, screenshotPath, finalState }
   } catch (error) {
-    throw new Error(`${errorMessage(error)}\nchrome stdout:\n${chrome.logs.stdout}\nchrome stderr:\n${chrome.logs.stderr}`)
+    throw new Error(`${errorMessage(error)}\nchrome stdout:\n${chrome?.logs.stdout ?? ''}\nchrome stderr:\n${chrome?.logs.stderr ?? ''}`)
   } finally {
     await cdp?.close?.().catch(() => {})
     await stopProcess(chrome)
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {})
+    await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
@@ -400,30 +408,36 @@ export async function runAgentAppShoppingBrowserScreenshot({
   if (!chromePath) throw new Error('Chrome executable was not found for Agent App browser screenshot validation')
   const debuggingPort = await freePort()
   const userDataDir = path.join(artifactsDir, `${slug}-agent-app-chrome-profile`)
+  const runtimeDir = path.join(artifactsDir, `${slug}-agent-app-chrome-runtime`)
   const screenshotPath = path.join(artifactsDir, `${slug}-${screenshotName}.png`)
   await rm(userDataDir, { recursive: true, force: true })
-  await mkdir(userDataDir, { recursive: true })
-  const chrome = startProcess(
-    chromePath,
-    [
-      '--headless=new',
-      '--disable-gpu',
-      '--disable-background-networking',
-      '--disable-extensions',
-      '--window-size=1440,1000',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--no-sandbox',
-      '--remote-debugging-address=127.0.0.1',
-      `--remote-debugging-port=${debuggingPort}`,
-      `--user-data-dir=${userDataDir}`,
-      'about:blank',
-    ],
-    process.env,
-    'chrome-cloud-agent-app-shopping',
-  )
+  await rm(runtimeDir, { recursive: true, force: true })
+  let chrome = null
   let cdp = null
   try {
+    const chromeEnv = await preflightChromiumSandbox({
+      executable: chromePath,
+      profileDirectory: userDataDir,
+      runtimeDirectory: runtimeDir,
+    })
+    chrome = startProcess(
+      chromePath,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--disable-background-networking',
+        '--disable-extensions',
+        '--window-size=1440,1000',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--remote-debugging-address=127.0.0.1',
+        `--remote-debugging-port=${debuggingPort}`,
+        `--user-data-dir=${userDataDir}`,
+        'about:blank',
+      ],
+      chromeEnv,
+      'chrome-cloud-agent-app-shopping',
+    )
     const target = await waitForChromeTarget(debuggingPort, chrome)
     cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
     await cdp.send('Page.enable')
@@ -443,11 +457,12 @@ export async function runAgentAppShoppingBrowserScreenshot({
     const cookieHeader = await agentAppCookieHeader(cdp)
     return { promptUrl: url, screenshotPath, finalState, cookieHeader }
   } catch (error) {
-    throw new Error(`${errorMessage(error)}\nchrome stdout:\n${chrome.logs.stdout}\nchrome stderr:\n${chrome.logs.stderr}`)
+    throw new Error(`${errorMessage(error)}\nchrome stdout:\n${chrome?.logs.stdout ?? ''}\nchrome stderr:\n${chrome?.logs.stderr ?? ''}`)
   } finally {
     await cdp?.close?.().catch(() => {})
     await stopProcess(chrome)
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {})
+    await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   }
 }
 

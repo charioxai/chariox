@@ -1,0 +1,7 @@
+# The outer slice container already relies on Bubblewrap for the provider
+# boundary. Ubuntu's restricted unprivileged-user-namespace policy otherwise
+# prevents Bubblewrap from writing its UID/GID map, even when Docker selects
+# the built-in unconfined profile.
+profile chariox-slice-provider flags=(unconfined) {
+  userns,
+}

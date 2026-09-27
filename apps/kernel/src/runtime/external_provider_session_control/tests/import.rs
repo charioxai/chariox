@@ -5,6 +5,7 @@ fn import_external_provider_session_creates_session_agent_and_run() {
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
+        let worktree = TestWorktree::new("external-one");
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
         ));
@@ -16,7 +17,8 @@ fn import_external_provider_session_creates_session_agent_and_run() {
             .await;
             app.external_provider_session_index_store()
         };
-        store.upsert(record("dev-stub", "external-1", "/tmp/external-one"));
+        let worktree_path = worktree.path().display().to_string();
+        store.upsert(record("dev-stub", "external-1", &worktree_path));
 
         let response = execute_external_provider_session_request(
             &app,
@@ -45,7 +47,7 @@ fn import_external_provider_session_creates_session_agent_and_run() {
             panic!("unexpected response")
         };
         assert_eq!(session.alias(), Some("imported-external-one-external-1"));
-        assert_eq!(session.worktree_id(), "/tmp/external-one");
+        assert_eq!(session.worktree_id(), worktree_path);
         assert_eq!(session.owner_user_id(), "external-import-user");
         assert_eq!(agent.provider(), "dev-stub");
         assert_eq!(agent.alias(), Some("Imported external one"));
@@ -82,12 +84,10 @@ fn import_external_provider_session_creates_session_agent_and_run() {
 #[test]
 fn persist_external_import_metadata_refreshes_runtime_session_projection() {
     let _environment = crate::env_lock::lock();
+    let worktree = TestWorktree::new("import-projection");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-import-projection",
-            std::env::temp_dir().display().to_string(),
-        ))
+        .create_session(worktree.session_request())
         .expect("session should create");
     let run = app
         .launch_provider(
@@ -144,6 +144,7 @@ fn import_codex_session_without_model_uses_persisted_thread_model() {
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
+        let worktree = TestWorktree::new("codex-thread");
         let app = Arc::new(Mutex::new(
             crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
                 .expect("app should boot"),
@@ -156,7 +157,8 @@ fn import_codex_session_without_model_uses_persisted_thread_model() {
             .await;
             app.external_provider_session_index_store()
         };
-        store.upsert(record("codex", "thread-1", "/tmp/codex-thread"));
+        let worktree_path = worktree.path().display().to_string();
+        store.upsert(record("codex", "thread-1", &worktree_path));
 
         let response = execute_external_provider_session_request(
             &app,
@@ -251,6 +253,7 @@ fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state()
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
+        let worktree = TestWorktree::new("thread-owned-by-resume");
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
         ));
@@ -261,7 +264,7 @@ fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state()
             )
             .await;
             let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             app.agents()
                 .set_agent_runtime_profile(
@@ -337,6 +340,7 @@ fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_res
             ),
         )
         .expect("codex session should write");
+    let worktree = TestWorktree::new("thread-owned-discovered");
 
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
@@ -350,7 +354,7 @@ fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_res
             )
             .await;
             let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             app.agents()
                 .set_agent_runtime_profile(
@@ -410,6 +414,7 @@ fn import_external_provider_agent_adds_agent_to_existing_session() {
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
+        let worktree = TestWorktree::new("external-two");
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
         ));
@@ -420,12 +425,13 @@ fn import_external_provider_agent_adds_agent_to_existing_session() {
             )
             .await;
             let (session, _) = crate::app::KernelSessionService::new(&mut app)
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             let store = app.external_provider_session_index_store();
             (session.id().to_string(), store)
         };
-        store.upsert(record("dev-stub", "external-2", "/tmp/external-two"));
+        let worktree_path = worktree.path().display().to_string();
+        store.upsert(record("dev-stub", "external-2", &worktree_path));
 
         let response = execute_external_provider_session_request(
             &app,
@@ -457,7 +463,7 @@ fn import_external_provider_agent_adds_agent_to_existing_session() {
         assert_eq!(agent.provider(), "dev-stub");
         assert_eq!(agent.alias(), Some("Imported agent"));
         assert_eq!(agent.owner_user_id(), "external-agent-user");
-        assert_eq!(agent.worktree_id(), Some("/tmp/external-two"));
+        assert_eq!(agent.worktree_id(), Some(worktree_path.as_str()));
         assert_eq!(
             provider_run
                 .expect("provider run should launch")
@@ -483,6 +489,8 @@ fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
+        let target_worktree = TestWorktree::new("external-agent-target");
+        let owner_worktree = TestWorktree::new("external-agent-owner");
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
         ));
@@ -493,16 +501,10 @@ fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
             )
             .await;
             let (target_session, _) = crate::app::KernelSessionService::new(&mut app)
-                .create_session(CreateSessionRequest::new(
-                    "workspace-target",
-                    "worktree-target",
-                ))
+                .create_session(target_worktree.session_request())
                 .expect("target session should create");
             let (owner_session, owner_agent) = crate::app::KernelSessionService::new(&mut app)
-                .create_session(CreateSessionRequest::new(
-                    "workspace-owner",
-                    "worktree-owner",
-                ))
+                .create_session(owner_worktree.session_request())
                 .expect("owner session should create");
             let run = test_codex_run(
                 owner_session.id(),
@@ -563,9 +565,10 @@ fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
 #[test]
 fn attached_chariox_agent_resume_state_removes_external_session_from_attachable_list() {
     let _environment = crate::env_lock::lock();
+    let worktree = TestWorktree::new("owned-by-chariox");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should create");
     app.agents()
         .set_agent_runtime_profile(
@@ -603,9 +606,10 @@ fn attached_chariox_agent_resume_state_removes_external_session_from_attachable_
 #[test]
 fn changed_attached_resume_state_returns_previous_provider_session_to_attachable_list() {
     let _environment = crate::env_lock::lock();
+    let worktree = TestWorktree::new("changed-attached-resume");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should create");
     attach_test_session(&app, session.id());
     let store = app.external_provider_session_index_store();
@@ -692,9 +696,10 @@ fn live_provider_run_provider_session_id_counts_as_attached_to_chariox() {
 #[test]
 fn chariox_owned_provider_run_provider_session_id_becomes_observer_target() {
     let _environment = crate::env_lock::lock();
+    let worktree = TestWorktree::new("chariox-owned-run");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should create");
     let run = test_codex_run(
         session.id(),
@@ -727,9 +732,10 @@ fn chariox_owned_provider_run_provider_session_id_becomes_observer_target() {
 #[test]
 fn imported_observer_target_keeps_import_cursor_source_when_provider_run_matches() {
     let _environment = crate::env_lock::lock();
+    let worktree = TestWorktree::new("imported-observer");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should create");
     let import = ExternalProviderImportMetadata::observed_history(
         "codex:thread-imported".to_string(),

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+#[cfg(all(test, target_os = "linux"))]
+mod sandbox_lifetime_tests;
 mod stdio;
 mod streamable_http;
 
