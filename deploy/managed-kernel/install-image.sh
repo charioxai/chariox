@@ -130,7 +130,7 @@ require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.ser
 require_regular_file "$image_root/etc/systemd/system/chariox-slice-broker.service"
 require_directory "$image_root/usr/lib/chariox/slice-build-context"
 rootless_context=usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker
-for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf chariox-slice-disk-quota-allocator.service slice-disk-quota-allocator.mjs slice-disk-quota-client.mjs slice-disk-quota-contract.mjs slice-disk-quota-service.mjs slice-disk-quota-state-store.mjs slice-disk-quota-xfs-backend.mjs probe-slice-disk-quota-backend.mjs; do
+for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf chariox-slice-disk-quota-allocator.service chariox-data-volume-admission.mjs slice-disk-quota-admission.mjs slice-disk-quota-allocator.mjs slice-disk-quota-client.mjs slice-disk-quota-contract.mjs slice-disk-quota-service.mjs slice-disk-quota-state-store.mjs slice-disk-quota-xfs-backend.mjs slice-disk-quota-xfs-readback.mjs probe-slice-disk-quota-backend.mjs; do
   require_regular_file "$image_root/$rootless_context/$rootless_file"
 done
 
