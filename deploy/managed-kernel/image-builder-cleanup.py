@@ -30,6 +30,11 @@ def require(condition, message):
 
 
 def timestamp(value):
+    # Keep the Unix-seconds API used by the task creator's datetime.fromtimestamp.
+    return float(exact_timestamp(value))
+
+
+def exact_timestamp(value):
     match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,18}))?(?:Z|\+00:00)', value) \
         if isinstance(value, str) else None
     require(match is not None, 'UTC timestamp required')
@@ -90,7 +95,7 @@ def validate_receipt(value):
     require(type(server['imageId']) is int and server['imageId'] > 0, 'invalid base image ID')
     import ipaddress
     require(ipaddress.ip_address(server['ipv4']).version == 4, 'invalid builder IPv4')
-    require(0 < timestamp(value['expiresAt']) - timestamp(server['created']) <= 7200,
+    require(0 < exact_timestamp(value['expiresAt']) - exact_timestamp(server['created']) <= 7200,
             'cleanup deadline must be within two hours of server creation')
     require(re.fullmatch(r'[0-9a-f]{64}', value['sshKey']['publicKeySha256']) is not None,
             'invalid public key fingerprint')
@@ -111,7 +116,7 @@ def validate_resource(resource, expected, receipt):
 def validate_server(server, receipt):
     expected = receipt['server']
     validate_resource(server, expected, receipt)
-    require(timestamp(server.get('created')) == timestamp(expected['created']), 'server creation identity changed')
+    require(exact_timestamp(server.get('created')) == exact_timestamp(expected['created']), 'server creation identity changed')
     locations = [item.get('name') for item in [server.get('location'),
                  (server.get('datacenter') or {}).get('location')] if item is not None]
     require(server.get('server_type', {}).get('name') == expected['type']

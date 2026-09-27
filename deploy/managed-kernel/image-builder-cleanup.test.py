@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -70,6 +71,11 @@ class FakeProvider:
 
 
 class CleanupTests(unittest.TestCase):
+    def test_timestamp_remains_compatible_with_creator_timer(self):
+        for suffix in ['Z', '+00:00']:
+            self.assertEqual(datetime.fromtimestamp(guard.timestamp('2026-09-27T20:00:00' + suffix), timezone.utc),
+                             datetime(2026, 9, 27, 20, tzinfo=timezone.utc))
+
     def test_equivalent_utc_timestamp_formatting_preserves_identity(self):
         for receipt_suffix, provider_suffix in [('Z', '+00:00'), ('+00:00', 'Z')]:
             with self.subTest(receipt_suffix=receipt_suffix):
