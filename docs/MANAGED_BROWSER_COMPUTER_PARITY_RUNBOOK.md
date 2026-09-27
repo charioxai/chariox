@@ -64,7 +64,32 @@ contains no credential or secret value:
   },
   "inspector": {
     "identity": "<reviewed independent inspector identity>",
-    "sha256": "sha256:<64 lowercase hex>"
+    "sha256": "sha256:<64 lowercase hex>",
+    "observations": {
+      "cloudInventoryModule": {
+        "path": "<absolute reviewed read-only Cloud inventory module path>",
+        "identity": "<reviewed Cloud inventory identity>",
+        "sha256": "sha256:<64 lowercase hex>"
+      },
+      "host": "<SSH host alias for the worker>",
+      "cloudInventory": {
+        "accountId": "<owning Cloud account>",
+        "realmId": "<owning relay realm>",
+        "userId": "<user requesting normal managed DELETE>"
+      },
+      "machineOwnership": {
+        "kind": "run_owned",
+        "machineId": "<immutable managed machine id>",
+        "creationReceipt": {
+          "runId": "cha-16-YYYYMMDD-HHMMSS",
+          "machineId": "<immutable managed machine id>",
+          "kernelId": "<immutable kernel id>",
+          "managedEnvironmentId": "<Cloud managed environment id>",
+          "providerServerId": "<provider server id>",
+          "createOperationId": "<normal CREATE operation id>"
+        }
+      }
+    }
   },
   "image": {
     "digest": "sha256:<64 lowercase hex>",
@@ -91,6 +116,32 @@ contains no credential or secret value:
   "stepTimeoutMs": 600000
 }
 ```
+
+The inventory module must export `createManagedParityCloudInventory` and declare
+the reviewed module identity required by the inspector loader. Pin its current
+hash together with the inspector; an older module without retirement evidence
+cannot validate run-owned cleanup. Use `preexisting` ownership only for an
+explicitly retained machine, never to avoid run-owned deletion proof.
+
+For run-owned cleanup, `retirementProof.authority` must be
+`normal-managed-delete`. Bind account, realm, user, environment, machine, kernel
+and CREATE operation to the metadata above. Include the successful normal DELETE
+operation, its deterministic `parity-cleanup-<sha256(runId)>` idempotency key,
+completed time and desired revision; the DELETED environment must have observed
+that revision. The machine must be REVOKED with leases disabled and a revocation
+time. Census counts `activeCredentials`, `unrevokedTokens`, `unrevokedGrants` and
+`nonRevokedTargets` must all be zero. Include one
+`managed_environment_deleted` tombstone for the machine and each owned kernel.
+These database observations do not replace independent provider absence or
+physical process, volume and profile cleanup checks.
+
+`retainedHeartbeatRows` projects heartbeat data from retained relay target rows,
+not a separate heartbeat identifier namespace. Its `id` must be the target row
+ID, `kernelId` must equal that target's `daemonId`, and `lastHeartbeatAt` must
+match exactly. Record those target IDs in `ownedHeartbeatIds` and
+`queriedHeartbeatIds`. Retained targets must be REVOKED and scoped to the exact
+account, realm, machine and owned kernels. Preserve historical counts in the
+evidence rather than pretending revoked history was physically deleted.
 
 ## Exact live command
 

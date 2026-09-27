@@ -70,6 +70,11 @@ export function createManagedParityInspectorFromAuthorities({ config, home, requ
   }
   if (cloud.authority?.kind !== "read-only-cloud-inventory") throw new Error("read-only Cloud inventory authority required")
   const owned = ownership.kind === "run_owned"
+  const actor = config?.inspector?.observations?.cloudInventory
+  if (owned && ["accountId", "realmId", "userId"].some(key =>
+    typeof actor?.[key] !== "string" || !actor[key].trim())) {
+    throw new Error("run-owned Cloud actor configuration requires accountId, realmId and userId")
+  }
   if (owned && (!ownership.creationReceipt || ownership.creationReceipt.runId !== config.runId
     || ownership.creationReceipt.machineId !== config.expected.machineId
     || ownership.creationReceipt.kernelId !== config.expected.kernelId

@@ -197,7 +197,6 @@ for (const [name, alter] of [
   ["omitted historical heartbeat", f => { f.value.retainedHeartbeatRows = [] }],
   ["missing proof", f => { f.value.retirementProof = null }],
   ["empty history without normal DELETE proof", f => { f.value.retainedTargetRows = []; f.value.retainedHeartbeatRows = []; f.value.retirementProof = null }],
-  ["missing actor configuration", f => { delete f.fixture.config.inspector.observations.cloudInventory.userId }],
   ["preexisting machine", f => { f.fixture.config.inspector.observations.machineOwnership.kind = "preexisting" }],
 ]) {
   test(`retained history refuses ${name}`, async () => {
@@ -209,6 +208,15 @@ for (const [name, alter] of [
     await assert.rejects(inspector.run("cleanup.inspect"), /retirement proof/)
   })
 }
+
+test("run-owned actor configuration is rejected before any cleanup or authority call", () => {
+  for (const key of ["accountId", "realmId", "userId"]) for (const value of [undefined, "", " ", 7]) {
+    const f = authorities({ owned: true })
+    f.config.inspector.observations.cloudInventory[key] = value
+    assert.throws(() => createManagedParityInspectorFromAuthorities(f), /run-owned Cloud actor configuration/)
+    assert.deepEqual(f.events, [])
+  }
+})
 
 test("retired history does not waive scoped identity coverage or provider absence", async () => {
   for (const mode of ["coverage", "provider"]) {
