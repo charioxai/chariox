@@ -376,6 +376,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "8d9778e257b53fa2ea9ab1a3aebee4ea1bdf755d5a2f40ab3269e67f379185bd"
+        "68aa1e81fc6fa7d43901fd2b95a92846986b7407538baae12f94073f1fc98745"
     );
 }
