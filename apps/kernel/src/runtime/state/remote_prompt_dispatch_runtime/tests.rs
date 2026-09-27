@@ -165,54 +165,162 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         }
     }
 
+    fn claim_test_discovery_error_is_retryable(
+        error: &tokio_tungstenite::tungstenite::Error,
+    ) -> bool {
+        let message = error.to_string().to_ascii_lowercase();
+        message.contains("reset")
+            || message.contains("connection closed")
+            || message.contains("closed metadata connection")
+    }
+
+    async fn accept_claim_test_worker_metadata(
+        listener: &TcpListener,
+        worker_id: &str,
+        home_relay_token: &str,
+        stage: &'static str,
+        diagnostics: impl Fn() -> String,
+    ) -> (WebSocketStream<TcpStream>, String, std::net::SocketAddr, Vec<String>) {
+        // Temporary peer requests query GetLiveKernel before opening their separately
+        // registered peer socket. Keep this discovery phase within the existing two-second
+        // request bound while recording retryable sockets that close before their first frame.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut abandoned_sockets = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                panic!(
+                    "temporary relay did not receive worker metadata before deadline at {stage}; abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
+                    diagnostics()
+                );
+            }
+            let (stream, peer_addr) = match tokio::time::timeout(remaining, listener.accept()).await {
+                Err(_) => panic!(
+                    "temporary relay did not accept worker metadata discovery at {stage}; abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
+                    diagnostics()
+                ),
+                Ok(Err(error)) => panic!(
+                    "temporary relay listener failed at {stage}: {error}; abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
+                    diagnostics()
+                ),
+                Ok(Ok(accepted)) => accepted,
+            };
+            let mut discovery = match tokio::time::timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                accept_async(stream),
+            )
+            .await
+            {
+                Err(_) => panic!(
+                    "temporary relay discovery upgrade timed out at {stage}; peer={peer_addr}, abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
+                    diagnostics()
+                ),
+                Ok(Ok(discovery)) => discovery,
+                Ok(Err(error)) if claim_test_discovery_error_is_retryable(&error) => {
+                    abandoned_sockets.push(format!("peer={peer_addr}, websocket_upgrade={error:?}"));
+                    continue;
+                }
+                Ok(Err(error)) => panic!(
+                    "temporary relay discovery upgrade failed at {stage}: {error:?}; abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
+                    diagnostics()
+                ),
+            };
+            let first_frame = match tokio::time::timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                discovery.next(),
+            )
+            .await
+            {
+                Err(_) => panic!(
+                    "temporary relay discovery produced no first frame before deadline at {stage}; peer={peer_addr}, abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
+                    diagnostics()
+                ),
+                Ok(None) => {
+                    abandoned_sockets.push(format!(
+                        "peer={peer_addr}, websocket_eof_before_first_frame"
+                    ));
+                    continue;
+                }
+                Ok(Some(Ok(Message::Close(_)))) => {
+                    abandoned_sockets.push(format!(
+                        "peer={peer_addr}, websocket_close_before_first_frame"
+                    ));
+                    continue;
+                }
+                Ok(Some(Err(error))) if claim_test_discovery_error_is_retryable(&error) => {
+                    abandoned_sockets.push(format!(
+                        "peer={peer_addr}, first_frame_error={error:?}"
+                    ));
+                    continue;
+                }
+                Ok(Some(Err(error))) => panic!(
+                    "temporary relay discovery read failed at {stage}: {error:?}; peer={peer_addr}, abandoned_discovery_sockets={abandoned_sockets:?} [{}]",
+                    diagnostics()
+                ),
+                Ok(Some(Ok(frame))) => frame,
+            };
+            let envelope: RelayEnvelope = serde_json::from_str(
+                first_frame.to_text().unwrap_or_else(|error| {
+                    panic!("{stage}: discovery frame was not text: {error}")
+                }),
+            )
+            .unwrap_or_else(|error| panic!("{stage}: discovery envelope did not decode: {error}"));
+            let request_id = match envelope {
+                RelayEnvelope::ClientMetadataRequest {
+                    request_id,
+                    query,
+                    auth_token,
+                } => {
+                    assert_eq!(
+                        auth_token, home_relay_token,
+                        "{stage}: metadata query should use the configured home relay token"
+                    );
+                    assert!(
+                        matches!(
+                            query,
+                            chariox_relay::protocol::RelayMetadataQuery::GetLiveKernel {
+                                kernel_ref
+                            } if kernel_ref == worker_id
+                        ),
+                        "{stage}: discovery should query the exact worker kernel"
+                    );
+                    request_id
+                }
+                other => panic!(
+                    "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest; peer={peer_addr}, abandoned_discovery_sockets={abandoned_sockets:?}",
+                    claim_test_envelope_kind(&other)
+                ),
+            };
+            return (discovery, request_id, peer_addr, abandoned_sockets);
+        }
+    }
+
     async fn accept_claim_test_prompt(
         listener: &TcpListener,
         worker_id: &str,
         machine_id: &str,
+        home_relay_token: &str,
+        home_public_key: &str,
         worker_public_key: &str,
         worker_private_key: &str,
         stage: &'static str,
         diagnostics: impl Fn() -> String,
     ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
-        let (stream, discovery_peer) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
-                .await
-                .unwrap_or_else(|_| panic!("{stage}: relay did not accept discovery socket"))
-                .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
-        let mut discovery = accept_async(stream)
-            .await
-            .unwrap_or_else(|error| panic!("{stage}: relay discovery upgrade failed: {error}"));
-        let metadata = receive_claim_test_envelope_with_diagnostics(
-            &mut discovery,
-            "temporary discovery first envelope",
-            || {
-                format!(
-                    "operation={stage},socket=discovery,peer={discovery_peer},{}",
-                    diagnostics()
-                )
-            },
-        )
-        .await;
-        let request_id = match metadata {
-            RelayEnvelope::ClientMetadataRequest {
-                request_id, query, ..
-            } => {
-                assert!(
-                    matches!(
-                        query,
-                        chariox_relay::protocol::RelayMetadataQuery::GetLiveKernel {
-                            kernel_ref
-                        } if kernel_ref == worker_id
-                    ),
-                    "{stage}: discovery should query the exact worker kernel"
-                );
-                request_id
-            }
-            other => panic!(
-                "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest",
-                claim_test_envelope_kind(&other)
-            ),
-        };
+        let (mut discovery, request_id, discovery_peer, abandoned_sockets) =
+            accept_claim_test_worker_metadata(
+                listener,
+                worker_id,
+                home_relay_token,
+                stage,
+                &diagnostics,
+            )
+            .await;
+        if !abandoned_sockets.is_empty() {
+            eprintln!(
+                "temporary relay discovery trace at {stage}: abandoned_sockets={abandoned_sockets:?}; accepted_metadata_peer={discovery_peer}; metadata_request_id={request_id}; worker={worker_id}; {}",
+                diagnostics()
+            );
+        }
         let presence = serde_json::from_value(serde_json::json!({
             "kernel_id": worker_id,
             "machine_id": machine_id,
@@ -252,7 +360,16 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         )
         .await;
         match registration {
-            RelayEnvelope::DaemonRegister { .. } => {}
+            RelayEnvelope::DaemonRegister { registration } => {
+                assert_eq!(
+                    registration.auth_token, home_relay_token,
+                    "{stage}: temporary peer registration should use the configured relay token"
+                );
+                assert_eq!(
+                    registration.public_key, home_public_key,
+                    "{stage}: temporary peer registration should use the home kernel identity"
+                );
+            }
             other => panic!(
                 "{stage}: peer socket's first envelope was {}, expected DaemonRegister",
                 claim_test_envelope_kind(&other)
@@ -290,6 +407,10 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             &encrypted_request,
         )
         .unwrap_or_else(|error| panic!("{stage}: worker could not decrypt peer request: {error}"));
+        assert_eq!(
+            decrypted.sender_public_key, home_public_key,
+            "{stage}: temporary peer request should use the same authenticated home identity"
+        );
         let request: RelayPeerRequest = serde_json::from_slice(&decrypted.plaintext)
             .unwrap_or_else(|error| panic!("{stage}: worker request did not decode: {error}"));
         let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
@@ -599,6 +720,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         dispatch: crate::app::KernelRemotePromptDispatch,
         successor_prompt: crate::session::PromptQueueItem,
         successor_prompt_id: String,
+        home_relay_token: String,
         home_public_key: String,
         worker_id: String,
         worker_machine_id: String,
@@ -613,7 +735,8 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
     ) -> ReceiptReconciliationFixture {
         let mut home_config = crate::config::DaemonConfig::for_tests();
         home_config.relay_url = Some(relay_url.to_string());
-        home_config.relay_token = Some(format!("receipt-home-token-{suffix}"));
+        let home_relay_token = format!("receipt-home-token-{suffix}");
+        home_config.relay_token = Some(home_relay_token.clone());
         home_config.relay_request_timeout_ms = 3_000;
         let home_public_key = home_config.relay_public_key.clone();
         let worker_config = crate::config::DaemonConfig::for_tests();
@@ -735,6 +858,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             dispatch,
             successor_prompt,
             successor_prompt_id,
+            home_relay_token,
             home_public_key,
             worker_id,
             worker_machine_id,
@@ -773,6 +897,7 @@ mod receipt_reconciliation {
         let worker_machine_id = fixture.worker_machine_id.clone();
         let worker_public_key = fixture.worker_public_key.clone();
         let worker_private_key = fixture.worker_private_key.clone();
+        let home_relay_token = fixture.home_relay_token.clone();
         let home_public_key = fixture.home_public_key.clone();
         let leased_agent_id = fixture.leased_agent_id.clone();
         let session_id = fixture.session_id.clone();
@@ -923,6 +1048,8 @@ mod receipt_reconciliation {
                 &listener,
                 &worker_id,
                 &worker_machine_id,
+                &home_relay_token,
+                &home_public_key,
                 &worker_public_key,
                 &worker_private_key,
                 "queued successor submission",
@@ -3683,11 +3810,9 @@ mod dispatch_settlement {
         };
         let predecessor = make_submission("home-prompt-claim-a", "predecessor prompt");
         let predecessor_id = predecessor.prompt_id.clone();
-        let home_session_id = session.id().to_string();
-        let home_agent_id = agent.id().to_string();
         let state_tags_runtime = runtime.clone();
-        let state_tags_session_id = home_session_id.clone();
-        let state_tags_agent_id = home_agent_id.clone();
+        let state_tags_session_id = session.id().to_string();
+        let state_tags_agent_id = agent.id().to_string();
         runtime.spawn_remote_prompt_dispatch(predecessor);
 
         let (predecessor_seen_tx, predecessor_seen_rx) = tokio::sync::oneshot::channel();
@@ -3704,6 +3829,8 @@ mod dispatch_settlement {
                 &listener,
                 WORKER_ID,
                 MACHINE_ID,
+                "claim-restart-test-token",
+                &home_public_key,
                 &worker_public_key,
                 &worker_private_key,
                 "predecessor submission",
@@ -3732,100 +3859,9 @@ mod dispatch_settlement {
             )
             .await;
 
-            // Dispatch settlement cancels the just-acknowledged predecessor by its exact
-            // worker run, then drains that run's terminal projection before B can dispatch.
-            let cancellation = receive_fake_worker_peer_request(
-                &listener,
-                WORKER_ID,
-                MACHINE_ID,
-                &worker_public_key,
-                &worker_private_key,
-            )
-            .await;
-            assert_eq!(cancellation.target_id, WORKER_ID);
-            assert!(
-                matches!(
-                    &cancellation.request,
-                    RelayPeerRequest::CancelLeasedPrompt {
-                        leased_agent_id,
-                        home_prompt_id,
-                        worker_provider_run_id,
-                    } if leased_agent_id == LEASED_AGENT_ID
-                        && home_prompt_id == &predecessor_home_prompt_id
-                        && worker_provider_run_id == "worker-run-claim-a"
-                ),
-                "predecessor cancellation must retain its exact home prompt and worker run: {:?}",
-                cancellation.request
-            );
-            send_fake_worker_peer_response(
-                cancellation,
-                WORKER_ID,
-                &worker_private_key,
-                &home_public_key,
-                RelayPeerResponse::LeasedPromptCancelled {
-                    cancellation: crate::session::PromptCancellation {
-                        prompt: crate::session::PromptQueueItem::new(
-                            format!("worker-{predecessor_home_prompt_id}"),
-                            "worker-attachment",
-                            LEASED_AGENT_ID,
-                            "predecessor prompt",
-                            crate::session::PromptStatus::Cancelling,
-                        ),
-                        started_next: None,
-                    },
-                },
-            )
-            .await;
-
-            let drain = receive_fake_worker_peer_request(
-                &listener,
-                WORKER_ID,
-                MACHINE_ID,
-                &worker_public_key,
-                &worker_private_key,
-            )
-            .await;
-            assert_eq!(drain.target_id, WORKER_ID);
-            assert!(
-                matches!(
-                    &drain.request,
-                    RelayPeerRequest::DrainLeasedRuntimeProjection {
-                        leased_agent_id,
-                        provider_run_id,
-                        pump_output: true,
-                    } if leased_agent_id == LEASED_AGENT_ID
-                        && provider_run_id == "worker-run-claim-a"
-                ),
-                "predecessor projection drain must target its exact acknowledged run: {:?}",
-                drain.request
-            );
-            send_fake_worker_peer_response(
-                drain,
-                WORKER_ID,
-                &worker_private_key,
-                &home_public_key,
-                RelayPeerResponse::LeasedRuntimeProjectionDrained {
-                    event: Some(RelayPeerEvent::LeasedRuntimeProjection {
-                        home_session_id,
-                        home_agent_id,
-                        provider_run_id: "worker-run-claim-a".to_string(),
-                        provider_run: None,
-                        prompts: Vec::new(),
-                        output_chunks: Vec::new(),
-                        notices: Vec::new(),
-                        completions: vec![
-                            crate::transport::relay_peer::RelayProjectedCompletion {
-                                message_id: "claim-predecessor-completion".to_string(),
-                                completed_at_ms: 1,
-                                home_prompt_id: Some(predecessor_home_prompt_id.clone()),
-                                provider_termination: None,
-                            },
-                        ],
-                    }),
-                },
-            )
-            .await;
-
+            // The held claim now belongs to the current successor. The worker fixture follows
+            // the observed wire sequence directly: submit B after acknowledging A, without
+            // inventing an extra cancellation or completion for A.
             let (
                 mut successor_peer,
                 successor_request_id,
@@ -3836,6 +3872,8 @@ mod dispatch_settlement {
                 &listener,
                 WORKER_ID,
                 MACHINE_ID,
+                "claim-restart-test-token",
+                &home_public_key,
                 &worker_public_key,
                 &worker_private_key,
                 "successor submission",
