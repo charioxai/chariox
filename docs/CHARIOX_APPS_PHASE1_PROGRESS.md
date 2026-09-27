@@ -56,7 +56,7 @@ All kernel paths in the table are relative to `apps/kernel/src/` unless an expli
 
 The current row-by-row status with evidence is in [CHARIOX_APPS_PHASE1_VERIFICATION.md](CHARIOX_APPS_PHASE1_VERIFICATION.md) (audit of 2026-09-27 and later updates). The tables below are the baseline inventory.
 
-Every row below is **Unverified**. Existing related tests are useful starting points, but none were run or audited as full App release evidence in this inventory. Preserve exact scenarios and pass criteria from the plan when implementing drills. The matrix includes all 91 non-header rows: 14 terminal, 6 kernel, 32 integration, 36 core and 3 reference-App rows.
+Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (marked "see verification"); rows still **Unverified** have no audited evidence. Evidence directories named there live outside the repository, under the evidence path. Preserve exact scenarios and pass criteria from the plan when implementing drills. The matrix includes all 91 non-header rows: 14 terminal, 6 kernel, 32 integration, 36 core and 3 reference-App rows.
 
 ### Released-terminal matrix
 
