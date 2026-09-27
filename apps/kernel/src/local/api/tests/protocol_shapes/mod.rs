@@ -12,7 +12,6 @@ mod credential_enrollment;
 mod event_publication;
 mod fresh_remote_relay_inventory;
 mod managed_activity;
-mod managed_quiescence;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;

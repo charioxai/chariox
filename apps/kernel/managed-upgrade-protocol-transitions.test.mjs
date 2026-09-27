@@ -50,8 +50,8 @@ test("protocol 350 authorizes only the reviewed 343, 348, 349 and self transitio
     }
     for (const version of [325, 333, 342, 344, 345, 346, 347]) {
       const oldRoot = join(scratch, `protocol-${version}`)
-      assert.throws(() => transition(oldRoot, version, newRoot, 349), /not reciprocally authorized/)
-      assert.throws(() => transition(newRoot, 349, oldRoot, version), /not reciprocally authorized/)
+      assert.throws(() => transition(oldRoot, version, newRoot, 350), /not reciprocally authorized/)
+      assert.throws(() => transition(newRoot, 350, oldRoot, version), /not reciprocally authorized/)
     }
   } finally {
     await rm(scratch, { recursive: true, force: true })
