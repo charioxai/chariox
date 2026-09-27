@@ -106,7 +106,7 @@ impl TemporaryPeerTestTrace {
         self.local_addr = local_addr;
     }
 
-    fn finish(&mut self, stage: &'static str) {
+    pub(crate) fn finish(&mut self, stage: &'static str) {
         self.record(stage, None);
         self.drop_stage = None;
     }
