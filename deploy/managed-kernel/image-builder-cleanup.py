@@ -106,8 +106,10 @@ def validate_server(server, receipt):
     expected = receipt['server']
     validate_resource(server, expected, receipt)
     require(server.get('created') == expected['created'], 'server creation identity changed')
+    locations = [item.get('name') for item in [server.get('location'),
+                 (server.get('datacenter') or {}).get('location')] if item is not None]
     require(server.get('server_type', {}).get('name') == expected['type']
-            and server.get('datacenter', {}).get('location', {}).get('name') == expected['location']
+            and locations and all(item == expected['location'] for item in locations)
             and (server.get('image') or {}).get('id') == expected['imageId'], 'server placement or base image changed')
     require(not server.get('volumes') and not server.get('rescue_enabled') and not server.get('backup_window')
             and server.get('protection', {}).get('delete') is False, 'server has unexpected protected state')

@@ -23,7 +23,7 @@ def fixture():
                    'publicKeySha256': hashlib.sha256(public_key.encode()).hexdigest()},
     }
     server = {**receipt['server'], 'labels': guard.labels(receipt), 'server_type': {'name': 'cpx22'},
-              'datacenter': {'location': {'name': 'fsn1'}}, 'image': {'id': 387894169}, 'volumes': [],
+              'location': {'name': 'fsn1'}, 'datacenter': {'location': {'name': 'fsn1'}}, 'image': {'id': 387894169}, 'volumes': [],
               'rescue_enabled': False, 'backup_window': None, 'protection': {'delete': False},
               'public_net': {'ipv4': {'ip': '192.0.2.5'}, 'firewalls': [{'id': 22}]}}
     firewall = {**receipt['firewall'], 'labels': guard.labels(receipt),
@@ -70,6 +70,19 @@ class FakeProvider:
 
 
 class CleanupTests(unittest.TestCase):
+    def test_current_location_shape_and_conflicting_legacy_location(self):
+        receipt, api = fixture()
+        server = api.resources['servers/11']['server']
+        server['datacenter'] = None
+        guard.validate_server(server, receipt)
+        server['datacenter'] = {'location': {'name': 'nbg1'}}
+        with self.assertRaises(ValueError):
+            guard.validate_server(server, receipt)
+        server['datacenter'] = None
+        server['location'] = None
+        with self.assertRaises(ValueError):
+            guard.validate_server(server, receipt)
+
     def test_check_never_mutates(self):
         receipt, api = fixture()
         self.assertEqual(guard.validate_receipt(receipt), receipt)
