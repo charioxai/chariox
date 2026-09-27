@@ -45,9 +45,15 @@ class RetirementMarkerTests(unittest.TestCase):
 
     def test_invalid_dates_and_reversed_container_intervals_do_not_authorize_retirement(self):
         for started, finished in [('2026-99-99T99::Z', '2026-99-99T99::Z'),
-                                  ('2026-09-27T19:01:00Z', '2026-09-27T19:00:00Z')]:
+                                  ('2026-09-27T19:01:00Z', '2026-09-27T19:00:00Z'),
+                                  ('2026-02-30T19:00:00Z', '2026-03-01T19:00:00Z'),
+                                  ('2026-09-27T19:00:00.000000002Z', '2026-09-27T19:00:00.000000001Z')]:
             with self.subTest(started=started):
                 self.assertFalse(store.valid_container_boundary({**self.proof, 'startedAt': started, 'finishedAt': finished}))
+
+    def test_valid_nanosecond_boundary(self):
+        self.assertTrue(store.valid_container_boundary({**self.proof,
+            'startedAt': '2026-09-27T19:00:00.000000001Z', 'finishedAt': '2026-09-27T19:00:00.000000002Z'}))
 
     def test_malformed_companion_cannot_reclaim_live_preparing_files(self):
         entry = self.entry()

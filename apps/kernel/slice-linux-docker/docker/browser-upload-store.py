@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One bounded quota transaction, wholly owned by a kernel-held flock."""
 import fcntl
+from datetime import datetime
 import importlib.util
 import json
 import os
@@ -84,13 +85,28 @@ def retired(record):
         return False
 
 
+def boundary_timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("timestamp must be a string")
+    match = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?Z", value)
+    if not match:
+        raise ValueError("invalid Docker timestamp")
+    # datetime validates the calendar; retain all Docker nanoseconds for order.
+    return datetime.fromisoformat(match[1]), int((match[2] or "").ljust(9, "0"))
+
+
 def valid_container_boundary(proof):
-    return (isinstance(proof, dict) and BOUNDARY_FIELDS <= proof.keys()
+    valid = (isinstance(proof, dict) and BOUNDARY_FIELDS <= proof.keys()
             and type(proof["version"]) is int and proof["version"] == 1 and proof["authority"] == "docker-stopped-container"
             and isinstance(proof["engineId"], str) and re.fullmatch(r"[a-zA-Z0-9:_-]{8,128}", proof["engineId"]) is not None
             and isinstance(proof["containerId"], str) and re.fullmatch(r"[a-f0-9]{64}", proof["containerId"]) is not None
-            and all(isinstance(proof[key], str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", proof[key])
-                    for key in ("startedAt", "finishedAt")))
+            )
+    if not valid:
+        return False
+    try:
+        return boundary_timestamp(proof["startedAt"]) <= boundary_timestamp(proof["finishedAt"])
+    except ValueError:
+        return False
 
 
 def legacy_retirements(root):

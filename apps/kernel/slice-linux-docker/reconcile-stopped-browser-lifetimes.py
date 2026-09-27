@@ -21,7 +21,8 @@ def timestamp(value):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z", value):
         raise RuntimeError("Docker generation timestamp rejected")
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        seconds, _, fraction = value[:-1].partition(".")
+        return datetime.fromisoformat(seconds), int(fraction.ljust(9, "0"))
     except ValueError as error:
         raise RuntimeError("Docker generation timestamp rejected") from error
 
@@ -155,7 +156,7 @@ def receipts(archive, proof):
                 started = timestamp(existing["startedAt"])
                 finished = timestamp(existing["finishedAt"])
                 current_finished = timestamp(proof["finished"])
-                same = same and started <= finished <= current_finished and started.utcoffset() is not None
+                same = same and started <= finished <= current_finished
             except (ValueError, TypeError, KeyError, AttributeError, RuntimeError):
                 same = False
             if not same:

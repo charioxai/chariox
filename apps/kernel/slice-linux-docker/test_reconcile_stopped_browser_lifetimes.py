@@ -148,7 +148,8 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_invalid_and_reversed_generation_dates_never_write_proof(self):
         for started, finished in [("2026-99-99T99:99:99Z", "2026-09-27T00:00:00Z"),
-                                  ("2026-09-28T00:00:00Z", "2026-09-27T00:00:00Z")]:
+                                  ("2026-09-28T00:00:00Z", "2026-09-27T00:00:00Z"),
+                                  ("2026-09-27T00:00:00.000000002Z", "2026-09-27T00:00:00.000000001Z")]:
             docker = Docker()
             def request(*args, **kwargs):
                 value = docker(*args, **kwargs)
