@@ -7,6 +7,8 @@ mod owner;
 mod ownership;
 mod recovery;
 mod start;
+#[cfg(target_os = "macos")]
+pub(crate) use start::macos_storage_root;
 #[cfg(test)]
 mod tests;
 use crate::{
