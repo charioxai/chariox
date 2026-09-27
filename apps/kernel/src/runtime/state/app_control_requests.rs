@@ -251,11 +251,6 @@ impl KernelRuntimeState {
         let expected: u64 = expected_generation
             .parse()
             .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
-        // Linux App storage is root-owned: deleting it needs a storage-helper
-        // operation that does not exist yet, so the request changes nothing.
-        if delete_data && cfg!(target_os = "linux") {
-            return Err(AppRequestErrorCode::InvalidRequest);
-        }
         if expected != current_generation {
             return Err(AppRequestErrorCode::Conflict);
         }
@@ -293,6 +288,9 @@ impl KernelRuntimeState {
         // A failure here leaves the App uninstalled with its data; uninstalling
         // again with delete_data finishes the deletion.
         if delete_data {
+            #[cfg(target_os = "linux")]
+            self.delete_linux_app_storage(&view_owner, &view_installation)
+                .await?;
             let store = self.owned.durable_state_store.clone();
             let permit = self.app_control().try_admit()?;
             let generation = installation.generation;
@@ -317,6 +315,35 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::AppInstallation {
             installation: crate::runtime::app_control::installation_summary(installation),
         })
+    }
+
+    /// Linux App storage is root-owned: the storage helper deletes it. The
+    /// stopped worker releases its lease as it is reaped, so a busy storage is
+    /// retried briefly; then the request fails and deleting again finishes it.
+    #[cfg(target_os = "linux")]
+    async fn delete_linux_app_storage(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(), AppRequestErrorCode> {
+        let (owner, installation) = (owner.to_owned(), installation.to_owned());
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..20 {
+                match chariox_app_runtime::worker_process::delete_linux_storage(
+                    &owner,
+                    &installation,
+                ) {
+                    Ok(()) => return Ok(()),
+                    Err(code) if code == "app_storage_busy" => {
+                        std::thread::sleep(std::time::Duration::from_millis(250))
+                    }
+                    Err(_) => return Err(AppRequestErrorCode::StorageUnavailable),
+                }
+            }
+            Err(AppRequestErrorCode::Busy)
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
     }
 
     /// Returns whether a new start was accepted (an owner thread was spawned).

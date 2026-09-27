@@ -186,6 +186,13 @@ impl Reply {
             code: None,
         }
     }
+    pub fn deleted() -> Self {
+        Self {
+            status: "deleted".into(),
+            grant: None,
+            code: None,
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

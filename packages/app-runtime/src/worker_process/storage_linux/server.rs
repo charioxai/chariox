@@ -217,6 +217,16 @@ impl Client {
                     return Err(error);
                 }
             },
+            (None, request @ Request::Delete { .. }) => {
+                let result = store.delete(self.uid, request);
+                let reply = match result {
+                    Ok(()) => Reply::deleted(),
+                    Err(error) => Reply::failed(error),
+                };
+                let _ = wire::send(&mut self.stream, &reply);
+                // One deletion per connection, like a release.
+                return Err(result.err().unwrap_or(Error::Io));
+            }
             (Some(expected), Request::Release { lease }) if *expected == lease => {
                 match store.release(self.uid, &lease, false) {
                     Ok(()) => {

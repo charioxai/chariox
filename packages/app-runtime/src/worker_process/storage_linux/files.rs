@@ -252,8 +252,19 @@ pub(super) fn replace(parent: &Dir, from: &str, to: &str) -> Result<()> {
     Ok(())
 }
 
+pub(super) const JOURNAL: &str = "journal.json";
+/// The journal of storage being deleted, renamed once its images are
+/// unmounted and detached: a retried deletion or recovery only removes files.
+pub(super) const DELETING: &str = "deleting.json";
+
 pub(super) fn read_journal(parent: &Dir) -> Result<Option<Journal>> {
-    let file = match parent.read_file(OsStr::new("journal.json"), false) {
+    read_named(parent, JOURNAL)
+}
+pub(super) fn read_deleting(parent: &Dir) -> Result<Option<Journal>> {
+    read_named(parent, DELETING)
+}
+fn read_named(parent: &Dir, name: &str) -> Result<Option<Journal>> {
+    let file = match parent.read_file(OsStr::new(name), false) {
         Ok(file) => file,
         Err(crate::private_fs::FsError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>
@@ -281,7 +292,7 @@ pub(super) fn save_journal(parent: &Dir, journal: &Journal) -> Result<()> {
         return Err(Error::Invalid);
     }
     // Existing descriptor-relative atomic replace fsyncs file and directory.
-    parent.atomic_replace(OsStr::new("journal.json"), &bytes)?;
+    parent.atomic_replace(OsStr::new(JOURNAL), &bytes)?;
     Ok(())
 }
 

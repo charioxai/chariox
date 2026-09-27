@@ -100,6 +100,11 @@ pub(super) enum Request {
         runtime_digest: String,
         runtime_revision: u64,
     },
+    /// Deletes one installation's storage: its owner deleted the App's data.
+    Delete {
+        owner: String,
+        installation: String,
+    },
 }
 impl Request {
     pub fn validate(&self) -> Result<()> {
@@ -123,6 +128,13 @@ impl Request {
                 hex(cgroup_leaf.strip_prefix("app-").ok_or(Error::Invalid)?, 32)
             }
             Self::Release { lease } => hex(lease, 32),
+            Self::Delete {
+                owner,
+                installation,
+            } => {
+                identifier(owner)?;
+                identifier(installation)
+            }
             Self::AttachCode {
                 lease,
                 package_digest,

@@ -358,6 +358,14 @@ impl Drop for WorkerProcess {
 #[cfg(test)]
 mod tests;
 
+/// Deletes one installation's Linux storage through the storage helper once
+/// its workers are reaped: the owner deleted the App's data. Deleting again
+/// finishes an interrupted deletion. The error is a stable storage code.
+#[cfg(target_os = "linux")]
+pub fn delete_linux_storage(owner: &str, installation: &str) -> Result<(), String> {
+    storage_linux::delete(owner, installation).map_err(|error| error.to_string())
+}
+
 /// Installed root-only Linux storage helper entry. It does not accept App RPCs.
 #[cfg(target_os = "linux")]
 pub fn run_app_storage_helper(arguments: Vec<String>) -> Result<(), String> {

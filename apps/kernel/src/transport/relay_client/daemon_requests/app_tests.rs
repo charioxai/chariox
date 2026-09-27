@@ -433,7 +433,7 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
     assert!(installation.data_kept);
     assert_ne!(installation.generation, generation);
     // Uninstalling again with delete_data deletes the kept data (protocol 363).
-    // Linux storage deletion needs a storage-helper operation: refused there.
+    // Linux deletes storage through the root storage helper, absent here.
     store
         .append_app_log("alice", "installed", "info", "kept", &serde_json::json!({}))
         .unwrap();
@@ -446,7 +446,7 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
     )
     .await;
     if cfg!(target_os = "linux") {
-        assert_eq!(delete, failed(AppRequestErrorCode::InvalidRequest));
+        assert_eq!(delete, failed(AppRequestErrorCode::StorageUnavailable));
     } else {
         let LocalDaemonResponse::AppInstallation { installation } = delete else {
             panic!("Alice deletes the kept data")

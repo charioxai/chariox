@@ -48,6 +48,60 @@ enum Operation<'a> {
         runtime_digest: &'a str,
         runtime_revision: u64,
     },
+    Delete {
+        owner: &'a str,
+        installation: &'a str,
+    },
+}
+
+/// The helper's authenticated per-UID socket, served by root.
+fn connect(uid: u32) -> Result<UnixStream> {
+    let socket_root = files::search_root_directory(Path::new(SOCKET_ROOT))?;
+    let socket_name = format!("u-{uid}.sock");
+    let metadata = crate::private_fs::entry_metadata(&socket_root, OsStr::new(&socket_name))?;
+    if metadata.st_mode & libc::S_IFMT != libc::S_IFSOCK
+        || metadata.st_uid != uid
+        || metadata.st_mode & 0o7777 != 0o600
+    {
+        return Err(Error::Identity);
+    }
+    let stream = UnixStream::connect(Path::new(SOCKET_ROOT).join(socket_name))?;
+    stream.set_nonblocking(true)?;
+    if wire::peer(&stream)? != 0 {
+        return Err(Error::Identity);
+    }
+    Ok(stream)
+}
+
+/// Asks the helper to delete one installation's storage once its workers are
+/// gone (the owner deleted the App's data). Deleting again finishes an
+/// interrupted deletion; absent storage is already deleted.
+pub(in crate::worker_process) fn delete(owner: &str, installation: &str) -> Result<()> {
+    let uid = unsafe { libc::geteuid() };
+    if uid == 0 {
+        return Err(Error::Identity);
+    }
+    let request = model::Request::Delete {
+        owner: owner.into(),
+        installation: installation.into(),
+    };
+    request.validate()?;
+    let mut stream = connect(uid)?;
+    wire::send(
+        &mut stream,
+        &Operation::Delete {
+            owner,
+            installation,
+        },
+    )?;
+    let reply: Reply = wire::receive(&stream, 150)?;
+    if reply.status == "deleted" && reply.grant.is_none() && reply.code.is_none() {
+        Ok(())
+    } else if reply.status == Error::Busy.to_string() {
+        Err(Error::Busy)
+    } else {
+        Err(Error::RecoveryRequired)
+    }
 }
 impl Lease {
     /// `committed_generation` is the installation's committed generation: a
@@ -72,20 +126,7 @@ impl Lease {
         };
         request.validate()?;
         let name = model::installation_name(owner, installation)?;
-        let socket_root = files::search_root_directory(Path::new(SOCKET_ROOT))?;
-        let socket_name = format!("u-{uid}.sock");
-        let metadata = crate::private_fs::entry_metadata(&socket_root, OsStr::new(&socket_name))?;
-        if metadata.st_mode & libc::S_IFMT != libc::S_IFSOCK
-            || metadata.st_uid != uid
-            || metadata.st_mode & 0o7777 != 0o600
-        {
-            return Err(Error::Identity);
-        }
-        let mut stream = UnixStream::connect(Path::new(SOCKET_ROOT).join(socket_name))?;
-        stream.set_nonblocking(true)?;
-        if wire::peer(&stream)? != 0 {
-            return Err(Error::Identity);
-        }
+        let mut stream = connect(uid)?;
         wire::send(
             &mut stream,
             &Operation::Acquire {

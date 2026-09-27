@@ -2001,9 +2001,9 @@ Workflow trigger and deployment direction:
   installation, at its current generation, deletes its kept data the same way,
   which also finishes a deletion interrupted after the uninstall. App
   installation summaries gain `data_kept`: uninstalled, with data an update
-  can reinstall into. Linux App storage is root-owned; until the storage
-  helper can delete it, `delete_data` is refused there with `invalid_request`
-  and nothing changes.
+  can reinstall into. Linux App storage is root-owned: the storage helper's
+  `delete` request (a new helper operation) removes it; an installation still
+  leased is busy.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -92,6 +92,7 @@ run_test() {
 }
 run_test chariox-storage-actual hosted_private_capacity_persistence_tmp_reset_and_noexec
 run_test chariox-storage-actual hosted_failed_update_restores_the_committed_data_snapshot
+run_test chariox-storage-actual hosted_deleting_an_installation_removes_its_storage
 # The committed start dropped the snapshot; no copy outlives the update.
 if find /var/lib/chariox-app-storage -name data-snapshot.ext4 | grep . ; then exit 1; fi
 run_test chariox-storage-actual hosted_readonly_code_views_match_verified_roots_in_kernel_namespace

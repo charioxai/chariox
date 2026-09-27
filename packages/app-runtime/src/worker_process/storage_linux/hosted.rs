@@ -172,6 +172,27 @@ fn hosted_failed_update_restores_the_committed_data_snapshot() {
     println!("each failed update started on and rolled back to committed data; a retry kept its writes; a committed update kept its own");
 }
 #[test]
+#[ignore = "requires dedicated hosted Linux root helper and fixed ext4 volumes"]
+fn hosted_deleting_an_installation_removes_its_storage() {
+    let context = Context::open("55555555555555555555555555555555");
+    let mut lease = context.lease("deleted", 1);
+    fs::write(lease.data_path().join("todos"), b"private").unwrap();
+    // A leased installation is still in use.
+    assert_eq!(
+        super::delete("hosted-owner", "deleted"),
+        Err(super::Error::Busy)
+    );
+    lease.release().unwrap();
+    super::delete("hosted-owner", "deleted").unwrap();
+    // Deleting again, or absent storage, succeeds.
+    super::delete("hosted-owner", "deleted").unwrap();
+    let mut fresh = context.lease("deleted", 1);
+    assert!(!fresh.data_path().join("todos").exists());
+    fresh.release().unwrap();
+    super::delete("hosted-owner", "deleted").unwrap();
+    println!("deletion refused a leased installation, then removed its storage; a new lease started empty");
+}
+#[test]
 #[ignore = "requires dedicated hosted Linux root helper and owned process cancellation"]
 fn hosted_crash_fixture_holds_lease_until_owner_is_killed() {
     let context = Context::open("22222222222222222222222222222222");

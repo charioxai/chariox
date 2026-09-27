@@ -17,7 +17,7 @@ mod server;
 mod store;
 mod wire;
 
-pub(super) use client::Lease;
+pub(super) use client::{delete, Lease};
 
 pub(super) fn cgroup_path() -> Result<std::path::PathBuf> {
     let uid = unsafe { libc::geteuid() };

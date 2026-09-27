@@ -330,6 +330,48 @@ impl Store {
         self.live.remove(lease);
         Ok(())
     }
+    /// Deletes one installation's storage after its workers are gone: the
+    /// owner deleted the App's data. A leased installation is busy. Its images
+    /// are unmounted and detached as on release; then the journal is renamed to
+    /// a deletion marker, so a retried deletion or recovery only removes what
+    /// is left. Absent storage is already deleted.
+    pub fn delete(&mut self, uid: u32, request: Request) -> Result<()> {
+        request.validate()?;
+        let Request::Delete {
+            owner,
+            installation,
+        } = request
+        else {
+            return Err(Error::Invalid);
+        };
+        self.owners.get(&uid).ok_or(Error::Identity)?;
+        let name = model::installation_name(&owner, &installation)?;
+        if self.live.values().any(|live| {
+            live.journal.uid == uid
+                && live.journal.owner == owner
+                && live.journal.installation == installation
+        }) {
+            return Err(Error::Busy);
+        }
+        let Some(user) = present(&self.root, &format!("u-{uid}"))? else {
+            return Ok(());
+        };
+        files::root_owned(&user.0, true)?;
+        let Some(directory) = present(&user, &name)? else {
+            return Ok(());
+        };
+        files::root_owned(&directory.0, true)?;
+        directory.sync()?; // complete any prior rename before observing it
+        if let Some(journal) = files::read_deleting(&directory)? {
+            journal.validate(uid, &name)?;
+        } else if let Some(mut journal) = files::read_journal(&directory)? {
+            journal.validate(uid, &name)?;
+            let path = Path::new(ROOT).join(format!("u-{uid}")).join(&name);
+            self.recover(&directory, &path, &mut journal)?;
+            files::replace(&directory, files::JOURNAL, files::DELETING)?;
+        }
+        finish_deletion(&user, &name, directory)
+    }
     pub fn shutdown(&mut self) {
         // Synchronous best effort, with durable recovery retained on any failure.
         // The daemon owns no detached cleanup thread or arbitrary PID signal.
@@ -370,7 +412,11 @@ impl Store {
                 let child = directory.child(&name)?;
                 files::root_owned(&child.0, true)?;
                 child.sync()?; // complete any prior rename before observing it
-                if let Some(mut journal) = files::read_journal(&child)? {
+                if let Some(journal) = files::read_deleting(&child)? {
+                    // An interrupted deletion: its images were already detached.
+                    journal.validate(uid, name.to_str().ok_or(Error::Identity)?)?;
+                    finish_deletion(&directory, name.to_str().ok_or(Error::Identity)?, child)?;
+                } else if let Some(mut journal) = files::read_journal(&child)? {
                     journal.validate(uid, name.to_str().ok_or(Error::Identity)?)?;
                     self.recover(
                         &child,
@@ -447,6 +493,37 @@ impl Drop for Store {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+fn present(parent: &Dir, name: &str) -> Result<Option<Dir>> {
+    files::component(name)?;
+    match parent.child(OsStr::new(name)) {
+        Ok(dir) => Ok(Some(dir)),
+        Err(crate::private_fs::FsError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Removes a deleting installation's files, then its marker, then the
+/// directory; its images were unmounted and detached before the marker.
+fn finish_deletion(user: &Dir, name: &str, directory: Dir) -> Result<()> {
+    let mut remaining = 4096;
+    crate::private_fs::remove_contents_preserving(
+        &directory,
+        &mut remaining,
+        OsStr::new(files::DELETING),
+        &mut || Ok(()),
+    )?;
+    directory.remove_file(OsStr::new(files::DELETING))?;
+    directory.sync()?;
+    drop(directory);
+    user.remove_directory(OsStr::new(name))?;
+    user.sync()?;
+    Ok(())
 }
 
 fn cleanup(directory: &Dir, path: &Path, journal: &mut Journal, owner: &Owner) -> Result<()> {
