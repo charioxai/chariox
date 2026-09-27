@@ -288,6 +288,9 @@ impl KernelRuntimeState {
         // A failure here leaves the App uninstalled with its data; uninstalling
         // again with delete_data finishes the deletion.
         if delete_data {
+            #[cfg(target_os = "macos")]
+            self.delete_macos_app_storage(&view_owner, &view_installation)
+                .await?;
             #[cfg(target_os = "linux")]
             self.delete_linux_app_storage(&view_owner, &view_installation)
                 .await?;
@@ -315,6 +318,39 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::AppInstallation {
             installation: crate::runtime::app_control::installation_summary(installation),
         })
+    }
+
+    /// The stopped worker releases its storage as it is reaped, so a busy
+    /// storage is retried briefly; then the request fails and deleting again
+    /// finishes it.
+    #[cfg(target_os = "macos")]
+    async fn delete_macos_app_storage(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(), AppRequestErrorCode> {
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (owner.to_owned(), installation.to_owned());
+        tokio::task::spawn_blocking(move || {
+            let root = crate::runtime::app_lifecycle::macos_storage_root(&store)
+                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
+            for _ in 0..20 {
+                match chariox_app_runtime::worker_process::PreparedWorker::delete_macos_storage(
+                    &root,
+                    &owner,
+                    &installation,
+                ) {
+                    Ok(()) => return Ok(()),
+                    Err("app_storage_busy") => {
+                        std::thread::sleep(std::time::Duration::from_millis(250))
+                    }
+                    Err(_) => return Err(AppRequestErrorCode::StorageUnavailable),
+                }
+            }
+            Err(AppRequestErrorCode::Busy)
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
     }
 
     /// Linux App storage is root-owned: the storage helper deletes it. The

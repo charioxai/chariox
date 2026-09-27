@@ -318,7 +318,7 @@ fn spawn(
 /// Kernel-owned private APFS image root beside the kernel database. It is
 /// never derived from an App, client or package value.
 #[cfg(target_os = "macos")]
-fn macos_storage_root(
+pub(crate) fn macos_storage_root(
     store: &crate::durable_state::DurableKernelStateStore,
 ) -> Result<std::path::PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
