@@ -23,6 +23,23 @@ const rootlessDockerDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-l
 const quotaAllocatorDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf")
 const sourceDateEpoch = "946684800"
 
+function parseUnitSections(source) {
+  const sections = new Map()
+  let section
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue
+    const header = /^\[([^\]]+)\]$/.exec(line)
+    if (header) {
+      section = header[1]
+      if (!sections.has(section)) sections.set(section, [])
+      continue
+    }
+    if (section) sections.get(section).push(line)
+  }
+  return sections
+}
+
 test("managed prebuilt slice runtime materializes its runtime output directory", async () => {
   const dockerfile = await readFile(
     join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
@@ -691,6 +708,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     ["chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", "quota allocator"],
   ]) {
     const dropIn = await readFile(join(output, "rootfs/etc/systemd/system", relativePath), "utf8")
+    const sections = parseUnitSections(dropIn)
     for (const directive of [
       "Requires=chariox-data-volume-admission.service",
       "After=chariox-data-volume-admission.service",
@@ -699,7 +717,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
       "AssertPathIsMountPoint=/var/lib/chariox-docker/data",
     ]) {
       assert.equal(
-        dropIn.split(/\r?\n/).filter((line) => line === directive).length,
+        (sections.get("Unit") ?? []).filter((line) => line === directive).length,
         1,
         `Path-1 ${label} drop-in must declare ${directive}`,
       )
@@ -709,7 +727,18 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     join(output, "rootfs/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"),
     "utf8",
   )
-  assert.ok(rootlessDataVolumeDropIn.includes("Environment=CHARIOX_PATH1_DATA_VOLUME_REQUIRED=1"))
+  const rootlessDataVolumeSections = parseUnitSections(rootlessDataVolumeDropIn)
+  const requiredDataVolumeEnvironment = "Environment=CHARIOX_PATH1_DATA_VOLUME_REQUIRED=1"
+  assert.equal(
+    (rootlessDataVolumeSections.get("Service") ?? []).filter((line) => line === requiredDataVolumeEnvironment).length,
+    1,
+    "Path-1 rootless Docker must enable admitted data-volume quota enforcement in [Service]",
+  )
+  assert.equal(
+    [...rootlessDataVolumeSections.values()].flat().filter((line) => line === requiredDataVolumeEnvironment).length,
+    1,
+    "Path-1 rootless Docker data-volume environment must appear exactly once",
+  )
 
   const releaseRoot = join(output, "rootfs")
   const path1Verifier = runVerifier(releaseRoot, packaged.stdout.trim(), fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
