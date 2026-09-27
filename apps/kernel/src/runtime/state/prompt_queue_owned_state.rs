@@ -210,6 +210,23 @@ impl KernelRuntimeOwnedState {
         queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
     ) -> Result<(), DaemonError> {
         let activity_mutation = self.begin_managed_activity_mutation();
+        self.mirror_prompt_owner_agent_state_with_activity_mutation(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            activity_mutation,
+        )
+    }
+
+    pub(super) fn mirror_prompt_owner_agent_state_with_activity_mutation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        active_prompt: Option<crate::session::PromptQueueItem>,
+        queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+    ) -> Result<(), DaemonError> {
         let session = self.session_store.mirror_agent_prompt_state(
             session_id,
             agent_id,

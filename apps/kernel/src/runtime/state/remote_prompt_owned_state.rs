@@ -174,8 +174,13 @@ impl KernelRuntimeOwnedState {
             self.record_started_user_prompt(session_id, started.source_attachment_id(), &started)?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-        activity_mutation.record();
+        self.mirror_prompt_owner_agent_state_with_activity_mutation(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            activity_mutation,
+        )?;
         self.persist_prompt_session_state(&self.session_store.get_session(session_id)?, agent_id)?;
         let remote_dispatch = crate::app::KernelRemotePromptDispatch {
             session_id: session_id.to_string(),
