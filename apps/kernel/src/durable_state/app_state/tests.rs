@@ -62,9 +62,16 @@ fn catalog_with_package(
     store: &DurableKernelStateStore,
     package_bytes: (Vec<u8>, TrustedPublisher),
 ) -> Arc<EventCatalog> {
+    catalog_for_owner(store, "alice", package_bytes)
+}
+pub(super) fn catalog_for_owner(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    package_bytes: (Vec<u8>, TrustedPublisher),
+) -> Arc<EventCatalog> {
     store
         .mutate_app_publisher(
-            "alice",
+            owner,
             AppPublisherMutation::Enroll {
                 publisher: publisher(),
                 expected_revision: 0,
@@ -75,7 +82,7 @@ fn catalog_with_package(
         .unwrap();
     let (bytes, publisher) = package_bytes;
     let trust = store
-        .trusted_app_publisher("alice", "com.example", "state-key")
+        .trusted_app_publisher(owner, "com.example", "state-key")
         .unwrap();
     let package = verify(
         &bytes,
@@ -85,7 +92,7 @@ fn catalog_with_package(
     let candidate = VerifiedInstallCandidate::from_verified(&package, &trust).unwrap();
     let AppRegistryOutcome::Update(record) = store
         .mutate_verified_app_installation(
-            "alice",
+            owner,
             AppVerifiedInstallationMutation::CreateAndStage {
                 installation_id: "installed".into(),
                 candidate,
@@ -99,7 +106,7 @@ fn catalog_with_package(
     let binding = {
         let mut connection = store.connection.lock().unwrap();
         InstallationRegistry::new(&mut connection)
-            .staged_trust("alice", &record.token)
+            .staged_trust(owner, &record.token)
             .unwrap()
     };
     for operation in [
@@ -122,11 +129,11 @@ fn catalog_with_package(
             now_ms: 4,
         },
     ] {
-        store.mutate_app_installation("alice", operation).unwrap();
+        store.mutate_app_installation(owner, operation).unwrap();
     }
     store
         .mutate_verified_app_installation(
-            "alice",
+            owner,
             AppVerifiedInstallationMutation::Commit {
                 token: record.token,
                 now_ms: 5,
@@ -170,6 +177,19 @@ fn package_variant(
     version: &str,
     schema: u32,
 ) -> (Vec<u8>, TrustedPublisher) {
+    package_build(with_tools, with_network, version, schema, false)
+}
+/// An App that also declares the incoming event `received` (any object).
+pub(super) fn inbox_package() -> (Vec<u8>, TrustedPublisher) {
+    package_build(false, false, "1.0.0", 0, true)
+}
+fn package_build(
+    with_tools: bool,
+    with_network: bool,
+    version: &str,
+    schema: u32,
+    incoming: bool,
+) -> (Vec<u8>, TrustedPublisher) {
     let mut manifest: Manifest=serde_json::from_value(json!({
         "schema":"chariox.app.v1","appId":"com.example.state","version":version,
         "publisher":{"id":"com.example","keyId":"state-key","name":"Developer"},
@@ -197,12 +217,19 @@ fn package_variant(
         ),
         (
             "schemas/events.json".into(),
-            serde_json::to_vec(&json!({"events":[{
-                "name":"changed","direction":"outgoing","schemaVersion":1,
-                "payloadSchema":{"type":"object","additionalProperties":false,
-                    "required":["text"],"properties":{"text":{"type":"string"}}}
-            }]}))
-            .unwrap(),
+            {
+                let mut events = vec![json!({
+                    "name":"changed","direction":"outgoing","schemaVersion":1,
+                    "payloadSchema":{"type":"object","additionalProperties":false,
+                        "required":["text"],"properties":{"text":{"type":"string"}}}
+                })];
+                if incoming {
+                    events.push(json!({"name":"received","direction":"incoming",
+                        "schemaVersion":1,"payloadSchema":{"type":"object","additionalProperties":false,
+                        "properties":{"text":{"type":"string"}}}}));
+                }
+                serde_json::to_vec(&json!({ "events": events })).unwrap()
+            },
         ),
     ]);
     if schema > 0 {

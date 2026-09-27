@@ -278,6 +278,18 @@ pub(crate) fn fixture_event_catalog(store: &DurableKernelStateStore) -> Arc<Even
     tests::catalog(store)
 }
 
+/// Installs `installed` for `owner` from a package that also declares the
+/// incoming event `received`; returns the package to stage its release.
+#[cfg(test)]
+pub(crate) fn fixture_inbox_installation(
+    store: &DurableKernelStateStore,
+    owner: &str,
+) -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    let package = tests::inbox_package();
+    tests::catalog_for_owner(store, owner, package.clone());
+    package
+}
+
 #[cfg(test)]
 pub(crate) fn fixture_event_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::package()
