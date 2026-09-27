@@ -1314,11 +1314,13 @@ mod tests {
         let (store, durable) = durable_setup_store(&root, "detached-output-writer-op");
         let scratch = make_scratch(&root, "detached-output-writer-op", 1, 0);
         let scratch_path = scratch.path().to_path_buf();
+        let fixture = DetachedOutputWriterFixture::new(&root, &scratch);
+        let environment = fixture.environment();
         let started = Instant::now();
         let result = super::super::project_environment_setup_validation::run_worker_validation_command_with_output_timeout(
-            "/usr/bin/setsid /bin/sh -c '/bin/sleep 0.25' & exit 0",
+            DetachedOutputWriterFixture::command_text(),
             &root.join("workspace"),
-            &BTreeMap::new(),
+            &environment,
             &scratch,
             &store,
             "detached-output-writer-op",
@@ -1341,6 +1343,11 @@ mod tests {
         assert!(error.contains("output pipes remained open"), "unexpected error: {error}");
         assert!(started.elapsed() < Duration::from_millis(500));
         assert!(scratch_path.exists(), "scratch remains while detached output may be active");
+        let writer_identity = fixture
+            .live_identity()
+            .expect("the parent must wait until the detached writer has escaped and retained stdout");
+        assert_eq!(writer_identity.process_group_id, writer_identity.pid);
+        assert_eq!(writer_identity.session_id, writer_identity.pid);
 
         let event = durable
             .load_events_by_kind("project.environment_setup.updated")
@@ -1376,13 +1383,150 @@ mod tests {
             true
         );
 
-        // Let the short-lived detached fixture release the pipe, then remove
-        // only this test's still-marker-verified scratch directory.
-        std::thread::sleep(Duration::from_millis(300));
-        scratch
+        fixture
             .cleanup()
-            .expect("the test-owned scratch should be removable after its writer exits");
-        let _ = fs::remove_dir_all(&root);
+            .expect("the exact detached writer should be reaped before owned scratch cleanup");
+        assert!(!scratch_path.exists(), "the test-owned scratch should be removed after writer cleanup");
+    }
+
+    struct DetachedOutputWriterFixture<'a> {
+        root: &'a Path,
+        scratch: &'a super::super::project_environment_setup_scratch::WorkerValidationScratch,
+        identity_path: PathBuf,
+    }
+
+    impl<'a> DetachedOutputWriterFixture<'a> {
+        const IDENTITY_ENV: &'static str = "CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY";
+
+        fn new(
+            root: &'a Path,
+            scratch: &'a super::super::project_environment_setup_scratch::WorkerValidationScratch,
+        ) -> Self {
+            Self {
+                root,
+                scratch,
+                identity_path: root.join("detached-output-writer.identity"),
+            }
+        }
+
+        fn command_text() -> &'static str {
+            r#"
+/usr/bin/setsid /bin/sh -c '
+writer_pid=$$
+proc_stat=$(/bin/cat "/proc/$writer_pid/stat") || exit 91
+proc_rest=${proc_stat##*) }
+set -- $proc_rest
+[ "$#" -ge 20 ] || exit 92
+writer_pgid=$3
+writer_sid=$4
+writer_start_time=${20}
+[ "$writer_pid" = "$writer_pgid" ] || exit 93
+[ "$writer_pid" = "$writer_sid" ] || exit 94
+case "$writer_start_time" in ""|*[!0-9]*) exit 95 ;; esac
+[ "$writer_start_time" -gt 0 ] || exit 96
+[ -p "/proc/$writer_pid/fd/1" ] || exit 97
+printf "%s %s %s %s\n" "$writer_pid" "$writer_pgid" "$writer_sid" "$writer_start_time" > "${CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY}.tmp" || exit 98
+/bin/mv "${CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY}.tmp" "$CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY" || exit 99
+exec /bin/sleep 5
+' &
+attempt=0
+while [ "$attempt" -lt 40 ]; do
+  [ -s "$CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY" ] && exit 0
+  /bin/sleep 0.005
+  attempt=$((attempt + 1))
+done
+[ -s "$CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY" ] || exit 100
+exit 0
+"#
+        }
+
+        fn environment(&self) -> BTreeMap<String, String> {
+            BTreeMap::from([(
+                Self::IDENTITY_ENV.to_string(),
+                self.identity_path.to_string_lossy().into_owned(),
+            )])
+        }
+
+        fn recorded_identity(&self) -> Result<(u32, u32, u32, u64), String> {
+            let recorded = fs::read_to_string(&self.identity_path)
+                .map_err(|error| format!("detached writer identity could not be read: {error}"))?;
+            let fields = recorded.split_whitespace().collect::<Vec<_>>();
+            if fields.len() != 4 {
+                return Err("detached writer identity is malformed".to_string());
+            }
+            let pid = fields[0]
+                .parse::<u32>()
+                .map_err(|_| "detached writer PID is malformed".to_string())?;
+            let process_group_id = fields[1]
+                .parse::<u32>()
+                .map_err(|_| "detached writer process group is malformed".to_string())?;
+            let session_id = fields[2]
+                .parse::<u32>()
+                .map_err(|_| "detached writer session is malformed".to_string())?;
+            let start_time_ticks = fields[3]
+                .parse::<u64>()
+                .map_err(|_| "detached writer start time is malformed".to_string())?;
+            if pid <= 1
+                || pid > i32::MAX as u32
+                || process_group_id != pid
+                || session_id != pid
+                || start_time_ticks == 0
+            {
+                return Err("detached writer identity is not a new session leader".to_string());
+            }
+            Ok((pid, process_group_id, session_id, start_time_ticks))
+        }
+
+        fn live_identity(&self) -> Result<ValidationProcessIdentity, String> {
+            let (pid, process_group_id, session_id, start_time_ticks) = self.recorded_identity()?;
+            let current = read_proc_identity(pid)?;
+            if current.process_group_id != process_group_id
+                || current.session_id != session_id
+                || current.start_time_ticks != start_time_ticks
+                || matches!(current.state, 'Z' | 'X')
+            {
+                return Err("detached writer process identity changed before cleanup".to_string());
+            }
+            let stdout_target = fs::read_link(PathBuf::from(format!("/proc/{pid}/fd/1")))
+                .map_err(|error| format!("detached writer stdout could not be inspected: {error}"))?;
+            if !stdout_target.to_string_lossy().starts_with("pipe:[") {
+                return Err("detached writer no longer holds the validation stdout pipe".to_string());
+            }
+            Ok(ValidationProcessIdentity {
+                boot_id: current_boot_id()?,
+                pid,
+                process_group_id,
+                session_id,
+                start_time_ticks,
+            })
+        }
+
+        fn cleanup(&self) -> Result<(), String> {
+            if !self.root.exists() {
+                return Ok(());
+            }
+            if self.identity_path.exists() {
+                let (_, process_group_id, _, _) = self.recorded_identity()?;
+                if !process_group_is_absent(process_group_id)? {
+                    let identity = self.live_identity()?;
+                    settle_process_group(&identity)?;
+                }
+                if !process_group_is_absent(process_group_id)? {
+                    return Err("detached writer process group remained after reap".to_string());
+                }
+            }
+            if self.scratch.path().exists() {
+                self.scratch.cleanup()?;
+            }
+            fs::remove_dir_all(self.root)
+                .map_err(|error| format!("test-owned detached writer root could not be removed: {error}"))
+        }
+    }
+
+    impl Drop for DetachedOutputWriterFixture<'_> {
+        fn drop(&mut self) {
+            let _ = self.cleanup();
+        }
     }
 
     #[cfg(target_os = "linux")]
