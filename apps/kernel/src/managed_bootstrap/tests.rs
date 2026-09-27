@@ -2102,19 +2102,66 @@ fn managed_slice_broker_owns_the_only_docker_socket_and_unlinks_its_endpoint() {
         "NoNewPrivileges=true",
         "CapabilityBoundingSet=",
         "ProtectSystem=strict",
-        "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share /run/chariox-docker",
     ] {
         assert!(
             unit.contains(required),
             "missing slice broker contract: {required}"
         );
     }
+    let writable_paths = systemd_service_list_property(unit, "ReadWritePaths");
+    let required_writable_paths = [
+        "/run/chariox-docker",
+        "/var/lib/chariox-docker",
+        "/var/lib/chariox-slice-share",
+    ];
+    for required in required_writable_paths {
+        assert!(
+            writable_paths.contains(&required),
+            "broker is missing writable path {required}: {writable_paths:?}"
+        );
+    }
+    let additional_writable_paths = writable_paths
+        .iter()
+        .copied()
+        .filter(|path| !required_writable_paths.contains(path))
+        .collect::<Vec<_>>();
+    assert!(
+        additional_writable_paths.is_empty()
+            || additional_writable_paths == vec!["/var/lib/chariox-slice-disk-quota"],
+        "broker has an unexpected writable path: {additional_writable_paths:?}"
+    );
     assert!(broker.contains("server.close()"));
     assert!(broker.contains("rmSync(SOCKET_PATH, { force: true })"));
     assert!(broker.contains("Docker command shape is not allowed"));
     assert!(broker.contains("must stay under the managed slice share"));
     assert!(broker.contains("chariox-slice-build-context"));
     assert!(!unit.contains("/var/lib/chariox/home"));
+}
+
+fn systemd_service_list_property<'a>(unit: &'a str, property: &str) -> Vec<&'a str> {
+    let mut in_service_section = false;
+    let mut values = Vec::new();
+    let prefix = format!("{property}=");
+    for line in unit.lines().map(str::trim) {
+        if line.starts_with('[') && line.ends_with(']') {
+            in_service_section = line == "[Service]";
+            continue;
+        }
+        if !in_service_section {
+            continue;
+        }
+        let Some(value) = line.strip_prefix(&prefix) else {
+            continue;
+        };
+        if value.trim().is_empty() {
+            values.clear();
+        } else {
+            values.extend(value.split_whitespace());
+        }
+    }
+    values.sort_unstable();
+    values.dedup();
+    values
 }
 
 #[test]

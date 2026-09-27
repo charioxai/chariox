@@ -992,7 +992,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             home.join(".chariox").display()
         )));
         assert!(path1.contains(&format!("cwd={}\n", canonical_home.display())));
-        assert!(path1.contains("path=/usr/bin\n"));
+        assert!(path1.contains("path=relative:/usr/bin:\n"));
         assert!(path1.contains("repository_root=/srv/managed workspaces\n"));
         assert!(path1.contains("topology=path1\n"));
         assert!(path1.contains("capability_root=<unset>\n"));
@@ -1110,7 +1110,9 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
     }
 
     #[cfg(target_os = "linux")]
-    struct Path1ConfirmationCloud;
+    struct Path1ConfirmationCloud {
+        relay_ready_marker: std::path::PathBuf,
+    }
 
     #[cfg(target_os = "linux")]
     impl BootstrapCloudClient for Path1ConfirmationCloud {
@@ -1127,6 +1129,16 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             _: &str,
             _: &super::super::cloud::ConfirmRequest,
         ) -> Result<super::super::cloud::ConfirmResponse, DaemonError> {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !self.relay_ready_marker.exists() {
+                if Instant::now() >= deadline {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "test managed bootstrap confirm",
+                        message: "probe kernel did not reach the relay-ready handshake".to_string(),
+                    });
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
             Ok(super::super::cloud::ConfirmResponse {
                 confirmed: true,
                 observed_state: "awaiting_context".to_string(),
@@ -1173,7 +1185,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "} > \"$record.tmp\"\n\
              /bin/mv \"$record.tmp\" \"$record\"\n\
              rm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\n\
-             if [ \"$generation\" = 1 ]; then exec /bin/sleep 30; fi\n",
+             : > \"$record.relay-ready\"\n\
+             if [ \"$generation\" = 1 ]; then exec /bin/sleep 5; fi\n",
         );
         script
     }
@@ -1381,7 +1394,12 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             &config,
             &release,
             &mut confirmation,
-            &Path1ConfirmationCloud,
+            &Path1ConfirmationCloud {
+                relay_ready_marker: std::path::PathBuf::from(format!(
+                    "{}.1.relay-ready",
+                    capture.display()
+                )),
+            },
             ManagedProviderTopology::Path1,
         );
 

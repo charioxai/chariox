@@ -1217,7 +1217,7 @@ mod tests {
         assert!(observed.contains(&format!("chariox_home={}\n", config.chariox_home.display())));
         assert!(observed.contains("repository_root=/srv/worker workspaces\n"));
         assert!(observed.contains("topology=path1\n"));
-        assert!(observed.contains("path=/usr/bin\n"));
+        assert!(observed.contains("path=relative:/usr/bin:\n"));
         assert!(observed.contains(&format!("cwd={}\n", config.process_home.display())));
         assert!(observed.contains("isolation=<unset>"));
         assert!(observed.contains("capability_root=<unset>"));
