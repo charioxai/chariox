@@ -178,6 +178,33 @@ export function validateProjectSetupProof(value) {
   return { ok: true, code: null }
 }
 
+export function validateProjectSetupProofCaptureBinding(value, captureProvenance) {
+  const invalid = (code, field = null) => ({ ok: false, code, ...(field ? { field } : {}) })
+  if (!isPlainObject(value)) return invalid("proof_missing")
+  if (!isPlainObject(captureProvenance) || captureProvenance.boundary !== "official-provider-turn"
+    || captureProvenance.observed !== true || !isPlainObject(captureProvenance.kernel_identity)) {
+    return invalid("capture_provenance_missing")
+  }
+
+  const kernel = captureProvenance.kernel_identity
+  if (!validIdentifier(kernel.kernel_id) || !validIdentifier(kernel.machine_id)
+    || kernel.transport !== "local-unix-ipc"
+    || !validIdentifier(captureProvenance.session_id)
+    || !validIdentifier(captureProvenance.agent_id)) {
+    return invalid("capture_identity_missing")
+  }
+
+  const expected = {
+    home_kernel_identity_fingerprint: fingerprint(`${kernel.kernel_id}\0${kernel.machine_id}`),
+    session_identity_fingerprint: fingerprint(captureProvenance.session_id),
+    agent_identity_fingerprint: fingerprint(captureProvenance.agent_id),
+  }
+  for (const [field, fingerprintValue] of Object.entries(expected)) {
+    if (value[field] !== fingerprintValue) return invalid("capture_identity_mismatch", field)
+  }
+  return { ok: true, code: null }
+}
+
 export function assertProjectSetupProof(value) {
   const validation = validateProjectSetupProof(value)
   if (!validation.ok) fail(validation.code, `Project setup proof failed validation: ${validation.code}`)

@@ -7,6 +7,7 @@ import {
   PROJECT_SETUP_MAX_STATUS_AGE_MS,
   PROJECT_SETUP_SELECTION_SCHEMA,
   validateProjectSetupProof,
+  validateProjectSetupProofCaptureBinding,
 } from "./managed-ordinary-project-setup-observer.mjs"
 
 const NOW = 1_800_000_000_000
@@ -163,6 +164,41 @@ test("Project setup observation binds fresh Ready validation to kernel, session,
   assert.equal(value.calls.some((entry) => entry?.GetProjectEnvironmentSetupStatus?.operationId === "operation-1"), true)
   assert.equal(value.calls.at(-1), "Close")
   assert.equal(JSON.stringify(observation).includes("127.0.0.1"), false)
+})
+
+test("Project setup identity binder requires the proof hashes to match its provider-turn capture", () => {
+  const selection = fixture().evidence.selection
+  const captureProvenance = {
+    boundary: "official-provider-turn",
+    observed: true,
+    kernel_identity: {
+      kernel_id: selection.kernel_id,
+      machine_id: selection.machine_id,
+      transport: "local-unix-ipc",
+    },
+    session_id: selection.session_id,
+    agent_id: selection.agent_id,
+  }
+  const proof = {
+    home_kernel_identity_fingerprint: digest(`${selection.kernel_id}\0${selection.machine_id}`),
+    session_identity_fingerprint: digest(selection.session_id),
+    agent_identity_fingerprint: digest(selection.agent_id),
+  }
+
+  // This unit checks hash linkage only; full acceptance also requires the production proof validator.
+  assert.deepEqual(validateProjectSetupProofCaptureBinding(proof, captureProvenance), { ok: true, code: null })
+  for (const field of [
+    "home_kernel_identity_fingerprint",
+    "session_identity_fingerprint",
+    "agent_identity_fingerprint",
+  ]) {
+    const forged = { ...proof, [field]: digest(`forged:${field}`) }
+    assert.deepEqual(validateProjectSetupProofCaptureBinding(forged, captureProvenance), {
+      ok: false,
+      code: "capture_identity_mismatch",
+      field,
+    })
+  }
 })
 
 test("assertion-only environment evidence is rejected before opening a kernel client", async () => {

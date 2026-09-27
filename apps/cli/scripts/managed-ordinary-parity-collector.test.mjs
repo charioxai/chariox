@@ -128,26 +128,33 @@ function procStat(pid, startTime = 123456) {
 
 // A production-shaped result fixture exercises the live observer schema. It
 // models the probe response shape and does not claim that this test contacted a kernel.
-function projectSetupProofFixture(overrides = {}) {
-  const workerIdentity = `sha256:${"2".repeat(64)}`
-  const workerKernelIdentity = `sha256:${"3".repeat(64)}`
+function projectSetupFingerprint(value) {
+  return `sha256:${createHash("sha256").update(String(value), "utf8").digest("hex")}`
+}
+
+function projectSetupProofFixture(overrides = {}, topology = "ordinary") {
+  const suffix = topology === "ordinary" ? "ordinary" : "path1"
+  const workerIdentity = projectSetupFingerprint(`${suffix}-worker`)
+  const workerKernelIdentity = projectSetupFingerprint(`${suffix}-worker-kernel`)
   const platform = "linux-x86_64"
+  const timestamp = 1_790_000_000_000 + (topology === "ordinary" ? 0 : 10_000)
+  const snapshotDigest = projectSetupFingerprint(`${suffix}-snapshot`)
   return {
     schema: PROJECT_SETUP_PROOF_SCHEMA,
     product_api_observation: "kernel-public-api",
     ready_validation_verified: true,
     status_fresh: true,
     before_after_identity_stable: true,
-    home_kernel_identity_fingerprint: `sha256:${"1".repeat(64)}`,
-    session_identity_fingerprint: `sha256:${"4".repeat(64)}`,
-    agent_identity_fingerprint: `sha256:${"5".repeat(64)}`,
-    project_identity_fingerprint: `sha256:${"6".repeat(64)}`,
-    operation_identity_fingerprint: `sha256:${"7".repeat(64)}`,
-    operation_attempt: 1,
-    operation_created_at_ms: 1_790_000_000_000,
-    status_updated_at_ms: 1_790_000_000_500,
-    observation_started_at_ms: 1_790_000_000_600,
-    observation_finished_at_ms: 1_790_000_000_700,
+    home_kernel_identity_fingerprint: projectSetupFingerprint(`${LIVE_KERNEL_IDENTITY.kernel_id}\0${LIVE_KERNEL_IDENTITY.machine_id}`),
+    session_identity_fingerprint: projectSetupFingerprint(CAPTURE_PROVENANCE.session_id),
+    agent_identity_fingerprint: projectSetupFingerprint(CAPTURE_PROVENANCE.agent_id),
+    project_identity_fingerprint: projectSetupFingerprint(`${suffix}-project`),
+    operation_identity_fingerprint: projectSetupFingerprint(`${suffix}-operation`),
+    operation_attempt: topology === "ordinary" ? 1 : 2,
+    operation_created_at_ms: timestamp,
+    status_updated_at_ms: timestamp + 500,
+    observation_started_at_ms: timestamp + 600,
+    observation_finished_at_ms: timestamp + 700,
     worker_identity_fingerprint: workerIdentity,
     worker_kernel_identity_fingerprint: workerKernelIdentity,
     target_identity_digest: projectSetupTargetIdentityDigest(workerIdentity, workerKernelIdentity, platform),
@@ -160,13 +167,13 @@ function projectSetupProofFixture(overrides = {}) {
     validation_receipts: [{
       command_digest: `sha256:${"9".repeat(64)}`,
       exit_code: 0,
-      stdout_bytes: 1,
-      stderr_bytes: 0,
+      stdout_bytes: topology === "ordinary" ? 1 : 19,
+      stderr_bytes: topology === "ordinary" ? 0 : 3,
     }],
-    before_snapshot_digest: `sha256:${"a".repeat(64)}`,
-    after_snapshot_digest: `sha256:${"a".repeat(64)}`,
-    transport_kind: "relay",
-    endpoint_fingerprint: `sha256:${"b".repeat(64)}`,
+    before_snapshot_digest: snapshotDigest,
+    after_snapshot_digest: snapshotDigest,
+    transport_kind: topology === "ordinary" ? "relay" : "kernel-public-api",
+    endpoint_fingerprint: projectSetupFingerprint(`${suffix}-endpoint`),
     ...overrides,
   }
 }
@@ -235,7 +242,7 @@ function genericResult(rowId, checkId, topology) {
     return {
       observed: true,
       project_setup_ok: true,
-      project_setup_proof: projectSetupProofFixture(),
+      project_setup_proof: projectSetupProofFixture({}, topology),
     }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
@@ -462,9 +469,11 @@ test("collects a real-command ordinary snapshot and validates all required rows"
   assert.ok(filesystem.files.size > 30)
 })
 
-test("MP-08 production-shaped Project setup proof fixture roundtrips for ordinary and Path-1", async () => {
+test("MP-08 production-shaped Project setup proof fixture roundtrips through collection and matrix validation", async () => {
+  const manifests = {}
   for (const topology of ["ordinary", "path1"]) {
     const { manifest } = await collect(topology)
+    manifests[topology] = manifest
     const check = manifest.rows["MP-08"].checks.project_setup
     assert.equal(manifest.schema, MATRIX_SCHEMA)
     assert.equal(check.status, "pass")
@@ -478,6 +487,18 @@ test("MP-08 production-shaped Project setup proof fixture roundtrips for ordinar
       signingKey: SIGNING_KEY,
     }).ok, true)
   }
+  const ordinaryProof = manifests.ordinary.rows["MP-08"].checks.project_setup.result.project_setup_proof
+  const path1Proof = manifests.path1.rows["MP-08"].checks.project_setup.result.project_setup_proof
+  assert.notEqual(ordinaryProof.operation_identity_fingerprint, path1Proof.operation_identity_fingerprint)
+  assert.notEqual(ordinaryProof.endpoint_fingerprint, path1Proof.endpoint_fingerprint)
+  assert.notEqual(ordinaryProof.before_snapshot_digest, path1Proof.before_snapshot_digest)
+  assert.notEqual(ordinaryProof.validation_receipts[0].stdout_bytes, path1Proof.validation_receipts[0].stdout_bytes)
+  const report = compareManifests(manifests.ordinary, manifests.path1, {
+    expectedReviewedCommit: REVIEWED_COMMIT,
+    expectedBuildId: BUILD_ID,
+    signingKey: SIGNING_KEY,
+  })
+  assert.equal(report.status, "pass", JSON.stringify(report, null, 2))
 })
 
 test("collector rejects injected or legacy Project setup assertions", async (context) => {
@@ -501,6 +522,18 @@ test("collector rejects injected or legacy Project setup assertions", async (con
         project_setup_ok: true,
         project_setup_proof: projectSetupProofFixture({ target_identity_digest: `sha256:${"c".repeat(64)}` }),
       },
+      errorCode: "project_setup_proof_invalid",
+    },
+    {
+      name: "proof identity belongs to a different provider-turn capture",
+      result: {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture({
+          session_identity_fingerprint: projectSetupFingerprint("different-session"),
+        }),
+      },
+      errorCode: "project_setup_capture_identity_mismatch",
     },
   ]
   for (const variant of variants) {
@@ -509,7 +542,7 @@ test("collector rejects injected or legacy Project setup assertions", async (con
         results: { "MP-08/project_setup": variant.result },
       })
       await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
-        assert.equal(error.code, "project_setup_proof_invalid")
+        assert.equal(error.code, variant.errorCode ?? "project_setup_proof_invalid")
         assert.equal(error.rowId, "MP-08")
         assert.equal(error.checkId, "project_setup")
         return true
