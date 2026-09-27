@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { spawn } from "node:child_process"
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { once } from "node:events"
@@ -172,7 +173,7 @@ linuxTest("direct exported-client reserve revokes a captured receipt before dura
     await assert.rejects(runWithSliceDiskQuotaAdmission({
       containerName: sliceIdentity.containerName,
       quotaMarkerPresent: false,
-      requestQuota: async () => Object.assign(new Error("allocator offline"), { code: "ECONNREFUSED" }),
+      requestQuota: async () => { throw Object.assign(new Error("allocator offline"), { code: "ECONNREFUSED" }) },
       resolveUnboundedProof: () => fixture.coordinator.resolveUnboundedProof(lock, sliceIdentity, sliceBinding),
       run: () => { started = true },
     }), /allocator offline/)
@@ -196,7 +197,7 @@ linuxTest("restarted coordinator ignores legacy receipts and uses strict shared 
     await assert.rejects(runWithSliceDiskQuotaAdmission({
       containerName: sliceIdentity.containerName,
       quotaMarkerPresent: false,
-      requestQuota: async () => Object.assign(new Error("allocator unavailable"), { code: "ENOENT" }),
+      requestQuota: async () => { throw Object.assign(new Error("allocator unavailable"), { code: "ENOENT" }) },
       resolveUnboundedProof: () => restarted.resolveUnboundedProof(lock, sliceIdentity, sliceBinding),
       run: () => assert.fail("legacy checkpoint receipt must not authorize rollout fallback"),
     }), /allocator unavailable/)
@@ -213,7 +214,7 @@ linuxTest("restarted coordinator ignores legacy receipts and uses strict shared 
     const result = await runWithSliceDiskQuotaAdmission({
       containerName: sliceIdentity.containerName,
       quotaMarkerPresent: false,
-      requestQuota: async () => Object.assign(new Error("allocator unavailable"), { code: "ECONNREFUSED" }),
+      requestQuota: async () => { throw Object.assign(new Error("allocator unavailable"), { code: "ECONNREFUSED" }) },
       resolveUnboundedProof: () => afterRestart.resolveUnboundedProof(lock, sliceIdentity, sliceBinding),
       run: (quota, admission) => ({ quota, admission }),
     })
@@ -378,6 +379,147 @@ linuxTest("aggregate-state lock serializes different container coordinators", as
   }
   await Promise.all([first, second])
   assert.equal(secondEntered, true)
+})
+
+linuxTest("actual unbounded start keeps its container lock through run before a service reserve", async (context) => {
+  const fixture = await setup(context)
+  const sliceIdentity = identity("start-reserve")
+  const sliceBinding = binding(sliceIdentity.homeVolumeName)
+  const allocator = testAllocator(fixture.stateStore)
+  const serviceCoordinator = createSliceDiskQuotaCoordinator({
+    stateStore: createFileSliceDiskQuotaStateStore(fixture.statePath),
+    ...fixture.paths,
+    lockWaitMs: 1_500,
+  })
+  let signalReserveAttempt
+  const reserveAttempted = new Promise((resolve) => { signalReserveAttempt = resolve })
+  const observedServiceCoordinator = {
+    ...serviceCoordinator,
+    runReservation(...args) {
+      signalReserveAttempt()
+      return serviceCoordinator.runReservation(...args)
+    },
+  }
+  const socketPath = await startQuotaService(context, allocator, observedServiceCoordinator)
+
+  await fixture.coordinator.withContainerLock(sliceIdentity.containerName, (lock) => (
+    fixture.coordinator.captureUnboundedProof(lock, sliceIdentity, sliceBinding)
+  ))
+  let signalRunEntered
+  const runEntered = new Promise((resolve) => { signalRunEntered = resolve })
+  let releaseRun
+  const runGate = new Promise((resolve) => { releaseRun = resolve })
+  const start = fixture.coordinator.withContainerLock(sliceIdentity.containerName, (lock) => (
+    runWithSliceDiskQuotaAdmission({
+      containerName: sliceIdentity.containerName,
+      quotaMarkerPresent: false,
+      requestQuota: (request) => requestSliceDiskQuota(request, { socketPath, requestTimeoutMs: 2_500 }),
+      resolveUnboundedProof: () => fixture.coordinator.resolveUnboundedProof(lock, sliceIdentity, sliceBinding),
+      run: async (quota, admission) => {
+        assert.deepEqual(quota, { bounded: false })
+        assert.deepEqual(admission, { source: "allocator", containerId: undefined })
+        signalRunEntered()
+        await runGate
+        return { status: "started" }
+      },
+    })
+  ))
+  let startDeadline
+  const startReachedRun = await Promise.race([
+    runEntered.then(() => true),
+    start.then(() => false, (error) => { throw error }),
+    new Promise((resolve) => { startDeadline = setTimeout(() => resolve(false), 3_500) }),
+  ])
+  clearTimeout(startDeadline)
+  assert.equal(startReachedRun, true)
+
+  const reserve = requestSliceDiskQuota(reserveRequest(sliceIdentity), { socketPath, requestTimeoutMs: 2_500 })
+  void reserve.catch(() => {})
+  try {
+    let queueDeadline
+    const didAttempt = await Promise.race([
+      reserveAttempted.then(() => true),
+      new Promise((resolve) => { queueDeadline = setTimeout(() => resolve(false), 1_000) }),
+    ])
+    clearTimeout(queueDeadline)
+    assert.equal(didAttempt, true)
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    assert.equal(Object.keys(fixture.baseStore.loadRequired().reservations).length, 0)
+    assert.equal(hasMatchingSliceDiskQuotaUnboundedProof(fixture.paths.proofRoot, sliceIdentity, sliceBinding), true)
+  } finally {
+    releaseRun()
+  }
+
+  assert.deepEqual(await start, { status: "started" })
+  await reserve
+  assert.equal(Object.keys(fixture.baseStore.loadRequired().reservations).length, 1)
+  assert.equal(hasMatchingSliceDiskQuotaUnboundedProof(fixture.paths.proofRoot, sliceIdentity, sliceBinding), false)
+})
+
+linuxTest("an abruptly exited lock owner releases its flock for a fresh coordinator", async (context) => {
+  const fixture = await setup(context)
+  const sliceIdentity = identity("lock-crash")
+  const childScript = join(fixture.root, "crashed-lock-owner.mjs")
+  const coordinatorUrl = new URL("./slice-disk-quota-coordinator.mjs", import.meta.url).href
+  await writeFile(childScript, `
+    import { createSliceDiskQuotaCoordinator } from ${JSON.stringify(coordinatorUrl)}
+    import { writeSync } from "node:fs"
+    const coordinator = createSliceDiskQuotaCoordinator({
+      statePath: ${JSON.stringify(fixture.statePath)},
+      coordinationRoot: ${JSON.stringify(fixture.paths.coordinationRoot)},
+      proofRoot: ${JSON.stringify(fixture.paths.proofRoot)},
+      lockWaitMs: 1_500,
+    })
+    await coordinator.withContainerLock(${JSON.stringify(sliceIdentity.containerName)}, async () => {
+      writeSync(1, "lock-action-entered\\n")
+      process.exit(0)
+    })
+  `, { mode: 0o600 })
+
+  const child = spawn(process.execPath, [childScript], {
+    cwd: "/",
+    env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    stdio: ["ignore", "pipe", "ignore"],
+  })
+  const exited = once(child, "exit")
+  context.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL")
+      await exited
+    }
+  })
+  let output = ""
+  let signalEntered
+  const entered = new Promise((resolve) => { signalEntered = resolve })
+  child.stdout.on("data", (chunk) => {
+    output += chunk.toString("utf8")
+    if (output.includes("lock-action-entered\n")) signalEntered()
+  })
+  let deadline
+  try {
+    const didEnter = await Promise.race([
+      entered.then(() => true),
+      exited.then(() => false),
+      new Promise((resolve) => { deadline = setTimeout(() => resolve(false), 4_000) }),
+    ])
+    assert.equal(didEnter, true)
+    clearTimeout(deadline)
+    const didExit = await Promise.race([
+      exited.then(() => true),
+      new Promise((resolve) => { deadline = setTimeout(() => resolve(false), 4_000) }),
+    ])
+    assert.equal(didExit, true)
+  } finally {
+    clearTimeout(deadline)
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL")
+      await exited
+    }
+  }
+
+  await fixture.coordinator.withContainerLock(sliceIdentity.containerName, (lock) => {
+    fixture.coordinator.assertLockHeld(lock)
+  })
 })
 
 linuxTest("failed bounded state write leaves the receipt revoked", async (context) => {

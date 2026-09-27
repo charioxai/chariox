@@ -77,7 +77,7 @@ test("broker start holds shared coordination through strict proof recheck and im
   const coordinator = await readFile(new URL("./slice-disk-quota-coordinator.mjs", import.meta.url), "utf8")
   assert.match(source, /withContainerLock\(containerName, async \(lock\) => runWithSliceDiskQuotaAdmission/)
   assert.match(source, /resolveUnboundedProof: \(\) => resolveBrokerUnboundedQuotaProof\(containerName, lock\)/)
-  assert.match(source, /resolveUnboundedProof\(lock, current\.identity, current\.binding\)/)
+  assert.match(source, /resolveUnboundedProof\(\s*lock,\s*current\.identity,\s*current\.binding,\s*\)/)
   assert.match(service, /coordinator\.runReservation\(request\.identity, \(\) => allocator\.handle\(request\)/)
   assert.match(coordinator, /withStateLock\(lock, async \(\) => \{[\s\S]*revokeUnboundedProof\(lock, identity\)[\s\S]*return operation\(\)/)
   assert.match(source, /prepared\.args\[1\] = admission\.containerId/)
