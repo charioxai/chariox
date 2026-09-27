@@ -5,6 +5,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import {
   acquireManagedReleaseBuilderLease,
   hashManagedReleaseSource,
@@ -495,20 +496,20 @@ function assertBuilderUnchanged(before, after) {
   }
 }
 
-function git(repository, args, encoding = "utf8") {
+function git(repository, args, encoding = "utf8", environment = process.env) {
   const result = spawnSync("git", args, {
     cwd: repository,
     encoding,
     maxBuffer: 512 * 1024 * 1024,
-    env: gitEnvironment(),
+    env: gitEnvironment(environment),
   })
   if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.toString().trim()}`)
   return result.stdout
 }
 
-function gitEnvironment() {
+function gitEnvironment(environment) {
   return {
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    PATH: environment.PATH ?? "/usr/bin:/bin",
     HOME: "/nonexistent",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
@@ -517,8 +518,8 @@ function gitEnvironment() {
   }
 }
 
-async function materializeGitTree(repository, commit, destination) {
-  const listing = git(repository, ["ls-tree", "-r", "-z", "--full-tree", commit], null)
+async function materializeGitTree(repository, commit, destination, environment) {
+  const listing = git(repository, ["ls-tree", "-r", "-z", "--full-tree", commit], null, environment)
   for (const record of listing.toString("utf8").split("\0").filter(Boolean)) {
     const match = /^(100644|100755) blob ([a-f0-9]{40})\t([^\0]+)$/.exec(record)
     if (!match || match[3].startsWith("/") || match[3].split("/").includes("..")) {
@@ -526,7 +527,7 @@ async function materializeGitTree(repository, commit, destination) {
     }
     const path = join(destination, match[3])
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    await writeFile(path, git(repository, ["cat-file", "blob", match[2]], null), {
+    await writeFile(path, git(repository, ["cat-file", "blob", match[2]], null, environment), {
       flag: "wx",
       mode: match[1] === "100755" ? 0o755 : 0o644,
     })
@@ -558,7 +559,34 @@ async function sha256File(path) {
   return `sha256:${createHash("sha256").update(await readFile(path)).digest("hex")}`
 }
 
-async function build(options) {
+async function captureOwnedScratchDirectory(path) {
+  const metadata = await lstat(path)
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new Error("managed release scratch path is not an invocation-owned directory")
+  }
+  return { dev: String(metadata.dev), ino: String(metadata.ino) }
+}
+
+async function removeOwnedScratchDirectory(path, identity) {
+  if (!path) return
+  let metadata
+  try {
+    metadata = await lstat(path)
+  } catch (error) {
+    if (error?.code === "ENOENT") return
+    throw error
+  }
+  if (!identity || metadata.isSymbolicLink() || !metadata.isDirectory() ||
+      String(metadata.dev) !== identity.dev || String(metadata.ino) !== identity.ino) {
+    throw new Error("managed release scratch path changed; refusing cleanup")
+  }
+  await rm(path, { recursive: true, force: false })
+}
+
+export async function runManagedKernelReleaseBuild(options, {
+  acquireBuilderLease = acquireManagedReleaseBuilderLease,
+  environment = process.env,
+} = {}) {
   if (!/^[a-f0-9]{40}$/.test(options["source-commit"])) {
     throw new Error("source commit must be a full lowercase Git commit ID")
   }
@@ -567,13 +595,13 @@ async function build(options) {
   if (repositoryMetadata.isSymbolicLink() || !repositoryMetadata.isDirectory()) {
     throw new Error("source repository must be a directory, not a symlink")
   }
-  const commit = git(repository, ["rev-parse", "--verify", `${options["source-commit"]}^{commit}`]).trim()
+  const commit = git(repository, ["rev-parse", "--verify", `${options["source-commit"]}^{commit}`], "utf8", environment).trim()
   if (commit !== options["source-commit"]) throw new Error("source commit did not resolve exactly")
-  const tree = git(repository, ["rev-parse", `${commit}^{tree}`]).trim()
+  const tree = git(repository, ["rev-parse", `${commit}^{tree}`], "utf8", environment).trim()
   const signingKey = await requirePrivateKey(options["builder-signing-key"])
 
   const dockerEnvironment = Object.fromEntries(
-    ["PATH", "HOME", "DOCKER_HOST"].flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []),
+    ["PATH", "HOME", "DOCKER_HOST"].flatMap((name) => environment[name] ? [[name, environment[name]]] : []),
   )
   dockerEnvironment.LC_ALL = "C"
   dockerEnvironment.NO_COLOR = "1"
@@ -582,14 +610,19 @@ async function build(options) {
     dockerEnvironment,
     preflightDeadlineMs: Date.now() + options["preflight-timeout-seconds"] * 1000,
   })
-  const lease = await acquireManagedReleaseBuilderLease({ builderName: verifiedBuilder.name })
+  const lease = await acquireBuilderLease({
+    home: environment.HOME,
+    builderName: verifiedBuilder.name,
+  })
   let priorBarrier = null
   let invocationBarrier = null
   let invocationBarrierWritten = false
   let invocationSettled = false
   let preserveInvocationArtifacts = false
   let runDirectory
+  let runDirectoryIdentity
   let pending
+  let pendingDirectoryIdentity
   try {
     if (!isStateDirectoryExternal(lease.stateDirectory, repository)) {
       throw new Error("managed release state must be outside the source repository")
@@ -603,8 +636,8 @@ async function build(options) {
       if (!priorSettlement.settled) {
         throw new Error(`managed release builder has an unresolved prior build: ${priorSettlement.reason}`)
       }
-      await lease.removeBarrier()
       await lease.removeRunArtifacts(priorBarrier)
+      await lease.removeBarrier()
       priorBarrier = null
     }
 
@@ -612,13 +645,15 @@ async function build(options) {
     await mkdir(dirname(options.output), { recursive: true })
     const invocationId = randomUUID()
     runDirectory = await lease.createRunDirectory(invocationId)
+    runDirectoryIdentity = await captureOwnedScratchDirectory(runDirectory)
     const source = join(runDirectory, "source")
     const metadataPath = join(runDirectory, "build-metadata.json")
     const exported = join(runDirectory, "artifacts")
     pending = join(dirname(options.output), `.new-${basename(options.output)}-${invocationId}`)
     await mkdir(source, { mode: 0o700 })
     await mkdir(pending, { mode: 0o755 })
-    await materializeGitTree(repository, commit, source)
+    pendingDirectoryIdentity = await captureOwnedScratchDirectory(pending)
+    await materializeGitTree(repository, commit, source, environment)
     const sourceDigest = await hashManagedReleaseSource(source)
     const historyBaseline = await listManagedBuildHistory({ ...options, dockerEnvironment }, Date.now() + options["preflight-timeout-seconds"] * 1000)
     invocationBarrier = {
@@ -631,14 +666,30 @@ async function build(options) {
       sourceDigest,
       sourceDirectory: source,
       runDirectory,
+      runDirectoryIdentity,
       outputPath: options.output,
       pendingDirectory: pending,
+      pendingDirectoryIdentity,
       startedAt: new Date().toISOString(),
       historyBaseline,
       buildRef: null,
+      buildStarted: false,
     }
-    invocationBarrierWritten = true
-    await lease.writeBarrier(invocationBarrier)
+    try {
+      await lease.writeBarrier(invocationBarrier)
+      invocationBarrierWritten = true
+    } catch (error) {
+      if (error?.barrierDisposition === "absent") {
+        invocationBarrierWritten = false
+      } else {
+        invocationBarrierWritten = true
+        preserveInvocationArtifacts = true
+      }
+      throw error
+    }
+
+    invocationBarrier = { ...invocationBarrier, buildStarted: true }
+    await lease.writeBarrier(invocationBarrier, { replace: true })
 
     const dockerBuild = await runCommand(
       "docker",
@@ -661,7 +712,7 @@ async function build(options) {
     const metadataReference = await readBuildReference(metadataPath, verifiedBuilder)
     if (metadataReference) {
       invocationBarrier = { ...invocationBarrier, buildRef: metadataReference }
-      await lease.writeBarrier(invocationBarrier)
+      await lease.writeBarrier(invocationBarrier, { replace: true })
     }
     let settlement
     try {
@@ -679,7 +730,7 @@ async function build(options) {
     invocationSettled = true
     if (invocationBarrier.buildRef === null) {
       invocationBarrier = { ...invocationBarrier, buildRef: settlement.buildRef }
-      await lease.writeBarrier(invocationBarrier)
+      await lease.writeBarrier(invocationBarrier, { replace: true })
     }
 
     if (dockerBuild.timedOut) throw new Error("locked managed release build timed out after remote settlement")
@@ -743,11 +794,11 @@ async function build(options) {
     try {
       if (!preserveInvocationArtifacts) {
         if (invocationBarrierWritten && invocationSettled) {
-          await lease.removeBarrier()
           await lease.removeRunArtifacts(invocationBarrier)
+          await lease.removeBarrier()
         } else if (!invocationBarrierWritten) {
-          if (pending) await rm(pending, { recursive: true, force: true })
-          if (runDirectory) await rm(runDirectory, { recursive: true, force: true })
+          await removeOwnedScratchDirectory(pending, pendingDirectoryIdentity)
+          await removeOwnedScratchDirectory(runDirectory, runDirectoryIdentity)
         }
       }
     } finally {
@@ -756,9 +807,11 @@ async function build(options) {
   }
 }
 
-try {
-  await build(parseOptions(process.argv.slice(2)))
-} catch (error) {
-  process.stderr.write(`${basename(process.argv[1])}: ${error instanceof Error ? error.message : String(error)}\n`)
-  process.exitCode = 1
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    await runManagedKernelReleaseBuild(parseOptions(process.argv.slice(2)))
+  } catch (error) {
+    process.stderr.write(`${basename(process.argv[1])}: ${error instanceof Error ? error.message : String(error)}\n`)
+    process.exitCode = 1
+  }
 }

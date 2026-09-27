@@ -1,11 +1,13 @@
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, verify } from "node:crypto"
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { test } from "node:test"
+import { runManagedKernelReleaseBuild } from "./build-managed-kernel-release.mjs"
+import { acquireManagedReleaseBuilderLease } from "./managed-release-settlement.mjs"
 import { parseBuildHistoryList } from "./managed-release-settlement.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
@@ -261,6 +263,25 @@ exit 98
       await writeFile(join(bin, "inspect-count"), "0")
       await writeFile(trace, "")
     },
+    environment() {
+      return {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        HOME: home,
+        TMPDIR: temp,
+      }
+    },
+    options() {
+      return {
+        "source-repository": source,
+        "source-commit": sourceCommit,
+        "builder-signing-key": keyPath,
+        output,
+        builder: builderName,
+        "preflight-timeout-seconds": 5,
+        "build-timeout-seconds": 30,
+      }
+    },
     run(extraArguments = [], includeBuilder = true, executionTimeoutMs, cwd) {
       return spawnSync(process.execPath, [
         builderScript,
@@ -274,12 +295,7 @@ exit 98
         encoding: "utf8",
         timeout: executionTimeoutMs,
         cwd,
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-          HOME: home,
-          TMPDIR: temp,
-        },
+        env: this.environment(),
       })
     },
     start(extraArguments = [], includeBuilder = true) {
@@ -293,12 +309,7 @@ exit 98
         ...extraArguments,
       ], {
         stdio: ["ignore", "ignore", "pipe"],
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-          HOME: home,
-          TMPDIR: temp,
-        },
+        env: this.environment(),
       })
       let stderr = ""
       child.stderr.setEncoding("utf8")
@@ -341,6 +352,72 @@ function waitForChild(child, timeoutMs = 10_000) {
       clearTimeout(timer)
       resolvePromise({ status, signal })
     })
+  })
+}
+
+function faultingBarrierFileOps(fixture, fault, beforeRename) {
+  const barrierPath = builderBarrierPath(fixture.home)
+  let injected = false
+  const tempPath = (path) => path.startsWith(`${barrierPath}.`) && path.endsWith(".tmp")
+  const ioFailure = (operation) => Object.assign(new Error(`injected barrier ${operation} failure`), { code: "EIO" })
+  return {
+    async open(path, ...args) {
+      if (fault === "open" && tempPath(path) && !injected) {
+        injected = true
+        throw ioFailure("open")
+      }
+      const handle = await open(path, ...args)
+      const kind = tempPath(path) ? "temp" : path === fixture.state ? "directory" : null
+      if (!kind) return handle
+      return new Proxy(handle, {
+        get(target, property) {
+          if (kind === "temp" && fault === "write" && property === "writeFile" && !injected) {
+            injected = true
+            return async () => { throw ioFailure("write") }
+          }
+          if (property === "sync" &&
+              ((kind === "temp" && fault === "file-sync") ||
+                (kind === "directory" && fault === "directory-sync")) && !injected) {
+            injected = true
+            return async () => { throw ioFailure(`${kind} sync`) }
+          }
+          const value = Reflect.get(target, property, target)
+          return typeof value === "function" ? value.bind(target) : value
+        },
+      })
+    },
+    lstat: async (path) => {
+      if (fault === "foreign-barrier" && path === barrierPath && !injected) {
+        const entries = await readdir(dirname(barrierPath))
+        if (entries.some((entry) => entry.startsWith(`${basename(barrierPath)}.`) && entry.endsWith(".tmp"))) {
+          injected = true
+          await writeFile(path, "foreign barrier\n", { flag: "wx", mode: 0o600 })
+        }
+      }
+      return lstat(path)
+    },
+    readFile,
+    rename: async (from, to) => {
+      if (to === barrierPath && tempPath(from)) {
+        await beforeRename?.()
+        if (fault === "rename" || fault === "tampered-pending") throw ioFailure("rename")
+      }
+      return rename(from, to)
+    },
+    rm,
+  }
+}
+
+function runBuildWithBarrierFault(fixture, fault, beforeRename) {
+  const fileOps = faultingBarrierFileOps(fixture, fault, beforeRename)
+  return runManagedKernelReleaseBuild(fixture.options(), {
+    environment: fixture.environment(),
+    acquireBuilderLease: ({ home, builderName: leasedBuilderName }) =>
+      acquireManagedReleaseBuilderLease({
+        home,
+        builderName: leasedBuilderName,
+        fileOps,
+      }),
   })
 }
 
@@ -495,6 +572,95 @@ test("managed release build requires a bounded, already-running Buildx builder b
   const attestation = await readFile(join(fixture.output, "build-attestation.json"))
   const signature = Buffer.from(await readFile(join(fixture.output, "build-attestation.sig"), "utf8"), "base64")
   assert.equal(verify(null, attestation, fixture.keys.publicKey, signature), true)
+})
+
+test("initial barrier write failures clean only owned scratch and never build or sign", async (context) => {
+  for (const fault of ["open", "write", "file-sync", "rename"]) {
+    const root = await mkdtemp(join(tmpdir(), `chariox-managed-build-barrier-${fault}-`))
+    context.after(() => rm(root, { recursive: true, force: true }))
+    const fixture = await makeFixture(root)
+    await fixture.configure({ scenario: "bounded" })
+
+    await assert.rejects(
+      runBuildWithBarrierFault(fixture, fault),
+      (error) => error.barrierDisposition === "absent",
+      fault,
+    )
+    assert.equal(await readFile(builderBarrierPath(fixture.home)).then(() => true, () => false), false, fault)
+    assert.equal(await lstat(fixture.output).then(() => true, () => false), false, fault)
+    assert.deepEqual(await readdir(fixture.state), [], fault)
+    assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".new-output-")), [], fault)
+    assert.deepEqual(await readdir(fixture.temp), [], fault)
+    assert.doesNotMatch(await readFile(fixture.trace, "utf8"), /buildx build/, fault)
+    assert.equal(await readFile(join(fixture.output, "build-attestation.sig")).then(() => true, () => false), false, fault)
+  }
+})
+
+test("a post-rename directory-sync failure retains a prepared barrier for safe recovery", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-barrier-directory-sync-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  await fixture.configure({ scenario: "bounded" })
+
+  await assert.rejects(
+    runBuildWithBarrierFault(fixture, "directory-sync"),
+    (error) => error.barrierDisposition === "persisted",
+  )
+  const barrierPath = builderBarrierPath(fixture.home)
+  const barrier = JSON.parse(await readFile(barrierPath, "utf8"))
+  assert.equal(barrier.buildStarted, false)
+  assert.ok(await readFile(join(barrier.sourceDirectory, "apps/kernel/slice-linux-docker/docker/Dockerfile")))
+  assert.deepEqual(await readdir(barrier.pendingDirectory), [])
+  assert.doesNotMatch(await readFile(fixture.trace, "utf8"), /buildx build/)
+  assert.equal(await readFile(join(fixture.output, "build-attestation.sig")).then(() => true, () => false), false)
+
+  const recovered = await runManagedKernelReleaseBuild(fixture.options(), {
+    environment: fixture.environment(),
+  })
+  assert.equal(recovered, undefined)
+  assert.equal(await readFile(barrierPath).then(() => true, () => false), false)
+  assert.equal(await lstat(barrier.sourceDirectory).then(() => true, () => false), false)
+  assert.deepEqual((await readdir(fixture.output)).sort(), [
+    "build-attestation.json", "build-attestation.sig", "builder-public-key",
+    "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
+  ])
+  assert.match(await readFile(join(fixture.output, "build-attestation.sig"), "utf8"), /^[A-Za-z0-9+/]+=*\n?$/)
+  const trace = await readFile(fixture.trace, "utf8")
+  assert.equal((trace.match(/buildx build --builder/g) ?? []).length, 1)
+})
+
+test("foreign barrier and replaced scratch paths fail closed", async (context) => {
+  const foreignRoot = await mkdtemp(join(tmpdir(), "chariox-managed-build-foreign-barrier-"))
+  context.after(() => rm(foreignRoot, { recursive: true, force: true }))
+  const foreignFixture = await makeFixture(foreignRoot)
+  await foreignFixture.configure({ scenario: "bounded" })
+  await assert.rejects(
+    runBuildWithBarrierFault(foreignFixture, "foreign-barrier"),
+    (error) => error.barrierDisposition === "unknown",
+  )
+  assert.equal(await readFile(builderBarrierPath(foreignFixture.home), "utf8"), "foreign barrier\n")
+  assert.doesNotMatch(await readFile(foreignFixture.trace, "utf8"), /buildx build/)
+  assert.equal((await readdir(foreignFixture.state)).some((entry) => entry.startsWith("run-")), true)
+  assert.equal((await readdir(foreignRoot)).some((name) => name.startsWith(".new-output-")), true)
+
+  const tamperedRoot = await mkdtemp(join(tmpdir(), "chariox-managed-build-tampered-scratch-"))
+  context.after(() => rm(tamperedRoot, { recursive: true, force: true }))
+  const tamperedFixture = await makeFixture(tamperedRoot)
+  await tamperedFixture.configure({ scenario: "bounded" })
+  let pendingPath
+  await assert.rejects(
+    runBuildWithBarrierFault(tamperedFixture, "tampered-pending", async () => {
+      pendingPath = (await readdir(tamperedRoot)).map((name) => join(tamperedRoot, name))
+        .find((path) => basename(path).startsWith(".new-output-"))
+      await rename(pendingPath, `${pendingPath}.foreign`)
+      await mkdir(pendingPath)
+      await writeFile(join(pendingPath, "foreign-sentinel"), "keep\n")
+    }),
+    /scratch path changed; refusing cleanup/,
+  )
+  assert.equal(await readFile(join(pendingPath, "foreign-sentinel"), "utf8"), "keep\n")
+  assert.equal(await readdir(tamperedFixture.state).then((entries) => entries.some((entry) => entry.startsWith("run-"))), true)
+  assert.doesNotMatch(await readFile(tamperedFixture.trace, "utf8"), /buildx build/)
 })
 
 test("managed release build timeout waits for the exact terminal history record before cleanup", async (context) => {

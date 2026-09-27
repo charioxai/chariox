@@ -355,6 +355,40 @@ test("terminal failure and cancellation statuses are terminal when inspection ti
   }
 })
 
+test("a prepared barrier proves the Buildx command was not dispatched only with exact scratch identities", async () => {
+  const barrier = makeBarrier({
+    buildStarted: false,
+    runDirectoryIdentity: { dev: "1", ino: "2" },
+    pendingDirectoryIdentity: { dev: "1", ino: "3" },
+  })
+  let remoteHistoryReads = 0
+  const result = await reconcileManagedReleaseBuild({
+    barrier,
+    currentBuilderFingerprint: barrier.builderFingerprint,
+    historyList: async () => { remoteHistoryReads += 1; return [] },
+    historyInspect: async () => { remoteHistoryReads += 1; return {} },
+  })
+  assert.deepEqual(result, { settled: true, buildRef: null, status: "not_started" })
+  assert.equal(remoteHistoryReads, 0)
+
+  const changedBuilder = structuredClone(barrier.builderFingerprint)
+  changedBuilder.nodes[0].containerId = "e".repeat(64)
+  const mismatched = await reconcileManagedReleaseBuild({
+    barrier,
+    currentBuilderFingerprint: changedBuilder,
+    historyList: async () => { remoteHistoryReads += 1; return [] },
+    historyInspect: async () => { remoteHistoryReads += 1; return {} },
+  })
+  assert.deepEqual(mismatched, { settled: false, reason: "builder fingerprint changed" })
+  assert.equal(remoteHistoryReads, 0)
+  await assert.rejects(reconcileManagedReleaseBuild({
+    barrier: { ...barrier, pendingDirectoryIdentity: undefined },
+    currentBuilderFingerprint: barrier.builderFingerprint,
+    historyList: async () => [],
+    historyInspect: async () => ({}),
+  }), /unresolved build barrier is malformed/)
+})
+
 test("an unchanged baseline or any individually changed builder fingerprint field blocks settlement", async () => {
   const barrier = makeBarrier()
   const noNewRecords = await reconcile({ barrier, refs: [baselineRef], records: new Map() })

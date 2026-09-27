@@ -25,8 +25,16 @@ function isMissing(error) {
   return error?.code === "ENOENT"
 }
 
-async function syncDirectory(path) {
-  const directory = await open(path, "r")
+const defaultBarrierFileOps = { open, lstat, readFile, rename, rm }
+
+function barrierWriteError(error, disposition) {
+  const wrapped = new Error(error instanceof Error ? error.message : String(error), { cause: error })
+  wrapped.barrierDisposition = disposition
+  return wrapped
+}
+
+async function syncDirectory(path, fileOps) {
+  const directory = await fileOps.open(path, "r")
   try {
     await directory.sync()
   } finally {
@@ -57,6 +65,10 @@ function expectedPendingDirectory(barrier) {
 }
 
 function validateBarrier(barrier, builderName) {
+  const validDirectoryIdentity = (identity) => identity && typeof identity === "object" &&
+    !Array.isArray(identity) && Object.keys(identity).sort().join(",") === "dev,ino" &&
+    typeof identity.dev === "string" && /^\d+$/.test(identity.dev) &&
+    typeof identity.ino === "string" && /^\d+$/.test(identity.ino)
   if (!barrier || typeof barrier !== "object" || Array.isArray(barrier) ||
       barrier.schemaVersion !== BARRIER_SCHEMA_VERSION || barrier.builderName !== builderName ||
       typeof barrier.invocationId !== "string" || !/^[a-f0-9-]{36}$/.test(barrier.invocationId) ||
@@ -72,7 +84,15 @@ function validateBarrier(barrier, builderName) {
       new Set(barrier.historyBaseline).size !== barrier.historyBaseline.length ||
       barrier.historyBaseline.some((record) => typeof record !== "string" || !record || record.length > MAX_BUILD_REFERENCE_LENGTH) ||
       !barrier.builderFingerprint || typeof barrier.builderFingerprint !== "object" ||
-      !Array.isArray(barrier.builderFingerprint.nodes) || barrier.builderFingerprint.nodes.length === 0) {
+      !Array.isArray(barrier.builderFingerprint.nodes) || barrier.builderFingerprint.nodes.length === 0 ||
+      (barrier.buildStarted !== undefined && typeof barrier.buildStarted !== "boolean") ||
+      ((barrier.runDirectoryIdentity !== undefined || barrier.pendingDirectoryIdentity !== undefined) &&
+        (!validDirectoryIdentity(barrier.runDirectoryIdentity) ||
+          !validDirectoryIdentity(barrier.pendingDirectoryIdentity))) ||
+      (barrier.buildStarted === false &&
+        (barrier.buildRef !== null ||
+          !validDirectoryIdentity(barrier.runDirectoryIdentity) ||
+          !validDirectoryIdentity(barrier.pendingDirectoryIdentity)))) {
     throw new Error("unresolved build barrier is malformed")
   }
   if (barrier.runDirectory !== expectedRunDirectory(dirname(barrier.runDirectory), barrier.invocationId) ||
@@ -217,9 +237,18 @@ async function releaseOwnedLeaseDirectory(lockDirectory, expectedOwner) {
   await rmdir(lockDirectory)
 }
 
-export async function acquireManagedReleaseBuilderLease({ home = process.env.HOME ?? homedir(), builderName }) {
+export async function acquireManagedReleaseBuilderLease({
+  home = process.env.HOME ?? homedir(),
+  builderName,
+  fileOps = defaultBarrierFileOps,
+}) {
   if (typeof home !== "string" || !isAbsolute(home) || typeof builderName !== "string" || !builderName) {
     throw new Error("managed release state location or builder identity is malformed")
+  }
+  if (!fileOps || typeof fileOps.open !== "function" || typeof fileOps.lstat !== "function" ||
+      typeof fileOps.readFile !== "function" || typeof fileOps.rename !== "function" ||
+      typeof fileOps.rm !== "function") {
+    throw new Error("managed release barrier file operations are malformed")
   }
   const stateDirectory = resolve(home, ".local", "state", "chariox", "managed-kernel-release")
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 })
@@ -301,23 +330,88 @@ export async function acquireManagedReleaseBuilderLease({ home = process.env.HOM
         throw error
       }
     },
-    async writeBarrier(barrier) {
+    async writeBarrier(barrier, { replace = false } = {}) {
       validateBarrier(barrier, builderName)
       const tempPath = `${barrierPath}.${process.pid}.${randomUUID()}.tmp`
+      let handle
+      let tempIdentity
+      let tempCreated = false
+      let renameAttempted = false
+      let renamed = false
       try {
-        const handle = await open(tempPath, "wx", 0o600)
-        try {
-          await handle.writeFile(JSON.stringify(barrier))
-          await handle.sync()
-        } finally {
-          await handle.close()
+        handle = await fileOps.open(tempPath, "wx", 0o600)
+        tempCreated = true
+        const metadata = await handle.stat()
+        if (!metadata.isFile()) throw new Error("managed release barrier temporary path is not a regular file")
+        tempIdentity = { dev: String(metadata.dev), ino: String(metadata.ino) }
+        await handle.writeFile(JSON.stringify(barrier))
+        await handle.sync()
+        await handle.close()
+        handle = undefined
+
+        if (!replace) {
+          try {
+            await fileOps.lstat(barrierPath)
+            throw new Error("managed release unresolved build barrier already exists")
+          } catch (error) {
+            if (!isMissing(error)) throw error
+          }
         }
-        await rename(tempPath, barrierPath)
+        renameAttempted = true
+        await fileOps.rename(tempPath, barrierPath)
+        renamed = true
+        await syncDirectory(stateDirectory, fileOps)
       } catch (error) {
-        await rm(tempPath, { force: true })
-        throw error
+        let tempProvenUnpublished = !tempCreated
+        let cleanupFailed = false
+        if (handle) {
+          try {
+            await handle.close()
+            handle = undefined
+          } catch {
+            cleanupFailed = true
+          }
+        }
+        if (tempCreated && tempIdentity && !renamed) {
+          try {
+            const metadata = await fileOps.lstat(tempPath)
+            if (metadata.isSymbolicLink() || !metadata.isFile() ||
+                String(metadata.dev) !== tempIdentity.dev || String(metadata.ino) !== tempIdentity.ino) {
+              throw new Error("managed release barrier temporary path changed during write")
+            }
+            tempProvenUnpublished = true
+            await fileOps.rm(tempPath, { force: false })
+          } catch (cleanupError) {
+            if (!isMissing(cleanupError)) cleanupFailed = true
+          }
+        } else if (tempCreated && !renamed) {
+          cleanupFailed = true
+        }
+
+        let targetDisposition = "unknown"
+        try {
+          const metadata = await fileOps.lstat(barrierPath)
+          if (!metadata.isSymbolicLink() && metadata.isFile()) {
+            const current = validateBarrier(
+              parseJson(await fileOps.readFile(barrierPath, "utf8"), "unresolved build barrier"),
+              builderName,
+            )
+            targetDisposition = JSON.stringify(current) === JSON.stringify(barrier)
+              ? "persisted"
+              : "unknown"
+          }
+        } catch (inspectionError) {
+          if (isMissing(inspectionError)) targetDisposition = "absent"
+          else cleanupFailed = true
+        }
+        const disposition = renamed || targetDisposition === "persisted"
+          ? "persisted"
+          : targetDisposition === "absent" && !cleanupFailed &&
+              (!renameAttempted || tempProvenUnpublished)
+            ? "absent"
+            : "unknown"
+        throw barrierWriteError(error, disposition)
       }
-      await syncDirectory(stateDirectory)
     },
     async removeBarrier() {
       await rm(barrierPath, { force: true })
@@ -330,15 +424,30 @@ export async function acquireManagedReleaseBuilderLease({ home = process.env.HOM
       if (barrier.runDirectory !== runDirectory || barrier.pendingDirectory !== pendingDirectory) {
         throw new Error("unresolved build artifact paths do not match the invocation identity")
       }
-      for (const path of [runDirectory, pendingDirectory]) {
+      const artifactPaths = [
+        [runDirectory, barrier.runDirectoryIdentity],
+        [pendingDirectory, barrier.pendingDirectoryIdentity],
+      ]
+      const existingArtifacts = []
+      for (const [path, expectedIdentity] of artifactPaths) {
         try {
           const metadata = await lstat(path)
           if (metadata.isSymbolicLink()) throw new Error("unresolved build artifact path is a symlink")
           if (!metadata.isDirectory()) throw new Error("unresolved build artifact path is not a directory")
-          await rm(path, { recursive: true, force: false })
+          if (expectedIdentity &&
+              (String(metadata.dev) !== expectedIdentity.dev || String(metadata.ino) !== expectedIdentity.ino)) {
+            throw new Error("unresolved build artifact path changed since invocation")
+          }
+          if (barrier.buildStarted === false && !expectedIdentity) {
+            throw new Error("unresolved prepared build artifact has no ownership identity")
+          }
+          existingArtifacts.push(path)
         } catch (error) {
           if (!isMissing(error)) throw error
         }
+      }
+      for (const path of existingArtifacts) {
+        await rm(path, { recursive: true, force: false })
       }
     },
     async createRunDirectory(invocationId) {
@@ -438,6 +547,9 @@ export async function reconcileManagedReleaseBuild({ barrier, currentBuilderFing
   validateBarrier(barrier, barrier.builderName)
   if (JSON.stringify(currentBuilderFingerprint) !== JSON.stringify(barrier.builderFingerprint)) {
     return { settled: false, reason: "builder fingerprint changed" }
+  }
+  if (barrier.buildStarted === false) {
+    return { settled: true, buildRef: null, status: "not_started" }
   }
 
   if (barrier.buildRef !== null) {
