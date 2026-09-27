@@ -104,6 +104,10 @@ test("an owner grants, lists and revokes an App's generator connections (protoco
   assert.deepEqual(sent, [grantAppConnectionRequest("slack", "dev.chariox.slack", "connection-1")])
   assert.equal(result.message, "connection-1 · dev.chariox.slack · actions: notification.reply")
   assert.equal((await executeAppCommand(["connection", "grant", "slack", "no-slash"], { send: async () => ({}) })).ok, false)
+  const undeclared = await executeAppCommand(["connection", "grant", "slack", "dev.chariox.other/connection-1"], {
+    send: async () => ({ AppRequestFailed: { code: "invalid_request" } }),
+  })
+  assert.match(undeclared.message ?? "", /must declare this generator under capabilities\.connections/)
 })
 
 test("app inbox move turns an event binding into an App route (protocol 360)", async () => {
