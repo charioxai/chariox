@@ -1,10 +1,15 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { test } from "node:test"
 import { createSliceDiskQuotaAllocator } from "./slice-disk-quota-allocator.mjs"
 import {
+  hasMatchingSliceDiskQuotaUnboundedProof,
   readSliceDiskQuotaMarkerInspection,
+  removeSliceDiskQuotaUnboundedProof,
   runWithSliceDiskQuotaAdmission,
+  writeSliceDiskQuotaUnboundedProof,
 } from "./slice-disk-quota-admission.mjs"
 
 const verifiedResult = {
@@ -66,14 +71,146 @@ test("the broker validates container and volume inspections before deriving mark
   assert.match(markerReader, /readSliceDiskQuotaMarkerInspection\(inspectedVolume, "volume", volume\)/)
 })
 
-function admission({ containerName = "chariox-slice-test", quotaMarkerPresent, result, requestQuota, run }) {
+test("broker start wires outage fallback through the durable receipt and immutable Docker ID", async () => {
+  const source = await readFile(new URL("./managed-docker-broker.mjs", import.meta.url), "utf8")
+  const reserveStart = source.indexOf('operation: "reserve"')
+  const proofRevocation = source.lastIndexOf("removeSliceDiskQuotaUnboundedProof(", reserveStart)
+  assert.ok(proofRevocation >= 0 && proofRevocation < reserveStart)
+  assert.match(source, /resolveUnboundedProof: \(\) => resolveBrokerUnboundedQuotaProof\(containerName\)/)
+  assert.match(source, /prepared\.args\[1\] = admission\.containerId/)
+  assert.match(source, /writeSliceDiskQuotaUnboundedProof\(UNBOUNDED_QUOTA_PROOF_ROOT/)
+})
+
+function admission({
+  containerName = "chariox-slice-test",
+  quotaMarkerPresent,
+  result,
+  requestQuota,
+  resolveUnboundedProof,
+  run,
+}) {
   return runWithSliceDiskQuotaAdmission({
     containerName,
     quotaMarkerPresent,
     requestQuota: requestQuota ?? (async () => result),
+    resolveUnboundedProof,
     run,
   })
 }
+
+const unboundedIdentity = {
+  ownerKernelId: "kernel-current",
+  ownerMachineId: "machine-current",
+  sliceId: "slice-current",
+  containerName: "chariox-slice-test",
+  homeVolumeName: "chariox-slice-test-home",
+}
+
+const unboundedBinding = {
+  containerId: "a".repeat(64),
+  homeVolumeCreatedAt: "2026-09-27T12:00:00Z",
+  homeVolumeDevice: "2049",
+  homeVolumeDriver: "local",
+  homeVolumeInode: "1337",
+  homeVolumeMountpoint: "/var/lib/chariox-docker/data/volumes/chariox-slice-test-home/_data",
+  homeVolumeName: "chariox-slice-test-home",
+  homeVolumeScope: "local",
+}
+
+async function proofRoot(t) {
+  const root = await mkdtemp(join(tmpdir(), "slice-quota-unbounded-proof-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  return root
+}
+
+test("only a current broker receipt permits ENOENT or ECONNREFUSED unbounded starts", async (t) => {
+  const root = await proofRoot(t)
+  writeSliceDiskQuotaUnboundedProof(root, unboundedIdentity, unboundedBinding)
+  assert.equal(hasMatchingSliceDiskQuotaUnboundedProof(root, unboundedIdentity, unboundedBinding), true)
+
+  for (const code of ["ENOENT", "ECONNREFUSED"]) {
+    let runContext
+    const unavailable = Object.assign(new Error("quota allocator unavailable"), { code })
+    const result = await admission({
+      quotaMarkerPresent: false,
+      requestQuota: async () => { throw unavailable },
+      resolveUnboundedProof: async () => (
+        hasMatchingSliceDiskQuotaUnboundedProof(root, unboundedIdentity, unboundedBinding)
+          ? { containerId: unboundedBinding.containerId }
+          : undefined
+      ),
+      run: (_quota, context) => { runContext = context; return "started" },
+    })
+    assert.equal(result, "started")
+    assert.deepEqual(runContext, { source: "broker-proof", containerId: unboundedBinding.containerId })
+  }
+})
+
+test("missing, stale, revoked, or unreadable receipts never authorize the offline start", async (t) => {
+  const root = await proofRoot(t)
+  const unavailable = Object.assign(new Error("quota allocator unavailable"), { code: "ECONNREFUSED" })
+  let mutationCount = 0
+  const tryOfflineStart = (binding = unboundedBinding) => admission({
+    quotaMarkerPresent: false,
+    requestQuota: async () => { throw unavailable },
+    resolveUnboundedProof: async () => (
+      hasMatchingSliceDiskQuotaUnboundedProof(root, unboundedIdentity, binding)
+        ? { containerId: binding.containerId }
+        : undefined
+    ),
+    run: () => { mutationCount += 1 },
+  })
+
+  await assert.rejects(tryOfflineStart(), (error) => error === unavailable)
+  writeSliceDiskQuotaUnboundedProof(root, unboundedIdentity, unboundedBinding)
+  await assert.rejects(tryOfflineStart({ ...unboundedBinding, containerId: "b".repeat(64) }), (error) => error === unavailable)
+  removeSliceDiskQuotaUnboundedProof(root, unboundedIdentity)
+  await assert.rejects(tryOfflineStart(), (error) => error === unavailable)
+
+  writeSliceDiskQuotaUnboundedProof(root, unboundedIdentity, unboundedBinding)
+  const [proofFile] = await readdir(root)
+  await writeFile(join(root, proofFile), "{", { mode: 0o600 })
+  await assert.rejects(tryOfflineStart(), /malformed|proof/i)
+  assert.equal(mutationCount, 0)
+})
+
+test("bounded markers and non-availability failures never use an unbounded receipt", async (t) => {
+  const root = await proofRoot(t)
+  writeSliceDiskQuotaUnboundedProof(root, unboundedIdentity, unboundedBinding)
+  let proofLookups = 0
+  let mutationCount = 0
+  const resolveUnboundedProof = async () => {
+    proofLookups += 1
+    return hasMatchingSliceDiskQuotaUnboundedProof(root, unboundedIdentity, unboundedBinding)
+      ? { containerId: unboundedBinding.containerId }
+      : undefined
+  }
+
+  const unavailable = Object.assign(new Error("quota allocator unavailable"), { code: "ENOENT" })
+  await assert.rejects(admission({
+    quotaMarkerPresent: true,
+    requestQuota: async () => { throw unavailable },
+    resolveUnboundedProof,
+    run: () => { mutationCount += 1 },
+  }), (error) => error === unavailable)
+  assert.equal(proofLookups, 0)
+
+  const unknown = Object.assign(new Error("quota allocator I/O failure"), { code: "EIO" })
+  await assert.rejects(admission({
+    quotaMarkerPresent: false,
+    requestQuota: async () => { throw unknown },
+    resolveUnboundedProof,
+    run: () => { mutationCount += 1 },
+  }), (error) => error === unknown)
+  await assert.rejects(admission({
+    quotaMarkerPresent: false,
+    requestQuota: async () => ({ bounded: false, extra: true }),
+    resolveUnboundedProof,
+    run: () => { mutationCount += 1 },
+  }), /unsupported fields/)
+  assert.equal(proofLookups, 0)
+  assert.equal(mutationCount, 0)
+})
 
 test("a quota-marked container cannot start without its matching durable reservation", async () => {
   let mutationCount = 0

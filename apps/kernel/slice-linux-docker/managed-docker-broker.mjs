@@ -28,9 +28,13 @@ import { createInterface } from "node:readline"
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { requestSliceDiskQuota, sliceDiskQuotaIdentityFromEnvironment } from "./slice-disk-quota-client.mjs"
+import { validateSliceDiskQuotaIdentity } from "./slice-disk-quota-contract.mjs"
 import {
+  hasMatchingSliceDiskQuotaUnboundedProof,
+  removeSliceDiskQuotaUnboundedProof,
   readSliceDiskQuotaMarkerInspection,
   runWithSliceDiskQuotaAdmission,
+  writeSliceDiskQuotaUnboundedProof,
 } from "./slice-disk-quota-admission.mjs"
 
 const MAX_FRAME_BYTES = 12 * 1024 * 1024
@@ -54,6 +58,7 @@ const BROKER_ARTIFACT_ROOT = resolve(
 )
 const HANDLE_ROOT = resolve(process.env.CHARIOX_SLICE_DOCKER_HANDLE_ROOT ?? "/var/lib/chariox-docker/mount-handles")
 const HANDLE_STATE = resolve(process.env.CHARIOX_SLICE_DOCKER_HANDLE_STATE ?? "/var/lib/chariox-docker/mount-handles.json")
+const UNBOUNDED_QUOTA_PROOF_ROOT = `${HANDLE_STATE}.unbounded-quota`
 const MAX_PERSISTENT_HANDLES = 256
 const MAX_HOME_ARCHIVE_BYTES = 32 * 1024 * 1024 * 1024
 const MIN_FREE_AFTER_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
@@ -1293,6 +1298,113 @@ function diskQuotaMarkerPresent(container) {
   return readSliceDiskQuotaMarkerInspection(inspectedVolume, "volume", volume)
 }
 
+function dockerInspection(result, label) {
+  if (result.error || result.signal || result.status !== 0) {
+    fail(`${label} could not be inspected`)
+  }
+  try {
+    const value = JSON.parse(result.stdout)
+    if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${label} inspection is malformed`)
+    return value
+  } catch {
+    fail(`${label} inspection is malformed`)
+  }
+}
+
+function unboundedQuotaObservation(container) {
+  const inspectedContainer = dockerInspection(spawnSync(
+    "/usr/bin/docker",
+    ["container", "inspect", "--format", "{{json .}}", container],
+    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 20_000 },
+  ), "managed slice container")
+  const containerLabels = inspectedContainer.Config?.Labels
+  if (!containerLabels || typeof containerLabels !== "object" || Array.isArray(containerLabels)) {
+    fail("managed slice container labels are unreadable")
+  }
+  if (readSliceDiskQuotaMarkerInspection({ status: 0, stdout: JSON.stringify(containerLabels) }, "container", container)) {
+    fail("managed slice container has a disk quota marker")
+  }
+  if (!Array.isArray(inspectedContainer.Mounts)) fail("managed slice container mounts are unreadable")
+  const homeMounts = inspectedContainer.Mounts.filter(
+    (mount) => mount?.Type === "volume" && mount.Destination === "/home/slice",
+  )
+  if (homeMounts.length !== 1 || homeMounts[0].RW !== true || typeof homeMounts[0].Name !== "string") {
+    fail("managed slice home-volume mount identity is invalid")
+  }
+  const homeVolumeName = homeMounts[0].Name
+  const inspectedVolume = dockerInspection(spawnSync(
+    "/usr/bin/docker",
+    ["volume", "inspect", "--format", "{{json .}}", homeVolumeName],
+    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
+  ), "managed slice home volume")
+  const volumeLabels = inspectedVolume.Labels
+  if (!volumeLabels || typeof volumeLabels !== "object" || Array.isArray(volumeLabels)) {
+    fail("managed slice home-volume labels are unreadable")
+  }
+  if (readSliceDiskQuotaMarkerInspection({ status: 0, stdout: JSON.stringify(volumeLabels) }, "volume", homeVolumeName)) {
+    fail("managed slice home volume has a disk quota marker")
+  }
+  const identity = validateSliceDiskQuotaIdentity({
+    ownerKernelId: containerLabels["io.chariox.slice.owner-kernel-id"],
+    ownerMachineId: containerLabels["io.chariox.slice.owner-machine-id"],
+    sliceId: containerLabels["io.chariox.slice.id"],
+    containerName: container,
+    homeVolumeName,
+  })
+  if (
+    inspectedVolume.Name !== homeVolumeName ||
+    volumeLabels["io.chariox.slice.owner-kernel-id"] !== identity.ownerKernelId ||
+    volumeLabels["io.chariox.slice.owner-machine-id"] !== identity.ownerMachineId ||
+    volumeLabels["io.chariox.slice.id"] !== identity.sliceId
+  ) {
+    fail("managed slice container and home-volume ownership do not match")
+  }
+  if (typeof inspectedContainer.Id !== "string" || !/^[a-f0-9]{64}$/.test(inspectedContainer.Id)) {
+    fail("managed slice container identity is invalid")
+  }
+  if (
+    typeof inspectedVolume.Mountpoint !== "string" || !isAbsolute(inspectedVolume.Mountpoint) ||
+    typeof inspectedVolume.Driver !== "string" || typeof inspectedVolume.Scope !== "string"
+  ) {
+    fail("managed slice home-volume identity is invalid")
+  }
+  const mountpointMetadata = lstatSync(inspectedVolume.Mountpoint, { bigint: true })
+  if (mountpointMetadata.isSymbolicLink() || !mountpointMetadata.isDirectory()) {
+    fail("managed slice home-volume mountpoint identity is invalid")
+  }
+  return {
+    identity,
+    binding: {
+      containerId: inspectedContainer.Id,
+      homeVolumeCreatedAt: typeof inspectedVolume.CreatedAt === "string" ? inspectedVolume.CreatedAt : "",
+      homeVolumeDevice: mountpointMetadata.dev.toString(),
+      homeVolumeDriver: inspectedVolume.Driver,
+      homeVolumeInode: mountpointMetadata.ino.toString(),
+      homeVolumeMountpoint: inspectedVolume.Mountpoint,
+      homeVolumeName,
+      homeVolumeScope: inspectedVolume.Scope,
+    },
+  }
+}
+
+function resolveBrokerUnboundedQuotaProof(container) {
+  const observed = unboundedQuotaObservation(container)
+  if (!hasMatchingSliceDiskQuotaUnboundedProof(UNBOUNDED_QUOTA_PROOF_ROOT, observed.identity, observed.binding)) {
+    return undefined
+  }
+  return { containerId: observed.binding.containerId }
+}
+
+function rememberBrokerUnboundedQuotaProof(identity, container) {
+  try {
+    const observed = unboundedQuotaObservation(container)
+    if (JSON.stringify(observed.identity) !== JSON.stringify(identity)) return
+    writeSliceDiskQuotaUnboundedProof(UNBOUNDED_QUOTA_PROOF_ROOT, observed.identity, observed.binding)
+  } catch {
+    // Online allocator evidence remains sufficient for this operation; no offline proof is cached.
+  }
+}
+
 function requireExactContainerMounts(container, expected, stop) {
   const actual = inspectContainerMounts(container)
   if (!actual) return false
@@ -1496,6 +1608,8 @@ function provisionerQuotaRequest(environment) {
 async function execute(request) {
   validateRequest(request)
   let releaseDiskQuota = false
+  let unboundedQuotaIdentity
+  let unboundedQuotaStatusVerified = false
   if (request.kind === "home_archive_capture") {
     const captured = captureHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(captured)).toString("base64"), stderrBase64: "" }
@@ -1522,7 +1636,9 @@ async function execute(request) {
   let boundedLimits
   if (request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
     const quota = provisionerQuotaRequest(request.environment)
+    unboundedQuotaIdentity = quota.identity
     if (quota.limits) {
+      removeSliceDiskQuotaUnboundedProof(UNBOUNDED_QUOTA_PROOF_ROOT, quota.identity)
       await requestSliceDiskQuota({
         protocolVersion: 1,
         operation: "reserve",
@@ -1541,6 +1657,11 @@ async function execute(request) {
           identity: quota.identity,
         })
         if (status.bounded) fail("configured disk quota caps are missing for a slice with an existing reservation")
+        if (!status || typeof status !== "object" || Array.isArray(status) || status.bounded !== false) {
+          fail("managed disk quota allocator status is invalid")
+        }
+        exactKeys(status, ["bounded"], "managed disk quota unbounded status")
+        unboundedQuotaStatusVerified = true
       } catch (error) {
         if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) throw error
       }
@@ -1562,8 +1683,11 @@ async function execute(request) {
   }
   let prepared
   try {
-    const runPrepared = () => {
+    const runPrepared = (admission) => {
       prepared = request.kind === "docker" ? prepareDocker(request.args) : prepareProvisioner(request)
+      if (request.kind === "docker" && admission?.source === "broker-proof") {
+        prepared.args[1] = admission.containerId
+      }
       const command = request.kind === "docker" ? "/usr/bin/docker" : PROVISIONER
       const args = request.kind === "docker" ? prepared.args : [request.action]
       const env = request.kind === "docker"
@@ -1585,13 +1709,46 @@ async function execute(request) {
       ? await runWithSliceDiskQuotaAdmission({
         containerName,
         quotaMarkerPresent: diskQuotaMarkerPresent(containerName),
-        run: runPrepared,
+        resolveUnboundedProof: () => resolveBrokerUnboundedQuotaProof(containerName),
+        run: (quotaResult, admission) => {
+          let before
+          if (admission.source === "allocator" && quotaResult.bounded === false) {
+            try {
+              before = unboundedQuotaObservation(containerName)
+            } catch {
+              // Online admission is still authoritative; without a stable Docker binding it is not cached.
+            }
+          }
+          const started = runPrepared(admission)
+          if (before && started.status === 0) {
+            try {
+              const after = unboundedQuotaObservation(containerName)
+              if (
+                JSON.stringify(before.identity) === JSON.stringify(after.identity) &&
+                JSON.stringify(before.binding) === JSON.stringify(after.binding)
+              ) {
+                writeSliceDiskQuotaUnboundedProof(
+                  UNBOUNDED_QUOTA_PROOF_ROOT,
+                  after.identity,
+                  after.binding,
+                )
+              }
+            } catch {
+              // Keep the successful start result; a failed proof write means future outages fail closed.
+            }
+          }
+          return started
+        },
       })
       : runPrepared()
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)
     }
     if (request.kind === "provisioner" && request.action === "destroy" && result.status === 0) {
+      removeSliceDiskQuotaUnboundedProof(
+        UNBOUNDED_QUOTA_PROOF_ROOT,
+        sliceDiskQuotaIdentityFromEnvironment(request.environment),
+      )
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
       if (releaseDiskQuota) {
         const quota = provisionerQuotaRequest(request.environment)
@@ -1610,6 +1767,14 @@ async function execute(request) {
       } else {
         removePersistentHandles((record) => prepared.newHandles.has(record.handle))
       }
+    }
+    if (
+      request.kind === "provisioner" &&
+      ["provision", "restore-state", "recover"].includes(request.action) &&
+      unboundedQuotaStatusVerified &&
+      result.status === 0
+    ) {
+      rememberBrokerUnboundedQuotaProof(unboundedQuotaIdentity, request.environment.CHARIOX_SLICE_NAME)
     }
     const response = {
       status: result.status ?? 125,
