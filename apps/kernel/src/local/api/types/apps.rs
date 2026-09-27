@@ -440,6 +440,29 @@ pub struct OpenAppViewRequest {
     pub installation_id: String,
 }
 
+/// Protocol 361: the caller's App set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetAppSetRequest {}
+
+/// The schema `AppSet` descriptions carry.
+pub const APP_SET_SCHEMA: &str = "chariox.app-set.v1";
+
+/// One active installation in an App set: what a kernel copy needs to
+/// install it again with the same approval and configuration. App data is
+/// not part of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppSetInstallation {
+    pub installation_id: String,
+    pub app_id: String,
+    pub release: AppReleaseSummary,
+    /// The release's signed capabilities, which the owner approved.
+    pub capabilities: serde_json::Value,
+    pub automations: Vec<AppAutomationSummary>,
+    pub inbox_routes: Vec<AppInboxRouteSummary>,
+    pub connections: Vec<AppConnectionSummary>,
+}
+
 /// Protocol 360: a workflow event binding becomes an App inbox route on the
 /// same generator connection, scope, filter and event. The binding is paused
 /// (it no longer claims the events), its actions become a connection grant

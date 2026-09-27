@@ -125,6 +125,11 @@ export function createAppInboxRouteRequest(options: {
   } }
 }
 
+/** Protocol 361: the caller's App set (releases, approved capabilities, configuration). */
+export function getAppSetRequest() {
+  return { GetAppSet: {} }
+}
+
 /** Protocol 360: a workflow event binding becomes an App inbox route on the
  * same connection; its actions become a grant and, optionally, the App's
  * outgoing event goes to the binding's workflow. The kernel undoes it on failure. */

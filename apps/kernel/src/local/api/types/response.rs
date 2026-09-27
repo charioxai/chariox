@@ -17,6 +17,8 @@ pub enum LocalDaemonResponse {
     AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
     AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
     AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
+    /// Protocol 361: the caller's active installations and their configuration.
+    AppSet { schema: String, installations: Vec<AppSetInstallation>, },
     /// Protocol 360: the binding (now paused) and what replaced it.
     EventBindingMovedToApp { binding_id: String, installation_id: String, route: AppInboxRouteSummary, connection: Option<AppConnectionSummary>, automation: Option<AppAutomationSummary>, },
     AppFileGranted { operation_id: String, files: u32, },

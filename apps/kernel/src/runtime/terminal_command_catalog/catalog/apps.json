@@ -20,6 +20,16 @@
         ]
       },
       {
+        "id": "app-set",
+        "label": "set",
+        "description": "Show this kernel's App set: releases, approved capabilities and configuration",
+        "value": "/app set",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
         "id": "app-status",
         "label": "status",
         "description": "Inspect one installation's active and pending release",

@@ -4,14 +4,14 @@ import {
   getAppLogsRequest, openAppViewRequest, uninstallAppRequest, createAppInboxRouteRequest, listAppInboxRoutesRequest,
   type AppInboxConnection,
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
-  grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, moveEventBindingToAppRequest,
+  grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, moveEventBindingToAppRequest, getAppSetRequest,
 } from "./ipc-app-requests.js"
 import type { AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
 type Client = { send(request: Record<string, unknown>): Promise<Record<string, unknown>> }
 const usage = [
-  "usage: app list [--after <installation-id>] [--limit <1..100>] | status <installation-id> | journal <installation-id>",
+  "usage: app list [--after <installation-id>] [--limit <1..100>] | status <installation-id> | journal <installation-id> | set",
   "       app logs <installation-id> [--after <sequence>]",
   "       app worker <installation-id> | start <installation-id> | stop <installation-id> | restart <installation-id>",
   "       app open <installation-id> [--session <session-id>] | uninstall <installation-id> [--generation <n>]",
@@ -43,6 +43,8 @@ export async function executeAppCommand(
       else return { ok: false, message: usage }
     }
     request = listAppInstallationsRequest(options)
+  } else if (action === "set" && rest.length === 0) {
+    request = getAppSetRequest()
   } else if ((action === "status" || action === "journal") && rest.length === 1 && rest[0]) {
     request = action === "status" ? getAppInstallationRequest(rest[0]) : getAppInstallationJournalRequest(rest[0])
   } else if (action === "logs" && rest[0] && (rest.length === 1 || (rest.length === 3 && rest[1] === "--after" && /^\d{1,19}$/.test(rest[2] ?? "")))) {
@@ -121,6 +123,15 @@ export async function executeAppCommand(
     const lines = data.connections.map((connection) =>
       `${connection.connection_id} · ${connection.generator_id} · actions: ${connection.actions.join(", ") || "none declared"}`)
     return { ok: true, message: lines.join("\n") || "No connections granted to this App.", data }
+  }
+  if (response.AppSet) {
+    const data = expect<{ schema: string; installations: Array<{ installation_id: string; app_id: string;
+      release: { version: string }; automations: unknown[]; inbox_routes: unknown[]; connections: unknown[] }> }>(response, "AppSet")
+    const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+    const lines = data.installations.map((installation) => `${installation.installation_id} · ${installation.app_id} v${installation.release.version} · `
+      + `${plural(installation.automations.length, "automation")}, ${plural(installation.inbox_routes.length, "inbox route")}, `
+      + `${plural(installation.connections.length, "connection")}`)
+    return { ok: true, message: [`App set (${data.schema}): ${plural(data.installations.length, "active installation")}`, ...lines].join("\n"), data }
   }
   if (response.EventBindingMovedToApp) {
     const data = expect<{ binding_id: string; installation_id: string; route: AppInboxRouteSummary;

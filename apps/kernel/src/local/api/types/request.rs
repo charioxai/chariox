@@ -30,6 +30,7 @@ pub enum LocalDaemonRequest {
     TestAppInboxRoute(TestAppInboxRouteRequest),
     GrantAppConnection(GrantAppConnectionRequest),
     MoveEventBindingToApp(MoveEventBindingToAppRequest),
+    GetAppSet(GetAppSetRequest),
     RevokeAppConnection(RevokeAppConnectionRequest),
     ListAppConnections(AppWorkerRequest),
     GrantAppFile(GrantAppFileRequest),

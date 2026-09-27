@@ -8,7 +8,7 @@ import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRo
 import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 360)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 361)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -108,6 +108,20 @@ test("an owner grants, lists and revokes an App's generator connections (protoco
     send: async () => ({ AppRequestFailed: { code: "invalid_request" } }),
   })
   assert.match(undeclared.message ?? "", /must declare this generator under capabilities\.connections/)
+})
+
+test("app set shows each active installation's release and configuration (protocol 361)", async () => {
+  const { executeAppCommand } = await import("./shell-app-command.js")
+  const sent: unknown[] = []
+  const result = await executeAppCommand(["set"], { send: async (request) => {
+    sent.push(request)
+    return { AppSet: { schema: "chariox.app-set.v1", installations: [{
+      installation_id: "slack", app_id: "com.chariox.slack", release: { version: "1.1.0" }, capabilities: {},
+      automations: [{}], inbox_routes: [{}, {}], connections: [] }] } }
+  } })
+  assert.deepEqual(sent, [{ GetAppSet: {} }])
+  assert.equal(result.message, "App set (chariox.app-set.v1): 1 active installation\nslack · com.chariox.slack v1.1.0 · 1 automation, 2 inbox routes, 0 connections")
+  assert.equal((await executeAppCommand(["set", "extra"], { send: async () => ({}) })).ok, false)
 })
 
 test("app inbox move turns an event binding into an App route (protocol 360)", async () => {

@@ -137,4 +137,7 @@ pub use workspace::*;
 /// Version 360 adds `MoveEventBindingToApp`: a workflow event binding becomes
 /// an App inbox route on the same generator connection
 /// (`EventBindingMovedToApp`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 360;
+/// Version 361 adds `GetAppSet`: the owner's App set, a versioned description
+/// of each active installation's release, approved capabilities and
+/// configuration (`AppSet`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 361;

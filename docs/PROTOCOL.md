@@ -1973,6 +1973,13 @@ Workflow trigger and deployment direction:
   `AppRequestFailed`; success answers `EventBindingMovedToApp {binding_id,
   installation_id, route, connection?, automation?}`. The paused binding is
   kept for the owner to remove once the App serves its events.
+- protocol 361: App sets. `GetAppSet {}` answers `AppSet {schema:
+  "chariox.app-set.v1", installations: [{installation_id, app_id, release,
+  capabilities, automations, inbox_routes, connections}]}`: the caller's
+  active installations with the release, the signed capabilities they approved
+  and their configuration, read through the same owner-scoped requests. It is
+  the versioned description a kernel copy installs from (Phase 2); App data is
+  never part of it.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

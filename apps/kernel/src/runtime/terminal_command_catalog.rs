@@ -752,6 +752,7 @@ mod tests {
                 "waiting",
                 "app",
                 "app-list",
+                "app-set",
                 "app-status",
                 "app-journal",
                 "app-logs",
