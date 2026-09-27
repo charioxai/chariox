@@ -82,12 +82,12 @@ export function createWorkflowDefinitionController(deps: WorkflowDefinitionContr
       kind: "workflow_remove",
       workflow_id: workflow.id,
     })
-    return {
-    createAgentWorkflow, workflow, session: payload.session }
+    return { workflow, session: payload.session }
   }
 
   return {
     createWorkflow,
+    createAgentWorkflow,
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,

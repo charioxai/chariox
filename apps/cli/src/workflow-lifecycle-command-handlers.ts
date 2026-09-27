@@ -136,8 +136,9 @@ export async function handleWorkflowNewCommand(
   deps.flashFooter(`created workflow ${formatWorkflowWithAlias(payload.workflow)}`, "info")
 }
 
-/** `/workflow from-agent <agent-ref> trigger|deploy [alias]`: the agent's own
- * one-node workflow; add its trigger or deployment on the entry endpoint. */
+/** `/workflow from-agent <agent-ref> trigger [http|schedule|notification]|deploy [alias]`:
+ * the agent's own one-node workflow; the answer names the command that adds
+ * the chosen trigger, or the deployment, on its entry endpoint. */
 export async function handleWorkflowFromAgentCommand(
   deps: WorkflowLifecycleCommandDeps & {
     createAgentWorkflow?: (agentId: string, reason: "trigger" | "deploy", alias?: string | null) => Promise<{ workflow: WorkflowDefinition; endpoint: { id: string }; session: RuntimeSession }>
@@ -145,11 +146,15 @@ export async function handleWorkflowFromAgentCommand(
   },
   args: readonly string[],
 ): Promise<void> {
-  const [, agentRef, reason, alias] = args
+  const [, agentRef, reason, ...rest] = args
   if (!agentRef || (reason !== "trigger" && reason !== "deploy")) {
-    deps.flashFooter("usage: /workflow from-agent <agent-ref> trigger|deploy [alias]", "error")
+    deps.flashFooter(fromAgentUsage, "error")
     return
   }
+  const kind = reason === "trigger" && rest[0] && Object.hasOwn(triggerNextCommand, rest[0])
+    ? rest.shift() as keyof typeof triggerNextCommand
+    : null
+  const alias = rest[0]
   const agentId = deps.resolveSessionAgent(agentRef)?.agent?.id
   if (!agentId) {
     deps.flashFooter(`unknown agent: ${agentRef}`, "error")
@@ -162,8 +167,21 @@ export async function handleWorkflowFromAgentCommand(
   const payload = await deps.createAgentWorkflow(agentId, reason, alias ?? null)
   deps.selectWorkflowCanvas(payload.workflow.id)
   deps.showWorkflowScreen()
-  deps.flashFooter(`created workflow ${formatWorkflowWithAlias(payload.workflow)} for ${agentRef}; next: /workflow ${reason === "trigger" ? "trigger" : "endpoint"} ... on endpoint ${payload.endpoint.id}`, "info")
+  const next = kind
+    ? triggerNextCommand[kind](payload.workflow.id, payload.endpoint.id)
+    : `/workflow ${reason === "trigger" ? "trigger" : "endpoint"} ... on endpoint ${payload.endpoint.id}`
+  deps.flashFooter(`created workflow ${formatWorkflowWithAlias(payload.workflow)} for ${agentRef}; next: ${next}`, "info")
 }
+
+const fromAgentUsage = "usage: /workflow from-agent <agent-ref> trigger [http|schedule|notification]|deploy [alias]"
+
+// The command that adds each trigger class to the new workflow's endpoint.
+const triggerNextCommand = {
+  http: (workflowId: string, endpointId: string) => `/workflow trigger create ${workflowId} ${endpointId} --route /`,
+  schedule: (workflowId: string, endpointId: string) => `/workflow schedule add ${workflowId} ${endpointId} --every 1h`,
+  notification: (workflowId: string, endpointId: string) =>
+    `/workflow trigger create ${workflowId} ${endpointId} --kind event_based, then /workflow trigger event attach`,
+} as const
 
 export async function handleWorkflowAliasCommand(
   deps: WorkflowLifecycleCommandDeps,
@@ -186,7 +204,7 @@ export async function handleWorkflowAliasCommand(
   deps.flashFooter(`workflow ${workflow.id} aliased as ${workflow.alias}`, "info")
 }
 
-export const workflowUsage = "usage: /workflow | /workflow list | /workflow show [workflow-ref] | /workflow new [alias] | /workflow from-agent <agent-ref> trigger|deploy [alias] | /workflow delete [workflow-ref] | /workflow run|start [workflow-ref] <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow run-output-schema [workflow-ref] [schema-ref|none] | /workflow runs [workflow-ref] | /workflow run-show|run-get <run-ref> | /workflow cancel <run-ref> | /workflow pause <run-ref> | /workflow resume <run-ref> | /workflow pane logs|trace|edit [workflow-ref] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ..."
+export const workflowUsage = "usage: /workflow | /workflow list | /workflow show [workflow-ref] | /workflow new [alias] | /workflow from-agent <agent-ref> trigger [http|schedule|notification]|deploy [alias] | /workflow delete [workflow-ref] | /workflow run|start [workflow-ref] <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow run-output-schema [workflow-ref] [schema-ref|none] | /workflow runs [workflow-ref] | /workflow run-show|run-get <run-ref> | /workflow cancel <run-ref> | /workflow pause <run-ref> | /workflow resume <run-ref> | /workflow pane logs|trace|edit [workflow-ref] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ..."
 
 function formatWorkflowListItem(workflow: WorkflowDefinition): string {
   return workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
