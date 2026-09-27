@@ -202,3 +202,38 @@ fn hosted_recovery_preserves_data_after_abrupt_helper_exit() {
     );
     lease.release().unwrap();
 }
+#[test]
+#[ignore = "requires dedicated hosted Linux root helper and owned process cancellation"]
+fn hosted_crash_fixture_holds_a_staged_update_until_the_helper_is_killed() {
+    let context = Context::open("55555555555555555555555555555555");
+    let mut committed = context.lease("update-crash", 1);
+    let mut file = File::create(committed.data_path().join("todos")).unwrap();
+    file.write_all(b"committed").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    committed.release().unwrap();
+    // The update to generation 2 is running when the helper dies.
+    let staged = context.staged("update-crash", 2, 1);
+    let mut file = File::create(staged.data_path().join("todos")).unwrap();
+    file.write_all(b"written by the interrupted update").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let marker = std::env::var("CHARIOX_STORAGE_CRASH_MARKER").unwrap();
+    fs::write(marker, "ready\n").unwrap();
+    std::thread::sleep(Duration::from_secs(60));
+    panic!("root fixture did not cancel its own held storage process");
+}
+#[test]
+#[ignore = "requires dedicated hosted Linux helper restart after abrupt cancellation"]
+fn hosted_an_update_interrupted_by_a_helper_crash_rolls_back_to_committed_data() {
+    let context = Context::open("66666666666666666666666666666666");
+    // The kernel treats the interrupted update as failed: the committed
+    // generation starts again on its own data.
+    let mut restored = context.lease("update-crash", 1);
+    assert_eq!(
+        fs::read(restored.data_path().join("todos")).unwrap(),
+        b"committed"
+    );
+    restored.release().unwrap();
+    println!("an update interrupted by an abrupt helper exit rolled back to the committed data");
+}
