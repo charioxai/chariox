@@ -83,6 +83,30 @@ def retired(record):
         return False
 
 
+def container_retired(entry):
+    record = entry.get("lifetime")
+    if not record or not retired(record):
+        return False
+    owner, supervisor = entry.get("owner") or {}, record.get("supervisor") or {}
+    if any(key not in owner or key not in supervisor or owner[key] != supervisor[key]
+           for key in ("boot", "namespace", "uid")):
+        return False
+    try:
+        proof = lifecycle.read_json(lifecycle.directory() / f"{record['instance']}.container-retired.json")
+    except FileNotFoundError:
+        return False
+    # Only the normal host Docker lifecycle writes this companion after proving
+    # the entire container exited. Graceful browser retirement does not prove
+    # that a controller still preparing files has stopped.
+    return (set(proof) == {"version", "authority", "engineId", "containerId", "startedAt", "finishedAt", "lifetime"}
+            and proof["version"] == 1 and proof["authority"] == "docker-stopped-container"
+            and isinstance(proof["engineId"], str) and re.fullmatch(r"[a-zA-Z0-9:_-]{8,128}", proof["engineId"]) is not None
+            and isinstance(proof["containerId"], str) and re.fullmatch(r"[a-f0-9]{64}", proof["containerId"]) is not None
+            and all(isinstance(proof[key], str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", proof[key])
+                    for key in ("startedAt", "finishedAt"))
+            and proof["lifetime"] == record)
+
+
 def prune_receipts(ledger):
     root = lifecycle.directory()
     retained = {entry["lifetime"]["instance"] for entry in ledger if entry.get("lifetime")}
@@ -96,6 +120,7 @@ def prune_receipts(ledger):
         except FileNotFoundError:
             continue
         receipt.unlink()
+        (root / f"{record['instance']}.container-retired.json").unlink(missing_ok=True)
         (root / f"{record['instance']}.json").unlink(missing_ok=True)
 
 
@@ -130,7 +155,7 @@ def transact(root, request):
             if not isinstance(entry, dict) or not re.fullmatch(r"[a-f0-9-]{36}", entry.get("id", "")) or not isinstance(entry.get("bytes"), int) or not 0 <= entry["bytes"] <= MAX_BYTES or not isinstance(entry.get("count"), int) or not 1 <= entry["count"] <= 20:
                 raise RuntimeError("invalid upload ledger entry")
         removable = [entry for entry in ledger if
-                     (entry.get("phase") == "preparing" and process_state(entry["owner"]) == "dead")
+                     (entry.get("phase") == "preparing" and (process_state(entry["owner"]) == "dead" or container_retired(entry)))
                      or (entry.get("phase") == "exposed" and retired(entry.get("lifetime")))]
         for entry in removable:
             shutil.rmtree(root / entry["id"], ignore_errors=False) if (root / entry["id"]).exists() else None
