@@ -18,7 +18,10 @@ import {
   createSignedManifest,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
-import { validateProjectSetupProof } from "./lib/managed-ordinary-project-setup-observer.mjs"
+import {
+  validateProjectSetupProof,
+  validateProjectSetupProofCaptureBinding,
+} from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 export const DEFAULT_TIMEOUT_MS = 45_000
 export const OFFICIAL_PROVIDERS = Object.freeze(["claude", "codex", "opencode"])
@@ -918,6 +921,15 @@ export function createParityCollector({
     }
     if (!sameProviderTurnProof(captureBoundary.result.capture_provenance, providerTurnProof)) {
       throw new CollectorError("capture_provenance_mismatch", "probe and collector did not observe the same kernel-owned provider turn")
+    }
+    const projectSetupProof = rows["MP-08"]?.checks?.project_setup?.result?.project_setup_proof
+    const projectSetupCaptureBinding = validateProjectSetupProofCaptureBinding(projectSetupProof, providerTurnProof)
+    if (!projectSetupCaptureBinding.ok) {
+      throw new CollectorError(
+        "project_setup_capture_identity_mismatch",
+        `MP-08/project_setup proof does not match this provider-turn capture (${projectSetupCaptureBinding.field ?? projectSetupCaptureBinding.code})`,
+        { rowId: "MP-08", checkId: "project_setup" },
+      )
     }
     captureBoundary.result = {
       observed: true,
