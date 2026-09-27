@@ -194,7 +194,7 @@ export function createManagedParityInspectorFromAuthorities({ config, home, requ
         cloudResult = await cloud.inspect(cloudScope(), { signal })
       }
       if (failed) throw failed
-      validateCloudInventory(cloudResult, cloudScope())
+      validateCloudInventory(cloudResult, cloudScope(), config.inspector.observations.cloudInventory)
       if (physicalResult.volumes !== 0) throw new Error("retained physical volume prevents profile cleanup proof")
       const relay = (await send({ QueryFreshRemoteMachineKernels: { machine_ref: config.expected.machineId } }, signal))
         ?.FreshRemoteMachineKernelsObserved
@@ -235,13 +235,14 @@ export function createManagedParityInspectorFromAuthorities({ config, home, requ
         machineOwnership: ownership.kind, physical: physicalResult, retirement,
         relay: { activeRegistrations, queryStartedAtMs: relay.query_started_at_ms, queryCompletedAtMs: relay.query_completed_at_ms },
         historicalRows: { targets: cloudResult.retainedTargetRows.length, heartbeats: cloudResult.retainedHeartbeatRows.length },
+        cloudRetirementProof: cloudResult.retirementProof ?? null,
       }
     },
     async close() { await Promise.allSettled([home.close(), cloud.close?.()]) },
   }
 }
 
-function validateCloudInventory(value, scope) {
+function validateCloudInventory(value, scope, actor) {
   if (value?.authority !== "read-only-cloud-inventory" || value.complete !== true) throw new Error("complete independent Cloud inventory required")
   for (const field of ["queriedTargetIds", "queriedHeartbeatIds",
     "activeTargets", "retainedTargetRows", "retainedHeartbeatRows"]) {
@@ -253,7 +254,57 @@ function validateCloudInventory(value, scope) {
       throw new Error("Cloud census did not query every retained identity")
     }
   }
-  if (value.retainedTargetRows.length || value.retainedHeartbeatRows.length) throw new Error("run-owned historical target or heartbeat rows remain")
+  if (scope.machineOwnership.kind === "run_owned" || value.retainedTargetRows.length || value.retainedHeartbeatRows.length) {
+    validateRetiredHistory(value, scope, actor)
+  }
+}
+
+function validateRetiredHistory(value, scope, actor) {
+  const fail = () => { throw new Error("retained Cloud history lacks exact normal managed DELETE retirement proof") }
+  const receipt = scope.machineOwnership.creationReceipt
+  const proof = value.retirementProof
+  const timestamp = input => typeof input === "string" && Number.isFinite(Date.parse(input))
+  if (scope.machineOwnership.kind !== "run_owned" || !actor?.accountId || !actor.realmId || !actor.userId
+    || proof?.authority !== "normal-managed-delete" || proof.accountId !== actor.accountId
+    || proof.realmId !== actor.realmId || proof.userId !== actor.userId
+    || proof.environmentId !== receipt.managedEnvironmentId || proof.machineId !== scope.binding.machineId
+    || proof.kernelId !== scope.binding.kernelId || proof.createOperationId !== receipt.createOperationId) fail()
+  const operation = proof.operation
+  const environment = proof.environment
+  const machine = proof.machine
+  if (!operation?.id || operation.accountId !== actor.accountId || operation.environmentId !== receipt.managedEnvironmentId
+    || operation.requestedByUserId !== actor.userId || operation.kind !== "DELETE" || operation.status !== "SUCCEEDED"
+    || operation.idempotencyKey !== `parity-cleanup-${createHash("sha256").update(scope.runId).digest("hex")}`
+    || !timestamp(operation.completedAt) || !Number.isSafeInteger(operation.desiredRevision) || operation.desiredRevision < 1
+    || environment?.id !== receipt.managedEnvironmentId || environment.accountId !== actor.accountId
+    || environment.runtimeMachineId !== scope.binding.machineId || environment.runtimeRelayRealmId !== actor.realmId
+    || environment.desiredState !== "DELETED" || environment.observedState !== "DELETED"
+    || environment.desiredRevision !== operation.desiredRevision || environment.observedRevision !== operation.desiredRevision
+    || machine?.accountId !== actor.accountId || machine.machineId !== scope.binding.machineId
+    || machine.status !== "REVOKED" || machine.acceptingLeases !== false || !timestamp(machine.revokedAt)
+    || proof.activeCredentials !== 0 || proof.unrevokedTokens !== 0 || proof.unrevokedGrants !== 0 || proof.nonRevokedTargets !== 0
+    || value.activeTargets.length !== 0 || !Array.isArray(proof.tombstones)) fail()
+  const kernels = new Set([...scope.ownedKernelIds, scope.binding.kernelId])
+  for (const [kind, id] of [["MACHINE", scope.binding.machineId], ...[...kernels].map(id => ["KERNEL", id])]) {
+    const rows = proof.tombstones.filter(row => row.accountId === actor.accountId && row.subjectKind === kind && row.subject === id
+      && row.reason === "managed_environment_deleted")
+    if (rows.length !== 1) fail()
+  }
+  const targets = new Map()
+  for (const row of value.retainedTargetRows) {
+    if (targets.has(row.id) || !scope.ownedTargetIds.includes(row.id) || row.accountId !== actor.accountId
+      || row.realmId !== actor.realmId || row.machineId !== scope.binding.machineId || !kernels.has(row.daemonId)
+      || row.status !== "REVOKED" || (row.lastHeartbeatAt !== null && !timestamp(row.lastHeartbeatAt))) fail()
+    targets.set(row.id, row)
+  }
+  const heartbeats = new Set()
+  for (const row of value.retainedHeartbeatRows) {
+    const target = targets.get(row.id)
+    if (heartbeats.has(row.id) || !scope.ownedHeartbeatIds.includes(row.id) || !target
+      || row.kernelId !== target.daemonId || !timestamp(row.lastHeartbeatAt) || row.lastHeartbeatAt !== target.lastHeartbeatAt) fail()
+    heartbeats.add(row.id)
+  }
+  for (const row of targets.values()) if (row.lastHeartbeatAt !== null && !heartbeats.has(row.id)) fail()
 }
 
 // Receipts choose ownership. Host observations establish physical identities.

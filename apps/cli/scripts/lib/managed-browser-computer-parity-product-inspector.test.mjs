@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { createHash } from "node:crypto"
 import { createManagedParityPhysicalLedger, createManagedParityInspectorFromAuthorities } from "./managed-browser-computer-parity-product-inspector.mjs"
 
 function snapshot(overrides = {}) {
@@ -55,7 +56,7 @@ test("physical ledger refuses a changed boot, mount or incomplete census", async
 function authorities({ owned = false, incompleteCloud = false } = {}) {
   const events = []
   const config = { runId: "run-1", expected: { kernelId: "kernel-1", machineId: "machine-1", roomId: "room-1" },
-    inspector: { identity: "fixture", sha256: "fixture", observations: { machineOwnership: {
+    inspector: { identity: "fixture", sha256: "fixture", observations: { cloudInventory: { accountId: "account-1", realmId: "realm-1", userId: "user-1" }, machineOwnership: {
       kind: owned ? "run_owned" : "preexisting", machineId: "machine-1",
       ...(owned ? { creationReceipt: { runId: "run-1", machineId: "machine-1", kernelId: "kernel-1",
         managedEnvironmentId: "managed-1", providerServerId: "123", createOperationId: "create-1" } } : {}),
@@ -67,7 +68,7 @@ function authorities({ owned = false, incompleteCloud = false } = {}) {
     async begin() { return ownershipReceipt }, async observeCreated() { return ownershipReceipt }, async beforeRetire() { return ownershipReceipt },
     async inspect() { return { authority: "read-only-cloud-inventory", complete: true, runId: "run-1", machineId: "machine-1",
       queriedTargetIds: incompleteCloud ? [] : ["target-1"], queriedHeartbeatIds: ["heartbeat-1"], activeTargets: [],
-      retainedTargetRows: [], retainedHeartbeatRows: [], retainedEvidenceLeakCount: 0 } },
+      retainedTargetRows: [], retainedHeartbeatRows: [], retirementProof: owned ? deletionProof() : null, retainedEvidenceLeakCount: 0 } },
     async inspectProviderMachine() { events.push("provider"); return { authority: "hetzner-api", providerServerId: "123",
       httpStatus: providerReads++ === 0 ? 200 : 404, observedAt: new Date().toISOString(),
       creationOperationId: "create-1", managedEnvironmentId: "managed-1" } },
@@ -126,6 +127,119 @@ test("missing retained Cloud identity coverage fails even with no current relay 
   const inspector = createManagedParityInspectorFromAuthorities(authorities({ incompleteCloud: true }))
   await inspector.begin({})
   await assert.rejects(inspector.run("cleanup.inspect"), /every retained identity/)
+})
+
+function deletionProof() {
+  return { authority: "normal-managed-delete", accountId: "account-1", realmId: "realm-1", userId: "user-1",
+    machineId: "machine-1", kernelId: "kernel-1", environmentId: "managed-1", createOperationId: "create-1",
+    operation: { id: "delete-1", accountId: "account-1", environmentId: "managed-1", requestedByUserId: "user-1",
+      idempotencyKey: `parity-cleanup-${createHash("sha256").update("run-1").digest("hex")}`,
+      kind: "DELETE", status: "SUCCEEDED", completedAt: "2026-09-28T00:00:00.000Z", desiredRevision: 2 },
+    environment: { id: "managed-1", accountId: "account-1", runtimeMachineId: "machine-1", runtimeRelayRealmId: "realm-1",
+      desiredState: "DELETED", observedState: "DELETED", desiredRevision: 2, observedRevision: 2 },
+    machine: { accountId: "account-1", machineId: "machine-1", status: "REVOKED", acceptingLeases: false, revokedAt: "2026-09-28T00:00:00.000Z" },
+    activeCredentials: 0, unrevokedTokens: 0, unrevokedGrants: 0, nonRevokedTargets: 0,
+    tombstones: [{ accountId: "account-1", subjectKind: "MACHINE", subject: "machine-1", reason: "managed_environment_deleted" },
+      { accountId: "account-1", subjectKind: "KERNEL", subject: "child-1", reason: "managed_environment_deleted" },
+      { accountId: "account-1", subjectKind: "KERNEL", subject: "kernel-1", reason: "managed_environment_deleted" }] }
+}
+
+function retiredHistoryFixture() {
+  const fixture = authorities({ owned: true })
+  fixture.cloud.begin = async () => ({ runId: "run-1", machineId: "machine-1", ownedTargetIds: ["target-1"],
+    ownedHeartbeatIds: ["target-1"], ownedKernelIds: ["kernel-1"] })
+  const proof = deletionProof()
+  const original = fixture.cloud.inspect
+  const value = { retirementProof: proof,
+    retainedTargetRows: [{ id: "target-1", accountId: "account-1", realmId: "realm-1", machineId: "machine-1",
+      daemonId: "kernel-1", status: "REVOKED", lastHeartbeatAt: "2026-09-27T23:59:00.000Z" }],
+    retainedHeartbeatRows: [{ id: "target-1", kernelId: "kernel-1", lastHeartbeatAt: "2026-09-27T23:59:00.000Z" }] }
+  fixture.cloud.inspect = async () => ({ ...await original(), queriedHeartbeatIds: ["target-1"], ...value })
+  return { fixture, value, proof }
+}
+
+test("normal managed DELETE permits proven revoked history and preserves nonzero counts", async () => {
+  const { fixture } = retiredHistoryFixture()
+  const inspector = createManagedParityInspectorFromAuthorities(fixture)
+  inspector.setBeforeMachineDelete(async () => ({ phase: "before-delete" }))
+  await inspector.begin({})
+  const result = await inspector.run("cleanup.inspect")
+  assert.deepEqual(result.historicalRows, { targets: 1, heartbeats: 1 })
+  assert.equal(result.activeTargets, 0)
+  assert.equal(result.retirement.providerAbsence.httpStatus, 404)
+  assert.equal(result.cloudRetirementProof.operation.id, "delete-1")
+})
+
+for (const [name, alter] of [
+  ["OFFLINE is not revoked", f => { f.value.retainedTargetRows[0].status = "OFFLINE" }],
+  ["fresh ONLINE target", f => { f.value.retainedTargetRows[0].status = "ONLINE" }],
+  ["active target census", f => { f.value.activeTargets = [{ id: "target-1" }] }],
+  ["usable credential", f => { f.proof.activeCredentials = 1 }],
+  ["usable token", f => { f.proof.unrevokedTokens = 1 }],
+  ["usable grant", f => { f.proof.unrevokedGrants = 1 }],
+  ["another nonrevoked machine target", f => { f.proof.nonRevokedTargets = 1 }],
+  ["missing revocation census", f => { delete f.proof.unrevokedTokens }],
+  ["missing tombstone", f => { f.proof.tombstones.pop() }],
+  ["wrong tombstone reason", f => { f.proof.tombstones[0].reason = "unrelated" }],
+  ["wrong account", f => { f.proof.accountId = "foreign" }],
+  ["wrong actor", f => { f.proof.operation.requestedByUserId = "foreign" }],
+  ["wrong DELETE environment", f => { f.proof.operation.environmentId = "foreign" }],
+  ["another DELETE request", f => { f.proof.operation.idempotencyKey = "another-run" }],
+  ["failed DELETE", f => { f.proof.operation.status = "FAILED" }],
+  ["undeleted environment", f => { f.proof.environment.observedState = "DELETING" }],
+  ["unobserved revision", f => { f.proof.environment.observedRevision = 1 }],
+  ["usable machine", f => { f.proof.machine.status = "ACTIVE" }],
+  ["accepting leases", f => { f.proof.machine.acceptingLeases = true }],
+  ["missing machine revocation", f => { f.proof.machine.revokedAt = null }],
+  ["foreign target", f => { f.value.retainedTargetRows[0].machineId = "foreign" }],
+  ["unowned target", f => { f.value.retainedTargetRows[0].id = "unknown" }],
+  ["unowned heartbeat", f => { f.value.retainedHeartbeatRows[0].id = "unknown" }],
+  ["omitted historical heartbeat", f => { f.value.retainedHeartbeatRows = [] }],
+  ["missing proof", f => { f.value.retirementProof = null }],
+  ["empty history without normal DELETE proof", f => { f.value.retainedTargetRows = []; f.value.retainedHeartbeatRows = []; f.value.retirementProof = null }],
+  ["missing actor configuration", f => { delete f.fixture.config.inspector.observations.cloudInventory.userId }],
+  ["preexisting machine", f => { f.fixture.config.inspector.observations.machineOwnership.kind = "preexisting" }],
+]) {
+  test(`retained history refuses ${name}`, async () => {
+    const f = retiredHistoryFixture()
+    alter(f)
+    const inspector = createManagedParityInspectorFromAuthorities(f.fixture)
+    inspector.setBeforeMachineDelete(async () => ({ phase: "before-delete" }))
+    await inspector.begin({})
+    await assert.rejects(inspector.run("cleanup.inspect"), /retirement proof/)
+  })
+}
+
+test("retired history does not waive scoped identity coverage or provider absence", async () => {
+  for (const mode of ["coverage", "provider"]) {
+    const { fixture, value } = retiredHistoryFixture()
+    if (mode === "coverage") value.queriedTargetIds = []
+    else {
+      const original = fixture.cloud.inspectProviderMachine
+      let count = 0
+      fixture.cloud.inspectProviderMachine = async () => ++count === 1 ? original() : { httpStatus: 404 }
+    }
+    const inspector = createManagedParityInspectorFromAuthorities(fixture)
+    inspector.setBeforeMachineDelete(async () => ({ phase: "before-delete" }))
+    await inspector.begin({})
+    await assert.rejects(inspector.run("cleanup.inspect"), /every retained identity|exact provider/)
+  }
+})
+
+test("retired history cannot hide a physical process or fresh owned registry entry", async () => {
+  const { fixture } = retiredHistoryFixture()
+  const inspect = fixture.physical.inspect
+  fixture.physical.inspect = async () => ({ ...await inspect(), processes: 1 })
+  const send = fixture.home.send
+  fixture.home.send = async request => request.QueryFreshRemoteMachineKernels
+    ? { FreshRemoteMachineKernelsObserved: { machine_ref: "machine-1", query_started_at_ms: 1, query_completed_at_ms: 2,
+      kernels: [{ kernel_id: "kernel-1" }] } } : send(request)
+  const inspector = createManagedParityInspectorFromAuthorities(fixture)
+  inspector.setBeforeMachineDelete(async () => ({ phase: "before-delete" }))
+  await inspector.begin({})
+  const result = await inspector.run("cleanup.inspect")
+  assert.equal(result.processes, 1)
+  assert.equal(result.activeTargets, 1)
 })
 
 test("started browser needs physical profile coverage and retained inode is not inferred away", async () => {
