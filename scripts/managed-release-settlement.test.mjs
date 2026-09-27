@@ -1,11 +1,16 @@
 import assert from "node:assert/strict"
+import { createHash, randomUUID } from "node:crypto"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { test } from "node:test"
 import {
+  acquireManagedReleaseBuilderLease,
   isTerminalBuildHistoryRecord,
   parseBuildHistoryList,
   reconcileManagedReleaseBuild,
   validateBuildMetadata,
 } from "./managed-release-settlement.mjs"
+import { dirname, join, resolve } from "node:path"
 
 const builderName = "chariox-managed-release"
 const nodeName = "chariox-managed-release0"
@@ -16,6 +21,8 @@ const secondBareId = "b".repeat(64)
 const baselineId = "c".repeat(64)
 const fullRef = `${builderName}/${nodeName}/${bareId}`
 const baselineRef = `${builderName}/${nodeName}/${baselineId}`
+const deadOwnerPid = 2_147_483_647
+const deadReaperPid = 2_147_483_646
 
 function historyRow(ref, overrides = {}) {
   const createdAt = new Date(Date.now() - 30_000).toISOString()
@@ -44,7 +51,16 @@ function makeBarrier(overrides = {}) {
   const startedAt = new Date(Date.now() - 90_000).toISOString()
   const builderFingerprint = {
     name: builderName,
-    nodes: [{ name: nodeName, containerId: "d".repeat(64) }],
+    nodes: [{
+      name: nodeName,
+      endpoint: "unix:///var/run/docker.sock",
+      containerId: "d".repeat(64),
+      startedAt: "2026-09-27T10:00:00.000Z",
+      pidsLimit: 1024,
+      effectiveCpus: 2,
+      memoryBytes: 8 * 1024 ** 3,
+      memoryWithSwapBytes: 8 * 1024 ** 3,
+    }],
   }
   return {
     schemaVersion: 1,
@@ -77,18 +93,53 @@ function inspectRecord(barrier, id, overrides = {}) {
   }
 }
 
-async function reconcile({ barrier = makeBarrier(), refs, records, fingerprint } = {}) {
+function leasePaths(home) {
+  const stateDirectory = join(home, ".local", "state", "chariox", "managed-kernel-release")
+  const builderKey = createHash("sha256").update(builderName).digest("hex")
+  return {
+    stateDirectory,
+    lockDirectory: join(stateDirectory, `builder-${builderKey}.lock`),
+  }
+}
+
+async function seedAbandonedReaper(home, {
+  reaperPid = deadReaperPid,
+  reaperOwnerToken,
+  bindOwner = true,
+} = {}) {
+  const { stateDirectory, lockDirectory } = leasePaths(home)
+  const ownerToken = randomUUID()
+  await mkdir(stateDirectory, { recursive: true, mode: 0o700 })
+  await mkdir(lockDirectory, { mode: 0o700 })
+  await writeFile(join(lockDirectory, "owner.json"), JSON.stringify({ pid: deadOwnerPid, token: ownerToken }), {
+    mode: 0o600,
+  })
+  const reaper = {
+    pid: reaperPid,
+    token: randomUUID(),
+  }
+  if (bindOwner) {
+    reaper.ownerPid = deadOwnerPid
+    reaper.ownerToken = reaperOwnerToken ?? ownerToken
+  }
+  await writeFile(join(lockDirectory, "reaper.json"), JSON.stringify(reaper), { mode: 0o600 })
+  return { lockDirectory, ownerToken }
+}
+
+async function reconcile({ barrier = makeBarrier(), refs, records, fingerprint, restartProcessCwd } = {}) {
   const inspected = []
+  const inspectionCwds = []
   const result = await reconcileManagedReleaseBuild({
     barrier,
     currentBuilderFingerprint: fingerprint ?? barrier.builderFingerprint,
     historyList: async () => refs,
-    historyInspect: async (id) => {
+    historyInspect: async (id, inspectionCwd) => {
       inspected.push(id)
+      inspectionCwds.push({ id, inspectionCwd, restartProcessCwd })
       return records.get(id) ?? {}
     },
   })
-  return { result, inspected }
+  return { result, inspected, inspectionCwds }
 }
 
 test("managed release history parses empty, single-line, and multiple newline JSON records", () => {
@@ -106,6 +157,7 @@ test("managed release history parses empty, single-line, and multiple newline JS
 test("managed release history rejects duplicate, malformed, and incomplete CLI rows", () => {
   assert.throws(() => parseBuildHistoryList(historyOutput(historyRow(fullRef), historyRow(fullRef))), /duplicate/i)
   assert.throws(() => parseBuildHistoryList('{"ref":\n'), /malformed/i)
+  assert.throws(() => parseBuildHistoryList(JSON.stringify([{ ID: bareId }])), /malformed/i)
   assert.throws(() => parseBuildHistoryList(historyOutput(historyRow("invalid-ref"))), /ref|malformed|invalid/i)
   assert.throws(() => parseBuildHistoryList(historyOutput(historyRow(fullRef, { completed_at: "not-a-timestamp" }))), /completion|timestamp|malformed/i)
 
@@ -129,6 +181,33 @@ test("metadata and inspect keep full builder references separate from bare inspe
   })
   assert.deepEqual(inspected, [bareId])
   assert.deepEqual(result, { settled: true, buildRef: fullRef, status: "completed" })
+})
+
+test("a persisted full build reference does not settle on mismatched or nonterminal inspect evidence", async () => {
+  const barrier = makeBarrier({ buildRef: fullRef })
+  const rejectedRecords = [
+    inspectRecord(barrier, bareId, { Context: `${barrier.sourceDirectory}-other` }),
+    inspectRecord(barrier, bareId, { Status: "running" }),
+  ]
+
+  for (const record of rejectedRecords) {
+    const { result, inspected } = await reconcile({
+      barrier,
+      records: new Map([[bareId, record]]),
+    })
+    assert.deepEqual(inspected, [bareId])
+    assert.equal(result.settled, false)
+  }
+
+  const changedFingerprint = structuredClone(barrier.builderFingerprint)
+  changedFingerprint.nodes[0].endpoint = "unix:///var/run/other-docker.sock"
+  const drifted = await reconcile({
+    barrier,
+    records: new Map([[bareId, inspectRecord(barrier, bareId)]]),
+    fingerprint: changedFingerprint,
+  })
+  assert.equal(drifted.result.settled, false)
+  assert.deepEqual(drifted.inspected, [])
 })
 
 test("history references with another builder, another node, or invalid identity do not settle", async () => {
@@ -155,7 +234,7 @@ test("history references with another builder, another node, or invalid identity
   }
 })
 
-test("only one new record matching the exact source, start, and target can settle", async () => {
+test("only one new record with matching invocation identity can settle", async () => {
   const barrier = makeBarrier()
   const secondRef = `${builderName}/${nodeName}/${secondBareId}`
   const records = new Map([
@@ -164,22 +243,81 @@ test("only one new record matching the exact source, start, and target can settl
   ])
 
   const ambiguous = await reconcile({ barrier, refs: [fullRef, secondRef], records })
-  assert.deepEqual(ambiguous.result, {
-    settled: false,
-    reason: "history does not identify exactly one invocation",
-  })
+  assert.equal(ambiguous.result.settled, false)
 
   const wrongIdentityRecords = [
-    [inspectRecord(barrier, bareId, { Ref: secondBareId }), "Buildx history inspect reference does not match the listed build"],
-    [inspectRecord(barrier, bareId, { Context: `${barrier.sourceDirectory}-other` }), "Buildx history inspect is missing or mismatches the invocation source context binding"],
-    [inspectRecord(barrier, bareId, { Context: undefined }), "Buildx history inspect is missing or mismatches the invocation source context binding"],
-    [inspectRecord(barrier, bareId, { Target: "default" }), "Buildx history inspect is missing or mismatches the managed release target binding"],
-    [inspectRecord(barrier, bareId, { Target: undefined }), "Buildx history inspect is missing or mismatches the managed release target binding"],
-    [inspectRecord(barrier, bareId, { StartedAt: new Date(Date.parse(barrier.startedAt) - 10 * 60_000).toISOString() }), "Buildx history inspect start timestamp does not match the invocation"],
+    inspectRecord(barrier, bareId, { Ref: secondBareId }),
+    inspectRecord(barrier, bareId, { Context: `${barrier.sourceDirectory}-other` }),
+    inspectRecord(barrier, bareId, { Context: undefined }),
+    inspectRecord(barrier, bareId, { Target: "default" }),
+    inspectRecord(barrier, bareId, { Target: undefined }),
+    inspectRecord(barrier, bareId, { StartedAt: new Date(Date.parse(barrier.startedAt) - 10 * 60_000).toISOString() }),
   ]
-  for (const [record, reason] of wrongIdentityRecords) {
-    const { result } = await reconcile({ barrier, refs: [fullRef], records: new Map([[bareId, record]]) })
-    assert.deepEqual(result, { settled: false, reason })
+  for (const record of wrongIdentityRecords) {
+    const { result, inspected } = await reconcile({ barrier, refs: [fullRef], records: new Map([[bareId, record]]) })
+    assert.equal(result.settled, false)
+    assert.deepEqual(inspected, [bareId])
+  }
+})
+
+test("restart inspection uses the saved absolute context regardless of the process CWD", async () => {
+  const barrier = makeBarrier({ buildRef: fullRef })
+  const restartProcessCwd = "/tmp/restarted-from-elsewhere"
+  assert.notEqual(restartProcessCwd, barrier.sourceDirectory)
+
+  const absoluteContext = await reconcile({
+    barrier,
+    restartProcessCwd,
+    records: new Map([[bareId, inspectRecord(barrier, bareId)]]),
+  })
+  assert.equal(absoluteContext.result.settled, true)
+  assert.deepEqual(absoluteContext.inspectionCwds, [{
+    id: bareId,
+    inspectionCwd: barrier.sourceDirectory,
+    restartProcessCwd,
+  }])
+
+  const relativeBarrier = makeBarrier()
+  const relativeContext = await reconcile({
+    barrier: relativeBarrier,
+    refs: [fullRef],
+    restartProcessCwd,
+    records: new Map([[bareId, inspectRecord(relativeBarrier, bareId, { Context: "./source" })]]),
+  })
+  assert.equal(relativeContext.result.settled, false)
+  assert.deepEqual(relativeContext.inspectionCwds, [{
+    id: bareId,
+    inspectionCwd: relativeBarrier.sourceDirectory,
+    restartProcessCwd,
+  }])
+  assert.equal(resolve(dirname(relativeBarrier.sourceDirectory), "./source"), relativeBarrier.sourceDirectory)
+  assert.notEqual(resolve(relativeBarrier.sourceDirectory, "./source"), relativeBarrier.sourceDirectory)
+  assert.notEqual(resolve(restartProcessCwd, "./source"), relativeBarrier.sourceDirectory)
+})
+
+test("lease recovery reclaims a dead owner-bound reaper marker and rejects unrelated or active markers", async (context) => {
+  const matchingHome = await mkdtemp(join(tmpdir(), "chariox-release-dead-reaper-matching-"))
+  context.after(() => rm(matchingHome, { recursive: true, force: true }))
+  const matching = await seedAbandonedReaper(matchingHome)
+  const lease = await acquireManagedReleaseBuilderLease({ home: matchingHome, builderName })
+  await lease.release()
+  assert.equal(await readFile(join(matching.lockDirectory, "owner.json")).then(() => true, () => false), false)
+
+  for (const marker of [
+    { homePrefix: "mismatched-owner", reaperPid: deadReaperPid, mismatchOwnerToken: true, bindOwner: true },
+    { homePrefix: "unbound-reaper", reaperPid: deadReaperPid, mismatchOwnerToken: false, bindOwner: false },
+    { homePrefix: "active-reaper", reaperPid: process.pid, mismatchOwnerToken: false, bindOwner: true },
+  ]) {
+    const home = await mkdtemp(join(tmpdir(), `chariox-release-${marker.homePrefix}-`))
+    context.after(() => rm(home, { recursive: true, force: true }))
+    const seeded = await seedAbandonedReaper(home, {
+      reaperPid: marker.reaperPid,
+      reaperOwnerToken: marker.mismatchOwnerToken ? randomUUID() : undefined,
+      bindOwner: marker.bindOwner,
+    })
+    await assert.rejects(acquireManagedReleaseBuilderLease({ home, builderName }))
+    assert.ok(await readFile(join(seeded.lockDirectory, "owner.json")))
+    assert.ok(await readFile(join(seeded.lockDirectory, "reaper.json")))
   }
 })
 
@@ -203,20 +341,45 @@ test("nonterminal or malformed completion fields never prove a build terminal", 
   }
 })
 
-test("an unchanged baseline or changed builder fingerprint cannot create terminal proof", async () => {
+test("terminal failure and cancellation statuses are terminal when inspection timestamps are valid", async () => {
+  const barrier = makeBarrier({ buildRef: fullRef })
+  for (const status of ["failed", "error", "canceled", "cancelled"]) {
+    const record = inspectRecord(barrier, bareId, { Status: status })
+    assert.equal(isTerminalBuildHistoryRecord(record), true, status)
+    const { result, inspected } = await reconcile({
+      barrier,
+      records: new Map([[bareId, record]]),
+    })
+    assert.deepEqual(inspected, [bareId], status)
+    assert.deepEqual(result, { settled: true, buildRef: fullRef, status }, status)
+  }
+})
+
+test("an unchanged baseline or any individually changed builder fingerprint field blocks settlement", async () => {
   const barrier = makeBarrier()
   const noNewRecords = await reconcile({ barrier, refs: [baselineRef], records: new Map() })
   assert.equal(noNewRecords.result.settled, false)
   assert.deepEqual(noNewRecords.inspected, [])
 
-  const changedFingerprint = structuredClone(barrier.builderFingerprint)
-  changedFingerprint.nodes[0].containerId = "e".repeat(64)
-  const changedBuilder = await reconcile({
-    barrier,
-    refs: [fullRef],
-    records: new Map([[bareId, inspectRecord(barrier, bareId)]]),
-    fingerprint: changedFingerprint,
-  })
-  assert.equal(changedBuilder.result.settled, false)
-  assert.deepEqual(changedBuilder.inspected, [])
+  const mutations = [
+    (fingerprint) => { fingerprint.nodes[0].containerId = "e".repeat(64) },
+    (fingerprint) => { fingerprint.nodes[0].startedAt = "2026-09-27T10:01:00.000Z" },
+    (fingerprint) => { fingerprint.nodes[0].endpoint = "unix:///var/run/other-docker.sock" },
+    (fingerprint) => { fingerprint.nodes[0].pidsLimit = 512 },
+    (fingerprint) => { fingerprint.nodes[0].effectiveCpus = 4 },
+    (fingerprint) => { fingerprint.nodes[0].memoryBytes = 7 * 1024 ** 3 },
+    (fingerprint) => { fingerprint.nodes[0].memoryWithSwapBytes = 16 * 1024 ** 3 },
+  ]
+  for (const mutate of mutations) {
+    const changedFingerprint = structuredClone(barrier.builderFingerprint)
+    mutate(changedFingerprint)
+    const changedBuilder = await reconcile({
+      barrier,
+      refs: [fullRef],
+      records: new Map([[bareId, inspectRecord(barrier, bareId)]]),
+      fingerprint: changedFingerprint,
+    })
+    assert.equal(changedBuilder.result.settled, false)
+    assert.deepEqual(changedBuilder.inspected, [])
+  }
 })
