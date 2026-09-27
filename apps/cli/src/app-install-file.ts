@@ -72,7 +72,8 @@ export class AppFileInstaller {
    * the installation cannot be reinstalled into because its data was deleted. */
   private async competingUpdate(installation: string, read?: string): Promise<string | null> {
     const current = (await this.send(getAppInstallationRequest(installation))).AppInstallation as { installation?: AppInstallationSummary } | undefined
-    if (current?.installation && !current.installation.active_release && current.installation.data_kept === false) {
+    const found = current?.installation
+    if (found && !found.active_release && found.pending_generation == null && found.data_kept === false) {
       return `App ${installation} is uninstalled and its data was deleted, so nothing is left to reinstall into. Install the App again instead.`
     }
     const reply = await this.send(getAppInstallationJournalRequest(installation))
