@@ -20,6 +20,8 @@ const POLL_ENDPOINT: &str = "/v1/managed-kernels/auto-stop/quiescence/poll";
 const ACK_ENDPOINT: &str = "/v1/managed-kernels/auto-stop/quiescence/ack";
 const RELEASE_ACK_ENDPOINT: &str = "/v1/managed-kernels/auto-stop/quiescence/release-ack";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_FAILURE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const FAILURE_WARNING_SUMMARY_INTERVAL: u8 = 5;
 
 #[derive(Clone)]
 pub(crate) struct ManagedKernelQuiescenceClient {
@@ -72,6 +74,88 @@ struct PollRequest<'a> {
     signature: String,
 }
 
+#[derive(Default)]
+struct QuiescencePollSchedule {
+    consecutive_failures: u32,
+}
+
+impl QuiescencePollSchedule {
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+    }
+
+    fn record_failure(&mut self) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+    }
+
+    fn next_poll_delay(&self) -> Duration {
+        if self.consecutive_failures == 0 {
+            return POLL_INTERVAL;
+        }
+
+        let exponent = self.consecutive_failures.saturating_sub(1).min(4);
+        let retry_secs = POLL_INTERVAL
+            .as_secs()
+            .saturating_mul(1_u64 << exponent)
+            .min(MAX_FAILURE_POLL_INTERVAL.as_secs());
+        Duration::from_secs(retry_secs)
+    }
+}
+
+#[derive(Default)]
+struct QuiescencePollWarningState {
+    warned_this_streak: bool,
+    failures_since_summary: u8,
+}
+
+impl QuiescencePollWarningState {
+    fn should_warn(&mut self) -> bool {
+        if !self.warned_this_streak {
+            self.warned_this_streak = true;
+            return true;
+        }
+
+        self.failures_since_summary = self.failures_since_summary.saturating_add(1);
+        if self.failures_since_summary >= FAILURE_WARNING_SUMMARY_INTERVAL {
+            self.failures_since_summary = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PollWaitOutcome {
+    PollNow,
+    Shutdown,
+}
+
+async fn wait_for_poll_or_shutdown(
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+    delay: Duration,
+) -> PollWaitOutcome {
+    tokio::select! {
+        biased;
+        changed = shutdown.changed() => {
+            if changed.is_err() || *shutdown.borrow() {
+                PollWaitOutcome::Shutdown
+            } else {
+                PollWaitOutcome::PollNow
+            }
+        }
+        _ = tokio::time::sleep(delay) => PollWaitOutcome::PollNow,
+    }
+}
+
+#[cfg(test)]
+#[path = "managed_kernel_quiescence_polling_tests.rs"]
+mod polling_tests;
+
 impl ManagedKernelQuiescenceClient {
     pub(crate) fn from_runtime(
         config: &DaemonConfig,
@@ -93,25 +177,39 @@ impl ManagedKernelQuiescenceClient {
         runtime: KernelRuntimeState,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), DaemonError> {
+        let mut schedule = QuiescencePollSchedule::default();
+        let mut warning_state = QuiescencePollWarningState::default();
         loop {
             if *shutdown.borrow() {
                 return Ok(());
             }
-            if self.poll_once(&runtime).await.is_err() {
-                // Do not include request material, challenge values, nonce or credential.
-                crate::logging::warn_with_fields(
-                    "managed_kernel.auto_stop_quiescence",
-                    "quiescence poll did not complete; durable admission state is retained",
-                    json!({}),
-                );
-            }
-            tokio::select! {
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        return Ok(());
-                    }
+            let delay = match self.poll_once(&runtime).await {
+                Ok(()) => {
+                    schedule.record_success();
+                    warning_state.reset();
+                    schedule.next_poll_delay()
                 }
-                _ = tokio::time::sleep(POLL_INTERVAL) => {}
+                Err(_) => {
+                    schedule.record_failure();
+                    let delay = schedule.next_poll_delay();
+                    if warning_state.should_warn() {
+                        // Keep the retry summary bounded and omit error/request material.
+                        crate::logging::warn_with_fields(
+                            "managed_kernel.auto_stop_quiescence",
+                            "quiescence poll failed; retrying while durable admission state is retained",
+                            json!({
+                                "consecutive_failures": schedule.consecutive_failures,
+                                "retry_in_seconds": delay.as_secs(),
+                            }),
+                        );
+                    }
+                    delay
+                }
+            };
+            if wait_for_poll_or_shutdown(&mut shutdown, delay).await
+                == PollWaitOutcome::Shutdown
+            {
+                return Ok(());
             }
         }
     }
