@@ -87,7 +87,7 @@ function parseEventBindings(value: unknown, publicationId: string): {
   )
   const seen = new Set<string>()
   return { bindings: record.bindings.map((candidate): MaterializedEventBinding => {
-    const binding = exactObject(candidate, [
+    const binding = exactObject(withoutLegacyReplyMode(candidate), [
       "source_binding_id",
       "generator_id",
       "generator_version",
@@ -148,6 +148,14 @@ function containedPackagePath(root: string, configuredPath: string): string {
     throw new Error("publication event_bindings_path escapes its package")
   }
   return join(resolve(root), pathname)
+}
+
+// Packages exported before protocol 364 carry the removed `reply_mode`.
+function withoutLegacyReplyMode(value: unknown): unknown {
+  const record = objectRecord(value)
+  if (!record || !("reply_mode" in record)) return value
+  const { reply_mode: _removed, ...rest } = record
+  return rest
 }
 
 function exactObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {

@@ -607,6 +607,12 @@ impl KernelRuntimeOwnedState {
                 })?;
             (binding, workflow_run.id().to_string(), reply_context)
         };
+        // Bindings persisted before protocol 364 may still enable it.
+        if action_id == crate::session::REMOVED_REPLY_ACTION {
+            return Err(
+                crate::session::removed_reply_action_error("runtime_tool_event_action"),
+            );
+        }
         if !binding
             .action_ids
             .iter()

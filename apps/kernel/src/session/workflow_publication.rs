@@ -740,3 +740,16 @@ mod tests {
             .contains("dev.arroba"));
     }
 }
+
+/// Workflow replies were removed (protocol 364): an agent that reads untrusted
+/// event content must not post back through the generator. Replies go through
+/// the generator's App instead.
+pub const REMOVED_REPLY_ACTION: &str = "notification.reply";
+
+pub fn removed_reply_action_error(operation: &'static str) -> crate::error::DaemonError {
+    crate::error::DaemonError::LocalTransport {
+        operation,
+        message: format!("`{REMOVED_REPLY_ACTION}` is not a workflow action; replies go through the generator's App"),
+    }
+}
+

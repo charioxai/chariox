@@ -2010,11 +2010,11 @@ Workflow trigger and deployment direction:
   through an App's granted connection (protocol 359). `CreateWorkflowEventBinding`,
   workflow event bindings and publication `event-bindings` templates drop
   `reply_mode`; `RemoteWorkflowTurnContext` drops `event_reply_enabled`; the
-  `reply_to_event` runtime tool is gone. `notification.reply` is an ordinary
-  event action: the `event_action` tool passes its `input` to the generator
-  unchanged, gated only by the binding's `action_ids`. Older peers and
-  persisted bindings that still carry the removed fields are read with them
-  ignored.
+  `reply_to_event` runtime tool is gone. Workflows cannot post
+  `notification.reply`: creating a binding that enables it is refused, and
+  `event_action` refuses it for bindings persisted before 364. Older peers,
+  persisted bindings and publication `event-bindings` documents that still
+  carry the removed fields are read with them ignored.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

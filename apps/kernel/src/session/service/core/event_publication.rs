@@ -366,6 +366,9 @@ fn normalize_event_action_ids(value: Vec<String>) -> Result<Vec<String>, DaemonE
                 message: "event action IDs must contain between 1 and 256 characters".to_string(),
             });
         }
+        if action == crate::session::REMOVED_REPLY_ACTION {
+            return Err(crate::session::removed_reply_action_error("create workflow event binding"));
+        }
         if normalized.iter().any(|existing| existing == action) {
             return Err(DaemonError::LocalTransport {
                 operation: "create workflow event binding",
@@ -375,4 +378,19 @@ fn normalize_event_action_ids(value: Vec<String>) -> Result<Vec<String>, DaemonE
         normalized.push(action.to_string());
     }
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod removed_reply_tests {
+    use super::*;
+
+    #[test]
+    fn a_binding_cannot_enable_the_removed_reply_action() {
+        let error = normalize_event_action_ids(vec![crate::session::REMOVED_REPLY_ACTION.into()]).unwrap_err();
+        assert!(error.to_string().contains("replies go through the generator's App"));
+        assert_eq!(
+            normalize_event_action_ids(vec!["reaction.add".into()]).unwrap(),
+            vec!["reaction.add".to_string()]
+        );
+    }
 }

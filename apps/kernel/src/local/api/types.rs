@@ -148,6 +148,7 @@ pub use workspace::*;
 /// Version 364 removes the workflow event reply surface: event bindings, their
 /// create request and publication binding templates lose the reply mode, the
 /// relay workflow turn context loses its reply capability, and the reply
-/// runtime tool is gone. `notification.reply` is an ordinary event action
-/// gated only by the binding's `action_ids`.
+/// runtime tool is gone. Workflows cannot post `notification.reply` at all:
+/// bindings refuse to enable it and `event_action` refuses it; replies go
+/// through the generator's App.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 364;
