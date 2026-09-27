@@ -99,7 +99,7 @@ class CleanupTests(unittest.TestCase):
     def test_timestamp_rejects_naive_non_utc_and_invalid_dates(self):
         for value in [None, '2026-09-27T18:00:00', '2026-09-27T18:00:00+01:00',
                       '2026-09-27T18:00:00-00:00', '2026-09-27T18:00:00+00:01',
-                      '2026-02-30T18:00:00Z']:
+                      '2026-02-30T18:00:00Z', '2026-09-27T18:00:00.١٢٣Z']:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 guard.timestamp(value)
 

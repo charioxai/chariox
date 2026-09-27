@@ -35,7 +35,7 @@ def timestamp(value):
 
 
 def exact_timestamp(value):
-    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,18}))?(?:Z|\+00:00)', value) \
+    match = re.fullmatch(r'([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,18}))?(?:Z|\+00:00)', value) \
         if isinstance(value, str) else None
     require(match is not None, 'UTC timestamp required')
     delta = datetime.fromisoformat(match[1] + '+00:00') - datetime(1970, 1, 1, tzinfo=timezone.utc)
