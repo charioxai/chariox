@@ -521,9 +521,7 @@ impl CommandRouter {
                 &required_scopes,
             )?;
             let _interest = self.event_interest_lock.lock().await;
-            if let LocalDaemonRequest::CreateWorkflowEventBinding(binding) = request {
-                self.refuse_app_route_interest(binding)?;
-            }
+            self.refuse_app_route_interest(request)?;
             let response = self
                 .workflow_runtime
                 .dispatch_workflow_command(command.clone(), request.clone())
@@ -569,42 +567,73 @@ impl CommandRouter {
 impl CommandRouter {
     /// A workflow binding may not take an interest an App route already
     /// receives; other workflow bindings are checked where they are stored.
-    fn refuse_app_route_interest(
-        &self,
-        binding: &crate::local::CreateWorkflowEventBindingRequest,
-    ) -> Result<(), DaemonError> {
+    fn refuse_app_route_interest(&self, request: &LocalDaemonRequest) -> Result<(), DaemonError> {
         let config = self.config_projection.snapshot();
-        let environment = binding
-            .environment_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&config.event_delivery_environment_id);
+        let stored = |session_id: &str, binding_id: &str| {
+            self.runtime_state
+                .list_session_snapshots()
+                .into_iter()
+                .find(|session| session.id() == session_id)
+                .and_then(|session| {
+                    session
+                        .workflow_event_bindings()
+                        .iter()
+                        .find(|binding| binding.id == binding_id)
+                        .map(|binding| {
+                            (binding.environment_id.clone(), binding.event_interest_key.clone())
+                        })
+                })
+        };
+        // The interest the binding will claim once active: a new binding's,
+        // or the stored one a reactivation or transfer makes active again.
+        let (environment, key) = match request {
+            LocalDaemonRequest::CreateWorkflowEventBinding(binding) => {
+                let environment = binding
+                    .environment_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(&config.event_delivery_environment_id)
+                    .to_owned();
+                let Ok(key) = chariox_event_protocol::event_interest_key(
+                    &binding.generator_id,
+                    &binding.event_type,
+                    binding.event_type_version,
+                    &binding.connection_scope,
+                    &binding.filter,
+                ) else {
+                    // The binding's own validation reports the filter.
+                    return Ok(());
+                };
+                (environment, key)
+            }
+            LocalDaemonRequest::SetWorkflowEventBindingStatus(change) => {
+                match stored(&change.session_id, &change.binding_id) {
+                    Some(interest) => interest,
+                    None => return Ok(()),
+                }
+            }
+            LocalDaemonRequest::TransferWorkflowEventBinding(transfer) => {
+                match stored(&transfer.source_session_id, &transfer.binding_id) {
+                    Some(interest) => interest,
+                    None => return Ok(()),
+                }
+            }
+            _ => return Ok(()),
+        };
+        // App routes live in this kernel's event environment.
         if environment != config.event_delivery_environment_id {
             return Ok(());
         }
-        let Ok(key) = chariox_event_protocol::event_interest_key(
-            &binding.generator_id,
-            &binding.event_type,
-            binding.event_type_version,
-            &binding.connection_scope,
-            &binding.filter,
-        ) else {
-            // The binding's own validation reports the filter.
-            return Ok(());
+        let refused = |message: String| DaemonError::LocalTransport {
+            operation: "workflow event binding",
+            message,
         };
-        match self.runtime_state.app_route_claiming(&key) {
-            Ok(None) => Ok(()),
-            Ok(Some(existing)) => Err(DaemonError::LocalTransport {
-                operation: "create workflow event binding",
-                message: format!(
-                    "an App inbox route (`{existing}`) already receives these events; remove it or use a different filter"
-                ),
-            }),
-            Err(message) => Err(DaemonError::LocalTransport {
-                operation: "create workflow event binding",
-                message,
-            }),
+        match self.runtime_state.app_route_claiming(&key).map_err(refused)? {
+            None => Ok(()),
+            Some(existing) => Err(refused(format!(
+                "an App inbox route (`{existing}`) already receives these events; remove it or use a different filter"
+            ))),
         }
     }
 }
