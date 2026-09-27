@@ -375,8 +375,11 @@ start_path1_runtime_services() {
   [ "$managed_provider_topology" = path1 ] || return 0
   path1_docker_uid=$(id -u chariox-docker) || return 1
   case "$path1_docker_uid" in ''|0|*[!0-9]*) return 1 ;; esac
-  # The allocator Requires the non-persistent admission oneshot. Starting it
-  # explicitly re-runs admission after upgrade, before rootless Docker starts.
+  # Force inactive units even when a caller reaches this helper with Docker
+  # already running, then run the non-persistent admission check before either
+  # service can start. Their Requires dependency repeats the check per start.
+  stop_path1_runtime_services || return 1
+  systemctl start chariox-data-volume-admission.service || return 1
   systemctl start chariox-slice-disk-quota-allocator.service || return 1
   systemctl start chariox-rootless-docker.service || return 1
   systemctl is-active --quiet chariox-slice-disk-quota-allocator.service || return 1
