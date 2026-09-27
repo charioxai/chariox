@@ -435,6 +435,14 @@ fn resume_registration(
     release: &VerifiedRelease,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
     validate_receipt_identity(&receipt, identity)?;
+    if receipt.schema_version == 3
+        && receipt.status == BootstrapReceiptStatus::Confirmed
+        && envelope.is_some()
+    {
+        return Err(bootstrap_error(
+            "confirmed Path-1 bootstrap receipt cannot resume with a bootstrap envelope",
+        ));
+    }
     let profile = load_managed_cloud_relay_profile()
         .ok_or_else(|| bootstrap_error("managed Cloud profile is missing after exchange"))?;
     validate_profile(&profile, &receipt)?;
