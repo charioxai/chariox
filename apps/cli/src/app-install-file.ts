@@ -180,7 +180,9 @@ export class AppFileInstaller {
       await this.releaseUpload(attempt, status)
       return status
     } catch (error) {
-      if (error instanceof InstallCancelled || error instanceof InstallFileChanged) await this.cleanup(attempt).catch(() => {})
+      // A Begin the kernel refused (not one lost in transport) never took the upload.
+      const refused = error instanceof KernelFailure && attempt.beginSent && !attempt.status
+      if (error instanceof InstallCancelled || error instanceof InstallFileChanged || refused) await this.cleanup(attempt).catch(() => {})
       throw error
     } finally { await source?.close() }
   }

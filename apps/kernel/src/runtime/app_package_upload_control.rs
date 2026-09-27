@@ -249,6 +249,17 @@ impl AppPackageUploadControl {
         store.finalize(trusted_owner, handle, now_ms)
     }
 
+    /// Installer-only: a staged package no longer needs its upload, so the
+    /// owner's upload slot is freed now instead of at expiry.
+    pub(crate) fn release_staged(&self, trusted_owner: &str, handle: &str, now_ms: u64) {
+        if !valid_identity(trusted_owner) || validate_handle(handle).is_err() {
+            return;
+        }
+        if let Ok(store) = self.store(now_ms) {
+            let _ = store.abort(trusted_owner, handle, now_ms);
+        }
+    }
+
     fn store(&self, now_ms: u64) -> Result<PackageUploadStore, UploadControlError> {
         let mut store = self.inner.store.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => UploadControlError::Busy,

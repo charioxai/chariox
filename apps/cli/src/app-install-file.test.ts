@@ -169,9 +169,12 @@ test("an update refused because another client's update is running says what tha
   const f = await sourceFixture(t)
   const k = kernel()
   let latest = { phase: "committed", generation: "7", release: { version: "1.2.5" } }
+  const aborted: string[] = []
   const send = async (request: Message): Promise<Message> => {
     if (request.BeginAppUpdate) return { AppRequestFailed: { code: "conflict" } }
     if (request.GetAppInstallationJournal) return { AppInstallationJournal: { installation_id: "todo", updates: [latest] } }
+    if (request.CancelAppInstallOperation) return { AppRequestFailed: { code: "not_found" } }
+    if (request.AbortAppPackageUpload) aborted.push(request.AbortAppPackageUpload.handle)
     return k.send(request)
   }
   const refused = async () => {
@@ -185,6 +188,8 @@ test("an update refused because another client's update is running says what tha
   assert.match(await refused(), /Another update of this App is in progress: version 1\.2\.6 \(generation 8\) is quiescing/)
   latest = { phase: "committed", generation: "8", release: { version: "1.2.6" } }
   assert.match(await refused(), /Another client just updated this App to version 1\.2\.6 \(generation 8\)/)
+  // The kernel refused each Begin, so each refused client aborted its upload.
+  assert.equal(aborted.length, 3)
 })
 
 test("lost chunk and install replies resume using original IDs and authoritative offset", async t => {

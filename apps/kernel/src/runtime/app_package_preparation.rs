@@ -88,6 +88,13 @@ pub(crate) struct AppPackagePreparation {
 }
 
 impl AppPackagePreparation {
+    /// Frees the upload a durably staged operation came from. Best effort:
+    /// expiry removes an upload this misses.
+    pub(crate) fn release_upload(&self, owner: &str, handle: &str) {
+        self.uploads
+            .release_staged(owner, handle, crate::session::unix_epoch_ms());
+    }
+
     /// Reuse the AppControl upload service, not a second open of its live store.
     /// Construct once per kernel and clone. Constructor performs no I/O.
     pub(crate) fn new(store: DurableKernelStateStore, uploads: AppPackageUploadControl) -> Self {

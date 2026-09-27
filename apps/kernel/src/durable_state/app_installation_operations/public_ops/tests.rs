@@ -77,7 +77,7 @@ fn input() -> InstallInput {
 
 #[test]
 fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
     let initial = f.reserve("request");
     assert_eq!(initial.phase, InstallPhase::Preparing);
     assert!(initial.review.is_none());
@@ -113,7 +113,11 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
         .store
         .get_app_installation("alice", &initial.token.installation_id)
         .is_err());
-    let reopened = DurableKernelStateStore::open_owned(f.store.path().to_path_buf()).unwrap();
+    // Release the first owner before reopening, as a kernel restart does.
+    let path = f.store.path().to_path_buf();
+    let scratch = DurableKernelStateStore::open_owned(f.path.join("scratch.sqlite")).unwrap();
+    drop(std::mem::replace(&mut f.store, scratch));
+    let reopened = DurableKernelStateStore::open_owned(path).unwrap();
     assert_eq!(
         cancelled,
         reopened

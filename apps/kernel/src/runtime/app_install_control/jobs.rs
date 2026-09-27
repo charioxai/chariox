@@ -108,13 +108,10 @@ pub(super) async fn run(
                     .input
                     .as_ref()
                     .ok_or(Error::Failed("app_install_input_missing"))?;
+                let upload_handle = input.upload_handle.clone();
                 let prepared = shared
                     .preparation
-                    .prepare(
-                        key.0.clone(),
-                        input.upload_handle.clone(),
-                        permit.take().unwrap(),
-                    )
+                    .prepare(key.0.clone(), upload_handle.clone(), permit.take().unwrap())
                     .await
                     .map_err(preparation)?;
                 let admitted = shared
@@ -135,6 +132,13 @@ pub(super) async fn run(
                     store.complete_app_install_preparation(&owner, &request, candidate, limit)
                 })
                 .await?;
+                // The staged release is durable and past preparation: a restart
+                // never prepares from this upload again.
+                let (preparation, owner) = (shared.preparation.clone(), key.0.clone());
+                let _ = tokio::task::spawn_blocking(move || {
+                    preparation.release_upload(&owner, &upload_handle)
+                })
+                .await;
                 permit = Some(
                     shared
                         .admission
