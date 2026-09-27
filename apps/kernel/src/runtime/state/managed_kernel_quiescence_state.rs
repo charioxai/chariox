@@ -1242,10 +1242,43 @@ mod tests {
             .reserve_if_current(canceled.clone(), || current_idle(&transitions))
             .expect("delayed reserve for canceled tuple is permanently busy"));
 
-        let new_challenge = challenge("challenge-new", "nonce-new");
+        let same_order_replay = ManagedKernelQuiescenceChallenge {
+            challenge_id: "challenge-new-replay".into(),
+            nonce: "nonce-new-replay".into(),
+            ..canceled.clone()
+        };
+        assert_eq!(
+            (same_order_replay.desired_revision, same_order_replay.idle_sequence),
+            (canceled.desired_revision, canceled.idle_sequence),
+            "replacing IDs and nonce must leave the Cloud replay identity unchanged"
+        );
+        assert!(gate
+            .apply_release(
+                &same_order_replay,
+                ManagedKernelQuiescenceOutcome::KeepRunning,
+                1,
+                || current_idle(&transitions),
+            )
+            .is_err(), "new IDs cannot replay a canceled Cloud idle identity");
+        assert!(!gate
+            .reserve_if_current(same_order_replay, || current_idle(&transitions))
+            .expect("same Cloud idle identity remains permanently busy"));
+        assert!(gate.admission_guard().is_ok(), "same-order replay cannot fence admission");
+
+        let mut new_challenge = challenge("challenge-new", "nonce-new");
+        new_challenge.idle_sequence = canceled.idle_sequence + 1;
+        new_challenge.stop_operation_id = "stop-2".into();
+        new_challenge.idle_deadline_at = "2026-09-26T00:01:00.000Z".into();
+        let (local_transition_sequence, observation) =
+            current_idle(&transitions).expect("read current local idle transition");
+        gate.confirm_activity_report(
+            new_challenge.idle_sequence,
+            local_transition_sequence,
+            observation,
+        );
         assert!(gate
             .reserve_if_current(new_challenge.clone(), || current_idle(&transitions))
-            .expect("a new challenge for the same confirmed idle state is independent"));
+            .expect("a new confirmed Cloud idle sequence is eligible"));
         assert!(gate.admission_guard().is_err());
         gate.apply_release(
             &new_challenge,
@@ -1254,6 +1287,7 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("new challenge may record terminal stop");
+        assert!(gate.admission_guard().is_err(), "stopped challenge retains its admission fence");
         gate.apply_release(
             &new_challenge,
             ManagedKernelQuiescenceOutcome::KeepRunning,
@@ -1261,6 +1295,7 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("new challenge may be safely released");
+        assert!(gate.admission_guard().is_ok(), "authoritative keep-running releases the fence");
         assert!(!gate
             .reserve_if_current(canceled.clone(), || current_idle(&transitions))
             .expect("old canceled tuple remains stale after later challenge"));
