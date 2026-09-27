@@ -215,7 +215,8 @@ fn hosted_crash_fixture_holds_a_staged_update_until_the_helper_is_killed() {
     // The update to generation 2 is running when the helper dies.
     let staged = context.staged("update-crash", 2, 1);
     let mut file = File::create(staged.data_path().join("todos")).unwrap();
-    file.write_all(b"written by the interrupted update").unwrap();
+    file.write_all(b"written by the interrupted update")
+        .unwrap();
     file.sync_all().unwrap();
     drop(file);
     let marker = std::env::var("CHARIOX_STORAGE_CRASH_MARKER").unwrap();
