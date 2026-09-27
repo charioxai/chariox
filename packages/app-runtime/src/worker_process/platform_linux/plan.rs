@@ -53,6 +53,9 @@ pub(super) fn arguments(
         "--unshare-net",
         "--unshare-ipc",
         "--unshare-uts",
+        // A new UTS namespace inherits the host name; Apps see a fixed one.
+        "--hostname",
+        "chariox-app",
         "--unshare-cgroup",
         "--disable-userns",
         "--cap-drop",

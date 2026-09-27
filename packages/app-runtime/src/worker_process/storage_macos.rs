@@ -1,7 +1,8 @@
 //! Kernel-private APFS storage preparation. All operations and Drop are blocking.
 //! The caller must quiesce/reap the previous worker before prepare/release. This
-//! component provides fixed private volume capacity, not signed runtime trust,
-//! App authorization, snapshot/rollback semantics, or aggregate runtime admission.
+//! component provides fixed private volume capacity and the data snapshot a
+//! failed update rolls back to, not signed runtime trust, App authorization,
+//! or aggregate runtime admission.
 
 mod commands;
 mod identity;
@@ -42,6 +43,21 @@ pub(super) enum Error {
     #[error("app_storage_recovery_required")]
     RecoveryRequired,
 }
+impl Error {
+    pub(super) fn code(self) -> &'static str {
+        match self {
+            Self::Io => "app_storage_io",
+            Self::Identity => "app_storage_identity",
+            Self::Busy => "app_storage_busy",
+            Self::Capacity => "app_storage_capacity",
+            Self::Metadata => "app_storage_metadata",
+            Self::Command => "app_storage_command",
+            Self::CommandTimeout => "app_storage_command_timeout",
+            Self::CommandOutput => "app_storage_command_output",
+            Self::RecoveryRequired => "app_storage_recovery_required",
+        }
+    }
+}
 impl From<std::io::Error> for Error {
     fn from(_: std::io::Error) -> Self {
         Self::Io
@@ -55,8 +71,53 @@ impl From<FsError> for Error {
 type Result<T> = std::result::Result<T, Error>;
 
 const MAX_INSTALLATIONS: usize = 64;
+/// Entries one deletion removes: the images, snapshots, journal temporaries and
+/// the empty mount directories, with room for what an App left in them.
+const MAX_DELETED_ENTRIES: usize = 4096;
 const MAX_RESERVED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const HOST_RESERVE: u64 = 8 * 1024 * 1024 * 1024;
+/// Storage last used by `recorded` admits `generation` when it is not older,
+/// or when it is the committed generation again: an update that was staged
+/// but never committed (it failed before commit) must not fence out the
+/// generation that stayed active. An older, superseded worker stays refused.
+fn admits_generation(recorded: u64, generation: u64, committed: u64) -> bool {
+    recorded <= generation || generation == committed
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SnapshotStep {
+    Take,
+    Keep,
+    Restore,
+    RestoreAndTake,
+    Discard,
+}
+
+/// What `generation` starting on data `previous` last used does with the
+/// committed generation's snapshot (`kept`: it exists). A staged generation
+/// starts on committed data: it takes the snapshot while the data is still the
+/// committed one's, keeps its own writes when it retries, and restores the
+/// snapshot (then takes it again) after another uncommitted generation, so no
+/// failed update's writes survive. The committed generation restores it after
+/// an uncommitted one ran, else drops it.
+fn snapshot_step(previous: u64, generation: u64, committed: u64, kept: bool) -> SnapshotStep {
+    if generation == committed {
+        return if previous > committed {
+            SnapshotStep::Restore
+        } else {
+            SnapshotStep::Discard
+        };
+    }
+    if previous == committed {
+        SnapshotStep::Take
+    } else if previous != generation && kept {
+        SnapshotStep::RestoreAndTake
+    } else {
+        // A retry, or storage staged before snapshots existed.
+        SnapshotStep::Keep
+    }
+}
+
 const CAPACITIES: [u64; 2] = [512 * 1024 * 1024, 64 * 1024 * 1024];
 
 pub(super) struct StorageRoot {
@@ -76,13 +137,15 @@ impl StorageRoot {
         })
     }
 
+    /// `committed` is the installation's committed (active) generation.
     pub fn prepare(
         &self,
         owner: &str,
         installation: &str,
         generation: u64,
+        committed: u64,
     ) -> Result<MountedStorage> {
-        self.prepare_with_capacities(owner, installation, generation, CAPACITIES)
+        self.prepare_with_capacities(owner, installation, generation, committed, CAPACITIES)
     }
 
     /// Kernel startup/failed-preparation recovery after all prior workers are
@@ -102,6 +165,11 @@ impl StorageRoot {
                 return Err(Error::Busy);
             }
             journal::recover_temporaries(&dir)?;
+            if journal::load_deleting(&dir)?.is_some() {
+                // An interrupted deletion: its volumes were already detached.
+                self.finish_deletion(dir, name.to_str().ok_or(Error::Identity)?)?;
+                continue;
+            }
             if let Some(journal) = journal::load(&dir)? {
                 let mut storage = MountedStorage {
                     root: dir,
@@ -137,11 +205,100 @@ impl StorageRoot {
         Ok(())
     }
 
+    /// Deletes one installation's storage, with its snapshots, after its
+    /// workers are reaped: the owner deleted the App's data. Volumes are
+    /// detached first; then the journal is renamed to a deletion marker, so a
+    /// retried deletion, or startup recovery, only removes what is left.
+    /// Absent storage is already deleted.
+    pub fn delete_blocking(&self, owner: &str, installation: &str) -> Result<()> {
+        journal::identifier(owner)?;
+        journal::identifier(installation)?;
+        let global = Dir::open_private(&self.path)?;
+        if FileIdentity::of(&global.0)? != FileIdentity::of(&self.dir.0)? {
+            return Err(Error::Identity);
+        }
+        if !global.try_lock()? {
+            return Err(Error::Busy);
+        }
+        let name = storage_name(owner, installation);
+        let open = || -> Result<Option<Dir>> {
+            let Some(dir) = Dir::open_private_child_if_present(&self.path, OsStr::new(&name))?
+            else {
+                return Ok(None);
+            };
+            if !dir.try_lock()? {
+                return Err(Error::Busy);
+            }
+            Ok(Some(dir))
+        };
+        let Some(dir) = open()? else {
+            return Ok(());
+        };
+        journal::recover_temporaries(&dir)?;
+        let deleting = journal::load_deleting(&dir)?;
+        let recorded = match &deleting {
+            Some(journal) => Some(journal.clone()),
+            None => journal::load(&dir)?,
+        };
+        if recorded
+            .as_ref()
+            .is_some_and(|journal| journal.owner != owner || journal.installation != installation)
+        {
+            return Err(Error::Identity);
+        }
+        let dir = match (deleting, recorded) {
+            (None, Some(journal)) => {
+                let mut storage = MountedStorage {
+                    root: dir,
+                    path: self.path.join(&name),
+                    journal,
+                    images: [None, None],
+                    mounted: [None, None],
+                    released: false,
+                    cleanup_attempted: false,
+                    deadline: std::time::Instant::now(),
+                };
+                storage.release_blocking()?;
+                drop(storage);
+                let dir = open()?.ok_or(Error::Identity)?;
+                crate::private_fs::publish(
+                    &dir,
+                    OsStr::new(journal::NAME),
+                    OsStr::new(journal::DELETING),
+                )?;
+                dir.sync()?;
+                dir
+            }
+            _ => dir,
+        };
+        self.finish_deletion(dir, &name)
+    }
+
+    /// Removes a deleting installation's files, then its marker, then the
+    /// directory; its volumes were detached before the marker was written.
+    fn finish_deletion(&self, dir: Dir, name: &str) -> Result<()> {
+        let mut remaining = MAX_DELETED_ENTRIES;
+        crate::private_fs::remove_contents_preserving(
+            &dir,
+            &mut remaining,
+            OsStr::new(journal::DELETING),
+            &mut || Ok(()),
+        )?;
+        dir.remove_file(OsStr::new(journal::DELETING))?;
+        dir.sync()?;
+        FileIdentity::of(&dir.0)?.require(&self.dir, OsStr::new(name), &dir.0)?;
+        drop(dir);
+        self.dir.remove_directory(OsStr::new(name))?;
+        self.dir.sync()?;
+        Ok(())
+    }
+
     fn prepare_with_capacities(
         &self,
         owner: &str,
         installation: &str,
         generation: u64,
+        committed: u64,
         capacities: [u64; 2],
     ) -> Result<MountedStorage> {
         journal::identifier(owner)?;
@@ -156,9 +313,8 @@ impl StorageRoot {
         if !global.try_lock()? {
             return Err(Error::Busy);
         }
-        let digest = Sha256::digest(format!("{owner}\0{installation}").as_bytes());
-        let name = format!("installation-{digest:x}");
-        self.check_capacity(&name, capacities)?;
+        let name = storage_name(owner, installation);
+        self.check_capacity(&name, capacities, generation, committed)?;
         let dir = Dir::open_or_create_private_child(&self.path, OsStr::new(&name))?;
         if !dir.try_lock()? {
             return Err(Error::Busy);
@@ -169,7 +325,7 @@ impl StorageRoot {
         let journal = if let Some(journal) = prior {
             if journal.owner != owner
                 || journal.installation != installation
-                || journal.generation > generation
+                || !admits_generation(journal.generation, generation, committed)
                 || journal.images.each_ref().map(|image| image.capacity) != capacities
             {
                 return Err(Error::Identity);
@@ -195,6 +351,8 @@ impl StorageRoot {
                     journal::image("data", capacities[0], FileIdentity::of(&data?.0)?),
                     journal::image("tmp", capacities[1], FileIdentity::of(&tmp?.0)?),
                 ],
+                restoring: None,
+                restoring_generation: None,
             }
         };
         journal.save(&dir)?;
@@ -212,6 +370,23 @@ impl StorageRoot {
         // Recovery always detaches any prior mapping first. Reusing a remembered
         // /dev identifier or an existing mount without rediscovery is forbidden.
         storage.release_blocking()?;
+        // File-image snapshot of the committed generation's data (see
+        // `snapshot_step`).
+        let kept = storage.has_snapshot(committed)?;
+        match snapshot_step(storage.journal.generation, generation, committed, kept) {
+            SnapshotStep::Take => storage.snapshot_data(committed)?,
+            // Without a snapshot (storage staged before snapshots existed) the
+            // data stays as the uncommitted generation left it.
+            SnapshotStep::Restore => storage.restore_data(committed)?,
+            SnapshotStep::RestoreAndTake => {
+                // The restore records committed data again before the new
+                // clone, so a crash between the two takes it afresh.
+                storage.restore_data(committed)?;
+                storage.snapshot_data(committed)?;
+            }
+            SnapshotStep::Discard => storage.discard_snapshots()?,
+            SnapshotStep::Keep => {}
+        }
         storage.journal.generation = generation;
         storage.journal.pending_recovery = true;
         storage.journal.save(&storage.root)?;
@@ -221,7 +396,16 @@ impl StorageRoot {
         Ok(storage)
     }
 
-    fn check_capacity(&self, selected: &str, capacities: [u64; 2]) -> Result<()> {
+    /// Admission counts the selected installation's data snapshots as they
+    /// will be after this start's snapshot step: one a staged start takes is
+    /// admitted with it, and one a committed start removes frees its room.
+    fn check_capacity(
+        &self,
+        selected: &str,
+        capacities: [u64; 2],
+        generation: u64,
+        committed: u64,
+    ) -> Result<()> {
         let mut total = 0_u64;
         let mut unallocated = 0_u64;
         let entries = self.dir.entries(MAX_INSTALLATIONS)?;
@@ -233,6 +417,10 @@ impl StorageRoot {
                 existing = true;
             }
             let dir = self.dir.child(entry)?;
+            if journal::load_deleting(&dir)?.is_some() {
+                // Being deleted: its images no longer count.
+                continue;
+            }
             if let Some(journal) = journal::load(&dir)? {
                 if value == selected {
                     reserved = true;
@@ -254,6 +442,33 @@ impl StorageRoot {
                         .checked_add(image.reserved().saturating_sub(allocated))
                         .ok_or(Error::Capacity)?;
                 }
+                // A kept data snapshot grows toward a full data image as the
+                // staged generation rewrites blocks: it is reserved like one.
+                let reserved_snapshot = journal.images[0].reserved();
+                let planned = (value == selected).then(|| {
+                    let kept = dir
+                        .read_file(OsStr::new(&volume::snapshot_name(committed)), false)
+                        .is_ok();
+                    // As the start will see it once an interrupted restore
+                    // is settled: the rename may have landed.
+                    let previous = match journal.restoring {
+                        Some(_) => journal.restoring_generation.unwrap_or(journal.generation),
+                        None => journal.generation,
+                    };
+                    snapshot_step(previous, generation, committed, kept)
+                });
+                let mut present = Vec::new();
+                if matches!(planned, None | Some(SnapshotStep::Keep)) {
+                    for name in dir.entries(16)? {
+                        if volume::is_snapshot(&name) {
+                            present.push(dir.read_file(&name, false)?.metadata()?.blocks() * 512);
+                        }
+                    }
+                }
+                let (reserved, free) = snapshot_reservation(planned, &present, reserved_snapshot)
+                    .ok_or(Error::Capacity)?;
+                total = total.checked_add(reserved).ok_or(Error::Capacity)?;
+                unallocated = unallocated.checked_add(free).ok_or(Error::Capacity)?;
             } else if value != selected {
                 return Err(Error::RecoveryRequired);
             }
@@ -277,6 +492,35 @@ impl StorageRoot {
         let available = stat.f_bavail.saturating_mul(stat.f_bsize as u64);
         require_capacity(total, unallocated, available)
     }
+}
+
+/// What an installation's data snapshots reserve (in total, and still
+/// unallocated) once `planned` ran, from the allocation of each present one.
+/// Each is reserved like a full data image.
+fn snapshot_reservation(
+    planned: Option<SnapshotStep>,
+    present: &[u64],
+    image: u64,
+) -> Option<(u64, u64)> {
+    match planned {
+        Some(SnapshotStep::Restore | SnapshotStep::Discard) => Some((0, 0)),
+        Some(SnapshotStep::Take | SnapshotStep::RestoreAndTake) => Some((image, image)),
+        Some(SnapshotStep::Keep) | None => {
+            present
+                .iter()
+                .try_fold((0_u64, 0_u64), |(total, free), allocated| {
+                    Some((
+                        total.checked_add(image)?,
+                        free.checked_add(image.saturating_sub(*allocated))?,
+                    ))
+                })
+        }
+    }
+}
+
+fn storage_name(owner: &str, installation: &str) -> String {
+    let digest = Sha256::digest(format!("{owner}\0{installation}").as_bytes());
+    format!("installation-{digest:x}")
 }
 
 fn require_capacity(total: u64, unallocated: u64, available: u64) -> Result<()> {

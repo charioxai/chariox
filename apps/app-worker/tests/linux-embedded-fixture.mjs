@@ -37,6 +37,7 @@ function start(kind, entry = 'runtime/main.mjs', startupTimeoutMs = 10000) {
   if (entry !== 'runtime/main.mjs') config.declarations.tools = [];
   const bootstrap = `require('node:module').createRequire('/runtime/bootstrap.cjs')('/runtime/bootstrap.cjs').start(${JSON.stringify(config)});`;
   const args = ['--unshare-user', '--unshare-pid', '--unshare-net', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup',
+    '--hostname', 'chariox-app',
     '--disable-userns', '--cap-drop', 'ALL', '--new-session', '--die-with-parent', '--as-pid-1',
     '--clearenv', '--setenv', 'CX_TEST_SECRET', 'fixture-only', '--json-status-fd', '5',
     '--ro-bind', join(mounts, 'package'), roots.package,

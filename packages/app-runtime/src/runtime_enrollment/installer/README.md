@@ -11,8 +11,10 @@ chariox-app-runtime-install cleanup --inventory-sha256 <inactive-inventory-sha25
 The executable requires real and effective UID 0 and has no output-path or
 environment override. Its only production destinations are
 `/usr/lib/chariox/app-runtimes/<inventory-sha256>` and
-`/etc/chariox/apps/runtime-enrollment.json`. macOS installation is unsupported;
-the private filesystem tests do not provide a production bypass.
+`/etc/chariox/apps/runtime-enrollment.json` on Linux, and
+`/Library/Application Support/Chariox/AppRuntimes/<inventory-sha256>` and
+`/Library/Application Support/Chariox/AppRuntime/runtime-enrollment.json` on
+macOS. The private filesystem tests do not provide a production bypass.
 
 One persistent installer lock serializes publication and recovery. All traversal
 and mutation uses anchored no-follow directory descriptors. The input owner's
