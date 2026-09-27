@@ -31,6 +31,8 @@ const sliceToolchainPackageUrl = new URL("../apps/kernel/slice-linux-docker/tool
 const sliceToolchainLockUrl = new URL("../apps/kernel/slice-linux-docker/toolchain/package-lock.json", import.meta.url)
 const runbookUrl = new URL("../docs/MANAGED_REMOTE_KERNEL_IMAGE.md", import.meta.url)
 const bootstrapEntrypointUrl = new URL("../apps/kernel/src/bin/chariox-managed-bootstrap.rs", import.meta.url)
+const managedBootstrapStateUrl = new URL("../apps/kernel/src/managed_bootstrap/state.rs", import.meta.url)
+const imageReleaseVerifierUrl = new URL("../deploy/managed-kernel/verify-image-release.mjs", import.meta.url)
 const managedServiceUrl = new URL("../deploy/managed-kernel/chariox-managed-bootstrap.service", import.meta.url)
 const path1ManagedServiceUrl = new URL("../deploy/managed-kernel/chariox-path1-managed-bootstrap.service", import.meta.url)
 const workerServiceUrl = new URL("../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", import.meta.url)
@@ -712,10 +714,21 @@ test("managed Docker authority and publication access remain narrowly separated"
 })
 
 test("managed image validation requires an explicit topology and preserves both paths", async () => {
-  const [preparation, providerLaunchProbe, runbook, path1ManagedService] = await Promise.all([
+  const [
+    preparation,
+    providerLaunchProbe,
+    runbook,
+    managedBootstrapState,
+    imageReleaseVerifier,
+    managedService,
+    path1ManagedService,
+  ] = await Promise.all([
     readFile(scriptUrl, "utf8"),
     readFile(providerLaunchProbeUrl, "utf8"),
     readFile(runbookUrl, "utf8"),
+    readFile(managedBootstrapStateUrl, "utf8"),
+    readFile(imageReleaseVerifierUrl, "utf8"),
+    readFile(managedServiceUrl, "utf8"),
     readFile(path1ManagedServiceUrl, "utf8"),
   ])
 
@@ -741,7 +754,25 @@ test("managed image validation requires an explicit topology and preserves both 
   assert.match(preparation, /shared_host[\s\S]*managed_bootstrap_service=chariox-managed-bootstrap\.service/)
   assert.match(preparation, /other_managed_bootstrap_service/)
   assert.match(path1ManagedService, /Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1/)
-  assert.match(path1ManagedService, /Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=\/var\/lib\/chariox\/managed-bootstrap\.json/)
+  assert.match(managedService, /Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=\/var\/lib\/chariox\/managed-bootstrap\.json/)
+  assert.doesNotMatch(
+    path1ManagedService,
+    /^Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/m,
+    "Path-1 must resolve its bootstrap input through the protected kernel path",
+  )
+  assert.match(
+    managedBootstrapState,
+    /PROTECTED_MANAGED_BOOTSTRAP_PATH:[\s\S]*?"\/etc\/chariox\/bootstrap\/managed-bootstrap\.json"/,
+  )
+  assert.match(managedBootstrapState, /Path-1 managed bootstrap must use the protected bootstrap path/)
+  assert.match(managedBootstrapState, /PathBuf::from\(PROTECTED_MANAGED_BOOTSTRAP_PATH\)/)
+  assert.match(managedBootstrapState, /validate_protected_bootstrap_file\(path, PROTECTED_MANAGED_BOOTSTRAP_PATH\)/)
+  assert.match(managedBootstrapState, /root:chariox with directory mode 0750 and file mode 0640/)
+  assert.match(
+    imageReleaseVerifier,
+    /hasDataVolumeAdmission && lines\.some\(\(line\) => line\.startsWith\("Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH="\)\)/,
+    "storage-capable Path-1 images must reject a bootstrap path environment override",
+  )
   assert.match(path1ManagedService, /Environment=HOME=\/home\/chariox/)
   assert.match(path1ManagedService, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
   assert.match(path1ManagedService, /^Environment=PATH=\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin$/m)
