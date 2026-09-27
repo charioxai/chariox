@@ -311,3 +311,46 @@ fn generator_routes_carry_their_connection_and_an_opaque_binding_id() {
         None
     );
 }
+
+#[test]
+fn generator_fed_routes_are_capped_across_the_kernel_at_create() {
+    let db = db();
+    let fed = |installation: usize, index: usize| InboxRoute {
+        route_id: format!("r{index}"),
+        installation_id: format!("app{installation}"),
+        source: Some(app_inbox::InboxSource {
+            generator_id: "dev.chariox.dummy".into(),
+            connection_id: "connection".into(),
+            connection_scope: "default".into(),
+            filter_json: "null".into(),
+        }),
+        ..route("r")
+    };
+    let tx = db.unchecked_transaction().unwrap();
+    for created in 0..app_inbox::MAX_GENERATOR_ROUTES {
+        let (installation, index) = (
+            created / app_inbox::MAX_ROUTES,
+            created % app_inbox::MAX_ROUTES,
+        );
+        app_inbox::create_route_in(&tx, &fed(installation, index), 1).unwrap();
+    }
+    let next = app_inbox::MAX_GENERATOR_ROUTES / app_inbox::MAX_ROUTES;
+    assert!(matches!(
+        app_inbox::create_route_in(&tx, &fed(next, 0), 1),
+        Err(InboxError::Limit)
+    ));
+    // A route the owner feeds itself is not generator-fed.
+    app_inbox::create_route_in(
+        &tx,
+        &InboxRoute {
+            installation_id: format!("app{next}"),
+            ..route("own")
+        },
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        app_inbox::generator_routes(&tx).unwrap().len(),
+        app_inbox::MAX_GENERATOR_ROUTES
+    );
+}
