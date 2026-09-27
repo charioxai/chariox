@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import base64
 import json
 from pathlib import Path
 import tarfile
@@ -34,6 +35,8 @@ class Docker:
     def __call__(self, *args, data=None):
         if args[0] == "info":
             return b"engine-1\n"
+        if args[:2] == ("system", "dial-stdio"):
+            return b"HTTP/1.1 404 Not Found\r\n\r\n"
         if args[0] == "inspect":
             self.reads += 1
             return json.dumps([{"Id": IDENTITY, "Config": {"Labels": LABELS}, "HostConfig": {"PidMode": ""}, "State": {"Status": self.state, "Running": self.state == "running",
@@ -107,6 +110,55 @@ class ReconciliationTests(unittest.TestCase):
             (INSTANCE + ".container-retired.json", marker, tarfile.REGTYPE, 1001)]))
         self.assertEqual(module.reconcile(IDENTITY, LABELS, docker)["retired"], 0)
         self.assertEqual(docker.writes, [])
+
+    def test_legacy_null_capture_without_any_lifecycle_directory(self):
+        docker = Docker()
+        entry = {"id": "12345678-1234-1234-1234-123456789012", "bytes": 8, "count": 1, "phase": "exposed", "lifetime": None}
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w") as target:
+            raw = json.dumps([entry]).encode(); item = tarfile.TarInfo("ledger.json")
+            item.size, item.uid, item.mode = len(raw), 1001, 0o600
+            target.addfile(item, io.BytesIO(raw))
+        def request(*args, **kwargs):
+            if args[:2] == ("system", "dial-stdio"):
+                metadata = base64.b64encode(json.dumps({"name": "chariox-browser-uploads-1001", "mode": 0x80000000 | 0o700, "linkTarget": ""}).encode())
+                return b"HTTP/1.1 200 OK\r\nX-Docker-Container-Path-Stat: " + metadata + b"\r\n\r\n"
+            if args[0] == "cp" and args[-1] == "-":
+                if args[1].endswith("/ledger.json"):
+                    return output.getvalue()
+                raise FileNotFoundError()
+            return docker(*args, **kwargs)
+        result = module.reconcile(IDENTITY, LABELS, request)
+        self.assertEqual(result["legacyEntries"], 1)
+        with tarfile.open(fileobj=io.BytesIO(docker.writes[0][1])) as proof:
+            self.assertEqual(proof.getmembers()[0].name, "legacy-container-retired.json")
+            self.assertEqual(json.load(proof.extractfile(proof.getmembers()[0]))["entries"], [entry])
+
+    def test_legacy_root_stat_rejects_public_or_symlink_directory(self):
+        for mode in (0x80000000 | 0o755, 0x08000000 | 0o700, 0o700):
+            docker = Docker()
+            def request(*args, **kwargs):
+                if args[:2] == ("system", "dial-stdio"):
+                    value = base64.b64encode(json.dumps({"name": "chariox-browser-uploads-1001", "mode": mode, "linkTarget": ""}).encode())
+                    return b"HTTP/1.1 200 OK\r\nX-Docker-Container-Path-Stat: " + value + b"\r\n\r\n"
+                return docker(*args, **kwargs)
+            with self.assertRaisesRegex(RuntimeError, "private nonsymlink"):
+                module.reconcile(IDENTITY, LABELS, request)
+            self.assertEqual(docker.writes, [])
+
+    def test_invalid_and_reversed_generation_dates_never_write_proof(self):
+        for started, finished in [("2026-99-99T99:99:99Z", "2026-09-27T00:00:00Z"),
+                                  ("2026-09-28T00:00:00Z", "2026-09-27T00:00:00Z")]:
+            docker = Docker()
+            def request(*args, **kwargs):
+                value = docker(*args, **kwargs)
+                if args[0] == "inspect":
+                    rows = json.loads(value); rows[0]["State"].update(StartedAt=started, FinishedAt=finished)
+                    return json.dumps(rows).encode()
+                return value
+            with self.assertRaisesRegex(RuntimeError, "timestamp"):
+                module.reconcile(IDENTITY, LABELS, request)
+            self.assertEqual(docker.writes, [])
 
 
 if __name__ == "__main__":
