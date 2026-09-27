@@ -61,7 +61,7 @@
     "browser-computer:idle-authenticated-soak": "node scripts/live-idle-authenticated-browser-soak.mjs",
     "test:browser-computer-idle-authenticated-soak": "node --test scripts/lib/idle-authenticated-browser-soak.test.mjs",
     "test:browser-computer-fixture": "node --test scripts/lib/browser-computer-fixture.test.mjs scripts/lib/browser-computer-fixture-attachments.test.mjs",
-    "test:browser-computer-persistence": "node --test --test-concurrency=1 scripts/lib/managed-browser-computer-parity-product-transport-m0.test.mjs",
+    "test:browser-computer-persistence": "node --test --test-concurrency=1 scripts/lib/managed-browser-computer-parity-*.test.mjs",
     "test:browser-computer-fixture-browser": "node --test scripts/lib/browser-computer-fixture-attachments.browser-test.mjs",
     "computer-secret-input:drill": "node scripts/computer-secret-input-protocol-drill.mjs",
     "computer-secret-input:x11-drill": "node scripts/live-computer-secret-input-x11-drill.mjs",
