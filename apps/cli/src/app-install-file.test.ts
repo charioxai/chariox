@@ -165,6 +165,27 @@ test("/app update fences the shared upload on the generation it read first", asy
   await assert.rejects(installer.status(), /No App installation in this terminal/)
 })
 
+test("an update refused because another client's update is running says what that update is doing", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  let phase = "quiescing"
+  const send = async (request: Message): Promise<Message> => {
+    if (request.BeginAppUpdate) return { AppRequestFailed: { code: "conflict" } }
+    if (request.GetAppInstallationJournal) {
+      return { AppInstallationJournal: { installation_id: "todo", updates: [{ phase, generation: "8", release: { version: "1.2.6" } }] } }
+    }
+    return k.send(request)
+  }
+  const running = new AppFileInstaller(send, () => {}, f.root)
+  t.after(() => running.dispose())
+  await assert.rejects(running.update("todo", f.path, "s1"),
+    /Another update of this App is in progress: version 1\.2\.6 \(generation 8\) is quiescing\. Wait for it, then check \/app status todo\./)
+  phase = "committed"
+  const done = new AppFileInstaller(send, () => {}, f.root)
+  t.after(() => done.dispose())
+  await assert.rejects(done.update("todo", f.path, "s1"), /Another client just updated this App to version 1\.2\.6 \(generation 8\)/)
+})
+
 test("lost chunk and install replies resume using original IDs and authoritative offset", async t => {
   const f = await sourceFixture(t)
   const k = kernel()

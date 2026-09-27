@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import {
   beginAppPackageUploadRequest, putAppPackageUploadChunkRequest, abortAppPackageUploadRequest,
   beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest, getAppInstallationRequest,
+  getAppInstallationJournalRequest,
 } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, AppInstallOperationSummary, AppPackageUploadSummary } from "@chariox/kernel-client/kernel-types"
 import { AppFileSource, checkCancelled, chunkBytes, InstallCancelled, InstallFileChanged } from "./app-install-file/source.js"
@@ -57,10 +58,25 @@ export class AppFileInstaller {
     } else if (attempt.path !== path || attempt.session !== session || attempt.update?.installation !== installation) {
       return Promise.reject(new Error("Another App installation or update is retained. Use /app operation or /app cancel before selecting another file."))
     }
-    const operation = this.transfer(attempt)
+    const operation = this.transfer(attempt).catch(async (error: unknown) => {
+      if (!(installation && error instanceof KernelFailure && error.code === "conflict")) throw error
+      throw new Error(await this.competingUpdate(installation).catch(() => null) ?? error.message)
+    })
     this.running = operation
     void operation.finally(() => { if (this.running === operation) this.running = undefined }).catch(() => {})
     return operation
+  }
+
+  /** On a conflict, what the installation's latest update (another client's) is doing. */
+  private async competingUpdate(installation: string): Promise<string | null> {
+    const reply = await this.send(getAppInstallationJournalRequest(installation))
+    const journal = reply.AppInstallationJournal as { updates?: Array<{ phase: string; generation: string; release?: { version?: string } }> } | undefined
+    const latest = journal?.updates?.[0]
+    if (!latest) return null
+    const release = `version ${latest.release?.version ?? "unknown"} (generation ${latest.generation})`
+    if (latest.phase === "committed") return `Another client just updated this App to ${release}. Run the update again if you still want this file.`
+    if (latest.phase === "aborted") return null
+    return `Another update of this App is in progress: ${release} is ${latest.phase}. Wait for it, then check /app status ${installation}.`
   }
 
   /** The open attempt this terminal retains (e.g. after a connection failure), if any. */
