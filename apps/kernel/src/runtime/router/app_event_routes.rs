@@ -143,17 +143,12 @@ impl CommandRouter {
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let first = self.read_binding(command, request).await?;
+        let first_connection = first.connection_id.clone();
         let _connection_guard = self
             .event_connection_lanes
             .lock(caller_user_id, &first.connection_id)
             .await;
-        // Read again under the locks: the owner may have changed it meanwhile.
-        let binding = self.read_binding(command, request).await?;
-        if binding.connection_id != first.connection_id {
-            return Err(move_error(
-                "the event binding changed during the move; try again",
-            ));
-        }
+        let binding = first;
         let config = self.config_projection.snapshot();
         if binding.environment_id != config.event_delivery_environment_id {
             return Err(move_error(format!(
@@ -178,7 +173,13 @@ impl CommandRouter {
         self.check_app_route(caller_user_id, &route, &connection)
             .await?;
         let _interest = self.event_interest_lock.lock().await;
+        // Read again under the locks: the owner may have changed it meanwhile.
         let binding = self.read_binding(command, request).await?;
+        if binding.connection_id != first_connection {
+            return Err(move_error(
+                "the event binding changed during the move; try again",
+            ));
+        }
         let was_active = binding.active();
         if was_active {
             self.set_binding_status(
