@@ -463,6 +463,7 @@ impl KernelRuntimeOwnedState {
             match self.ensure_workflow_prompt_workspace_claim(session_id, next_queued_prompt) {
                 Ok(acquired) => acquired,
                 Err(DaemonError::WorkspaceClaimConflict { .. }) => {
+                    drop(activity_mutation);
                     return self.finalize_local_completion_without_queued_advance(
                         session_id,
                         agent_id,
@@ -702,6 +703,10 @@ impl KernelRuntimeOwnedState {
             );
     }
 }
+
+#[cfg(test)]
+#[path = "prompt_workspace_claim_conflict_tests.rs"]
+mod prompt_workspace_claim_conflict_tests;
 
 fn join_hidden_context(first: &str, second: &str) -> String {
     match (first.trim(), second.trim()) {
