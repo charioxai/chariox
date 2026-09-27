@@ -2094,6 +2094,30 @@ fn a_refused_move_leaves_nothing_behind_and_the_same_move_then_succeeds() {
         LocalDaemonResponse::AppRequestFailed { .. }
     ));
     assert_eq!(granted(), ["connection-local"], "an earlier grant is kept");
+    // AEDS deliveries for the binding; the workflow accepts the first now.
+    let delivery =
+        |delivery_id: &str, occurrence_id: &str| chariox_event_protocol::EventDeliveryEnvelope {
+            delivery_id: delivery_id.to_string(),
+            binding_id: binding.id.clone(),
+            event_type: "dummy.test".to_string(),
+            event_type_version: 1,
+            occurrence_id: occurrence_id.to_string(),
+            occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            prompt: "moved".to_string(),
+            artifacts: Vec::new(),
+            metadata: serde_json::Value::Null,
+            reply_context: None,
+            expires_at_ms: u64::MAX,
+        };
+    let accept = |delivery: chariox_event_protocol::EventDeliveryEnvelope| {
+        let runtime_state = runtime_state.clone();
+        harness.block_on_test_task(async move {
+            tokio::task::spawn_blocking(move || runtime_state.accept_event_delivery(delivery))
+                .await
+                .unwrap()
+        })
+    };
+    assert_eq!(accept(delivery("before", "occurrence-before")), Ok(()));
     // The same move with a declared event then succeeds.
     match move_to_app("changed") {
         LocalDaemonResponse::EventBindingMovedToApp {
@@ -2108,6 +2132,37 @@ fn a_refused_move_leaves_nothing_behind_and_the_same_move_then_succeeds() {
         response => panic!("unexpected response: {response:?}"),
     }
     assert_eq!(status(), WorkflowEventBindingStatus::Paused);
+    // The moved binding takes no more deliveries: a replay of one it accepted
+    // is acknowledged, and one it never accepted reaches the App's inbox once,
+    // however often AEDS repeats it or also delivers it on the App's route.
+    assert_eq!(accept(delivery("before", "occurrence-before")), Ok(()));
+    assert_eq!(accept(delivery("pending", "occurrence-pending")), Ok(()));
+    assert_eq!(accept(delivery("pending", "occurrence-pending")), Ok(()));
+    assert_eq!(
+        accept(chariox_event_protocol::EventDeliveryEnvelope {
+            binding_id: chariox_app_runtime::app_inbox::route_binding_id(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "installed",
+                "moved",
+            ),
+            ..delivery("on-route", "occurrence-pending")
+        }),
+        Ok(())
+    );
+    let inbox = rusqlite::Connection::open(store.path())
+        .unwrap()
+        .prepare("SELECT route_id, occurrence_id FROM app_inbox")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        inbox,
+        [("moved".to_string(), "occurrence-pending".to_string())]
+    );
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
