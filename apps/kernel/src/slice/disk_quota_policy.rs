@@ -39,17 +39,25 @@ impl SliceDiskQuotaLimits {
     ) -> Result<Option<Self>, DaemonError> {
         match (writable_layer_mb, persistent_home_mb) {
             (None, None) => Ok(None),
-            (Some(layer_mb), Some(home_mb)) if layer_mb > 0 && home_mb > 0 => {
+            (Some(0), _) => Err(DaemonError::InvalidConfig {
+                field: "slices.linux.disk_layer_mb",
+                message: "disk_layer_mb must be a positive integer",
+            }),
+            (_, Some(0)) => Err(DaemonError::InvalidConfig {
+                field: "slices.linux.disk_home_mb",
+                message: "disk_home_mb must be a positive integer",
+            }),
+            (Some(layer_mb), Some(home_mb)) => {
                 Ok(Some(Self {
                     writable_layer_bytes: u64::from(layer_mb) * BYTES_PER_MEBIBYTE,
                     persistent_home_bytes: u64::from(home_mb) * BYTES_PER_MEBIBYTE,
                 }))
             }
-            (Some(_), Some(_)) => Err(DaemonError::InvalidConfig {
-                field: "slices.linux.disk_layer_mb",
-                message: "disk_layer_mb and disk_home_mb must both be positive integers",
+            (Some(_), None) => Err(DaemonError::InvalidConfig {
+                field: "slices.linux.disk_home_mb",
+                message: "disk_layer_mb and disk_home_mb must be configured together",
             }),
-            _ => Err(DaemonError::InvalidConfig {
+            (None, Some(_)) => Err(DaemonError::InvalidConfig {
                 field: "slices.linux.disk_layer_mb",
                 message: "disk_layer_mb and disk_home_mb must be configured together",
             }),
@@ -163,6 +171,18 @@ mod tests {
         }
     }
 
+    fn invalid_config_field(
+        writable_layer_mb: Option<u32>,
+        persistent_home_mb: Option<u32>,
+    ) -> &'static str {
+        match SliceDiskQuotaLimits::from_megabytes(writable_layer_mb, persistent_home_mb)
+            .expect_err("invalid quota configuration must be rejected")
+        {
+            DaemonError::InvalidConfig { field, .. } => field,
+            error => panic!("expected invalid configuration error, got {error}"),
+        }
+    }
+
     fn verified_evidence() -> SliceDiskQuotaEvidence {
         let limits = limits();
         SliceDiskQuotaEvidence {
@@ -196,6 +216,23 @@ mod tests {
         assert!(SliceDiskQuotaLimits::from_megabytes(Some(0), Some(2_048)).is_err());
         assert!(SliceDiskQuotaLimits::from_megabytes(Some(512), Some(0)).is_err());
 
+        assert_eq!(
+            invalid_config_field(Some(0), Some(2_048)),
+            "slices.linux.disk_layer_mb"
+        );
+        assert_eq!(
+            invalid_config_field(Some(512), Some(0)),
+            "slices.linux.disk_home_mb"
+        );
+        assert_eq!(
+            invalid_config_field(Some(512), None),
+            "slices.linux.disk_home_mb"
+        );
+        assert_eq!(
+            invalid_config_field(None, Some(2_048)),
+            "slices.linux.disk_layer_mb"
+        );
+
         let limits = SliceDiskQuotaLimits::from_megabytes(Some(512), Some(2_048))
             .expect("paired caps should be accepted");
         assert_eq!(
@@ -203,6 +240,16 @@ mod tests {
             Some(SliceDiskQuotaLimits {
                 writable_layer_bytes: 512 * BYTES_PER_MEBIBYTE,
                 persistent_home_bytes: 2_048 * BYTES_PER_MEBIBYTE,
+            })
+        );
+
+        let maximum = SliceDiskQuotaLimits::from_megabytes(Some(u32::MAX), Some(u32::MAX))
+            .expect("u32 megabyte caps fit in the widened byte conversion");
+        assert_eq!(
+            maximum,
+            Some(SliceDiskQuotaLimits {
+                writable_layer_bytes: u64::from(u32::MAX) * BYTES_PER_MEBIBYTE,
+                persistent_home_bytes: u64::from(u32::MAX) * BYTES_PER_MEBIBYTE,
             })
         );
     }
