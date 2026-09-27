@@ -100,6 +100,17 @@ test("recovery fails closed on representative required overlay errors before sta
   const root = await mkdtemp(join(tmpdir(), "chariox-support-overlay-"));
   try {
     await writeFakeDocker(root);
+    await t.test("legacy browser admission refusal prevents package setup, every overlay and runtime startup", async () => {
+      const result = await recover(root, { browserDisposition: "unowned" });
+      assert.notEqual(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stderr, /legacy or unowned Chromium/);
+      assert.match(result.stderr, /\/slice stop fixture-slice.*\/slice start fixture-slice/);
+      const calls = await readFile(join(root, "docker-calls"), "utf8");
+      assert.doesNotMatch(calls, /(?:^|\n)cp\0/, "no overlay copy may precede browser admission");
+      assert.doesNotMatch(calls, /apt-get -qq update/, "package preparation must follow browser admission");
+      assert.doesNotMatch(calls, /(?:^|\n)(?:stop|kill|restart)\0/, "admission must not stop live provider turns");
+      assert.equal(await runtimeStarted(root), false);
+    });
     const rejectedDestinations = [
       ["runtime launcher", "/opt/chariox-slice/start-runtime.sh"],
       ["provider bridge", "/opt/chariox-slice/provider-port-bridge.mjs"],
@@ -170,7 +181,11 @@ async function recover(root, options = {}) {
       CHARIOX_TEST_FAIL_COPY_DESTINATION: options.failCopyDestination ?? "",
       CHARIOX_TEST_FAIL_IMPORT_DIRECTORY: options.failImportDirectory ? "1" : "0",
       CHARIOX_TEST_FAIL_REQUIRED_CHMOD: options.failRequiredChmod ? "1" : "0",
+      CHARIOX_TEST_BROWSER_DISPOSITION: options.browserDisposition ?? "clear",
       CHARIOX_SLICE_NAME: "chariox-slice-fixture",
+      CHARIOX_SLICE_ID: "fixture-slice",
+      CHARIOX_SLICE_OWNER_KERNEL_ID: "fixture-kernel",
+      CHARIOX_SLICE_OWNER_MACHINE_ID: "fixture-machine",
       CHARIOX_SLICE_VIEWER_BACKEND: options.backend ?? "selkies",
       CHARIOX_SLICE_START_DESKTOP: "0",
       CHARIOX_SLICE_START_RUNTIME: "1",
@@ -198,7 +213,11 @@ set -euo pipefail
   printf '\\n'
 } >> "$CHARIOX_TEST_DOCKER_LOG"
 
-if [[ "\${1:-}" == info || ( "\${1:-}" == container && "\${2:-}" == inspect ) ]]; then
+if [[ "\${1:-}" == info ]]; then
+  if [[ "$*" == *'{{.ID}}'* ]]; then printf 'fixture-engine-1234\\n'; fi
+  exit 0
+fi
+if [[ "\${1:-}" == container && "\${2:-}" == inspect ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == inspect ]]; then
@@ -206,6 +225,14 @@ if [[ "\${1:-}" == inspect ]]; then
     *HostConfig.Ulimits*) printf '8192:8192\\n' ;;
     *State.Paused*) printf 'false\\n' ;;
     *State.Running*) printf 'true\\n' ;;
+    *) printf '%s\\n' '${JSON.stringify([{ Id: "a".repeat(64), Image: `sha256:${"b".repeat(64)}`,
+      Created: "2026-09-27T10:00:00Z", State: { Running: true, Paused: false, Restarting: false,
+        Status: "running", Pid: 123, StartedAt: "2026-09-27T10:00:00Z", FinishedAt: "0001-01-01T00:00:00Z" },
+      HostConfig: { PidMode: "" }, Config: { Env: ["HOME=/home/slice"], Labels: {
+        "io.chariox.slice.id": "fixture-slice", "io.chariox.slice.owner-kernel-id": "fixture-kernel",
+        "io.chariox.slice.owner-machine-id": "fixture-machine",
+      } },
+    }])}' ;;
   esac
   exit 0
 fi
@@ -218,6 +245,14 @@ if [[ "\${1:-}" == cp ]]; then
 fi
 if [[ "\${1:-}" == exec ]]; then
   command_line=" $* "
+  if [[ "\${5:-}" == python3 && "\${6:-}" == -c && "$command_line" == *profileProcessCount* ]]; then
+    case "$CHARIOX_TEST_BROWSER_DISPOSITION" in
+      clear) printf '%s\\n' '{"disposition":"clear","profileProcessCount":0}' ;;
+      unowned) printf '%s\\n' '{"disposition":"unowned","profileProcessCount":1}' ;;
+      *) exit 98 ;;
+    esac
+    exit 0
+  fi
   if [[ "\${CHARIOX_TEST_FAIL_IMPORT_DIRECTORY:-0}" == 1 \\
     && "$command_line" == *"mkdir -p /opt/chariox-slice/browser-session-import"* ]]; then
     printf 'fake Docker rejected browser import directory creation\\n' >&2
@@ -238,8 +273,5 @@ if [[ "\${1:-}" == exec ]]; then
   fi
 fi
 exit 0
-`, { mode: 0o700 });
-  await writeFile(join(root, "sleep"), `#!/usr/bin/env bash
-exec /usr/bin/sleep 0.001
 `, { mode: 0o700 });
 }
