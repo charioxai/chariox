@@ -251,6 +251,13 @@ fn package_build(
             );
         }
     }
+    if incoming {
+        // It may act through a granted dummy connection.
+        manifest.capabilities.connections = vec![chariox_app_package::ConnectionAccess {
+            generator: "dev.chariox.dummy".into(),
+            actions: vec!["dummy.ping".into()],
+        }];
+    }
     if with_tools {
         manifest.tools = Some("schemas/tools.json".into());
         files.insert("schemas/tools.json".into(), serde_json::to_vec(&json!({"tools":[{

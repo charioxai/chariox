@@ -229,7 +229,15 @@ fn serve_ready_connection(
                 "filter_schema": {"type": "object"},
                 "required_scopes": ["events:read"]
             }],
-            "actions": [],
+            "actions": [{
+                "action_id": "dummy.ping",
+                "name": "Ping",
+                "description": "A fixture action.",
+                "target": "connection",
+                "mutation": false,
+                "idempotent": true,
+                "input_schema": {"type": "object"}
+            }],
             "signature": {"key_id": "test", "algorithm": "ed25519", "value": "test"}
         })
         .to_string()
@@ -2013,6 +2021,79 @@ fn a_refused_move_leaves_nothing_behind_and_the_same_move_then_succeeds() {
         }
         response => panic!("unexpected response: {response:?}"),
     }
+    // A binding with actions: a refused move revokes the grant it made, but
+    // never one the App already held.
+    let acting =
+        match harness
+            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
+                CreateWorkflowEventBindingRequest {
+                    session_id: graph.session_id.clone(),
+                    publication_ref: publication.id().to_string(),
+                    generator_id: "dev.chariox.dummy".to_string(),
+                    generator_version: "1.0.0".to_string(),
+                    manifest_digest:
+                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
+                            .to_string(),
+                    connection_id: "connection-local".to_string(),
+                    connection_scope: "tenant:local".to_string(),
+                    event_type: "dummy.test".to_string(),
+                    event_type_version: 1,
+                    filter: serde_json::json!({"channel": "acting"}),
+                    environment_id: None,
+                    queue_ref: Some("default".to_string()),
+                    reply_mode: None,
+                    action_ids: vec!["dummy.ping".to_string()],
+                },
+            ))
+            .unwrap()
+        {
+            LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
+            response => panic!("unexpected response: {response:?}"),
+        };
+    let refused_acting_move = || {
+        harness
+            .dispatch(LocalDaemonRequest::MoveEventBindingToApp(
+                crate::local::MoveEventBindingToAppRequest {
+                    session_id: graph.session_id.clone(),
+                    binding_id: acting.id.clone(),
+                    installation_id: "installed".to_string(),
+                    route_id: "acting".to_string(),
+                    event_name: "received".to_string(),
+                    automation: Some(crate::local::MovedEventAutomation {
+                        automation_id: "acting".to_string(),
+                        event_name: "undeclared".to_string(),
+                    }),
+                },
+            ))
+            .unwrap()
+    };
+    let granted = || match app(LocalDaemonRequest::ListAppConnections(installed())) {
+        LocalDaemonResponse::AppConnections { connections, .. } => connections
+            .into_iter()
+            .map(|granted| granted.connection_id)
+            .collect::<Vec<_>>(),
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert!(matches!(
+        refused_acting_move(),
+        LocalDaemonResponse::AppRequestFailed { .. }
+    ));
+    assert!(granted().is_empty(), "the move's own grant is revoked");
+    assert!(matches!(
+        app(LocalDaemonRequest::GrantAppConnection(
+            crate::local::GrantAppConnectionRequest {
+                installation_id: "installed".to_string(),
+                generator_id: "dev.chariox.dummy".to_string(),
+                connection_id: "connection-local".to_string(),
+            }
+        )),
+        LocalDaemonResponse::AppConnections { .. }
+    ));
+    assert!(matches!(
+        refused_acting_move(),
+        LocalDaemonResponse::AppRequestFailed { .. }
+    ));
+    assert_eq!(granted(), ["connection-local"], "an earlier grant is kept");
     // The same move with a declared event then succeeds.
     match move_to_app("changed") {
         LocalDaemonResponse::EventBindingMovedToApp {
