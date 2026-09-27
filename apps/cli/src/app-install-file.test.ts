@@ -168,22 +168,23 @@ test("/app update fences the shared upload on the generation it read first", asy
 test("an update refused because another client's update is running says what that update is doing", async t => {
   const f = await sourceFixture(t)
   const k = kernel()
-  let phase = "quiescing"
+  let latest = { phase: "committed", generation: "7", release: { version: "1.2.5" } }
   const send = async (request: Message): Promise<Message> => {
     if (request.BeginAppUpdate) return { AppRequestFailed: { code: "conflict" } }
-    if (request.GetAppInstallationJournal) {
-      return { AppInstallationJournal: { installation_id: "todo", updates: [{ phase, generation: "8", release: { version: "1.2.6" } }] } }
-    }
+    if (request.GetAppInstallationJournal) return { AppInstallationJournal: { installation_id: "todo", updates: [latest] } }
     return k.send(request)
   }
-  const running = new AppFileInstaller(send, () => {}, f.root)
-  t.after(() => running.dispose())
-  await assert.rejects(running.update("todo", f.path, "s1"),
-    /Another update of this App is in progress: version 1\.2\.6 \(generation 8\) is quiescing\. Wait for it, then check \/app status todo\./)
-  phase = "committed"
-  const done = new AppFileInstaller(send, () => {}, f.root)
-  t.after(() => done.dispose())
-  await assert.rejects(done.update("todo", f.path, "s1"), /Another client just updated this App to version 1\.2\.6 \(generation 8\)/)
+  const refused = async () => {
+    const installer = new AppFileInstaller(send, () => {}, f.root)
+    t.after(() => installer.dispose())
+    return installer.update("todo", f.path, "s1").then(() => assert.fail("refused"), (error: Error) => error.message)
+  }
+  // The fixture reads generation 7: the journal's generation-7 release is not the competing one.
+  assert.match(await refused(), /Another client's update of this App is being prepared\. Wait for it, then check \/app status todo\./)
+  latest = { phase: "quiescing", generation: "8", release: { version: "1.2.6" } }
+  assert.match(await refused(), /Another update of this App is in progress: version 1\.2\.6 \(generation 8\) is quiescing/)
+  latest = { phase: "committed", generation: "8", release: { version: "1.2.6" } }
+  assert.match(await refused(), /Another client just updated this App to version 1\.2\.6 \(generation 8\)/)
 })
 
 test("lost chunk and install replies resume using original IDs and authoritative offset", async t => {
