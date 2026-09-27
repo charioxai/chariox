@@ -14,6 +14,7 @@ use super::super::remote_prompt_worker_submission_runtime::{
 };
 use super::*;
 use crate::transport::relay_peer::RelayPeerEvent;
+use crate::transport::relay_discovery;
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -170,6 +171,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         worker_id: &str,
         home_relay_token: &str,
         stage: &'static str,
+        trace_checkpoint: Option<relay_discovery::RelayDiscoveryTestTraceCheckpoint>,
         diagnostics: impl Fn() -> String,
     ) -> (WebSocketStream<TcpStream>, String, std::net::SocketAddr) {
         // A normal temporary peer call writes GetLiveKernel on this discovery socket before it
@@ -180,18 +182,45 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             listener.accept(),
         )
         .await
-        .unwrap_or_else(|_| panic!("{stage}: relay did not accept discovery socket"))
+        .unwrap_or_else(|_| {
+            let relay_trace = trace_checkpoint
+                .map(|checkpoint| {
+                    relay_discovery::take_relay_discovery_test_trace(checkpoint, None)
+                })
+                .unwrap_or_else(|| "not captured".to_string());
+            panic!("{stage}: relay did not accept discovery socket; relay_trace={relay_trace}")
+        })
         .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
         let mut discovery = accept_async(stream)
             .await
-            .unwrap_or_else(|error| panic!("{stage}: relay discovery upgrade failed: {error}"));
+            .unwrap_or_else(|error| {
+                let relay_trace = trace_checkpoint
+                    .map(|checkpoint| {
+                        relay_discovery::take_relay_discovery_test_trace(
+                            checkpoint,
+                            Some(peer_addr),
+                        )
+                    })
+                    .unwrap_or_else(|| "not captured".to_string());
+                panic!(
+                    "{stage}: relay discovery upgrade failed: {error}; peer={peer_addr}; relay_trace={relay_trace}"
+                );
+            });
         let envelope = receive_claim_test_envelope_with_diagnostics(
             &mut discovery,
             "temporary discovery first envelope",
             || {
                 format!(
-                    "operation={stage},socket=discovery,peer={peer_addr},{}",
-                    diagnostics()
+                    "operation={stage},socket=discovery,peer={peer_addr},relay_trace={},{}",
+                    trace_checkpoint
+                        .map(|checkpoint| {
+                            relay_discovery::take_relay_discovery_test_trace(
+                                checkpoint,
+                                Some(peer_addr),
+                            )
+                        })
+                        .unwrap_or_else(|| "not captured".to_string()),
+                    diagnostics(),
                 )
             },
         )
@@ -217,10 +246,21 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
                 );
                 request_id
             }
-            other => panic!(
-                "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest; peer={peer_addr}",
-                claim_test_envelope_kind(&other)
-            ),
+            other => {
+                let relay_trace = trace_checkpoint
+                    .map(|checkpoint| {
+                        relay_discovery::take_relay_discovery_test_trace(
+                            checkpoint,
+                            Some(peer_addr),
+                        )
+                    })
+                    .unwrap_or_else(|| "not captured".to_string());
+                panic!(
+                    "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest; peer={peer_addr}; relay_trace={relay_trace}; {}",
+                    claim_test_envelope_kind(&other),
+                    diagnostics(),
+                );
+            }
         };
         (discovery, request_id, peer_addr)
     }
@@ -234,6 +274,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
         worker_public_key: &str,
         worker_private_key: &str,
         stage: &'static str,
+        trace_checkpoint: Option<relay_discovery::RelayDiscoveryTestTraceCheckpoint>,
         diagnostics: impl Fn() -> String,
     ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
         let (mut discovery, request_id, discovery_peer) =
@@ -242,6 +283,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
                 worker_id,
                 home_relay_token,
                 stage,
+                trace_checkpoint,
                 &diagnostics,
             )
             .await;
@@ -803,6 +845,7 @@ mod receipt_reconciliation {
             .expect("fake relay listener should bind");
         let relay_url = format!("ws://{}", listener.local_addr().unwrap());
         let fixture = make_receipt_reconciliation_fixture(&relay_url, "cancel-claimed").await;
+        let trace_relay_url = relay_url.clone();
         fixture
             .runtime
             .owned
@@ -937,6 +980,8 @@ mod receipt_reconciliation {
             release_drain_rx
                 .await
                 .expect("test should release the terminal projection");
+            let successor_trace_checkpoint =
+                relay_discovery::relay_discovery_test_trace_checkpoint(&trace_relay_url);
             send_fake_worker_peer_response(
                 drain_request,
                 &worker_id,
@@ -977,6 +1022,7 @@ mod receipt_reconciliation {
                 &worker_public_key,
                 &worker_private_key,
                 "queued successor submission",
+                Some(successor_trace_checkpoint),
                 move || {
                     claim_test_successor_state_tags(
                         &state_tags_runtime,
@@ -3758,6 +3804,7 @@ mod dispatch_settlement {
                 &worker_public_key,
                 &worker_private_key,
                 "predecessor submission",
+                None,
                 || "state_tags_available=false".to_string(),
             )
             .await;
@@ -3801,6 +3848,7 @@ mod dispatch_settlement {
                 &worker_public_key,
                 &worker_private_key,
                 "successor submission",
+                None,
                 move || {
                     claim_test_successor_state_tags(
                         &state_tags_runtime,
