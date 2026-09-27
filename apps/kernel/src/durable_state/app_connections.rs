@@ -94,7 +94,7 @@ impl DurableKernelStateStore {
 
 /// Grants end with the installation's active release: an uninstalled App, or
 /// one installed again under the same id, starts with none.
-pub(super) fn forget_inactive(
+pub(crate) fn forget_inactive(
     connection: &Connection,
     owner: &str,
     installation: &str,

@@ -22,9 +22,10 @@ impl VerifiedInstallCandidate {
         self.stage_supervised_in(tx, owner, installation, 0, now_ms)
     }
 
-    /// A local replacement of the owner's active installation. A release with
-    /// a newer data schema migrates the data during the update (its package
-    /// declares every step from 0); data is never migrated down.
+    /// A local replacement of the owner's active installation, or a reinstall
+    /// of an uninstalled one whose data was kept. A release with a newer data
+    /// schema migrates the data during the update (its package declares every
+    /// step from 0); data is never migrated down.
     pub fn stage_update_in(
         &self,
         tx: &Transaction<'_>,
@@ -38,8 +39,8 @@ impl VerifiedInstallCandidate {
         if current.owner_id != owner {
             return Err(InstallationError::NotFound.into());
         }
-        let active = current.active.ok_or(InstallationError::Inactive)?;
-        if self.release.schema_version < active.release.schema_version {
+        let data = current.data_release().ok_or(InstallationError::Inactive)?;
+        if self.release.schema_version < data.release.schema_version {
             return Err(InstallationError::Invalid("data schema downgrade").into());
         }
         self.stage_supervised_in(tx, owner, installation, expected_generation, now_ms)
@@ -148,8 +149,8 @@ impl StageTrustBinding {
         let mut record = current_update(tx, &self.token)?;
         // Admission pauses in this transaction, so the snapshot is consistent.
         let data = load_installation(tx, &self.token.installation_id)?
-            .active
-            .map(|active| active.release.schema_version);
+            .data_release()
+            .map(|data| data.release.schema_version);
         if let Some(from) = data.filter(|from| *from != record.release.schema_version) {
             crate::managed_state::migration::begin_in(
                 tx,

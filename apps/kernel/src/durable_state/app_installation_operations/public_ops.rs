@@ -19,6 +19,7 @@ pub(crate) struct InstallApprovalChallenge {
     trust: TrustedPublisherSnapshot,
     capabilities_digest: String,
     review: serde_json::Value,
+    reinstall: bool,
 }
 impl InstallApprovalChallenge {
     pub(crate) fn installation_id(&self) -> &str {
@@ -27,6 +28,10 @@ impl InstallApprovalChallenge {
     /// A local update of an installed App rather than a first install.
     pub(crate) fn is_update(&self) -> bool {
         self.binding.token().base_generation > 0
+    }
+    /// An update of an uninstalled installation into its kept data.
+    pub(crate) fn is_reinstall(&self) -> bool {
+        self.reinstall
     }
     pub(crate) fn interaction_id(&self) -> &str {
         &self.interaction_id
@@ -204,8 +209,9 @@ fn active_capabilities(
         })
         .transpose()
 }
-/// An update targets the owner's active installation at its current
-/// generation, with no other unfinished install or update operation.
+/// An update targets the owner's installation at its current generation, with
+/// no other unfinished install or update operation. The installation is active,
+/// or uninstalled with its data kept: then the update is a reinstall.
 fn require_updatable(
     tx: &rusqlite::Transaction<'_>,
     owner: &str,
@@ -214,13 +220,14 @@ fn require_updatable(
     identity(&target.installation_id)?;
     let row: Option<(String, i64, bool, bool)> = sql(tx
         .query_row(
-            "SELECT owner_id,generation,pending_generation IS NOT NULL,active_json IS NOT NULL
+            "SELECT owner_id,generation,pending_generation IS NOT NULL,
+                active_json IS NOT NULL OR retained_json IS NOT NULL
              FROM app_installations WHERE installation_id=?1",
             [&target.installation_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional())?;
-    let Some((installed_by, generation, pending, active)) = row else {
+    let Some((installed_by, generation, pending, has_data)) = row else {
         return Err(InstallOperationError::NotFound);
     };
     if installed_by != owner {
@@ -232,7 +239,7 @@ fn require_updatable(
         [&target.installation_id],
         |r| r.get(0),
     ))?;
-    if !active || pending || unfinished || generation != target.expected_generation as i64 {
+    if !has_data || pending || unfinished || generation != target.expected_generation as i64 {
         return Err(InstallOperationError::Conflict);
     }
     Ok(())
@@ -324,13 +331,18 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 .and_then(|input| input.update.as_ref())
             {
                 None => candidate.stage_first_in(&tx, &owner, installation, time as u64),
-                Some(target) => candidate.stage_update_in(
-                    &tx,
-                    &owner,
-                    installation,
-                    target.expected_generation,
-                    time as u64,
-                ),
+                Some(target) => {
+                    // A reinstall inherits no grants, automations or routes.
+                    crate::durable_state::apps::forget_uninstalled(&tx, &owner, installation)
+                        .map_err(|_| InstallOperationError::Storage)?;
+                    candidate.stage_update_in(
+                        &tx,
+                        &owner,
+                        installation,
+                        target.expected_generation,
+                        time as u64,
+                    )
+                }
             }
             .map_err(|error| match error {
                 VerifiedStageError::Installation(InstallationError::Invalid(
@@ -383,11 +395,14 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             }
             // Consent covers capabilities: a local update of the same App,
             // publisher and exactly the approved capabilities needs no new
-            // decision. Any capability change asks the owner again.
-            if current.token.base_generation > 0
-                && active_capabilities(&tx, &current.token.installation_id)?.as_deref()
-                    == Some(update.release.capabilities_digest.as_str())
-            {
+            // decision. Any capability change asks the owner again, and so does
+            // a reinstall, which has no active release.
+            let active = match current.token.base_generation {
+                0 => None,
+                _ => active_capabilities(&tx, &current.token.installation_id)?,
+            };
+            let reinstall = current.token.base_generation > 0 && active.is_none();
+            if active.as_deref() == Some(update.release.capabilities_digest.as_str()) {
                 binding
                     .decide_in(
                         &tx,
@@ -429,6 +444,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                     trust,
                     capabilities_digest: update.release.capabilities_digest,
                     review,
+                    reinstall,
                 },
             )))
         }

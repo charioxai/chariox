@@ -27,7 +27,9 @@ pub(super) fn projection(value: InstallOperation) -> LocalDaemonResponse {
                 InstallPhase::Preparing => AppInstallOperationPhase::Preparing,
                 // Approved but not yet started (for example waiting for a
                 // worker slot): the person's part is done.
-                InstallPhase::AwaitingApproval if value.approved => AppInstallOperationPhase::Starting,
+                InstallPhase::AwaitingApproval if value.approved => {
+                    AppInstallOperationPhase::Starting
+                }
                 InstallPhase::AwaitingApproval => AppInstallOperationPhase::AwaitingApproval,
                 InstallPhase::Starting => AppInstallOperationPhase::Starting,
                 InstallPhase::Committed => AppInstallOperationPhase::Committed,
@@ -118,6 +120,10 @@ impl AppInstallControl {
             None => None,
         };
         let key = (owner.clone(), request_id.clone());
+        let update_target = match request {
+            LocalDaemonRequest::BeginAppUpdate(value) => Some(value.installation_id.clone()),
+            _ => None,
+        };
         if matches!(request, LocalDaemonRequest::CancelAppInstallOperation(_)) {
             self.cancel_admission(&key);
         }
@@ -187,6 +193,9 @@ impl AppInstallControl {
         let result = receiver.await;
         Some(match result {
             Ok(Ok((operation, close))) => {
+                if let Some(installation) = &update_target {
+                    runtime.unbind_if_uninstalled(&key.0, installation).await;
+                }
                 if operation.phase == InstallPhase::Cancelled {
                     self.cancelled(key, operation.review.is_some());
                 } else if matches!(

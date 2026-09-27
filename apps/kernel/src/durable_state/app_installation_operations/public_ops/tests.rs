@@ -443,3 +443,84 @@ fn a_policy_approval_accepts_the_longest_request_id() {
         InstallReviewDisposition::Approved
     ));
 }
+
+#[test]
+fn a_reinstall_updates_the_kept_installation_and_restores_no_configuration() {
+    let f = Fixture::new();
+    let sql = Connection::open(f.store.path()).unwrap();
+    sql.execute_batch(
+        "INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,
+            event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status)
+         VALUES('alice','installed','nightly',1,'ready',1,'sha256:x','s','p','e','q','active');
+         INSERT INTO app_inbox_routes(owner_id,installation_id,route_id,event_name,
+            source_event_type,source_event_version,active,created_at_ms)
+         VALUES('alice','installed','mail','received','mail.received',1,1,1);
+         INSERT INTO app_connection_grants(owner_id,installation_id,connection_id,generator_id,
+            granted_at_ms) VALUES('alice','installed','c1','g1',1);",
+    )
+    .unwrap();
+    f.store
+        .mutate_app_installation(
+            "alice",
+            crate::durable_state::apps::AppRegistryMutation::Uninstall {
+                installation_id: "installed".into(),
+                expected_generation: 1,
+                now_ms: 5,
+            },
+        )
+        .unwrap();
+    let kept = f.store.get_app_installation("alice", "installed").unwrap();
+    assert!(kept.active.is_none());
+    assert_eq!(kept.retained.as_ref().unwrap().generation, 1);
+    let count = |table: &str, filter: &str| -> i64 {
+        sql.query_row(
+            &format!("SELECT count(*) FROM {table} WHERE installation_id='installed' {filter}"),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    // Uninstall disables automations and drops routes and grants.
+    assert_eq!(count("app_automations", "AND status='disabled'"), 1);
+    assert_eq!(count("app_inbox_routes", ""), 0);
+    assert_eq!(count("app_connection_grants", ""), 0);
+    // The same release with unchanged capabilities still asks: a reinstall
+    // inherits no approval.
+    let next = release("1.1.0", 0, false, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    f.store
+        .reserve_app_install("alice", "reinstall", update_input(2), &digest, budget())
+        .unwrap();
+    f.store
+        .complete_app_install_preparation("alice", "reinstall", next, budget())
+        .unwrap();
+    let challenge = Arc::new(f.arm("reinstall", "yes"));
+    assert!(challenge.is_reinstall());
+    let approved = f
+        .store
+        .decide_app_install(challenge, true, budget())
+        .unwrap();
+    assert_eq!(approved.phase, InstallPhase::AwaitingApproval);
+    assert!(approved.approved);
+    assert_eq!(count("app_automations", "AND status='active'"), 0);
+}
+
+#[test]
+fn a_reinstall_needs_kept_data() {
+    let f = Fixture::new();
+    Connection::open(f.store.path())
+        .unwrap()
+        .execute_batch(
+            "UPDATE app_installations SET active_json=NULL, retained_json=NULL,
+             generation=2, allocated_generation=2 WHERE installation_id='installed'",
+        )
+        .unwrap();
+    let next = release("1.1.0", 0, false, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    assert_eq!(
+        f.store
+            .reserve_app_install("alice", "reinstall", update_input(2), &digest, budget())
+            .unwrap_err(),
+        InstallOperationError::Conflict
+    );
+}

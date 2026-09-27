@@ -145,6 +145,17 @@ pub struct Installation {
     pub active: Option<ActiveGeneration>,
     pub pending_generation: Option<u64>,
     pub admission_paused: bool,
+    /// The last active release of an uninstalled installation whose data is
+    /// kept. A reinstall is an update of it, from the same publisher.
+    pub retained: Option<ActiveGeneration>,
+}
+
+impl Installation {
+    /// The release the installation's data belongs to: the active one, or the
+    /// retained one after an uninstall.
+    pub fn data_release(&self) -> Option<&ActiveGeneration> {
+        self.active.as_ref().or(self.retained.as_ref())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,7 +187,8 @@ impl<'a> InstallationRegistry<'a> {
                 active_json TEXT,
                 pending_generation INTEGER,
                 admission_paused INTEGER NOT NULL DEFAULT 0
-                    CHECK(admission_paused IN (0, 1))
+                    CHECK(admission_paused IN (0, 1)),
+                retained_json TEXT
              );
              CREATE INDEX IF NOT EXISTS app_installations_owner
                 ON app_installations(owner_id, installation_id);
@@ -206,6 +218,16 @@ impl<'a> InstallationRegistry<'a> {
                 PRIMARY KEY(installation_id,generation)
              );",
         )?;
+        let retained: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_installations')
+             WHERE name='retained_json')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !retained {
+            self.connection
+                .execute_batch("ALTER TABLE app_installations ADD COLUMN retained_json TEXT;")?;
+        }
         crate::managed_state::migration::initialize(self.connection)?;
         Ok(())
     }
@@ -260,7 +282,7 @@ impl<'a> InstallationRegistry<'a> {
         }
         let mut statement = self.connection.prepare(
             "SELECT installation_id, app_id, owner_id, generation, active_json,
-                pending_generation, admission_paused FROM app_installations
+                pending_generation, admission_paused, retained_json FROM app_installations
              WHERE owner_id = ?1 AND installation_id > ?2
              ORDER BY installation_id LIMIT ?3",
         )?;
@@ -414,8 +436,9 @@ impl<'a> InstallationRegistry<'a> {
         Ok(record)
     }
 
-    /// Deactivates installation metadata and fences all prior generations.
-    /// Worker stop, grant/token revocation and App data retention are supervisor
+    /// Deactivates installation metadata and fences all prior generations. The
+    /// last release is retained with the data, so a reinstall can update it.
+    /// Worker stop, grant/token revocation and App data deletion are supervisor
     /// responsibilities. User workflow and agent assets are never deleted here.
     pub fn uninstall(
         &mut self,
@@ -437,7 +460,8 @@ impl<'a> InstallationRegistry<'a> {
         }
         let generation = allocate_generation(&transaction, installation_id)?;
         let changed = transaction.execute(
-            "UPDATE app_installations SET generation = ?2, active_json = NULL,
+            "UPDATE app_installations SET generation = ?2,
+                retained_json = COALESCE(active_json, retained_json), active_json = NULL,
                 pending_generation = NULL, admission_paused = 0
              WHERE installation_id = ?1 AND generation = ?3",
             params![
@@ -494,7 +518,7 @@ fn commit_generation(
     };
     let changed = transaction.execute(
         "UPDATE app_installations SET generation = ?2, active_json = ?3,
-             pending_generation = NULL, admission_paused = 0
+             retained_json = NULL, pending_generation = NULL, admission_paused = 0
          WHERE installation_id = ?1 AND generation = ?4 AND pending_generation = ?2",
         params![
             token.installation_id,
@@ -543,9 +567,8 @@ fn stage_release(
         return Err(InstallationError::Invalid("different App identity"));
     }
     if installation
-        .active
-        .as_ref()
-        .is_some_and(|active| active.release.publisher_id != release.publisher_id)
+        .data_release()
+        .is_some_and(|data| data.release.publisher_id != release.publisher_id)
     {
         return Err(InstallationError::Invalid(
             "publisher change requires separate trust migration",
@@ -593,7 +616,7 @@ pub(crate) fn load_installation(connection: &Connection, id: &str) -> Result<Ins
     let row = connection
         .query_row(
             "SELECT app_id, owner_id, generation, active_json, pending_generation,
-            admission_paused FROM app_installations WHERE installation_id = ?1",
+            admission_paused, retained_json FROM app_installations WHERE installation_id = ?1",
             [id],
             |row| stored_installation_row(row, 0),
         )
@@ -602,7 +625,15 @@ pub(crate) fn load_installation(connection: &Connection, id: &str) -> Result<Ins
     installation_from_fields(id, row)
 }
 
-type StoredInstallation = (String, String, i64, Option<String>, Option<i64>, bool);
+type StoredInstallation = (
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<i64>,
+    bool,
+    Option<String>,
+);
 
 fn stored_installation_row(
     row: &rusqlite::Row<'_>,
@@ -615,6 +646,7 @@ fn stored_installation_row(
         row.get(start + 3)?,
         row.get(start + 4)?,
         row.get(start + 5)?,
+        row.get(start + 6)?,
     ))
 }
 
@@ -627,6 +659,7 @@ fn installation_from_fields(id: &str, row: StoredInstallation) -> Result<Install
         active: row.3.map(|json| serde_json::from_str(&json)).transpose()?,
         pending_generation: row.4.map(stored_generation).transpose()?,
         admission_paused: row.5,
+        retained: row.6.map(|json| serde_json::from_str(&json)).transpose()?,
     })
 }
 

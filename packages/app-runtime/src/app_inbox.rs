@@ -318,6 +318,24 @@ pub fn remove_route_in(
     Ok(())
 }
 
+/// An uninstalled App keeps no routes: a reinstall starts with none, and the
+/// owner adds them again.
+pub fn remove_all_routes_in(
+    tx: &Connection,
+    owner_id: &str,
+    installation_id: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "DELETE FROM app_inbox_routes WHERE owner_id=?1 AND installation_id=?2",
+        params![owner_id, installation_id],
+    )?;
+    tx.execute(
+        "DELETE FROM app_inbox WHERE owner_id=?1 AND installation_id=?2",
+        params![owner_id, installation_id],
+    )?;
+    Ok(())
+}
+
 fn route_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxRoute> {
     let generator_id: Option<String> = row.get(7)?;
     Ok(InboxRoute {

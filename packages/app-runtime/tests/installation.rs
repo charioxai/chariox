@@ -421,10 +421,23 @@ fn uninstall_fences_pending_and_active_handles_without_deleting_user_assets() {
         registry.mark_prepared(&token, 10),
         Err(InstallationError::InvalidTransition)
     ));
+    // The release the kept data belongs to stays, for a reinstall.
+    assert_eq!(uninstalled.retained, Some(old));
+    let mut foreign = release(2);
+    foreign.publisher_id = "another-public-key".into();
+    assert!(matches!(
+        registry.stage("todo", uninstalled.generation, foreign, 11),
+        Err(InstallationError::Invalid(_))
+    ));
     let reinstall = registry
         .stage("todo", uninstalled.generation, release(2), 11)
         .unwrap();
     assert!(reinstall.token.generation > uninstalled.generation);
+    prepare(&mut registry, &reinstall.token);
+    registry.commit(&reinstall.token, 12).unwrap();
+    let reinstalled = registry.get("todo").unwrap();
+    assert_eq!(reinstalled.active.unwrap().release, release(2));
+    assert_eq!(reinstalled.retained, None);
     let workflow: String = connection
         .query_row("SELECT id FROM user_workflows", [], |row| row.get(0))
         .unwrap();
@@ -757,4 +770,24 @@ fn owner_pages_are_bounded_stable_and_work_on_read_only_connection() {
     }
     assert!(registry.list("", None, 2).is_err());
     assert!(registry.list("owner", Some("\n"), 2).is_err());
+}
+
+#[test]
+fn an_installation_table_without_retained_releases_gains_the_column() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE app_installations (installation_id TEXT PRIMARY KEY,
+                app_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+                generation INTEGER NOT NULL DEFAULT 0,
+                allocated_generation INTEGER NOT NULL DEFAULT 0, active_json TEXT,
+                pending_generation INTEGER, admission_paused INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO app_installations(installation_id,app_id,owner_id)
+             VALUES('todo','com.chariox.todo','owner');",
+        )
+        .unwrap();
+    let mut registry = InstallationRegistry::new(&mut connection);
+    registry.initialize().unwrap();
+    registry.initialize().unwrap();
+    assert_eq!(registry.get("todo").unwrap().retained, None);
 }

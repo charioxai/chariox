@@ -1795,7 +1795,13 @@ Workflow trigger and deployment direction:
   committed in between returns `conflict` and leaves the App user-stopped. Open
   App views stay on screen but are unbound, so their calls fail. App data, user
   workflows and agents are retained; wakes and events of the inactive
-  installation are refused by the normal start gate.
+  installation are refused by the normal start gate. The installation keeps
+  the release its data belongs to; its automations are disabled and its inbox
+  routes and connection grants removed. `BeginAppUpdate` on such an
+  installation, at its current generation, is a reinstall into the kept data:
+  the same publisher only, no data-schema downgrade, and always a new approval
+  ("Reinstall App"), even for unchanged capabilities. Nothing removed at
+  uninstall comes back; the owner adds automations, routes and grants again.
 - protocol 348 adds `GetAppLogs {installation_id, after_sequence?, limit?}`,
   returning `AppLogs {installation_id, entries}` oldest first (at most 200 per
   page). Entries come from the SDK's `log.write` (level `debug|info|warn|error`,

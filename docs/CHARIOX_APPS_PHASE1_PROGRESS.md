@@ -136,7 +136,7 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 | V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Unverified |
 | V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Unverified |
 | V-PKG-07 | Concurrent operations | Four-client concurrency test. | Unverified |
-| V-PKG-08 | Uninstall and reinstall | Lifecycle drill with all three reference Apps. | Unverified |
+| V-PKG-08 | Uninstall and reinstall | Lifecycle drill with all three reference Apps. | Partial: reinstall into kept data without inherited configuration or approval (#494); delete-data and the live drill pending |
 
 ### Worker containment/lifecycle matrix
 

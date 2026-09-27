@@ -41,6 +41,22 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A reinstall starts unbound: a revocation its uninstall could not finish
+    /// is repeated before the owner is asked to approve it.
+    pub(crate) async fn unbind_if_uninstalled(&self, owner: &str, installation: &str) {
+        let store = self.owned.durable_state_store.clone();
+        let (read_owner, read_installation) = (owner.to_owned(), installation.to_owned());
+        let inactive = tokio::task::spawn_blocking(move || {
+            store
+                .get_app_installation(&read_owner, &read_installation)
+                .map(|value| value.active.is_none())
+        })
+        .await;
+        if matches!(inactive, Ok(Ok(true))) {
+            self.unbind_uninstalled_app(owner, installation).await;
+        }
+    }
+
     /// An uninstalled App is unbound from every agent, which refreshes their
     /// tool catalogs; workflow copies follow the existing grant path.
     pub(crate) async fn unbind_uninstalled_app(&self, owner: &str, installation: &str) {

@@ -237,10 +237,16 @@ impl AppInstallControl {
                 }
                 continue;
             }
-            let (title, question, action) = if prompt.challenge.is_update() {
+            let (title, question, action) = if prompt.challenge.is_reinstall() {
+                ("Reinstall App", "Reinstall this App into its kept data with the declared capabilities? Its earlier automations, inbox routes and connection grants are not restored.", "Reinstall")
+            } else if prompt.challenge.is_update() {
                 ("Update App", "Replace the installed App with this release and its declared capabilities? Its data is kept.", "Update")
             } else {
-                ("Install App", "Install this App with the declared capabilities?", "Install")
+                (
+                    "Install App",
+                    "Install this App with the declared capabilities?",
+                    "Install",
+                )
             };
             let message=format!("{question}\n\n{}\n\nDeclared information sets are shown for review only. This decision does not grant information-set access.",
                 serde_json::to_string_pretty(prompt.challenge.review()).unwrap_or_default());

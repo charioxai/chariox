@@ -168,6 +168,22 @@ impl AppOutbox {
         Ok(broken)
     }
 
+    /// An uninstalled App's automations are disabled with a new revision, so a
+    /// reinstall starts with none running; the owner adds them again.
+    pub fn disable_all_in(
+        tx: &rusqlite::Connection,
+        trusted_owner: &str,
+        installation_id: &str,
+    ) -> rusqlite::Result<()> {
+        tx.execute(
+            "UPDATE app_automations SET status='disabled',revision=revision+1
+             WHERE owner_id=?1 AND installation_id=?2 AND status!='disabled'
+               AND revision<9223372036854775807",
+            params![trusted_owner, installation_id],
+        )?;
+        Ok(())
+    }
+
     /// Revoking a binding needs no still-existing workflow target. Active is
     /// intentionally rejected: reactivation must repeat configure_in and the
     /// kernel's current workflow authorization/target checks.

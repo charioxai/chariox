@@ -8,7 +8,7 @@ use chariox_app_runtime::installation::{
     ActiveGeneration, CapabilityDecision, Installation, InstallationError, InstallationPage,
     InstallationRegistry, ReleaseMetadata, StageToken, UpdateRecord,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::DaemonError;
 
@@ -188,7 +188,7 @@ fn apply(
         &mutation,
         AppRegistryMutation::CreateAndStage { .. } | AppRegistryMutation::Stage { .. }
     ) {
-        super::app_connections::forget_inactive(connection, owner_id, &installation_id)?;
+        forget_uninstalled(connection, owner_id, &installation_id)?;
     }
     let uninstall = matches!(&mutation, AppRegistryMutation::Uninstall { .. });
     let mut registry = InstallationRegistry::new(connection);
@@ -248,15 +248,13 @@ fn apply(
             .uninstall(&installation_id, expected_generation, now_ms)
             .map(AppRegistryOutcome::Installation),
     }?;
-    // The uninstall is committed; a failed cleanup is retried by the next
-    // stage of this installation, so it does not fail the uninstall.
+    // The uninstall is committed; a failed cleanup is repeated when a
+    // reinstall stages, so it does not fail the uninstall.
     if uninstall {
-        if let Err(error) =
-            super::app_connections::forget_inactive(connection, owner_id, &installation_id)
-        {
+        if let Err(error) = forget_uninstalled(connection, owner_id, &installation_id) {
             crate::logging::warn_with_fields(
                 "daemon.apps",
-                "connection grants of an uninstalled App were not removed",
+                "configuration of an uninstalled App was not removed",
                 serde_json::json!({"installation_id": installation_id, "error": error.to_string()}),
             );
         }
@@ -282,4 +280,33 @@ fn validate_owner(owner_id: &str) -> Result<(), InstallationError> {
         return Err(InstallationError::Invalid("owner identity"));
     }
     Ok(())
+}
+
+/// What an active release allowed ends with it: connection grants,
+/// automations and inbox routes. Runs after an uninstall and again when a
+/// reinstall stages, so a reinstall inherits none of them. Only an uninstalled
+/// installation (inactive, keeping the release its data belongs to) is touched.
+pub(crate) fn forget_uninstalled(
+    connection: &Connection,
+    owner_id: &str,
+    installation_id: &str,
+) -> rusqlite::Result<()> {
+    let uninstalled: Option<bool> = connection
+        .query_row(
+            "SELECT active_json IS NULL AND retained_json IS NOT NULL
+             FROM app_installations WHERE installation_id=?1",
+            [installation_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if uninstalled != Some(true) {
+        return Ok(());
+    }
+    super::app_connections::forget_inactive(connection, owner_id, installation_id)?;
+    chariox_app_runtime::app_outbox::AppOutbox::disable_all_in(
+        connection,
+        owner_id,
+        installation_id,
+    )?;
+    chariox_app_runtime::app_inbox::remove_all_routes_in(connection, owner_id, installation_id)
 }
