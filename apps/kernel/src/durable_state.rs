@@ -21,6 +21,9 @@ pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
 pub(crate) mod workflow_runtime;
 
+pub(crate) const QUIESCENCE_STATE_SNAPSHOT_KIND: &str =
+    "managed_kernel.auto_stop_quiescence.changed";
+
 #[derive(Debug, Clone)]
 pub struct DurableKernelStateStore {
     path: PathBuf,
@@ -125,6 +128,12 @@ enum DurableWriteOperation {
         event_id: String,
         kind: String,
         subject_id: Option<String>,
+        timestamp_ms: u64,
+        payload_json: String,
+    },
+    QuiescenceSnapshotEvent {
+        event_id: String,
+        subject_id: String,
         timestamp_ms: u64,
         payload_json: String,
     },
@@ -322,6 +331,34 @@ impl DurableKernelStateStore {
             event_id,
             kind,
             subject_id,
+            timestamp_ms,
+            payload,
+        })
+    }
+
+    pub(crate) fn append_quiescence_snapshot(
+        &self,
+        kernel_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<DurableStateEvent, DaemonError> {
+        let timestamp_ms = unix_epoch_ms();
+        let event_id = format!("state_evt_{timestamp_ms}_{}", rand_suffix());
+        let payload_json =
+            serde_json::to_string(&payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.encode_event",
+                message: error.to_string(),
+            })?;
+        let sequence = self.writer.execute(DurableWriteOperation::QuiescenceSnapshotEvent {
+            event_id: event_id.clone(),
+            subject_id: kernel_id.to_string(),
+            timestamp_ms,
+            payload_json,
+        })?;
+        Ok(DurableStateEvent {
+            sequence,
+            event_id,
+            kind: QUIESCENCE_STATE_SNAPSHOT_KIND.to_string(),
+            subject_id: Some(kernel_id.to_string()),
             timestamp_ms,
             payload,
         })
@@ -1343,6 +1380,37 @@ fn commit_durable_write_batch(
                     ],
                 )
                 .map(|_| transaction.last_insert_rowid().max(0) as u64),
+            DurableWriteOperation::QuiescenceSnapshotEvent {
+                event_id,
+                subject_id,
+                timestamp_ms,
+                payload_json,
+            } => transaction
+                .execute(
+                    "INSERT INTO durable_state_events (
+                        event_id, kind, subject_id, timestamp_ms, payload_json
+                    ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        event_id,
+                        QUIESCENCE_STATE_SNAPSHOT_KIND,
+                        subject_id,
+                        *timestamp_ms as i64,
+                        payload_json
+                    ],
+                )
+                .and_then(|_| {
+                    let sequence = transaction.last_insert_rowid().max(0) as u64;
+                    transaction.execute(
+                        "DELETE FROM durable_state_events
+                         WHERE kind = ?1 AND subject_id = ?2 AND sequence < ?3",
+                        params![
+                            QUIESCENCE_STATE_SNAPSHOT_KIND,
+                            subject_id,
+                            sequence as i64
+                        ],
+                    )?;
+                    Ok(sequence)
+                }),
             DurableWriteOperation::Snapshot {
                 sequence,
                 timestamp_ms,
@@ -1784,6 +1852,10 @@ fn rand_suffix() -> u64 {
     let mut rng = rand::thread_rng();
     rng.next_u64()
 }
+
+#[cfg(test)]
+#[path = "durable_state/quiescence_snapshot_retention_tests.rs"]
+mod quiescence_snapshot_retention_tests;
 
 #[cfg(test)]
 mod tests {

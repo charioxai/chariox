@@ -2,12 +2,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
-use crate::durable_state::DurableKernelStateStore;
+use crate::durable_state::{DurableKernelStateStore, QUIESCENCE_STATE_SNAPSHOT_KIND};
 use crate::error::DaemonError;
 
 use super::managed_activity_persistence::{ManagedActivityObservation, ManagedActivityTransitionState};
 
-const QUIESCENCE_EVENT_KIND: &str = "managed_kernel.auto_stop_quiescence.changed";
+const QUIESCENCE_EVENT_KIND: &str = QUIESCENCE_STATE_SNAPSHOT_KIND;
 const QUIESCENCE_STATE_SCHEMA_VERSION: u8 = 1;
 const MAX_QUIESCENCE_TOMBSTONES: usize = 64;
 
@@ -856,9 +856,9 @@ fn persist_quiescence_state(
     kernel_id: &str,
     state: &PersistedQuiescenceState,
 ) -> Result<(), DaemonError> {
-    store.append_event(
-        QUIESCENCE_EVENT_KIND,
-        Some(kernel_id.to_string()),
+    validate_persisted_state(state, kernel_id)?;
+    store.append_quiescence_snapshot(
+        kernel_id,
         serde_json::to_value(state)
             .map_err(|error| quiescence_error(format!("could not encode durable quiescence state: {error}")))?,
     )?;

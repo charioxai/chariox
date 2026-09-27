@@ -132,6 +132,12 @@ fn restore(
     )
 }
 
+fn current_idle(
+    transitions: &ManagedActivityTransitionState,
+) -> Result<(u64, ManagedActivityObservation), DaemonError> {
+    transitions.current_observation_with_sequence(0)
+}
+
 fn assert_restore_fails_closed(
     store: &DurableKernelStateStore,
     transitions: &ManagedActivityTransitionState,
@@ -493,6 +499,14 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
         .clone();
     assert_eq!(retained.tombstones.len(), MAX_QUIESCENCE_TOMBSTONES);
     assert_eq!(retained.replay_floor.as_ref().unwrap().idle_sequence, cancellation_count as u32);
+    let compacted_snapshots = store
+        .load_subject_events_by_kind("kernel-1", QUIESCENCE_EVENT_KIND, 200)
+        .expect("load compacted quiescence snapshots");
+    assert_eq!(compacted_snapshots.len(), 1);
+    assert_eq!(
+        compacted_snapshots[0].payload["replayFloor"]["idleSequence"],
+        cancellation_count,
+    );
     drop(gate);
 
     let restored = restore(&store, &transitions, &mutation_lock)
@@ -540,16 +554,52 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
         MAX_QUIESCENCE_TOMBSTONES,
     );
 
+    drop(restored);
+    let after_fresh_restart = restore(&store, &transitions, &mutation_lock)
+        .expect("restart loads the compacted snapshot with the latest replay floor");
+    after_fresh_restart
+        .apply_release(
+            &fresh,
+            ManagedKernelQuiescenceOutcome::KeepRunning,
+            1,
+            || Err(quiescence_error("exact release retry must not need activity")),
+        )
+        .expect("exact retained release receipt remains idempotent after compaction and restart");
+
     let mut unrelated_agent_operation_ran = false;
-    restored
+    after_fresh_restart
         .with_open_admission(|| {
             unrelated_agent_operation_ran = true;
             Ok(())
         })
         .expect("released cancellations do not fence unrelated agent operations");
     assert!(unrelated_agent_operation_ran);
-    drop(restored);
+    drop(after_fresh_restart);
     cleanup(&path, store, transitions);
+}
+
+#[test]
+fn malformed_quiescence_snapshot_does_not_prune_the_last_valid_snapshot() {
+    let (path, store, transitions, mutation_lock) =
+        persist_snapshot("malformed-write-preserves-history", &empty_bounded_state());
+    let mut malformed = empty_bounded_state();
+    malformed.kernel_id = "wrong-kernel".into();
+
+    assert!(persist_quiescence_state(&store, "kernel-1", &malformed).is_err());
+    let snapshots = store
+        .load_subject_events_by_kind("kernel-1", QUIESCENCE_EVENT_KIND, 200)
+        .expect("load prior valid quiescence snapshot");
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].payload["kernelId"], "kernel-1");
+    drop(store);
+    drop(transitions);
+    let restarted_store = DurableKernelStateStore::open(path.clone()).expect("restart durable store");
+    let restarted_transitions =
+        ManagedActivityTransitionState::new(restarted_store.clone(), Some("kernel-1".into()));
+    restore(&restarted_store, &restarted_transitions, &mutation_lock)
+        .expect("valid snapshot remains recoverable after rejected malformed write");
+
+    cleanup(&path, restarted_store, restarted_transitions);
 }
 
 #[test]
