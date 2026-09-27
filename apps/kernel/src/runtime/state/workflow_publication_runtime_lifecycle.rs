@@ -445,15 +445,26 @@ async fn stop_disabled_publication_runtimes(runtime_state: &KernelRuntimeState) 
     for publication in disabled {
         let process_key =
             publication_runtime_process_key(publication.session_id(), publication.id());
-        if !matches!(
-            runtime_state
-                .owned
-                .workflow_publication_runtimes
-                .running(&process_key)
-                .await,
-            Ok(Some(_))
-        ) {
-            continue;
+        match runtime_state
+            .owned
+            .workflow_publication_runtimes
+            .running(&process_key)
+            .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => continue,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.publication_runtime",
+                    "failed to inspect disabled publication runtime",
+                    serde_json::json!({
+                        "session_id": publication.session_id(),
+                        "publication_id": publication.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                continue;
+            }
         }
         let result = stop_publication_runtime(runtime_state, &process_key)
             .await
