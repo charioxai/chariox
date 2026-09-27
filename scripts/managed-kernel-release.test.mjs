@@ -51,6 +51,12 @@ function parseUnitSections(source) {
   return sections
 }
 
+function parseNulDelimitedArgvTrace(contents) {
+  const records = contents.toString("utf8").split("\0\0")
+  if (records.at(-1) === "") records.pop()
+  return records.map((record) => record.split("\0"))
+}
+
 test("managed prebuilt slice runtime materializes its runtime output directory", async () => {
   const dockerfile = await readFile(
     join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
@@ -483,17 +489,11 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   assert.match(packagedRootlessService, /CHARIOX_PATH1_DATA_VOLUME_REQUIRED:-0/)
   assert.match(packagedRootlessService, /Path-1 rootless Docker requires its admitted XFS project-quota mount/)
   const brokerContextRoot = join(releaseRoot, "usr/lib/chariox/slice-build-context")
-  const brokerImportClosure = await localEsmImportClosure(
-    brokerContextRoot,
-    "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-  )
-  assert.deepEqual(brokerImportClosure, [
-    "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
-    "apps/kernel/slice-linux-docker/slice-disk-quota-client.mjs",
-    "apps/kernel/slice-linux-docker/slice-disk-quota-contract.mjs",
-  ])
-  for (const modulePath of brokerImportClosure) {
+  const brokerRuntimeEntry = "apps/kernel/slice-linux-docker/managed-docker-broker.mjs"
+  const brokerRuntimeFiles = await localEsmImportClosure(repositoryRoot, brokerRuntimeEntry)
+  const packagedBrokerRuntimeFiles = await localEsmImportClosure(brokerContextRoot, brokerRuntimeEntry)
+  assert.deepEqual(packagedBrokerRuntimeFiles, brokerRuntimeFiles)
+  for (const modulePath of brokerRuntimeFiles) {
     assert.ok(
       packagedPaths.includes(`usr/lib/chariox/slice-build-context/${modulePath}`),
       `broker import dependency is absent from the signed release: ${modulePath}`,
@@ -1473,7 +1473,8 @@ case "$1 $2" in
     [ ! -e "$source/working-tree-only" ]
     grep -F 'FROM scratch AS managed-release-artifacts' "$dockerfile" >/dev/null
     ! grep -F 'working tree drift' "$dockerfile" >/dev/null
-    printf '%s\n' "$*" >> '${trace}'
+    for argument do printf '%s\\000' "$argument" >> '${trace}'; done
+    printf '\\000' >> '${trace}'
     build_ref="$builder_name/node0/fixture-build-$$"
     build_status=completed
     if [ "$builder_name" = fail-builder ]; then build_status=error; fi
@@ -1543,7 +1544,7 @@ esac
   )
   const result = runBuilder(output)
   assert.equal(result.status, 0, result.stderr)
-  const defaultBuildArguments = (await readFile(trace, "utf8")).trim().split("\n")[0].split(" ")
+  const defaultBuildArguments = parseNulDelimitedArgvTrace(await readFile(trace))[0]
   assert.deepEqual(defaultBuildArguments.slice(0, 2), ["buildx", "build"])
   assert.equal(defaultBuildArguments[defaultBuildArguments.indexOf("--builder") + 1], "bounded-release-builder")
   const metadataPathIndex = defaultBuildArguments.indexOf("--metadata-file")
@@ -1605,12 +1606,21 @@ esac
   const namedBuilderOutput = join(root, "builder-output-with-named-builder")
   const namedBuilderResult = runBuilder(namedBuilderOutput, "capped-release-builder")
   assert.equal(namedBuilderResult.status, 0, namedBuilderResult.stderr)
-  const buildInvocations = (await readFile(trace, "utf8")).trim().split("\n")
+  const buildInvocations = parseNulDelimitedArgvTrace(await readFile(trace))
   assert.equal(buildInvocations.length, 2)
-  assert.match(buildInvocations[1], /^buildx build --builder capped-release-builder /)
-  assert.match(buildInvocations[1], /--target managed-release-artifacts/)
-  assert.match(buildInvocations[1], /--output type=local,dest=/)
-  assert.doesNotMatch(buildInvocations[1], /--load|--tag|\brun\b|image inspect/)
+  const namedBuildArguments = buildInvocations[1]
+  assert.deepEqual(
+    namedBuildArguments.slice(0, 2),
+    ["buildx", "build"],
+    "release export must invoke Docker Buildx build rather than docker run or image inspect",
+  )
+  assert.equal(namedBuildArguments.includes("--builder"), true)
+  assert.equal(namedBuildArguments[namedBuildArguments.indexOf("--builder") + 1], "capped-release-builder")
+  assert.equal(namedBuildArguments.includes("--target"), true)
+  assert.equal(namedBuildArguments[namedBuildArguments.indexOf("--target") + 1], "managed-release-artifacts")
+  assert.ok(namedBuildArguments.some((argument) => argument.startsWith("type=local,dest=")))
+  assert.equal(namedBuildArguments.includes("--load"), false)
+  assert.equal(namedBuildArguments.includes("--tag"), false)
 
   const failedOutput = join(root, "builder-output-failure")
   const failed = runBuilder(failedOutput, "fail-builder")
