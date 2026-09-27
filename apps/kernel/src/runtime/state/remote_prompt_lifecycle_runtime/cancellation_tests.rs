@@ -94,6 +94,13 @@ async fn next_peer_request(
         .await
         .unwrap_or_else(|_| panic!("{stage}: fake relay did not receive the peer request"))
         .unwrap_or_else(|| panic!("{stage}: fake relay request channel closed"));
+    decode_peer_request(envelope, worker_private_key)
+}
+
+fn decode_peer_request(
+    envelope: RelayEnvelope,
+    worker_private_key: &str,
+) -> (String, String, RelayPeerRequest) {
     let RelayEnvelope::DaemonPeerRequest {
         request_id,
         target,
@@ -114,6 +121,75 @@ async fn next_peer_request(
     let request =
         serde_json::from_slice(&decrypted.plaintext).expect("fake worker request should decode");
     (request_id, target_id, request)
+}
+
+fn cancellation_successor_state_tags(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    successor_prompt_id: &str,
+) -> String {
+    let session = runtime.owned.session_store.get_session(session_id).ok();
+    let (prompt, _) = session
+        .map(|session| {
+            runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, agent_id)
+        })
+        .unwrap_or_default();
+    let successor_active = prompt
+        .as_ref()
+        .is_some_and(|prompt| prompt.id() == successor_prompt_id);
+    let cancelling = prompt
+        .as_ref()
+        .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling);
+    let phase = prompt
+        .as_ref()
+        .and_then(|prompt| prompt.durable_delivery_phase());
+    let claim_held = runtime
+        .owned
+        .remote_prompt_recoveries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(&(session_id.to_string(), agent_id.to_string()));
+    let dispatch_stages = prompt
+        .as_ref()
+        .filter(|prompt| prompt.id() == successor_prompt_id)
+        .map(|prompt| {
+            super::super::remote_prompt_dispatch_execution_runtime::remote_prompt_dispatch_test_stages(
+                prompt.id(),
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "successor_active={successor_active},active_cancelling={cancelling},active_accepted={},active_dispatching={},active_delivered={},reconciliation_pending={},recovery_claim_held={claim_held},dispatch_stages=[{dispatch_stages}]",
+        phase == Some(crate::session::DurablePromptDeliveryPhase::Accepted),
+        phase == Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+        phase == Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+        prompt.as_ref().is_some_and(|prompt| prompt.durable_delivery_reconciliation_pending()),
+    )
+}
+
+async fn next_successor_peer_request(
+    receiver: &mut mpsc::Receiver<RelayEnvelope>,
+    worker_private_key: &str,
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    successor_prompt_id: &str,
+) -> (String, String, RelayPeerRequest) {
+    let envelope = match tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+        .await
+    {
+        Ok(Some(envelope)) => envelope,
+        Ok(None) => panic!("queued successor dispatch request: fake relay request channel closed"),
+        Err(_) => panic!(
+            "queued successor dispatch request: fake relay did not receive the peer request [{}]",
+            cancellation_successor_state_tags(runtime, session_id, agent_id, successor_prompt_id,)
+        ),
+    };
+    decode_peer_request(envelope, worker_private_key)
 }
 
 async fn acknowledge_peer_request(
@@ -166,6 +242,68 @@ async fn send_temporary_relay_envelope(
         ))
         .await
         .expect("temporary relay envelope should send");
+}
+
+async fn close_temporary_relay_discovery(socket: &mut WebSocketStream<TcpStream>) {
+    let _ = socket.close(None).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        while let Some(message) = socket.next().await {
+            match message {
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+}
+
+async fn serve_worker_metadata_query(listener: TcpListener, worker_public_key: String) {
+    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+        .await
+        .expect("relay should accept worker metadata lookup before timeout")
+        .expect("relay metadata listener should accept");
+    let mut socket = accept_async(stream)
+        .await
+        .expect("relay should upgrade worker metadata lookup");
+    let RelayEnvelope::ClientMetadataRequest {
+        request_id, query, ..
+    } = receive_temporary_relay_envelope(&mut socket).await
+    else {
+        panic!("expected worker metadata lookup");
+    };
+    assert!(matches!(
+        query,
+        chariox_relay::protocol::RelayMetadataQuery::GetLiveKernel { kernel_ref }
+            if kernel_ref == WORKER_ID
+    ));
+    send_temporary_relay_envelope(
+        &mut socket,
+        RelayEnvelope::ClientMetadataResponse {
+            request_id,
+            machines: None,
+            kernels: None,
+            kernel: Some(chariox_relay::protocol::RelayKernelPresence {
+                kernel_id: WORKER_ID.to_string(),
+                machine_id: "worker-machine-cancel-successor".to_string(),
+                machine_alias: None,
+                relay_alias: None,
+                kernel_alias: None,
+                available_providers: Vec::new(),
+                provider_accounts: Vec::new(),
+                capabilities: Vec::new(),
+                accepting_remote_leases: true,
+                leased_agent_count: 0,
+                local_session_count: 0,
+                public_key: worker_public_key,
+            }),
+            error: None,
+        },
+    )
+    .await;
+
+    // Match the production metadata client: finish the WebSocket close handshake
+    // before the fixture releases its discovery connection.
+    close_temporary_relay_discovery(&mut socket).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -279,7 +417,7 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
             },
         )
         .await;
-        drop(discovery);
+        close_temporary_relay_discovery(&mut discovery).await;
 
         let (stream, _) = listener
             .accept()
@@ -377,20 +515,34 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
 
 #[tokio::test]
 async fn direct_settled_cancel_dispatches_queued_successor_once() {
+    let metadata_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("metadata relay listener should bind");
+    let relay_url = format!("ws://{}", metadata_listener.local_addr().unwrap());
     let mut config = crate::config::DaemonConfig::for_tests();
-    config.relay_url = Some(RELAY_URL.to_string());
+    config.relay_url = Some(relay_url.clone());
     config.relay_token = Some("cancel-successor-test-token".to_string());
     config.relay_request_timeout_ms = 2_000;
     let home_public_key = config.relay_public_key.clone();
     let worker_config = crate::config::DaemonConfig::for_tests();
     let worker_private_key = worker_config.relay_private_key.clone();
+    let metadata_server = tokio::spawn(serve_worker_metadata_query(
+        metadata_listener,
+        worker_config.relay_public_key.clone(),
+    ));
 
-    let mut app = crate::app::DaemonApp::bootstrap(config).expect("home app should bootstrap");
+    let mut app = crate::test_support::bootstrap_authenticated_app(config)
+        .expect("home app should bootstrap with an authenticated Codex test profile");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "cancel-successor-workspace",
-            "cancel-successor-worktree",
-        ))
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                "cancel-successor-workspace",
+                "cancel-successor-worktree",
+            )
+            .with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex").with_model("gpt-test"),
+            ),
+        )
         .expect("home session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -466,15 +618,16 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
     let agent_id = agent.id().to_string();
     let attachment_id = attachment.id().to_string();
     let home_prompt_id = active_prompt.id().to_string();
-    let successor_prompt_id = successor_prompt.id().to_string();
+    let queued_successor_prompt_id = successor_prompt.id().to_string();
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let relay_state = Arc::clone(&runtime.owned.relay_state);
     let (outgoing_tx, mut peer_requests, _event_rx) =
         crate::transport::relay_client::RelayOutgoingSender::channel(8);
+    let outgoing_liveness_tx = outgoing_tx.clone();
     {
         let mut relay = relay_state.write().await;
-        relay.test_set_connected_sender(outgoing_tx, RELAY_URL);
+        relay.test_set_connected_sender(outgoing_tx, relay_url.clone());
         relay.remember_peer_public_key(WORKER_ID, worker_config.relay_public_key.clone());
     }
 
@@ -539,18 +692,41 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         .expect("cancellation task should join")
         .expect("settled cancellation should finalize")
         .expect("direct remote cancellation should be handled");
+    metadata_server
+        .await
+        .expect("worker metadata fixture should join");
     assert_eq!(
         cancellation.cancellation.prompt.id(),
         home_prompt_id,
         "settling the worker run must preserve the exact cancelled home prompt"
     );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("home session should remain available after cancellation");
+    let active_successor = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .expect("settling the exact cancellation must promote the queued successor");
+    assert_eq!(active_successor.prompt(), "queued successor");
+    assert_ne!(
+        active_successor.id(),
+        queued_successor_prompt_id,
+        "promotion must use the new active home prompt identity"
+    );
+    let successor_prompt_id = active_successor.id().to_string();
 
     let mut submit_count = 0;
     loop {
-        let (request_id, target_id, request) = next_peer_request(
+        let (request_id, target_id, request) = next_successor_peer_request(
             &mut peer_requests,
             &worker_private_key,
-            "queued successor dispatch request",
+            &runtime,
+            &session_id,
+            &agent_id,
+            &successor_prompt_id,
         )
         .await;
         assert_eq!(target_id, WORKER_ID);
@@ -623,6 +799,27 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                     },
                 )
                 .await;
+            }
+            RelayPeerRequest::DrainLeasedRuntimeProjection {
+                leased_agent_id,
+                provider_run_id,
+                pump_output,
+            } => {
+                assert_eq!(
+                    submit_count, 1,
+                    "the successor projection drain must follow its exact submission ACK"
+                );
+                assert_eq!(leased_agent_id, LEASED_AGENT_ID);
+                assert_eq!(provider_run_id, SUCCESSOR_WORKER_RUN_ID);
+                assert!(pump_output, "successor projection drain should pump output");
+                acknowledge_peer_request(
+                    &relay_state,
+                    request_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                )
+                .await;
                 break;
             }
             other => panic!("unexpected worker request during successor dispatch: {other:?}"),
@@ -665,12 +862,92 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         "the successor ACK should stay bound to its exact worker run"
     );
     assert_eq!(submit_count, 1);
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(300), peer_requests.recv())
-            .await
-            .is_err(),
-        "settled cancellation should neither replay nor submit the successor twice"
-    );
+    {
+        let relay = relay_state.read().await;
+        assert!(
+            relay.connected(),
+            "the fixture relay should remain connected"
+        );
+        assert_eq!(
+            relay.connected_relay_url().as_deref(),
+            Some(relay_url.as_str()),
+            "the duplicate observation must use the same connected relay fixture"
+        );
+        assert!(
+            relay.outgoing_sender().is_some(),
+            "the fixture relay should retain its outgoing sender"
+        );
+    }
+    // Keep the original sender alive so the receiver stays open for the entire observation
+    // window even if the relay state drops its own sender.
+    let duplicate_observation_deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+    loop {
+        let remaining =
+            duplicate_observation_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, peer_requests.recv()).await {
+            Err(_) => break,
+            Ok(None) => panic!(
+                "fixture-owned relay sender did not keep the request channel open"
+            ),
+            Ok(Some(envelope @ RelayEnvelope::DaemonPeerRequest { .. })) => {
+                let (request_id, target_id, request) =
+                    decode_peer_request(envelope, &worker_private_key);
+                assert_eq!(
+                    target_id, WORKER_ID,
+                    "the observation window must preserve the worker target"
+                );
+                match request {
+                    RelayPeerRequest::DrainLeasedRuntimeProjection {
+                        leased_agent_id,
+                        provider_run_id,
+                        pump_output,
+                    } => {
+                        assert_eq!(leased_agent_id, LEASED_AGENT_ID);
+                        assert_eq!(provider_run_id, SUCCESSOR_WORKER_RUN_ID);
+                        assert!(
+                            pump_output,
+                            "successor projection drain should pump output"
+                        );
+                        acknowledge_peer_request(
+                            &relay_state,
+                            request_id,
+                            &worker_private_key,
+                            &home_public_key,
+                            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                        )
+                        .await;
+                    }
+                    other => panic!(
+                        "unexpected worker peer request during the 300 ms duplicate observation window: {other:?}"
+                    ),
+                }
+            }
+            Ok(Some(envelope)) => panic!(
+                "unexpected relay outgoing envelope during the 300 ms duplicate observation window: {envelope:?}"
+            ),
+        }
+    }
+    {
+        let relay = relay_state.read().await;
+        assert!(
+            relay.connected(),
+            "the fixture relay disconnected during duplicate observation"
+        );
+        assert_eq!(
+            relay.connected_relay_url().as_deref(),
+            Some(relay_url.as_str()),
+            "the fixture relay changed during duplicate observation"
+        );
+        assert!(
+            relay.outgoing_sender().is_some(),
+            "the fixture relay dropped its outgoing sender during duplicate observation"
+        );
+    }
+    drop(outgoing_liveness_tx);
 }
 
 #[tokio::test]
@@ -999,7 +1276,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                 worker_provider_run_id: WORKER_RUN_ID.to_string(),
                 phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
                 target_home_prompt_id: None,
-                execution_lease_id: None,
+                execution_lease_id: Some("worker-lease-cancel-ack".to_string()),
             }),
         },
     )

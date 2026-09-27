@@ -50,6 +50,11 @@ mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;
 mod leased_agent_operations;
 mod managed_activity_runtime_state;
+mod managed_kernel_quiescence_state;
+pub(crate) use managed_kernel_quiescence_state::{
+    ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge,
+    ManagedKernelQuiescenceGate, ManagedKernelQuiescenceOutcome,
+};
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
@@ -114,6 +119,9 @@ struct KernelRuntimeOwnedState {
     // Serializes local activity-bearing mutations with their durable observation. Callers must
     // release this boundary before async or provider I/O.
     managed_activity_mutation_lock: Arc<std::sync::Mutex<()>>,
+    managed_kernel_quiescence: Option<Arc<ManagedKernelQuiescenceGate>>,
+    managed_kernel_quiescence_client:
+        Option<crate::runtime::managed_kernel_quiescence::ManagedKernelQuiescenceClient>,
     #[cfg(test)]
     managed_activity_before_record_pause: Arc<
         std::sync::Mutex<Option<managed_activity_runtime_state::ManagedActivityRecordPause>>,
@@ -122,6 +130,8 @@ struct KernelRuntimeOwnedState {
     managed_activity_next_lock_probe: Arc<
         std::sync::Mutex<Option<managed_activity_runtime_state::ManagedActivityLockProbe>>,
     >,
+    #[cfg(test)]
+    managed_activity_record_calls: Arc<std::sync::atomic::AtomicU64>,
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
@@ -163,8 +173,8 @@ struct KernelRuntimeOwnedState {
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     remote_prompt_projection_drains:
-        Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
-    remote_prompt_recoveries: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
+        remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
+    remote_prompt_recoveries: remote_prompt_claim_runtime::RemotePromptRecoveryClaimStore,
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
@@ -318,6 +328,8 @@ mod remote_prompt_projection_drain_runtime;
 mod remote_prompt_receipt_reconciliation_runtime;
 mod remote_prompt_worker_submission_runtime;
 mod remote_provider_failure_runtime;
+#[cfg(test)]
+mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
@@ -498,7 +510,7 @@ impl KernelRuntimeState {
             relay_state,
             legacy_workflow_history,
             agent_runtime_projection,
-            has_managed_kernel_registration,
+            managed_kernel_registration,
         ) = {
             let started = Instant::now();
             loop {
@@ -510,7 +522,7 @@ impl KernelRuntimeState {
                         app.relay_client_state(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
-                        app.managed_kernel_registration().is_some(),
+                        app.managed_kernel_registration(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -546,7 +558,7 @@ impl KernelRuntimeState {
                 &durable_state_store,
             );
         let config = config_projection.snapshot();
-        let managed_activity_kernel_id = (has_managed_kernel_registration
+        let managed_activity_kernel_id = (managed_kernel_registration.is_some()
             || (config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
                 && std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
                     .filter(|value| !value.is_empty())
@@ -556,8 +568,56 @@ impl KernelRuntimeState {
         let managed_activity_transitions =
             managed_activity_persistence::ManagedActivityTransitionState::new(
                 durable_state_store.clone(),
-                managed_activity_kernel_id,
+                managed_activity_kernel_id.clone(),
             );
+        let managed_activity_mutation_lock = Arc::new(std::sync::Mutex::new(()));
+        let managed_kernel_quiescence = managed_kernel_registration.as_ref().map(|_| {
+            let kernel_id = config.daemon_id.clone();
+            match ManagedKernelQuiescenceGate::restore(
+                durable_state_store.clone(),
+                kernel_id.clone(),
+                Arc::clone(&managed_activity_mutation_lock),
+                managed_activity_transitions.clone(),
+            ) {
+                Ok(gate) => gate,
+                Err(error) => {
+                    crate::logging::error_with_fields(
+                        "managed_kernel.auto_stop_quiescence",
+                        "durable provider admission fence could not be restored; admissions are closed",
+                        serde_json::json!({
+                            "kernel_id": kernel_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    ManagedKernelQuiescenceGate::unavailable(
+                        durable_state_store.clone(),
+                        kernel_id,
+                        Arc::clone(&managed_activity_mutation_lock),
+                        managed_activity_transitions.clone(),
+                        error.to_string(),
+                    )
+                }
+            }
+        });
+        let managed_kernel_quiescence_client =
+            match crate::runtime::managed_kernel_quiescence::ManagedKernelQuiescenceClient::from_runtime(
+                &config,
+                managed_kernel_registration.as_ref(),
+            ) {
+                Ok(client) => client,
+                Err(error) => {
+                    crate::logging::error_with_fields(
+                        "managed_kernel.auto_stop_quiescence",
+                        "managed kernel quiescence transport is unavailable",
+                        serde_json::json!({
+                            "kernel_id": config.daemon_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    None
+                }
+            };
+        provider_store.set_managed_kernel_admission_gate(managed_kernel_quiescence.clone());
         let runtime = Self {
             app,
             provider_runtime_lanes,
@@ -600,11 +660,15 @@ impl KernelRuntimeState {
                     ),
                 durable_state_store,
                 managed_activity_transitions,
-                managed_activity_mutation_lock: Arc::new(std::sync::Mutex::new(())),
+                managed_activity_mutation_lock,
+                managed_kernel_quiescence,
+                managed_kernel_quiescence_client,
                 #[cfg(test)]
                 managed_activity_before_record_pause: Arc::new(std::sync::Mutex::new(None)),
                 #[cfg(test)]
                 managed_activity_next_lock_probe: Arc::new(std::sync::Mutex::new(None)),
+                #[cfg(test)]
+                managed_activity_record_calls: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 legacy_workflow_history,
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),

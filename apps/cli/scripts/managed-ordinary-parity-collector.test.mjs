@@ -1,16 +1,27 @@
 import assert from "node:assert/strict"
+import { once } from "node:events"
 import { createHash } from "node:crypto"
-import { test } from "node:test"
+import { unlink } from "node:fs/promises"
+import { createServer } from "node:net"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { after, before, test } from "node:test"
 
 import {
   createParityCollector,
   defaultRunCommand,
 } from "./managed-ordinary-parity-collector.mjs"
 import {
+  CAPTURE_PROVENANCE_SCHEMA,
   SHUTDOWN_EXPECTATIONS,
+  MATRIX_SCHEMA,
   compareManifests,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
+import {
+  PROJECT_SETUP_PROOF_SCHEMA,
+  projectSetupTargetIdentityDigest,
+} from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 const SIGNING_KEY = Buffer.from("managed-ordinary-parity-collector-fixture-key-20260920")
 const REVIEWED_COMMIT = "d1e925f2b3e318b66160d65cac05973409c99b68"
@@ -27,17 +38,173 @@ const KERNEL_RELEASE_ROOT = "/release/rootfs"
 const KERNEL_BINARY = `${KERNEL_RELEASE_ROOT}/usr/local/bin/chariox-kernel`
 const KERNEL_RELEASE_PUBLIC_KEY = "/release/trusted-release-public-key"
 const KERNEL_BUILDER_PUBLIC_KEY = "/release/trusted-builder-public-key"
+const LIVE_KERNEL_PID = 43210
+const LIVE_KERNEL_SOCKET_INODE = "880042"
+const LIVE_KERNEL_SOCKET = join(tmpdir(), `chariox-managed-ordinary-parity-${process.pid}.sock`)
+const LIVE_KERNEL_IDENTITY = Object.freeze({ kernel_id: "kernel-current", machine_id: "machine-current" })
+const CAPTURE_PROVENANCE = Object.freeze({
+  schema: CAPTURE_PROVENANCE_SCHEMA,
+  boundary: "official-provider-turn",
+  observed: true,
+  kernel_identity: { ...LIVE_KERNEL_IDENTITY, transport: "local-unix-ipc" },
+  session_id: "session-owned",
+  agent_id: "agent-owned",
+  attachment_id: "attachment-owned",
+  prompt_id: "prompt-owned",
+  prompt_origin: "chariox",
+  prompt_status: "running",
+  prompt_phase_start: "streaming",
+  prompt_phase_end: "streaming",
+  provider: {
+    provider_run_id: "provider-run-owned",
+    name: "codex",
+    status: "Running",
+    process_status: "active",
+  },
+  process: {
+    pid: 201,
+    linux_boot_id: "b4a8b0e7-0f5b-4fd8-bcd9-ccc1e8b3c5ac",
+    start_time_ticks: "7001",
+    ancestry_depth: 2,
+    executable_basename: "codex",
+    executable_path_sha256: `sha256:${"1".repeat(64)}`,
+    executable_sha256: `sha256:${"2".repeat(64)}`,
+    command_line_sha256: `sha256:${"3".repeat(64)}`,
+    current_working_directory_sha256: `sha256:${"4".repeat(64)}`,
+    launch_program_basename: "codex",
+    launch_program_sha256: `sha256:${"5".repeat(64)}`,
+    launch_arguments_sha256: `sha256:${"6".repeat(64)}`,
+    launch_working_directory_sha256: `sha256:${"7".repeat(64)}`,
+  },
+})
+
+function frame(payload) {
+  const bytes = Buffer.from(JSON.stringify(payload), "utf8")
+  const header = Buffer.allocUnsafe(4)
+  header.writeUInt32BE(bytes.length, 0)
+  return Buffer.concat([header, bytes])
+}
+
+let liveKernelServer
+
+before(async () => {
+  await unlink(LIVE_KERNEL_SOCKET).catch((error) => {
+    if (error?.code !== "ENOENT") throw error
+  })
+  liveKernelServer = createServer((socket) => {
+    let request = Buffer.alloc(0)
+    socket.on("data", (chunk) => {
+      request = Buffer.concat([request, chunk])
+      if (request.length < 4) return
+      const length = request.readUInt32BE(0)
+      if (request.length < length + 4) return
+      socket.end(frame({
+        response: {
+          RelayStatus: {
+            status: { daemon_id: LIVE_KERNEL_IDENTITY.kernel_id, machine_id: LIVE_KERNEL_IDENTITY.machine_id },
+          },
+        },
+        error: null,
+      }))
+    })
+  })
+  liveKernelServer.listen(LIVE_KERNEL_SOCKET)
+  await once(liveKernelServer, "listening")
+})
+
+after(async () => {
+  if (liveKernelServer?.listening) {
+    await new Promise((resolve, reject) => liveKernelServer.close((error) => error ? reject(error) : resolve()))
+  }
+  await unlink(LIVE_KERNEL_SOCKET).catch((error) => {
+    if (error?.code !== "ENOENT") throw error
+  })
+})
+
+function procStat(pid, startTime = 123456) {
+  const fields = ["S", "1", ...Array(17).fill("0"), String(startTime)]
+  return `${pid} (chariox-kernel fixture) ${fields.join(" ")}\n`
+}
+
+// A production-shaped result fixture exercises the live observer schema. It
+// models the probe response shape and does not claim that this test contacted a kernel.
+function projectSetupFingerprint(value) {
+  return `sha256:${createHash("sha256").update(String(value), "utf8").digest("hex")}`
+}
+
+function projectSetupProofFixture(overrides = {}, topology = "ordinary") {
+  const suffix = topology === "ordinary" ? "ordinary" : "path1"
+  const workerIdentity = projectSetupFingerprint(`${suffix}-worker`)
+  const workerKernelIdentity = projectSetupFingerprint(`${suffix}-worker-kernel`)
+  const platform = "linux-x86_64"
+  const timestamp = 1_790_000_000_000 + (topology === "ordinary" ? 0 : 10_000)
+  const snapshotDigest = projectSetupFingerprint(`${suffix}-snapshot`)
+  return {
+    schema: PROJECT_SETUP_PROOF_SCHEMA,
+    product_api_observation: "kernel-public-api",
+    ready_validation_verified: true,
+    status_fresh: true,
+    before_after_identity_stable: true,
+    home_kernel_identity_fingerprint: projectSetupFingerprint(`${LIVE_KERNEL_IDENTITY.kernel_id}\0${LIVE_KERNEL_IDENTITY.machine_id}`),
+    session_identity_fingerprint: projectSetupFingerprint(CAPTURE_PROVENANCE.session_id),
+    agent_identity_fingerprint: projectSetupFingerprint(CAPTURE_PROVENANCE.agent_id),
+    project_identity_fingerprint: projectSetupFingerprint(`${suffix}-project`),
+    operation_identity_fingerprint: projectSetupFingerprint(`${suffix}-operation`),
+    operation_attempt: topology === "ordinary" ? 1 : 2,
+    operation_created_at_ms: timestamp,
+    status_updated_at_ms: timestamp + 500,
+    observation_started_at_ms: timestamp + 600,
+    observation_finished_at_ms: timestamp + 700,
+    worker_identity_fingerprint: workerIdentity,
+    worker_kernel_identity_fingerprint: workerKernelIdentity,
+    target_identity_digest: projectSetupTargetIdentityDigest(workerIdentity, workerKernelIdentity, platform),
+    platform,
+    definition_digest: `sha256:${"8".repeat(64)}`,
+    definition_origin: "utility_generated",
+    definition_source: "commands",
+    definition_identity_verified: true,
+    validation_command_count: 1,
+    validation_receipts: [{
+      command_digest: `sha256:${"9".repeat(64)}`,
+      exit_code: 0,
+      stdout_bytes: topology === "ordinary" ? 1 : 19,
+      stderr_bytes: topology === "ordinary" ? 0 : 3,
+    }],
+    before_snapshot_digest: snapshotDigest,
+    after_snapshot_digest: snapshotDigest,
+    transport_kind: topology === "ordinary" ? "relay" : "kernel-public-api",
+    endpoint_fingerprint: projectSetupFingerprint(`${suffix}-endpoint`),
+    ...overrides,
+  }
+}
 
 function memoryFilesystem() {
   const files = new Map()
   const directories = new Set(["/repo"])
+  directories.add(`/proc/${LIVE_KERNEL_PID}/fd`)
   return {
     files,
     directories,
     async mkdir(directory) { directories.add(directory) },
     async readFile(file) {
+      if (file === "/proc/net/unix") {
+        return `Num RefCount Protocol Flags Type St Inode Path\n0000000000000000: 00000002 00000000 00010000 0001 01 ${LIVE_KERNEL_SOCKET_INODE} ${LIVE_KERNEL_SOCKET}\n`
+      }
+      if (file === "/proc/sys/kernel/random/boot_id") return "7a2b9ea4-cd3d-4bc2-9b36-46cba658217a\n"
+      if (file === `/proc/${LIVE_KERNEL_PID}/stat`) return procStat(LIVE_KERNEL_PID)
+      if (file === `/proc/${LIVE_KERNEL_PID}/exe`) return KERNEL_BYTES
       if (!files.has(file)) throw Object.assign(new Error(`missing fixture file ${file}`), { code: "ENOENT" })
       return files.get(file)
+    },
+    async readdir(directory) {
+      if (directory === "/proc") return [String(LIVE_KERNEL_PID)]
+      if (directory === `/proc/${LIVE_KERNEL_PID}/fd`) return ["3"]
+      throw Object.assign(new Error(`missing fixture directory ${directory}`), { code: "ENOENT" })
+    },
+    async readlink(file) {
+      if (file === `/proc/${LIVE_KERNEL_PID}/exe`) return KERNEL_BINARY
+      if (file === `/proc/${LIVE_KERNEL_PID}/fd/3`) return `socket:[${LIVE_KERNEL_SOCKET_INODE}]`
+      throw Object.assign(new Error(`missing fixture link ${file}`), { code: "ENOENT" })
     },
     async realpath(file) {
       if (directories.has(file)) return file
@@ -63,7 +230,20 @@ function genericResult(rowId, checkId, topology) {
     return { observed: true, official: true, provider_name: "codex", executable_matches: true }
   }
   if (rowId === "MP-10" && checkId === "capture_boundary") {
-    return { observed: true, boundary: "official-provider-turn", inside_provider_turn: true, independent: true }
+    return {
+      observed: true,
+      boundary: "official-provider-turn",
+      inside_provider_turn: true,
+      independent: true,
+      capture_provenance: CAPTURE_PROVENANCE,
+    }
+  }
+  if (rowId === "MP-08" && checkId === "project_setup") {
+    return {
+      observed: true,
+      project_setup_ok: true,
+      project_setup_proof: projectSetupProofFixture({}, topology),
+    }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
     return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true, ancestry_complete: true }
@@ -139,7 +319,6 @@ function genericResult(rowId, checkId, topology) {
     "MP-08/session_agent_launch": { session_created: true, agent_created: true, official_command: true },
     "MP-08/terminal_file_git": { terminal_ok: true, file_ok: true, git_ok: true },
     "MP-08/attachments_permissions_capabilities": { attachments_ok: true, permissions_ok: true, capabilities_ok: true },
-    "MP-08/project_setup": { project_setup_ok: true },
     "MP-08/reconnect_orphan_recovery": { reconnect_ok: true, orphan_recovered: true },
     "MP-08/restart_recovery": { restart_recovered: true },
     "MP-08/reconnect_history_result_identity": { history_preserved: true, result_identity_preserved: true },
@@ -202,11 +381,41 @@ function makeHarness(topology, overrides = {}) {
     const overridden = overrides.command ? await overrides.command(command, args, defaultCommand) : undefined
     return overridden ?? defaultCommand(command, args)
   }
+  const providerTurnBindingFactory = overrides.providerTurnBindingFactory ?? (async ({ expectedProvider, expectedBoundary }) => {
+    assert.equal(expectedProvider, "codex")
+    assert.equal(expectedBoundary, "official-provider-turn")
+    return {
+      socketPath: LIVE_KERNEL_SOCKET,
+      kernelIdentity: { ...LIVE_KERNEL_IDENTITY, transport: "local-unix-ipc" },
+      initialProof: CAPTURE_PROVENANCE,
+      async finish() { return CAPTURE_PROVENANCE },
+    }
+  })
   const collector = createParityCollector({
     filesystem,
     runCommand,
     clock,
-    processApi: { platform: "linux", pid: 77, cwd: () => processCwd },
+    providerTurnBindingFactory,
+    processApi: {
+      platform: "linux",
+      pid: 77,
+      cwd: () => processCwd,
+      env: {
+        CHARIOX_DAEMON_SOCKET: LIVE_KERNEL_SOCKET,
+        CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON: JSON.stringify({
+          observed: false,
+          boundary: "remote-command",
+          inside_provider_turn: false,
+          independent: false,
+          kernel_identity: {
+            observed: false,
+            kernel_id: "caller-stale-kernel",
+            machine_id: "caller-stale-machine",
+            transport: "remote",
+          },
+        }),
+      },
+    },
   })
   const options = {
     topology,
@@ -247,7 +456,99 @@ test("collects a real-command ordinary snapshot and validates all required rows"
     signingKey: SIGNING_KEY,
   }).ok, true)
   assert.equal(calls.some(([command, args]) => command === process.execPath && args[0].endsWith("managed-ordinary-parity-probe.mjs") && args.includes("session_agent_launch")), true)
+  const sourceIdentity = manifest.rows["MP-10"].checks.source_protocol_identity
+  const bindingPath = sourceIdentity.evidence_refs.find((reference) => reference.endsWith("live-kernel-binding.json"))
+  assert.ok(bindingPath)
+  const binding = JSON.parse(filesystem.files.get(bindingPath))
+  assert.equal(binding.schema, "chariox.managed-ordinary-live-kernel-binding/v1")
+  assert.equal(binding.observed, true)
+  assert.equal(binding.observed_kernel.kernel_id, LIVE_KERNEL_IDENTITY.kernel_id)
+  assert.equal(binding.transport.kind, "local-unix-ipc")
+  assert.equal(binding.kernel_process.executable_sha256, KERNEL_DIGEST)
+  assert.equal(binding.stable_across_capture, true)
   assert.ok(filesystem.files.size > 30)
+})
+
+test("MP-08 production-shaped Project setup proof fixture roundtrips through collection and matrix validation", async () => {
+  const manifests = {}
+  for (const topology of ["ordinary", "path1"]) {
+    const { manifest } = await collect(topology)
+    manifests[topology] = manifest
+    const check = manifest.rows["MP-08"].checks.project_setup
+    assert.equal(manifest.schema, MATRIX_SCHEMA)
+    assert.equal(check.status, "pass")
+    assert.equal(check.result.project_setup_ok, true)
+    assert.equal(check.result.project_setup_proof.schema, PROJECT_SETUP_PROOF_SCHEMA)
+    assert.equal(check.result.project_setup_proof.product_api_observation, "kernel-public-api")
+    assert.equal(validateManifest(manifest, {
+      expectedTopology: topology,
+      expectedReviewedCommit: REVIEWED_COMMIT,
+      expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY,
+    }).ok, true)
+  }
+  const ordinaryProof = manifests.ordinary.rows["MP-08"].checks.project_setup.result.project_setup_proof
+  const path1Proof = manifests.path1.rows["MP-08"].checks.project_setup.result.project_setup_proof
+  assert.notEqual(ordinaryProof.operation_identity_fingerprint, path1Proof.operation_identity_fingerprint)
+  assert.notEqual(ordinaryProof.endpoint_fingerprint, path1Proof.endpoint_fingerprint)
+  assert.notEqual(ordinaryProof.before_snapshot_digest, path1Proof.before_snapshot_digest)
+  assert.notEqual(ordinaryProof.validation_receipts[0].stdout_bytes, path1Proof.validation_receipts[0].stdout_bytes)
+  const report = compareManifests(manifests.ordinary, manifests.path1, {
+    expectedReviewedCommit: REVIEWED_COMMIT,
+    expectedBuildId: BUILD_ID,
+    signingKey: SIGNING_KEY,
+  })
+  assert.equal(report.status, "pass", JSON.stringify(report, null, 2))
+})
+
+test("collector rejects injected or legacy Project setup assertions", async (context) => {
+  const variants = [
+    {
+      name: "injected observer transport",
+      result: {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture({ product_api_observation: "injected-test-transport" }),
+      },
+    },
+    {
+      name: "legacy boolean only",
+      result: { observed: true, project_setup_ok: true },
+    },
+    {
+      name: "mismatched target digest",
+      result: {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture({ target_identity_digest: `sha256:${"c".repeat(64)}` }),
+      },
+      errorCode: "project_setup_proof_invalid",
+    },
+    {
+      name: "proof identity belongs to a different provider-turn capture",
+      result: {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture({
+          session_identity_fingerprint: projectSetupFingerprint("different-session"),
+        }),
+      },
+      errorCode: "project_setup_capture_identity_mismatch",
+    },
+  ]
+  for (const variant of variants) {
+    await context.test(variant.name, async () => {
+      const harness = makeHarness("ordinary", {
+        results: { "MP-08/project_setup": variant.result },
+      })
+      await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+        assert.equal(error.code, variant.errorCode ?? "project_setup_proof_invalid")
+        assert.equal(error.rowId, "MP-08")
+        assert.equal(error.checkId, "project_setup")
+        return true
+      })
+    })
+  }
 })
 
 test("collects a fresh Path-1 managed snapshot and the comparator accepts ordinary-versus-managed parity", async () => {
@@ -447,6 +748,47 @@ test("forged caller pass values and forged probe status are ignored", async () =
   })
 })
 
+test("MP-10 caller boundary booleans without kernel provider-turn provenance fail closed", async () => {
+  const harness = makeHarness("ordinary", {
+    results: {
+      "MP-10/capture_boundary": {
+        observed: true,
+        boundary: "official-provider-turn",
+        inside_provider_turn: true,
+        independent: true,
+      },
+    },
+  })
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "capture_provenance_missing")
+    return true
+  })
+})
+
+test("collector rejects a probe proof for a different prompt than its capture binding", async () => {
+  const harness = makeHarness("ordinary", {
+    providerTurnBindingFactory: async () => ({
+      socketPath: LIVE_KERNEL_SOCKET,
+      kernelIdentity: { ...LIVE_KERNEL_IDENTITY, transport: "local-unix-ipc" },
+      initialProof: CAPTURE_PROVENANCE,
+      async finish() { return { ...CAPTURE_PROVENANCE, prompt_id: "prompt-foreign" } },
+    }),
+  })
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "capture_provenance_mismatch")
+    return true
+  })
+})
+
+test("remote-command capture boundary is rejected without its own authority", async () => {
+  const harness = makeHarness("ordinary")
+  harness.options.boundary = "remote-command"
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "capture_boundary_invalid")
+    return true
+  })
+})
+
 test("caller-supplied probe executables are rejected before collection", async () => {
   const harness = makeHarness("ordinary")
   harness.options.probeCommand = "/tmp/fake-probe"
@@ -529,12 +871,22 @@ test("partial cleanup is rejected instead of becoming an MP-08 pass", async () =
 test("evidence output is deterministic and redacts credentials", async () => {
   const first = makeHarness("ordinary", {
     results: {
-      "MP-08/project_setup": { observed: true, project_setup_ok: true, token: "supersecret-token" },
+      "MP-08/project_setup": {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture(),
+        token: "supersecret-token",
+      },
     },
   })
   const second = makeHarness("ordinary", {
     results: {
-      "MP-08/project_setup": { observed: true, project_setup_ok: true, token: "supersecret-token" },
+      "MP-08/project_setup": {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture(),
+        token: "supersecret-token",
+      },
     },
   })
   await first.collector.collect(first.options)

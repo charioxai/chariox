@@ -10,6 +10,7 @@ const upgradeSource = await readFile(new URL("./upgrade-image.sh", import.meta.u
 const prepareSource = await readFile(new URL("./prepare-hetzner-image.sh", import.meta.url), "utf8")
 const path1Service = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
 const disposableWorkerService = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
+const providerPathSource = await readFile(new URL("../../apps/kernel/src/managed_bootstrap/provider_path.rs", import.meta.url), "utf8")
 const providerResolverSources = await Promise.all(["codex", "claude", "opencode"].map((provider) =>
   readFile(new URL(`../../apps/kernel/src/provider/${provider}.rs`, import.meta.url), "utf8")))
 const upgradeStateScript = new URL("./managed-kernel-upgrade-state.mjs", import.meta.url)
@@ -26,14 +27,16 @@ function sourceFunction(source, name, nextName) {
   return source.slice(start, end)
 }
 
-test("Path-1 service starts use the current login PATH for tool lookup across restarts", async (context) => {
+test("Path-1 services keep bootstrap PATH while provider lookup uses the isolated login PATH resolver", () => {
+  const bootstrapPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   const units = [
-    [path1Service, "exec /usr/local/bin/chariox-managed-bootstrap"],
-    [disposableWorkerService, "exec /usr/local/bin/chariox-managed-bootstrap --disposable-worker"],
+    [path1Service, "/usr/local/bin/chariox-managed-bootstrap"],
+    [disposableWorkerService, "/usr/local/bin/chariox-managed-bootstrap --disposable-worker"],
   ]
   for (const [unit, command] of units) {
-    assert.doesNotMatch(unit, /^Environment=PATH=/m, "Path-1 must not pin a fixed executable search path")
-    assert.ok(unit.includes(`ExecStart=/bin/bash --login -c '${command}'`))
+    assert.ok(unit.includes(`Environment=PATH=${bootstrapPath}`), "bootstrap PATH must remain system-owned")
+    assert.ok(unit.includes(`ExecStart=${command}`), "service must launch the trusted bootstrap directly")
+    assert.doesNotMatch(unit, /^ExecStart=.*bash --login/m)
   }
 
   const [codex, claude, opencode] = providerResolverSources
@@ -43,59 +46,9 @@ test("Path-1 service starts use the current login PATH for tool lookup across re
     /for directory in env::split_paths\(&path_var\)/)
   assert.match(sourceFunction(opencode, "resolve_candidate", "is_executable_file"),
     /env::split_paths\(&path_var\)[\s\S]*?\.find\(\|path\| is_executable_file\(path\)\)/)
-
-  const scratch = await mkdtemp(join(tmpdir(), "chariox-path1-provider-path-"))
-  context.after(() => rm(scratch, { recursive: true, force: true }))
-  const home = join(scratch, "home")
-  const profileBinA = join(home, "toolchain-a", "bin")
-  const profileBinB = join(home, "toolchain-b", "bin")
-  const userBin = join(home, ".local", "bin")
-  const profileProviderBin = join(home, "profile-provider-bin")
-  await Promise.all([home, profileBinA, profileBinB, userBin, profileProviderBin].map((directory) =>
-    mkdir(directory, { recursive: true })))
-
-  const executable = "#!/bin/sh\nexit 0\n"
-  await Promise.all([
-    writeFile(join(profileBinA, "path1-profile-tool"), executable, { mode: 0o755 }),
-    writeFile(join(profileBinB, "path1-profile-tool"), executable, { mode: 0o755 }),
-    writeFile(join(userBin, "codex"), executable, { mode: 0o755 }),
-    writeFile(join(userBin, "claude"), executable, { mode: 0o755 }),
-    writeFile(join(profileProviderBin, "opencode"), executable, { mode: 0o755 }),
-  ])
-
-  const servicePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-  const launchFromCurrentProfile = () => spawnSync("/bin/bash", [
-    "--login",
-    "-c",
-    "set -eu; command -v path1-profile-tool; command -v codex; command -v claude; command -v opencode",
-  ], {
-    encoding: "utf8",
-    env: { HOME: home, PATH: servicePath },
-  })
-  const writeProfile = (profileBin) => writeFile(join(home, ".profile"),
-    `PATH="$HOME/${profileBin.slice(home.length + 1)}:$HOME/.local/bin:$HOME/profile-provider-bin:$PATH"\nexport PATH\n`)
-
-  // Each invocation is the actual service-launch shell shape. A new launch
-  // rereads the user's profile, just as a systemd restart does.
-  await writeProfile(profileBinA)
-  const first = launchFromCurrentProfile()
-  assert.equal(first.status, 0, first.stderr)
-  assert.deepEqual(first.stdout.trim().split(/\r?\n/), [
-    join(profileBinA, "path1-profile-tool"),
-    join(userBin, "codex"),
-    join(userBin, "claude"),
-    join(profileProviderBin, "opencode"),
-  ])
-
-  await writeProfile(profileBinB)
-  const restarted = launchFromCurrentProfile()
-  assert.equal(restarted.status, 0, restarted.stderr)
-  assert.deepEqual(restarted.stdout.trim().split(/\r?\n/), [
-    join(profileBinB, "path1-profile-tool"),
-    join(userBin, "codex"),
-    join(userBin, "claude"),
-    join(profileProviderBin, "opencode"),
-  ])
+  assert.ok(providerPathSource.includes(".env_clear()"), "login profile probe must start with a cleared environment")
+  assert.ok(providerPathSource.includes('.env("PATH", BOOTSTRAP_PATH)'), "probe starts from the system bootstrap PATH")
+  assert.ok(providerPathSource.includes("Only the validated PATH string crosses back"))
 })
 
 test("Path-1 role units do not inherit shared-host provider sandbox controls", () => {
@@ -332,21 +285,57 @@ test("Path-1 upgrade checks both effective units before recovery and after reloa
   const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-test-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
   const systemctl = join(scratch, "systemctl")
-  await writeFile(systemctl, '#!/bin/sh\ncase "$*" in\n  *chariox-disposable-worker-bootstrap.service) printf "%s" "${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;\n  *) printf "%s" "${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;\nesac\n')
+  await writeFile(systemctl, `#!/bin/sh
+[ "$#" -eq 4 ] && [ "$1" = show ] && [ "$3" = --value ] || exit 2
+case "$4" in
+  chariox-path1-managed-bootstrap.service)
+    reload=\${SYSTEMD_HOME_NEED_DAEMON_RELOAD:-no}
+    reload_error=\${SYSTEMD_HOME_RELOAD_QUERY_FAIL:-}
+    drop_ins=\${SYSTEMD_HOME_DROP_IN_PATHS:-}
+    drop_ins_error=\${SYSTEMD_HOME_DROP_INS_QUERY_FAIL:-}
+    ;;
+  chariox-disposable-worker-bootstrap.service)
+    reload=\${SYSTEMD_WORKER_NEED_DAEMON_RELOAD:-no}
+    reload_error=\${SYSTEMD_WORKER_RELOAD_QUERY_FAIL:-}
+    drop_ins=\${SYSTEMD_WORKER_DROP_IN_PATHS:-}
+    drop_ins_error=\${SYSTEMD_WORKER_DROP_INS_QUERY_FAIL:-}
+    ;;
+  *) exit 2 ;;
+esac
+case "$2" in
+  --property=NeedDaemonReload)
+    [ "$reload_error" != 1 ] || exit 1
+    printf '%s\\n' "$reload"
+    ;;
+  --property=DropInPaths)
+    [ "$drop_ins_error" != 1 ] || exit 1
+    printf '%s\\n' "$drop_ins"
+    ;;
+  *) exit 2 ;;
+esac
+`)
   await chmod(systemctl, 0o755)
   const command = `${guard}\nassert_path1_units_have_no_dropins\n`
   const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}`, managed_provider_topology: "path1" }
-  for (const [name, home, worker, expectedExit] of [
-    ["clean", "", "", 0],
-    ["home drop-in", "/etc/systemd/system/home.d/50-hardening.conf", "", 1],
-    ["worker drop-in", "", "/etc/systemd/system/worker.d/50-hardening.conf", 1],
+  for (const [name, overrides, expectedExit, expectedError] of [
+    ["clean", {}, 0, null],
+    ["home drop-in", { SYSTEMD_HOME_DROP_IN_PATHS: "/etc/systemd/system/home.d/50-hardening.conf" }, 1, /Path-1 service .* has systemd drop-ins/],
+    ["worker drop-in", { SYSTEMD_WORKER_DROP_IN_PATHS: "/etc/systemd/system/worker.d/50-hardening.conf" }, 1, /Path-1 service .* has systemd drop-ins/],
+    ["home needs daemon-reload", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "yes" }, 1, /needs systemd daemon-reload/],
+    ["worker needs daemon-reload", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "yes" }, 1, /needs systemd daemon-reload/],
+    ["unknown home reload state", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "unknown" }, 1, /could not verify systemd reload state/],
+    ["malformed worker reload state", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "no\\nno" }, 1, /could not verify systemd reload state/],
+    ["home reload query failure", { SYSTEMD_HOME_RELOAD_QUERY_FAIL: "1" }, 1, /could not inspect systemd reload state/],
+    ["worker reload query failure", { SYSTEMD_WORKER_RELOAD_QUERY_FAIL: "1" }, 1, /could not inspect systemd reload state/],
+    ["home drop-in query failure", { SYSTEMD_HOME_DROP_INS_QUERY_FAIL: "1" }, 1, /could not inspect effective systemd drop-ins/],
+    ["worker drop-in query failure", { SYSTEMD_WORKER_DROP_INS_QUERY_FAIL: "1" }, 1, /could not inspect effective systemd drop-ins/],
   ]) {
     const result = spawnSync("/bin/sh", ["-c", command], {
       encoding: "utf8",
-      env: { ...env, SYSTEMD_HOME_DROP_IN_PATHS: home, SYSTEMD_WORKER_DROP_IN_PATHS: worker },
+      env: { ...env, ...overrides },
     })
     assert.equal(result.status, expectedExit, `${name}: ${result.stderr}`)
-    if (expectedExit) assert.match(result.stderr, /Path-1 service .* has systemd drop-ins/)
+    if (expectedError) assert.match(result.stderr, expectedError)
   }
 })
 

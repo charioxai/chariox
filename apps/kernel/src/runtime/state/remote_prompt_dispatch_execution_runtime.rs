@@ -6,11 +6,48 @@ use super::remote_prompt_worker_submission_runtime::{
 };
 use super::*;
 
+#[cfg(test)]
+static REMOTE_PROMPT_DISPATCH_TEST_STAGES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::BTreeMap<String, Vec<&'static str>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(super) fn record_remote_prompt_dispatch_test_stage(prompt_id: &str, stage: &'static str) {
+    const MAX_PROMPTS: usize = 4096;
+    const MAX_STAGES_PER_PROMPT: usize = 24;
+
+    let stages = REMOTE_PROMPT_DISPATCH_TEST_STAGES
+        .get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    let Ok(mut stages) = stages.lock() else {
+        return;
+    };
+    if !stages.contains_key(prompt_id) && stages.len() >= MAX_PROMPTS {
+        return;
+    }
+    let prompt_stages = stages.entry(prompt_id.to_string()).or_default();
+    if prompt_stages.len() < MAX_STAGES_PER_PROMPT {
+        prompt_stages.push(stage);
+    }
+}
+
+#[cfg(test)]
+pub(super) fn remote_prompt_dispatch_test_stages(prompt_id: &str) -> String {
+    REMOTE_PROMPT_DISPATCH_TEST_STAGES
+        .get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+        .lock()
+        .ok()
+        .and_then(|stages| stages.get(prompt_id).cloned())
+        .unwrap_or_default()
+        .join(" > ")
+}
+
 impl KernelRuntimeState {
     pub(super) async fn dispatch_remote_prompt_once(
         &self,
         mut dispatch: crate::app::KernelRemotePromptDispatch,
     ) -> Option<crate::app::KernelRemotePromptDispatch> {
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "dispatch_once_entered");
         crate::logging::info_with_fields(
             "daemon.remote_prompt_dispatch",
             "remote prompt dispatch starting",
@@ -35,6 +72,13 @@ impl KernelRuntimeState {
                 .await;
             return None;
         }
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(
+            &dispatch.prompt_id,
+            "durable_dispatching_marked",
+        );
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "agent_lookup_started");
         let agent = match self.owned.agent_store.get_agent(&dispatch.agent_id) {
             Ok(agent) => agent,
             Err(error) => {
@@ -44,6 +88,10 @@ impl KernelRuntimeState {
                 return None;
             }
         };
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "agent_lookup_ready");
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "skill_context_started");
         let (prompt, _) = match self
             .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
             .await
@@ -56,7 +104,11 @@ impl KernelRuntimeState {
                 return None;
             }
         };
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "skill_context_ready");
         let attachments = dispatch.attachments.clone();
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "attachment_serialization_started");
         let serialized_attachments = match tokio::task::spawn_blocking(move || {
             crate::app::serialize_remote_prompt_attachments(&attachments)
         })
@@ -77,6 +129,10 @@ impl KernelRuntimeState {
                 return None;
             }
         };
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "attachments_serialized");
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "worker_submission_started");
         let result = submit_remote_prompt_to_worker_with_binding_refresh(
             self,
             &mut dispatch,
@@ -84,6 +140,8 @@ impl KernelRuntimeState {
             attachments,
         )
         .await;
+        #[cfg(test)]
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "worker_submission_returned");
         match &result {
             Ok(provider_run_id) => crate::logging::info_with_fields(
                 "daemon.remote_prompt_dispatch",

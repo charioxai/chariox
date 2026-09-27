@@ -11,14 +11,29 @@ import {
   commandDigest,
   parseProjectEnvironmentSetupDrillArgs,
   projectEnvironmentSetupDrillValidationCommands,
-  runBoundedProjectEnvironmentSetupOperation,
+  requireVariant,
+  runBoundedProjectEnvironmentSetupOperation as runBoundedProjectEnvironmentSetupOperationWithBuilders,
   setupDrillOperationId,
-  startSetupRequest,
+  setupStatusBinding,
+  startSetupParameters,
   validateProjectEnvironmentSetupDrillPin,
   validateSetupDrillConfirmations,
 } from './project-environment-setup-drill.mjs'
 
 const NOW = Date.parse('2026-09-26T12:00:00.000Z')
+
+const requestBuilders = {
+  getProjectEnvironmentSetupStatusRequest: (operationId) => ({ GetProjectEnvironmentSetupStatus: { operationId } }),
+  retryProjectEnvironmentSetupRequest: (operationId, sessionId) => ({ RetryProjectEnvironmentSetup: { operationId, sessionId } }),
+}
+
+function testStartRequest(targetPin, operationId, branch, validationCommands) {
+  return { StartProjectEnvironmentSetup: startSetupParameters(targetPin, operationId, branch, validationCommands) }
+}
+
+function runBoundedProjectEnvironmentSetupOperation(options) {
+  return runBoundedProjectEnvironmentSetupOperationWithBuilders({ ...options, requestBuilders })
+}
 
 function pin(overrides = {}) {
   return {
@@ -166,6 +181,20 @@ test('reviewed target pin and exact destructive confirmations fail closed', () =
   assert.throws(() => validateSetupDrillConfirmations({ ...confirmations, '--confirm-target': 'another-machine' }, targetPin, 'sha256:reviewed-pin'), /does not match/)
 })
 
+test('shared setup helpers bind the reviewed identity and select the first present response variant', () => {
+  const targetPin = pin()
+  assert.deepEqual(setupStatusBinding(targetPin, 'operation-drill'), {
+    operation_id: 'operation-drill',
+    project_id: targetPin.project_id,
+    session_id: targetPin.session_id,
+    agent_id: targetPin.utility_agent_id,
+    worker_id: targetPin.target_machine_id,
+    platform: targetPin.target_platform,
+  })
+  assert.deepEqual(requireVariant({ Missing: null, Found: { value: 1 }, Later: { value: 2 } }, 'Missing', 'Found', 'Later'), { value: 1 })
+  assert.throws(() => requireVariant({ Missing: null }, 'Missing'), /none of the expected response variants: Missing/)
+})
+
 test('CLI requires the reviewed pin, external paths, and provider launch consent', () => {
   const required = [
     '--home-kernel', 'ws://127.0.0.1:43120/kernel',
@@ -212,12 +241,12 @@ test('cold request omits a definition and stored request omits both definition a
   const runId = '123e4567-e89b-42d3-a456-426614174000'
   const coldId = setupDrillOperationId(runId, 'cold')
   const storedId = setupDrillOperationId(runId, 'stored')
-  const cold = startSetupRequest(targetPin, coldId, 'cold')
-  const stored = startSetupRequest(targetPin, storedId, 'stored')
-  assert.equal('definition' in cold.StartProjectEnvironmentSetup, false)
-  assert.deepEqual(cold.StartProjectEnvironmentSetup.validationCommands, PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS)
-  assert.equal('definition' in stored.StartProjectEnvironmentSetup, false)
-  assert.equal('validationCommands' in stored.StartProjectEnvironmentSetup, false)
+  const cold = startSetupParameters(targetPin, coldId, 'cold')
+  const stored = startSetupParameters(targetPin, storedId, 'stored')
+  assert.equal('definition' in cold, false)
+  assert.deepEqual(cold.validationCommands, PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS)
+  assert.equal('definition' in stored, false)
+  assert.equal('validationCommands' in stored, false)
 })
 
 test('Cargo validation is run-id scoped, bounded, and only removes its own marked target directory', () => {
@@ -273,7 +302,7 @@ test('Ready requires every requested bounded target validation command to pass o
 test('stored setup replays the same operation idempotently, reconnects, and recovers the same attempt', async () => {
   const targetPin = pin()
   const operationId = setupStatus().operation_id
-  const request = startSetupRequest(targetPin, operationId, 'stored')
+  const request = testStartRequest(targetPin, operationId, 'stored')
   const requests = []
   let clientNumber = 0
   const clientFactory = async () => {
@@ -338,7 +367,7 @@ test('one explicitly permitted service-authorized retry advances exactly one att
   const result = await runBoundedProjectEnvironmentSetupOperation({
     createClient: factory,
     pin: targetPin,
-    request: startSetupRequest(targetPin, firstFailed.operation_id, 'stored'),
+    request: testStartRequest(targetPin, firstFailed.operation_id, 'stored'),
     allowOneRetry: true,
     idempotentStartReplay: false,
     pollMs: 250,
@@ -366,7 +395,7 @@ test('setup operation rejects a different operation identity on reconnect', asyn
   await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
     createClient: factory,
     pin: pin(),
-    request: startSetupRequest(pin(), setupStatus().operation_id, 'stored'),
+    request: testStartRequest(pin(), setupStatus().operation_id, 'stored'),
     delay: async () => {},
   }), /operation_id changed from the reviewed binding/)
   assert.equal(reconnect, true)
@@ -386,7 +415,7 @@ test('setup operation rejects attempt drift on reconnect', async () => {
   await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
     createClient: factory,
     pin: pin(),
-    request: startSetupRequest(pin(), setupStatus().operation_id, 'stored'),
+    request: testStartRequest(pin(), setupStatus().operation_id, 'stored'),
     delay: async () => {},
   }), /attempt changed unexpectedly/)
 })
@@ -406,7 +435,7 @@ test('setup operation times out at its injected deadline', async () => {
   await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
     createClient: factory,
     pin: pin(),
-    request: startSetupRequest(pin(), setupStatus().operation_id, 'stored'),
+    request: testStartRequest(pin(), setupStatus().operation_id, 'stored'),
     timeoutMs: 250,
     pollMs: 250,
     nowMs: () => now,
@@ -427,7 +456,7 @@ test('setup operation does not retry a nonretryable failure', async () => {
   await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
     createClient: factory,
     pin: pin(),
-    request: startSetupRequest(pin(), failed.operation_id, 'stored'),
+    request: testStartRequest(pin(), failed.operation_id, 'stored'),
     allowOneRetry: true,
     delay: async () => {},
   }), (error) => error.code === 'setup_failed_non_retryable')
@@ -457,7 +486,7 @@ test('setup operation enforces the one-retry ceiling even when attempt two also 
   await assert.rejects(runBoundedProjectEnvironmentSetupOperation({
     createClient: factory,
     pin: pin(),
-    request: startSetupRequest(pin(), failedFirst.operation_id, 'stored'),
+    request: testStartRequest(pin(), failedFirst.operation_id, 'stored'),
     allowOneRetry: true,
     delay: async () => {},
   }), (error) => error.code === 'retryable_setup_failure_without_retry_authorization')

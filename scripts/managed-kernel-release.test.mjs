@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, join, relative, sep } from "node:path"
+import { basename, join, posix, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { once } from "node:events"
@@ -21,6 +21,17 @@ const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-s
 const dataVolumeAdmissionService = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service")
 const rootlessDockerDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf")
 const quotaAllocatorDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf")
+const quotaRuntimeAssets = [
+  "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.service",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-allocator.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-client.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-contract.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-service.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-state-store.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-xfs-backend.mjs",
+  "apps/kernel/slice-linux-docker/probe-slice-disk-quota-backend.mjs",
+]
 const sourceDateEpoch = "946684800"
 
 function parseUnitSections(source) {
@@ -220,7 +231,30 @@ async function treeDigest(root) {
   return `sha256:${hash.digest("hex")}`
 }
 
-async function makeFixture(root, variant = "", { dockerfileContents } = {}) {
+async function localEsmImportClosure(root, entry) {
+  const pending = [entry]
+  const visited = new Set()
+  while (pending.length > 0) {
+    const current = pending.pop()
+    if (visited.has(current)) continue
+    visited.add(current)
+    const source = await readFile(join(root, ...current.split("/")), "utf8")
+    const specifiers = [
+      ...source.matchAll(/\bfrom\s*["'](\.[^"']+)["']/g),
+      ...source.matchAll(/\bimport\s*["'](\.[^"']+)["']/g),
+    ].map((match) => match[1])
+    for (const specifier of specifiers) {
+      const dependency = posix.normalize(posix.join(posix.dirname(current), specifier))
+      if (dependency === ".." || dependency.startsWith("../") || !dependency.endsWith(".mjs")) {
+        throw new Error(`broker import escapes the packaged ESM context: ${current} -> ${specifier}`)
+      }
+      pending.push(dependency)
+    }
+  }
+  return [...visited].sort()
+}
+
+async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAsset } = {}) {
   const kernel = join(root, "chariox-kernel")
   const supervisor = join(root, "chariox-managed-bootstrap")
   const relay = join(root, "chariox-relay")
@@ -253,23 +287,17 @@ async function makeFixture(root, variant = "", { dockerfileContents } = {}) {
       return [path, await readFile(join(repositoryRoot, path))]
     })),
     ...await Promise.all([
-      "chariox-slice-disk-quota-allocator.service",
       "chariox-data-volume-admission.mjs",
       "slice-data-volume-device.mjs",
       "slice-data-volume-protected-io.mjs",
-      "slice-disk-quota-admission.mjs",
-      "slice-disk-quota-allocator.mjs",
-      "slice-disk-quota-client.mjs",
-      "slice-disk-quota-contract.mjs",
-      "slice-disk-quota-service.mjs",
-      "slice-disk-quota-state-store.mjs",
-      "slice-disk-quota-xfs-backend.mjs",
       "slice-disk-quota-xfs-readback.mjs",
-      "probe-slice-disk-quota-backend.mjs",
     ].map(async (name) => {
       const path = `apps/kernel/slice-linux-docker/${name}`
       return [path, await readFile(join(repositoryRoot, path))]
     })),
+    ...await Promise.all(quotaRuntimeAssets
+      .filter((path) => path !== omitQuotaAsset)
+      .map(async (path) => [path, await readFile(join(repositoryRoot, path))])),
     ["apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", "#!/bin/sh\nSLICE_BUILD_IMAGE=fixture\n"],
     ["apps/kernel/slice-linux-docker/managed-publication-access.sh", "#!/bin/sh\nexit 0\n"],
     [
@@ -430,6 +458,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-kernel",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/toolchain/package-lock.json",
+    ...quotaRuntimeAssets.map((path) => `usr/lib/chariox/slice-build-context/${path}`),
     "usr/lib/chariox/slice-build-context/Cargo.lock",
     "usr/lib/chariox/slice-build-context/apps/kernel/src/transport/relay_peer.rs",
     "usr/lib/chariox/slice-build-context/apps/relay/Cargo.toml",
@@ -445,6 +474,23 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   )
   assert.match(packagedRootlessService, /CHARIOX_PATH1_DATA_VOLUME_REQUIRED:-0/)
   assert.match(packagedRootlessService, /Path-1 rootless Docker requires its admitted XFS project-quota mount/)
+  const brokerContextRoot = join(releaseRoot, "usr/lib/chariox/slice-build-context")
+  const brokerImportClosure = await localEsmImportClosure(
+    brokerContextRoot,
+    "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+  )
+  assert.deepEqual(brokerImportClosure, [
+    "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
+    "apps/kernel/slice-linux-docker/slice-disk-quota-client.mjs",
+    "apps/kernel/slice-linux-docker/slice-disk-quota-contract.mjs",
+  ])
+  for (const modulePath of brokerImportClosure) {
+    assert.ok(
+      packagedPaths.includes(`usr/lib/chariox/slice-build-context/${modulePath}`),
+      `broker import dependency is absent from the signed release: ${modulePath}`,
+    )
+  }
 
   const manifestBytes = await readFile(join(releaseRoot, "usr/lib/chariox/release-manifest.json"))
   const manifest = JSON.parse(manifestBytes)
@@ -1702,6 +1748,50 @@ exec /bin/mv "$@"
   return { bin, state, installRoot, chownLog, migrationFaultMarker }
 }
 
+test("managed image installer rejects a signed release missing a quota runtime file", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
+  for (const [label, omittedAsset, invalidFile] of [
+    [
+      "allocator service",
+      "apps/kernel/slice-linux-docker/slice-disk-quota-service.mjs",
+      /managed kernel image contains an invalid file: .*slice-disk-quota-service\.mjs/,
+    ],
+    [
+      "broker admission dependency",
+      "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
+      /managed kernel image contains an invalid file: .*slice-disk-quota-admission\.mjs/,
+    ],
+  ]) {
+    await context.test(label, async (subtest) => {
+      const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-missing-quota-"))
+      subtest.after(() => rm(root, { recursive: true, force: true }))
+      const fixture = await makeFixture(root, "", { omitQuotaAsset: omittedAsset })
+      const output = join(root, "release")
+      const packaged = runPackager({ ...fixture, output })
+      assert.equal(packaged.status, 0, packaged.stderr)
+      const harness = await createInstallerHarness(root)
+      const env = {
+        ...process.env,
+        PATH: `${harness.bin}:${process.env.PATH}`,
+        HARNESS_STATE: harness.state,
+        CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+        CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+      }
+      const result = spawnSync(
+        installer,
+        installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture),
+        { encoding: "utf8", env },
+      )
+      assert.equal(result.status, 1)
+      assert.match(result.stderr, invalidFile)
+      assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+    })
+  }
+})
+
 test("managed image installer verifies, installs twice, and rejects seeded runtime state", async (context) => {
   if (process.platform !== "linux" || process.getuid?.() !== 0) {
     context.skip("requires Linux root ownership semantics")
@@ -1859,7 +1949,34 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(await readFile(installedBrokerService, "utf8"), fixture.sliceBrokerServiceBytes.toString("utf8"))
   assert.equal(await lstat(brokerWantsLink).then(() => true, () => false), false)
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/slice-build-context")), "current/usr/lib/chariox/slice-build-context")
-  assert.match(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), /^releases\/[a-f0-9]{64}$/)
+  const activeReleaseTarget = `releases/${packaged.stdout.trim().slice("sha256:".length)}`
+  assert.equal(await readlink(currentLink), activeReleaseTarget)
+  const allocatorUnitLink = join(
+    harness.installRoot,
+    "etc/systemd/system/chariox-slice-disk-quota-allocator.service",
+  )
+  assert.equal((await lstat(allocatorUnitLink)).isSymbolicLink(), true)
+  assert.equal(
+    await readlink(allocatorUnitLink),
+    `../../../usr/lib/chariox/current/${contextPath}/chariox-slice-disk-quota-allocator.service`,
+  )
+  const signedAllocatorUnit = join(args[0], contextPath, "chariox-slice-disk-quota-allocator.service")
+  assert.deepEqual(await readFile(allocatorUnitLink), await readFile(signedAllocatorUnit))
+  const allocatorUnitContents = await readFile(allocatorUnitLink, "utf8")
+  assert.match(
+    allocatorUnitContents,
+    /ExecStart=\/usr\/bin\/node \/usr\/lib\/chariox\/current\/usr\/lib\/chariox\/slice-build-context\/apps\/kernel\/slice-linux-docker\/slice-disk-quota-service\.mjs/,
+  )
+  const activeQuotaService = join(
+    harness.installRoot,
+    "usr/lib/chariox/current",
+    contextPath,
+    "slice-disk-quota-service.mjs",
+  )
+  assert.deepEqual(
+    await readFile(activeQuotaService),
+    await readFile(join(args[0], contextPath, "slice-disk-quota-service.mjs")),
+  )
   assert.equal(
     await lstat(join(harness.installRoot, "usr/lib/chariox/current/usr/local/bin/unsigned-extra"))
       .then(() => true, () => false),

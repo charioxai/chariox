@@ -93,6 +93,7 @@ impl KernelRuntimeState {
         else {
             return Ok(Some(cancellation_intent));
         };
+        cancellation_claim.mark_active_prompt(&active_prompt.id());
         let cancellation = self
             .send_remote_agent_prompt_cancellation_with_claim(
                 session_id,
@@ -108,6 +109,9 @@ impl KernelRuntimeState {
             let session_id = session_id.to_string();
             let target_agent_id = target_agent_id.to_string();
             tokio::spawn(async move {
+                // Consume any deferred successor before rebuilding from authoritative state.
+                // The pending dispatch is a wake signal, not permission to bypass phase checks.
+                let _ = cancellation_claim.take_pending_dispatch();
                 let dispatch = match state
                     .remote_prompt_dispatch_after_claim_restart(&session_id, &target_agent_id)
                     .await

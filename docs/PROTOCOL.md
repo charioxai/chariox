@@ -1734,6 +1734,23 @@ Workflow trigger and deployment direction:
   is unchanged, but the receipt's original-prompt semantics require both home
   and worker kernels to support relay peer protocol 62. Local-daemon client
   minimum versions do not change.
+- protocol 350 adds optional `disk_layer_mb` and `disk_home_mb` to the Linux
+  slice settings in the existing user-config response and coordinates the
+  signed managed auto-stop quiescence HTTP contract. Quiescence adds no
+  LocalDaemon request/response variant. Kernel-to-Cloud REST v1 uses
+  `/v1/managed-kernels/auto-stop/quiescence/poll`,
+  `/v1/managed-kernels/auto-stop/quiescence/ack`, and
+  `/v1/managed-kernels/auto-stop/quiescence/release-ack`. Cloud must deploy and
+  verify all three routes and their validators before protocol-350 kernels roll
+  out. The legacy timer/direct auto-stop path must be disabled before either
+  side is enabled; the producer and receiver must not be deployed independently.
+  Missing routes, timeouts, malformed or unsupported v1 responses, and missing,
+  invalid, or stale acknowledgements leave the stop pending and retain the
+  admission fence. There is no legacy auto-stop fallback. The quiescence
+  contract does not change web, native, or CLI minimums because clients do not
+  consume it. The optional disk-cap fields do not change minimums for clients
+  that do not use them; a client that reads or writes those fields must gate
+  that capability at protocol 350.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

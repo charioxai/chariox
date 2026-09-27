@@ -6,7 +6,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 
 const cases = [
-  ["browser.tab", { action: "activate" }, "Target.activateTarget", "Target.getTargets"],
+  ["browser.tab", { action: "activate" }, "Page.bringToFront", "Target.getTargets"],
   ["browser.tab", { action: "close" }, "Target.closeTarget", "Target.getTargets"],
   ["browser.navigate", { url: "https://example.test/next" }, "Page.navigate", "Page.getFrameTree"],
   ["browser.history", { action: "back" }, "Page.navigateToHistoryEntry", "Page.getNavigationHistory"],

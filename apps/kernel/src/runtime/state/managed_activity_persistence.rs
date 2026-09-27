@@ -180,6 +180,14 @@ impl ManagedActivityTransitionState {
         &self,
         running_agent_count: u8,
     ) -> Result<ManagedActivityObservation, DaemonError> {
+        self.current_observation_with_sequence(running_agent_count)
+            .map(|(_, observation)| observation)
+    }
+
+    pub(super) fn current_observation_with_sequence(
+        &self,
+        running_agent_count: u8,
+    ) -> Result<(u64, ManagedActivityObservation), DaemonError> {
         let kernel_id = self.kernel_id().ok_or_else(|| {
             activity_state_error("managed activity tracking is not enabled for this kernel")
         })?;
@@ -197,7 +205,7 @@ impl ManagedActivityTransitionState {
                 "managed activity changed without a durable mutation-boundary transition",
             ));
         }
-        Ok(observation)
+        Ok((inner.latest_durable_sequence, observation))
     }
 
     fn kernel_id(&self) -> Option<String> {

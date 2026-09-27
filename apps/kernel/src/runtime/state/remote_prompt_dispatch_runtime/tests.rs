@@ -1,4 +1,6 @@
-use super::super::remote_prompt_claim_runtime::RemotePromptAgentClaim;
+use super::super::remote_prompt_claim_runtime::{
+    RemotePromptAgentClaim, RemotePromptProjectionDrainClaim,
+};
 use super::super::remote_prompt_projection_drain_runtime::{
     completed_receipt_projection_matches, remote_prompt_projection_error_should_refresh_binding,
     RemotePromptRunBindingRecovery,
@@ -11,6 +13,7 @@ use super::super::remote_prompt_worker_submission_runtime::{
     query_remote_prompt_worker_receipt_with_transport, remote_prompt_transport_retry_delay,
 };
 use super::*;
+use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{SinkExt, StreamExt};
@@ -18,6 +21,42 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
+
+#[derive(Clone)]
+struct ClaimTestRelayLifecycleProbe {
+    started: std::time::Instant,
+    events: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl ClaimTestRelayLifecycleProbe {
+    fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            events: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    fn record(&self, stage: &str, peer: Option<std::net::SocketAddr>) {
+        let event = match peer {
+            Some(peer) => format!(
+                "+{}us:{stage}:peer={peer}",
+                self.started.elapsed().as_micros()
+            ),
+            None => format!("+{}us:{stage}", self.started.elapsed().as_micros()),
+        };
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+
+    fn snapshot(&self) -> String {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .join(";")
+    }
+}
 
 async fn receive_claim_test_envelope(
     socket: &mut WebSocketStream<TcpStream>,
@@ -36,6 +75,91 @@ async fn receive_claim_test_envelope(
     .expect("temporary relay envelope should deserialize")
 }
 
+async fn receive_claim_test_envelope_with_diagnostics(
+    socket: &mut WebSocketStream<TcpStream>,
+    stage: &'static str,
+    diagnostics: impl Fn() -> String,
+) -> RelayEnvelope {
+    let message = match tokio::time::timeout(std::time::Duration::from_secs(2), socket.next()).await
+    {
+        Err(_) => panic!(
+            "temporary relay did not receive a client envelope at {stage} [{}]",
+            diagnostics()
+        ),
+        Ok(None) => panic!(
+            "temporary relay socket closed at {stage} [{}]",
+            diagnostics()
+        ),
+        Ok(Some(Err(error))) => panic!("{stage}: {error:?} [{}]", diagnostics()),
+        Ok(Some(Ok(message))) => message,
+    };
+    serde_json::from_str(
+        message
+            .to_text()
+            .expect("temporary relay envelope should be text"),
+    )
+    .expect("temporary relay envelope should deserialize")
+}
+
+fn claim_test_successor_state_tags(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    successor_prompt: &str,
+) -> String {
+    let (active, queued) = runtime
+        .owned
+        .session_store
+        .get_session(session_id)
+        .ok()
+        .map(|session| {
+            runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, agent_id)
+        })
+        .unwrap_or_default();
+    let successor_active = active
+        .as_ref()
+        .is_some_and(|prompt| prompt.prompt() == successor_prompt);
+    let successor_queued = queued
+        .iter()
+        .any(|prompt| prompt.prompt() == successor_prompt);
+    let cancelling = active
+        .as_ref()
+        .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling);
+    let phase = active
+        .as_ref()
+        .and_then(|prompt| prompt.durable_delivery_phase());
+    let recovery_claim_held = runtime
+        .owned
+        .remote_prompt_recoveries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(&(session_id.to_string(), agent_id.to_string()));
+    let projection_claim_held = runtime
+        .owned
+        .remote_prompt_projection_drains
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(&(session_id.to_string(), agent_id.to_string()));
+    let dispatch_stages = active
+            .as_ref()
+            .filter(|prompt| prompt.prompt() == successor_prompt)
+            .map(|prompt| {
+                super::super::remote_prompt_dispatch_execution_runtime::remote_prompt_dispatch_test_stages(
+                    prompt.id(),
+                )
+            })
+            .unwrap_or_default();
+    format!(
+            "successor_active={successor_active},successor_queued={successor_queued},active_cancelling={cancelling},active_dispatching={},active_delivered={},reconciliation_pending={},recovery_claim_held={recovery_claim_held},projection_claim_held={projection_claim_held},dispatch_stages=[{dispatch_stages}]",
+            phase == Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+            phase == Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+            active.as_ref().is_some_and(|prompt| prompt.durable_delivery_reconciliation_pending()),
+        )
+}
+
 async fn send_claim_test_envelope(
     socket: &mut WebSocketStream<TcpStream>,
     envelope: RelayEnvelope,
@@ -50,25 +174,183 @@ async fn send_claim_test_envelope(
         .expect("temporary relay envelope should send");
 }
 
+async fn close_claim_test_discovery(
+    socket: &mut WebSocketStream<TcpStream>,
+    lifecycle_probe: Option<(&ClaimTestRelayLifecycleProbe, &'static str)>,
+) {
+    if let Some((probe, operation)) = lifecycle_probe {
+        probe.record(&format!("{operation}_discovery_close_started"), None);
+    }
+    let _ = socket.close(None).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        while let Some(message) = socket.next().await {
+            match message {
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    if let Some((probe, operation)) = lifecycle_probe {
+        probe.record(&format!("{operation}_discovery_close_completed"), None);
+    }
+}
+
+fn claim_test_envelope_kind(envelope: &RelayEnvelope) -> &'static str {
+    match envelope {
+        RelayEnvelope::ClientMetadataRequest { .. } => "ClientMetadataRequest",
+        RelayEnvelope::DaemonRegister { .. } => "DaemonRegister",
+        RelayEnvelope::DaemonPeerRequest { .. } => "DaemonPeerRequest",
+        RelayEnvelope::ClientMetadataResponse { .. } => "ClientMetadataResponse",
+        RelayEnvelope::DaemonPeerResponse { .. } => "DaemonPeerResponse",
+        _ => "other relay envelope",
+    }
+}
+
+async fn accept_claim_test_worker_metadata(
+    listener: &TcpListener,
+    worker_id: &str,
+    home_relay_token: &str,
+    stage: &'static str,
+    trace_checkpoint: Option<relay_discovery::RelayDiscoveryTestTraceCheckpoint>,
+    lifecycle_probe: Option<&ClaimTestRelayLifecycleProbe>,
+    diagnostics: impl Fn() -> String,
+) -> (WebSocketStream<TcpStream>, String, std::net::SocketAddr) {
+    // A normal temporary peer call writes GetLiveKernel on this discovery socket before it
+    // opens its separately registered peer socket. Report a reset here immediately rather
+    // than treating an unlabelled abandoned connection as a metadata retry.
+    if let Some(probe) = lifecycle_probe {
+        probe.record("successor_discovery_accept_started", None);
+    }
+    let (stream, peer_addr) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            listener.accept(),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            let relay_trace = trace_checkpoint
+                .map(|checkpoint| {
+                    relay_discovery::take_relay_discovery_test_trace(checkpoint, None)
+                })
+                .unwrap_or_else(|| "not captured".to_string());
+            panic!(
+                "{stage}: relay did not accept discovery socket; relay_trace={relay_trace}; lifecycle=[{}]",
+                lifecycle_probe
+                    .map(ClaimTestRelayLifecycleProbe::snapshot)
+                    .unwrap_or_else(|| "not captured".to_string())
+            )
+        })
+        .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
+    if let Some(probe) = lifecycle_probe {
+        probe.record("successor_discovery_tcp_accepted", Some(peer_addr));
+        probe.record("successor_discovery_upgrade_started", Some(peer_addr));
+    }
+    let mut discovery = accept_async(stream)
+            .await
+            .unwrap_or_else(|error| {
+                let relay_trace = trace_checkpoint
+                    .map(|checkpoint| {
+                        relay_discovery::take_relay_discovery_test_trace(
+                            checkpoint,
+                            Some(peer_addr),
+                        )
+                    })
+                    .unwrap_or_else(|| "not captured".to_string());
+                panic!(
+                    "{stage}: relay discovery upgrade failed: {error}; peer={peer_addr}; relay_trace={relay_trace}; lifecycle=[{}]",
+                    lifecycle_probe
+                        .map(ClaimTestRelayLifecycleProbe::snapshot)
+                        .unwrap_or_else(|| "not captured".to_string())
+                );
+            });
+    if let Some(probe) = lifecycle_probe {
+        probe.record("successor_discovery_upgrade_completed", Some(peer_addr));
+    }
+    let envelope = receive_claim_test_envelope_with_diagnostics(
+        &mut discovery,
+        "temporary discovery first envelope",
+        || {
+            format!(
+                "operation={stage},socket=discovery,peer={peer_addr},relay_trace={},{}",
+                trace_checkpoint
+                    .map(|checkpoint| {
+                        relay_discovery::take_relay_discovery_test_trace(
+                            checkpoint,
+                            Some(peer_addr),
+                        )
+                    })
+                    .unwrap_or_else(|| "not captured".to_string()),
+                diagnostics(),
+            )
+        },
+    )
+    .await;
+    if let Some(probe) = lifecycle_probe {
+        probe.record(
+            "successor_discovery_first_envelope_received",
+            Some(peer_addr),
+        );
+    }
+    let request_id = match envelope {
+        RelayEnvelope::ClientMetadataRequest {
+            request_id,
+            query,
+            auth_token,
+        } => {
+            assert_eq!(
+                auth_token, home_relay_token,
+                "{stage}: metadata query should use the configured home relay token"
+            );
+            assert!(
+                matches!(
+                    query,
+                    chariox_relay::protocol::RelayMetadataQuery::GetLiveKernel {
+                        kernel_ref
+                    } if kernel_ref == worker_id
+                ),
+                "{stage}: discovery should query the exact worker kernel"
+            );
+            request_id
+        }
+        other => {
+            let relay_trace = trace_checkpoint
+                .map(|checkpoint| {
+                    relay_discovery::take_relay_discovery_test_trace(checkpoint, Some(peer_addr))
+                })
+                .unwrap_or_else(|| "not captured".to_string());
+            panic!(
+                    "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest; peer={peer_addr}; relay_trace={relay_trace}; {}",
+                    claim_test_envelope_kind(&other),
+                    diagnostics(),
+                );
+        }
+    };
+    (discovery, request_id, peer_addr)
+}
+
 async fn accept_claim_test_prompt(
     listener: &TcpListener,
     worker_id: &str,
     machine_id: &str,
+    home_relay_token: &str,
+    home_public_key: &str,
     worker_public_key: &str,
     worker_private_key: &str,
+    stage: &'static str,
+    trace_checkpoint: Option<relay_discovery::RelayDiscoveryTestTraceCheckpoint>,
+    lifecycle_probe: Option<&ClaimTestRelayLifecycleProbe>,
+    diagnostics: impl Fn() -> String,
 ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
-    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
-        .await
-        .expect("temporary relay should accept discovery connection before timeout")
-        .expect("temporary relay listener should remain open");
-    let mut discovery = accept_async(stream)
-        .await
-        .expect("temporary relay should upgrade discovery connection");
-    let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
-        receive_claim_test_envelope(&mut discovery, "successor discovery request").await
-    else {
-        panic!("expected relay metadata request");
-    };
+    let (mut discovery, request_id, discovery_peer) = accept_claim_test_worker_metadata(
+        listener,
+        worker_id,
+        home_relay_token,
+        stage,
+        trace_checkpoint,
+        lifecycle_probe,
+        &diagnostics,
+    )
+    .await;
     let presence = serde_json::from_value(serde_json::json!({
         "kernel_id": worker_id,
         "machine_id": machine_id,
@@ -86,40 +368,93 @@ async fn accept_claim_test_prompt(
         },
     )
     .await;
-    drop(discovery);
+    close_claim_test_discovery(
+        &mut discovery,
+        lifecycle_probe.map(|probe| (probe, "successor")),
+    )
+    .await;
 
-    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
-        .await
-        .expect("temporary relay should accept peer connection before timeout")
-        .expect("temporary relay listener should remain open");
+    let (stream, peer_addr) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap_or_else(|_| panic!("{stage}: relay did not accept peer socket"))
+            .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
     let mut peer = accept_async(stream)
         .await
-        .expect("temporary relay should upgrade peer connection");
-    assert!(matches!(
-        receive_claim_test_envelope(&mut peer, "successor peer registration").await,
-        RelayEnvelope::DaemonRegister { .. }
-    ));
-    let RelayEnvelope::DaemonPeerRequest {
-        request_id,
-        encrypted_request,
-        ..
-    } = receive_claim_test_envelope(&mut peer, "successor encrypted request").await
-    else {
-        panic!("expected leased prompt submission");
+        .unwrap_or_else(|error| panic!("{stage}: relay peer upgrade failed: {error}"));
+    let registration = receive_claim_test_envelope_with_diagnostics(
+        &mut peer,
+        "temporary peer first envelope",
+        || {
+            format!(
+                "operation={stage},socket=peer,peer={peer_addr},{}",
+                diagnostics()
+            )
+        },
+    )
+    .await;
+    match registration {
+        RelayEnvelope::DaemonRegister { registration } => {
+            assert_eq!(
+                registration.auth_token, home_relay_token,
+                "{stage}: temporary peer registration should use the configured relay token"
+            );
+            assert_eq!(
+                registration.public_key, home_public_key,
+                "{stage}: temporary peer registration should use the home kernel identity"
+            );
+        }
+        other => panic!(
+            "{stage}: peer socket's first envelope was {}, expected DaemonRegister",
+            claim_test_envelope_kind(&other)
+        ),
+    }
+    let request_envelope = receive_claim_test_envelope_with_diagnostics(
+        &mut peer,
+        "temporary peer request after registration",
+        || {
+            format!(
+                "operation={stage},socket=peer,peer={peer_addr},{}",
+                diagnostics()
+            )
+        },
+    )
+    .await;
+    let (request_id, target, encrypted_request) = match request_envelope {
+        RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            target,
+            encrypted_request,
+        } => (request_id, target, encrypted_request),
+        other => panic!(
+            "{stage}: peer socket's second envelope was {}, expected DaemonPeerRequest",
+            claim_test_envelope_kind(&other)
+        ),
     };
+    let target_id = target
+        .daemon_id
+        .or(target.daemon_alias)
+        .expect("claim test peer request should identify its worker");
+    assert_eq!(target_id, worker_id, "{stage} target mismatch");
     let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
         worker_private_key,
         &encrypted_request,
     )
-    .expect("fake worker should decrypt the prompt submission");
+    .unwrap_or_else(|error| panic!("{stage}: worker could not decrypt peer request: {error}"));
+    assert_eq!(
+        decrypted.sender_public_key, home_public_key,
+        "{stage}: temporary peer request should use the same authenticated home identity"
+    );
+    let request: RelayPeerRequest = serde_json::from_slice(&decrypted.plaintext)
+        .unwrap_or_else(|error| panic!("{stage}: worker request did not decode: {error}"));
     let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id,
         prompt,
         git_context: Some(git_context),
         ..
-    } = serde_json::from_slice(&decrypted.plaintext).expect("fake worker request should decode")
+    } = request
     else {
-        panic!("expected SubmitLeasedPrompt with home turn context");
+        panic!("{stage}: expected SubmitLeasedPrompt with home turn context");
     };
     (
         peer,
@@ -306,7 +641,11 @@ async fn receive_fake_worker_peer_request(
     worker_machine_id: &str,
     worker_public_key: &str,
     worker_private_key: &str,
+    lifecycle_probe: Option<(&ClaimTestRelayLifecycleProbe, &'static str)>,
 ) -> FakeRelayPeerRequest {
+    if let Some((probe, operation)) = lifecycle_probe {
+        probe.record(&format!("{operation}_worker_request_receive_started"), None);
+    }
     let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
         .await
         .expect("fake relay should accept metadata connection")
@@ -336,7 +675,7 @@ async fn receive_fake_worker_peer_request(
         },
     )
     .await;
-    drop(discovery);
+    close_claim_test_discovery(&mut discovery, lifecycle_probe).await;
 
     let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
         .await
@@ -368,6 +707,9 @@ async fn receive_fake_worker_peer_request(
     .expect("fake worker should decrypt the public kernel request");
     let request = serde_json::from_slice(&decrypted.plaintext)
         .expect("fake worker request should deserialize");
+    if let Some((probe, operation)) = lifecycle_probe {
+        probe.record(&format!("{operation}_worker_request_received"), None);
+    }
     FakeRelayPeerRequest {
         socket,
         request_id,
@@ -410,6 +752,7 @@ struct ReceiptReconciliationFixture {
     dispatch: crate::app::KernelRemotePromptDispatch,
     successor_prompt: crate::session::PromptQueueItem,
     successor_prompt_id: String,
+    home_relay_token: String,
     home_public_key: String,
     worker_id: String,
     worker_machine_id: String,
@@ -424,7 +767,8 @@ async fn make_receipt_reconciliation_fixture(
 ) -> ReceiptReconciliationFixture {
     let mut home_config = crate::config::DaemonConfig::for_tests();
     home_config.relay_url = Some(relay_url.to_string());
-    home_config.relay_token = Some(format!("receipt-home-token-{suffix}"));
+    let home_relay_token = format!("receipt-home-token-{suffix}");
+    home_config.relay_token = Some(home_relay_token.clone());
     home_config.relay_request_timeout_ms = 3_000;
     let home_public_key = home_config.relay_public_key.clone();
     let worker_config = crate::config::DaemonConfig::for_tests();
@@ -434,12 +778,18 @@ async fn make_receipt_reconciliation_fixture(
     let worker_machine_id = format!("machine-receipt-{suffix}");
     let leased_agent_id = format!("leased-agent-receipt-{suffix}");
 
-    let mut app = DaemonApp::bootstrap(home_config).expect("home app should bootstrap");
+    let mut app = crate::test_support::bootstrap_authenticated_app(home_config)
+        .expect("home app should bootstrap with authenticated Codex test profiles");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            format!("workspace-receipt-{suffix}"),
-            format!("worktree-receipt-{suffix}"),
-        ))
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                format!("workspace-receipt-{suffix}"),
+                format!("worktree-receipt-{suffix}"),
+            )
+            .with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex").with_model("gpt-test"),
+            ),
+        )
         .expect("home session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -540,6 +890,7 @@ async fn make_receipt_reconciliation_fixture(
         dispatch,
         successor_prompt,
         successor_prompt_id,
+        home_relay_token,
         home_public_key,
         worker_id,
         worker_machine_id,
@@ -559,6 +910,7 @@ mod receipt_reconciliation {
             .expect("fake relay listener should bind");
         let relay_url = format!("ws://{}", listener.local_addr().unwrap());
         let fixture = make_receipt_reconciliation_fixture(&relay_url, "cancel-claimed").await;
+        let trace_relay_url = relay_url.clone();
         fixture
             .runtime
             .owned
@@ -577,13 +929,27 @@ mod receipt_reconciliation {
         let worker_machine_id = fixture.worker_machine_id.clone();
         let worker_public_key = fixture.worker_public_key.clone();
         let worker_private_key = fixture.worker_private_key.clone();
+        let home_relay_token = fixture.home_relay_token.clone();
         let home_public_key = fixture.home_public_key.clone();
         let leased_agent_id = fixture.leased_agent_id.clone();
         let session_id = fixture.session_id.clone();
         let agent_id = fixture.agent_id.clone();
         let prompt_id = fixture.dispatch.prompt_id.clone();
         let successor_prompt = fixture.successor_prompt.prompt().to_string();
+        let state_tags_successor_prompt = successor_prompt.clone();
+        let state_tags_runtime = fixture.runtime.clone();
+        let state_tags_session_id = fixture.session_id.clone();
+        let state_tags_agent_id = fixture.agent_id.clone();
         let run_id = "worker-run-cancel-claimed".to_string();
+        let relay_lifecycle_probe = ClaimTestRelayLifecycleProbe::new();
+        let server_lifecycle_probe = relay_lifecycle_probe.clone();
+        let heartbeat_probe = relay_lifecycle_probe.clone();
+        let executor_heartbeat = tokio::spawn(async move {
+            for beat in 1..=4 {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                heartbeat_probe.record(&format!("fake_relay_executor_heartbeat_{beat}"), None);
+            }
+        });
         let server = tokio::spawn(async move {
             let receipt_request = receive_fake_worker_peer_request(
                 &listener,
@@ -591,6 +957,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                Some((&server_lifecycle_probe, "receipt")),
             )
             .await;
             assert_eq!(receipt_request.target_id, worker_id);
@@ -601,6 +968,7 @@ mod receipt_reconciliation {
                     home_prompt_id: requested_prompt,
                 } if requested_agent == &leased_agent_id && requested_prompt == &prompt_id
             ));
+            server_lifecycle_probe.record("receipt_response_send_started", None);
             send_fake_worker_peer_response(
                 receipt_request,
                 &worker_id,
@@ -617,6 +985,7 @@ mod receipt_reconciliation {
                 },
             )
             .await;
+            server_lifecycle_probe.record("receipt_response_send_completed", None);
 
             let cancel_request = receive_fake_worker_peer_request(
                 &listener,
@@ -624,6 +993,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                Some((&server_lifecycle_probe, "cancel")),
             )
             .await;
             assert_eq!(cancel_request.target_id, worker_id);
@@ -643,6 +1013,7 @@ mod receipt_reconciliation {
             release_cancel_rx
                 .await
                 .expect("test should release the cancellation response");
+            server_lifecycle_probe.record("cancel_response_send_started", None);
             send_fake_worker_peer_response(
                 cancel_request,
                 &worker_id,
@@ -662,6 +1033,7 @@ mod receipt_reconciliation {
                 },
             )
             .await;
+            server_lifecycle_probe.record("cancel_response_send_completed", None);
 
             // Requiring the projection request next proves concurrent callers did not issue a
             // second cancellation request after the claimed send was acknowledged.
@@ -671,6 +1043,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                Some((&server_lifecycle_probe, "drain")),
             )
             .await;
             assert_eq!(drain_request.target_id, worker_id);
@@ -688,6 +1061,9 @@ mod receipt_reconciliation {
             release_drain_rx
                 .await
                 .expect("test should release the terminal projection");
+            let successor_trace_checkpoint =
+                relay_discovery::relay_discovery_test_trace_checkpoint(&trace_relay_url);
+            server_lifecycle_probe.record("drain_response_send_started", None);
             send_fake_worker_peer_response(
                 drain_request,
                 &worker_id,
@@ -712,6 +1088,7 @@ mod receipt_reconciliation {
                 },
             )
             .await;
+            server_lifecycle_probe.record("drain_response_send_completed", None);
 
             let (
                 mut successor_peer,
@@ -723,8 +1100,28 @@ mod receipt_reconciliation {
                 &listener,
                 &worker_id,
                 &worker_machine_id,
+                &home_relay_token,
+                &home_public_key,
                 &worker_public_key,
                 &worker_private_key,
+                "queued successor submission",
+                Some(successor_trace_checkpoint),
+                Some(&server_lifecycle_probe),
+                {
+                    let lifecycle_for_diagnostics = server_lifecycle_probe.clone();
+                    move || {
+                        format!(
+                            "{};relay_lifecycle=[{}]",
+                            claim_test_successor_state_tags(
+                                &state_tags_runtime,
+                                &state_tags_session_id,
+                                &state_tags_agent_id,
+                                &state_tags_successor_prompt,
+                            ),
+                            lifecycle_for_diagnostics.snapshot(),
+                        )
+                    }
+                },
             )
             .await;
             assert_ne!(successor_home_prompt_id, prompt_id);
@@ -816,6 +1213,7 @@ mod receipt_reconciliation {
         server
             .await
             .expect("fake worker should serve receipt, cancellation, and terminal projection");
+        executor_heartbeat.abort();
 
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
@@ -869,6 +1267,96 @@ mod receipt_reconciliation {
     }
 
     #[tokio::test]
+    async fn claimed_successor_handoff_reconstructs_current_intent_and_prunes_stale_phases() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "claim-handoff").await;
+        let mut claim = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&fixture.runtime.owned.remote_prompt_recoveries),
+            &fixture.session_id,
+            &fixture.agent_id,
+        )
+        .expect("the test should own the production recovery claim");
+        claim.mark_active_prompt(&fixture.dispatch.prompt_id);
+        fixture
+            .runtime
+            .owned
+            .begin_remote_prompt_cancellation(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .expect("cancellation intent should persist before advancement");
+        fixture
+            .runtime
+            .finalize_remote_prompt_cancellation_and_advance(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .expect("settled cancellation should promote the queued successor");
+
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("home session should remain available");
+        let active = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &fixture.agent_id)
+            .expect("queued successor should be active");
+        assert_eq!(active.prompt(), fixture.successor_prompt.prompt());
+        assert_ne!(active.id(), fixture.successor_prompt_id.as_str());
+        assert!(
+            claim.release_or_restart(),
+            "queued dispatch should wake its owner"
+        );
+        let pending = claim
+            .take_pending_dispatch()
+            .expect("claim should retain the exact promoted dispatch intent");
+        assert_eq!(pending.prompt_id.as_str(), active.id());
+        assert_eq!(
+            pending.source_attachment_id,
+            fixture.dispatch.source_attachment_id
+        );
+
+        let rebuilt = fixture
+            .runtime
+            .remote_prompt_dispatch_after_claim_restart(&fixture.session_id, &fixture.agent_id)
+            .await
+            .expect("claim restart should inspect current prompt state")
+            .expect("current accepted successor should remain dispatchable");
+        assert_eq!(rebuilt.prompt_id.as_str(), active.id());
+        assert_eq!(rebuilt.worker_kernel_id, fixture.worker_id);
+        assert_eq!(rebuilt.leased_agent_id, fixture.leased_agent_id);
+
+        fixture
+            .app
+            .lock()
+            .await
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &rebuilt.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect("dispatch phase should persist before transport");
+        assert!(fixture
+            .runtime
+            .remote_prompt_dispatch_after_claim_restart(&fixture.session_id, &fixture.agent_id)
+            .await
+            .expect("dispatching successor should remain held for reconciliation")
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn completed_worker_receipt_drains_projection_and_durably_promotes_one_successor() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -902,6 +1390,7 @@ mod receipt_reconciliation {
                 &listener_worker_machine_id,
                 &listener_worker_public_key,
                 &listener_worker_private_key,
+                None,
             )
             .await;
             assert_eq!(receipt_request.target_id, listener_worker_id);
@@ -940,6 +1429,7 @@ mod receipt_reconciliation {
                 &listener_worker_machine_id,
                 &listener_worker_public_key,
                 &listener_worker_private_key,
+                None,
             )
             .await;
             assert_eq!(projection_request.target_id, listener_worker_id);
@@ -1068,6 +1558,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                None,
             )
             .await;
             assert!(matches!(
@@ -1184,6 +1675,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                None,
             )
             .await;
             assert!(matches!(
@@ -1198,6 +1690,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                None,
             )
             .await;
             assert!(matches!(
@@ -1318,6 +1811,7 @@ mod receipt_reconciliation {
                 &listener_worker_machine_id,
                 &listener_worker_public_key,
                 &listener_worker_private_key,
+                None,
             )
             .await;
             assert_eq!(receipt_request.target_id, listener_worker_id);
@@ -1358,6 +1852,7 @@ mod receipt_reconciliation {
                 &listener_worker_machine_id,
                 &listener_worker_public_key,
                 &listener_worker_private_key,
+                None,
             )
             .await;
             assert_eq!(retry_request.target_id, listener_worker_id);
@@ -3043,17 +3538,27 @@ mod projection_drain {
     #[test]
     fn remote_prompt_projection_drain_claims_coalesce_restart_before_release() {
         let claims = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
-        let mut first =
-            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1")
-                .expect("first drain should claim the agent");
+        let mut first = RemotePromptProjectionDrainClaim::try_acquire(
+            Arc::clone(&claims),
+            "session-1",
+            "agent-1",
+        )
+        .expect("first drain should claim the agent");
 
-        let other_agent =
-            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-2", "agent-2")
-                .expect("a different agent must remain independently dispatchable");
+        let other_agent = RemotePromptProjectionDrainClaim::try_acquire(
+            Arc::clone(&claims),
+            "session-2",
+            "agent-2",
+        )
+        .expect("a different agent must remain independently dispatchable");
 
         assert!(
-            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1",)
-                .is_none(),
+            RemotePromptProjectionDrainClaim::try_acquire(
+                Arc::clone(&claims),
+                "session-1",
+                "agent-1",
+            )
+            .is_none(),
             "a duplicate drain must not start while the first owner is alive"
         );
         assert!(
@@ -3066,7 +3571,8 @@ mod projection_drain {
         );
 
         assert!(
-            RemotePromptAgentClaim::try_acquire(claims, "session-1", "agent-1",).is_some(),
+            RemotePromptProjectionDrainClaim::try_acquire(claims, "session-1", "agent-1",)
+                .is_some(),
             "an atomically released claim must allow reconnect recovery to start a new drain"
         );
         drop(other_agent);
@@ -3312,6 +3818,7 @@ mod dispatch_settlement {
         config.relay_url = Some(relay_url);
         config.relay_token = Some("claim-restart-test-token".to_string());
         config.relay_request_timeout_ms = 2_000;
+        let home_public_key = config.relay_public_key.clone();
         let worker_config = crate::config::DaemonConfig::for_tests();
         let worker_private_key = worker_config.relay_private_key.clone();
         let worker_public_key = worker_config.relay_public_key.clone();
@@ -3372,6 +3879,9 @@ mod dispatch_settlement {
         };
         let predecessor = make_submission("home-prompt-claim-a", "predecessor prompt");
         let predecessor_id = predecessor.prompt_id.clone();
+        let state_tags_runtime = runtime.clone();
+        let state_tags_session_id = session.id().to_string();
+        let state_tags_agent_id = agent.id().to_string();
         runtime.spawn_remote_prompt_dispatch(predecessor);
 
         let (predecessor_seen_tx, predecessor_seen_rx) = tokio::sync::oneshot::channel();
@@ -3388,8 +3898,14 @@ mod dispatch_settlement {
                 &listener,
                 WORKER_ID,
                 MACHINE_ID,
+                "claim-restart-test-token",
+                &home_public_key,
                 &worker_public_key,
                 &worker_private_key,
+                "predecessor submission",
+                None,
+                None,
+                || "state_tags_available=false".to_string(),
             )
             .await;
             predecessor_seen_tx
@@ -3414,6 +3930,9 @@ mod dispatch_settlement {
             )
             .await;
 
+            // The held claim now belongs to the current successor. The worker fixture follows
+            // the observed wire sequence directly: submit B after acknowledging A, without
+            // inventing an extra cancellation or completion for A.
             let (
                 mut successor_peer,
                 successor_request_id,
@@ -3424,8 +3943,21 @@ mod dispatch_settlement {
                 &listener,
                 WORKER_ID,
                 MACHINE_ID,
+                "claim-restart-test-token",
+                &home_public_key,
                 &worker_public_key,
                 &worker_private_key,
+                "successor submission",
+                None,
+                None,
+                move || {
+                    claim_test_successor_state_tags(
+                        &state_tags_runtime,
+                        &state_tags_session_id,
+                        &state_tags_agent_id,
+                        "successor prompt",
+                    )
+                },
             )
             .await;
             acknowledge_claim_test_prompt(

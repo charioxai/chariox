@@ -1,23 +1,130 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { test } from "node:test"
 
 import {
   MATRIX_SCHEMA,
+  CAPTURE_PROVENANCE_SCHEMA,
   ROW_DEFINITIONS,
   REPORT_SCHEMA,
   SHUTDOWN_EXPECTATIONS,
   compareManifests,
+  canonicalJson,
   createParityMatrixRunner,
   createSignedManifest,
   runEvidenceCommand,
   serializeReport,
+  validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
+import {
+  PROJECT_SETUP_PROOF_SCHEMA,
+  projectSetupTargetIdentityDigest,
+} from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 const SIGNING_KEY = Buffer.from("managed-ordinary-parity-matrix-fixture-key-20260920")
 const REVIEWED_COMMIT = "c899b9ce9fe3ca91d49e771d9bd6bbde07416576"
 const BUILD_ID = "build-kernel-20260920"
 const KERNEL_BUILD_ID = "kernel-build-ordinary-managed-20260920"
 const SOURCE_DIGEST = "sha256:" + "a".repeat(64)
+
+function captureProvenance(topology = "ordinary") {
+  const suffix = topology === "ordinary" ? "ordinary" : "path1"
+  return {
+    schema: CAPTURE_PROVENANCE_SCHEMA,
+    boundary: "official-provider-turn",
+    observed: true,
+    kernel_identity: {
+      kernel_id: `kernel-${suffix}`,
+      machine_id: `machine-${suffix}`,
+      transport: "local-unix-ipc",
+    },
+    session_id: `session-${suffix}`,
+    agent_id: `agent-${suffix}`,
+    attachment_id: `attachment-${suffix}`,
+    prompt_id: `prompt-${suffix}`,
+    prompt_origin: "chariox",
+    prompt_status: "running",
+    prompt_phase_start: "awaiting_first_output",
+    prompt_phase_end: "streaming",
+    provider: {
+      provider_run_id: `provider-run-${suffix}`,
+      name: "codex",
+      status: "Running",
+      process_status: "active",
+    },
+    process: {
+      pid: topology === "ordinary" ? 301 : 401,
+      linux_boot_id: "b4a8b0e7-0f5b-4fd8-bcd9-ccc1e8b3c5ac",
+      start_time_ticks: topology === "ordinary" ? "7001" : "8001",
+      ancestry_depth: 1,
+      executable_basename: "codex",
+      executable_path_sha256: `sha256:${"1".repeat(64)}`,
+      executable_sha256: `sha256:${"2".repeat(64)}`,
+      command_line_sha256: `sha256:${"3".repeat(64)}`,
+      current_working_directory_sha256: `sha256:${"4".repeat(64)}`,
+      launch_program_basename: "codex",
+      launch_program_sha256: `sha256:${"5".repeat(64)}`,
+      launch_arguments_sha256: `sha256:${"6".repeat(64)}`,
+      launch_working_directory_sha256: `sha256:${"7".repeat(64)}`,
+    },
+  }
+}
+
+function provenanceFingerprint(proof) {
+  return `sha256:${createHash("sha256").update(canonicalJson(proof)).digest("hex")}`
+}
+
+function fingerprint(value) {
+  return `sha256:${createHash("sha256").update(String(value), "utf8").digest("hex")}`
+}
+
+// Signed schema fixtures exercise parity semantics; they do not claim live kernel observations.
+function projectSetupProof(topology = "ordinary", overrides = {}) {
+  const suffix = topology === "ordinary" ? "ordinary" : "path1"
+  const capture = captureProvenance(topology)
+  const workerIdentity = fingerprint(`${suffix}-worker`)
+  const workerKernelIdentity = fingerprint(`${suffix}-worker-kernel`)
+  const platform = "linux-x86_64"
+  const timestamp = 1_790_000_000_000 + (topology === "ordinary" ? 0 : 10_000)
+  const snapshotDigest = fingerprint(`${suffix}-project-setup-snapshot`)
+  return {
+    schema: PROJECT_SETUP_PROOF_SCHEMA,
+    product_api_observation: "kernel-public-api",
+    ready_validation_verified: true,
+    status_fresh: true,
+    before_after_identity_stable: true,
+    home_kernel_identity_fingerprint: fingerprint(`${capture.kernel_identity.kernel_id}\0${capture.kernel_identity.machine_id}`),
+    session_identity_fingerprint: fingerprint(capture.session_id),
+    agent_identity_fingerprint: fingerprint(capture.agent_id),
+    project_identity_fingerprint: fingerprint(`${suffix}-project`),
+    operation_identity_fingerprint: fingerprint(`${suffix}-operation`),
+    operation_attempt: topology === "ordinary" ? 1 : 2,
+    operation_created_at_ms: timestamp,
+    status_updated_at_ms: timestamp + 500,
+    observation_started_at_ms: timestamp + 600,
+    observation_finished_at_ms: timestamp + 700,
+    worker_identity_fingerprint: workerIdentity,
+    worker_kernel_identity_fingerprint: workerKernelIdentity,
+    target_identity_digest: projectSetupTargetIdentityDigest(workerIdentity, workerKernelIdentity, platform),
+    platform,
+    definition_digest: `sha256:${"8".repeat(64)}`,
+    definition_origin: "utility_generated",
+    definition_source: "commands",
+    definition_identity_verified: true,
+    validation_command_count: 1,
+    validation_receipts: [{
+      command_digest: `sha256:${"9".repeat(64)}`,
+      exit_code: 0,
+      stdout_bytes: topology === "ordinary" ? 1 : 19,
+      stderr_bytes: topology === "ordinary" ? 0 : 3,
+    }],
+    before_snapshot_digest: snapshotDigest,
+    after_snapshot_digest: snapshotDigest,
+    transport_kind: topology === "ordinary" ? "relay" : "kernel-public-api",
+    endpoint_fingerprint: fingerprint(`${suffix}-endpoint`),
+    ...overrides,
+  }
+}
 
 const RESULT_TRUE_FIELDS = Object.freeze({
   "MP-01/mount_visibility": ["mounts_match_ordinary", "mount_probe_complete"],
@@ -44,7 +151,6 @@ const RESULT_TRUE_FIELDS = Object.freeze({
   "MP-08/session_agent_launch": ["session_created", "agent_created", "official_command"],
   "MP-08/terminal_file_git": ["terminal_ok", "file_ok", "git_ok"],
   "MP-08/attachments_permissions_capabilities": ["attachments_ok", "permissions_ok", "capabilities_ok"],
-  "MP-08/project_setup": ["project_setup_ok"],
   "MP-08/reconnect_orphan_recovery": ["reconnect_ok", "orphan_recovered"],
   "MP-08/restart_recovery": ["restart_recovered"],
   "MP-08/reconnect_history_result_identity": ["history_preserved", "result_identity_preserved"],
@@ -56,7 +162,7 @@ const RESULT_TRUE_FIELDS = Object.freeze({
   "MP-08/cleanup": ["owned_processes_gone", "owned_artifacts_removed", "foreign_processes_untouched", "cleanup_complete"],
 })
 
-function ordinaryResult(rowId, checkId) {
+function ordinaryResult(rowId, checkId, topology = "ordinary") {
   if (rowId === "MP-10" && checkId === "source_protocol_identity") {
     return {
       observed: true,
@@ -85,8 +191,17 @@ function ordinaryResult(rowId, checkId) {
       provider_version_observed: true,
     }
   }
+  if (rowId === "MP-08" && checkId === "project_setup") {
+    return { observed: true, project_setup_ok: true, project_setup_proof: projectSetupProof(topology) }
+  }
   if (rowId === "MP-10" && checkId === "capture_boundary") {
-    return { observed: true, boundary_verified: true, inside_provider_turn: true, independent: true }
+    return {
+      observed: true,
+      boundary_verified: true,
+      inside_provider_turn: true,
+      independent: true,
+      provenance_sha256: provenanceFingerprint(captureProvenance(topology)),
+    }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
     return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true }
@@ -161,7 +276,7 @@ function path1Result(rowId, checkId) {
       observed_delay_seconds: expectation.observesDelay ? configuredDelay : null,
     }
   }
-  return ordinaryResult(rowId, checkId)
+  return ordinaryResult(rowId, checkId, "path1")
 }
 
 function makeManifest(topology) {
@@ -172,7 +287,7 @@ function makeManifest(topology) {
       checks[checkId] = {
         status: "pass",
         result: topology === "ordinary"
-          ? ordinaryResult(definition.id, checkId)
+          ? ordinaryResult(definition.id, checkId, topology)
           : path1Result(definition.id, checkId),
         command: `collector-${topology} ${definition.id} ${checkId}`,
         evidence_refs: [`evidence://${topology}/${definition.id}/${checkId}`],
@@ -206,6 +321,7 @@ function makeManifest(topology) {
       inside_provider_turn: true,
       independent: true,
       fixture: true,
+      capture_provenance: captureProvenance(topology),
     },
     rows,
   }, SIGNING_KEY)
@@ -262,6 +378,168 @@ test("green fixture covers MP-01 through MP-10 and permits only the two exemptio
   assert.deepEqual(report.rows.map((row) => row.id), ROW_DEFINITIONS.map((row) => row.id))
   assert.deepEqual(report.rows.filter((row) => row.exemption).map((row) => row.id), ["MP-07", "MP-09"])
   assert.equal(report.failures.length, 0)
+})
+
+test("matrix v4 requires linked provider-turn provenance and allows capture-specific fingerprints", () => {
+  const ordinary = makeManifest("ordinary")
+  const path1 = makeManifest("path1")
+  assert.notEqual(
+    ordinary.rows["MP-10"].checks.capture_boundary.result.provenance_sha256,
+    path1.rows["MP-10"].checks.capture_boundary.result.provenance_sha256,
+  )
+  assert.equal(compare(ordinary, path1).status, "pass")
+
+  const unbound = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+    delete manifest.collection.capture_provenance
+  })
+  const report = compare(unbound, path1)
+  assert.equal(report.status, "fail")
+  assert.ok(report.failures.some((failure) => failure.code === "capture_provenance_missing"))
+  assert.ok(report.failures.some((failure) => failure.code === "capture_provenance_fingerprint_mismatch"))
+})
+
+test("Project setup parity accepts distinct bound captures and rejects forged identity or changed shared semantics", () => {
+  const ordinary = makeManifest("ordinary")
+  const path1 = makeManifest("path1")
+  const ordinaryProof = ordinary.rows["MP-08"].checks.project_setup.result.project_setup_proof
+  const path1Proof = path1.rows["MP-08"].checks.project_setup.result.project_setup_proof
+
+  for (const field of [
+    "home_kernel_identity_fingerprint",
+    "session_identity_fingerprint",
+    "agent_identity_fingerprint",
+    "project_identity_fingerprint",
+    "operation_identity_fingerprint",
+    "operation_attempt",
+    "operation_created_at_ms",
+    "status_updated_at_ms",
+    "observation_started_at_ms",
+    "observation_finished_at_ms",
+    "target_identity_digest",
+    "before_snapshot_digest",
+    "after_snapshot_digest",
+    "endpoint_fingerprint",
+  ]) {
+    assert.notDeepEqual(ordinaryProof[field], path1Proof[field], field)
+  }
+  assert.notEqual(ordinaryProof.validation_receipts[0].stdout_bytes, path1Proof.validation_receipts[0].stdout_bytes)
+  assert.equal(compare(ordinary, path1).status, "pass")
+
+  for (const field of [
+    "home_kernel_identity_fingerprint",
+    "session_identity_fingerprint",
+    "agent_identity_fingerprint",
+  ]) {
+    const forged = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+      manifest.rows["MP-08"].checks.project_setup.result.project_setup_proof[field] = fingerprint(`forged:${field}`)
+    })
+    const validation = validateManifest(forged, {
+      expectedTopology: "ordinary",
+      expectedReviewedCommit: REVIEWED_COMMIT,
+      expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY,
+      allowFixture: true,
+    })
+    assert.equal(validation.ok, false, field)
+    assert.ok(validation.failures.some((failure) => (
+      failure.code === "project_setup_capture_identity_mismatch" && failure.detail === field
+    )), field)
+  }
+
+  for (const variant of [
+    {
+      name: "definition digest",
+      mutate(proof) { proof.definition_digest = fingerprint("different-definition") },
+    },
+    {
+      name: "validation command digest",
+      mutate(proof) { proof.validation_receipts[0].command_digest = fingerprint("different-validation-command") },
+    },
+  ]) {
+    const changedPath1 = cloneAndResign(makeManifest("path1"), (manifest) => {
+      variant.mutate(manifest.rows["MP-08"].checks.project_setup.result.project_setup_proof)
+    })
+    const report = compare(makeManifest("ordinary"), changedPath1)
+    assert.equal(report.status, "fail", variant.name)
+    assert.ok(report.failures.some((failure) => (
+      failure.code === "unapproved_difference" && failure.rowId === "MP-08" && failure.checkId === "project_setup"
+    )), variant.name)
+  }
+})
+
+test("matrix v4 rejects remote-command boundary claims without an authority", () => {
+  const ordinary = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+    manifest.collection.boundary = "remote-command"
+  })
+  const report = compare(ordinary, makeManifest("path1"))
+  assert.equal(report.status, "fail")
+  assert.ok(report.failures.some((failure) => failure.code === "capture_boundary_invalid"))
+})
+
+test("matrix v4 explicitly rejects v3 and v4 boolean-only MP-08 evidence", () => {
+  for (const schema of ["chariox.managed-ordinary-parity-matrix/v3", MATRIX_SCHEMA]) {
+    const legacy = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+      manifest.schema = schema
+      manifest.rows["MP-08"].checks.project_setup.result = {
+        observed: true,
+        project_setup_ok: true,
+      }
+    })
+    const validation = validateManifest(legacy, {
+      expectedTopology: "ordinary",
+      expectedReviewedCommit: REVIEWED_COMMIT,
+      expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY,
+      allowFixture: true,
+    })
+    assert.equal(validation.ok, false, schema)
+    if (schema !== MATRIX_SCHEMA) {
+      assert.ok(validation.failures.some((failure) => failure.code === "schema_mismatch"), schema)
+    }
+    assert.ok(validation.failures.some((failure) => (
+      failure.code === "check_result_shape_invalid"
+        && failure.rowId === "MP-08"
+        && failure.checkId === "project_setup"
+    )), schema)
+  }
+})
+
+test("MP-08 rejects injected, stale, mismatched, and incomplete Project setup proof", () => {
+  const variants = [
+    { name: "injected transport", proof: { product_api_observation: "injected-test-transport" } },
+    { name: "not ready", proof: { ready_validation_verified: false } },
+    { name: "stale status", proof: { status_updated_at_ms: 1_789_000_000_000 } },
+    { name: "target digest mismatch", proof: { target_identity_digest: `sha256:${"c".repeat(64)}` } },
+    { name: "changed after snapshot", proof: { after_snapshot_digest: `sha256:${"d".repeat(64)}` } },
+    { name: "failed validation receipt", proof: { validation_receipts: [{
+      command_digest: `sha256:${"9".repeat(64)}`,
+      exit_code: 1,
+      stdout_bytes: 1,
+      stderr_bytes: 0,
+    }] } },
+    { name: "unsupported proof key", proof: { caller_project_identity: `sha256:${"e".repeat(64)}` } },
+  ]
+  for (const variant of variants) {
+    const ordinary = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+      Object.assign(manifest.rows["MP-08"].checks.project_setup.result.project_setup_proof, variant.proof)
+    })
+    const validation = validateManifest(ordinary, {
+      expectedTopology: "ordinary",
+      expectedReviewedCommit: REVIEWED_COMMIT,
+      expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY,
+      allowFixture: true,
+    })
+    assert.equal(validation.ok, false, variant.name)
+    assert.ok(validation.failures.some((failure) => failure.code === "project_setup_proof_invalid"), variant.name)
+  }
+
+  const incompletePath1 = cloneAndResign(makeManifest("path1"), (manifest) => {
+    manifest.rows["MP-08"].checks.project_setup.result.project_setup_proof.validation_receipts = null
+  })
+  const incompleteReport = compare(makeManifest("ordinary"), incompletePath1)
+  assert.equal(incompleteReport.status, "fail")
+  assert.ok(incompleteReport.failures.some((failure) => failure.code === "project_setup_proof_invalid"))
 })
 
 test("missing row and missing shutdown check fail closed", () => {

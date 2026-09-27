@@ -287,8 +287,8 @@ test("tab lifecycle operations stay document-bound and use browser target comman
     action: "close",
   });
   assert.deepEqual(
-    connection.calls.find((call) => call.method === "Target.activateTarget")?.params,
-    { targetId: "target-a" },
+    connection.calls.find((call) => call.method === "Page.bringToFront"),
+    { method: "Page.bringToFront", params: {}, sessionId: "session-a" },
   );
   assert.deepEqual(
     connection.calls.find((call) => call.method === "Target.closeTarget")?.params,
@@ -301,6 +301,29 @@ test("tab lifecycle operations stay document-bound and use browser target comman
   await assert.rejects(
     browser.manageTab({ target_id: "target-b", document_id: "loader-b", action: "detach" }),
     (error) => error.code === "browser_tab_action_invalid",
+  );
+});
+
+test("tab activation brings the selected page to front before focus is reconciled", async () => {
+  const connection = new PageActivationConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const before = await browser.reconcile(viewport);
+  assert.equal(before.focused_target_id, "target-b");
+
+  await browser.manageTab({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "activate",
+  });
+
+  const after = await browser.reconcile(viewport);
+  assert.equal(after.focused_target_id, "target-a");
+  assert.equal(
+    connection.calls.some(
+      (call) => call.method === "Page.bringToFront" && call.sessionId === "session-a",
+    ),
+    true,
+    "activation must use the selected page session so a subsequent focus read sees it",
   );
 });
 
@@ -1036,6 +1059,29 @@ class FakeConnection {
     if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
     if (method === "Runtime.callFunctionOn") return { result: { value: "file" } };
     return {};
+  }
+}
+
+class PageActivationConnection extends FakeConnection {
+  constructor() {
+    super();
+    this.focusedTargetId = "target-b";
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Page.bringToFront") {
+      this.focusedTargetId = sessionId === "session-a" ? "target-a" : "target-b";
+      return super.send(method, params, sessionId);
+    }
+    if (method === "Runtime.evaluate" && params.expression === "document.visibilityState === 'visible'") {
+      this.calls.push({ method, params, sessionId });
+      return {
+        result: {
+          value: this.focusedTargetId === (sessionId === "session-a" ? "target-a" : "target-b"),
+        },
+      };
+    }
+    return super.send(method, params, sessionId);
   }
 }
 

@@ -1831,10 +1831,18 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
   case "$*" in
     *relay-peer-protocol-version*) printf '%s\n' "$EXPECTED_PROTOCOL" ;;
     *runtime-source-revision*) printf '%s\n' "$EXPECTED_REVISION" ;;
-    *io.chariox.selkies-version*runtime-image*) printf '0.0.0.dev0\n' ;;
-    *io.chariox.selkies-source-revision*runtime-image*) printf '%s\n' "$EXPECTED_SELKIES_REVISION" ;;
-    *io.chariox.selkies-source*runtime-image*) printf 'https://github.com/selkies-project/selkies/commit/%s\n' "$EXPECTED_SELKIES_REVISION" ;;
-    *io.chariox.selkies-license*runtime-image*) printf '%s\n' "$EXPECTED_SELKIES_LICENSE" ;;
+    *io.chariox.selkies-version*)
+      case "$*" in *"$SELKIES_CAPABLE_IMAGE"*) printf '0.0.0.dev0\n' ;; esac
+      ;;
+    *io.chariox.selkies-source-revision*)
+      case "$*" in *"$SELKIES_CAPABLE_IMAGE"*) printf '%s\n' "$EXPECTED_SELKIES_REVISION" ;; esac
+      ;;
+    *io.chariox.selkies-source*)
+      case "$*" in *"$SELKIES_CAPABLE_IMAGE"*) printf 'https://github.com/selkies-project/selkies/commit/%s\n' "$EXPECTED_SELKIES_REVISION" ;; esac
+      ;;
+    *io.chariox.selkies-license*)
+      case "$*" in *"$SELKIES_CAPABLE_IMAGE"*) printf '%s\n' "$EXPECTED_SELKIES_LICENSE" ;; esac
+      ;;
     *'{{.Id}}'*) printf 'sha256:backup-image\n' ;;
   esac
   exit 0
@@ -1863,15 +1871,32 @@ if [ "$1" = "rm" ] && [ "${2:-}" = "saved-slice" ]; then
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
-  [ -f "$DOCKER_VOLUME" ]
-  exit $?
+  if [ ! -f "$DOCKER_VOLUME" ]; then
+    printf 'Error response from daemon: get saved-slice-home: no such volume\n' >&2
+    exit 1
+  fi
+  case "$*" in
+    *io.chariox.saved-home.archive-sha256*) cat "$DOCKER_VOLUME.archive-sha256"; exit $? ;;
+    *io.chariox.saved-home.initialization-token*) cat "$DOCKER_VOLUME.initialization-token"; exit $? ;;
+  esac
+  exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
-  rm -f "$DOCKER_VOLUME"
+  rm -f "$DOCKER_VOLUME" "$DOCKER_VOLUME.archive-sha256" "$DOCKER_VOLUME.initialization-token"
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
   : > "$DOCKER_VOLUME"
+  for argument in "$@"; do
+    case "$argument" in
+      io.chariox.saved-home.archive-sha256=*)
+        printf '%s' "${argument#*=}" > "$DOCKER_VOLUME.archive-sha256"
+        ;;
+      io.chariox.saved-home.initialization-token=*)
+        printf '%s' "${argument#*=}" > "$DOCKER_VOLUME.initialization-token"
+        ;;
+    esac
+  done
   exit 0
 fi
 if [ "$1" = "create" ]; then
@@ -1920,34 +1945,38 @@ exit 0
     let selkies_license = selkies_lock["selkies"]["license"]
         .as_str()
         .expect("Selkies lock should include its license");
-    let output = Command::new("bash")
-        .arg(script)
-        .arg("restore-state")
-        .env("PATH", path)
-        .env("TMPDIR", &root)
-        .env("DOCKER_LOG", &log)
-        .env("DOCKER_CONTAINER", &container)
-        .env("DOCKER_RUNNING", &running)
-        .env("DOCKER_VOLUME", &volume)
-        .env(
-            "EXPECTED_PROTOCOL",
-            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION.to_string(),
-        )
-        .env("EXPECTED_REVISION", &revision)
-        .env("EXPECTED_SELKIES_REVISION", selkies_revision)
-        .env("EXPECTED_SELKIES_LICENSE", selkies_license)
-        .env("CHARIOX_SLICE_BUILD_CONTEXT_DIGEST", &revision)
-        .env("CHARIOX_SLICE_NAME", "saved-slice")
-        .env("CHARIOX_SLICE_HOME_VOLUME", "saved-slice-home")
-        .env("CHARIOX_SLICE_DOCKER_IMAGE", "backup-image")
-        .env("CHARIOX_SLICE_BASE_IMAGE", "runtime-image")
-        .env("CHARIOX_SLICE_BUILD_IMAGE", "never")
-        .env("CHARIOX_SLICE_SAVED_HOME_ARCHIVE", &archive)
-        .env("CHARIOX_SLICE_START_DESKTOP", "1")
-        .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "1")
-        .env("CHARIOX_SLICE_START_RUNTIME", "1")
-        .output()
-        .expect("slice restore command should execute");
+    let run_restore = |selkies_capable_image: &str| {
+        Command::new("bash")
+            .arg(&script)
+            .arg("restore-state")
+            .env("PATH", &path)
+            .env("TMPDIR", &root)
+            .env("DOCKER_LOG", &log)
+            .env("DOCKER_CONTAINER", &container)
+            .env("DOCKER_RUNNING", &running)
+            .env("DOCKER_VOLUME", &volume)
+            .env(
+                "EXPECTED_PROTOCOL",
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION.to_string(),
+            )
+            .env("EXPECTED_REVISION", &revision)
+            .env("EXPECTED_SELKIES_REVISION", selkies_revision)
+            .env("EXPECTED_SELKIES_LICENSE", selkies_license)
+            .env("SELKIES_CAPABLE_IMAGE", selkies_capable_image)
+            .env("CHARIOX_SLICE_BUILD_CONTEXT_DIGEST", &revision)
+            .env("CHARIOX_SLICE_NAME", "saved-slice")
+            .env("CHARIOX_SLICE_HOME_VOLUME", "saved-slice-home")
+            .env("CHARIOX_SLICE_DOCKER_IMAGE", "backup-image")
+            .env("CHARIOX_SLICE_BASE_IMAGE", "runtime-image")
+            .env("CHARIOX_SLICE_BUILD_IMAGE", "never")
+            .env("CHARIOX_SLICE_SAVED_HOME_ARCHIVE", &archive)
+            .env("CHARIOX_SLICE_START_DESKTOP", "1")
+            .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "1")
+            .env("CHARIOX_SLICE_START_RUNTIME", "1")
+            .output()
+            .expect("slice restore command should execute")
+    };
+    let output = run_restore("runtime-image");
     assert!(
         output.status.success(),
         "slice restore failed: {}",
@@ -1964,7 +1993,12 @@ exit 0
     };
     let remove_container = position("rm saved-slice");
     let remove_volume = position("volume rm saved-slice-home");
-    let create_volume = position("volume create saved-slice-home");
+    let create_volume = calls
+        .iter()
+        .position(|call| {
+            call.starts_with("volume create ") && call.ends_with(" saved-slice-home")
+        })
+        .unwrap_or_else(|| panic!("missing labeled home volume creation: {calls:?}"));
     let create_container = position("create --name saved-slice ");
     for label in [
         "io.chariox.selkies-version",
@@ -2033,6 +2067,29 @@ exit 0
     assert!(
         volume.exists(),
         "replacement home volume should remain available"
+    );
+
+    std::fs::write(&log, b"").expect("compatible-image Docker log should reset");
+    let compatible_output = run_restore("backup-image");
+    assert!(
+        compatible_output.status.success(),
+        "compatible saved-image restore failed: {}",
+        String::from_utf8_lossy(&compatible_output.stderr)
+    );
+    let compatible_calls_text =
+        std::fs::read_to_string(&log).expect("compatible-image Docker log should read");
+    let compatible_calls = compatible_calls_text.lines().collect::<Vec<_>>();
+    let compatible_create = compatible_calls
+        .iter()
+        .find(|call| call.starts_with("create --name saved-slice "))
+        .expect("compatible saved image should create the replacement container");
+    assert!(
+        compatible_create.ends_with(" backup-image"),
+        "a runtime-compatible saved image should be retained: {compatible_calls:?}"
+    );
+    assert!(
+        !running.exists(),
+        "compatible saved-image restore must also leave the replacement stopped"
     );
 
     let _ = std::fs::remove_dir_all(root);

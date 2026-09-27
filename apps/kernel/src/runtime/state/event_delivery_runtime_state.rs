@@ -257,6 +257,7 @@ impl KernelRuntimeState {
         };
         #[cfg(test)]
         run_event_activity_gate_hook(&BEFORE_EVENT_ACTIVITY_GATE);
+        let _admission = self.owned.begin_managed_activity_admission()?;
         let activity_mutation = self.owned.begin_managed_activity_mutation();
         #[cfg(test)]
         run_event_activity_gate_hook(&AFTER_EVENT_ACTIVITY_GATE);
@@ -338,6 +339,7 @@ impl KernelRuntimeState {
             return Err(error);
         }
 
+        drop(_admission);
         let dispatches = match self
             .owned
             .workflow_start_next_queued_prompt_for_response(&session_id)

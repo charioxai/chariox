@@ -385,7 +385,9 @@ export class BrowserCdpClient {
     }
     assertNotCancelled(signal);
     if (action === "activate") {
-      await connection.send("Target.activateTarget", { targetId });
+      const sessionId = await this.ensureTargetSession(connection, targetId);
+      assertNotCancelled(signal);
+      await connection.send("Page.bringToFront", {}, sessionId);
     } else {
       const result = await connection.send("Target.closeTarget", { targetId });
       if (result?.success !== true) {

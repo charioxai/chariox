@@ -455,6 +455,42 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
     request: RelayPeerRequest,
     response_timeout: Duration,
 ) -> Result<RelayPeerResponse, DaemonError> {
+    #[cfg(test)]
+    {
+        let mut trace =
+            relay_discovery::TemporaryPeerTestTrace::new(config.relay_url.as_deref());
+        let result = send_peer_request_via_temporary_connection_with_timeout_inner(
+            config,
+            target,
+            request,
+            response_timeout,
+            &mut trace,
+        )
+        .await;
+        trace.finish(if result.is_ok() {
+            "temporary_peer_call_returned_ok"
+        } else {
+            "temporary_peer_call_returned_error"
+        });
+        return result;
+    }
+    #[cfg(not(test))]
+    send_peer_request_via_temporary_connection_with_timeout_inner(
+        config,
+        target,
+        request,
+        response_timeout,
+    )
+    .await
+}
+
+async fn send_peer_request_via_temporary_connection_with_timeout_inner(
+    config: &crate::config::DaemonConfig,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+    response_timeout: Duration,
+    #[cfg(test)] test_trace: &mut relay_discovery::TemporaryPeerTestTrace,
+) -> Result<RelayPeerResponse, DaemonError> {
     let target_ref = target
         .daemon_id
         .as_deref()
@@ -477,6 +513,28 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
             operation: "send relay peer request",
             message: "relay_token is not configured".to_string(),
         })?;
+    #[cfg(test)]
+    let kernel = {
+        let peer_call_id = test_trace.peer_call_id();
+        test_trace.record("metadata_discovery_started", None);
+        match relay_discovery::get_live_kernel_for_temporary_peer_test_call(
+            config,
+            target_ref,
+            peer_call_id,
+        )
+        .await
+        {
+            Ok(kernel) => {
+                test_trace.record("metadata_discovery_returned_ok", None);
+                kernel
+            }
+            Err(error) => {
+                test_trace.record("metadata_discovery_returned_error", None);
+                return Err(error);
+            }
+        }
+    };
+    #[cfg(not(test))]
     let kernel = relay_discovery::get_live_kernel(config, target_ref).await?;
     let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay peer request",
@@ -487,6 +545,8 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
         &kernel.public_key,
         &plaintext,
     )?;
+    #[cfg(test)]
+    test_trace.record("registered_peer_connect_started", None);
     let (mut socket, _) = timeout(response_timeout, connect_async(&relay_url))
         .await
         .map_err(|_| DaemonError::LocalTransport {
@@ -497,6 +557,11 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
             operation: "connect temporary relay peer socket",
             message: error.to_string(),
         })?;
+    #[cfg(test)]
+    test_trace.record(
+        "registered_peer_socket_connected",
+        relay_discovery::relay_discovery_test_local_addr(&socket),
+    );
     let request_id = format!(
         "daemon-peer-tmp-{}-{}-{}",
         std::process::id(),
