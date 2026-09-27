@@ -1,7 +1,11 @@
 use super::*;
-use crate::durable_state::app_event_maintenance::{
-    AppEventMaintenanceOperation, AppEventMaintenanceOutcome,
+use crate::durable_state::{
+    app_automations::AppAutomationOutcome,
+    app_event_maintenance::{
+        AppEventClassification, AppEventMaintenanceOperation, AppEventMaintenanceOutcome,
+    },
 };
+use chariox_app_runtime::app_outbox::AutomationStatus;
 
 fn queued_fixture(fixture: &Fixture) -> (DurableKernelStateStore, SessionService, String, Receipt) {
     let (store, mut sessions, session, receipt) = setup(fixture);
@@ -151,4 +155,38 @@ fn restart_recovers_exact_legacy_queue_session_but_not_a_mismatched_association(
         status(&store, &fixture, &receipt.receipt_id).state,
         ReceiptState::Queued
     );
+}
+
+#[test]
+fn a_delivery_to_a_deleted_target_breaks_the_automation_and_tells_the_owner() {
+    let fixture = Fixture::new();
+    let (store, _sessions, _session, receipt) = setup(&fixture);
+    let classify = |receipt: Receipt| AppEventMaintenanceOperation::Classify {
+        owner: "local".into(),
+        catalog: fixture.catalog.clone(),
+        receipt,
+        classification: AppEventClassification::TargetGone,
+    };
+    let AppEventMaintenanceOutcome::Classified(failed) = store
+        .maintain_app_events(classify(receipt.clone()), budget())
+        .unwrap()
+    else {
+        panic!("expected a classified receipt");
+    };
+    assert_eq!(failed.state, ReceiptState::Failed);
+    let AppAutomationOutcome::Listed(automations) = store
+        .mutate_app_automation("local", fixture.catalog.clone(), AppAutomationMutation::List, budget())
+        .unwrap()
+    else {
+        panic!("expected automations");
+    };
+    assert_eq!(automations[0].status, AutomationStatus::Broken);
+    assert_eq!(automations[0].revision, receipt.automation_revision + 1);
+    let installation = fixture.catalog.installation_id();
+    let logs = store.app_logs("local", installation, 0, 10).unwrap();
+    assert_eq!(logs.len(), 1);
+    assert!(logs[0]
+        .message
+        .starts_with("Automation automation stopped: its workflow target is gone"));
+    assert_eq!(logs[0].fields["undelivered"], 1);
 }

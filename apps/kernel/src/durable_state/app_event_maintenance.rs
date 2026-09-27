@@ -33,6 +33,9 @@ type Result<T> = std::result::Result<T, AppEventMaintenanceError>;
 pub(crate) enum AppEventClassification {
     Retryable,
     Failed,
+    /// Failed because the automation's workflow target is gone; the
+    /// automation breaks with it and the App's log says so.
+    TargetGone,
     Expired,
 }
 pub(crate) enum AppEventMaintenanceOperation {
@@ -216,6 +219,45 @@ fn apply(
                     ReceiptState::Failed,
                     now,
                 )?,
+                AppEventClassification::TargetGone => {
+                    let failed = AppOutbox::settle_in(
+                        &tx,
+                        &catalog,
+                        &owner,
+                        &receipt.receipt_id,
+                        receipt.revision,
+                        ReceiptState::Failed,
+                        now,
+                    )?;
+                    if let Some(undelivered) = AppOutbox::break_in(
+                        &tx,
+                        &owner,
+                        catalog.installation_id(),
+                        &receipt.automation_id,
+                        receipt.automation_revision,
+                    )? {
+                        let lost = match undelivered {
+                            0 => String::new(),
+                            1 => ", and 1 more accepted event will not be delivered".into(),
+                            count => format!(", and {count} more accepted events will not be delivered"),
+                        };
+                        let mut fields = serde_json::Map::new();
+                        fields.insert("automation_id".into(), receipt.automation_id.clone().into());
+                        fields.insert("undelivered".into(), (undelivered + 1).into());
+                        super::app_logs::append_kernel_notice_in(
+                            &tx,
+                            &owner,
+                            catalog.installation_id(),
+                            now,
+                            &format!(
+                                "Automation {} stopped: its workflow target is gone, so this event was not delivered{lost}. Add the automation again with a new target.",
+                                receipt.automation_id
+                            ),
+                            fields,
+                        )?;
+                    }
+                    failed
+                }
                 AppEventClassification::Expired => AppOutbox::settle_in(
                     &tx,
                     &catalog,

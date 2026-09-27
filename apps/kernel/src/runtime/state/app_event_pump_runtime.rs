@@ -271,7 +271,7 @@ fn dispatch_order(sessions: BTreeSet<String>, after: Option<&str>) -> Vec<String
         .collect()
 }
 fn classify_failure(error: &AppEventDeliveryError) -> Option<AppEventClassification> {
-    use AppEventClassification::{Failed, Retryable};
+    use AppEventClassification::{Failed, Retryable, TargetGone};
     match error {
         AppEventDeliveryError::Limit => Some(Retryable),
         AppEventDeliveryError::AutomationChanged => Some(Failed),
@@ -288,10 +288,9 @@ fn classify_failure(error: &AppEventDeliveryError) -> Option<AppEventClassificat
         AppEventDeliveryError::Outbox(
             OutboxError::Invalid | OutboxError::Schema | OutboxError::Corrupt | OutboxError::TooOld,
         ) => Some(Failed),
+        AppEventDeliveryError::Target(AppAutomationError::InvalidTarget) => Some(TargetGone),
         AppEventDeliveryError::Target(
-            AppAutomationError::InvalidTarget
-            | AppAutomationError::NotOwner
-            | AppAutomationError::TargetChanged,
+            AppAutomationError::NotOwner | AppAutomationError::TargetChanged,
         ) => Some(Failed),
         // Lifecycle cancellation, current-generation/signer fencing, paused
         // bindings, concurrent revision changes and storage uncertainty do not

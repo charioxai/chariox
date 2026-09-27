@@ -152,20 +152,56 @@ impl AppOutbox {
             .collect::<Vec<_>>();
         let mut broken = Vec::with_capacity(changed.len());
         for id in changed {
-            tx.execute(
-                "UPDATE app_automations SET status='broken',revision=revision+1
-                 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",
-                params![trusted_owner, catalog.installation_id(), id],
-            )?;
-            let undelivered: u64 = tx.query_row(
-                "SELECT COUNT(*) FROM app_outbox WHERE owner_id=?1 AND installation_id=?2
-                 AND automation_id=?3 AND state IN ('accepted','retryable')",
-                params![trusted_owner, catalog.installation_id(), id],
-                |row| row.get::<_, i64>(0).map(|count| count as u64),
-            )?;
+            let undelivered = Self::break_one_in(tx, trusted_owner, catalog.installation_id(), &id)?;
             broken.push((id, undelivered));
         }
         Ok(broken)
+    }
+
+    /// A delivery found the automation's workflow target gone (for example,
+    /// the workflow was deleted). The App cannot pick a replacement: the
+    /// automation becomes `broken` with a new revision, only from the revision
+    /// that delivery used, and its other undelivered events fail with it.
+    /// Returns how many those are, or `None` if the automation already changed.
+    pub fn break_in(
+        tx: &Transaction<'_>,
+        trusted_owner: &str,
+        installation_id: &str,
+        automation_id: &str,
+        revision: u64,
+    ) -> Result<Option<u64>> {
+        let current: Option<i64> = tx
+            .query_row(
+                "SELECT revision FROM app_automations WHERE owner_id=?1 AND installation_id=?2
+                 AND automation_id=?3 AND status IN ('active','paused')
+                 AND revision<9223372036854775807",
+                params![trusted_owner, installation_id, automation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.and_then(|value| u64::try_from(value).ok()) != Some(revision) {
+            return Ok(None);
+        }
+        Self::break_one_in(tx, trusted_owner, installation_id, automation_id).map(Some)
+    }
+
+    fn break_one_in(
+        tx: &Transaction<'_>,
+        trusted_owner: &str,
+        installation_id: &str,
+        automation_id: &str,
+    ) -> Result<u64> {
+        tx.execute(
+            "UPDATE app_automations SET status='broken',revision=revision+1
+             WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",
+            params![trusted_owner, installation_id, automation_id],
+        )?;
+        Ok(tx.query_row(
+            "SELECT COUNT(*) FROM app_outbox WHERE owner_id=?1 AND installation_id=?2
+             AND automation_id=?3 AND state IN ('accepted','retryable')",
+            params![trusted_owner, installation_id, automation_id],
+            |row| row.get::<_, i64>(0).map(|count| count as u64),
+        )?)
     }
 
     /// An uninstalled App's automations are disabled with a new revision, so a
