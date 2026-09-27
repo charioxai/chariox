@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, realpath, rm, symlink, readFile, stat } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import nodeTest from "node:test";
+import { execFileSync } from "node:child_process";
 import { uploadBrowserFiles } from "./browser-controller-files.mjs";
 import { BrowserUploadStaging, uploadCopyTimeoutMs } from "./browser-controller-upload-staging.mjs";
 
@@ -108,6 +109,16 @@ test("upload authorization compares exact nanoseconds without float millisecond 
   assert.equal(await readFile(lease.files[0], "utf8"), "approved");
   await lease.discard();
   await assert.rejects(data.prepare("browser-a", { metadata: [{ ...approved, mtimeNs: approved.mtimeNs + 1n }] }), /source changed/);
+});
+
+test("staged timestamps preserve exact descriptor nanoseconds at millisecond boundaries", async t => {
+  const data = await fixture(t);
+  for (const ns of ["1790533992267000000", "1790533992267123456"]) {
+    execFileSync("python3", ["-c", "import os,sys; n=int(sys.argv[2]); os.utime(sys.argv[1], ns=(n,n))", data.file, ns]);
+    const lease = await data.prepare();
+    assert.equal((await stat(lease.files[0], { bigint: true })).mtimeNs, BigInt(ns));
+    await lease.discard();
+  }
 });
 
 test("cancellation and copy deadline fail before native dispatch", async t => {

@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, utimes } from "node:fs/promises";
+import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,6 +23,21 @@ function denied(message) {
 async function resolveOpenedFile(source) {
   if (process.platform !== "linux") throw denied("secure browser upload staging requires Linux descriptor resolution");
   return realpath(`/proc/self/fd/${source.fd}`);
+}
+
+async function preserveTimestamp(output, nanoseconds) {
+  // Node's utimes converts through floating-point seconds and can lose a
+  // microsecond at a millisecond boundary. Pass the owned descriptor, not a
+  // path that would need reopening, to Python's integer-nanosecond syscall.
+  await new Promise((resolve, reject) => {
+    const child = spawn("python3", ["-c", "import os,sys; n=int(sys.argv[1]); os.utime(3, ns=(n,n))", String(nanoseconds)],
+      { stdio: ["ignore", "ignore", "ignore", output.fd], timeout: 2000, killSignal: "SIGKILL" });
+    child.once("error", reject);
+    child.once("close", code => code === 0 ? resolve() : reject(denied("upload timestamp preservation failed")));
+  });
+  if ((await output.stat({ bigint: true })).mtimeNs !== nanoseconds) {
+    throw denied("upload filesystem did not preserve the approved timestamp");
+  }
 }
 
 // Chromium's File objects can outlive the controller and CDP connection. Once
@@ -137,10 +152,10 @@ export class BrowserUploadStaging {
               throw denied("upload source changed while staging");
             }
             check();
+            await preserveTimestamp(output, approved.mtimeNs);
+            check();
             await output.sync();
           } finally { await output.close(); }
-          const lastModified = new Date(Number(approved.mtimeNs / 1000000n));
-          await utimes(destination, lastModified, lastModified);
           staged.push(destination);
         } finally { await source.close(); }
       }
