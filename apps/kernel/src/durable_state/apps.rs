@@ -326,14 +326,19 @@ pub(crate) fn forget_uninstalled(
 }
 
 /// App data records of an uninstalled installation, deleted together with the
-/// release it kept. Its private storage is deleted by the supervisor first.
-const DATA_TABLES: [&str; 6] = [
+/// release it kept: structured state, wakes, logs, and the file contents it was
+/// handed or offered. Its private storage (where a platform has one) is
+/// deleted by the supervisor first.
+const DATA_TABLES: [&str; 9] = [
     "app_state_values",
     "app_state_heads",
     "app_state_snapshot_values",
     "app_state_migrations",
     "app_wakes",
     "app_logs",
+    "app_file_grants",
+    "app_file_picks",
+    "app_file_exports",
 ];
 
 fn forget_data(
