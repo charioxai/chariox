@@ -463,9 +463,7 @@ impl CommandRouter {
                 &required_scopes,
             )?;
             let _interest = self.event_interest_lock.lock().await;
-            if let LocalDaemonRequest::CreateWorkflowEventBinding(binding) = request {
-                self.refuse_app_route_interest(binding)?;
-            }
+            self.refuse_app_route_interest(request)?;
             let response = self
                 .workflow_runtime
                 .dispatch_workflow_command(command.clone(), request.clone())
