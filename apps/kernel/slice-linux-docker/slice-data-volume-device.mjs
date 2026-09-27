@@ -128,7 +128,7 @@ export function selectHetznerVolumeDevice(devices, expectedSerial, rootSourcePat
   if (!devicePath) fail("Hetzner Volume device path is missing")
   return {
     path: devicePath,
-    serial: expectedSerial,
+    serial: selected.device.serial,
     sizeBytes,
     filesystemType: typeof selected.device.fstype === "string" ? selected.device.fstype : "",
     filesystemUuid: typeof selected.device.uuid === "string" ? selected.device.uuid : "",

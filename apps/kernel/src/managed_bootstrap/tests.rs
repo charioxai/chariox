@@ -13,19 +13,73 @@ use super::cloud::{
     BootstrapCloudClient, ConfirmRequest, ConfirmResponse, ExchangeRequest, ExchangeResponse,
     ManagedCloudRelayProfile, RuntimeIdentityReportResponse,
 };
-use super::freshness::ManagedKernelRuntimeIdentityReport;
+use super::freshness::{ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks, ManagedKernelRuntimeIdentityReport};
 use super::prepare_managed_kernel;
 use super::release::verify_release;
-use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus};
+use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus, ManagedBootstrapEnvelope};
 use super::supervisor::run_kernel_once;
 use super::{
-    validate_pre_reimage_observation_binding, ConfirmedManagedKernelRegistration,
+    expected_data_volume_identity, validate_pre_reimage_observation_binding,
+    validate_rebuild_volume_evidence, ConfirmedManagedKernelRegistration,
     ManagedKernelContextPlan, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV,
 };
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
 
 mod disposable_worker;
+
+#[test]
+fn path1_rebuild_freshness_must_match_the_protected_volume_identity() {
+    let config = BootstrapConfig {
+        process_home: PathBuf::new(),
+        chariox_home: PathBuf::new(),
+        envelope_path: PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH),
+        receipt_path: PathBuf::new(),
+        manifest_path: PathBuf::new(),
+        signature_path: PathBuf::new(),
+        public_key_path: PathBuf::new(),
+        kernel_binary: PathBuf::new(),
+        kernel_host: "127.0.0.1".to_string(),
+        kernel_port: 1,
+    };
+    let envelope = ManagedBootstrapEnvelope {
+        schema_version: 3,
+        cloud_api_url: "https://cloud.example.test".to_string(),
+        environment_id: "environment-1".to_string(),
+        token: format!("mkboot_{}", "x".repeat(40)),
+        expires_at: "2026-09-27T00:00:00Z".to_string(),
+        runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        managed_repository_root: None,
+        provider_rebuild_action_id: Some("12345".to_string()),
+        expected_data_volume_serial: Some("12345".to_string()),
+        expected_data_volume_size_gb: Some(20),
+    };
+    let evidence = ManagedKernelFreshnessEvidence {
+        schema_version: Some(3),
+        linux_boot_id: "01234567-89ab-cdef-0123-456789abcdef".to_string(),
+        os_machine_id: "b".repeat(32),
+        runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        runtime_source_commit: "c".repeat(40),
+        runtime_source_tree: "d".repeat(40),
+        residue_checks: ManagedKernelResidueChecks {
+            old_services_absent: true,
+            old_processes_absent: true,
+            old_state_absent: true,
+        },
+        data_volume_serial: Some("12345".to_string()),
+        data_volume_size_gb: Some(20),
+    };
+
+    assert_eq!(expected_data_volume_identity(&envelope).unwrap(), Some(("12345", 20)));
+    validate_rebuild_volume_evidence(&config, Some(&envelope), &evidence)
+        .expect("protected volume identity is matched");
+    let mut wrong_serial = evidence.clone();
+    wrong_serial.data_volume_serial = Some("54321".to_string());
+    assert!(validate_rebuild_volume_evidence(&config, Some(&envelope), &wrong_serial).is_err());
+    let mut wrong_size = evidence;
+    wrong_size.data_volume_size_gb = Some(30);
+    assert!(validate_rebuild_volume_evidence(&config, Some(&envelope), &wrong_size).is_err());
+}
 
 #[test]
 fn pre_reimage_observation_binding_requires_exact_confirmed_generation_and_current_identity() {

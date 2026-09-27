@@ -1,5 +1,6 @@
 mod cloud;
 mod context_plan;
+mod data_volume_observation;
 mod freshness;
 mod provider_path;
 mod release;
@@ -26,7 +27,7 @@ use cloud::{
 };
 pub use context_plan::ManagedKernelContextPlan;
 use freshness::{
-    capture_freshness_evidence, capture_old_generation_runtime_identity_report,
+    capture_freshness_evidence_with_volume, capture_old_generation_runtime_identity_report,
     validate_freshness_evidence, ManagedKernelFreshnessEvidence,
     ManagedKernelRuntimeIdentityReport,
 };
@@ -705,7 +706,69 @@ fn capture_rebuild_freshness_evidence(
         &config.kernel_binary,
         trusted_builder_public_key_path()?.as_deref(),
     )?;
-    Ok(Some(capture_freshness_evidence(config, &verified)?))
+    let expected_data_volume = expected_data_volume_identity(envelope)?;
+    let evidence = capture_freshness_evidence_with_volume(
+        config,
+        &verified,
+        expected_data_volume,
+    )?;
+    validate_rebuild_volume_evidence(config, Some(envelope), &evidence)?;
+    Ok(Some(evidence))
+}
+
+fn expected_data_volume_identity(
+    envelope: &ManagedBootstrapEnvelope,
+) -> Result<Option<(&str, u32)>, DaemonError> {
+    match (
+        envelope.schema_version,
+        envelope.expected_data_volume_serial.as_deref(),
+        envelope.expected_data_volume_size_gb,
+    ) {
+        (3, Some(serial), Some(size_gb)) => Ok(Some((serial, size_gb))),
+        (1 | 2, None, None) => Ok(None),
+        _ => Err(bootstrap_error(
+            "managed protected data-volume identity is incomplete",
+        )),
+    }
+}
+
+fn validate_rebuild_volume_evidence(
+    config: &BootstrapConfig,
+    envelope: Option<&ManagedBootstrapEnvelope>,
+    evidence: &ManagedKernelFreshnessEvidence,
+) -> Result<(), DaemonError> {
+    let path1 = config.envelope_path.as_path()
+        == std::path::Path::new(state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
+    if path1 {
+        if evidence.schema_version != Some(3) {
+            return Err(bootstrap_error(
+                "Path-1 reimage freshness evidence is missing its admitted data-volume identity",
+            ));
+        }
+        if let Some(envelope) = envelope {
+            let Some((expected_serial, expected_size_gb)) = expected_data_volume_identity(envelope)?
+            else {
+                return Err(bootstrap_error(
+                    "Path-1 freshness evidence has no protected data-volume expectation",
+                ));
+            };
+            if evidence.data_volume_serial.as_deref() != Some(expected_serial)
+                || evidence.data_volume_size_gb != Some(expected_size_gb)
+            {
+                return Err(bootstrap_error(
+                    "Path-1 freshness evidence does not match its protected data-volume identity",
+                ));
+            }
+        }
+    } else if evidence.schema_version.is_some()
+        || evidence.data_volume_serial.is_some()
+        || evidence.data_volume_size_gb.is_some()
+    {
+        return Err(bootstrap_error(
+            "shared-host freshness evidence contains Path-1 storage identity",
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_rebuild_freshness_evidence(
@@ -748,6 +811,7 @@ fn ensure_rebuild_freshness_evidence(
             bootstrap_error("managed confirmed reimage freshness evidence is missing")
         })?;
         validate_freshness_evidence(evidence, &verified.digest)?;
+        validate_rebuild_volume_evidence(config, envelope, evidence)?;
         if evidence.runtime_source_commit != verified.source_commit
             || evidence.runtime_source_tree != verified.source_tree
         {
@@ -762,7 +826,13 @@ fn ensure_rebuild_freshness_evidence(
             "managed reimage confirmation envelope is missing",
         ));
     }
-    receipt.freshness_evidence = Some(capture_freshness_evidence(config, &verified)?);
+    let expected_data_volume = envelope
+        .map(expected_data_volume_identity)
+        .transpose()?
+        .flatten();
+    let evidence = capture_freshness_evidence_with_volume(config, &verified, expected_data_volume)?;
+    validate_rebuild_volume_evidence(config, envelope, &evidence)?;
+    receipt.freshness_evidence = Some(evidence);
     receipt.persist(&config.receipt_path)?;
     Ok(receipt)
 }
