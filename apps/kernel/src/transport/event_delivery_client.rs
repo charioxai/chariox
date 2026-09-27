@@ -59,13 +59,7 @@ struct DeliveryAcceptanceQueue {
 impl DeliveryAcceptanceQueue {
     fn new(runtime_state: KernelRuntimeState) -> Self {
         Self::with_acceptor(Arc::new(move |delivery| {
-            if delivery.binding_id.starts_with("app-route-") {
-                return runtime_state.accept_app_event_delivery(delivery);
-            }
-            runtime_state
-                .accept_workflow_event_delivery(delivery)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
+            runtime_state.accept_event_delivery(delivery)
         }))
     }
 

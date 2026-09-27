@@ -273,6 +273,50 @@ impl KernelRuntimeState {
         }
     }
 
+    /// An AEDS delivery, to the App route or workflow binding it names. A
+    /// binding whose events moved to an App (paused while an App route
+    /// receives its interest) takes no more deliveries: one it accepted before
+    /// is a replay after a lost acknowledgement, and one it never accepted
+    /// goes to the App's inbox, which keeps one copy per occurrence.
+    pub(crate) fn accept_event_delivery(
+        &self,
+        delivery: chariox_event_protocol::EventDeliveryEnvelope,
+    ) -> Result<(), String> {
+        if delivery.binding_id.starts_with("app-route-") {
+            return self.accept_app_event_delivery(delivery);
+        }
+        let paused = self
+            .owned
+            .session_store
+            .read()
+            .find_workflow_event_binding(&delivery.binding_id)
+            .filter(|(_, binding)| {
+                binding.status == crate::session::WorkflowEventBindingStatus::Paused
+            });
+        if let Some((session_id, binding)) = paused {
+            if let Some(route) = self.app_route_claiming(&binding.event_interest_key)? {
+                let accepted = self
+                    .owned
+                    .session_store
+                    .read()
+                    .workflow_event_delivery_was_accepted(&session_id, &delivery.delivery_id)
+                    .map_err(|error| error.to_string())?;
+                if accepted {
+                    return Ok(());
+                }
+                return self.accept_app_event_delivery(
+                    chariox_event_protocol::EventDeliveryEnvelope {
+                        binding_id: route,
+                        ..delivery
+                    },
+                );
+            }
+        }
+        self.accept_workflow_event_delivery(delivery)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     /// Protocol 358: an occurrence for an App inbox route. Returns Ok when
     /// the source may be acknowledged: the occurrence is durably in the
     /// App's inbox (or already was), or it can never be (the route is gone,

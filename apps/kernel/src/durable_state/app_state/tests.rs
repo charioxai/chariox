@@ -179,7 +179,8 @@ fn package_variant(
 ) -> (Vec<u8>, TrustedPublisher) {
     package_build(with_tools, with_network, version, schema, false)
 }
-/// An App that also declares the incoming event `received` (any object).
+/// An App that also declares the incoming event `received` (a generator
+/// occurrence, or just `text`).
 pub(super) fn inbox_package() -> (Vec<u8>, TrustedPublisher) {
     package_build(false, false, "1.0.0", 0, true)
 }
@@ -226,7 +227,8 @@ fn package_build(
                 if incoming {
                     events.push(json!({"name":"received","direction":"incoming",
                         "schemaVersion":1,"payloadSchema":{"type":"object","additionalProperties":false,
-                        "properties":{"text":{"type":"string"}}}}));
+                        "properties":{"text":{"type":"string"},"source":{},"occurred_at":{"type":"string"},
+                            "metadata":{},"artifacts":{"type":"array"},"reply_context":{}}}}));
                 }
                 serde_json::to_vec(&json!({ "events": events })).unwrap()
             },
