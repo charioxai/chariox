@@ -12,25 +12,27 @@ const builderScript = join(repositoryRoot, "scripts/build-managed-kernel-release
 const sourceCommit = "a".repeat(40)
 const sourceTree = "b".repeat(40)
 const sourceBlob = "c".repeat(40)
-const buildkitNode = "release-builder0"
+const builderName = "chariox-path1-release-20260926-2cpu8g"
+const buildkitNode = "chariox-path1-release-20260926-2cpu8g0"
+const buildkitEndpoint = "unix:///Users/miguel/.chariox/dev/browser-computer-use/path1-build-20260926.sock"
 const memoryGiB = 1024 ** 3
 
 function buildxInspect(driver = "docker-container", nodeName = buildkitNode, includeStatus = true) {
   return [
-    "Name:          release-builder",
+    `Name:          ${builderName}`,
     `Driver:        ${driver}`,
     "",
     "Nodes:",
-    `  Name:          ${nodeName}`,
-    "  Endpoint:      default",
-    ...(includeStatus ? ["  Status:        running"] : []),
+    `Name:          ${nodeName}`,
+    `Endpoint:      ${buildkitEndpoint}`,
+    ...(includeStatus ? ["Status:        running"] : []),
     "",
   ].join("\n")
 }
 
 function builderContainer({
   id = "d".repeat(64),
-  name = buildkitNode,
+  name = `buildx_buildkit_${buildkitNode}`,
   nanoCpus = 0,
   cpuQuota = 200_000,
   cpuPeriod = 100_000,
@@ -104,12 +106,13 @@ if [ "$1" = buildx ] && [ "$2" = inspect ]; then
   exit 0
 fi
 if [ "$1" = --context ] || [ "$1" = --host ]; then
-  [ "$2" = default ] || [ "$1" = --host ] || exit 93
+  [ "$1" = --host ] && [ "$2" = '${buildkitEndpoint}' ] || exit 93
   shift 2
 fi
 if [ "$1" = inspect ]; then
   [ "$2" = --type ] && [ "$3" = container ] || exit 94
   [ "$4" = --format ] && [ "$5" = '{{json .}}' ] || exit 95
+  [ "$6" = 'buildx_buildkit_${buildkitNode}' ] || exit 99
   if [ "$scenario" = malformed-container ]; then printf '%s\\n' '{bad json'; exit 0; fi
   inspect_count=0
   [ ! -f "$bin_dir/inspect-count" ] || inspect_count=$(cat "$bin_dir/inspect-count")
@@ -127,6 +130,9 @@ if [ "$1" = buildx ] && [ "$2" = build ]; then
     sleep 20 &
     build_pid=$!
     wait "$build_pid"
+  elif [ "$scenario" = build-timeout-escaped-holder ]; then
+    '${process.execPath}' -e 'const {spawn}=require("node:child_process"); const fs=require("node:fs"); const holder=spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000)"], {detached:true, stdio:["ignore",1,2]}); holder.unref(); fs.writeFileSync(process.argv[1], String(holder.pid))' "$bin_dir/escaped-child-pid"
+    sleep 20
   fi
   destination=
   previous=
@@ -168,17 +174,18 @@ exit 98
       await writeFile(join(bin, "inspect-count"), "0")
       await writeFile(trace, "")
     },
-    run(extraArguments = [], includeBuilder = true) {
+    run(extraArguments = [], includeBuilder = true, executionTimeoutMs) {
       return spawnSync(process.execPath, [
         builderScript,
         "--source-repository", source,
         "--source-commit", sourceCommit,
         "--builder-signing-key", keyPath,
-        ...(includeBuilder ? ["--builder", "release-builder"] : []),
+        ...(includeBuilder ? ["--builder", builderName] : []),
         "--output", output,
         ...extraArguments,
       ], {
         encoding: "utf8",
+        timeout: executionTimeoutMs,
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
@@ -238,6 +245,12 @@ test("managed release build requires a bounded, already-running Buildx builder b
       message: /does not match its inspected node/,
     },
     {
+      label: "bare Buildx node name is not its backing container",
+      scenario: "bare-node-container",
+      container: builderContainer({ name: buildkitNode }),
+      message: /does not match its inspected node/,
+    },
+    {
       label: "unbounded swap setting",
       scenario: "unbounded-swap",
       container: builderContainer({ memorySwap: -1 }),
@@ -252,7 +265,7 @@ test("managed release build requires a bounded, already-running Buildx builder b
     {
       label: "mismatched inspected builder identity",
       scenario: "wrong-builder",
-      builder: buildxInspect().replace("release-builder", "other-builder"),
+      builder: buildxInspect().replace(builderName, "other-builder"),
       message: /identity does not match/,
     },
     {
@@ -289,11 +302,11 @@ test("managed release build requires a bounded, already-running Buildx builder b
   assert.equal(admitted.status, 0, admitted.stderr)
   const trace = (await readFile(fixture.trace, "utf8")).trim().split("\n")
   assert.equal(trace.length, 5)
-  assert.match(trace[0], /^buildx inspect release-builder$/)
-  assert.match(trace[1], /^--context default inspect --type container --format /)
-  assert.match(trace[2], /^buildx build --builder release-builder --pull --platform linux\/amd64 --target managed-release-artifacts /)
-  assert.match(trace[3], /^buildx inspect release-builder$/)
-  assert.match(trace[4], /^--context default inspect --type container --format /)
+  assert.equal(trace[0], `buildx inspect ${builderName}`)
+  assert.ok(trace[1].startsWith(`--host ${buildkitEndpoint} inspect --type container --format `), trace[1])
+  assert.ok(trace[2].startsWith(`buildx build --builder ${builderName} --pull --platform linux/amd64 --target managed-release-artifacts `), trace[2])
+  assert.equal(trace[3], `buildx inspect ${builderName}`)
+  assert.ok(trace[4].startsWith(`--host ${buildkitEndpoint} inspect --type container --format `), trace[4])
   assert.doesNotMatch(trace.join("\n"), /--bootstrap|buildx create|buildx stop|buildx rm/)
   assert.deepEqual((await readdir(fixture.output)).sort(), [
     "build-attestation.json", "build-attestation.sig", "builder-public-key",
@@ -314,8 +327,32 @@ test("managed release build deadline terminates a stalled build command", async 
   assert.equal(result.status, 1, result.stderr)
   assert.match(result.stderr, /managed release build timed out/)
   const trace = await readFile(fixture.trace, "utf8")
-  assert.match(trace, /buildx build --builder release-builder/)
+  assert.ok(trace.split("\n").some((line) => line.startsWith(`buildx build --builder ${builderName} `)))
   assert.equal(await readFile(join(fixture.bin, "build-cancelled"), "utf8"), "cancelled")
+  assert.equal(await readdir(root).then((entries) => entries.includes("output")), false)
+  assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".new-output-")), [])
+  assert.deepEqual(await readdir(fixture.temp), [])
+})
+
+test("managed release build closes inherited pipes after a detached descendant survives cancellation", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-escaped-output-"))
+  const fixture = await makeFixture(root)
+  context.after(async () => {
+    try {
+      const pid = Number(await readFile(join(fixture.bin, "escaped-child-pid"), "utf8"))
+      if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, "SIGKILL")
+    } catch {}
+    await rm(root, { recursive: true, force: true })
+  })
+  await fixture.configure({ scenario: "build-timeout-escaped-holder" })
+
+  const startedAt = Date.now()
+  const result = fixture.run(["--build-timeout-seconds", "1"], true, 20_000)
+  const elapsedMs = Date.now() - startedAt
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /managed release build timed out/)
+  assert.ok(elapsedMs < 19_000, `script remained open for ${elapsedMs}ms`)
+  assert.ok(Number(await readFile(join(fixture.bin, "escaped-child-pid"), "utf8")) > 0)
   assert.equal(await readdir(root).then((entries) => entries.includes("output")), false)
   assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".new-output-")), [])
   assert.deepEqual(await readdir(fixture.temp), [])
@@ -331,7 +368,7 @@ test("managed release build withholds signing if its inspected builder changes d
   assert.equal(result.status, 1, result.stderr)
   assert.match(result.stderr, /identity or resource limits changed during the release build/)
   const trace = (await readFile(fixture.trace, "utf8")).trim().split("\n")
-  assert.match(trace[2], /^buildx build --builder release-builder/)
+  assert.ok(trace[2].startsWith(`buildx build --builder ${builderName}`))
   assert.equal(await readdir(root).then((entries) => entries.includes("output")), false)
   assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".new-output-")), [])
   assert.deepEqual(await readdir(fixture.temp), [])

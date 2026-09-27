@@ -20,6 +20,8 @@ const MAX_PREFLIGHT_TIMEOUT_SECONDS = 60
 const DEFAULT_BUILD_TIMEOUT_SECONDS = 2 * 60 * 60
 const MAX_BUILD_TIMEOUT_SECONDS = 4 * 60 * 60
 const MAX_DOCKER_OUTPUT_BYTES = 4 * 1024 * 1024
+const POST_EXIT_OUTPUT_DRAIN_MS = 1_000
+const FORCED_OUTPUT_CLOSE_MS = 250
 const MAX_BUILDKIT_CPUS = 8
 const MAX_BUILDKIT_MEMORY_BYTES = 16 * 1024 ** 3
 const MAX_BUILDKIT_MEMORY_WITH_SWAP_BYTES = 32 * 1024 ** 3
@@ -96,26 +98,56 @@ function runCommand(command, args, {
     let outputLimitExceeded = false
     let spawnError
     let forceKillTimer
+    let forcedCloseTimer
+    let postExitDrainTimer
     let terminationStarted = false
     let interruptedSignal
     let parentSignalCount = 0
+    let exitedStatus = null
+    let exitedSignal = null
+    let settled = false
+
+    const finish = (status = exitedStatus, signal = exitedSignal, forceClose = false) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (forceKillTimer) clearTimeout(forceKillTimer)
+      if (forcedCloseTimer) clearTimeout(forcedCloseTimer)
+      if (postExitDrainTimer) clearTimeout(postExitDrainTimer)
+      for (const [parentSignal, handler] of parentSignalHandlers) {
+        process.removeListener(parentSignal, handler)
+      }
+      if (forceClose) {
+        child.stdout?.unpipe?.()
+        child.stderr?.unpipe?.()
+        child.stdout?.destroy?.()
+        child.stderr?.destroy?.()
+      }
+      resolvePromise({
+        status,
+        signal,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        timedOut,
+        outputLimitExceeded,
+        spawnError,
+        interruptedSignal,
+        stdioStalled: forceClose,
+      })
+    }
 
     const terminate = () => {
       if (terminationStarted) return
       terminationStarted = true
       try {
-        // Docker CLI forwards termination to Buildx; its command context reaches
-        // the BuildKit Solve RPC, whose cancellation stops the remote solve.
-        // Allow that path to drain before the bounded process-group fallback.
-        if (gracefulCancellation) child.kill("SIGTERM")
-        else signalProcessTree(child, "SIGTERM")
+        // The CLI plugin shutdown path has no remote cancellation acknowledgment.
+        // Signal the owned process group to stop the local Docker/Buildx clients.
+        signalProcessTree(child, "SIGTERM")
       } catch {}
       forceKillTimer = setTimeout(() => {
-        if (gracefulCancellation) {
-          try { signalProcessTree(child, "SIGKILL") } catch {}
-          return
-        }
         try { signalProcessTree(child, "SIGKILL") } catch {}
+        forcedCloseTimer = setTimeout(() => finish(exitedStatus, exitedSignal, true), FORCED_OUTPUT_CLOSE_MS)
+        forcedCloseTimer.unref?.()
       }, gracefulCancellation ? BUILD_CANCELLATION_GRACE_MS : 250)
       forceKillTimer.unref?.()
     }
@@ -131,6 +163,8 @@ function runCommand(command, args, {
           parentSignalCount += 1
           if (parentSignalCount > 1) {
             try { signalProcessTree(child, "SIGKILL") } catch {}
+            forcedCloseTimer = setTimeout(() => finish(exitedStatus, exitedSignal, true), FORCED_OUTPUT_CLOSE_MS)
+            forcedCloseTimer.unref?.()
             return
           }
           interruptedSignal = signal
@@ -143,11 +177,6 @@ function runCommand(command, args, {
 
     if (captureOutput || streamOutput) {
       const collect = (chunks, label) => (chunk) => {
-        if (streamOutput) {
-          const destination = label === "stdout" ? process.stdout : process.stderr
-          destination.write(chunk)
-          return
-        }
         if (label === "stdout") stdoutBytes += chunk.length
         else stderrBytes += chunk.length
         if (stdoutBytes + stderrBytes > MAX_DOCKER_OUTPUT_BYTES) {
@@ -159,27 +188,25 @@ function runCommand(command, args, {
         }
         chunks.push(chunk)
       }
-      child.stdout.on("data", collect(stdout, "stdout"))
-      child.stderr.on("data", collect(stderr, "stderr"))
+      if (streamOutput) {
+        child.stdout.pipe(process.stdout)
+        child.stderr.pipe(process.stderr)
+      } else {
+        child.stdout.on("data", collect(stdout, "stdout"))
+        child.stderr.on("data", collect(stderr, "stderr"))
+      }
     }
     child.on("error", (error) => { spawnError = error })
-    child.on("close", (status, signal) => {
-      clearTimeout(timeout)
-      if (forceKillTimer) clearTimeout(forceKillTimer)
-      for (const [parentSignal, handler] of parentSignalHandlers) {
-        process.removeListener(parentSignal, handler)
+    child.on("exit", (status, signal) => {
+      exitedStatus = status
+      exitedSignal = signal
+      if (!terminationStarted) {
+        // A detached descendant can inherit a pipe and hold `close` open after
+        // the command itself exits. Drain briefly, then close those descriptors.
+        postExitDrainTimer = setTimeout(() => finish(status, signal, true), POST_EXIT_OUTPUT_DRAIN_MS)
       }
-      resolvePromise({
-        status,
-        signal,
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
-        timedOut,
-        outputLimitExceeded,
-        spawnError,
-        interruptedSignal,
-      })
     })
+    child.on("close", (status, signal) => finish(status, signal))
   })
 }
 
@@ -212,11 +239,12 @@ function parseBuildxInspect(output, expectedBuilderName) {
     const match = /^(\s*)([A-Za-z][A-Za-z ]*):\s*(.*?)\s*$/.exec(line)
     if (!match) continue
     const indentation = match[1].length
-    if (indentation === 2 && match[2] === "Name") {
+    if (indentation !== 0 && indentation !== 2) continue
+    if (match[2] === "Name") {
       currentNode = new Map()
       nodes.push(currentNode)
     }
-    if (currentNode && indentation === 2) {
+    if (currentNode) {
       const values = currentNode.get(match[2]) ?? []
       values.push(match[3])
       currentNode.set(match[2], values)
@@ -295,7 +323,9 @@ function validateBuilderContainer(container, node) {
   if (typeof container.Id !== "string" || !/^[a-f0-9]{64}$/.test(container.Id)) {
     throw new Error("managed builder container identity is malformed")
   }
-  if (container.Name !== `/${node.name}`) throw new Error("managed builder container does not match its inspected node")
+  if (container.Name !== `/buildx_buildkit_${node.name}`) {
+    throw new Error("managed builder container does not match its inspected node")
+  }
   if (!container.State || container.State.Running !== true) {
     throw new Error("managed builder containers must already be running")
   }
@@ -358,6 +388,7 @@ async function dockerOutput(args, options, label, deadlineMs) {
   })
   if (result.timedOut) throw new Error(`${label} timed out`)
   if (result.outputLimitExceeded) throw new Error(`${label} output exceeded the inspection limit`)
+  if (result.stdioStalled) throw new Error(`${label} output did not close after its process exited`)
   if (result.spawnError || result.status !== 0) throw new Error(`${label} failed`)
   return result.stdout
 }
@@ -376,7 +407,7 @@ async function verifyManagedBuilder(options) {
   for (const node of builder.nodes) {
     const inspectArgs = [
       ...dockerEndpointArguments(node.endpoint),
-      "inspect", "--type", "container", "--format", "{{json .}}", node.name,
+      "inspect", "--type", "container", "--format", "{{json .}}", `buildx_buildkit_${node.name}`,
     ]
     const containerOutput = await dockerOutput(inspectArgs, options, "docker inspect", deadlineMs)
     inspectedBytes += Buffer.byteLength(containerOutput)
@@ -514,6 +545,7 @@ async function build(options) {
       throw new Error(`locked managed release build interrupted by ${dockerBuild.interruptedSignal}`)
     }
     if (dockerBuild.spawnError) throw new Error("locked managed release artifact export could not start")
+    if (dockerBuild.stdioStalled) throw new Error("locked managed release build output did not close")
     if (dockerBuild.status !== 0) {
       throw new Error(`locked managed release artifact export failed with status ${dockerBuild.status ?? "unknown"}`)
     }
