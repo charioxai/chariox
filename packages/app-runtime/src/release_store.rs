@@ -412,7 +412,12 @@ mod unix {
             tree: &ExpectedTree<'_>,
             checkpoint: &mut impl FnMut(StageCheckpoint) -> Result<()>,
         ) -> Result<StagedRelease> {
-            if !dir.try_lock()? {
+            // A release another installation is running holds shared worker
+            // leases. Reusing a sealed release only reads it, and a shared lock
+            // still excludes a publisher or collection; an unsealed one waits.
+            if !dir.try_lock()?
+                && (!dir.try_lock_shared()? || dir.0.metadata()?.mode() & 0o7777 != 0o500)
+            {
                 return Err(ReleaseStoreError::Busy);
             }
             self.finish(name, digest, &dir, tree, true, checkpoint)

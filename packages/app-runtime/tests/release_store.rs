@@ -270,10 +270,10 @@ fn verified_worker_lease_retains_shared_publication_lock_until_last_consumer_dra
     let observer = fs::File::open(&staged.path).unwrap();
     let exclusive = || unsafe { libc::flock(observer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     assert_ne!(exclusive(), 0);
-    assert!(matches!(
-        store.stage(&package, &archive, budget()),
-        Err(ReleaseStoreError::Busy)
-    ));
+    // Installing the same release again while it runs reuses the sealed tree
+    // under a shared lock; the publication lock stays with the workers.
+    assert!(store.stage(&package, &archive, budget()).unwrap().reused);
+    assert_ne!(exclusive(), 0);
     drop(first);
     assert_ne!(exclusive(), 0);
     drop(second);
