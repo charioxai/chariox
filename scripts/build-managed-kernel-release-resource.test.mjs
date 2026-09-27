@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, verify } from "node:crypto"
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -70,6 +70,7 @@ function builderContainer({
 }
 
 async function makeFixture(root) {
+  root = await realpath(root)
   const bin = join(root, "bin")
   const source = join(root, "source-repository")
   const temp = join(root, "tmp")
@@ -243,6 +244,7 @@ exit 98
   await writeFile(join(bin, "inspect-count"), "0")
 
   return {
+    root,
     bin,
     home,
     keys,
@@ -566,8 +568,8 @@ test("managed release restart keeps the builder leased until the exact prior sou
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-restart-barrier-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
-  const callerOne = join(root, "caller-one")
-  const callerTwo = join(root, "caller-two")
+  const callerOne = join(fixture.root, "caller-one")
+  const callerTwo = join(fixture.root, "caller-two")
   await Promise.all([mkdir(callerOne), mkdir(callerTwo)])
   await fixture.configure({ scenario: "timeout-still-running" })
 
