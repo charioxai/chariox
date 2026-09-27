@@ -551,24 +551,25 @@ fn validate_persisted_state(
     state: &PersistedQuiescenceState,
     kernel_id: &str,
 ) -> Result<(), DaemonError> {
+    let mut challenge_ids = std::collections::HashSet::with_capacity(state.tombstones.len());
+    let valid_tombstones = state.tombstones.iter().all(|tombstone| {
+        valid_reservation(tombstone, kernel_id)
+            && !tombstone.admission_fenced
+            && tombstone.decisions.last().is_some_and(|decision| {
+                decision.outcome == ManagedKernelQuiescenceOutcome::KeepRunning
+            })
+            // challenge_id is the existing replay key used by reserve and release handling.
+            && challenge_ids.insert(tombstone.challenge.challenge_id.as_str())
+    });
     let valid = state.kernel_id == kernel_id
         && state
             .reservation
             .as_ref()
-            .is_none_or(|reservation| valid_reservation(reservation, kernel_id))
-        && state
-            .tombstones
-            .iter()
-            .all(|tombstone| valid_reservation(tombstone, kernel_id)
-                && !tombstone.admission_fenced
-                && tombstone.decisions.last().is_some_and(|decision| {
-                    decision.outcome == ManagedKernelQuiescenceOutcome::KeepRunning
-                }))
-        && state.tombstones.iter().enumerate().all(|(index, tombstone)| {
-            !state.tombstones[index + 1..].iter().any(|later| {
-                later.challenge.challenge_id == tombstone.challenge.challenge_id
+            .is_none_or(|reservation| {
+                valid_reservation(reservation, kernel_id)
+                    && !challenge_ids.contains(reservation.challenge.challenge_id.as_str())
             })
-        });
+        && valid_tombstones;
     if valid {
         Ok(())
     } else {
@@ -1108,3 +1109,7 @@ mod tests {
         cleanup(&path, durable_store);
     }
 }
+
+#[cfg(test)]
+#[path = "managed_kernel_quiescence_state_restore_tests.rs"]
+mod restore_tests;
