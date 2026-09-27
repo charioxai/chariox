@@ -9,6 +9,7 @@ import sys
 import time
 
 LIMIT = 4096
+ENGINE_ENDPOINT = None
 
 
 def bounded(values, maximum=LIMIT):
@@ -21,7 +22,11 @@ def bounded(values, maximum=LIMIT):
 
 
 def docker(*args):
-    child = subprocess.Popen(["docker", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if ENGINE_ENDPOINT is None:
+        raise ValueError("explicit Docker engine required")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("DOCKER_")}
+    child = subprocess.Popen(["docker", "--host", ENGINE_ENDPOINT, *args],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
     output, size = [], 0
     deadline = time.monotonic() + 3
     try:
@@ -57,10 +62,19 @@ def process_identity(pid):
     prefix = "/proc/" + str(pid)
     raw = open(prefix + "/stat").read()
     fields = raw[raw.rindex(")") + 2:].split()
+    with open(prefix + "/cgroup") as stream:
+        cgroup = stream.read(65537)
+    if len(cgroup) > 65536:
+        raise ValueError("process cgroup limit")
     return {"pid": int(pid), "startTicks": fields[19],
             "pidNamespace": os.readlink(prefix + "/ns/pid"),
             "netNamespace": os.readlink(prefix + "/ns/net"),
-            "rssBytes": int(fields[21]) * os.sysconf("SC_PAGE_SIZE")}
+            "rssBytes": int(fields[21]) * os.sysconf("SC_PAGE_SIZE"), "cgroup": cgroup}
+
+
+def belongs_to_container(cgroup, container_ids):
+    return any(re.search(r"(?<![a-f0-9])" + re.escape(value) + r"(?![a-f0-9])", cgroup)
+               for value in container_ids)
 
 
 def same_process(before, after):
@@ -88,10 +102,17 @@ def mount_identity(path):
 
 
 def main():
+    global ENGINE_ENDPOINT
     payload = sys.stdin.buffer.read(256 * 1024 + 1)
     if len(payload) > 256 * 1024:
         raise ValueError("input limit")
     request = json.loads(payload)
+    engine = request["engine"]
+    if not re.fullmatch(r"unix://[/a-zA-Z0-9_.-]+\.sock", engine["endpoint"]):
+        raise ValueError("explicit Unix Docker endpoint required")
+    ENGINE_ENDPOINT = engine["endpoint"]
+    if docker("info", "--format", "{{.ID}}").strip() != engine["id"]:
+        raise ValueError("Docker engine identity mismatch")
     resources = bounded(request.get("resources", []), 32)
     retained = request.get("retained") or {}
     roots = bounded(request.get("paths", []), 32)
@@ -129,12 +150,14 @@ def main():
     retained_containers = [value for value in retained_container_ids if value in all_ids]
     all_volume_names = set(bounded(docker("volume", "ls", "--quiet").split()))
     retained_volumes = [value for value in bounded(retained.get("volumeNames", []), 256) if value in all_volume_names]
-    namespaces = {item["pidNamespace"] for item in bounded(retained.get("processes", []))}
     known_container_ids = set(containers) | set(retained_container_ids)
     for item in containers.values():
         if item["running"]:
             item["initIdentity"] = process_identity(item["initPid"])
-            namespaces.add(item["initIdentity"]["pidNamespace"])
+            if not belongs_to_container(item["initIdentity"]["cgroup"], {item["id"]}):
+                raise ValueError("container init cgroup identity unavailable")
+            if item["initIdentity"]["pidNamespace"] == os.readlink("/proc/1/ns/pid"):
+                raise ValueError("host PID namespace is not an owned container namespace")
     processes = []
     total_rss = 0
     for entry in bounded(os.listdir("/proc"), 32768):
@@ -143,8 +166,7 @@ def main():
         try:
             identity = process_identity(entry)
             total_rss += identity["rssBytes"]
-            cgroup = open("/proc/" + entry + "/cgroup").read()
-            if identity["pidNamespace"] in namespaces or any(value in cgroup for value in known_container_ids):
+            if belongs_to_container(identity["cgroup"], known_container_ids):
                 processes.append(identity)
         except (FileNotFoundError, ProcessLookupError):
             continue
@@ -214,7 +236,8 @@ def main():
     if boot != open("/proc/sys/kernel/random/boot_id").read().strip():
         raise ValueError("host rebooted during observation")
     print(json.dumps({"schema": "chariox.managed_parity.host_observation.v1", "bootId": boot,
-          "mountNamespace": os.readlink("/proc/self/ns/mnt"),
+          "mountNamespace": os.readlink("/proc/self/ns/mnt"), "engineId": engine["id"],
+          "hostContainerIds": sorted(all_ids), "hostVolumeNames": sorted(all_volume_names),
           "containers": list(containers.values()), "volumes": list(volumes.values()),
           "processes": processes, "listeners": listeners, "paths": paths, "mounts": mounts,
           "retainedContainers": retained_containers, "retainedVolumes": retained_volumes,

@@ -8,6 +8,13 @@ test("host observer rejects option injection before executing SSH", async () => 
   }
 })
 
+test("host observer refuses ambient Docker configuration", async () => {
+  for (const engine of [null, { endpoint: "unix:///run/chariox-docker/docker.sock" },
+    { endpoint: "tcp://elsewhere:2375", id: "engine-123" }]) {
+    await assert.rejects(observeManagedParityHost({ host: "trusted-host", engine }), /pinned Unix Docker/)
+  }
+})
+
 test("bounded observer command passes input and returns only stdout", async () => {
   const output = await runBoundedObserverCommand(process.execPath, ["-e", `
     process.stdin.pipe(process.stdout); process.stderr.write('private diagnostic');

@@ -6,12 +6,16 @@ const MAX_OUTPUT = 2 * 1024 * 1024
 
 // The remote timeout owns the probe's lifetime even if SSH loses its connection.
 // The local subprocess is always reaped before observation returns or rejects.
-export async function observeManagedParityHost({ host, resources, retained, paths, signal }) {
+export async function observeManagedParityHost({ host, engine, resources, retained, paths, signal }) {
   if (!/^[a-zA-Z0-9_.@:-]+$/.test(host ?? "") || host.startsWith("-")) {
     throw new Error("managed parity observer requires an explicit SSH host")
   }
+  if (!/^unix:\/\/[\/a-zA-Z0-9_.-]+\.sock$/.test(engine?.endpoint ?? "")
+    || !/^[a-zA-Z0-9:_-]{8,128}$/.test(engine?.id ?? "")) {
+    throw new Error("managed parity observer requires a pinned Unix Docker endpoint and engine identity")
+  }
   const source = await readFile(PROBE, "utf8")
-  const input = JSON.stringify({ resources, retained, paths })
+  const input = JSON.stringify({ engine, resources, retained, paths })
   if (Buffer.byteLength(input) > 256 * 1024) throw new Error("managed parity observer input limit exceeded")
   const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
   const command = `/usr/bin/timeout --signal=TERM --kill-after=1s 12s /usr/bin/python3 -c ${quote(source)}`
