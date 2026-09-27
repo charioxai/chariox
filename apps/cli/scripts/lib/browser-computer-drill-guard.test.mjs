@@ -163,6 +163,8 @@ test("pre-delete resource samples remain distinct from unavailable post-delete t
   const caps = { diskBytes: 100, memoryBytes: 100, processCount: 100, logBytes: 100 }
   assert.equal(evaluateBrowserComputerResourceCaps(samples, caps).ok, false)
   assert.equal(evaluateBrowserComputerResourceCaps(samples, caps, { terminalPhase: "before-delete" }).ok, true)
+  assert.deepEqual(evaluateBrowserComputerResourceCaps(samples, caps, { terminalPhase: "before-delete" }).phases,
+    ["before", "during", "before-delete"])
   assert.equal(samples[2].phase, "before-delete")
 })
 

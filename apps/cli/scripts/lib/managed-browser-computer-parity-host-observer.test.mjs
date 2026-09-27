@@ -9,6 +9,12 @@ test("host observer rejects option injection before executing SSH", async () => 
   }
 })
 
+test("physical census reports missing root access before inspecting processes", async () => {
+  await assert.rejects(runBoundedObserverCommand("python3", ["-B", "-c",
+    "import os,runpy,sys; os.geteuid=lambda:1001; runpy.run_path(sys.argv[1],run_name='__main__')",
+    fileURLToPath(new URL("./managed-browser-computer-parity-host-probe.py", import.meta.url))]), /requires a root SSH identity/)
+})
+
 test("host observer refuses ambient Docker configuration", async () => {
   for (const engine of [null, { endpoint: "unix:///run/chariox-docker/docker.sock" },
     { endpoint: "tcp://elsewhere:2375", id: "engine-123" }]) {

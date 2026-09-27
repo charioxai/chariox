@@ -69,6 +69,7 @@ export function runBoundedObserverCommand(command, args, { input = "", signal, t
       // A descendant must not outlive an exited group leader.
       killGroup("SIGKILL")
       if (failure) reject(failure)
+      else if (code === 77) reject(new Error("managed parity physical census requires a root SSH identity"))
       else if (code !== 0) reject(new Error("managed parity physical host inspection failed"))
       else resolve(Buffer.concat(chunks).toString("utf8"))
     })

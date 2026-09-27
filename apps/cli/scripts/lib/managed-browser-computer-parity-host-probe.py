@@ -107,6 +107,9 @@ def mount_identity(path):
 
 def main():
     global ENGINE_ENDPOINT
+    if os.geteuid() != 0:
+        sys.stderr.write("physical census requires a root SSH identity\n")
+        raise SystemExit(77)
     payload = sys.stdin.buffer.read(256 * 1024 + 1)
     if len(payload) > 256 * 1024:
         raise ValueError("input limit")

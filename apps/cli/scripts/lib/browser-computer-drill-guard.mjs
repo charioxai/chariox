@@ -372,7 +372,7 @@ export function evaluateBrowserComputerResourceCaps(samples, caps, { additionalS
   return {
     schema: BROWSER_COMPUTER_GUARD_SCHEMA,
     ok: violations.length === 0,
-    phases: BROWSER_COMPUTER_SAMPLE_PHASES,
+    phases,
     caps: normalizedCaps,
     metrics,
     violations,
