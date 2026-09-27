@@ -130,6 +130,8 @@ struct KernelRuntimeOwnedState {
     managed_activity_next_lock_probe: Arc<
         std::sync::Mutex<Option<managed_activity_runtime_state::ManagedActivityLockProbe>>,
     >,
+    #[cfg(test)]
+    managed_activity_record_calls: Arc<std::sync::atomic::AtomicU64>,
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
@@ -326,6 +328,8 @@ mod remote_prompt_projection_drain_runtime;
 mod remote_prompt_receipt_reconciliation_runtime;
 mod remote_prompt_worker_submission_runtime;
 mod remote_provider_failure_runtime;
+#[cfg(test)]
+mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
@@ -663,6 +667,8 @@ impl KernelRuntimeState {
                 managed_activity_before_record_pause: Arc::new(std::sync::Mutex::new(None)),
                 #[cfg(test)]
                 managed_activity_next_lock_probe: Arc::new(std::sync::Mutex::new(None)),
+                #[cfg(test)]
+                managed_activity_record_calls: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 legacy_workflow_history,
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),

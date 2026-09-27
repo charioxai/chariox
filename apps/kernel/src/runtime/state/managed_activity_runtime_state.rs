@@ -13,6 +13,13 @@ pub(super) struct ManagedActivityLockProbe {
 }
 
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn managed_activity_record_call_count_for_test(&self) -> u64 {
+        self.owned
+            .managed_activity_record_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) fn managed_activity_change_sequence(&self) -> u64 {
         self.owned.runtime_projection_changes.sequence()
     }
@@ -222,6 +229,9 @@ impl KernelRuntimeOwnedState {
     }
 
     fn record_managed_activity_transition_at_unlocked(&self, observed_at_ms: Option<u64>) {
+        #[cfg(test)]
+        self.managed_activity_record_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if !self.managed_activity_transitions.is_enabled() {
             return;
         }
