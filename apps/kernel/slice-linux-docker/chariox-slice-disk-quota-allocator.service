@@ -6,7 +6,9 @@ RequiresMountsFor=/var/lib/chariox-docker/data
 
 [Service]
 Type=simple
-User=root
+# The rootless Docker tree is deliberately owner-only. Run path validation as
+# its owner while retaining the existing quota-administration capability.
+User=chariox-docker
 Group=chariox-docker
 Environment=PATH=/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
 ExecStartPre=/usr/bin/test -x /usr/sbin/xfs_quota
