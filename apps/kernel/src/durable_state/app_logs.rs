@@ -169,10 +169,10 @@ pub(super) fn execute(connection: &mut Connection, request: AppLogRequest) {
                 &request.owner,
                 &request.installation,
                 now,
-                &format!(
-                    "{} log writes were dropped: the App wrote faster than its log rate limit or while busy.",
-                    request.dropped
-                ),
+                &match request.dropped {
+                    1 => "1 log write was dropped: the App wrote faster than its log rate limit or while busy.".into(),
+                    count => format!("{count} log writes were dropped: the App wrote faster than its log rate limit or while busy."),
+                },
                 fields,
             )?;
         }

@@ -142,14 +142,14 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V-RUN-01 | Infinite loop and CPU saturation | Kernel health, local TUI, remote TUI, web terminal. | Unverified |
-| V-RUN-02 | Memory growth | macOS and Linux App worker tests in Phase 1; Windows repeats them in Phase 2. | Unverified |
-| V-RUN-03 | Crash loop | CLI, slash command and web status. | Unverified |
+| V-RUN-01 | Infinite loop and CPU saturation | Kernel health, local TUI, remote TUI, web terminal. | Partial: live on macOS (#498) |
+| V-RUN-02 | Memory growth | macOS and Linux App worker tests in Phase 1; Windows repeats them in Phase 2. | Partial: live on macOS |
+| V-RUN-03 | Crash loop | CLI, slash command and web status. | Implemented on macOS (#499) |
 | V-RUN-04 | Malformed or oversized IPC | IPC contract and fuzz tests. | Unverified |
-| V-RUN-05 | Ignored cancellation or acknowledgement | Tool call, external event, local event and lifecycle callback. | Unverified |
+| V-RUN-05 | Ignored cancellation or acknowledgement | Tool call, external event, local event and lifecycle callback. | Partial: live event path |
 | V-RUN-06 | Kernel restart and machine reboot | Local and managed machine drills. | Unverified |
 | V-RUN-07 | Sandbox escape attempts | One malicious package on macOS and Linux Phase 1 release builds. Windows reuses the corpus in Phase 2. | Unverified |
-| V-RUN-08 | Log flooding | CLI, TUI and web logs. | Unverified |
+| V-RUN-08 | Log flooding | CLI, TUI and web logs. | Partial: live, dropped count (#498) |
 | V-RUN-09 | Sandbox active before App code | Every attempt observes the final default-deny OS policy. No unconfined startup window exists. | Unverified |
 | V-RUN-10 | Cross-installation isolation | Neither installation reads, writes, signals, impersonates, or exhausts the other's worker, supervisor, or HTTP budget. | Unverified |
 
