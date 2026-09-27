@@ -1059,7 +1059,18 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             )));
             assert!(path1_broker.contains("repository_root=/srv/managed workspaces\n"));
             assert!(path1_broker.contains("topology=path1\n"));
-            assert!(path1_broker.contains("path=relative:/usr/bin:\n"));
+            let observed_path = path1_broker
+                .lines()
+                .find_map(|line| line.strip_prefix("path="))
+                .expect("Path-1 broker PATH should be captured");
+            let expected_fallback_path = format!(
+                "{}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                home.join(".local/bin").display()
+            );
+            assert_eq!(
+                observed_path, expected_fallback_path,
+                "background profile writer should force the bounded probe fallback; actual PATH: {observed_path:?}"
+            );
             assert!(path1_broker.contains("slice_root=/var/lib/chariox-slice-share/slices\n"));
             assert!(path1_broker.contains("capability_root=<unset>\n"));
             assert!(path1_broker.contains("provider_isolation=<unset>\n"));
