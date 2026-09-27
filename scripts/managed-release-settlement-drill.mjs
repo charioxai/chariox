@@ -628,7 +628,7 @@ async function scenario({ ownedScratch, evidence, home, builderName, baseImage, 
       throw new Error(`Buildx did not provide an invocation-bound running record: ${runningResult.reason ?? "reference mismatch"}`)
     }
     barrier = runningBarrier
-    await lease.writeBarrier(barrier)
+    await lease.writeBarrier(barrier, { replace: true })
     await record("running-full-ref-persisted", { fullRef, inspectedId: bareId, inspectResult: runningResult.reason })
 
     await lease.release()
