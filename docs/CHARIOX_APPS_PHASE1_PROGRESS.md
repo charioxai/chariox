@@ -1537,7 +1537,7 @@ Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS s
 
 | ID | Status | PRs | Evidence | Remaining |
 |---|---|---|---|---|
-| P1.01 | Partial | protocol 345–356 across the stack | Shape tests for every new request and response | Records for App sets, file metadata and the inbox |
+| P1.01 | Implemented | protocol 345–361 across the stack | Shape tests for every new request and response. Inbox records (#460), file grant and export records (#462, #463), App-set records (#484: `GetAppSet`, a versioned `chariox.app-set.v1` description of each active installation's release, approved capabilities and configuration; live in the TUI and web) | — |
 | P1.02 | Implemented | earlier foundation, #439 (uninstall) | Live install, update and uninstall of Todo and Documents | Signed and notarized distribution is Phase 2 |
 | P1.03 | Implemented (macOS live, Linux in CI) | #431 | Todo and Documents run on the macOS launcher; native probe | Production installer provisioning on Linux |
 | P1.04 | Partial | foundation, #444 (effects), #462 (file grants), #463 (export) | Live state, files and HTTP broker. User-selected file grants: live prompt in the web terminal and grant; `files.import` tested through a real worker. Live `files.export` from Documents, saved through the web prompt. Live Documents import through the web file prompt on the re-enrolled runtime (P1.13). #474: `files.snapshot` (quiescent fence or crash-consistent label; files, state and wakes, no receipts) restored into an isolated installation in kernel tests; live quiescent snapshot of Documents 1.3.0 on the enrolled runtime | Owner-facing restore and App-set copy (Phase 2) |
