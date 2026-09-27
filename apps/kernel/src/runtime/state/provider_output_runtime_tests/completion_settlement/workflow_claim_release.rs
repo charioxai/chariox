@@ -3,8 +3,9 @@ use super::*;
 #[tokio::test]
 async fn archived_validated_publication_settlement_releases_claim_and_retries_successor() {
     let worktree = crate::test_support::TestWorktree::new("workflow-claim-release-archived");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
@@ -153,6 +154,22 @@ async fn archived_validated_publication_settlement_releases_claim_and_retries_su
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    let running_workflow = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist")
+        .workflow_run(workflow_run.id())
+        .expect("publication workflow should still be active")
+        .clone();
+    assert_eq!(
+        runtime
+            .owned
+            .release_completed_workflow_write_claims(session.id(), &running_workflow),
+        0,
+        "a noncompleted workflow must retain its live write claim"
+    );
+    assert!(runtime.owned.prompt_workspace_claims.contains(&claim_id));
     let context = crate::transport::runtime_tools::WorkflowRuntimeToolContext {
         session_id: session.id().to_string(),
         workflow_run_ref: workflow_run.id().to_string(),
@@ -201,6 +218,16 @@ async fn archived_validated_publication_settlement_releases_claim_and_retries_su
         .archive_terminal_workflow_runs(session.id())
         .expect("terminal workflow should archive");
     assert!(archived.iter().any(|run| run.id() == workflow_run.id()));
+    assert_eq!(
+        runtime.owned.release_archived_completed_workflow_claims(
+            session.id(),
+            workflow_run.id(),
+            "unmatched-node-run",
+        ),
+        None,
+        "archived completion evidence for another node must not release a live claim"
+    );
+    assert!(runtime.owned.prompt_workspace_claims.contains(&claim_id));
 
     let settlement = runtime
         .settle_owned_provider_prompt(session.id(), provider_run.id(), true, false, false)
