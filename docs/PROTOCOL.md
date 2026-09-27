@@ -1995,9 +1995,11 @@ Workflow trigger and deployment direction:
   and carry `{"event.channel": id}`). Clients merge it into the binding's
   filter; no client special-cases a generator.
 - protocol 363: App data deletion. `UninstallApp` gains `delete_data` (omitted
-  when false): the kernel also deletes the App's private storage, structured
-  state, wakes and logs and the release it kept, so the installation can no
-  longer be reinstalled into. `UninstallApp` on an already uninstalled
+  when false): the kernel also deletes the App's structured state, wakes,
+  logs and file handoffs and the release it kept, so the installation can no
+  longer be reinstalled into. Where a platform gives Apps private storage, the
+  supervisor deletes it first (the macOS worker's storage: #496 and its kernel
+  wiring; Linux: the storage helper, #497). `UninstallApp` on an already uninstalled
   installation, at its current generation, deletes its kept data the same way,
   which also finishes a deletion interrupted after the uninstall. App
   installation summaries gain `data_kept`: uninstalled, with data an update
