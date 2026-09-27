@@ -189,6 +189,7 @@ fn run_workspace_claim_conflict_scenario(ready_tx: mpsc::SyncSender<()>) {
         .send(())
         .expect("outer timeout harness should still be waiting");
     let completion = runtime
+        .owned
         .complete_local_prompt_with_queued_advance_if_matches(
             &session_id,
             &agent_id,
