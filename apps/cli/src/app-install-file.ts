@@ -147,6 +147,9 @@ export class AppFileInstaller {
   private async transfer(attempt: Attempt): Promise<AppInstallOperationSummary> {
     const cancelled = () => attempt.cancelled || (this.disposed && !attempt.beginSent)
     let source: AppFileSource | undefined
+    // Only a Begin sent by this call can have been refused by the kernel; a
+    // resumed attempt's failed status read must not cancel a live operation.
+    let begunHere = false
     try {
       checkCancelled(cancelled)
       if (attempt.beginSent) {
@@ -173,6 +176,7 @@ export class AppFileInstaller {
       await source.unchanged()
       checkCancelled(cancelled)
       attempt.beginSent = true
+      begunHere = true
       const begin = { sessionId: attempt.session, requestId: attempt.request, uploadHandle: upload.handle, expectedPackageDigest: source.digest }
       const status = operation(await this.request(attempt.update && generation ? beginAppUpdateRequest({ ...begin, installationId: attempt.update.installation, expectedGeneration: generation }) : beginAppInstallRequest(begin), cancelled), attempt.request)
       attempt.status = status
@@ -181,7 +185,7 @@ export class AppFileInstaller {
       return status
     } catch (error) {
       // A Begin the kernel refused (not one lost in transport) never took the upload.
-      const refused = error instanceof KernelFailure && attempt.beginSent && !attempt.status
+      const refused = error instanceof KernelFailure && begunHere && !attempt.status
       if (error instanceof InstallCancelled || error instanceof InstallFileChanged || refused) await this.cleanup(attempt).catch(() => {})
       throw error
     } finally { await source?.close() }
