@@ -13,14 +13,50 @@ use super::super::remote_prompt_worker_submission_runtime::{
     query_remote_prompt_worker_receipt_with_transport, remote_prompt_transport_retry_delay,
 };
 use super::*;
-use crate::transport::relay_peer::RelayPeerEvent;
 use crate::transport::relay_discovery;
+use crate::transport::relay_peer::RelayPeerEvent;
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
+
+#[derive(Clone)]
+struct ClaimTestRelayLifecycleProbe {
+    started: std::time::Instant,
+    events: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl ClaimTestRelayLifecycleProbe {
+    fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            events: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    fn record(&self, stage: &str, peer: Option<std::net::SocketAddr>) {
+        let event = match peer {
+            Some(peer) => format!(
+                "+{}us:{stage}:peer={peer}",
+                self.started.elapsed().as_micros()
+            ),
+            None => format!("+{}us:{stage}", self.started.elapsed().as_micros()),
+        };
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+
+    fn snapshot(&self) -> String {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .join(";")
+    }
+}
 
 async fn receive_claim_test_envelope(
     socket: &mut WebSocketStream<TcpStream>,
@@ -138,7 +174,13 @@ async fn send_claim_test_envelope(
         .expect("temporary relay envelope should send");
 }
 
-async fn close_claim_test_discovery(socket: &mut WebSocketStream<TcpStream>) {
+async fn close_claim_test_discovery(
+    socket: &mut WebSocketStream<TcpStream>,
+    lifecycle_probe: Option<(&ClaimTestRelayLifecycleProbe, &'static str)>,
+) {
+    if let Some((probe, operation)) = lifecycle_probe {
+        probe.record(&format!("{operation}_discovery_close_started"), None);
+    }
     let _ = socket.close(None).await;
     let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
         while let Some(message) = socket.next().await {
@@ -149,6 +191,9 @@ async fn close_claim_test_discovery(socket: &mut WebSocketStream<TcpStream>) {
         }
     })
     .await;
+    if let Some((probe, operation)) = lifecycle_probe {
+        probe.record(&format!("{operation}_discovery_close_completed"), None);
+    }
 }
 
 fn claim_test_envelope_kind(envelope: &RelayEnvelope) -> &'static str {
@@ -168,40 +213,59 @@ async fn accept_claim_test_worker_metadata(
     home_relay_token: &str,
     stage: &'static str,
     trace_checkpoint: Option<relay_discovery::RelayDiscoveryTestTraceCheckpoint>,
+    lifecycle_probe: Option<&ClaimTestRelayLifecycleProbe>,
     diagnostics: impl Fn() -> String,
 ) -> (WebSocketStream<TcpStream>, String, std::net::SocketAddr) {
     // A normal temporary peer call writes GetLiveKernel on this discovery socket before it
     // opens its separately registered peer socket. Report a reset here immediately rather
     // than treating an unlabelled abandoned connection as a metadata retry.
+    if let Some(probe) = lifecycle_probe {
+        probe.record("successor_discovery_accept_started", None);
+    }
     let (stream, peer_addr) = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        listener.accept(),
-    )
-    .await
-    .unwrap_or_else(|_| {
-        let relay_trace = trace_checkpoint
-            .map(|checkpoint| {
-                relay_discovery::take_relay_discovery_test_trace(checkpoint, None)
-            })
-            .unwrap_or_else(|| "not captured".to_string());
-        panic!("{stage}: relay did not accept discovery socket; relay_trace={relay_trace}")
-    })
-    .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
-    let mut discovery = accept_async(stream)
+            std::time::Duration::from_secs(2),
+            listener.accept(),
+        )
         .await
-        .unwrap_or_else(|error| {
+        .unwrap_or_else(|_| {
             let relay_trace = trace_checkpoint
                 .map(|checkpoint| {
-                    relay_discovery::take_relay_discovery_test_trace(
-                        checkpoint,
-                        Some(peer_addr),
-                    )
+                    relay_discovery::take_relay_discovery_test_trace(checkpoint, None)
                 })
                 .unwrap_or_else(|| "not captured".to_string());
             panic!(
-                "{stage}: relay discovery upgrade failed: {error}; peer={peer_addr}; relay_trace={relay_trace}"
-            );
-        });
+                "{stage}: relay did not accept discovery socket; relay_trace={relay_trace}; lifecycle=[{}]",
+                lifecycle_probe
+                    .map(ClaimTestRelayLifecycleProbe::snapshot)
+                    .unwrap_or_else(|| "not captured".to_string())
+            )
+        })
+        .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
+    if let Some(probe) = lifecycle_probe {
+        probe.record("successor_discovery_tcp_accepted", Some(peer_addr));
+        probe.record("successor_discovery_upgrade_started", Some(peer_addr));
+    }
+    let mut discovery = accept_async(stream)
+            .await
+            .unwrap_or_else(|error| {
+                let relay_trace = trace_checkpoint
+                    .map(|checkpoint| {
+                        relay_discovery::take_relay_discovery_test_trace(
+                            checkpoint,
+                            Some(peer_addr),
+                        )
+                    })
+                    .unwrap_or_else(|| "not captured".to_string());
+                panic!(
+                    "{stage}: relay discovery upgrade failed: {error}; peer={peer_addr}; relay_trace={relay_trace}; lifecycle=[{}]",
+                    lifecycle_probe
+                        .map(ClaimTestRelayLifecycleProbe::snapshot)
+                        .unwrap_or_else(|| "not captured".to_string())
+                );
+            });
+    if let Some(probe) = lifecycle_probe {
+        probe.record("successor_discovery_upgrade_completed", Some(peer_addr));
+    }
     let envelope = receive_claim_test_envelope_with_diagnostics(
         &mut discovery,
         "temporary discovery first envelope",
@@ -221,6 +285,12 @@ async fn accept_claim_test_worker_metadata(
         },
     )
     .await;
+    if let Some(probe) = lifecycle_probe {
+        probe.record(
+            "successor_discovery_first_envelope_received",
+            Some(peer_addr),
+        );
+    }
     let request_id = match envelope {
         RelayEnvelope::ClientMetadataRequest {
             request_id,
@@ -245,17 +315,14 @@ async fn accept_claim_test_worker_metadata(
         other => {
             let relay_trace = trace_checkpoint
                 .map(|checkpoint| {
-                    relay_discovery::take_relay_discovery_test_trace(
-                        checkpoint,
-                        Some(peer_addr),
-                    )
+                    relay_discovery::take_relay_discovery_test_trace(checkpoint, Some(peer_addr))
                 })
                 .unwrap_or_else(|| "not captured".to_string());
             panic!(
-                "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest; peer={peer_addr}; relay_trace={relay_trace}; {}",
-                claim_test_envelope_kind(&other),
-                diagnostics(),
-            );
+                    "{stage}: discovery socket's first envelope was {}, expected ClientMetadataRequest; peer={peer_addr}; relay_trace={relay_trace}; {}",
+                    claim_test_envelope_kind(&other),
+                    diagnostics(),
+                );
         }
     };
     (discovery, request_id, peer_addr)
@@ -271,18 +338,19 @@ async fn accept_claim_test_prompt(
     worker_private_key: &str,
     stage: &'static str,
     trace_checkpoint: Option<relay_discovery::RelayDiscoveryTestTraceCheckpoint>,
+    lifecycle_probe: Option<&ClaimTestRelayLifecycleProbe>,
     diagnostics: impl Fn() -> String,
 ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
-    let (mut discovery, request_id, discovery_peer) =
-        accept_claim_test_worker_metadata(
-            listener,
-            worker_id,
-            home_relay_token,
-            stage,
-            trace_checkpoint,
-            &diagnostics,
-        )
-        .await;
+    let (mut discovery, request_id, discovery_peer) = accept_claim_test_worker_metadata(
+        listener,
+        worker_id,
+        home_relay_token,
+        stage,
+        trace_checkpoint,
+        lifecycle_probe,
+        &diagnostics,
+    )
+    .await;
     let presence = serde_json::from_value(serde_json::json!({
         "kernel_id": worker_id,
         "machine_id": machine_id,
@@ -300,7 +368,11 @@ async fn accept_claim_test_prompt(
         },
     )
     .await;
-    close_claim_test_discovery(&mut discovery).await;
+    close_claim_test_discovery(
+        &mut discovery,
+        lifecycle_probe.map(|probe| (probe, "successor")),
+    )
+    .await;
 
     let (stream, peer_addr) =
         tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
@@ -569,7 +641,11 @@ async fn receive_fake_worker_peer_request(
     worker_machine_id: &str,
     worker_public_key: &str,
     worker_private_key: &str,
+    lifecycle_probe: Option<(&ClaimTestRelayLifecycleProbe, &'static str)>,
 ) -> FakeRelayPeerRequest {
+    if let Some((probe, operation)) = lifecycle_probe {
+        probe.record(&format!("{operation}_worker_request_receive_started"), None);
+    }
     let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
         .await
         .expect("fake relay should accept metadata connection")
@@ -599,7 +675,7 @@ async fn receive_fake_worker_peer_request(
         },
     )
     .await;
-    close_claim_test_discovery(&mut discovery).await;
+    close_claim_test_discovery(&mut discovery, lifecycle_probe).await;
 
     let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
         .await
@@ -631,6 +707,9 @@ async fn receive_fake_worker_peer_request(
     .expect("fake worker should decrypt the public kernel request");
     let request = serde_json::from_slice(&decrypted.plaintext)
         .expect("fake worker request should deserialize");
+    if let Some((probe, operation)) = lifecycle_probe {
+        probe.record(&format!("{operation}_worker_request_received"), None);
+    }
     FakeRelayPeerRequest {
         socket,
         request_id,
@@ -862,6 +941,8 @@ mod receipt_reconciliation {
         let state_tags_session_id = fixture.session_id.clone();
         let state_tags_agent_id = fixture.agent_id.clone();
         let run_id = "worker-run-cancel-claimed".to_string();
+        let relay_lifecycle_probe = ClaimTestRelayLifecycleProbe::new();
+        let server_lifecycle_probe = relay_lifecycle_probe.clone();
         let server = tokio::spawn(async move {
             let receipt_request = receive_fake_worker_peer_request(
                 &listener,
@@ -869,6 +950,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                Some((&server_lifecycle_probe, "receipt")),
             )
             .await;
             assert_eq!(receipt_request.target_id, worker_id);
@@ -879,6 +961,7 @@ mod receipt_reconciliation {
                     home_prompt_id: requested_prompt,
                 } if requested_agent == &leased_agent_id && requested_prompt == &prompt_id
             ));
+            server_lifecycle_probe.record("receipt_response_send_started", None);
             send_fake_worker_peer_response(
                 receipt_request,
                 &worker_id,
@@ -895,6 +978,7 @@ mod receipt_reconciliation {
                 },
             )
             .await;
+            server_lifecycle_probe.record("receipt_response_send_completed", None);
 
             let cancel_request = receive_fake_worker_peer_request(
                 &listener,
@@ -902,6 +986,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                Some((&server_lifecycle_probe, "cancel")),
             )
             .await;
             assert_eq!(cancel_request.target_id, worker_id);
@@ -921,6 +1006,7 @@ mod receipt_reconciliation {
             release_cancel_rx
                 .await
                 .expect("test should release the cancellation response");
+            server_lifecycle_probe.record("cancel_response_send_started", None);
             send_fake_worker_peer_response(
                 cancel_request,
                 &worker_id,
@@ -940,6 +1026,7 @@ mod receipt_reconciliation {
                 },
             )
             .await;
+            server_lifecycle_probe.record("cancel_response_send_completed", None);
 
             // Requiring the projection request next proves concurrent callers did not issue a
             // second cancellation request after the claimed send was acknowledged.
@@ -949,6 +1036,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                Some((&server_lifecycle_probe, "drain")),
             )
             .await;
             assert_eq!(drain_request.target_id, worker_id);
@@ -968,6 +1056,7 @@ mod receipt_reconciliation {
                 .expect("test should release the terminal projection");
             let successor_trace_checkpoint =
                 relay_discovery::relay_discovery_test_trace_checkpoint(&trace_relay_url);
+            server_lifecycle_probe.record("drain_response_send_started", None);
             send_fake_worker_peer_response(
                 drain_request,
                 &worker_id,
@@ -992,6 +1081,7 @@ mod receipt_reconciliation {
                 },
             )
             .await;
+            server_lifecycle_probe.record("drain_response_send_completed", None);
 
             let (
                 mut successor_peer,
@@ -1009,13 +1099,21 @@ mod receipt_reconciliation {
                 &worker_private_key,
                 "queued successor submission",
                 Some(successor_trace_checkpoint),
-                move || {
-                    claim_test_successor_state_tags(
-                        &state_tags_runtime,
-                        &state_tags_session_id,
-                        &state_tags_agent_id,
-                        &state_tags_successor_prompt,
-                    )
+                Some(&server_lifecycle_probe),
+                {
+                    let lifecycle_for_diagnostics = server_lifecycle_probe.clone();
+                    move || {
+                        format!(
+                            "{};relay_lifecycle=[{}]",
+                            claim_test_successor_state_tags(
+                                &state_tags_runtime,
+                                &state_tags_session_id,
+                                &state_tags_agent_id,
+                                &state_tags_successor_prompt,
+                            ),
+                            lifecycle_for_diagnostics.snapshot(),
+                        )
+                    }
                 },
             )
             .await;
@@ -1284,6 +1382,7 @@ mod receipt_reconciliation {
                 &listener_worker_machine_id,
                 &listener_worker_public_key,
                 &listener_worker_private_key,
+                None,
             )
             .await;
             assert_eq!(receipt_request.target_id, listener_worker_id);
@@ -1322,6 +1421,7 @@ mod receipt_reconciliation {
                 &listener_worker_machine_id,
                 &listener_worker_public_key,
                 &listener_worker_private_key,
+                None,
             )
             .await;
             assert_eq!(projection_request.target_id, listener_worker_id);
@@ -1450,6 +1550,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                None,
             )
             .await;
             assert!(matches!(
@@ -1566,6 +1667,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                None,
             )
             .await;
             assert!(matches!(
@@ -1580,6 +1682,7 @@ mod receipt_reconciliation {
                 &worker_machine_id,
                 &worker_public_key,
                 &worker_private_key,
+                None,
             )
             .await;
             assert!(matches!(
@@ -1700,6 +1803,7 @@ mod receipt_reconciliation {
                 &listener_worker_machine_id,
                 &listener_worker_public_key,
                 &listener_worker_private_key,
+                None,
             )
             .await;
             assert_eq!(receipt_request.target_id, listener_worker_id);
@@ -1740,6 +1844,7 @@ mod receipt_reconciliation {
                 &listener_worker_machine_id,
                 &listener_worker_public_key,
                 &listener_worker_private_key,
+                None,
             )
             .await;
             assert_eq!(retry_request.target_id, listener_worker_id);
@@ -3791,6 +3896,7 @@ mod dispatch_settlement {
                 &worker_private_key,
                 "predecessor submission",
                 None,
+                None,
                 || "state_tags_available=false".to_string(),
             )
             .await;
@@ -3834,6 +3940,7 @@ mod dispatch_settlement {
                 &worker_public_key,
                 &worker_private_key,
                 "successor submission",
+                None,
                 None,
                 move || {
                     claim_test_successor_state_tags(
