@@ -975,6 +975,10 @@ mod tests {
         assert!(managed_repository_root_for_schema(1, Some("/srv/workspaces")).is_err());
         assert!(managed_repository_root_for_schema(2, None).is_err());
         assert!(managed_repository_root_for_schema(2, Some("/srv//workspaces")).is_err());
-        assert!(managed_repository_root_for_schema(3, Some("/srv/workspaces")).is_err());
+        assert_eq!(
+            managed_repository_root_for_schema(3, Some("/srv/workspaces")).unwrap(),
+            "/srv/workspaces"
+        );
+        assert!(managed_repository_root_for_schema(4, Some("/srv/workspaces")).is_err());
     }
 }
