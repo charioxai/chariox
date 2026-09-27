@@ -33,7 +33,7 @@ function barrierWriteError(error, disposition) {
   return wrapped
 }
 
-async function syncDirectory(path, fileOps) {
+async function syncDirectory(path, fileOps = defaultBarrierFileOps) {
   const directory = await fileOps.open(path, "r")
   try {
     await directory.sync()
@@ -414,8 +414,8 @@ export async function acquireManagedReleaseBuilderLease({
       }
     },
     async removeBarrier() {
-      await rm(barrierPath, { force: true })
-      await syncDirectory(stateDirectory)
+      await fileOps.rm(barrierPath, { force: true })
+      await syncDirectory(stateDirectory, fileOps)
     },
     async removeRunArtifacts(barrier) {
       validateBarrier(barrier, builderName)

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash, randomUUID } from "node:crypto"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { test } from "node:test"
 import {
@@ -318,6 +318,45 @@ test("lease recovery reclaims a dead owner-bound reaper marker and rejects unrel
     await assert.rejects(acquireManagedReleaseBuilderLease({ home, builderName }))
     assert.ok(await readFile(join(seeded.lockDirectory, "owner.json")))
     assert.ok(await readFile(join(seeded.lockDirectory, "reaper.json")))
+  }
+})
+
+test("barrier removal flushes its directory through the lease file-operation seam", async (context) => {
+  const home = await mkdtemp(join(tmpdir(), "chariox-release-barrier-remove-sync-"))
+  context.after(() => rm(home, { recursive: true, force: true }))
+  const { stateDirectory } = leasePaths(home)
+  let directorySyncOpens = 0
+  const fileOps = {
+    open: async (path, ...args) => {
+      if (path === stateDirectory) directorySyncOpens += 1
+      return open(path, ...args)
+    },
+    lstat,
+    readFile,
+    rename,
+    rm,
+  }
+  const lease = await acquireManagedReleaseBuilderLease({ home, builderName, fileOps })
+  const invocationId = randomUUID()
+  const runDirectory = join(stateDirectory, `run-${invocationId}`)
+  const outputPath = join(home, "release-output")
+  const barrier = makeBarrier({
+    invocationId,
+    runDirectory,
+    sourceDirectory: join(runDirectory, "source"),
+    runDirectoryIdentity: { dev: "1", ino: "2" },
+    outputPath,
+    pendingDirectory: join(home, `.new-release-output-${invocationId}`),
+    pendingDirectoryIdentity: { dev: "1", ino: "3" },
+    buildStarted: false,
+  })
+  try {
+    await lease.writeBarrier(barrier)
+    await lease.removeBarrier()
+    assert.equal(directorySyncOpens, 2)
+    await assert.rejects(readFile(lease.barrierPath), { code: "ENOENT" })
+  } finally {
+    await lease.release()
   }
 })
 
