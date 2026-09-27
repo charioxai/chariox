@@ -3,6 +3,7 @@ set -eu
 
 MARKER_VALUE=managed-remote-kernels-image-builder-v1
 MARKER_PATH=/.chariox-managed-image-builder
+path1_data_volume_dropins_bypassed=0
 
 fail() {
   echo "prepare-hetzner-image.sh: $*" >&2
@@ -14,6 +15,134 @@ assert_path1_unit_has_no_dropins() {
     || fail "could not inspect effective systemd drop-ins for $1"
   [ -z "$drop_in_paths" ] \
     || fail "Path-1 service $1 has systemd drop-ins: $drop_in_paths"
+}
+
+assert_path1_builder_storage_pristine() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  for builder_unit in \
+    chariox-data-volume-admission.service \
+    chariox-slice-disk-quota-allocator.service \
+    chariox-rootless-docker.service; do
+    builder_state=$(systemctl show --property=ActiveState --value "$builder_unit") \
+      || fail "could not inspect image-builder unit state for $builder_unit"
+    [ "$builder_state" = inactive ] \
+      || fail "image-builder storage unit $builder_unit is not inactive"
+  done
+  builder_data_root=/var/lib/chariox-docker/data
+  if [ -e "$builder_data_root" ] || [ -L "$builder_data_root" ]; then
+    [ -d "$builder_data_root" ] && [ ! -L "$builder_data_root" ] \
+      || fail "image-builder Docker data-root is not a real directory"
+    if mountpoint --quiet "$builder_data_root"; then
+      fail "image-builder Docker data-root is already mounted"
+    else
+      builder_mount_status=$?
+      [ "$builder_mount_status" -eq 32 ] \
+        || fail "could not inspect the image-builder Docker data-root mount"
+    fi
+  fi
+  builder_binding_state=/var/lib/chariox-data-volume
+  if [ -e "$builder_binding_state" ] || [ -L "$builder_binding_state" ]; then
+    [ -d "$builder_binding_state" ] && [ ! -L "$builder_binding_state" ] \
+      || fail "image-builder data-volume state is not a real directory"
+    builder_binding_entry=$(find "$builder_binding_state" -mindepth 1 -print -quit) \
+      || fail "could not inspect image-builder data-volume binding state"
+    [ -z "$builder_binding_entry" ] \
+      || fail "image-builder data-volume state already exists; refusing to reuse its binding"
+  fi
+  builder_observation_state=/run/chariox-data-volume-observation
+  if [ -e "$builder_observation_state" ] || [ -L "$builder_observation_state" ]; then
+    [ -d "$builder_observation_state" ] && [ ! -L "$builder_observation_state" ] \
+      || fail "image-builder data-volume observation state is not a real directory"
+    builder_observation_entry=$(find "$builder_observation_state" -mindepth 1 -print -quit) \
+      || fail "could not inspect image-builder data-volume observation state"
+    [ -z "$builder_observation_entry" ] \
+      || fail "image-builder has an existing data-volume observation; refusing to reuse it"
+  fi
+}
+
+restore_path1_dropin() {
+  builder_link=$1
+  builder_target=$2
+  builder_label=$3
+  builder_parent=${builder_link%/*}
+  [ -d "$builder_parent" ] && [ ! -L "$builder_parent" ] \
+    || { echo "prepare-hetzner-image.sh: $builder_label drop-in directory is unsafe" >&2; return 1; }
+  if [ -L "$builder_link" ]; then
+    builder_actual_target=$(readlink "$builder_link") \
+      || { echo "prepare-hetzner-image.sh: could not inspect $builder_label drop-in" >&2; return 1; }
+    [ "$builder_actual_target" = "$builder_target" ] \
+      || { echo "prepare-hetzner-image.sh: $builder_label drop-in changed during image preparation" >&2; return 1; }
+  elif [ -e "$builder_link" ]; then
+    echo "prepare-hetzner-image.sh: $builder_label drop-in path became obstructed" >&2
+    return 1
+  else
+    ln -s "$builder_target" "$builder_link" \
+      || { echo "prepare-hetzner-image.sh: could not restore $builder_label drop-in" >&2; return 1; }
+  fi
+}
+
+restore_path1_data_volume_dropins() {
+  [ "$path1_data_volume_dropins_bypassed" -eq 1 ] || return 0
+  builder_restore_status=0
+  restore_path1_dropin \
+    /etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf \
+    ../../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf \
+    "rootless Docker" || builder_restore_status=1
+  restore_path1_dropin \
+    /etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf \
+    ../../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf \
+    "quota allocator" || builder_restore_status=1
+  systemctl daemon-reload || builder_restore_status=1
+  if [ "$builder_restore_status" -eq 0 ]; then
+    path1_data_volume_dropins_bypassed=0
+    return 0
+  fi
+  return 1
+}
+
+cleanup_path1_data_volume_bypass() {
+  builder_cleanup_status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$path1_data_volume_dropins_bypassed" -eq 1 ]; then
+    builder_services_stopped=1
+    systemctl stop chariox-rootless-docker.service || builder_services_stopped=0
+    systemctl stop chariox-slice-disk-quota-allocator.service || builder_services_stopped=0
+    systemctl stop chariox-data-volume-admission.service || builder_services_stopped=0
+    for builder_unit in \
+      chariox-rootless-docker.service \
+      chariox-slice-disk-quota-allocator.service \
+      chariox-data-volume-admission.service; do
+      if systemctl is-active --quiet "$builder_unit"; then
+        builder_services_stopped=0
+      fi
+    done
+    if [ "$builder_services_stopped" -eq 1 ]; then
+      restore_path1_data_volume_dropins || builder_cleanup_status=1
+    else
+      echo "prepare-hetzner-image.sh: Path-1 drop-ins remain bypassed because image-builder storage services could not be stopped" >&2
+      builder_cleanup_status=1
+    fi
+  fi
+  exit "$builder_cleanup_status"
+}
+
+bypass_path1_data_volume_dropins() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  builder_rootless_dropin=/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf
+  builder_allocator_dropin=/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf
+  builder_rootless_target=../../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf
+  builder_allocator_target=../../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf
+  [ -L "$builder_rootless_dropin" ] \
+    && [ "$(readlink "$builder_rootless_dropin")" = "$builder_rootless_target" ] \
+    || fail "signed rootless Docker data-volume drop-in is missing or changed"
+  [ -L "$builder_allocator_dropin" ] \
+    && [ "$(readlink "$builder_allocator_dropin")" = "$builder_allocator_target" ] \
+    || fail "signed quota allocator data-volume drop-in is missing or changed"
+  path1_data_volume_dropins_bypassed=1
+  trap cleanup_path1_data_volume_bypass EXIT
+  trap 'exit 1' HUP INT TERM
+  rm -- "$builder_rootless_dropin" "$builder_allocator_dropin"
+  systemctl daemon-reload
 }
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -138,6 +267,7 @@ docker buildx version >/dev/null || fail "Docker Buildx is unavailable"
 
 "$script_root/install-image.sh" \
   "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
+assert_path1_builder_storage_pristine
 if [ "$managed_provider_topology" = path1 ]; then
   assert_path1_unit_has_no_dropins "$managed_bootstrap_service"
   assert_path1_unit_has_no_dropins chariox-disposable-worker-bootstrap.service
@@ -279,6 +409,8 @@ remove_seeded_rootless_quota_config=0
 if [ ! -e "$rootless_docker_config" ] && [ ! -L "$rootless_docker_config" ]; then
   remove_seeded_rootless_quota_config=1
 fi
+bypass_path1_data_volume_dropins
+assert_path1_builder_storage_pristine
 systemctl start chariox-rootless-docker.service
 rootless_docker_ready=0
 for _attempt in $(seq 1 30); do
@@ -322,6 +454,8 @@ systemctl stop chariox-slice-disk-quota-allocator.service
 if systemctl is-active --quiet chariox-slice-disk-quota-allocator.service; then
   fail "slice disk quota allocator remained active while freezing the image"
 fi
+assert_path1_builder_storage_pristine
+restore_path1_data_volume_dropins
 if [ -e /var/lib/chariox-docker/data ] || [ -L /var/lib/chariox-docker/data ]; then
   [ -d /var/lib/chariox-docker/data ] && [ ! -L /var/lib/chariox-docker/data ] \
     || fail "Docker data-root is not a real directory"
@@ -359,13 +493,17 @@ for bootstrap_service in "$managed_bootstrap_service" "$other_managed_bootstrap_
   fi
 done
 
-for state_directory in /var/lib/chariox-slice-disk-quota /var/lib/chariox-data-volume; do
+for state_directory in \
+  /var/lib/chariox-slice-disk-quota \
+  /var/lib/chariox-data-volume \
+  /run/chariox-data-volume-observation; do
   if [ -e "$state_directory" ] || [ -L "$state_directory" ]; then
     [ -d "$state_directory" ] && [ ! -L "$state_directory" ] \
       || fail "managed image runtime state path is not a real directory: $state_directory"
-    if find "$state_directory" -mindepth 1 -print -quit | grep -q .; then
-      fail "managed image contains persisted quota or data-volume binding state: $state_directory"
-    fi
+    state_entry=$(find "$state_directory" -mindepth 1 -print -quit) \
+      || fail "could not inspect managed image runtime state path: $state_directory"
+    [ -z "$state_entry" ] \
+      || fail "managed image contains persisted quota, data-volume binding, or observation state: $state_directory"
   fi
 done
 if [ -e /etc/chariox/bootstrap ] || [ -L /etc/chariox/bootstrap ]; then
