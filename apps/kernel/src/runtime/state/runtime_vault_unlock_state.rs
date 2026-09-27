@@ -261,9 +261,35 @@ impl KernelRuntimeState {
                     "encrypted Chariox vault access requires a session_id so the unlock popup can be shown"
                         .to_string(),
             })?;
-        let agent_id = agent_id.or(command.agent_id.as_deref()).unwrap_or("vault");
-        self.ensure_vault_unlocked_for_agent(session_id, agent_id, operation)
+        let agent_id = self
+            .vault_prompt_agent(
+                session_id,
+                agent_id.or(command.agent_id.as_deref()),
+                operation,
+            )
+            .await?;
+        self.ensure_vault_unlocked_for_agent(session_id, &agent_id, operation)
             .await
+    }
+
+    /// The unlock popup is an agent's runtime interaction. Without a named
+    /// agent it goes to the session's focus agent, the terminal the person is
+    /// using; a session without agents cannot show it.
+    pub(crate) async fn vault_prompt_agent(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<String, DaemonError> {
+        if let Some(agent_id) = agent_id {
+            return Ok(agent_id.to_owned());
+        }
+        self.focused_agent_id(session_id)
+            .await?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: "encrypted Chariox vault access requires an agent in the session so the unlock popup can be shown".to_string(),
+            })
     }
 
     pub(super) async fn ensure_vault_unlocked_for_provider_run(
@@ -785,5 +811,67 @@ mod tests {
             "test",
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn vault_prompt_goes_to_the_named_agent_else_the_focus_agent() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-prompt-agent-{}-{:032x}",
+            std::process::id(),
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root_path = root.to_string_lossy().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                &root_path, &root_path,
+            ))
+            .expect("session should be created");
+        let (unfocused, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                &root_path, &root_path,
+            ))
+            .expect("second session should be created");
+        app.sessions_mut()
+            .set_focused_agent(unfocused.id(), None)
+            .expect("focus should clear");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(crate::agent::CreateAgentRequest::new(
+                session.id(),
+                "dev-stub",
+            ))
+            .expect("agent should be created");
+        crate::app::KernelSessionService::new(&mut app)
+            .focus_agent(session.id(), agent.id())
+            .expect("agent should take focus");
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+
+        assert_eq!(
+            state
+                .vault_prompt_agent(session.id(), Some("agent-9"), "test")
+                .await
+                .expect("named agent"),
+            "agent-9"
+        );
+        assert_eq!(
+            state
+                .vault_prompt_agent(session.id(), None, "test")
+                .await
+                .expect("focus agent"),
+            agent.id()
+        );
+        let error = state
+            .vault_prompt_agent(unfocused.id(), None, "test")
+            .await
+            .expect_err("a session without a focus agent cannot show the popup");
+        assert!(matches!(
+            error,
+            DaemonError::LocalTransport { message, .. }
+                if message.contains("requires an agent in the session")
+        ));
+        let _ = std::fs::remove_dir_all(root);
     }
 }
