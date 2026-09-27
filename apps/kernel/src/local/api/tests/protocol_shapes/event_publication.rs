@@ -37,7 +37,7 @@ fn sample_event_connection(
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 364);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 365);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -68,51 +68,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 query: Some("review".to_string()),
                 cursor: Some("opaque-event-cursor".to_string()),
                 limit: 50,
-            },
-        ),
-        LocalDaemonRequest::CreateWorkflowEventBinding(
-            crate::local::CreateWorkflowEventBindingRequest {
-                session_id: "session-1".to_string(),
-                publication_ref: "publication-1".to_string(),
-                generator_id: "dev.chariox.github".to_string(),
-                generator_version: "1.0.0".to_string(),
-                manifest_digest: format!("sha256:{}", "a".repeat(64)),
-                connection_id: "connection-1".to_string(),
-                connection_scope: "installation:1".to_string(),
-                event_type: "pull_request.opened".to_string(),
-                event_type_version: 1,
-                filter: serde_json::json!({"repository": "chariox"}),
-                environment_id: Some("environment-1".to_string()),
-                queue_ref: Some("priority".to_string()),
-                action_ids: Vec::new(),
-            },
-        ),
-        LocalDaemonRequest::ListWorkflowEventBindings(
-            crate::local::ListWorkflowEventBindingsRequest {
-                session_id: "session-1".to_string(),
-                publication_ref: Some("publication-1".to_string()),
-            },
-        ),
-        LocalDaemonRequest::SetWorkflowEventBindingStatus(
-            crate::local::SetWorkflowEventBindingStatusRequest {
-                session_id: "session-1".to_string(),
-                binding_id: "binding-1".to_string(),
-                status: crate::session::WorkflowEventBindingStatus::Paused,
-            },
-        ),
-        LocalDaemonRequest::TransferWorkflowEventBinding(
-            crate::local::TransferWorkflowEventBindingRequest {
-                source_session_id: "session-1".to_string(),
-                binding_id: "binding-1".to_string(),
-                target_session_id: "session-2".to_string(),
-                target_publication_ref: "publication-2".to_string(),
-            },
-        ),
-        LocalDaemonRequest::TestWorkflowEventBinding(
-            crate::local::TestWorkflowEventBindingRequest {
-                session_id: "session-1".to_string(),
-                binding_id: "binding-1".to_string(),
-                prompt: Some("Review pull request #42.".to_string()),
             },
         ),
         LocalDaemonRequest::GetEventDeliveryStatus(crate::local::GetEventDeliveryStatusRequest),
@@ -310,16 +265,14 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         },
         LocalDaemonResponse::EventConnectionDependencies {
             connection_id: "connection-1".to_string(),
-            dependencies: vec![crate::local::WorkflowEventBindingDependency {
-                session_id: "session-1".to_string(),
-                publication_id: "publication-1".to_string(),
-                binding_id: "binding-1".to_string(),
-                status: crate::session::WorkflowEventBindingStatus::Active,
+            dependencies: vec![crate::local::EventConnectionDependency {
+                installation_id: "app_slack".to_string(),
+                route_id: Some("mentions".to_string()),
+                active: true,
             }],
         },
         LocalDaemonResponse::EventConnectionRemoved {
             connection: sample_event_connection(crate::local::EventConnectionStatus::Revoked),
-            deactivated_bindings: Vec::new(),
         },
     ];
     let snapshot = serde_json::json!({
@@ -329,18 +282,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/requests/1/SearchEventGeneratorCatalog/cursor"),
         Some(&serde_json::json!("opaque-cursor"))
-    );
-    assert_eq!(
-        snapshot.pointer("/requests/5/CreateWorkflowEventBinding/filter/repository"),
-        Some(&serde_json::json!("chariox"))
-    );
-    assert_eq!(
-        snapshot.pointer("/requests/7/SetWorkflowEventBindingStatus/status"),
-        Some(&serde_json::json!("paused"))
-    );
-    assert_eq!(
-        snapshot.pointer("/requests/8/TransferWorkflowEventBinding/target_publication_ref"),
-        Some(&serde_json::json!("publication-2"))
     );
     assert_eq!(
         snapshot.pointer("/responses/0/EventGeneratorEventsPage/page/events/0/required_scopes/0"),
@@ -375,35 +316,14 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "68aa1e81fc6fa7d43901fd2b95a92846986b7407538baae12f94073f1fc98745"
+        "dd821bbcb628277dd0691269138772b0d8c6b22f30193663f6142f5af3c2027b"
     );
 }
 
 #[test]
-fn workflow_event_binding_and_turn_context_shapes_are_versioned() {
-    // Protocol 364 removed the workflow event reply surface.
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 364);
-    let binding = crate::session::WorkflowEventBinding {
-        id: "binding-1".to_string(),
-        publication_id: "publication-1".to_string(),
-        generator_id: "dev.chariox.github".to_string(),
-        generator_version: "1.0.0".to_string(),
-        manifest_digest: format!("sha256:{}", "a".repeat(64)),
-        connection_id: "connection-1".to_string(),
-        connection_scope: "installation:1".to_string(),
-        event_type: "pull_request.opened".to_string(),
-        event_type_version: 1,
-        filter: serde_json::json!({"repository": "chariox"}),
-        event_interest_key: "interest-1".to_string(),
-        environment_id: "environment-1".to_string(),
-        endpoint_id: "endpoint-1".to_string(),
-        queue_ref: Some("default".to_string()),
-        action_ids: vec!["notification.reply".to_string()],
-        revision: 1,
-        status: crate::session::WorkflowEventBindingStatus::Active,
-        created_at_ms: 1_700_000,
-        updated_at_ms: 1_800_000,
-    };
+fn workflow_turn_context_shape_is_versioned() {
+    // Protocol 365 removed the event context and action capabilities.
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 365);
     let context = crate::execution_lease::RemoteWorkflowTurnContext {
         home_kernel_id: "home".to_string(),
         home_session_id: "room".to_string(),
@@ -411,48 +331,17 @@ fn workflow_event_binding_and_turn_context_shapes_are_versioned() {
         workflow_run_id: "run".to_string(),
         workflow_node_run_id: "node".to_string(),
         delivery_token: "token".to_string(),
-        event_context_enabled: true,
-        event_actions_enabled: true,
     };
-    let snapshot = serde_json::json!({"binding": binding, "context": context});
-    let keys = |value: &serde_json::Value| {
+    let value = serde_json::to_value(&context).unwrap();
+    assert_eq!(
         value
             .as_object()
             .unwrap()
             .keys()
             .cloned()
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        keys(&snapshot["binding"]),
-        [
-            "action_ids",
-            "connection_id",
-            "connection_scope",
-            "created_at_ms",
-            "endpoint_id",
-            "environment_id",
-            "event_interest_key",
-            "event_type",
-            "event_type_version",
-            "filter",
-            "generator_id",
-            "generator_version",
-            "id",
-            "manifest_digest",
-            "publication_id",
-            "queue_ref",
-            "revision",
-            "status",
-            "updated_at_ms",
-        ]
-    );
-    assert_eq!(
-        keys(&snapshot["context"]),
+            .collect::<Vec<_>>(),
         [
             "delivery_token",
-            "event_actions_enabled",
-            "event_context_enabled",
             "home_agent_id",
             "home_kernel_id",
             "home_session_id",
@@ -460,25 +349,18 @@ fn workflow_event_binding_and_turn_context_shapes_are_versioned() {
             "workflow_run_id",
         ]
     );
-    // Persisted bindings and older peers may still carry removed fields.
-    let mut legacy = snapshot.clone();
-    legacy["binding"]["retired_field"] = serde_json::json!("thread");
-    legacy["context"]["retired_field"] = serde_json::json!(true);
+    // Older peers still send the removed capabilities.
+    let mut legacy = value.clone();
+    legacy["event_context_enabled"] = serde_json::json!(true);
+    legacy["event_actions_enabled"] = serde_json::json!(true);
     assert_eq!(
-        serde_json::from_value::<crate::session::WorkflowEventBinding>(legacy["binding"].clone())
+        serde_json::from_value::<crate::execution_lease::RemoteWorkflowTurnContext>(legacy)
             .unwrap(),
-        binding
-    );
-    assert_eq!(
-        serde_json::from_value::<crate::execution_lease::RemoteWorkflowTurnContext>(
-            legacy["context"].clone()
-        )
-        .unwrap(),
         context
     );
-    let serialized = serde_json::to_string(&snapshot).unwrap();
+    let serialized = serde_json::to_string(&value).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "b917c96b330312ffbb262dec487a260d4fa323a56a60e75ccc4abe8f6c02b117"
+        "ee11932387891cb53da8ddaa37805476972a9323531f648f88d5fa8f522e1c21"
     );
 }

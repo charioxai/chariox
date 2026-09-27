@@ -394,15 +394,6 @@ impl KernelRuntimeState {
         // Do not promote a workflow prompt onto it: complete the current turn
         // first, then the app-level queue path will replace the provider with a
         // workflow-scoped run before dispatching the queued prompt.
-        let next_queued_workflow_event_capabilities = next_queued_prompt_candidate
-            .as_ref()
-            .filter(|prompt| {
-                crate::scheduler::runtime::is_workflow_prompt_attachment(
-                    prompt.source_attachment_id(),
-                )
-            })
-            .map(|prompt| owned.workflow_event_capabilities_for_prompt(session_id, prompt))
-            .transpose()?;
         let next_queued_workflow_requires_fresh_context = next_queued_prompt_candidate
             .as_ref()
             .filter(|prompt| {
@@ -420,11 +411,7 @@ impl KernelRuntimeState {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(
                     prompt.source_attachment_id(),
                 ) && (next_queued_workflow_requires_fresh_context
-                    || !provider_run.workflow_tools_enabled()
-                    || next_queued_workflow_event_capabilities.is_some_and(|(context, actions)| {
-                        provider_run.workflow_event_context_enabled() != context
-                            || provider_run.workflow_event_actions_enabled() != actions
-                    }))
+                    || !provider_run.workflow_tools_enabled())
             });
         let next_queued_prompt = (!defer_queued_prompt)
             .then_some(next_queued_prompt_candidate)

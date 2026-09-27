@@ -3,9 +3,9 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use crate::error::DaemonError;
 use crate::session::{
     DurableWorkflowHotState, RuntimeSession, WorkflowConsole, WorkflowDefinition,
-    WorkflowEndpointRuntimeInstance, WorkflowEventBinding, WorkflowEventDeliveryReceipt,
-    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowPublicationSnapshot,
-    WorkflowQueuedPrompt, WorkflowRun, WorkflowScheduleDefinition,
+    WorkflowEndpointRuntimeInstance, WorkflowEventDeliveryReceipt, WorkflowPromptQueueDefinition,
+    WorkflowPublicationDefinition, WorkflowPublicationSnapshot, WorkflowQueuedPrompt, WorkflowRun,
+    WorkflowScheduleDefinition,
 };
 
 use super::{
@@ -134,56 +134,6 @@ impl DurableKernelStateStore {
                 workflow_runs: encoded.workflow_runs,
                 delivery_receipts: encoded.delivery_receipts,
                 prompt_state_json,
-            })
-    }
-
-    pub(crate) fn persist_workflow_runtime_sessions_transition(
-        &self,
-        sessions: &[RuntimeSession],
-        reason: &str,
-    ) -> Result<u64, DaemonError> {
-        let Some(first) = sessions.first() else {
-            return Err(DaemonError::LocalTransport {
-                operation: "durable_state.persist_workflow_runtime_sessions_transition",
-                message: "workflow runtime transition requires at least one session".to_string(),
-            });
-        };
-        let owner_id = first.host_daemon_id();
-        if sessions
-            .iter()
-            .any(|session| session.host_daemon_id() != owner_id)
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "durable_state.persist_workflow_runtime_sessions_transition",
-                message: "workflow runtime transition cannot span kernel owners".to_string(),
-            });
-        }
-        let timestamp_ms = unix_epoch_ms();
-        let event_id = format!("state_evt_{timestamp_ms}_{}", super::rand_suffix());
-        let session_ids = sessions
-            .iter()
-            .map(|session| session.id())
-            .collect::<Vec<_>>();
-        let payload_json = serde_json::to_string(&serde_json::json!({
-            "owner_id": owner_id,
-            "session_ids": session_ids,
-            "reason": reason,
-        }))
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.encode_workflow_runtime_sessions_transition",
-            message: error.to_string(),
-        })?;
-        let sessions = sessions
-            .iter()
-            .map(encode_workflow_session)
-            .collect::<Result<Vec<_>, _>>()?;
-        self.writer
-            .execute(DurableWriteOperation::WorkflowRuntimeSessionsTransition {
-                event_id,
-                timestamp_ms,
-                payload_json,
-                owner_id: owner_id.to_string(),
-                sessions,
             })
     }
 
@@ -556,74 +506,6 @@ pub(super) fn write_workflow_runtime_transition(
             ],
         )?;
         return Ok(transaction.last_insert_rowid().max(0) as u64);
-    }
-    Ok(sequence)
-}
-
-pub(super) fn write_workflow_runtime_sessions_transition(
-    transaction: &Transaction<'_>,
-    event_id: &str,
-    timestamp_ms: u64,
-    payload_json: &str,
-    owner_id: &str,
-    sessions: &[DurableWorkflowSessionWrite],
-) -> Result<u64, rusqlite::Error> {
-    transaction.execute(
-        "INSERT INTO durable_state_events (
-            event_id, kind, subject_id, timestamp_ms, payload_json
-         ) VALUES (?1, 'workflow.runtime.updated', NULL, ?2, ?3)",
-        params![event_id, timestamp_ms as i64, payload_json],
-    )?;
-    let sequence = transaction.last_insert_rowid().max(0) as u64;
-    for session in sessions {
-        super::app_event_maintenance::record_queue_removals_in(
-            transaction,
-            owner_id,
-            &session.session_id,
-            &session.hot_entities,
-            &session.workflow_runs,
-        )?;
-        write_workflow_hot_entities(
-            transaction,
-            owner_id,
-            &session.session_id,
-            timestamp_ms,
-            &session.hot_entities,
-            true,
-        )?;
-        write_workflow_runs(
-            transaction,
-            owner_id,
-            timestamp_ms,
-            &session.workflow_runs,
-            true,
-        )?;
-        write_delivery_receipts(
-            transaction,
-            owner_id,
-            timestamp_ms,
-            &session.delivery_receipts,
-            true,
-        )?;
-        super::app_event_maintenance::record_workflow_transition_in(
-            transaction,
-            owner_id,
-            &session.session_id,
-            &session.hot_entities,
-            &session.workflow_runs,
-        )?;
-        delete_missing_active_workflow_runs(
-            transaction,
-            owner_id,
-            &session.session_id,
-            &session.workflow_runs,
-        )?;
-        delete_missing_delivery_receipts(
-            transaction,
-            owner_id,
-            &session.session_id,
-            &session.delivery_receipts,
-        )?;
     }
     Ok(sequence)
 }
@@ -1032,14 +914,6 @@ fn encode_workflow_hot_entities(
             &snapshot,
         )?);
     }
-    for binding in state.workflow_event_bindings {
-        entities.push(encode_workflow_hot_entity(
-            session_id,
-            "event_binding",
-            &binding.id,
-            &binding,
-        )?);
-    }
     Ok(entities)
 }
 
@@ -1102,9 +976,9 @@ fn decode_workflow_hot_entity(
                 .workflow_publication_snapshots
                 .insert(entity_id.to_string(), decode!(WorkflowPublicationSnapshot));
         }
-        "event_binding" => state
-            .workflow_event_bindings
-            .push(decode!(WorkflowEventBinding)),
+        // Direct workflow event bindings were retired (protocol 365); a row
+        // left from an older kernel is dropped with the session's next write.
+        "event_binding" => {}
         unsupported => {
             return Err(DaemonError::LocalTransport {
                 operation: "durable_state.decode_workflow_hot_entity",
@@ -1254,6 +1128,41 @@ mod tests {
             "/workspace",
         ));
         session
+    }
+
+    #[test]
+    fn retired_event_binding_rows_are_ignored_on_load() {
+        let (store, path) = temp_store("workflow-runtime-retired-binding");
+        store
+            .persist_workflow_runtime_transition(&session_with_runs(), "test")
+            .expect("workflow transition should persist");
+        drop(store);
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO durable_workflow_hot_entities
+                 (owner_id, session_id, entity_kind, entity_id, updated_at_ms, payload_json)
+                 VALUES ('kernel-1', 'session-1', 'event_binding', 'event-binding-1', 1, '{\"id\":\"event-binding-1\"}')",
+                [],
+            )
+            .unwrap();
+        let store = DurableKernelStateStore::open(path).expect("store should reopen");
+        let hot_states = store
+            .load_workflow_hot_states("kernel-1")
+            .expect("a retired event binding row must not fail the load");
+        assert_eq!(hot_states.len(), 1);
+        assert_eq!(hot_states[0].1.workflow_runtime_instances.len(), 1);
+
+        // A session written before protocol 365 still loads; its bindings are dropped.
+        let mut legacy = serde_json::to_value(session_with_runs()).unwrap();
+        legacy["workflow_event_bindings"] =
+            serde_json::json!([{"id": "event-binding-1", "status": "active"}]);
+        let session: RuntimeSession =
+            serde_json::from_value(legacy).expect("a pre-365 session must load");
+        assert!(serde_json::to_value(&session)
+            .unwrap()
+            .get("workflow_event_bindings")
+            .is_none());
     }
 
     #[test]
@@ -1477,66 +1386,6 @@ mod tests {
             .expect("workflow hot state should load")[0]
             .1
             .workflow_runtime_instances
-            .is_empty());
-
-        drop(store);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn multi_session_workflow_transition_is_atomic_and_never_writes_session_aggregates() {
-        let (store, path) = temp_store("workflow-runtime-multi-session");
-        let first = session_with_runs();
-        let mut second = RuntimeSession::new(
-            "session-2",
-            None,
-            "/workspace",
-            "/workspace",
-            "machine-1",
-            "kernel-1",
-        );
-        second.create_workflow_run(WorkflowRun::new(
-            "run-second",
-            "workflow-2",
-            "endpoint-2",
-            "node-2",
-            Some("second".to_string()),
-            None,
-            Vec::new(),
-            Vec::new(),
-        ));
-
-        store
-            .persist_workflow_runtime_sessions_transition(&[first, second], "binding_transferred")
-            .expect("multi-session transition should persist");
-
-        let hot_states = store
-            .load_workflow_hot_states("kernel-1")
-            .expect("hot states should load");
-        assert_eq!(hot_states.len(), 2);
-        assert_eq!(
-            store
-                .load_active_workflow_runs("kernel-1")
-                .expect("active runs should load")
-                .len(),
-            2
-        );
-        let events = store
-            .load_events_by_kind("workflow.runtime.updated")
-            .expect("workflow events should load");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].payload["reason"], "binding_transferred");
-        assert_eq!(
-            events[0].payload["session_ids"]
-                .as_array()
-                .expect("session ids should be an array")
-                .len(),
-            2
-        );
-        assert!(events[0].payload.get("sessions").is_none());
-        assert!(store
-            .load_events_by_kind("sessions.updated")
-            .expect("aggregate events should load")
             .is_empty());
 
         drop(store);

@@ -28,74 +28,6 @@ fn default_workflow_publication_kind() -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowEventBinding {
-    pub id: String,
-    pub publication_id: String,
-    #[serde(deserialize_with = "crate::event_connection::deserialize_event_generator_id")]
-    pub generator_id: String,
-    pub generator_version: String,
-    pub manifest_digest: String,
-    pub connection_id: String,
-    pub connection_scope: String,
-    pub event_type: String,
-    pub event_type_version: u32,
-    #[serde(default, skip_serializing_if = "serde_json_value_is_null")]
-    pub filter: Value,
-    pub event_interest_key: String,
-    pub environment_id: String,
-    pub endpoint_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue_ref: Option<String>,
-    /// Provider action IDs explicitly enabled for this event binding. The
-    /// list is catalog-validated before persistence and is never inferred
-    /// from provider context alone.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub action_ids: Vec<String>,
-    pub revision: u64,
-    pub status: WorkflowEventBindingStatus,
-    pub created_at_ms: u64,
-    pub updated_at_ms: u64,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkflowEventBindingStatus {
-    Active,
-    Paused,
-    Conflict,
-    Tombstoned,
-}
-
-impl WorkflowEventBinding {
-    pub fn active(&self) -> bool {
-        self.status == WorkflowEventBindingStatus::Active
-    }
-
-    pub fn route_claim(
-        &self,
-        kernel_id: impl Into<String>,
-    ) -> chariox_event_protocol::EnvironmentRouteClaim {
-        chariox_event_protocol::EnvironmentRouteClaim {
-            environment_id: self.environment_id.clone(),
-            event_interest_key: self.event_interest_key.clone(),
-            kernel_id: kernel_id.into(),
-            publication_id: self.publication_id.clone(),
-            binding_id: self.id.clone(),
-            endpoint_id: self.endpoint_id.clone(),
-            queue_ref: self.queue_ref.clone(),
-            binding_revision: self.revision,
-            active: self.active(),
-        }
-    }
-
-    pub fn set_status(&mut self, status: WorkflowEventBindingStatus) {
-        self.status = status;
-        self.revision = self.revision.saturating_add(1);
-        self.updated_at_ms = unix_epoch_ms();
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowEventDeliveryReceipt {
     pub delivery_id: String,
     pub binding_id: String,
@@ -104,10 +36,6 @@ pub struct WorkflowEventDeliveryReceipt {
     pub queued_prompt_id: String,
     pub accepted_at_ms: u64,
     pub expires_at_ms: u64,
-}
-
-fn serde_json_value_is_null(value: &Value) -> bool {
-    value.is_null()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -707,49 +635,3 @@ impl WorkflowPublicationDefinition {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn removed_publisher_namespace_restores_as_canonical_workflow_binding() {
-        let binding: WorkflowEventBinding = serde_json::from_value(serde_json::json!({
-            "id": "binding-1",
-            "publication_id": "publication-1",
-            "generator_id": "dev.arroba.github",
-            "generator_version": "1",
-            "manifest_digest": "sha256:test",
-            "connection_id": "connection-1",
-            "connection_scope": "repository",
-            "event_type": "pull_request.opened",
-            "event_type_version": 1,
-            "event_interest_key": "repository:charioxai/chariox:pull_request.opened",
-            "environment_id": "kernel-1",
-            "endpoint_id": "endpoint-1",
-            "revision": 1,
-            "status": "active",
-            "created_at_ms": 1,
-            "updated_at_ms": 1
-        }))
-        .expect("removed publisher namespace should deserialize");
-
-        assert_eq!(binding.generator_id, "dev.chariox.github");
-        assert!(!serde_json::to_string(&binding)
-            .expect("binding should serialize")
-            .contains("dev.arroba"));
-    }
-}
-
-/// Workflow replies were removed (protocol 364): an agent that reads untrusted
-/// event content must not post back through the generator. Replies go through
-/// the generator's App instead.
-pub const REMOVED_REPLY_ACTION: &str = "notification.reply";
-
-pub fn removed_reply_action_error(operation: &'static str) -> crate::error::DaemonError {
-    crate::error::DaemonError::LocalTransport {
-        operation,
-        message: format!("`{REMOVED_REPLY_ACTION}` is not a workflow action; replies go through the generator's App"),
-    }
-}
-

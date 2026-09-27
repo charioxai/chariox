@@ -22,6 +22,8 @@ pub struct EventConnection {
     pub scopes: Vec<EventConnectionScope>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<EventConnectedResource>,
+    /// Protocol 365: active App inbox routes and App connection grants that
+    /// use the connection.
     #[serde(default)]
     pub attached_trigger_count: u64,
     #[serde(default, skip_serializing_if = "is_json_null")]
@@ -70,12 +72,14 @@ pub struct EventConnectionPage {
     pub next_cursor: Option<String>,
 }
 
+/// Protocol 365: an App installation that uses an event connection, through
+/// an inbox route (`route_id`) or a connection grant (no `route_id`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowEventBindingDependency {
-    pub session_id: String,
-    pub publication_id: String,
-    pub binding_id: String,
-    pub status: crate::session::WorkflowEventBindingStatus,
+pub struct EventConnectionDependency {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_id: Option<String>,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,57 +323,6 @@ pub struct ListEventGeneratorResourcesRequest {
     pub limit: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CreateWorkflowEventBindingRequest {
-    pub session_id: String,
-    pub publication_ref: String,
-    pub generator_id: String,
-    pub generator_version: String,
-    pub manifest_digest: String,
-    pub connection_id: String,
-    pub connection_scope: String,
-    pub event_type: String,
-    pub event_type_version: u32,
-    #[serde(default, skip_serializing_if = "is_json_null")]
-    pub filter: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub action_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListWorkflowEventBindingsRequest {
-    pub session_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication_ref: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetWorkflowEventBindingStatusRequest {
-    pub session_id: String,
-    pub binding_id: String,
-    pub status: crate::session::WorkflowEventBindingStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferWorkflowEventBindingRequest {
-    pub source_session_id: String,
-    pub binding_id: String,
-    pub target_session_id: String,
-    pub target_publication_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TestWorkflowEventBindingRequest {
-    pub session_id: String,
-    pub binding_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetEventDeliveryStatusRequest;
 
@@ -383,6 +336,7 @@ pub struct EventDeliveryStatus {
     pub last_connected_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Active App inbox routes fed by an event generator.
     pub active_route_count: usize,
 }
 

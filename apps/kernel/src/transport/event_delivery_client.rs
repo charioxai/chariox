@@ -114,9 +114,7 @@ pub(crate) fn event_delivery_status(
         aeds_url: config.event_delivery_url.clone(),
         last_connected_at_ms: health.last_connected_at_ms,
         last_error: health.last_error,
-        active_route_count: runtime_state
-            .active_event_route_claims(&config.daemon_id)
-            .len(),
+        active_route_count: runtime_state.active_app_route_count(),
     }
 }
 

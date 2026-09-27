@@ -101,13 +101,6 @@ pub struct RemoteWorkflowTurnContext {
     pub workflow_run_id: String,
     pub workflow_node_run_id: String,
     pub delivery_token: String,
-    /// Whether this event run may request bounded provider context. Defaults
-    /// off for older peers.
-    #[serde(default)]
-    pub event_context_enabled: bool,
-    /// Whether this event run has at least one catalog-validated action.
-    #[serde(default)]
-    pub event_actions_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

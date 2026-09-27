@@ -90,8 +90,6 @@ async fn assert_offline_worker_failure_settlement(
             workflow_run_id: "home-run".into(),
             workflow_node_run_id: "home-node-run".into(),
             delivery_token: "home-turn-token".into(),
-            event_context_enabled: false,
-            event_actions_enabled: false,
         };
         let git_context = RemoteGitTurnContext {
             home_session_id: "home-room".into(),

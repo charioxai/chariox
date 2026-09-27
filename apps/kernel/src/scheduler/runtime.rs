@@ -640,36 +640,16 @@ pub fn ensure_workflow_provider_run_for_agent(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
 ) -> Result<String, DaemonError> {
-    prompt_dispatch::ensure_workflow_provider_run_for_agent(
-        app,
-        session_id,
-        agent_id,
-        event_context_enabled,
-        event_actions_enabled,
-        false,
-        None,
-    )
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(app, session_id, agent_id, false, None)
 }
 
 pub fn ensure_fresh_workflow_provider_run_for_agent(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
 ) -> Result<String, DaemonError> {
-    prompt_dispatch::ensure_workflow_provider_run_for_agent(
-        app,
-        session_id,
-        agent_id,
-        event_context_enabled,
-        event_actions_enabled,
-        true,
-        None,
-    )
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(app, session_id, agent_id, true, None)
 }
 
 pub fn ensure_fresh_workflow_provider_run_for_node(
@@ -677,15 +657,11 @@ pub fn ensure_fresh_workflow_provider_run_for_node(
     session_id: &str,
     agent_id: &str,
     workflow_node_run_id: &str,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
 ) -> Result<String, DaemonError> {
     prompt_dispatch::ensure_workflow_provider_run_for_agent(
         app,
         session_id,
         agent_id,
-        event_context_enabled,
-        event_actions_enabled,
         true,
         Some(workflow_node_run_id),
     )

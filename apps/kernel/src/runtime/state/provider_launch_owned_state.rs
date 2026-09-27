@@ -916,14 +916,7 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let (workflow_provider_run_id, retired_provider_run_id) = runtime
             .owned
-            .workflow_ensure_provider_run(
-                session.id(),
-                workflow_agent.id(),
-                false,
-                false,
-                false,
-                None,
-            )
+            .workflow_ensure_provider_run(session.id(), workflow_agent.id(), false, None)
             .expect("locked vault must not block synchronous workflow admission");
         assert!(retired_provider_run_id.is_none());
         assert!(runtime

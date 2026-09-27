@@ -547,7 +547,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RemoveAppInboxRoute(_) => "app.inbox.route.remove",
         LocalDaemonRequest::ListAppInboxRoutes(_) => "app.inbox.route.list",
         LocalDaemonRequest::GrantAppConnection(_) => "app.connection.grant",
-        LocalDaemonRequest::MoveEventBindingToApp(_) => "app.inbox.route.move_binding",
         LocalDaemonRequest::GetAppSet(_) => "app.set",
         LocalDaemonRequest::RevokeAppConnection(_) => "app.connection.revoke",
         LocalDaemonRequest::ListAppConnections(_) => "app.connection.list",
@@ -889,11 +888,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "event_connection.dependencies.list"
         }
         LocalDaemonRequest::RemoveEventConnection(_) => "event_connection.remove",
-        LocalDaemonRequest::CreateWorkflowEventBinding(_) => "workflow_event_binding.create",
-        LocalDaemonRequest::ListWorkflowEventBindings(_) => "workflow_event_binding.list",
-        LocalDaemonRequest::SetWorkflowEventBindingStatus(_) => "workflow_event_binding.status.set",
-        LocalDaemonRequest::TransferWorkflowEventBinding(_) => "workflow_event_binding.transfer",
-        LocalDaemonRequest::TestWorkflowEventBinding(_) => "workflow_event_binding.test",
         LocalDaemonRequest::GetEventDeliveryStatus(_) => "event_delivery.status",
         LocalDaemonRequest::ControlWorkflowPublicationRuntime(_) => {
             "workflow_publication.runtime.control"

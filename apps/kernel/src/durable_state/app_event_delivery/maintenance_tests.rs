@@ -85,7 +85,7 @@ fn real_workflow_run_persistence_and_receipt_delivery_share_one_transaction() {
     assert_eq!(status(&store, &fixture, &receipt.receipt_id), delivered);
 }
 #[test]
-fn actual_queue_remove_atomically_fails_receipt_including_multi_session_writer() {
+fn actual_queue_remove_atomically_fails_receipt() {
     let fixture = Fixture::new();
     let (store, mut sessions, session, receipt) = queued_fixture(&fixture);
     sessions
@@ -95,13 +95,13 @@ fn actual_queue_remove_atomically_fails_receipt_including_multi_session_writer()
     let db = Connection::open(fixture.root.join("kernel.sqlite")).unwrap();
     db.execute_batch("CREATE TRIGGER reject_cancel BEFORE UPDATE OF state ON app_outbox WHEN NEW.state='failed' BEGIN SELECT RAISE(ABORT,'fixture cancelled receipt failure'); END;").unwrap();
     assert!(store
-        .persist_workflow_runtime_sessions_transition(&[before.clone()], "queue_removed")
+        .persist_workflow_runtime_transition(&before, "queue_removed")
         .is_err());
     assert_eq!(status(&store, &fixture, &receipt.receipt_id), receipt);
     assert_eq!(queued_count(&db), 1);
     db.execute_batch("DROP TRIGGER reject_cancel").unwrap();
     store
-        .persist_workflow_runtime_sessions_transition(&[before], "queue_removed")
+        .persist_workflow_runtime_transition(&before, "queue_removed")
         .unwrap();
     assert_eq!(
         status(&store, &fixture, &receipt.receipt_id).state,

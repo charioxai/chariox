@@ -334,14 +334,7 @@ mod tests {
                     .spawn(move || {
                         barrier.wait();
                         owned
-                            .workflow_ensure_provider_run(
-                                &session_id,
-                                &agent_id,
-                                false,
-                                false,
-                                false,
-                                None,
-                            )
+                            .workflow_ensure_provider_run(&session_id, &agent_id, false, None)
                             .map(|(provider_run_id, _)| provider_run_id)
                     })
                     .expect("workflow provider admission thread should spawn"),
@@ -489,14 +482,7 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let (provider_run_id, retired_provider_run_id) = runtime
             .owned
-            .workflow_ensure_provider_run(
-                session.id(),
-                workflow_agent.id(),
-                false,
-                false,
-                false,
-                None,
-            )
+            .workflow_ensure_provider_run(session.id(), workflow_agent.id(), false, None)
             .expect("workflow provider should start");
         assert!(retired_provider_run_id.is_none());
         let credential_probe = crate::provider::ProviderCredentialDeliveryProbe::install(
@@ -604,14 +590,7 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let (provider_run_id, retired_provider_run_id) = runtime
             .owned
-            .workflow_ensure_provider_run(
-                session.id(),
-                workflow_agent.id(),
-                false,
-                false,
-                false,
-                None,
-            )
+            .workflow_ensure_provider_run(session.id(), workflow_agent.id(), false, None)
             .expect("workflow provider should be admitted while vault is locked");
         assert!(retired_provider_run_id.is_none());
         let credential_probe = crate::provider::ProviderCredentialDeliveryProbe::install(

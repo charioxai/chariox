@@ -81,25 +81,16 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
-    fn ordinary_workflow_specs_omit_opt_in_event_tools() {
-        let specs = workflow_runtime_tool_specs_without_event_tools();
-        assert!(!specs
-            .iter()
-            .any(|spec| spec.name == EVENT_CONTEXT_TOOL_QUALIFIED));
-        assert!(!specs
-            .iter()
-            .any(|spec| spec.name == EVENT_ACTION_TOOL_QUALIFIED));
+    fn workflow_specs_have_no_event_tools() {
+        let specs = workflow_runtime_tool_specs();
+        assert!(!specs.iter().any(|spec| spec.name.contains("event_")));
         assert_eq!(
             canonical_workflow_tool_name("mcp__chariox__event_context"),
-            Some(EVENT_CONTEXT_TOOL)
-        );
-        assert_eq!(
-            workflow_event_action_tool_spec().name,
-            EVENT_ACTION_TOOL_QUALIFIED
+            None
         );
         assert_eq!(
             canonical_workflow_tool_name("mcp__chariox__event_action"),
-            Some(EVENT_ACTION_TOOL)
+            None
         );
     }
 

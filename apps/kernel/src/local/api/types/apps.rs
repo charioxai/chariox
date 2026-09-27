@@ -471,33 +471,6 @@ pub struct AppSetInstallation {
     pub connections: Vec<AppConnectionSummary>,
 }
 
-/// Protocol 360: a workflow event binding becomes an App inbox route on the
-/// same generator connection, scope, filter and event. The binding is paused
-/// (it no longer claims the events), its actions become a connection grant
-/// when the App declares them, and optionally the App's outgoing event is
-/// routed to the binding's publication. Every step is undone on a failure.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MoveEventBindingToAppRequest {
-    pub session_id: String,
-    pub binding_id: String,
-    pub installation_id: String,
-    pub route_id: String,
-    /// The App's signed incoming event the occurrences become.
-    pub event_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub automation: Option<MovedEventAutomation>,
-}
-
-/// The App automation that takes the binding's place in its workflow.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MovedEventAutomation {
-    pub automation_id: String,
-    /// The App's signed outgoing event routed to the binding's publication.
-    pub event_name: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppAutomationStatus {

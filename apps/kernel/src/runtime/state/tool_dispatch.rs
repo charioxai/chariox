@@ -184,21 +184,7 @@ impl KernelRuntimeState {
         let workflow_tools_enabled =
             leased_provider_run || provider_runs.iter().any(|run| run.workflow_tools_enabled());
         if workflow_tools_enabled {
-            specs.extend(
-                crate::transport::runtime_tools::workflow_runtime_tool_specs_without_event_tools(),
-            );
-            if provider_runs
-                .iter()
-                .any(|run| run.workflow_event_actions_enabled())
-            {
-                specs.push(crate::transport::runtime_tools::workflow_event_action_tool_spec());
-            }
-            if provider_runs
-                .iter()
-                .any(|run| run.workflow_event_context_enabled())
-            {
-                specs.push(crate::transport::runtime_tools::workflow_event_context_tool_spec());
-            }
+            specs.extend(crate::transport::runtime_tools::workflow_runtime_tool_specs());
         }
         specs
     }

@@ -1,12 +1,9 @@
 use super::*;
 use crate::local::{
-    DisableWorkflowPublicationRequest, GetEventConnectionRequest, GetEventDeliveryStatusRequest,
-    ListEventConnectionDependenciesRequest, ListWorkflowEventBindingsRequest,
+    GetEventConnectionRequest, ListEventConnectionDependenciesRequest,
     ObserveEventConnectionAuthorizationRequest, ReconnectEventConnectionRequest,
     RefreshEventConnectionRequest, RemoveEventConnectionRequest,
-    SetWorkflowEventBindingStatusRequest, TransferWorkflowEventBindingRequest,
 };
-use crate::session::WorkflowEventBindingStatus;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -434,365 +431,6 @@ fn http_request_complete(request: &[u8]) -> bool {
 }
 
 #[test]
-fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
-    let server = ReadyConnectionServer::start();
-    let mut config = crate::DaemonConfig::for_tests();
-    config
-        .event_generator_management_targets
-        .insert("dev.chariox.dummy".to_string(), server.target());
-    let harness = LocalRouterTestHarness::with_config(config);
-    let graph = create_publication_test_graph(&harness, "event-publication");
-    let create_publication = |alias: &str| match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-            CreateWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                workflow_ref: graph.workflow_id.clone(),
-                endpoint_ref: graph.endpoint_id.clone(),
-                expected_workflow_revision: None,
-                operation_key: Some(format!("publish-{alias}")),
-                queue_ref: Some("default".to_string()),
-                alias: Some(alias.to_string()),
-                kind: Some("event_based".to_string()),
-                route: None,
-                methods: Vec::new(),
-                transport: None,
-                parser: None,
-                input_schema: None,
-                trace_exposure: None,
-                mode: None,
-                sync_timeout_ms: None,
-                poll_ms: None,
-            },
-        ))
-        .expect("event publication should be created")
-    {
-        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let first = create_publication("event-first");
-    let second = create_publication("event-second");
-    let binding_request = |publication_ref: &str| CreateWorkflowEventBindingRequest {
-        session_id: graph.session_id.clone(),
-        publication_ref: publication_ref.to_string(),
-        generator_id: "dev.chariox.dummy".to_string(),
-        generator_version: "1.0.0".to_string(),
-        manifest_digest: crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-            .to_string(),
-        connection_id: "connection-local".to_string(),
-        connection_scope: "tenant:local".to_string(),
-        event_type: "dummy.test".to_string(),
-        event_type_version: 1,
-        filter: serde_json::json!({"channel": "default"}),
-        environment_id: Some("environment-local".to_string()),
-        queue_ref: Some("default".to_string()),
-        action_ids: Vec::new(),
-    };
-    let binding = match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-            binding_request(first.id()),
-        ))
-        .expect("first event binding should be created")
-    {
-        LocalDaemonResponse::WorkflowEventBindingCreated {
-            binding, session, ..
-        } => {
-            assert_eq!(
-                session.workflow_event_bindings(),
-                std::slice::from_ref(&binding)
-            );
-            binding
-        }
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let idempotent = match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-            binding_request(first.id()),
-        ))
-        .expect("repeating the same binding should be idempotent")
-    {
-        LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert_eq!(idempotent.id, binding.id);
-    let fan_out = harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-            binding_request(second.id()),
-        ))
-        .expect("same event interest should fan out to a second workflow");
-    let fan_out_binding = match fan_out {
-        LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert_ne!(fan_out_binding.id, binding.id);
-    assert_eq!(
-        fan_out_binding.event_interest_key,
-        binding.event_interest_key
-    );
-
-    let persisted = harness.with_app(|app| {
-        app.durable_state_store()
-            .load_workflow_hot_states("daemon-test")
-            .expect("durable workflow state should load")
-            .into_iter()
-            .find(|(session_id, _)| session_id == &graph.session_id)
-            .map(|(_, state)| state)
-            .expect("event publication session should be persisted")
-    });
-    assert_eq!(persisted.workflow_publications.len(), 2);
-    assert_eq!(persisted.workflow_publication_snapshots.len(), 2);
-    assert_eq!(persisted.workflow_event_bindings.len(), 2);
-
-    let package_files = match harness
-        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
-            ExportWorkflowPublicationPackageRequest {
-                session_id: graph.session_id.clone(),
-                publication_ref: first.id().to_string(),
-                kernel_url: None,
-                agent_app: None,
-                agent_app_assets_dir: None,
-            },
-        ))
-        .expect("event publication package should export")
-    {
-        LocalDaemonResponse::WorkflowPublicationPackageExported {
-            package_version,
-            package_files,
-            ..
-        } => {
-            assert_eq!(package_version, 4);
-            package_files
-        }
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let binding_template = package_files
-        .iter()
-        .find(|file| file.path == "event-bindings.example.json")
-        .expect("event binding activation template should travel with the publication");
-    let binding_template = String::from_utf8(
-        base64::engine::general_purpose::STANDARD
-            .decode(&binding_template.content_base64)
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(binding_template.contains("\"requested_scope\": \"tenant:local\""));
-    assert!(binding_template.contains("\"connection_id\": null"));
-    assert!(binding_template.contains("\"action_ids\": []"));
-    assert!(!binding_template.contains("connection-local"));
-    let publication_json = package_json_file(&package_files, "publication.json");
-    assert_eq!(
-        publication_json["event_bindings_path"],
-        serde_json::json!("event-bindings.local.json")
-    );
-    assert_eq!(
-        publication_json["hooks"][0]["transport"],
-        serde_json::json!("event_based")
-    );
-    assert!(publication_json["hooks"][0].get("route").is_none());
-    assert!(publication_json["hooks"][0].get("methods").is_none());
-    assert!(publication_json["hooks"][0].get("parser").is_none());
-    assert!(publication_json["hooks"][0].get("mode").is_none());
-    assert!(!package_files
-        .iter()
-        .any(|file| file.path.starts_with("public/")));
-    let deployment_contract = package_json_file(&package_files, "deployment-contract.json");
-    assert_eq!(
-        deployment_contract["routes"][0]["transport"],
-        serde_json::json!("event_based")
-    );
-    assert_eq!(
-        deployment_contract["routes"][0]["methods"],
-        serde_json::json!([])
-    );
-    assert!(deployment_contract["routes"][0].get("path").is_none());
-
-    let tested = match harness
-        .dispatch(LocalDaemonRequest::TestWorkflowEventBinding(
-            TestWorkflowEventBindingRequest {
-                session_id: graph.session_id.clone(),
-                binding_id: binding.id.clone(),
-                prompt: Some("Process the deterministic event.".to_string()),
-            },
-        ))
-        .expect("test delivery should enter the workflow queue")
-    {
-        LocalDaemonResponse::WorkflowEventBindingTested {
-            queued_prompt_id,
-            duplicate,
-            session,
-            ..
-        } => {
-            assert!(!duplicate);
-            assert!(session
-                .workflow_event_delivery_receipts()
-                .values()
-                .any(|receipt| receipt.queued_prompt_id == queued_prompt_id));
-            assert!(
-                session.workflow_runs().iter().any(|run| {
-                    run.publication_invocation().is_some_and(|invocation| {
-                        invocation.transport == "event"
-                            && invocation.hook_id.as_deref() == Some(binding.id.as_str())
-                    })
-                }) || session.workflow_queued_prompts().iter().any(|prompt| {
-                    prompt.publication_invocation().is_some_and(|invocation| {
-                        invocation.transport == "event"
-                            && invocation.hook_id.as_deref() == Some(binding.id.as_str())
-                    })
-                })
-            );
-            session
-        }
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert_eq!(
-        tested.workflow_event_bindings().len(),
-        2,
-        "a second publication may intentionally fan out the same event interest"
-    );
-    let accepted_receipt = tested
-        .workflow_event_delivery_receipts()
-        .values()
-        .next()
-        .expect("test delivery receipt should remain available");
-    let duplicate = harness
-        .runtime_state()
-        .accept_workflow_event_delivery(chariox_event_protocol::EventDeliveryEnvelope {
-            delivery_id: accepted_receipt.delivery_id.clone(),
-            binding_id: binding.id.clone(),
-            event_type: binding.event_type.clone(),
-            event_type_version: binding.event_type_version,
-            occurrence_id: accepted_receipt.occurrence_id.clone(),
-            occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            prompt: "Replay the already accepted test event.".to_string(),
-            artifacts: Vec::new(),
-            metadata: serde_json::json!({"test": true, "duplicate": true}),
-            reply_context: None,
-            expires_at_ms: u64::MAX,
-        })
-        .expect("a duplicate delivery should return its durable receipt without blocking");
-    assert!(duplicate.duplicate);
-    assert_eq!(
-        duplicate.queued_prompt_id,
-        accepted_receipt.queued_prompt_id
-    );
-
-    let active_route_count = || match harness
-        .dispatch(LocalDaemonRequest::GetEventDeliveryStatus(
-            GetEventDeliveryStatusRequest,
-        ))
-        .expect("event delivery status should resolve")
-    {
-        LocalDaemonResponse::EventDeliveryStatus { status } => status.active_route_count,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert_eq!(
-        active_route_count(),
-        2,
-        "both active publications advertise the intentional fan-out"
-    );
-    harness.runtime_state().apply_event_route_conflicts(&[
-        chariox_event_protocol::EventRouteConflict {
-            environment_id: binding.environment_id.clone(),
-            event_interest_key: binding.event_interest_key.clone(),
-            requested_binding_id: binding.id.clone(),
-            existing_binding_id: "binding-on-new-kernel".to_string(),
-            existing_publication_id: second.id().to_string(),
-        },
-    ]);
-    assert_eq!(
-        active_route_count(),
-        1,
-        "an AEDS ownership conflict must fence only the old kernel route"
-    );
-    harness
-        .dispatch(LocalDaemonRequest::SetWorkflowEventBindingStatus(
-            SetWorkflowEventBindingStatusRequest {
-                session_id: graph.session_id.clone(),
-                binding_id: binding.id.clone(),
-                status: WorkflowEventBindingStatus::Active,
-            },
-        ))
-        .expect("a locally resolved conflict should be resumable");
-    assert_eq!(active_route_count(), 2);
-
-    let disabled = match harness
-        .dispatch(LocalDaemonRequest::DisableWorkflowPublication(
-            DisableWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                publication_ref: first.id().to_string(),
-            },
-        ))
-        .expect("event publication should disable")
-    {
-        LocalDaemonResponse::WorkflowPublicationDisabled { session, .. } => session,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert_eq!(
-        disabled.workflow_event_bindings()[0].status,
-        WorkflowEventBindingStatus::Tombstoned,
-        "disabling a publication must retain a durable tombstone for reconciliation"
-    );
-    assert_eq!(
-        active_route_count(),
-        1,
-        "a disabled publication must not continue advertising its active AEDS route"
-    );
-    let subscribe_error = harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-            binding_request(first.id()),
-        ))
-        .expect_err("a disabled publication must reject new event bindings");
-    assert!(
-        subscribe_error
-            .to_string()
-            .contains("workflow publication is disabled"),
-        "unexpected subscribe error: {subscribe_error}"
-    );
-    let test_error = harness
-        .dispatch(LocalDaemonRequest::TestWorkflowEventBinding(
-            TestWorkflowEventBindingRequest {
-                session_id: graph.session_id.clone(),
-                binding_id: binding.id.clone(),
-                prompt: None,
-            },
-        ))
-        .expect_err("a tombstoned event binding must reject test delivery");
-    assert!(
-        test_error
-            .to_string()
-            .contains("workflow event binding is tombstoned"),
-        "unexpected test error: {test_error}"
-    );
-
-    harness
-        .dispatch(LocalDaemonRequest::ApplyWorkflowDesignOp(
-            ApplyWorkflowDesignOpRequest {
-                session_id: graph.session_id.clone(),
-                origin_client_id: "event-connection-lifecycle-test".to_string(),
-                op_id: "remove-event-workflow".to_string(),
-                op: WorkflowDesignOp::WorkflowRemove {
-                    workflow_id: graph.workflow_id,
-                },
-            },
-        ))
-        .expect("workflow deletion should tombstone bindings without removing the connection");
-    let preserved_connection = match harness
-        .dispatch(LocalDaemonRequest::GetEventConnection(
-            GetEventConnectionRequest {
-                connection_id: binding.connection_id,
-            },
-        ))
-        .expect("workflow deletion must preserve the installed event connection")
-    {
-        LocalDaemonResponse::EventConnection { connection } => connection,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert_eq!(
-        preserved_connection.status,
-        crate::local::EventConnectionStatus::Ready
-    );
-}
-
-#[test]
 fn kernel_reconciles_completed_event_authorization_without_a_client_observer() {
     let server = ReadyConnectionServer::start();
     let mut config = crate::DaemonConfig::for_tests();
@@ -924,72 +562,29 @@ fn failed_event_connection_validation_is_durable_and_recovers_in_place() {
 }
 
 #[test]
-fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revocation() {
+fn event_connection_removal_waits_for_the_apps_that_use_it() {
     let server = ReadyConnectionServer::start();
     let mut config = crate::DaemonConfig::for_tests();
     config
         .event_generator_management_targets
         .insert("dev.chariox.dummy".to_string(), server.target());
     let harness = LocalRouterTestHarness::with_config(config);
-    let graph = create_publication_test_graph(&harness, "event-connection-removal");
-    let publication = match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-            CreateWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                workflow_ref: graph.workflow_id.clone(),
-                endpoint_ref: graph.endpoint_id.clone(),
-                expected_workflow_revision: None,
-                operation_key: Some("publish-removal".to_string()),
-                queue_ref: Some("default".to_string()),
-                alias: Some("event-removal".to_string()),
-                kind: Some("event_based".to_string()),
-                route: None,
-                methods: Vec::new(),
-                transport: None,
-                parser: None,
-                input_schema: None,
-                trace_exposure: None,
-                mode: None,
-                sync_timeout_ms: None,
-                poll_ms: None,
-            },
-        ))
-        .expect("event publication should be created")
-    {
-        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let binding =
-        match harness
-            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-                CreateWorkflowEventBindingRequest {
-                    session_id: graph.session_id.clone(),
-                    publication_ref: publication.id().to_string(),
-                    generator_id: "dev.chariox.dummy".to_string(),
-                    generator_version: "1.0.0".to_string(),
-                    manifest_digest:
-                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-                            .to_string(),
-                    connection_id: "connection-local".to_string(),
-                    connection_scope: "tenant:local".to_string(),
-                    event_type: "dummy.test".to_string(),
-                    event_type_version: 1,
-                    filter: serde_json::json!({"channel": "removal"}),
-                    environment_id: Some("environment-removal".to_string()),
-                    queue_ref: Some("default".to_string()),
-                    action_ids: Vec::new(),
-                },
-            ))
-            .expect("event binding should be created")
-        {
-            LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-            response => panic!("unexpected response: {response:?}"),
-        };
+    register_ready_connection(&harness);
+    install_app_route(&harness, "removal");
+    let store = harness.with_app(|app| app.durable_state_store());
+    let database = rusqlite::Connection::open(store.path()).unwrap();
+    database
+        .execute_batch(
+            "INSERT INTO app_connection_grants(owner_id,installation_id,connection_id,generator_id,granted_at_ms)
+             VALUES('local','app_route_first','connection-local','dev.chariox.dummy',1)",
+        )
+        .unwrap();
+    let connection_id = "connection-local".to_string();
 
     let dependencies = match harness
         .dispatch(LocalDaemonRequest::ListEventConnectionDependencies(
             ListEventConnectionDependenciesRequest {
-                connection_id: binding.connection_id.clone(),
+                connection_id: connection_id.clone(),
             },
         ))
         .expect("connection dependencies should resolve")
@@ -997,14 +592,39 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
         LocalDaemonResponse::EventConnectionDependencies { dependencies, .. } => dependencies,
         response => panic!("unexpected response: {response:?}"),
     };
-    assert_eq!(dependencies.len(), 1);
-    assert_eq!(dependencies[0].binding_id, binding.id);
-    assert_eq!(dependencies[0].status, WorkflowEventBindingStatus::Active);
+    assert_eq!(
+        dependencies,
+        vec![
+            crate::local::EventConnectionDependency {
+                installation_id: "app_route_first".to_string(),
+                route_id: Some("taken".to_string()),
+                active: true,
+            },
+            crate::local::EventConnectionDependency {
+                installation_id: "app_route_first".to_string(),
+                route_id: None,
+                active: true,
+            },
+        ]
+    );
+    match harness
+        .dispatch(LocalDaemonRequest::GetEventConnection(
+            GetEventConnectionRequest {
+                connection_id: connection_id.clone(),
+            },
+        ))
+        .expect("the connection should resolve")
+    {
+        LocalDaemonResponse::EventConnection { connection } => {
+            assert_eq!(connection.attached_trigger_count, 2)
+        }
+        response => panic!("unexpected response: {response:?}"),
+    }
 
     let pending_authorization = match harness
         .dispatch(LocalDaemonRequest::ReconnectEventConnection(
             ReconnectEventConnectionRequest {
-                connection_id: binding.connection_id.clone(),
+                connection_id: connection_id.clone(),
                 return_url: Some("http://127.0.0.1:4321/notifications".to_string()),
             },
         ))
@@ -1014,61 +634,46 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
         response => panic!("unexpected response: {response:?}"),
     };
 
-    let confirmation_error = harness
-        .dispatch(LocalDaemonRequest::RemoveEventConnection(
+    let remove = |confirm: bool| {
+        harness.dispatch(LocalDaemonRequest::RemoveEventConnection(
             RemoveEventConnectionRequest {
-                connection_id: binding.connection_id.clone(),
-                confirm: false,
+                connection_id: connection_id.clone(),
+                confirm,
             },
         ))
-        .expect_err("connection removal must require explicit confirmation");
-    assert!(confirmation_error
-        .to_string()
-        .contains("will deactivate 1 workflow binding(s)"));
+    };
+    let unconfirmed = remove(false).expect_err("removal must require explicit confirmation");
+    assert!(
+        unconfirmed
+            .to_string()
+            .contains("2 App route(s) or grant(s) use it"),
+        "{unconfirmed}"
+    );
+    let in_use = remove(true).expect_err("an App still uses the connection");
+    assert!(
+        in_use.to_string().contains("remove the App inbox routes"),
+        "{in_use}"
+    );
     assert!(!server.revoked.load(Ordering::Relaxed));
 
-    let removed = harness
-        .dispatch(LocalDaemonRequest::RemoveEventConnection(
-            RemoveEventConnectionRequest {
-                connection_id: binding.connection_id.clone(),
-                confirm: true,
-            },
-        ))
-        .expect("confirmed connection removal should succeed");
-    let LocalDaemonResponse::EventConnectionRemoved {
-        connection,
-        deactivated_bindings,
-    } = removed
-    else {
+    // The App is uninstalled: its route stops counting, its grant is gone.
+    database
+        .execute_batch(
+            "UPDATE app_installations SET active_json=NULL WHERE installation_id='app_route_first';
+             DELETE FROM app_connection_grants;",
+        )
+        .unwrap();
+    let removed = remove(true).expect("confirmed connection removal should succeed");
+    let LocalDaemonResponse::EventConnectionRemoved { connection } = removed else {
         panic!("unexpected response: {removed:?}");
     };
-    assert_eq!(connection.connection_id, binding.connection_id);
-    assert_eq!(deactivated_bindings.len(), 1);
-    assert_eq!(
-        deactivated_bindings[0].status,
-        WorkflowEventBindingStatus::Tombstoned
-    );
+    assert_eq!(connection.connection_id, connection_id);
     assert!(server.revoked.load(Ordering::Relaxed));
-
-    let bindings = match harness
-        .dispatch(LocalDaemonRequest::ListWorkflowEventBindings(
-            ListWorkflowEventBindingsRequest {
-                session_id: graph.session_id.clone(),
-                publication_ref: Some(publication.id().to_string()),
-            },
-        ))
-        .expect("workflow bindings should remain as reconciliation tombstones")
-    {
-        LocalDaemonResponse::WorkflowEventBindingsListed { bindings } => bindings,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert_eq!(bindings.len(), 1);
-    assert_eq!(bindings[0].status, WorkflowEventBindingStatus::Tombstoned);
 
     let missing_connection = harness
         .dispatch(LocalDaemonRequest::GetEventConnection(
             GetEventConnectionRequest {
-                connection_id: binding.connection_id.clone(),
+                connection_id: connection_id.clone(),
             },
         ))
         .expect_err("removed connection must leave the kernel registry");
@@ -1084,108 +689,12 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
     assert!(missing_authorization
         .to_string()
         .contains("authorization was not found"));
-
-    let fresh_attach_error =
-        harness
-            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-                CreateWorkflowEventBindingRequest {
-                    session_id: graph.session_id.clone(),
-                    publication_ref: publication.id().to_string(),
-                    generator_id: "dev.chariox.dummy".to_string(),
-                    generator_version: "1.0.0".to_string(),
-                    manifest_digest:
-                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-                            .to_string(),
-                    connection_id: binding.connection_id.clone(),
-                    connection_scope: "tenant:local".to_string(),
-                    event_type: "dummy.test".to_string(),
-                    event_type_version: 1,
-                    filter: serde_json::json!({"channel": "reattach"}),
-                    environment_id: Some("environment-removal".to_string()),
-                    queue_ref: Some("default".to_string()),
-                    action_ids: Vec::new(),
-                },
-            ))
-            .expect_err("a revoked connection must reject a fresh attachment");
-    assert!(fresh_attach_error.to_string().contains("Revoked"));
-    harness
-        .dispatch(LocalDaemonRequest::GetEventConnection(
-            GetEventConnectionRequest {
-                connection_id: binding.connection_id.clone(),
-            },
-        ))
-        .expect_err("failed fresh attachment must not resurrect the removed connection");
-
-    let reactivate_error = harness
-        .dispatch(LocalDaemonRequest::SetWorkflowEventBindingStatus(
-            SetWorkflowEventBindingStatusRequest {
-                session_id: graph.session_id,
-                binding_id: binding.id,
-                status: WorkflowEventBindingStatus::Active,
-            },
-        ))
-        .expect_err("a removed connection must not allow a binding to reactivate");
-    assert!(reactivate_error
-        .to_string()
-        .contains("removed or is not installed"));
 }
 
-#[test]
-fn reduced_connection_scopes_block_binding_reactivation_and_transfer() {
-    let server = ReadyConnectionServer::start();
-    let target = server.target();
-    let mut config = crate::DaemonConfig::for_tests();
-    config.event_registry_url = Some(target.url.clone());
-    config
-        .event_generator_management_targets
-        .insert("dev.chariox.dummy".to_string(), target);
-    let harness = LocalRouterTestHarness::with_config(config);
-    let source = create_publication_test_graph(&harness, "event-scope-source");
-    let target = create_publication_test_graph(&harness, "event-scope-target");
-
-    let create_publication =
-        |session_id: &str, workflow_id: &str, endpoint_id: &str, alias: &str| match harness
-            .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-                CreateWorkflowPublicationRequest {
-                    session_id: session_id.to_string(),
-                    workflow_ref: workflow_id.to_string(),
-                    endpoint_ref: endpoint_id.to_string(),
-                    expected_workflow_revision: None,
-                    operation_key: Some(format!("publish-{alias}")),
-                    queue_ref: Some("default".to_string()),
-                    alias: Some(alias.to_string()),
-                    kind: Some("event_based".to_string()),
-                    route: None,
-                    methods: Vec::new(),
-                    transport: None,
-                    parser: None,
-                    input_schema: None,
-                    trace_exposure: None,
-                    mode: None,
-                    sync_timeout_ms: None,
-                    poll_ms: None,
-                },
-            ))
-            .expect("event publication should be created")
-        {
-            LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
-            response => panic!("unexpected response: {response:?}"),
-        };
-    let source_publication = create_publication(
-        &source.session_id,
-        &source.workflow_id,
-        &source.endpoint_id,
-        "event-scope-source",
-    );
-    let target_publication = create_publication(
-        &target.session_id,
-        &target.workflow_id,
-        &target.endpoint_id,
-        "event-scope-target",
-    );
+fn register_ready_connection(harness: &LocalRouterTestHarness) {
     let runtime_state = harness.runtime_state();
-    let connection_registry = runtime_state.event_connection_registry();
-    connection_registry
+    let registry = runtime_state.event_connection_registry();
+    registry
         .upsert(
             crate::session::DEFAULT_LOCAL_USER_ID,
             chariox_event_protocol::AegsConnectionSummary {
@@ -1197,8 +706,8 @@ fn reduced_connection_scopes_block_binding_reactivation_and_transfer() {
                 updated_at_ms: 1,
             },
         )
-        .expect("installed connection should be registered");
-    connection_registry
+        .unwrap();
+    registry
         .apply_inspection(
             crate::session::DEFAULT_LOCAL_USER_ID,
             chariox_event_protocol::AegsConnectionInspection {
@@ -1220,112 +729,44 @@ fn reduced_connection_scopes_block_binding_reactivation_and_transfer() {
                 test_event_supported: false,
             },
         )
-        .expect("installed connection grants should be recorded");
-    let binding =
-        match harness
-            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-                CreateWorkflowEventBindingRequest {
-                    session_id: source.session_id.clone(),
-                    publication_ref: source_publication.id().to_string(),
-                    generator_id: "dev.chariox.dummy".to_string(),
-                    generator_version: "1.0.0".to_string(),
-                    manifest_digest:
-                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-                            .to_string(),
-                    connection_id: "connection-local".to_string(),
-                    connection_scope: "tenant:local".to_string(),
-                    event_type: "dummy.test".to_string(),
-                    event_type_version: 1,
-                    filter: serde_json::json!({"channel": "scoped"}),
-                    environment_id: Some("environment-scoped".to_string()),
-                    queue_ref: Some("default".to_string()),
-                    action_ids: Vec::new(),
-                },
-            ))
-            .expect("initial grants should allow binding creation")
-        {
-            LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-            response => panic!("unexpected response: {response:?}"),
-        };
-    harness
-        .dispatch(LocalDaemonRequest::SetWorkflowEventBindingStatus(
-            SetWorkflowEventBindingStatusRequest {
-                session_id: source.session_id.clone(),
-                binding_id: binding.id.clone(),
-                status: WorkflowEventBindingStatus::Paused,
-            },
-        ))
-        .expect("binding should pause before the provider grant changes");
-
-    server.scopes_reduced.store(true, Ordering::Relaxed);
-    harness
-        .dispatch(LocalDaemonRequest::RefreshEventConnection(
-            RefreshEventConnectionRequest {
-                connection_id: binding.connection_id.clone(),
-            },
-        ))
-        .expect("connection refresh should persist the reduced grants");
-
-    let reactivate_error = harness
-        .dispatch(LocalDaemonRequest::SetWorkflowEventBindingStatus(
-            SetWorkflowEventBindingStatusRequest {
-                session_id: source.session_id.clone(),
-                binding_id: binding.id.clone(),
-                status: WorkflowEventBindingStatus::Active,
-            },
-        ))
-        .expect_err("reactivation must revalidate the stored event contract");
-    assert!(reactivate_error
-        .to_string()
-        .contains("missing required scopes: events:read"));
-
-    let transfer_error = harness
-        .dispatch(LocalDaemonRequest::TransferWorkflowEventBinding(
-            TransferWorkflowEventBindingRequest {
-                source_session_id: source.session_id.clone(),
-                binding_id: binding.id.clone(),
-                target_session_id: target.session_id.clone(),
-                target_publication_ref: target_publication.id().to_string(),
-            },
-        ))
-        .expect_err("transfer must revalidate the stored event contract");
-    assert!(transfer_error
-        .to_string()
-        .contains("missing required scopes: events:read"));
-
-    let source_bindings = match harness
-        .dispatch(LocalDaemonRequest::ListWorkflowEventBindings(
-            ListWorkflowEventBindingsRequest {
-                session_id: source.session_id,
-                publication_ref: Some(source_publication.id().to_string()),
-            },
-        ))
-        .expect("source bindings should resolve")
-    {
-        LocalDaemonResponse::WorkflowEventBindingsListed { bindings } => bindings,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert_eq!(source_bindings.len(), 1);
-    assert_eq!(
-        source_bindings[0].status,
-        WorkflowEventBindingStatus::Paused
-    );
-    let target_bindings = match harness
-        .dispatch(LocalDaemonRequest::ListWorkflowEventBindings(
-            ListWorkflowEventBindingsRequest {
-                session_id: target.session_id,
-                publication_ref: Some(target_publication.id().to_string()),
-            },
-        ))
-        .expect("target bindings should resolve")
-    {
-        LocalDaemonResponse::WorkflowEventBindingsListed { bindings } => bindings,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert!(target_bindings.is_empty());
+        .unwrap();
 }
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+/// An installed App with an inbox route on `connection-local` for the
+/// `dummy.test` events of `channel`.
+fn install_app_route(harness: &LocalRouterTestHarness, channel: &str) {
+    let store = harness.with_app(|app| app.durable_state_store());
+    rusqlite::Connection::open(store.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
+             VALUES('app_route_first','com.example.first','local',1,1,'{}')",
+        )
+        .unwrap();
+    store
+        .app_inbox(
+            crate::durable_state::app_inbox::AppInboxOperation::CreateRoute {
+                route: chariox_app_runtime::app_inbox::InboxRoute {
+                    route_id: "taken".into(),
+                    owner_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                    installation_id: "app_route_first".into(),
+                    event_name: "received".into(),
+                    source_event_type: "dummy.test".into(),
+                    source_event_version: 1,
+                    active: true,
+                    source: Some(chariox_app_runtime::app_inbox::InboxSource {
+                        generator_id: "dev.chariox.dummy".into(),
+                        connection_id: "connection-local".into(),
+                        connection_scope: "tenant:local".into(),
+                        filter_json: serde_json::json!({"channel": channel}).to_string(),
+                    }),
+                },
+                now_ms: 1,
+            },
+        )
+        .unwrap();
+}
+
 #[test]
 fn app_inbox_routes_are_checked_with_the_generator_before_they_are_stored() {
     let server = ReadyConnectionServer::start();
@@ -1336,96 +777,9 @@ fn app_inbox_routes_are_checked_with_the_generator_before_they_are_stored() {
         .event_generator_management_targets
         .insert("dev.chariox.dummy".to_string(), target);
     let harness = LocalRouterTestHarness::with_config(config);
-    let graph = create_publication_test_graph(&harness, "app-route-interest");
-    let publication = match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-            CreateWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                workflow_ref: graph.workflow_id.clone(),
-                endpoint_ref: graph.endpoint_id.clone(),
-                expected_workflow_revision: None,
-                operation_key: Some("publish-app-route-interest".to_string()),
-                queue_ref: Some("default".to_string()),
-                alias: Some("app-route-interest".to_string()),
-                kind: Some("event_based".to_string()),
-                route: None,
-                methods: Vec::new(),
-                transport: None,
-                parser: None,
-                input_schema: None,
-                trace_exposure: None,
-                mode: None,
-                sync_timeout_ms: None,
-                poll_ms: None,
-            },
-        ))
-        .unwrap()
-    {
-        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    harness
-        .runtime_state()
-        .event_connection_registry()
-        .upsert(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            chariox_event_protocol::AegsConnectionSummary {
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-                status: chariox_event_protocol::AegsConnectionStatus::Ready,
-                metadata: serde_json::json!({"account": "local"}),
-                expires_at_ms: None,
-                updated_at_ms: 1,
-            },
-        )
-        .unwrap();
-    harness
-        .runtime_state()
-        .event_connection_registry()
-        .apply_inspection(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            chariox_event_protocol::AegsConnectionInspection {
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-                lifecycle_state: chariox_event_protocol::AegsConnectionLifecycleState::Connected,
-                scopes: vec![chariox_event_protocol::AegsConnectionScope {
-                    id: "events:read".to_string(),
-                    label: "Read events".to_string(),
-                    granted: true,
-                    required: true,
-                }],
-                resources: Vec::new(),
-                last_successful_health_check_at_ms: Some(1),
-                last_accepted_event_at_ms: None,
-                problem_code: None,
-                problem_message: None,
-                recovery_action: None,
-                test_event_supported: false,
-            },
-        )
-        .unwrap();
-    // A workflow binding in the kernel's default environment takes the
-    // interest first.
-    harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-            CreateWorkflowEventBindingRequest {
-                session_id: graph.session_id.clone(),
-                publication_ref: publication.id().to_string(),
-                generator_id: "dev.chariox.dummy".to_string(),
-                generator_version: "1.0.0".to_string(),
-                manifest_digest: crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-                    .to_string(),
-                connection_id: "connection-local".to_string(),
-                connection_scope: "tenant:local".to_string(),
-                event_type: "dummy.test".to_string(),
-                event_type_version: 1,
-                filter: serde_json::json!({"channel": "taken"}),
-                environment_id: None,
-                queue_ref: Some("default".to_string()),
-                action_ids: Vec::new(),
-            },
-        ))
-        .expect("the workflow binding is created");
+    register_ready_connection(&harness);
+    // An installed App's route takes the interest first.
+    install_app_route(&harness, "taken");
     let route = |event_type: &str, channel: &str| {
         harness.dispatch(LocalDaemonRequest::CreateAppInboxRoute(
             crate::local::CreateAppInboxRouteRequest {
@@ -1479,680 +833,4 @@ fn app_inbox_routes_are_checked_with_the_generator_before_they_are_stored() {
         .ok();
     let unscoped = message(route("dummy.test", "free"));
     assert!(unscoped.contains("missing required scopes"), "{unscoped}");
-}
-
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-#[test]
-fn a_workflow_binding_cannot_take_an_interest_an_app_route_receives() {
-    let server = ReadyConnectionServer::start();
-    let target = server.target();
-    let mut config = crate::DaemonConfig::for_tests();
-    config.event_registry_url = Some(target.url.clone());
-    config
-        .event_generator_management_targets
-        .insert("dev.chariox.dummy".to_string(), target);
-    let harness = LocalRouterTestHarness::with_config(config);
-    let graph = create_publication_test_graph(&harness, "app-route-first");
-    let target = create_publication_test_graph(&harness, "app-route-first-target");
-    let publish = |graph: &PublicationTestGraph, alias: &str| match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-            CreateWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                workflow_ref: graph.workflow_id.clone(),
-                endpoint_ref: graph.endpoint_id.clone(),
-                expected_workflow_revision: None,
-                operation_key: Some(format!("publish-{alias}")),
-                queue_ref: Some("default".to_string()),
-                alias: Some(alias.to_string()),
-                kind: Some("event_based".to_string()),
-                route: None,
-                methods: Vec::new(),
-                transport: None,
-                parser: None,
-                input_schema: None,
-                trace_exposure: None,
-                mode: None,
-                sync_timeout_ms: None,
-                poll_ms: None,
-            },
-        ))
-        .unwrap()
-    {
-        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let target_publication = publish(&target, "app-route-first-target");
-    let publication = match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-            CreateWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                workflow_ref: graph.workflow_id.clone(),
-                endpoint_ref: graph.endpoint_id.clone(),
-                expected_workflow_revision: None,
-                operation_key: Some("publish-app-route-first".to_string()),
-                queue_ref: Some("default".to_string()),
-                alias: Some("app-route-first".to_string()),
-                kind: Some("event_based".to_string()),
-                route: None,
-                methods: Vec::new(),
-                transport: None,
-                parser: None,
-                input_schema: None,
-                trace_exposure: None,
-                mode: None,
-                sync_timeout_ms: None,
-                poll_ms: None,
-            },
-        ))
-        .unwrap()
-    {
-        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let runtime_state = harness.runtime_state();
-    let registry = runtime_state.event_connection_registry();
-    registry
-        .upsert(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            chariox_event_protocol::AegsConnectionSummary {
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-                status: chariox_event_protocol::AegsConnectionStatus::Ready,
-                metadata: serde_json::json!({"account": "local"}),
-                expires_at_ms: None,
-                updated_at_ms: 1,
-            },
-        )
-        .unwrap();
-    registry
-        .apply_inspection(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            chariox_event_protocol::AegsConnectionInspection {
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-                lifecycle_state: chariox_event_protocol::AegsConnectionLifecycleState::Connected,
-                scopes: vec![chariox_event_protocol::AegsConnectionScope {
-                    id: "events:read".to_string(),
-                    label: "Read events".to_string(),
-                    granted: true,
-                    required: true,
-                }],
-                resources: Vec::new(),
-                last_successful_health_check_at_ms: Some(1),
-                last_accepted_event_at_ms: None,
-                problem_code: None,
-                problem_message: None,
-                recovery_action: None,
-                test_event_supported: false,
-            },
-        )
-        .unwrap();
-    let bind = |channel: &str| {
-        harness.dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-            CreateWorkflowEventBindingRequest {
-                session_id: graph.session_id.clone(),
-                publication_ref: publication.id().to_string(),
-                generator_id: "dev.chariox.dummy".to_string(),
-                generator_version: "1.0.0".to_string(),
-                manifest_digest: crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-                    .to_string(),
-                connection_id: "connection-local".to_string(),
-                connection_scope: "tenant:local".to_string(),
-                event_type: "dummy.test".to_string(),
-                event_type_version: 1,
-                filter: serde_json::json!({"channel": channel}),
-                environment_id: None,
-                queue_ref: Some("default".to_string()),
-                action_ids: Vec::new(),
-            },
-        ))
-    };
-    let set = |binding_id: &str, status: WorkflowEventBindingStatus| {
-        harness.dispatch(LocalDaemonRequest::SetWorkflowEventBindingStatus(
-            SetWorkflowEventBindingStatusRequest {
-                session_id: graph.session_id.clone(),
-                binding_id: binding_id.to_string(),
-                status,
-            },
-        ))
-    };
-    // A binding paused while an App route took its interest cannot come back.
-    let binding = match bind("taken").unwrap() {
-        LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    set(&binding.id, WorkflowEventBindingStatus::Paused).unwrap();
-    let store = harness.with_app(|app| app.durable_state_store());
-    rusqlite::Connection::open(store.path())
-        .unwrap()
-        .execute_batch(
-            "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
-             VALUES('app_route_first','com.example.first','local',1,1,'{}')",
-        )
-        .unwrap();
-    store
-        .app_inbox(
-            crate::durable_state::app_inbox::AppInboxOperation::CreateRoute {
-                route: chariox_app_runtime::app_inbox::InboxRoute {
-                    route_id: "taken".into(),
-                    owner_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
-                    installation_id: "app_route_first".into(),
-                    event_name: "received".into(),
-                    source_event_type: "dummy.test".into(),
-                    source_event_version: 1,
-                    active: true,
-                    source: Some(chariox_app_runtime::app_inbox::InboxSource {
-                        generator_id: "dev.chariox.dummy".into(),
-                        connection_id: "connection-local".into(),
-                        connection_scope: "tenant:local".into(),
-                        filter_json: serde_json::json!({"channel": "taken"}).to_string(),
-                    }),
-                },
-                now_ms: 1,
-            },
-        )
-        .unwrap();
-    let transfer = harness.dispatch(LocalDaemonRequest::TransferWorkflowEventBinding(
-        TransferWorkflowEventBindingRequest {
-            source_session_id: graph.session_id.clone(),
-            binding_id: binding.id.clone(),
-            target_session_id: target.session_id.clone(),
-            target_publication_ref: target_publication.id().to_string(),
-        },
-    ));
-    for refused in [
-        bind("taken").unwrap_err().to_string(),
-        set(&binding.id, WorkflowEventBindingStatus::Active)
-            .unwrap_err()
-            .to_string(),
-        transfer.unwrap_err().to_string(),
-    ] {
-        assert!(refused.contains("an App inbox route"), "{refused}");
-    }
-    // Another interest is free.
-    assert!(bind("free").is_ok());
-}
-
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-#[test]
-fn a_binding_that_cannot_move_to_an_app_stays_active() {
-    let server = ReadyConnectionServer::start();
-    let target = server.target();
-    let mut config = crate::DaemonConfig::for_tests();
-    config.event_registry_url = Some(target.url.clone());
-    config
-        .event_generator_management_targets
-        .insert("dev.chariox.dummy".to_string(), target);
-    let harness = LocalRouterTestHarness::with_config(config);
-    let graph = create_publication_test_graph(&harness, "move-binding");
-    let publication = match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-            CreateWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                workflow_ref: graph.workflow_id.clone(),
-                endpoint_ref: graph.endpoint_id.clone(),
-                expected_workflow_revision: None,
-                operation_key: Some("publish-move-binding".to_string()),
-                queue_ref: Some("default".to_string()),
-                alias: Some("move-binding".to_string()),
-                kind: Some("event_based".to_string()),
-                route: None,
-                methods: Vec::new(),
-                transport: None,
-                parser: None,
-                input_schema: None,
-                trace_exposure: None,
-                mode: None,
-                sync_timeout_ms: None,
-                poll_ms: None,
-            },
-        ))
-        .unwrap()
-    {
-        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let runtime_state = harness.runtime_state();
-    let registry = runtime_state.event_connection_registry();
-    registry
-        .upsert(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            chariox_event_protocol::AegsConnectionSummary {
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-                status: chariox_event_protocol::AegsConnectionStatus::Ready,
-                metadata: serde_json::json!({"account": "local"}),
-                expires_at_ms: None,
-                updated_at_ms: 1,
-            },
-        )
-        .unwrap();
-    registry
-        .apply_inspection(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            chariox_event_protocol::AegsConnectionInspection {
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-                lifecycle_state: chariox_event_protocol::AegsConnectionLifecycleState::Connected,
-                scopes: vec![chariox_event_protocol::AegsConnectionScope {
-                    id: "events:read".to_string(),
-                    label: "Read events".to_string(),
-                    granted: true,
-                    required: true,
-                }],
-                resources: Vec::new(),
-                last_successful_health_check_at_ms: Some(1),
-                last_accepted_event_at_ms: None,
-                problem_code: None,
-                problem_message: None,
-                recovery_action: None,
-                test_event_supported: false,
-            },
-        )
-        .unwrap();
-    let binding =
-        |environment_id: Option<&str>, channel: &str| match harness
-            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-                CreateWorkflowEventBindingRequest {
-                    session_id: graph.session_id.clone(),
-                    publication_ref: publication.id().to_string(),
-                    generator_id: "dev.chariox.dummy".to_string(),
-                    generator_version: "1.0.0".to_string(),
-                    manifest_digest:
-                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-                            .to_string(),
-                    connection_id: "connection-local".to_string(),
-                    connection_scope: "tenant:local".to_string(),
-                    event_type: "dummy.test".to_string(),
-                    event_type_version: 1,
-                    filter: serde_json::json!({"channel": channel}),
-                    environment_id: environment_id.map(str::to_string),
-                    queue_ref: Some("default".to_string()),
-                    action_ids: Vec::new(),
-                },
-            ))
-            .unwrap()
-        {
-            LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-            response => panic!("unexpected response: {response:?}"),
-        };
-    let move_to_app = |binding_id: &str| {
-        harness.dispatch(LocalDaemonRequest::MoveEventBindingToApp(
-            crate::local::MoveEventBindingToAppRequest {
-                session_id: graph.session_id.clone(),
-                binding_id: binding_id.to_string(),
-                installation_id: "app_missing".to_string(),
-                route_id: "moved".to_string(),
-                event_name: "received".to_string(),
-                automation: None,
-            },
-        ))
-    };
-    let status = |binding_id: &str| match harness
-        .dispatch(LocalDaemonRequest::ListWorkflowEventBindings(
-            ListWorkflowEventBindingsRequest {
-                session_id: graph.session_id.clone(),
-                publication_ref: None,
-            },
-        ))
-        .unwrap()
-    {
-        LocalDaemonResponse::WorkflowEventBindingsListed { bindings } => {
-            bindings
-                .into_iter()
-                .find(|binding| binding.id == binding_id)
-                .unwrap()
-                .status
-        }
-        response => panic!("unexpected response: {response:?}"),
-    };
-    // The App lane refuses (nothing installed): the binding is active again.
-    let local = binding(None, "local");
-    assert!(matches!(
-        move_to_app(&local.id),
-        Ok(LocalDaemonResponse::AppRequestFailed { .. })
-    ));
-    assert_eq!(status(&local.id), WorkflowEventBindingStatus::Active);
-    // Only bindings in this kernel's event environment can become App routes.
-    let elsewhere = binding(Some("environment-elsewhere"), "elsewhere");
-    let refused = move_to_app(&elsewhere.id).unwrap_err().to_string();
-    assert!(refused.contains("event environment"), "{refused}");
-    assert_eq!(status(&elsewhere.id), WorkflowEventBindingStatus::Active);
-    let missing = move_to_app("binding-missing").unwrap_err().to_string();
-    assert!(missing.contains("was not found"), "{missing}");
-}
-
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-#[test]
-fn a_refused_move_leaves_nothing_behind_and_the_same_move_then_succeeds() {
-    let server = ReadyConnectionServer::start();
-    let target = server.target();
-    let root = std::env::temp_dir().join(format!("chariox-move-{:016x}", rand::random::<u64>()));
-    std::fs::create_dir(&root).unwrap();
-    let root = std::fs::canonicalize(root).unwrap();
-    let mut config = crate::DaemonConfig::for_tests();
-    config.user_config.state.path = Some(root.join("state.db").display().to_string());
-    config.event_registry_url = Some(target.url.clone());
-    config
-        .event_generator_management_targets
-        .insert("dev.chariox.dummy".to_string(), target);
-    let harness = LocalRouterTestHarness::with_config(config);
-    // An installed App with the incoming event `received` and the outgoing
-    // event `changed`, and its stored release.
-    let store = harness.with_app(|app| app.durable_state_store());
-    let (bytes, publisher) = crate::durable_state::app_state::fixture_inbox_installation(
-        &store,
-        crate::session::DEFAULT_LOCAL_USER_ID,
-    );
-    let verified = chariox_app_package::verify(
-        &bytes,
-        &chariox_app_package::VerificationPolicy::new(
-            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
-            vec![publisher],
-        ),
-    )
-    .unwrap();
-    chariox_app_runtime::release_store::ReleaseStore::open_or_create(store.path())
-        .unwrap()
-        .stage(
-            &verified,
-            &bytes,
-            chariox_app_runtime::release_store::StageBudget {
-                max_stage_bytes: 1024 * 1024,
-                reserved_bytes: 1024 * 1024,
-                host_reserve_bytes: 1024 * 1024,
-            },
-        )
-        .unwrap();
-    let graph = create_publication_test_graph(&harness, "move-success");
-    let publication = match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-            CreateWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                workflow_ref: graph.workflow_id.clone(),
-                endpoint_ref: graph.endpoint_id.clone(),
-                expected_workflow_revision: None,
-                operation_key: Some("publish-move-success".to_string()),
-                queue_ref: Some("default".to_string()),
-                alias: Some("move-success".to_string()),
-                kind: Some("event_based".to_string()),
-                route: None,
-                methods: Vec::new(),
-                transport: None,
-                parser: None,
-                input_schema: None,
-                trace_exposure: None,
-                mode: None,
-                sync_timeout_ms: None,
-                poll_ms: None,
-            },
-        ))
-        .unwrap()
-    {
-        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let runtime_state = harness.runtime_state();
-    let registry = runtime_state.event_connection_registry();
-    registry
-        .upsert(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            chariox_event_protocol::AegsConnectionSummary {
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-                status: chariox_event_protocol::AegsConnectionStatus::Ready,
-                metadata: serde_json::json!({"account": "local"}),
-                expires_at_ms: None,
-                updated_at_ms: 1,
-            },
-        )
-        .unwrap();
-    registry
-        .apply_inspection(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            chariox_event_protocol::AegsConnectionInspection {
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-                lifecycle_state: chariox_event_protocol::AegsConnectionLifecycleState::Connected,
-                scopes: vec![chariox_event_protocol::AegsConnectionScope {
-                    id: "events:read".to_string(),
-                    label: "Read events".to_string(),
-                    granted: true,
-                    required: true,
-                }],
-                resources: Vec::new(),
-                last_successful_health_check_at_ms: Some(1),
-                last_accepted_event_at_ms: None,
-                problem_code: None,
-                problem_message: None,
-                recovery_action: None,
-                test_event_supported: false,
-            },
-        )
-        .unwrap();
-    let binding =
-        match harness
-            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-                CreateWorkflowEventBindingRequest {
-                    session_id: graph.session_id.clone(),
-                    publication_ref: publication.id().to_string(),
-                    generator_id: "dev.chariox.dummy".to_string(),
-                    generator_version: "1.0.0".to_string(),
-                    manifest_digest:
-                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-                            .to_string(),
-                    connection_id: "connection-local".to_string(),
-                    connection_scope: "tenant:local".to_string(),
-                    event_type: "dummy.test".to_string(),
-                    event_type_version: 1,
-                    filter: serde_json::json!({"channel": "moved"}),
-                    environment_id: None,
-                    queue_ref: Some("default".to_string()),
-                    action_ids: Vec::new(),
-                },
-            ))
-            .unwrap()
-        {
-            LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-            response => panic!("unexpected response: {response:?}"),
-        };
-    let move_to_app = |outgoing: &str| {
-        harness
-            .dispatch(LocalDaemonRequest::MoveEventBindingToApp(
-                crate::local::MoveEventBindingToAppRequest {
-                    session_id: graph.session_id.clone(),
-                    binding_id: binding.id.clone(),
-                    installation_id: "installed".to_string(),
-                    route_id: "moved".to_string(),
-                    event_name: "received".to_string(),
-                    automation: Some(crate::local::MovedEventAutomation {
-                        automation_id: "forward".to_string(),
-                        event_name: outgoing.to_string(),
-                    }),
-                },
-            ))
-            .unwrap()
-    };
-    let status = || match harness
-        .dispatch(LocalDaemonRequest::ListWorkflowEventBindings(
-            ListWorkflowEventBindingsRequest {
-                session_id: graph.session_id.clone(),
-                publication_ref: None,
-            },
-        ))
-        .unwrap()
-    {
-        LocalDaemonResponse::WorkflowEventBindingsListed { bindings } => {
-            bindings
-                .into_iter()
-                .find(|found| found.id == binding.id)
-                .unwrap()
-                .status
-        }
-        response => panic!("unexpected response: {response:?}"),
-    };
-    let app = |request: LocalDaemonRequest| harness.dispatch(request).unwrap();
-    let installed = || crate::local::AppWorkerRequest {
-        installation_id: "installed".to_string(),
-    };
-    // The automation (the last step) is refused: the route is removed, no
-    // automation is left, and the binding is active again.
-    assert!(matches!(
-        move_to_app("undeclared"),
-        LocalDaemonResponse::AppRequestFailed { .. }
-    ));
-    assert_eq!(status(), WorkflowEventBindingStatus::Active);
-    match app(LocalDaemonRequest::ListAppInboxRoutes(installed())) {
-        LocalDaemonResponse::AppInboxRoutes { routes, .. } => assert!(routes.is_empty()),
-        response => panic!("unexpected response: {response:?}"),
-    }
-    match app(LocalDaemonRequest::ListAppAutomations(installed())) {
-        LocalDaemonResponse::AppAutomations { automations, .. } => {
-            assert!(automations.is_empty())
-        }
-        response => panic!("unexpected response: {response:?}"),
-    }
-    // A binding with actions: a refused move revokes the grant it made, but
-    // never one the App already held.
-    let acting =
-        match harness
-            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-                CreateWorkflowEventBindingRequest {
-                    session_id: graph.session_id.clone(),
-                    publication_ref: publication.id().to_string(),
-                    generator_id: "dev.chariox.dummy".to_string(),
-                    generator_version: "1.0.0".to_string(),
-                    manifest_digest:
-                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-                            .to_string(),
-                    connection_id: "connection-local".to_string(),
-                    connection_scope: "tenant:local".to_string(),
-                    event_type: "dummy.test".to_string(),
-                    event_type_version: 1,
-                    filter: serde_json::json!({"channel": "acting"}),
-                    environment_id: None,
-                    queue_ref: Some("default".to_string()),
-                    action_ids: vec!["dummy.ping".to_string()],
-                },
-            ))
-            .unwrap()
-        {
-            LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-            response => panic!("unexpected response: {response:?}"),
-        };
-    let refused_acting_move = || {
-        harness
-            .dispatch(LocalDaemonRequest::MoveEventBindingToApp(
-                crate::local::MoveEventBindingToAppRequest {
-                    session_id: graph.session_id.clone(),
-                    binding_id: acting.id.clone(),
-                    installation_id: "installed".to_string(),
-                    route_id: "acting".to_string(),
-                    event_name: "received".to_string(),
-                    automation: Some(crate::local::MovedEventAutomation {
-                        automation_id: "acting".to_string(),
-                        event_name: "undeclared".to_string(),
-                    }),
-                },
-            ))
-            .unwrap()
-    };
-    let granted = || match app(LocalDaemonRequest::ListAppConnections(installed())) {
-        LocalDaemonResponse::AppConnections { connections, .. } => connections
-            .into_iter()
-            .map(|granted| granted.connection_id)
-            .collect::<Vec<_>>(),
-        response => panic!("unexpected response: {response:?}"),
-    };
-    assert!(matches!(
-        refused_acting_move(),
-        LocalDaemonResponse::AppRequestFailed { .. }
-    ));
-    assert!(granted().is_empty(), "the move's own grant is revoked");
-    assert!(matches!(
-        app(LocalDaemonRequest::GrantAppConnection(
-            crate::local::GrantAppConnectionRequest {
-                installation_id: "installed".to_string(),
-                generator_id: "dev.chariox.dummy".to_string(),
-                connection_id: "connection-local".to_string(),
-            }
-        )),
-        LocalDaemonResponse::AppConnections { .. }
-    ));
-    assert!(matches!(
-        refused_acting_move(),
-        LocalDaemonResponse::AppRequestFailed { .. }
-    ));
-    assert_eq!(granted(), ["connection-local"], "an earlier grant is kept");
-    // AEDS deliveries for the binding; the workflow accepts the first now.
-    let delivery =
-        |delivery_id: &str, occurrence_id: &str| chariox_event_protocol::EventDeliveryEnvelope {
-            delivery_id: delivery_id.to_string(),
-            binding_id: binding.id.clone(),
-            event_type: "dummy.test".to_string(),
-            event_type_version: 1,
-            occurrence_id: occurrence_id.to_string(),
-            occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            prompt: "moved".to_string(),
-            artifacts: Vec::new(),
-            metadata: serde_json::Value::Null,
-            reply_context: None,
-            expires_at_ms: u64::MAX,
-        };
-    let accept = |delivery: chariox_event_protocol::EventDeliveryEnvelope| {
-        let runtime_state = runtime_state.clone();
-        harness.block_on_test_task(async move {
-            tokio::task::spawn_blocking(move || runtime_state.accept_event_delivery(delivery))
-                .await
-                .unwrap()
-        })
-    };
-    assert_eq!(accept(delivery("before", "occurrence-before")), Ok(()));
-    // The same move with a declared event then succeeds.
-    match move_to_app("changed") {
-        LocalDaemonResponse::EventBindingMovedToApp {
-            route, automation, ..
-        } => {
-            assert_eq!(route.route_id, "moved");
-            assert_eq!(route.connection.unwrap().connection_scope, "tenant:local");
-            let automation = automation.unwrap();
-            assert_eq!(automation.publication_id, publication.id());
-            assert_eq!(automation.event_name, "changed");
-        }
-        response => panic!("unexpected response: {response:?}"),
-    }
-    assert_eq!(status(), WorkflowEventBindingStatus::Paused);
-    // The moved binding takes no more deliveries: a replay of one it accepted
-    // is acknowledged, and one it never accepted reaches the App's inbox once,
-    // however often AEDS repeats it or also delivers it on the App's route.
-    assert_eq!(accept(delivery("before", "occurrence-before")), Ok(()));
-    assert_eq!(accept(delivery("pending", "occurrence-pending")), Ok(()));
-    assert_eq!(accept(delivery("pending", "occurrence-pending")), Ok(()));
-    assert_eq!(
-        accept(chariox_event_protocol::EventDeliveryEnvelope {
-            binding_id: chariox_app_runtime::app_inbox::route_binding_id(
-                crate::session::DEFAULT_LOCAL_USER_ID,
-                "installed",
-                "moved",
-            ),
-            ..delivery("on-route", "occurrence-pending")
-        }),
-        Ok(())
-    );
-    let inbox = rusqlite::Connection::open(store.path())
-        .unwrap()
-        .prepare("SELECT route_id, occurrence_id FROM app_inbox")
-        .unwrap()
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert_eq!(
-        inbox,
-        [("moved".to_string(), "occurrence-pending".to_string())]
-    );
-    drop(harness);
-    let _ = std::fs::remove_dir_all(root);
 }

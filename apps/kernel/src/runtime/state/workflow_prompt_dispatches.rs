@@ -15,6 +15,7 @@ pub(super) struct WorkflowPromptDispatches {
 }
 
 impl WorkflowPromptDispatches {
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.local.is_empty()
             && self.remote.is_empty()

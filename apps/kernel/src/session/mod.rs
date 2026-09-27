@@ -117,8 +117,7 @@ pub use workflow_instances::{
     WorkflowEndpointRuntimeInstance, WorkflowEndpointRuntimeInstanceStatus,
 };
 pub use workflow_publication::{
-    removed_reply_action_error, REMOVED_REPLY_ACTION,
-    WorkflowEventBinding, WorkflowEventBindingStatus, WorkflowEventDeliveryReceipt,
+    WorkflowEventDeliveryReceipt,
     WorkflowPublicationRuntimeMaterialization, WorkflowPublicationSnapshot,
     WorkflowPublicationSourceSessionSnapshot, WORKFLOW_PUBLICATION_KIND_EVENT_BASED,
     WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,

@@ -151,4 +151,11 @@ pub use workspace::*;
 /// runtime tool is gone. Workflows cannot post `notification.reply` at all:
 /// bindings refuse to enable it and `event_action` refuses it; replies go
 /// through the generator's App.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 364;
+/// Version 365 retires direct workflow event bindings: the binding requests
+/// and responses, `MoveEventBindingToApp` and the `event_context` /
+/// `event_action` runtime tools are gone. Events reach workflows only through
+/// App inbox routes and App automations. Connection dependencies
+/// (`EventConnectionDependency`), `attached_trigger_count` and the event
+/// delivery status count App routes and grants; `EventConnectionRemoved` loses
+/// `deactivated_bindings`. Relay peer protocol 58 drops the same flags.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 365;

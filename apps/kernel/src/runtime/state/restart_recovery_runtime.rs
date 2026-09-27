@@ -580,17 +580,12 @@ impl KernelRuntimeState {
             return Ok(None);
         }
 
-        let (event_context_enabled, event_actions_enabled) = self
-            .owned
-            .workflow_event_capabilities_for_prompt(session_id, &prompt)?;
         let fresh_context = self
             .owned
             .workflow_prompt_requires_fresh_provider_context(session_id, agent_id, &prompt)?;
         let (provider_run_id, retired_provider_run_id) = self.owned.workflow_ensure_provider_run(
             session_id,
             agent_id,
-            event_context_enabled,
-            event_actions_enabled,
             fresh_context,
             prompt.workflow_node_run_id(),
         )?;

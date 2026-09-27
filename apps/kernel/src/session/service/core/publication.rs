@@ -378,17 +378,6 @@ impl SessionService {
             publication.disable();
             publication.clone()
         };
-        let binding_ids = session
-            .workflow_event_bindings()
-            .iter()
-            .filter(|binding| binding.publication_id == publication_id && binding.active())
-            .map(|binding| binding.id.clone())
-            .collect::<Vec<_>>();
-        for binding_id in binding_ids {
-            if let Some(binding) = session.workflow_event_binding_mut(&binding_id) {
-                binding.set_status(crate::session::WorkflowEventBindingStatus::Tombstoned);
-            }
-        }
         Ok(publication)
     }
 

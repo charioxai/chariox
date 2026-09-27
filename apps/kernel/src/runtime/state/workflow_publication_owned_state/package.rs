@@ -9,7 +9,6 @@ mod deployment_contract;
 pub(super) fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
     snapshot: &crate::session::WorkflowPublicationSnapshot,
-    event_bindings: &[crate::session::WorkflowEventBinding],
     extension_requirements: &serde_json::Value,
     kernel_url: Option<&str>,
     agent_app: Option<&serde_json::Value>,
@@ -30,7 +29,6 @@ pub(super) fn workflow_publication_package_files(
         workflow_publication_package_json(publication, &publication_value, agent_app);
     let requirements = extension_requirements.clone();
     let bindings = workflow_publication_bindings_json(snapshot);
-    let event_bindings = workflow_publication_event_bindings_json(publication, event_bindings);
     let config =
         workflow_publication_gateway_config_json(publication, &publication_value, kernel_url);
     let mut files = vec![
@@ -55,13 +53,6 @@ pub(super) fn workflow_publication_package_files(
             false,
         ),
     ];
-    if publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
-        files.push(package_file(
-            "event-bindings.example.json",
-            pretty_json(&event_bindings)?,
-            false,
-        ));
-    }
     if publication_uses_http_ingress(&publication_value) {
         files.extend([
             package_file(
@@ -195,10 +186,6 @@ fn workflow_publication_package_json(
             "schema_version": 1,
         },
     });
-    if publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
-        package["event_bindings_path"] =
-            serde_json::Value::String("event-bindings.local.json".to_string());
-    }
     if agent_app
         .and_then(|value| value.get("enabled"))
         .and_then(|value| value.as_bool())
@@ -337,43 +324,6 @@ fn workflow_publication_bindings_json(
     })
 }
 
-fn workflow_publication_event_bindings_json(
-    publication: &crate::session::WorkflowPublicationDefinition,
-    bindings: &[crate::session::WorkflowEventBinding],
-) -> serde_json::Value {
-    let bindings = bindings
-        .iter()
-        .map(|binding| {
-            serde_json::json!({
-                "source_binding_id": binding.id,
-                "generator_id": binding.generator_id,
-                "generator_version": binding.generator_version,
-                "manifest_digest": binding.manifest_digest,
-                "event_type": binding.event_type,
-                "event_type_version": binding.event_type_version,
-                "filter": binding.filter,
-                "requested_scope": binding.connection_scope,
-                "endpoint_id": binding.endpoint_id,
-                "queue_ref": binding.queue_ref,
-                "action_ids": binding.action_ids,
-                "source_environment_id": binding.environment_id,
-                "source_revision": binding.revision,
-                "activation": {
-                    "connection_id": null,
-                    "environment_id": null,
-                    "mode": "authorize_or_explicit_transfer",
-                },
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({
-        "schema_version": 1,
-        "publication_id": publication.id(),
-        "secrets_included": false,
-        "bindings": bindings,
-    })
-}
-
 fn workflow_publication_gateway_config_json(
     publication: &crate::session::WorkflowPublicationDefinition,
     publication_value: &serde_json::Value,
@@ -504,9 +454,6 @@ fn workflow_publication_readme(
         "# Workflow Publication {}\n\nThis directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.\n\n## Files\n\n- `publication.json`: workflow trigger package metadata\n- `deployment-contract.json`: immutable release requirements and compatibility contract\n- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents\n- `requirements.json`: exact non-secret extension definitions, usage, credential slots, network destinations, readiness tests, and portability\n- `bindings.example.json`: provider/model override template\n",
         publication.alias().unwrap_or(publication.id())
     );
-    if publication_package.get("event_bindings_path").is_some() {
-        readme.push_str("- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route\n");
-    }
     readme.push_str("- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n");
     if uses_http_ingress {
         readme.push_str(&format!(

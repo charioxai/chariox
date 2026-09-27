@@ -138,7 +138,7 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
 }
 
 #[tokio::test]
-async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_discovery() {
+async fn leased_provider_tool_list_exposes_workflow_tools_for_fresh_and_reused_discovery() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let mut config = DaemonConfig::for_tests();
@@ -180,8 +180,6 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
         workflow_run_id: "workflow-run-tools".to_string(),
         workflow_node_run_id: "workflow-node-tools".to_string(),
         delivery_token: "delivery-token-tools".to_string(),
-        event_context_enabled: true,
-        event_actions_enabled: false,
     };
     let queued_workflow_context = crate::execution_lease::RemoteWorkflowTurnContext {
         home_kernel_id: "home-kernel-tools".to_string(),
@@ -190,13 +188,11 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
         workflow_run_id: "workflow-run-tools-queued".to_string(),
         workflow_node_run_id: "workflow-node-tools-queued".to_string(),
         delivery_token: "delivery-token-tools-queued".to_string(),
-        event_context_enabled: false,
-        event_actions_enabled: false,
     };
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-    let fresh_discovery_saw_event_context = Arc::new(AtomicBool::new(false));
+    let fresh_discovery_saw_workflow_tools = Arc::new(AtomicBool::new(false));
     let probe_state = router.runtime_state.clone();
-    let probe_flag = Arc::clone(&fresh_discovery_saw_event_context);
+    let probe_flag = Arc::clone(&fresh_discovery_saw_workflow_tools);
     let provider_run_projection = app
         .try_lock()
         .expect("app should be available")
@@ -208,9 +204,7 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
             if probe_state
                 .runtime_tool_specs_for_auth_token(&auth_token)
                 .iter()
-                .any(|spec| {
-                    spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
-                })
+                .any(|spec| spec.name == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL)
             {
                 probe_flag.store(true, Ordering::SeqCst);
             }
@@ -221,7 +215,7 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
         crate::app::RemoteLeaseRuntime::new(&mut app_guard)
             .submit_leased_prompt_with_workflow_context(
                 &leased_agent.id,
-                "event-triggered leased prompt",
+                "leased workflow prompt",
                 Vec::new(),
                 Some(workflow_context),
                 Some(remote_git_context("home-prompt-tools-1")),
@@ -233,8 +227,8 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
     };
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
     assert!(
-        fresh_discovery_saw_event_context.load(Ordering::SeqCst),
-        "fresh provider discovery must expose event_context before launch returns"
+        fresh_discovery_saw_workflow_tools.load(Ordering::SeqCst),
+        "fresh provider discovery must expose the workflow tools before launch returns"
     );
     let leased_token = {
         let app_guard = app.try_lock().expect("app should be available");
@@ -272,7 +266,7 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
             crate::app::RemoteLeaseRuntime::new(&mut app_guard)
                 .submit_leased_prompt_with_workflow_context(
                     &leased_agent.id,
-                    "second event-triggered leased prompt",
+                    "second leased workflow prompt",
                     Vec::new(),
                     Some(queued_workflow_context),
                     Some(remote_git_context("home-prompt-tools-2")),
@@ -289,16 +283,15 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
             .leased_workflow_turn_context_for_provider_run(&provider_run_id)
             .expect("active leased turn should retain its own workflow context");
         assert_eq!(active_context.workflow_run_id, "workflow-run-tools");
-        assert!(active_context.event_context_enabled);
         (ordinary_token, reused_provider_run_id)
     };
     assert_eq!(provider_run_id, reused_provider_run_id);
     let specs = router
         .runtime_state
         .runtime_tool_specs_for_auth_token(&leased_token);
-    assert!(specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
-    }));
+    assert!(specs
+        .iter()
+        .any(|spec| { spec.name == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL }));
     let _app_guard = app
         .try_lock()
         .expect("the app mutex should be available for the contention check");
@@ -306,10 +299,10 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
         .runtime_state
         .runtime_tool_specs_for_auth_token(&leased_token);
     assert!(
-        contended_specs.iter().any(|spec| {
-            spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
-        }),
-        "provider discovery must retain event_context while the app mutex is contended"
+        contended_specs
+            .iter()
+            .any(|spec| { spec.name == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL }),
+        "provider discovery must retain the workflow tools while the app mutex is contended"
     );
     let ordinary_specs = router
         .runtime_state
@@ -317,7 +310,4 @@ async fn leased_provider_tool_list_exposes_event_context_for_fresh_and_reused_di
     assert!(!ordinary_specs
         .iter()
         .any(|spec| { spec.name == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL }));
-    assert!(!ordinary_specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
-    }));
 }

@@ -311,7 +311,7 @@ async fn workflow_rotation_does_not_copy_another_providers_adapter() {
             .unwrap();
         let (next, _) = runtime
             .owned
-            .workflow_ensure_provider_run(&session, &agent, false, false, fresh, None)
+            .workflow_ensure_provider_run(&session, &agent, fresh, None)
             .unwrap();
         let run = runtime.owned.provider_store.get_run(&next).unwrap();
         assert_eq!(

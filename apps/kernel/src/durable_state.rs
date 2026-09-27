@@ -217,13 +217,6 @@ enum DurableWriteOperation {
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
         prompt_state_json: Option<String>,
     },
-    WorkflowRuntimeSessionsTransition {
-        event_id: String,
-        timestamp_ms: u64,
-        payload_json: String,
-        owner_id: String,
-        sessions: Vec<DurableWorkflowSessionWrite>,
-    },
     WorkflowRuntimeMigration {
         owner_id: String,
         hot_entities: Vec<DurableWorkflowHotEntityWrite>,
@@ -1696,20 +1689,6 @@ fn commit_durable_write_batch(
                     delivery_receipts,
                     prompt_state_json: prompt_state_json.as_deref(),
                 },
-            ),
-            DurableWriteOperation::WorkflowRuntimeSessionsTransition {
-                event_id,
-                timestamp_ms,
-                payload_json,
-                owner_id,
-                sessions,
-            } => workflow_runtime::write_workflow_runtime_sessions_transition(
-                &transaction,
-                event_id,
-                *timestamp_ms,
-                payload_json,
-                owner_id,
-                sessions,
             ),
             DurableWriteOperation::WorkflowRuntimeMigration {
                 owner_id,

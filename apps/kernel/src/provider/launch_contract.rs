@@ -498,17 +498,6 @@ pub struct LaunchProviderRequest {
     pub client_interface: ProviderClientInterface,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_import: Option<ExternalProviderImportMetadata>,
-    /// Workflow-only capability snapshot for bounded provider event context.
-    /// This is intentionally omitted from the wire shape unless enabled.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub workflow_event_context_enabled: bool,
-    /// Workflow-only capability snapshot for explicitly enabled provider actions.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub workflow_event_actions_enabled: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -650,8 +639,6 @@ impl LaunchProviderRequest {
             structured_endpoint: None,
             client_interface: ProviderClientInterface::Chariox,
             external_provider_import: None,
-            workflow_event_context_enabled: false,
-            workflow_event_actions_enabled: false,
         }
     }
 
@@ -793,16 +780,6 @@ impl LaunchProviderRequest {
 
     pub fn with_external_provider_import(mut self, import: ExternalProviderImportMetadata) -> Self {
         self.external_provider_import = Some(import);
-        self
-    }
-
-    pub fn with_workflow_event_context(mut self, enabled: bool) -> Self {
-        self.workflow_event_context_enabled = enabled;
-        self
-    }
-
-    pub fn with_workflow_event_actions(mut self, enabled: bool) -> Self {
-        self.workflow_event_actions_enabled = enabled;
         self
     }
 

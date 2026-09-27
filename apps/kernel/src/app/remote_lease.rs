@@ -921,32 +921,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
         })
     }
 
-    pub(crate) fn leased_workflow_event_capabilities_for_backing_prompt(
+    pub(crate) fn is_leased_workflow_backing_prompt(
         &self,
         session_id: &str,
         agent_id: &str,
         backing_prompt_id: &str,
-    ) -> Option<(bool, bool)> {
-        self.app
-            .leased_workflow_turns
-            .values()
-            .find(|binding| {
-                binding.backing_prompt_id == backing_prompt_id
-                    && self
-                        .app
-                        .leased_agents
-                        .get(&binding.leased_agent_id)
-                        .is_some_and(|agent| {
-                            agent.backing_session_id == session_id
-                                && agent.backing_agent_id == agent_id
-                        })
-            })
-            .map(|binding| {
-                (
-                    binding.context.event_context_enabled,
-                    binding.context.event_actions_enabled,
-                )
-            })
+    ) -> bool {
+        self.app.leased_workflow_turns.values().any(|binding| {
+            binding.backing_prompt_id == backing_prompt_id
+                && self
+                    .app
+                    .leased_agents
+                    .get(&binding.leased_agent_id)
+                    .is_some_and(|agent| {
+                        agent.backing_session_id == session_id && agent.backing_agent_id == agent_id
+                    })
+        })
     }
 
     pub(crate) fn activate_leased_workflow_prompt(
@@ -1281,7 +1271,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn leased_workflow_turn_binding_for_test(
         &self,
         home_prompt_id: &str,
-    ) -> Option<(String, String, bool)> {
+    ) -> Option<(String, String)> {
         self.app
             .leased_workflow_turns
             .values()
@@ -1290,7 +1280,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 (
                     binding.backing_prompt_id.clone(),
                     binding.provider_run_id.clone(),
-                    binding.context.event_context_enabled,
                 )
             })
     }

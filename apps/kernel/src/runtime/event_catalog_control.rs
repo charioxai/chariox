@@ -13,7 +13,7 @@ use crate::local::{
     EventCatalogCategory, EventCatalogFacet, EventCatalogFacetValue, EventConnectionPage,
     EventGeneratorCatalogDetail, EventGeneratorCatalogPage, EventGeneratorCatalogSummary,
     EventGeneratorEventDefinition, EventGeneratorEventPage, EventGeneratorParty,
-    LocalDaemonRequest, LocalDaemonResponse, WorkflowEventBindingDependency,
+    LocalDaemonRequest, LocalDaemonResponse,
 };
 use crate::runtime::aegs_network_policy::is_globally_reachable_aegs_destination;
 use crate::runtime::cloud_api_client::issue_event_generator_management_capability;
@@ -69,53 +69,6 @@ impl AegsManagementHttpClient {
         Self {
             agent_builder: Arc::new(agent_builder),
         }
-    }
-}
-
-pub(crate) struct WorkflowEventBindingContract {
-    pub(crate) generator_id: String,
-    pub(crate) generator_version: String,
-    pub(crate) manifest_digest: String,
-    pub(crate) connection_id: String,
-    pub(crate) event_type: String,
-    pub(crate) event_type_version: u32,
-    pub(crate) action_ids: Vec<String>,
-}
-
-impl From<&crate::local::CreateWorkflowEventBindingRequest> for WorkflowEventBindingContract {
-    fn from(request: &crate::local::CreateWorkflowEventBindingRequest) -> Self {
-        Self {
-            generator_id: request.generator_id.clone(),
-            generator_version: request.generator_version.clone(),
-            manifest_digest: request.manifest_digest.clone(),
-            connection_id: request.connection_id.clone(),
-            event_type: request.event_type.clone(),
-            event_type_version: request.event_type_version,
-            action_ids: request.action_ids.clone(),
-        }
-    }
-}
-
-impl From<&crate::session::WorkflowEventBinding> for WorkflowEventBindingContract {
-    fn from(binding: &crate::session::WorkflowEventBinding) -> Self {
-        Self {
-            generator_id: binding.generator_id.clone(),
-            generator_version: binding.generator_version.clone(),
-            manifest_digest: binding.manifest_digest.clone(),
-            connection_id: binding.connection_id.clone(),
-            event_type: binding.event_type.clone(),
-            event_type_version: binding.event_type_version,
-            action_ids: binding.action_ids.clone(),
-        }
-    }
-}
-
-impl WorkflowEventBindingContract {
-    pub(crate) async fn required_scopes(
-        &self,
-        config_projection: &DaemonConfigProjectionStore,
-    ) -> Result<Vec<String>, DaemonError> {
-        validate_event_binding_contract(config_projection, self).await
     }
 }
 
@@ -502,22 +455,9 @@ pub(crate) async fn validate_event_connection(
     Ok(())
 }
 
-pub(crate) async fn validate_event_binding_contract(
-    config_projection: &DaemonConfigProjectionStore,
-    contract: &WorkflowEventBindingContract,
-) -> Result<Vec<String>, DaemonError> {
-    let detail = event_generator_detail(
-        config_projection,
-        &contract.generator_id,
-        Some(contract.generator_version.clone()),
-    )
-    .await?;
-    validate_event_binding_detail(&detail, contract)
-}
-
-/// Protocol 358: an App inbox route gets the checks a workflow binding gets:
-/// the generator's current catalog declares the event type at that version,
-/// and the connection was granted the event's required scopes.
+/// Protocol 358: the generator's current catalog declares an App inbox route's
+/// event type at that version, and the connection was granted the event's
+/// required scopes.
 pub(crate) async fn validate_app_route_event(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
@@ -573,61 +513,6 @@ async fn event_generator_detail(
     Ok(detail)
 }
 
-fn validate_event_binding_detail(
-    detail: &EventGeneratorCatalogDetail,
-    contract: &WorkflowEventBindingContract,
-) -> Result<Vec<String>, DaemonError> {
-    let WorkflowEventBindingContract {
-        generator_id,
-        generator_version,
-        manifest_digest,
-        event_type,
-        event_type_version,
-        action_ids,
-        ..
-    } = contract;
-    if detail.summary.generator_id != *generator_id || detail.summary.version != *generator_version
-    {
-        return Err(connection_error(format!(
-            "event catalog returned `{}`@`{}` for requested `{generator_id}@{generator_version}`",
-            detail.summary.generator_id, detail.summary.version
-        )));
-    }
-    if detail.summary.manifest_digest != *manifest_digest {
-        return Err(connection_error(format!(
-            "event generator manifest changed; expected `{manifest_digest}`, catalog has `{}`",
-            detail.summary.manifest_digest
-        )));
-    }
-    let Some(event) = detail
-        .events
-        .iter()
-        .find(|event| event.event_type == *event_type && event.version == *event_type_version)
-    else {
-        return Err(connection_error(format!(
-            "event `{event_type}@{event_type_version}` is not declared by `{generator_id}@{generator_version}`"
-        )));
-    };
-    let mut required_scopes = event
-        .required_scopes
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    for action_id in action_ids {
-        let Some(action) = detail
-            .actions
-            .iter()
-            .find(|action| action.action_id == *action_id)
-        else {
-            return Err(connection_error(format!(
-                "action `{action_id}` is not declared by `{generator_id}@{generator_version}`"
-            )));
-        };
-        required_scopes.extend(action.required_scopes.iter().cloned());
-    }
-    Ok(required_scopes.into_iter().collect())
-}
-
 pub(crate) fn validate_event_connection_scopes(
     runtime_state: &KernelRuntimeState,
     caller_user_id: &str,
@@ -666,86 +551,6 @@ fn validate_granted_event_connection_scopes(
         "event connection `{connection_id}` is missing required scopes: {}; reconnect it before attaching",
         missing_scopes.join(", ")
     )))
-}
-
-pub(crate) async fn validate_registered_event_connection(
-    runtime_state: &KernelRuntimeState,
-    config_projection: &DaemonConfigProjectionStore,
-    management_client: &AegsManagementHttpClient,
-    caller_user_id: &str,
-    generator_id: &str,
-    connection_id: &str,
-) -> Result<(), DaemonError> {
-    let connection = runtime_state
-        .event_connection_registry()
-        .get(caller_user_id, connection_id)?
-        .ok_or_else(|| connection_error("event connection was removed or is not installed"))?;
-    if connection.generator_id != generator_id {
-        return Err(connection_error(
-            "event connection does not belong to the requested generator",
-        ));
-    }
-    validate_event_connection(
-        runtime_state,
-        config_projection,
-        management_client,
-        caller_user_id,
-        generator_id,
-        connection_id,
-    )
-    .await
-}
-
-/// Ensure a workflow runtime action has a live management target before the
-/// synchronous action path reads the projection. This is deliberately shared
-/// by event-action and event-context tools so registry-issued targets are resolved
-/// after a kernel restart as well as during connection/binding setup.
-pub(crate) async fn ensure_event_generator_management_target_for_workflow_run(
-    runtime_state: &KernelRuntimeState,
-    config_projection: &DaemonConfigProjectionStore,
-    session_id: &str,
-    workflow_run_ref: &str,
-) -> Result<(), DaemonError> {
-    let (generator_id, caller_user_id) = {
-        let session_store = runtime_state.session_store();
-        let session = session_store.read().get_session(session_id)?;
-        let workflow_run = session_store
-            .read()
-            .resolve_workflow_run_ref(session_id, workflow_run_ref)?;
-        let invocation = workflow_run.publication_invocation().ok_or_else(|| {
-            connection_error("event runtime action is missing its invocation".to_string())
-        })?;
-        let binding_id = invocation.hook_id.as_deref().ok_or_else(|| {
-            connection_error("event runtime action is missing its binding identity".to_string())
-        })?;
-        let binding = session
-            .workflow_event_bindings()
-            .iter()
-            .find(|binding| binding.id == binding_id)
-            .ok_or_else(|| {
-                connection_error(format!("event binding `{binding_id}` was not found"))
-            })?;
-        (
-            binding.generator_id.clone(),
-            session.owner_user_id().to_string(),
-        )
-    };
-    let config = config_projection.snapshot();
-    let request =
-        LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
-            generator_id: Some(generator_id),
-            cursor: None,
-            limit: 1,
-        });
-    resolve_event_generator_management_targets(
-        runtime_state,
-        config_projection,
-        &config,
-        &caller_user_id,
-        &request,
-    )
-    .await
-    .map(|_| ())
 }
 
 async fn execute_event_connection_request(
@@ -966,7 +771,7 @@ async fn execute_event_connection_request(
                 runtime_state,
                 caller_user_id,
                 &request.connection_id,
-            );
+            )?;
             Ok(LocalDaemonResponse::EventConnectionDependencies {
                 connection_id: request.connection_id,
                 dependencies,
@@ -974,25 +779,22 @@ async fn execute_event_connection_request(
         }
         LocalDaemonRequest::RemoveEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
-            let dependencies = event_connection_dependencies(
+            let active_dependency_count = event_connection_dependencies(
                 runtime_state,
                 caller_user_id,
                 &request.connection_id,
-            );
-            let active_dependency_count = dependencies
-                .iter()
-                .filter(|dependency| {
-                    dependency.status != crate::session::WorkflowEventBindingStatus::Tombstoned
-                })
-                .count();
+            )?
+            .into_iter()
+            .filter(|dependency| dependency.active)
+            .count();
             if !request.confirm {
                 return Err(connection_error(format!(
-                    "removing this connection requires confirm=true and will deactivate {active_dependency_count} workflow binding(s)"
+                    "removing this connection requires confirm=true; {active_dependency_count} App route(s) or grant(s) use it"
                 )));
             }
             if active_dependency_count != 0 {
                 return Err(connection_error(
-                    "dependent workflow bindings must be deactivated before connection removal"
+                    "remove the App inbox routes and connection grants that use this connection first"
                         .to_string(),
                 ));
             }
@@ -1035,10 +837,7 @@ async fn execute_event_connection_request(
             registry
                 .remove_authorizations_for_connection(caller_user_id, &connection.connection_id)?;
             registry.remove(caller_user_id, &connection.connection_id)?;
-            Ok(LocalDaemonResponse::EventConnectionRemoved {
-                connection,
-                deactivated_bindings: dependencies,
-            })
+            Ok(LocalDaemonResponse::EventConnectionRemoved { connection })
         }
         _ => Err(connection_error(
             "request is not an event connection request".to_string(),
@@ -1157,34 +956,10 @@ fn event_connection_dependencies(
     runtime_state: &KernelRuntimeState,
     caller_user_id: &str,
     connection_id: &str,
-) -> Vec<WorkflowEventBindingDependency> {
+) -> Result<Vec<crate::local::EventConnectionDependency>, DaemonError> {
     runtime_state
-        .list_session_snapshots()
-        .into_iter()
-        .flat_map(|session| {
-            let session_id = session.id().to_string();
-            let owned_publication_ids = session
-                .workflow_publications()
-                .iter()
-                .filter(|publication| publication.created_by_user_id() == caller_user_id)
-                .map(|publication| publication.id().to_string())
-                .collect::<std::collections::BTreeSet<_>>();
-            session
-                .workflow_event_bindings()
-                .iter()
-                .filter(|binding| {
-                    binding.connection_id == connection_id
-                        && owned_publication_ids.contains(&binding.publication_id)
-                })
-                .map(move |binding| WorkflowEventBindingDependency {
-                    session_id: session_id.clone(),
-                    publication_id: binding.publication_id.clone(),
-                    binding_id: binding.id.clone(),
-                    status: binding.status,
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
+        .event_connection_dependencies(caller_user_id, connection_id)
+        .map_err(connection_error)
 }
 
 fn project_event_connection_usage(
@@ -1194,35 +969,15 @@ fn project_event_connection_usage(
     connection: crate::local::EventConnection,
 ) -> Result<crate::local::EventConnection, DaemonError> {
     let attached_trigger_count =
-        event_connection_dependencies(runtime_state, caller_user_id, &connection.connection_id)
+        event_connection_dependencies(runtime_state, caller_user_id, &connection.connection_id)?
             .into_iter()
-            .filter(|dependency| {
-                dependency.status != crate::session::WorkflowEventBindingStatus::Tombstoned
-            })
+            .filter(|dependency| dependency.active)
             .count() as u64;
     registry.set_attached_trigger_count(
         caller_user_id,
         &connection.connection_id,
         attached_trigger_count,
     )
-}
-
-pub(crate) fn workflow_event_binding_contract(
-    runtime_state: &KernelRuntimeState,
-    session_id: &str,
-    binding_id: &str,
-) -> Option<WorkflowEventBindingContract> {
-    runtime_state
-        .list_session_snapshots()
-        .into_iter()
-        .find(|session| session.id() == session_id)
-        .and_then(|session| {
-            session
-                .workflow_event_bindings()
-                .iter()
-                .find(|binding| binding.id == binding_id)
-                .map(WorkflowEventBindingContract::from)
-        })
 }
 
 fn decode_offset(cursor: Option<&str>) -> Result<usize, DaemonError> {
@@ -2069,23 +1824,6 @@ fn catalog_error(message: String) -> DaemonError {
 mod tests {
     use super::*;
 
-    fn binding_contract(
-        detail: &EventGeneratorCatalogDetail,
-        generator_id: &str,
-        event_type: &str,
-        action_ids: Vec<String>,
-    ) -> WorkflowEventBindingContract {
-        WorkflowEventBindingContract {
-            generator_id: generator_id.to_string(),
-            generator_version: detail.summary.version.clone(),
-            manifest_digest: detail.summary.manifest_digest.clone(),
-            connection_id: "connection-1".to_string(),
-            event_type: event_type.to_string(),
-            event_type_version: 1,
-            action_ids,
-        }
-    }
-
     #[test]
     fn builtin_dummy_catalog_matches_publisher_manifest_fixture() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
@@ -2107,53 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn event_binding_contract_rejects_undeclared_event_type() {
-        let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        let contract =
-            binding_contract(&detail, &detail.summary.generator_id, "dummy_typo", vec![]);
-        let error = validate_event_binding_detail(&detail, &contract)
-            .expect_err("undeclared event type must be rejected");
-        assert!(error.to_string().contains("is not declared"));
-    }
-
-    #[test]
-    fn event_binding_contract_accepts_declared_event_type() {
-        let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        let contract =
-            binding_contract(&detail, &detail.summary.generator_id, "dummy.test", vec![]);
-        validate_event_binding_detail(&detail, &contract)
-            .expect("declared event type should be accepted");
-    }
-
-    #[test]
-    fn event_binding_contract_returns_unique_event_and_action_scopes() {
-        let mut detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        detail.events[0].required_scopes = vec!["events:read".to_string()];
-        detail.actions = vec![crate::local::EventGeneratorActionDefinition {
-            action_id: "dummy.acknowledge".to_string(),
-            name: "Acknowledge".to_string(),
-            description: "Acknowledge the event".to_string(),
-            required_scopes: vec!["actions:write".to_string(), "events:read".to_string()],
-            target: "originating_resource".to_string(),
-            mutation: true,
-            idempotent: true,
-            input_schema: serde_json::json!({"type": "object"}),
-        }];
-
-        let contract = binding_contract(
-            &detail,
-            &detail.summary.generator_id,
-            "dummy.test",
-            vec!["dummy.acknowledge".to_string()],
-        );
-        let required_scopes = validate_event_binding_detail(&detail, &contract)
-            .expect("declared action should be accepted");
-
-        assert_eq!(required_scopes, vec!["actions:write", "events:read"]);
-    }
-
-    #[test]
-    fn event_binding_scope_validation_fails_closed_for_omitted_grants() {
+    fn event_scope_validation_fails_closed_for_omitted_grants() {
         let required_scopes = vec!["actions:write".to_string()];
         let error = validate_granted_event_connection_scopes("connection-1", &[], &required_scopes)
             .expect_err("omitted scopes must not grant a scope-bearing action");
@@ -2234,15 +1926,6 @@ mod tests {
             owner_scoped: None,
         };
         assert!(is_registry_issued_management_target(&registry_target));
-    }
-
-    #[test]
-    fn event_binding_contract_rejects_mismatched_generator_identity() {
-        let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        let contract = binding_contract(&detail, "dev.chariox.other", "dummy.test", vec![]);
-        let error = validate_event_binding_detail(&detail, &contract)
-            .expect_err("mismatched catalog identity must be rejected");
-        assert!(error.to_string().contains("event catalog returned"));
     }
 
     #[test]

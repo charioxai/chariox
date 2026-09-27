@@ -90,6 +90,28 @@ impl DurableKernelStateStore {
         rows.collect::<Result<_, _>>()
             .map_err(|_| "STORAGE_UNAVAILABLE")
     }
+
+    /// The installations granted one of the owner's connections.
+    pub(crate) fn app_connection_grantees(
+        &self,
+        owner: &str,
+        connection_id: &str,
+    ) -> Result<Vec<String>, &'static str> {
+        let connection = self
+            .lock_connection("durable_state.app_connection_grantees")
+            .map_err(|_| "STORAGE_UNAVAILABLE")?;
+        let mut statement = connection
+            .prepare(
+                "SELECT installation_id FROM app_connection_grants
+                 WHERE owner_id=?1 AND connection_id=?2 ORDER BY installation_id",
+            )
+            .map_err(|_| "STORAGE_UNAVAILABLE")?;
+        let rows = statement
+            .query_map(params![owner, connection_id], |row| row.get(0))
+            .map_err(|_| "STORAGE_UNAVAILABLE")?;
+        rows.collect::<Result<_, _>>()
+            .map_err(|_| "STORAGE_UNAVAILABLE")
+    }
 }
 
 /// Grants end with the installation's active release: an uninstalled App, or

@@ -1,9 +1,8 @@
 use super::*;
 use crate::local::{
-    CreateWorkflowEventBindingRequest, CreateWorkflowPublicationRequest,
-    CreateWorkflowScheduleRequest, ExportWorkflowPublicationPackageRequest, InstallSkillRequest,
-    ListWorkflowPublicationsRequest, RegisterEnvironmentRequest, RegisterScriptRequest,
-    RegisterWorkflowPublicationEndpointRequest, TestWorkflowEventBindingRequest,
+    CreateWorkflowPublicationRequest, CreateWorkflowScheduleRequest,
+    ExportWorkflowPublicationPackageRequest, InstallSkillRequest, ListWorkflowPublicationsRequest,
+    RegisterEnvironmentRequest, RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;
 use sha2::{Digest, Sha256};

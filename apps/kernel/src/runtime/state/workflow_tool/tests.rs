@@ -67,102 +67,6 @@ fn runtime_tool_snapshot_policy_keeps_external_context_tools_out_of_large_writes
     assert!(!super::runtime_tool_requires_session_snapshot(
         crate::transport::runtime_tools::READ_WORKFLOW_TURN_CONTEXT_TOOL
     ));
-    assert!(!super::runtime_tool_requires_session_snapshot(
-        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
-    ));
-    assert!(!super::runtime_tool_requires_session_snapshot(
-        crate::transport::runtime_tools::EVENT_ACTION_TOOL
-    ));
-}
-
-#[test]
-fn event_context_idempotency_fingerprint_scopes_request_parameters() {
-    let first = super::event_context_request_fingerprint("thread", 20, None, None);
-    let same_request = super::event_context_request_fingerprint("thread", 20, None, None);
-    let next_page = super::event_context_request_fingerprint("thread", 20, Some("cursor-2"), None);
-    let different_limit = super::event_context_request_fingerprint("thread", 50, None, None);
-    let different_users =
-        super::event_context_request_fingerprint("users", 20, None, Some(&[String::from("U123")]));
-
-    assert_eq!(first, same_request);
-    assert_ne!(first, next_page);
-    assert_ne!(first, different_limit);
-    assert_ne!(first, different_users);
-}
-
-#[test]
-fn event_context_runtime_receipts_redact_provider_payloads() {
-    let result = crate::transport::runtime_tools::RuntimeToolResult {
-        ok: true,
-        payload: serde_json::json!({
-            "result": {
-                "messages": [{"text": "private conversation body"}],
-                "users": [{"id": "U123", "profile": "private profile"}]
-            }
-        }),
-    };
-    let receipt = super::workflow_runtime_tool_result_json(
-        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL,
-        &result,
-    );
-
-    assert!(receipt.contains("\"redacted\":true"));
-    assert!(!receipt.contains("private conversation body"));
-    assert!(!receipt.contains("private profile"));
-
-    let mut envelope = crate::session::WorkflowTurnEnvelope::new(
-        "workflow-ack:test",
-        "mention".to_string(),
-        None,
-        None,
-    );
-    envelope.add_runtime_tool_call(crate::session::WorkflowRuntimeToolCallEvent::new(
-        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL,
-        "{\"kind\":\"thread\"}",
-        Some(receipt),
-        true,
-    ));
-    let snapshot = serde_json::to_string(&envelope).expect("turn envelope should serialize");
-    assert!(!snapshot.contains("private conversation body"));
-    assert!(!snapshot.contains("private profile"));
-}
-
-#[test]
-fn event_context_tool_is_discovered_without_event_action_tool() {
-    let worktree = crate::test_support::TestWorktree::new("workflow-tool-event-context");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should be created");
-    let run = app
-        .launch_provider(
-            crate::provider::LaunchProviderRequest::new(
-                session.id(),
-                "dev-stub",
-                "dev-stub",
-                "default",
-                "default",
-            )
-            .with_agent_id(agent.id())
-            .with_workflow_event_context(true),
-        )
-        .expect("provider should launch");
-    app.providers()
-        .enable_workflow_tools(run.id())
-        .expect("workflow tools should be enabled");
-    let auth_token = run
-        .runtime_mcp_auth_token()
-        .expect("provider should expose runtime MCP auth")
-        .to_string();
-    let runtime = runtime_state_from_app(app);
-    let specs = runtime.runtime_tool_specs_for_auth_token(&auth_token);
-    assert!(specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
-    }));
-    assert!(!specs
-        .iter()
-        .any(|spec| { spec.name == crate::transport::runtime_tools::EVENT_ACTION_TOOL_QUALIFIED }));
 }
 
 #[test]
@@ -289,10 +193,6 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
             .with_agent_id(agent.id()),
         )
         .expect("ordinary provider should launch");
-    let ordinary_auth_token = ordinary
-        .runtime_mcp_auth_token()
-        .expect("ordinary provider should expose runtime MCP auth")
-        .to_string();
     let ordinary_attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -316,10 +216,6 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
     ));
 
     let runtime = runtime_state_from_app(app);
-    let ordinary_specs = runtime.runtime_tool_specs_for_auth_token(&ordinary_auth_token);
-    assert!(!ordinary_specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
-    }));
     runtime
         .owned
         .complete_local_prompt_without_advance(session.id(), agent.id(), Some(ordinary.id()))
@@ -396,15 +292,6 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
 
     assert_ne!(workflow_provider.id(), ordinary.id());
     assert!(workflow_provider.workflow_tools_enabled());
-    assert!(!workflow_provider.workflow_event_context_enabled());
-    let workflow_auth_token = workflow_provider
-        .runtime_mcp_auth_token()
-        .expect("workflow provider should expose runtime MCP auth")
-        .to_string();
-    let workflow_specs = runtime.runtime_tool_specs_for_auth_token(&workflow_auth_token);
-    assert!(!workflow_specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
-    }));
     assert!(matches!(
         runtime
             .owned

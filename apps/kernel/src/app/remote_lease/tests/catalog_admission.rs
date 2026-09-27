@@ -109,8 +109,6 @@ fn changed_catalog_does_not_queue_a_prompt_on_the_busy_old_provider() {
         &lease,
         &[],
         &desired,
-        false,
-        false,
     );
     assert!(matches!(
         result,
@@ -149,8 +147,6 @@ fn unchanged_catalog_keeps_the_existing_busy_provider() {
         &lease,
         &[],
         &desired,
-        false,
-        false,
     );
     assert!(matches!(
         result,
@@ -211,8 +207,6 @@ fn native_catalog_waits_for_observed_refresh_and_keeps_the_attached_run_identity
             &lease,
             &[],
             &desired,
-            false,
-            false,
         );
         assert!(matches!(
             prepared,
@@ -245,8 +239,6 @@ fn native_catalog_waits_for_observed_refresh_and_keeps_the_attached_run_identity
             &lease,
             &[],
             &desired,
-            false,
-            false,
         );
         assert!(
             matches!(prepared, Ok(super::super::provider_run::LeasedProviderRunMatch::Ready(id)) if id == native.id())

@@ -112,8 +112,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
         remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
-        event_context_enabled: bool,
-        event_actions_enabled: bool,
     ) -> Result<LeasedProviderRunMatch, DaemonError> {
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             leased_agent,
@@ -143,16 +141,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
             let catalog_matches =
                 run.remote_extension_catalog_matches_launch(remote_extension_manifest);
-            let context_capability_matches =
-                run.workflow_event_context_enabled() == event_context_enabled;
-            let actions_capability_matches =
-                run.workflow_event_actions_enabled() == event_actions_enabled;
-            if existing_profile_matches
-                && mcp_matches
-                && catalog_matches
-                && context_capability_matches
-                && actions_capability_matches
-            {
+            if existing_profile_matches && mcp_matches && catalog_matches {
                 if run.remote_extension_manifest() != remote_extension_manifest {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),
@@ -249,8 +238,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
         .with_agent_id(&leased_agent.backing_agent_id)
         .with_owner_user_id(lease.owner_user_id)
-        .with_workflow_event_context(event_context_enabled)
-        .with_workflow_event_actions(event_actions_enabled)
         .with_working_directory(std::path::PathBuf::from(
             self.app
                 .sessions

@@ -19,8 +19,6 @@ pub enum LocalDaemonResponse {
     AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
     /// Protocol 361: the caller's active installations and their configuration.
     AppSet { schema: String, installations: Vec<AppSetInstallation>, },
-    /// Protocol 360: the binding (now paused) and what replaced it.
-    EventBindingMovedToApp { binding_id: String, installation_id: String, route: AppInboxRouteSummary, connection: Option<AppConnectionSummary>, automation: Option<AppAutomationSummary>, },
     AppFileGranted { operation_id: String, files: u32, },
     AppFileExport { operation_id: String, name: String, contents_base64: String, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
@@ -441,13 +439,8 @@ pub enum LocalDaemonResponse {
     },
     EventConnectionResourcesPage { page: EventGeneratorResourcePage, },
     EventConnectionTested { result: chariox_event_protocol::AegsConnectionTestEventResponse, },
-    EventConnectionDependencies { connection_id: String, dependencies: Vec<WorkflowEventBindingDependency>, },
-    EventConnectionRemoved { connection: EventConnection, deactivated_bindings: Vec<WorkflowEventBindingDependency>, },
-    WorkflowEventBindingCreated { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },
-    WorkflowEventBindingsListed { bindings: Vec<crate::session::WorkflowEventBinding>, },
-    WorkflowEventBindingUpdated { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },
-    WorkflowEventBindingTransferred { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },
-    WorkflowEventBindingTested { delivery_id: String, queued_prompt_id: String, duplicate: bool, session: RuntimeSession, },
+    EventConnectionDependencies { connection_id: String, dependencies: Vec<EventConnectionDependency>, },
+    EventConnectionRemoved { connection: EventConnection, },
     EventDeliveryStatus { status: EventDeliveryStatus, },
     WorkflowPublication { publication: WorkflowPublicationDefinition, },
     WorkflowPublicationPackageExported {

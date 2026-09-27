@@ -516,8 +516,6 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
                 workflow_run_id: "workflow-first".to_string(),
                 workflow_node_run_id: "node-first".to_string(),
                 delivery_token: "delivery-first".to_string(),
-                event_context_enabled: true,
-                event_actions_enabled: false,
             }),
             Some(crate::transport::relay_peer::RemoteGitTurnContext {
                 home_session_id: "session-leased-workflow-queue".to_string(),
@@ -541,11 +539,6 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
         first_outcome,
         PromptSubmissionOutcome::Started { .. }
     ));
-    assert!(app
-        .providers()
-        .get_run(&first_provider_run_id)
-        .expect("first provider run should exist")
-        .workflow_event_context_enabled());
 
     let second_home_prompt_id = "home-leased-workflow-second";
     let (queued_provider_run_id, second_outcome) = RemoteLeaseRuntime::new(&mut app)
@@ -560,8 +553,6 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
                 workflow_run_id: "workflow-second".to_string(),
                 workflow_node_run_id: "node-second".to_string(),
                 delivery_token: "delivery-second".to_string(),
-                event_context_enabled: false,
-                event_actions_enabled: false,
             }),
             Some(crate::transport::relay_peer::RemoteGitTurnContext {
                 home_session_id: "session-leased-workflow-queue".to_string(),
@@ -618,12 +609,6 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
         .expect("replacement provider run should be active")
         .id()
         .to_string();
-    assert_ne!(second_provider_run_id, first_provider_run_id);
-    assert!(!app
-        .providers()
-        .get_run(&second_provider_run_id)
-        .expect("replacement provider run should exist")
-        .workflow_event_context_enabled());
     assert_eq!(
         RemoteLeaseRuntime::new(&mut app)
             .leased_agent_snapshot_for_test(&leased_agent.id)
@@ -633,7 +618,7 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
     assert_eq!(
         RemoteLeaseRuntime::new(&mut app)
             .leased_workflow_turn_binding_for_test(second_home_prompt_id),
-        Some((second_backing_prompt_id, second_provider_run_id, false))
+        Some((second_backing_prompt_id, second_provider_run_id))
     );
     assert!(!RemoteLeaseRuntime::new(&mut app)
         .has_leased_workflow_turn_binding_for_test(first_home_prompt_id));
@@ -697,8 +682,7 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
                   home_kernel_id: &str,
                   home_session_id: &str,
                   home_agent_id: &str,
-                  workflow_run_id: &str,
-                  event_context_enabled: bool| {
+                  workflow_run_id: &str| {
         RemoteLeaseRuntime::new(app).submit_leased_prompt_with_workflow_context(
             &agent.id,
             "same home prompt id from independent lease\n",
@@ -710,8 +694,6 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
                 workflow_run_id: workflow_run_id.to_string(),
                 workflow_node_run_id: format!("{workflow_run_id}-node"),
                 delivery_token: format!("{workflow_run_id}-delivery"),
-                event_context_enabled,
-                event_actions_enabled: false,
             }),
             Some(crate::transport::relay_peer::RemoteGitTurnContext {
                 home_session_id: home_session_id.to_string(),
@@ -739,7 +721,6 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
         "session-leased-one",
         "agent-home-one",
         "workflow-one",
-        true,
     )
     .expect("first workflow prompt should submit");
     let first_backing_prompt_id = match first_outcome {
@@ -753,7 +734,6 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
         "session-leased-two",
         "agent-home-two",
         "workflow-two",
-        false,
     )
     .expect("second workflow prompt should submit");
     let second_backing_prompt_id = match second_outcome {
@@ -780,8 +760,8 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
     );
     assert_eq!(
         RemoteLeaseRuntime::new(&mut app).leased_workflow_turn_binding_for_test("same-home-prompt"),
-        Some((second_backing_prompt_id, second_provider_run_id, false)),
-        "completing one lease must leave the other lease's event context intact"
+        Some((second_backing_prompt_id, second_provider_run_id)),
+        "completing one lease must leave the other lease's workflow context intact"
     );
 }
 
