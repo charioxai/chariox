@@ -78,6 +78,19 @@ impl ActiveRelease {
     }
 }
 
+/// The App error an owner sees when the active release cannot be read.
+impl From<ActiveReleaseError> for crate::local::AppRequestErrorCode {
+    fn from(error: ActiveReleaseError) -> Self {
+        match error {
+            ActiveReleaseError::NotActive => Self::NotFound,
+            ActiveReleaseError::Untrusted | ActiveReleaseError::Invalid => Self::Conflict,
+            ActiveReleaseError::Unavailable | ActiveReleaseError::Storage => {
+                Self::StorageUnavailable
+            }
+        }
+    }
+}
+
 impl DurableKernelStateStore {
     pub(crate) fn active_app_release(
         &self,

@@ -334,7 +334,6 @@ impl KernelRuntimeState {
         installation: &str,
     ) -> Result<std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>, AppRequestErrorCode>
     {
-        use crate::durable_state::app_active_release::ActiveReleaseError;
         let store = self.owned.durable_state_store.clone();
         let (owner, installation) = (owner.to_owned(), installation.to_owned());
         let permit = self.app_control().try_admit()?;
@@ -344,15 +343,7 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
-        .map_err(|error| match error {
-            ActiveReleaseError::NotActive => AppRequestErrorCode::NotFound,
-            ActiveReleaseError::Untrusted | ActiveReleaseError::Invalid => {
-                AppRequestErrorCode::Conflict
-            }
-            ActiveReleaseError::Unavailable | ActiveReleaseError::Storage => {
-                AppRequestErrorCode::StorageUnavailable
-            }
-        })
+        .map_err(AppRequestErrorCode::from)
     }
 
     async fn app_worker_summary(

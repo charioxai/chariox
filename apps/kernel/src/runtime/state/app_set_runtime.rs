@@ -99,18 +99,7 @@ impl KernelRuntimeState {
             })
             .await
             .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
-            .map_err(|error| {
-                use crate::durable_state::app_active_release::ActiveReleaseError;
-                match error {
-                    ActiveReleaseError::NotActive => AppRequestErrorCode::NotFound,
-                    ActiveReleaseError::Untrusted | ActiveReleaseError::Invalid => {
-                        AppRequestErrorCode::Conflict
-                    }
-                    ActiveReleaseError::Unavailable | ActiveReleaseError::Storage => {
-                        AppRequestErrorCode::StorageUnavailable
-                    }
-                }
-            })?;
+            .map_err(AppRequestErrorCode::from)?;
             // One generation per entry: an update that committed while the
             // set was read would pair one release with another's capabilities.
             if digest != release.package_digest {
