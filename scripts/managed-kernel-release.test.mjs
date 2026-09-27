@@ -21,7 +21,7 @@ const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-s
 const dataVolumeAdmissionService = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service")
 const rootlessDockerDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf")
 const quotaAllocatorDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf")
-const quotaRuntimeAssets = [
+const quotaRuntimeAssetSeeds = [
   "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.service",
   "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
   "apps/kernel/slice-linux-docker/slice-disk-quota-allocator.mjs",
@@ -246,13 +246,21 @@ async function localEsmImportClosure(root, entry) {
     for (const specifier of specifiers) {
       const dependency = posix.normalize(posix.join(posix.dirname(current), specifier))
       if (dependency === ".." || dependency.startsWith("../") || !dependency.endsWith(".mjs")) {
-        throw new Error(`broker import escapes the packaged ESM context: ${current} -> ${specifier}`)
+        throw new Error(`local ESM import escapes the packaged ESM context: ${current} -> ${specifier}`)
       }
       pending.push(dependency)
     }
   }
   return [...visited].sort()
 }
+
+const quotaRuntimeAssets = [...new Set([
+  ...quotaRuntimeAssetSeeds,
+  ...await localEsmImportClosure(
+    repositoryRoot,
+    "apps/kernel/slice-linux-docker/slice-disk-quota-service.mjs",
+  ),
+])].sort()
 
 async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAsset } = {}) {
   const kernel = join(root, "chariox-kernel")
@@ -1377,26 +1385,79 @@ test("managed kernel builder archives the exact commit and emits a signed binary
   const fixture = await makeFixture(root, "", { dockerfileContents })
   const bin = join(root, "builder-bin")
   const trace = join(root, "builder-trace")
+  const verificationTrace = join(root, "builder-verification-trace")
   const output = join(root, "builder-output")
   const temp = join(root, "builder-temp")
+  const fakeHome = join(root, "builder-home")
   await mkdir(temp)
   await mkdir(bin)
+  await mkdir(fakeHome, { mode: 0o700 })
   await writeHarnessCommand(join(bin, "docker"), `#!/bin/sh
 set -eu
 [ -z "\${RUSTC_WRAPPER:-}" ]
 [ -z "\${CARGO:-}" ]
 [ -z "\${RUSTFLAGS:-}" ]
+printf '%s\n' "$*" >> '${verificationTrace}'
+if [ "$1" = buildx ] && [ "$2" = inspect ]; then
+  [ "$#" -eq 3 ]
+  builder_name=$3
+  printf '%s\n' "$builder_name" > '${root}/builder-current-name'
+  printf 'Name: %s\nDriver: docker-container\nNodes:\n  Name: node0\n  Endpoint: unix:///var/run/docker.sock\n  Status: running\n' "$builder_name"
+  exit 0
+fi
+if [ "$1" = --host ]; then
+  [ "$#" -eq 8 ]
+  [ "$2" = unix:///var/run/docker.sock ]
+  [ "$3" = inspect ]
+  [ "$4" = --type ] && [ "$5" = container ]
+  [ "$6" = --format ] && [ "$7" = '{{json .}}' ]
+  [ "$8" = buildx_buildkit_node0 ]
+  container_id=$(printf '%064d' 1)
+  printf '{"Id":"%s","Name":"/buildx_buildkit_node0","State":{"Running":true,"StartedAt":"2026-09-27T00:00:00.000Z"},"HostConfig":{"PidsLimit":512,"NanoCpus":2000000000,"CpuQuota":0,"CpuPeriod":0,"Memory":4294967296,"MemorySwap":8589934592,"CpusetCpus":""}}\n' "$container_id"
+  exit 0
+fi
+if [ "$1" = buildx ] && [ "$2" = history ]; then
+  case "$3" in
+    ls)
+      [ "$#" -eq 8 ]
+      [ "$4" = --builder ] && [ "$6" = --format ] && [ "$7" = json ] && [ "$8" = --no-trunc ]
+      [ "$5" = "$(cat '${root}/builder-current-name')" ]
+      printf '[]\n'
+      ;;
+    inspect)
+      [ "$#" -eq 8 ]
+      [ "$4" = --builder ] && [ "$6" = --format ] && [ "$7" = json ]
+      build_ref=$(cat '${root}/builder-current-ref')
+      builder_from_ref=\${build_ref%%/*}
+      [ "$5" = "$builder_from_ref" ]
+      build_id=\${build_ref##*/}
+      [ "$8" = "$build_id" ]
+      source_directory=$(cat '${root}/builder-current-source')
+      started_at=$(cat '${root}/builder-current-started-at')
+      build_status=$(cat '${root}/builder-current-status')
+      completed_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+      printf '{"Ref":"%s","Context":"%s","Target":"managed-release-artifacts","StartedAt":"%s","Status":"%s","CompletedAt":"%s"}\n' "$build_id" "$source_directory" "$started_at" "$build_status" "$completed_at"
+      ;;
+    *) exit 34 ;;
+  esac
+  exit 0
+fi
 case "$1 $2" in
   "buildx build")
     case " $* " in *" --pull --platform linux/amd64 --target managed-release-artifacts "*) ;; *) exit 31 ;; esac
     case " $* " in *" --output type=local,dest="*) ;; *) exit 31 ;; esac
+    [ "$3" = --builder ] && [ -n "$4" ]
     case " $* " in *" --load "*|*" --tag "*) exit 31 ;; esac
     source=
     for argument do source=$argument; done
     dockerfile=
     destination=
+    metadata_path=
+    builder_name=
     previous=
     for argument do
+      if [ "$previous" = "--builder" ]; then builder_name=$argument; fi
+      if [ "$previous" = "--metadata-file" ]; then metadata_path=$argument; fi
       if [ "$previous" = "--file" ]; then dockerfile=$argument; fi
       if [ "$previous" = "--output" ]; then
         case "$argument" in type=local,dest=*) destination=\${argument#type=local,dest=} ;; *) exit 31 ;; esac
@@ -1405,12 +1466,24 @@ case "$1 $2" in
     done
     [ -f "$dockerfile" ]
     [ "$dockerfile" = "$source/apps/kernel/slice-linux-docker/docker/Dockerfile" ]
+    [ -n "$builder_name" ]
+    [ -n "$metadata_path" ]
+    [ "$builder_name" = "$(cat '${root}/builder-current-name')" ]
     [ ! -e "$source/.git" ]
     [ ! -e "$source/working-tree-only" ]
     grep -F 'FROM scratch AS managed-release-artifacts' "$dockerfile" >/dev/null
     ! grep -F 'working tree drift' "$dockerfile" >/dev/null
     printf '%s\n' "$*" >> '${trace}'
-    case " $* " in *" --builder fail-builder "*) exit 39 ;; esac
+    build_ref="$builder_name/node0/fixture-build-$$"
+    build_status=completed
+    if [ "$builder_name" = fail-builder ]; then build_status=error; fi
+    started_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    printf '%s\n' "$source" > '${root}/builder-current-source'
+    printf '%s\n' "$build_ref" > '${root}/builder-current-ref'
+    printf '%s\n' "$started_at" > '${root}/builder-current-started-at'
+    printf '%s\n' "$build_status" > '${root}/builder-current-status'
+    printf '{"buildx.build.ref":"%s"}\n' "$build_ref" > "$metadata_path"
+    if [ "$build_status" = error ]; then exit 39; fi
     export_case=normal
     case " $* " in
       *" --builder missing-artifact "*) export_case=missing ;;
@@ -1444,14 +1517,14 @@ esac
     Buffer.concat([dockerfileContents, Buffer.from("# working tree drift\n")]),
   )
   await writeFile(join(fixture.sourceRepository, ".git/info/attributes"), "* export-ignore\n")
-  const runBuilder = (destination, builderName) => spawnSync(
+  const runBuilder = (destination, builderName = "bounded-release-builder") => spawnSync(
     process.execPath,
     [
       builder,
       "--source-repository", fixture.sourceRepository,
       "--source-commit", fixture.sourceCommit,
       "--builder-signing-key", fixture.signingKey,
-      ...(builderName ? ["--builder", builderName] : []),
+      "--builder", builderName,
       "--output", destination,
     ],
     {
@@ -1459,6 +1532,7 @@ esac
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
+        HOME: fakeHome,
         TMPDIR: temp,
         RUSTC_WRAPPER: "/tmp/hostile-rustc-wrapper",
         CARGO: "/tmp/hostile-cargo",
@@ -1471,11 +1545,34 @@ esac
   assert.equal(result.status, 0, result.stderr)
   const defaultBuildArguments = (await readFile(trace, "utf8")).trim().split("\n")[0].split(" ")
   assert.deepEqual(defaultBuildArguments.slice(0, 2), ["buildx", "build"])
-  assert.equal(defaultBuildArguments.includes("--builder"), false)
+  assert.equal(defaultBuildArguments[defaultBuildArguments.indexOf("--builder") + 1], "bounded-release-builder")
+  const metadataPathIndex = defaultBuildArguments.indexOf("--metadata-file")
+  assert.ok(metadataPathIndex > 0)
+  const metadataPath = defaultBuildArguments[metadataPathIndex + 1]
+  assert.ok(metadataPath.startsWith(
+    join(fakeHome, ".local", "state", "chariox", "managed-kernel-release", "run-"),
+  ))
+  assert.match(metadataPath, /\/run-[a-f0-9-]{36}\/build-metadata\.json$/)
   assert.equal(defaultBuildArguments.includes("--load"), false)
   assert.equal(defaultBuildArguments.includes("--tag"), false)
   assert.equal(defaultBuildArguments[defaultBuildArguments.indexOf("--target") + 1], "managed-release-artifacts")
   assert.match(defaultBuildArguments[defaultBuildArguments.indexOf("--output") + 1], /^type=local,dest=/)
+  const initialVerificationCalls = (await readFile(verificationTrace, "utf8")).trim().split("\n")
+  assert.deepEqual(initialVerificationCalls.slice(0, 3), [
+    "buildx inspect bounded-release-builder",
+    "--host unix:///var/run/docker.sock inspect --type container --format {{json .}} buildx_buildkit_node0",
+    "buildx history ls --builder bounded-release-builder --format json --no-trunc",
+  ])
+  assert.match(
+    initialVerificationCalls[3],
+    /^buildx build --builder bounded-release-builder .*--metadata-file /,
+  )
+  assert.match(
+    initialVerificationCalls[4],
+    /^buildx history inspect --builder bounded-release-builder --format json fixture-build-[0-9]+$/,
+  )
+  assert.equal(initialVerificationCalls[5], "buildx inspect bounded-release-builder")
+  assert.equal(initialVerificationCalls[6], initialVerificationCalls[1])
   assert.deepEqual((await readdir(output)).sort(), [
     "build-attestation.json", "build-attestation.sig", "builder-public-key",
     "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
@@ -1769,6 +1866,11 @@ test("managed image installer rejects a signed release missing a quota runtime f
       "broker admission dependency",
       "apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs",
       /managed kernel image contains an invalid file: .*slice-disk-quota-admission\.mjs/,
+    ],
+    [
+      "quota coordinator dependency",
+      "apps/kernel/slice-linux-docker/slice-disk-quota-coordinator.mjs",
+      /managed kernel image contains an invalid file: .*slice-disk-quota-coordinator\.mjs/,
     ],
   ]) {
     await context.test(label, async (subtest) => {
