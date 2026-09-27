@@ -94,8 +94,11 @@ const HEALTHY_RUN_MS: u64 = 5 * 60 * 1000;
 
 /// Whether an on-demand start may restart this failed worker now.
 pub(super) fn restart_allowed(status: &WorkerStatus, now_ms: u64) -> bool {
+    if status.failures > RESTARTS {
+        return false;
+    }
     let backoff_ms = 1000 << (2 * (status.failures.max(1) - 1));
-    status.failures <= RESTARTS && now_ms >= status.updated_ms.saturating_add(backoff_ms)
+    now_ms >= status.updated_ms.saturating_add(backoff_ms)
 }
 pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Reply> {
     let now = checked(crate::session::unix_epoch_ms())?;
