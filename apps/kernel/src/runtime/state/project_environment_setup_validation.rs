@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::project_environment_setup_storage::{
@@ -913,7 +914,7 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
                 "worker validation command could not establish its start gate and output pipes",
             ));
         }
-        let gate_stdin = gate_stdin.expect("the validation gate pipe was checked");
+        let mut gate_stdin = gate_stdin.expect("the validation gate pipe was checked");
         let stdout_pipe = stdout.expect("checked stdout");
         let stderr_pipe = stderr.expect("checked stderr");
         let stdout_reader = match spawn_validation_output_reader(stdout_pipe) {
