@@ -13,35 +13,16 @@ test("global keyboard shortcut controller delegates hotkey toggles first", () =>
   assert.deepEqual(harness.calls(), ["hotkeys:t"])
 })
 
-test("global keyboard shortcut controller closes dialog overlays on escape", () => {
-  const harness = createHarness({ dialogOpen: true })
-  const event = keyEvent("escape")
+test("global keyboard shortcut controller leaves stdin-owned keys to the stdin controller", () => {
+  for (const [name, ctrl] of [["c", true], ["e", true], ["escape", false]] as const) {
+    const harness = createHarness({ activeTurnWork: true })
+    const event = keyEvent(name, { ctrl })
 
-  assert.equal(harness.controller.handleKey(event), true)
+    assert.equal(harness.controller.handleKey(event), false)
 
-  assert.equal(event.prevented, true)
-  assert.equal(event.stopped, true)
-  assert.deepEqual(harness.calls(), ["hotkeys:escape", "close-dialog"])
-})
-
-test("global keyboard shortcut controller exits on ctrl-e", () => {
-  const harness = createHarness()
-  const event = keyEvent("e", { ctrl: true })
-
-  assert.equal(harness.controller.handleKey(event), true)
-
-  assert.equal(event.prevented, true)
-  assert.deepEqual(harness.calls(), ["hotkeys:e", "exit"])
-})
-
-test("global keyboard shortcut controller maps ctrl-c to stop while turn work is active", () => {
-  const stopHarness = createHarness({ activeTurnWork: true })
-  assert.equal(stopHarness.controller.handleKey(keyEvent("c", { ctrl: true })), true)
-  assert.deepEqual(stopHarness.calls(), ["hotkeys:c", "stop"])
-
-  const exitHarness = createHarness({ activeTurnWork: false })
-  assert.equal(exitHarness.controller.handleKey(keyEvent("c", { ctrl: true })), true)
-  assert.deepEqual(exitHarness.calls(), ["hotkeys:c", "exit"])
+    assert.equal(event.prevented, false)
+    assert.deepEqual(harness.calls(), [`hotkeys:${name}`])
+  }
 })
 
 test("global keyboard shortcut controller maps SIGINT to stop while turn work is active", () => {
@@ -83,9 +64,6 @@ function createHarness(options: {
       return options.hotkeysHandled ?? false
     },
     dialogOverlayOpen: () => options.dialogOpen ?? false,
-    closeActiveDialogOverlay: () => {
-      calls.push("close-dialog")
-    },
     requestExit: () => {
       calls.push("exit")
     },

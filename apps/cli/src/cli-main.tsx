@@ -19,8 +19,10 @@ import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import { runPublicationDeploymentCommand } from "./publication-deployment-command.js"
 import { runDeployedWorkflowCommand } from "./deployed-workflow-command.js"
 import { runAppCommand } from "./app-command.js"
+import { assertSolidClientBuild } from "./solid-client-build.js"
 
 async function main() {
+  assertSolidClientBuild()
   const argv = process.argv.slice(2)
   if (await runAppCommand(argv)) return
   if (argv[0] === "logs") {

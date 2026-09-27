@@ -9,7 +9,6 @@ export type GlobalKeyboardShortcutControllerDeps = {
   handleKernelApprovalKey?: (event: GlobalKeyboardShortcutEvent) => boolean
   handleHotkeysToggleShortcut: (source: "keyboard", event: GlobalKeyboardShortcutEvent) => boolean
   dialogOverlayOpen: () => boolean
-  closeActiveDialogOverlay: () => void
   requestExit: () => void
   requestPromptStop: () => void
   hasActiveTurnWork: () => boolean
@@ -20,47 +19,28 @@ export type GlobalKeyboardShortcutController = {
   handleSigint(): void
 }
 
+// Ctrl+C, Ctrl+E and Escape on a dialog overlay are owned by the stdin key
+// controller, which sees the same terminal bytes; handling them here too
+// would run each action twice.
 export function createGlobalKeyboardShortcutController(
   deps: GlobalKeyboardShortcutControllerDeps,
 ): GlobalKeyboardShortcutController {
-  const consume = (event: GlobalKeyboardShortcutEvent) => {
-    event.preventDefault()
-    event.stopPropagation()
-  }
-  const requestPromptStopOrExit = () => {
-    if (deps.hasActiveTurnWork()) {
-      deps.requestPromptStop()
-    } else {
-      deps.requestExit()
-    }
-  }
-
   return {
     handleSigint() {
-      requestPromptStopOrExit()
+      if (deps.hasActiveTurnWork()) {
+        deps.requestPromptStop()
+      } else {
+        deps.requestExit()
+      }
     },
     handleKey(event) {
       if (deps.handleKernelApprovalKey?.(event)) return true
       if (deps.handleHotkeysToggleShortcut("keyboard", event)) {
         return true
       }
-      if (deps.dialogOverlayOpen() && event.name === "escape") {
-        consume(event)
-        deps.closeActiveDialogOverlay()
-        return true
-      }
-      if (event.ctrl && event.name === "e") {
-        consume(event)
-        deps.requestExit()
-        return true
-      }
-      if (event.ctrl && event.name === "c") {
-        consume(event)
-        requestPromptStopOrExit()
-        return true
-      }
       if (deps.dialogOverlayOpen()) {
-        consume(event)
+        event.preventDefault()
+        event.stopPropagation()
         return true
       }
       return false
