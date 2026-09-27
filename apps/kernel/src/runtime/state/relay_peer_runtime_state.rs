@@ -1141,8 +1141,8 @@ mod relay_native_provider_launch_tests {
     fn native_lease_fixture() -> NativeLeaseFixture {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        let mut app = crate::app::DaemonApp::bootstrap(config)
-            .expect("worker app should bootstrap");
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("worker app should bootstrap");
         let (leased_agent_id, matching_request) = {
             let mut runtime = RemoteLeaseRuntime::new(&mut app);
             let lease = runtime

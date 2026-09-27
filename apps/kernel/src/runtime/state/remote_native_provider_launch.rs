@@ -30,13 +30,10 @@ where
     RefreshFuture: Future<Output = Result<RemoteAgentBinding, DaemonError>>,
 {
     ensure_compatible_binding(&initial_binding)?;
-    let skipped_credential_for_active_run =
-        initial_binding.active_worker_provider_run_id.is_some();
+    let skipped_credential_for_active_run = initial_binding.active_worker_provider_run_id.is_some();
     let credential = credential_for_binding(&initial_binding, &mut resolve_credential).await?;
     let mut initial_result = send(initial_binding.clone(), credential).await;
-    if skipped_credential_for_active_run
-        && launch_requires_provider_credential(&initial_result)
-    {
+    if skipped_credential_for_active_run && launch_requires_provider_credential(&initial_result) {
         let credential = resolve_credential().await?;
         initial_result = send(initial_binding.clone(), credential).await;
     }
@@ -67,9 +64,7 @@ where
     }
 }
 
-fn launch_requires_provider_credential<Response>(
-    result: &Result<Response, DaemonError>,
-) -> bool {
+fn launch_requires_provider_credential<Response>(result: &Result<Response, DaemonError>) -> bool {
     let Err(error) = result else {
         return false;
     };
@@ -84,9 +79,7 @@ fn launch_requires_provider_credential<Response>(
     }
 }
 
-pub(super) fn ensure_compatible_binding(
-    binding: &RemoteAgentBinding,
-) -> Result<(), DaemonError> {
+pub(super) fn ensure_compatible_binding(binding: &RemoteAgentBinding) -> Result<(), DaemonError> {
     if binding.relay_peer_protocol_compatible() {
         return Ok(());
     }
@@ -214,10 +207,12 @@ mod tests {
                 );
                 std::future::ready(Ok("reused"))
             },
-            || std::future::ready(Err(DaemonError::InternalInvariant {
-                operation: "refresh test binding",
-                message: "successful reuse must not refresh".to_string(),
-            })),
+            || {
+                std::future::ready(Err(DaemonError::InternalInvariant {
+                    operation: "refresh test binding",
+                    message: "successful reuse must not refresh".to_string(),
+                }))
+            },
         )
         .await
         .expect("an active worker run must not depend on a home vault token");
@@ -305,11 +300,9 @@ mod tests {
         .await;
 
         let error = result.expect_err("cold launch must preserve credential failure");
-        assert!(
-            error
-                .to_string()
-                .contains("cold launch requires the configured setup token")
-        );
+        assert!(error
+            .to_string()
+            .contains("cold launch requires the configured setup token"));
         assert_eq!(send_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -390,9 +383,7 @@ mod tests {
                     }))
                 }
             },
-            move || {
-                std::future::ready(Ok(binding(Some(current.saturating_sub(1)), None)))
-            },
+            move || std::future::ready(Ok(binding(Some(current.saturating_sub(1)), None))),
         )
         .await;
 
@@ -429,7 +420,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(DaemonError::ExecutionLeaseNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(DaemonError::ExecutionLeaseNotFound { .. })
+        ));
         assert_eq!(send_calls.load(Ordering::SeqCst), 2);
         assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
     }
