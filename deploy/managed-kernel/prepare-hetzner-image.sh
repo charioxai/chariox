@@ -464,6 +464,7 @@ broker_namespace=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-do
 } |
 runuser -u chariox-docker -- env \
   DOCKER_BUILDKIT=1 \
+  TMPDIR=/tmp \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   "$broker_namespace" docker build --pull --tag chariox-broker-network-check:local - >/dev/null
 runuser -u chariox-docker -- env \
