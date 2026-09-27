@@ -192,6 +192,29 @@ test("an update refused because another client's update is running says what tha
   assert.equal(aborted.length, 3)
 })
 
+test("a resumed attempt whose status read fails keeps the kernel operation", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  let lostBegins = 3
+  let failStatus = false
+  const send = async (request: Message): Promise<Message> => {
+    // The kernel takes the Begin, but every reply is lost.
+    if (request.BeginAppInstall && lostBegins > 0) {
+      lostBegins -= 1
+      await k.send(request)
+      throw new Error("connection lost")
+    }
+    if (request.GetAppInstallOperation && failStatus) return { AppRequestFailed: { code: "storage_unavailable" } }
+    return k.send(request)
+  }
+  const installer = new AppFileInstaller(send, () => {}, f.root)
+  t.after(() => installer.dispose())
+  await assert.rejects(installer.install(f.path, "s1"), /Connection interrupted/)
+  failStatus = true
+  await assert.rejects(installer.install(f.path, "s1"), /storage/i)
+  assert.equal(k.requests.some(request => request.CancelAppInstallOperation), false)
+})
+
 test("lost chunk and install replies resume using original IDs and authoritative offset", async t => {
   const f = await sourceFixture(t)
   const k = kernel()
