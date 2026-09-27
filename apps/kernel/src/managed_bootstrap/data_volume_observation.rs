@@ -281,4 +281,5 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "data_volume_observation_tests.rs"]
 mod data_volume_observation_tests;
