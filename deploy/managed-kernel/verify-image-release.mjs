@@ -60,6 +60,23 @@ function fail(message) {
   throw new Error(message)
 }
 
+function parseUnitSections(source) {
+  const sections = new Map()
+  let section
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue
+    const header = /^\[([^\]]+)\]$/.exec(line)
+    if (header) {
+      section = header[1]
+      if (!sections.has(section)) sections.set(section, [])
+      continue
+    }
+    if (section) sections.get(section).push(line)
+  }
+  return sections
+}
+
 async function readRegularFile(path, label, maxBytes) {
   const metadata = await lstat(path).catch((error) => fail(`${label} cannot be read: ${error.message}`))
   if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > maxBytes) {
@@ -535,7 +552,8 @@ async function verifyImageRelease(
           const dropInPath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(artifactName).path)
           const dropIn = (await readRegularFile(dropInPath, `Path-1 ${label} data-volume drop-in`, 16 * 1024))
             .toString("utf8")
-          const dropInLines = dropIn.split(/\r?\n/)
+          const dropInSections = parseUnitSections(dropIn)
+          const unitDirectives = dropInSections.get("Unit") ?? []
           for (const directive of [
             "Requires=chariox-data-volume-admission.service",
             "After=chariox-data-volume-admission.service",
@@ -543,13 +561,17 @@ async function verifyImageRelease(
             "BindsTo=var-lib-chariox\\x2ddocker-data.mount",
             "AssertPathIsMountPoint=/var/lib/chariox-docker/data",
           ]) {
-            if (dropInLines.filter((line) => line === directive).length !== 1) {
+            if (unitDirectives.filter((line) => line === directive).length !== 1) {
               fail(`Path-1 ${label} must declare ${directive}`)
             }
           }
-          if (artifactName === "chariox-rootless-docker.path1-data-volume.conf"
-            && dropInLines.filter((line) => line === "Environment=CHARIOX_PATH1_DATA_VOLUME_REQUIRED=1").length !== 1) {
-            fail("Path-1 rootless Docker must require admitted data-volume quota storage")
+          if (artifactName === "chariox-rootless-docker.path1-data-volume.conf") {
+            const environmentDirective = "Environment=CHARIOX_PATH1_DATA_VOLUME_REQUIRED=1"
+            const allDirectives = [...dropInSections.values()].flat()
+            if ((dropInSections.get("Service") ?? []).filter((line) => line === environmentDirective).length !== 1
+              || allDirectives.filter((line) => line === environmentDirective).length !== 1) {
+              fail("Path-1 rootless Docker must require admitted data-volume quota storage in [Service]")
+            }
           }
         }
       }
