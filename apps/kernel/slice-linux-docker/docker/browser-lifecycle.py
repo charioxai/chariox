@@ -139,6 +139,18 @@ def reap_uploads():
                    timeout=3, check=True)
 
 
+def lock_launch(fd):
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
 def supervise(root, instance, profile, log, command):
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
         raise RuntimeError("cannot own Chromium descendant lifetime")
@@ -167,7 +179,7 @@ def start(profile, log, command):
     root = directory()
     lock = os.open(root / "launch.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(lock, "w") as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_launch(stream)
         pointer = current_path(root, profile)
         if pointer.exists():
             previous = read_json(pointer)
@@ -191,7 +203,13 @@ def start(profile, log, command):
             time.sleep(0.02)
         record = read_json(root / f"{instance}.json")
         write_json(pointer, record)
-        reap_uploads()
+        try:
+            reap_uploads()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            # The browser is already owned and alive. Deferred garbage
+            # collection cannot turn successful startup into a teardown signal.
+            # Quota remains retained and enforced by the upload store.
+            print("browser upload cleanup deferred; retained quota remains charged", file=sys.stderr)
         print(json.dumps(record))
 
 
@@ -199,7 +217,7 @@ def stop(profile):
     root = directory()
     lock = os.open(root / "launch.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_launch(lock)
         stop_locked(root, profile)
     finally:
         os.close(lock)

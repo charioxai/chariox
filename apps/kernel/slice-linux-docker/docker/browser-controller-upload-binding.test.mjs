@@ -4,12 +4,37 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import nodeTest from "node:test";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { uploadBrowserFiles } from "./browser-controller-files.mjs";
 import { BrowserUploadStaging, uploadCopyTimeoutMs } from "./browser-controller-upload-staging.mjs";
 
 // Procfs identity and kernel-held flock are Linux runtime contracts.
 const test = (name, run) => nodeTest(name, { skip: process.platform !== "linux" }, run);
 const platformFixture = {};
+
+async function ownedBrowser(t, root) {
+  const previous = process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT;
+  process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT = path.join(root, "lifetimes");
+  const lifecycle = fileURLToPath(new URL("./browser-lifecycle.py", import.meta.url));
+  const profile = path.join(root, "profile"), portFile = path.join(root, "port");
+  const code = `import socket,time\ns=socket.socket();s.bind(("127.0.0.1",0));s.listen()\nopen(${JSON.stringify(portFile)},"w").write(str(s.getsockname()[1]))\ntime.sleep(60)`;
+  const record = JSON.parse(execFileSync("python3", [lifecycle, "start", profile, path.join(root, "browser.log"), "python3", "-c", code, `--user-data-dir=${profile}`], { encoding: "utf8", timeout: 8000 }));
+  t.after(async () => {
+    try { execFileSync("python3", [lifecycle, "stop", profile], { timeout: 15000, stdio: "pipe" }); }
+    finally {
+      if (previous === undefined) delete process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT;
+      else process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  let port;
+  for (let tries = 0; tries < 100 && !port; tries++) {
+    try { port = Number(await readFile(portFile, "utf8")); } catch {}
+    if (!port) await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.ok(port, "owned browser listener is ready");
+  return { port, processInfo: { processInfo: [{ type: "browser", id: record.browser.pid }] } };
+}
 
 async function approvedMetadata(file) {
   const metadata = await stat(file, { bigint: true });
@@ -25,7 +50,7 @@ nodeTest("upload copy deadline scales with approved bytes and remains bounded", 
 
 test("upload cannot expose an outside-root replacement during renderer awaits", async (t) => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "chariox-upload-binding-")));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const browser = await ownedBrowser(t, root);
   const allowed = path.join(root, "allowed");
   await mkdir(allowed);
   const selected = path.join(allowed, "report.txt");
@@ -34,8 +59,9 @@ test("upload cannot expose an outside-root replacement during renderer awaits", 
   await writeFile(denied, "outside-root-fixture");
   let consumed;
   const connection = {
-    browserInstanceId: "ws://127.0.0.1:9222/devtools/browser/browser-a",
+    browserInstanceId: `ws://127.0.0.1:${browser.port}/devtools/browser/browser-a`,
     async send(method, params) {
+      if (method === "SystemInfo.getProcessInfo") return browser.processInfo;
       if (method === "Page.getFrameTree") return { frameTree: { frame: { loaderId: "doc-a" } } };
       if (method === "DOM.resolveNode") {
         await rm(selected);
@@ -56,13 +82,15 @@ test("upload cannot expose an outside-root replacement during renderer awaits", 
 
 async function fixture(t, limits = {}) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "chariox-upload-staging-")));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const browser = await ownedBrowser(t, root);
   const file = path.join(root, "report.txt");
   await writeFile(file, "approved");
   const options = { root: path.join(root, "staging"), ...platformFixture, ...limits };
-  return { root, file, options, async prepare(identity = "browser-a", extra = {}) {
+  const connection = { async send(method) { assert.equal(method, "SystemInfo.getProcessInfo"); return browser.processInfo; } };
+  const browserIdentity = `ws://127.0.0.1:${browser.port}/devtools/browser/browser-a`;
+  return { root, file, options, connection, browserIdentity, async prepare(identity = "browser-a", extra = {}) {
     return new BrowserUploadStaging(options).prepare({ files: [file], metadata: [await approvedMetadata(file)],
-      browserIdentity: `ws://127.0.0.1:9222/devtools/browser/${identity}`, ...extra });
+      browserIdentity: `ws://127.0.0.1:${browser.port}/devtools/browser/${identity}`, connection, ...extra });
   } };
 }
 
@@ -177,7 +205,7 @@ for (const phase of ["DOM.resolveNode", "DOM.setFileInputFiles"]) {
     };
     await assert.rejects(uploadBrowserFiles({ connection, sessionId: "s", targetId: "t", documentId: "doc-a",
       nodeRef: "backend:1", filePaths: [data.file], uploadRoots: [data.root],
-      stageUploads: async options => { const lease = await new BrowserUploadStaging(data.options).prepare(options); staged = lease.files[0]; return lease; },
+      stageUploads: async options => { const lease = await new BrowserUploadStaging(data.options).prepare({ ...options, connection: data.connection, browserIdentity: data.browserIdentity }); staged = lease.files[0]; return lease; },
     }), { code: "stale_element_reference" });
     if (phase === "DOM.resolveNode") await assert.rejects(stat(staged), { code: "ENOENT" });
     else assert.equal(await readFile(staged, "utf8"), "approved");

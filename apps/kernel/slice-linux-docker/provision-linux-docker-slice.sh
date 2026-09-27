@@ -420,6 +420,10 @@ copy_required_slice_overlay() {
 }
 
 refresh_slice_support_files() {
+  run_with_timeout 30 python3 "$SCRIPT_DIR/check-browser-overlay-admission.py" \
+    --container "$SLICE_NAME" --slice-id "$SLICE_ID" \
+    --owner-kernel-id "$SLICE_OWNER_KERNEL_ID" --owner-machine-id "$SLICE_OWNER_MACHINE_ID" \
+    || fail "browser overlay admission refused; stop then start this slice through the normal kernel lifecycle"
   # Saved images retain their original packages. Prepare the desktop services
   # before overlaying the current launcher.
   run_with_timeout 180 docker exec -u root "$SLICE_NAME" bash -lc '
@@ -975,6 +979,7 @@ ensure_container() {
   if ! container_running; then
     apply_both_disk_quotas
     log "starting container $SLICE_NAME"
+    reconcile_stopped_browser_lifetimes
     local start_status=0
     if run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null; then
       start_status=0
@@ -1007,6 +1012,12 @@ ensure_container() {
   probe_provider_sandbox_compatibility
 }
 
+reconcile_stopped_browser_lifetimes() {
+  run_with_timeout 40 python3 "$SCRIPT_DIR/reconcile-stopped-browser-lifetimes.py" "$SLICE_NAME" \
+    "$SLICE_ID" "$SLICE_OWNER_KERNEL_ID" "$SLICE_OWNER_MACHINE_ID" >/dev/null \
+    || fail "stopped browser lifetime reconciliation failed for $SLICE_NAME"
+}
+
 recover_existing_container() {
   container_exists || fail "slice container $SLICE_NAME does not exist; cannot recover failed state save"
   apply_both_disk_quotas
@@ -1026,6 +1037,7 @@ recover_existing_container() {
   esac
   if ! container_running; then
     log "restarting existing container $SLICE_NAME after failed state save"
+    reconcile_stopped_browser_lifetimes
     if ! run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null \
       && ! wait_for_container_running 24 5; then
       fail "failed to restart existing container $SLICE_NAME after failed state save"
@@ -1067,6 +1079,7 @@ ensure_auth_target_container() {
   verify_container_nofile_limit
   if ! container_running; then
     log "starting container $SLICE_NAME"
+    reconcile_stopped_browser_lifetimes
     run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null || fail "failed to start container $SLICE_NAME"
   fi
   run_with_timeout 30 docker exec -u root "$SLICE_NAME" rm -f \

@@ -1,4 +1,5 @@
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -145,10 +146,12 @@ time.sleep(60)
             os.kill(record["supervisor"]["pid"], signal.SIGCONT)
 
     def test_dead_controller_reservation_is_reclaimed_but_exposed_bytes_are_retained(self):
+        record, port, _escaped = self.start_browser()
         for exposed in (False, True):
             instance = str(uuid.uuid4())
             ready = self.root / f"ready-{exposed}"
-            request = {"action": "reserve", "entry": {"id": instance, "browser": "a" * 64, "bytes": 8, "count": 1}, "maximumBytes": 8, "maximumFiles": 1}
+            request = {"action": "reserve", "entry": {"id": instance, "browser": "a" * 64, "bytes": 8, "count": 1}, "maximumBytes": 8, "maximumFiles": 1,
+                       "browserPid": record["browser"]["pid"], "browserPort": port}
             code = f'''import json, pathlib, subprocess, sys, time
 def tx(value):
  p = subprocess.run([sys.executable, {str(HERE / 'browser-upload-store.py')!r}, {str(self.staging)!r}], input=json.dumps(value), text=True, capture_output=True)
@@ -184,6 +187,26 @@ m.transact(pathlib.Path({str(self.staging)!r}), {{"action":"reap"}})
         mutator.kill(); mutator.wait(timeout=3)
         self.store.transact(self.staging, {"action": "reap"})
         self.assertEqual(json.loads((self.staging / "ledger.json").read_text()), [])
+
+    def test_start_acknowledges_owned_browser_when_upload_reaper_is_contended(self):
+        self.staging.mkdir(mode=0o700)
+        with open(self.staging / "quota.lock", "w") as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            record, _port, _escaped = self.start_browser()
+            self.assertTrue(self.lifecycle.same_process(record["browser"]))
+
+    def test_launch_waits_for_short_lived_lock_holder(self):
+        root = self.lifecycle.directory()
+        ready = self.root / "launch-lock-ready"
+        holder = subprocess.Popen([sys.executable, "-c", f'''import fcntl,time,pathlib
+with open({str(root / "launch.lock")!r}, "w") as f:
+ fcntl.flock(f,fcntl.LOCK_EX); pathlib.Path({str(ready)!r}).touch(); time.sleep(.2)
+'''])
+        self.processes.append(holder)
+        self.wait_file(ready)
+        record, _port, _escaped = self.start_browser()
+        self.assertTrue(self.lifecycle.same_process(record["browser"]))
 
 
 if __name__ == "__main__":
