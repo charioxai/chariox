@@ -382,7 +382,16 @@ async function makeHarness(context, {
     root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, builderKeys,
   )
   const installRoot = join(root, "host")
-  if (path1Release) await mkdir(join(installRoot, "etc"), { recursive: true, mode: 0o755 })
+  if (path1Release) {
+    await mkdir(join(installRoot, "etc/systemd/system/chariox-rootless-docker.service.d"), {
+      recursive: true,
+      mode: 0o755,
+    })
+    await mkdir(join(installRoot, "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"), {
+      recursive: true,
+      mode: 0o755,
+    })
+  }
   const releases = join(installRoot, "usr/lib/chariox/releases")
   const currentRelease = join(releases, current.digest.slice("sha256:".length))
   await mkdir(releases, { recursive: true })
@@ -394,6 +403,19 @@ async function makeHarness(context, {
   await cp(current.rootfs, currentRelease, { recursive: true, preserveTimestamps: true })
   await symlink(`releases/${current.digest.slice("sha256:".length)}`, join(installRoot, "usr/lib/chariox/current"))
   await symlink("current/usr/lib/chariox/slice-build-context", join(installRoot, "usr/lib/chariox/slice-build-context"))
+  if (path1Release) {
+    // Match the release-owned host links created by install-image.sh for Path-1.
+    for (const [path, target] of [
+      ["etc/systemd/system/chariox-data-volume-admission.service",
+        "../../../usr/lib/chariox/current/etc/systemd/system/chariox-data-volume-admission.service"],
+      ["etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+        "../../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"],
+      ["etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+        "../../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"],
+    ]) {
+      await symlink(target, join(installRoot, path))
+    }
+  }
   const receiptPath = join(installRoot, receiptKind === "allocation_worker"
     ? "var/lib/chariox/disposable-worker/bootstrap-receipt.json"
     : "var/lib/chariox/managed/bootstrap-receipt.json")
