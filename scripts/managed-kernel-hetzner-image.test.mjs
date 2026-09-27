@@ -108,13 +108,16 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   const bypassCleanup = script.slice(bypassCleanupStart, bypassCleanupEnd)
   assert.match(bypassCleanup, /systemctl stop chariox-data-volume-admission\.service/)
   assert.match(bypassCleanup, /chariox-data-volume-admission\.service; do/)
-  assert.match(bypassCleanup, /if \[ "\$builder_services_stopped" -eq 1 \]; then\s+restore_path1_data_volume_dropins/)
+  assert.match(bypassCleanup, /if \[ "\$builder_services_stopped" -eq 1 \]; then[\s\S]*clear_owned_probe_root[\s\S]*restore_path1_data_volume_dropins/)
   const builderBypass = script.indexOf(
-    "bypass_path1_data_volume_dropins\nassert_path1_builder_storage_pristine\nsystemctl start chariox-rootless-docker.service",
+    "bypass_path1_data_volume_dropins\nassert_path1_builder_storage_pristine\n",
   )
   const builderStop = script.indexOf("systemctl stop chariox-rootless-docker.service", builderBypass)
-  const builderRestore = script.indexOf("restore_path1_data_volume_dropins\nif [ -e /var/lib/chariox-docker/data ]", builderStop)
+  const builderClaim = script.indexOf("claim_empty_probe_root /var/lib/chariox-docker/data", builderBypass)
+  const builderStart = script.indexOf("systemctl start chariox-rootless-docker.service", builderClaim)
+  const builderRestore = script.indexOf("restore_path1_data_volume_dropins\nclear_owned_probe_root /var/lib/chariox-docker/data", builderStop)
   assert.ok(builderBypass >= 0)
+  assert.ok(builderClaim > builderBypass && builderStart > builderClaim && builderStop > builderStart)
   assert.ok(builderStop > builderBypass)
   assert.ok(builderRestore > builderStop)
   const runtimeStateStart = script.indexOf("for state_directory in")

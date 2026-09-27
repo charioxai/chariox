@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { readFile, mkdtemp, mkdir, writeFile, rm, symlink, readdir, readlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -8,6 +8,93 @@ import test from 'node:test'
 const source = await readFile(new URL('./prepare-hetzner-image.sh', import.meta.url), 'utf8')
 const functions = source.slice(source.indexOf('assert_unmounted_probe_root()'), source.indexOf('assert_path1_unit_has_no_dropins()'))
 const linuxTest = process.platform === 'linux' ? test : test.skip
+async function runExit(t, body, scenario = '') {
+  const root = await mkdtemp(join(tmpdir(), 'chariox-probe-exit-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, 'data'))
+  for (const unit of ['chariox-rootless-docker', 'chariox-slice-disk-quota-allocator']) {
+    const dir = join(root, 'etc', `${unit}.service.d`)
+    await mkdir(dir, { recursive: true })
+    await symlink(`../../../../usr/lib/chariox/current/etc/systemd/system/${unit}.service.d/50-chariox-data-volume.conf`, join(dir, '50-chariox-data-volume.conf'))
+  }
+  const shell = source.slice(source.indexOf('fail()'), source.indexOf('\nif [ "$(id -u)"'))
+    .replaceAll('/etc/systemd/system/', `${root}/etc/`)
+    // Targets are signed relative strings, not fixture paths.
+    .replaceAll(`../../../../usr/lib/chariox/current${root}/etc/`, '../../../../usr/lib/chariox/current/etc/systemd/system/')
+    .replaceAll('/var/lib/chariox-docker/data', `${root}/data`)
+  const result = spawnSync('sh', ['-c', `set -eu
+path1_data_volume_dropins_bypassed=0
+managed_provider_topology=path1
+${shell}
+systemctl() {
+  printf '%s\\n' "$*" >> '${root}/services'
+  case "$1" in
+    stop) [ '${scenario}' != stop-failure ] ;;
+    show) [ '${scenario}' != state-error ] || return 1; if [ '${scenario}' = active ]; then echo active; else echo inactive; fi ;;
+    is-active) [ '${scenario}' = active ] ;;
+    *) return 0 ;;
+  esac
+}
+findmnt() { printf '/\\n'; }
+stat() { '${process.execPath}' -e 'const s=require("node:fs").statSync(process.argv[1]); console.log(s.dev+":"+s.ino)' "$3"; }
+bypass_path1_data_volume_dropins
+${body}`, 'test', root], { encoding: 'utf8', timeout: 10_000 })
+  return { root, result }
+}
+
+test('EXIT after a claimed probe failure clears only its data and preserves the original failure', async t => {
+  const { root, result } = await runExit(t, 'claim_empty_probe_root "$1/data"; touch "$1/data/probe-metadata"; exit 7')
+  assert.equal(result.status, 7, result.stderr)
+  assert.deepEqual(await readdir(join(root, 'data')), [])
+  assert.equal(await readlink(join(root, 'etc/chariox-rootless-docker.service.d/50-chariox-data-volume.conf')),
+    '../../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf')
+  const services = await readFile(join(root, 'services'), 'utf8')
+  for (const unit of ['chariox-rootless-docker', 'chariox-slice-disk-quota-allocator', 'chariox-data-volume-admission']) {
+    assert.ok(services.includes(`show --property=ActiveState --value ${unit}.service`))
+  }
+})
+
+test('EXIT before claim preserves inherited data', async t => {
+  const { root, result } = await runExit(t, 'touch "$1/data/inherited"; exit 7')
+  assert.equal(result.status, 7, result.stderr)
+  assert.deepEqual(await readdir(join(root, 'data')), ['inherited'])
+})
+
+test('failed empty-root claim never authorizes EXIT cleanup', async t => {
+  const { root, result } = await runExit(t, 'touch "$1/data/inherited"; claim_empty_probe_root "$1/data"')
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /pre-existing data/)
+  assert.deepEqual(await readdir(join(root, 'data')), ['inherited'])
+})
+
+for (const [name, mutation, diagnostic] of [
+  ['changed inode', 'mv "$1/data" "$1/original"; mkdir "$1/data"; touch "$1/data/unowned"', /identity changed/],
+  ['nested mount', 'findmnt() { printf "%s\\n" "$probe_root/nested"; }', /contains a mount/],
+  ['mount census failure', 'findmnt() { return 1; }', /could not inspect probe mounts/],
+]) {
+  test(`EXIT refuses ${name}, restores drop-ins and preserves the original failure`, async t => {
+    const { root, result } = await runExit(t, `claim_empty_probe_root "$1/data"; touch "$1/data/probe-metadata"; ${mutation}; exit 7`)
+    assert.equal(result.status, 7, result.stderr)
+    assert.match(result.stderr, diagnostic)
+    assert.ok((await readdir(join(root, 'data'))).length > 0)
+    await readlink(join(root, 'etc/chariox-rootless-docker.service.d/50-chariox-data-volume.conf'))
+  })
+}
+
+for (const scenario of ['active', 'state-error', 'stop-failure']) for (const exit of [0, 7]) {
+  test(`EXIT preserves probe data when ${scenario}, reporting failure from exit ${exit}`, async t => {
+    const { root, result } = await runExit(t, `claim_empty_probe_root "$1/data"; touch "$1/data/probe-metadata"; exit ${exit}`, scenario)
+    assert.equal(result.status, exit || 1, result.stderr)
+    assert.match(result.stderr, /storage services could not be stopped/)
+    assert.deepEqual(await readdir(join(root, 'data')), ['probe-metadata'])
+  })
+}
+
+test('EXIT mount refusal turns an otherwise successful exit into failure', async t => {
+  const { root, result } = await runExit(t, 'claim_empty_probe_root "$1/data"; touch "$1/data/probe-metadata"; findmnt() { return 1; }; exit 0')
+  assert.equal(result.status, 1, result.stderr)
+  assert.deepEqual(await readdir(join(root, 'data')), ['probe-metadata'])
+})
 async function run(t, body) {
   const root = await mkdtemp(join(tmpdir(), 'chariox-probe-cleanup-'))
   t.after(() => rm(root, { recursive: true, force: true }))

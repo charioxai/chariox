@@ -4,6 +4,8 @@ set -eu
 MARKER_VALUE=managed-remote-kernels-image-builder-v1
 MARKER_PATH=/.chariox-managed-image-builder
 path1_data_volume_dropins_bypassed=0
+claimed_probe_root=
+probe_root_identity=
 
 fail() {
   echo "prepare-hetzner-image.sh: $*" >&2
@@ -24,6 +26,7 @@ claim_empty_probe_root() {
   probe_entry=$(find "$1" -mindepth 1 -print -quit) || fail "could not inspect probe data-root"
   [ -z "$probe_entry" ] || fail "probe data-root contains pre-existing data"
   probe_root_identity=$(stat -c '%d:%i' "$1") || fail "could not identify probe data-root"
+  claimed_probe_root=$1
 }
 
 clear_owned_probe_root() {
@@ -33,6 +36,7 @@ clear_owned_probe_root() {
   # Called only after the storage services are verified inactive. The directory
   # was empty before this invocation's probes; never erase an inherited store.
   find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + || fail "could not clear probe-owned engine metadata"
+  claimed_probe_root=
 }
 
 assert_path1_unit_has_no_dropins() {
@@ -127,8 +131,9 @@ restore_path1_data_volume_dropins() {
 
 cleanup_path1_data_volume_bypass() {
   builder_cleanup_status=$?
+  builder_cleanup_failed=0
   trap - EXIT HUP INT TERM
-  if [ "$path1_data_volume_dropins_bypassed" -eq 1 ]; then
+  if [ "$path1_data_volume_dropins_bypassed" -eq 1 ] || [ -n "${claimed_probe_root:-}" ]; then
     builder_services_stopped=1
     systemctl stop chariox-rootless-docker.service || builder_services_stopped=0
     systemctl stop chariox-slice-disk-quota-allocator.service || builder_services_stopped=0
@@ -137,16 +142,29 @@ cleanup_path1_data_volume_bypass() {
       chariox-rootless-docker.service \
       chariox-slice-disk-quota-allocator.service \
       chariox-data-volume-admission.service; do
-      if systemctl is-active --quiet "$builder_unit"; then
+      builder_active_state=$(systemctl show --property=ActiveState --value "$builder_unit") || builder_services_stopped=0
+      if [ "$builder_active_state" != inactive ]; then
         builder_services_stopped=0
       fi
     done
     if [ "$builder_services_stopped" -eq 1 ]; then
-      restore_path1_data_volume_dropins || builder_cleanup_status=1
+      if [ -n "${claimed_probe_root:-}" ]; then
+        # Isolation lets a failed ownership/mount check preserve the original
+        # failure and still attempt drop-in restoration. Never claim here.
+        if (clear_owned_probe_root "$claimed_probe_root"); then
+          claimed_probe_root=
+        else
+          builder_cleanup_failed=1
+        fi
+      fi
+      restore_path1_data_volume_dropins || builder_cleanup_failed=1
     else
       echo "prepare-hetzner-image.sh: Path-1 drop-ins remain bypassed because image-builder storage services could not be stopped" >&2
-      builder_cleanup_status=1
+      builder_cleanup_failed=1
     fi
+  fi
+  if [ "$builder_cleanup_status" -eq 0 ] && [ "$builder_cleanup_failed" -ne 0 ]; then
+    builder_cleanup_status=1
   fi
   exit "$builder_cleanup_status"
 }
