@@ -32,7 +32,7 @@ function usage() {
   return [
     "Usage: node scripts/managed-release-settlement-drill.mjs --builder NAME --container-id SHA256 --base-image IMAGE@sha256:DIGEST",
     "       [--scratch-parent ABSOLUTE_PATH] [--evidence-parent ABSOLUTE_PATH]",
-    "Requires an already-created, isolated Buildx docker-container builder with one running node, init enabled, network=none, and finite resource caps.",
+    "Requires an isolated, resource-capped Buildx builder and a digest-pinned base already in its cache; the drill does not seed or pull it, and network=none makes a cache miss fail offline.",
   ].join("\n")
 }
 
@@ -74,49 +74,108 @@ function runCommand(command, args, { cwd, timeoutMs = PROBE_TIMEOUT_MS, env = pr
       rejectPromise(error)
       return
     }
-    let stdout = ""
-    let stderr = ""
-    let bytes = 0
-    let finished = false
-    const finish = (value) => {
-      if (finished) return
-      finished = true
-      clearTimeout(timer)
-      resolvePromise(value)
-    }
-    const capture = (stream, destination) => {
-      stream.on("data", (chunk) => {
-        bytes += chunk.length
-        if (bytes > MAX_OUTPUT_BYTES) {
-          child.kill("SIGKILL")
-          finish({ status: null, signal: "SIGKILL", stdout, stderr, outputLimitExceeded: true })
-          return
-        }
-        if (destination === "stdout") stdout += chunk.toString("utf8")
-        else stderr += chunk.toString("utf8")
-      })
-    }
-    capture(child.stdout, "stdout")
-    capture(child.stderr, "stderr")
-    child.once("error", (error) => {
-      if (finished) return
-      finished = true
-      clearTimeout(timer)
-      rejectPromise(error)
-    })
-    child.once("close", (status, signal) => finish({ status, signal, stdout, stderr }))
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL")
-      finish({ status: null, signal: "SIGKILL", stdout, stderr, timedOut: true })
-    }, timeoutMs)
-    timer.unref?.()
+    resolvePromise(trackChild(child, timeoutMs).completion)
   })
+}
+
+function trackChild(child, timeoutMs) {
+  let stdout = ""
+  let stderr = ""
+  let outputBytes = 0
+  let timedOut = false
+  let outputLimitExceeded = false
+  let finished = false
+  let exitResult = null
+  let spawnError = null
+  let resolveCompletion
+  let drainScheduled = false
+  const timers = new Set()
+  const completion = new Promise((resolvePromise) => { resolveCompletion = resolvePromise })
+  const schedule = (delayMs, callback) => {
+    const timer = setTimeout(() => {
+      timers.delete(timer)
+      callback()
+    }, delayMs)
+    timers.add(timer)
+    return timer
+  }
+  const finish = (result) => {
+    if (finished) return
+    finished = true
+    for (const timer of timers) clearTimeout(timer)
+    timers.clear()
+    resolveCompletion({
+      stdout,
+      stderr,
+      timedOut,
+      outputLimitExceeded,
+      ...result,
+    })
+  }
+  const closeStreams = () => {
+    for (const stream of [child.stdout, child.stderr]) {
+      if (stream && !stream.destroyed) stream.destroy()
+    }
+  }
+  const scheduleBoundedDrain = () => {
+    if (drainScheduled || finished) return
+    drainScheduled = true
+    schedule(1_000, () => {
+      if (finished) return
+      closeStreams()
+      schedule(250, () => {
+        if (finished) return
+        if (exitResult) {
+          finish({ ...exitResult, reaped: true, streamsClosed: true, forcedPipeClose: true })
+        } else if (spawnError && child.pid == null) {
+          finish({ status: null, signal: null, error: spawnError.message, reaped: true, streamsClosed: true, forcedPipeClose: true })
+        } else {
+          finish({ status: null, signal: "unreaped", reaped: false, streamsClosed: true, forcedPipeClose: true })
+        }
+      })
+    })
+  }
+  const requestKill = (reason) => {
+    if (reason === "timeout") timedOut = true
+    if (reason === "output-limit") outputLimitExceeded = true
+    if (!finished) child.kill("SIGKILL")
+    scheduleBoundedDrain()
+  }
+  const collect = (stream, destination) => stream?.on("data", (chunk) => {
+    if (finished || outputLimitExceeded) return
+    outputBytes += chunk.length
+    if (outputBytes > MAX_OUTPUT_BYTES) {
+      requestKill("output-limit")
+      return
+    }
+    if (destination === "stdout") stdout += chunk.toString("utf8")
+    else stderr += chunk.toString("utf8")
+  })
+  collect(child.stdout, "stdout")
+  collect(child.stderr, "stderr")
+  child.once("error", (error) => {
+    spawnError = error
+    scheduleBoundedDrain()
+  })
+  child.once("exit", (status, signal) => {
+    exitResult = { status, signal }
+    scheduleBoundedDrain()
+  })
+  child.once("close", (status, signal) => finish({ status, signal, reaped: true, streamsClosed: true }))
+  const timeout = schedule(timeoutMs, () => requestKill("timeout"))
+  timeout.unref?.()
+  return {
+    completion,
+    get closed() { return finished },
+    terminate: requestKill,
+  }
 }
 
 async function checkedDocker(args, label, options = {}) {
   const result = await runCommand("docker", args, options)
   if (result.timedOut) throw new Error(`${label} exceeded its ${options.timeoutMs ?? PROBE_TIMEOUT_MS}ms deadline`)
   if (result.outputLimitExceeded) throw new Error(`${label} exceeded the output limit`)
+  if (!result.reaped || !result.streamsClosed) throw new Error(`${label} did not close and reap within its deadline`)
   if (result.status !== 0) {
     const detail = result.stderr.trim().slice(-2000)
     throw new Error(`${label} failed${detail ? `: ${detail}` : ""}`)
@@ -333,51 +392,26 @@ class DockerBuildxEngine {
 }
 
 function trackBuildClient(child, timeoutMs) {
-  let stdout = ""
-  let stderr = ""
-  let bytes = 0
-  let closed = false
-  let resolveCompletion
-  const completion = new Promise((resolvePromise) => { resolveCompletion = resolvePromise })
-  const finish = (result) => {
-    if (closed) return
-    closed = true
-    clearTimeout(timer)
-    resolveCompletion({ ...result, stdout, stderr })
-  }
-  const collect = (stream, key) => stream.on("data", (chunk) => {
-    bytes += chunk.length
-    if (bytes > MAX_OUTPUT_BYTES) {
-      child.kill("SIGKILL")
-      finish({ status: null, signal: "SIGKILL", outputLimitExceeded: true })
-    } else if (key === "stdout") stdout += chunk.toString("utf8")
-    else stderr += chunk.toString("utf8")
-  })
-  collect(child.stdout, "stdout")
-  collect(child.stderr, "stderr")
-  child.once("error", (error) => finish({ status: null, signal: null, error: error.message }))
-  child.once("close", (status, signal) => finish({ status, signal }))
-  const timer = setTimeout(() => {
-    child.kill("SIGKILL")
-    finish({ status: null, signal: "SIGKILL", timedOut: true })
-  }, timeoutMs)
-  timer.unref?.()
+  const tracked = trackChild(child, timeoutMs)
   return {
-    completion,
-    get closed() { return closed },
+    completion: tracked.completion,
+    get closed() { return tracked.closed },
     async interrupt() {
-      if (closed) return { ...(await completion), interrupted: false }
+      if (tracked.closed) return { ...(await tracked.completion), interrupted: false }
       const sent = child.kill("SIGINT")
-      const result = await Promise.race([
-        completion,
-        new Promise((resolvePromise) => setTimeout(() => resolvePromise(null), 5_000)),
-      ])
+      const waitForClose = async (waitMs) => {
+        let timer
+        const timed = new Promise((resolvePromise) => {
+          timer = setTimeout(() => resolvePromise(null), waitMs)
+        })
+        const result = await Promise.race([tracked.completion, timed])
+        clearTimeout(timer)
+        return result
+      }
+      const result = await waitForClose(5_000)
       if (result) return { ...result, interrupted: sent }
-      if (!closed) child.kill("SIGKILL")
-      const forced = await Promise.race([
-        completion,
-        new Promise((resolvePromise) => setTimeout(() => resolvePromise({ status: null, signal: "timeout" }), 2_000)),
-      ])
+      tracked.terminate("interrupt-timeout")
+      const forced = await waitForClose(2_000) ?? { status: null, signal: "unreaped", reaped: false, streamsClosed: false }
       return { ...forced, interrupted: sent, forced: true }
     },
   }
@@ -422,7 +456,7 @@ async function removeOwnedDirectory(owned, timeoutMs = CLEANUP_TIMEOUT_MS) {
   if (remainingMs <= 0) throw new Error("owned scratch cleanup exceeded its deadline")
   const result = await runCommand("rm", ["-rf", "--", actual], { timeoutMs: remainingMs })
   if (result.timedOut) throw new Error("owned scratch cleanup exceeded its deadline")
-  if (result.status !== 0) throw new Error("owned scratch cleanup command failed")
+  if (!result.reaped || !result.streamsClosed || result.status !== 0) throw new Error("owned scratch cleanup command failed or did not close and reap")
 }
 
 function barrierFor({ builderName, invocationId, sourceCommit, sourceTree, sourceDigest, sourceDirectory, runDirectory, home, startedAt, historyBaseline, builderFingerprint }) {
@@ -611,7 +645,8 @@ async function scenario({ ownedScratch, evidence, home, builderName, baseImage, 
 
     const interrupted = await client.interrupt()
     client = null
-    if (!interrupted || !interrupted.interrupted || interrupted.timedOut || interrupted.outputLimitExceeded || interrupted.error || interrupted.signal === "timeout") {
+    if (!interrupted || !interrupted.interrupted || !interrupted.reaped || !interrupted.streamsClosed ||
+        interrupted.timedOut || interrupted.outputLimitExceeded || interrupted.error || interrupted.signal === "timeout" || interrupted.signal === "unreaped") {
       throw new Error("Buildx client did not stop within its bounded interruption deadline")
     }
     await record("client-interrupted", { status: interrupted.status, signal: interrupted.signal })

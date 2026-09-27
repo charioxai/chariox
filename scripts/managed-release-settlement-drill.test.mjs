@@ -41,18 +41,19 @@ function historyRow(ref, status, completed = false) {
 }
 
 async function fixtureRoots() {
-  const parent = await mkdtemp(join(tmpdir(), "managed-release-settlement-"))
-  const scratch = join(parent, "scratch-owned")
+  const temporaryParent = await mkdtemp(join(tmpdir(), "managed-release-settlement-"))
+  const parent = await realpath(temporaryParent)
+  const scratchToken = randomUUID()
+  const scratch = join(parent, `scratch-${scratchToken}`)
   const evidence = join(parent, "evidence-owned")
   const home = join(scratch, "home")
-  const scratchToken = randomUUID()
   await mkdir(scratch, { mode: 0o700 })
   await mkdir(evidence, { mode: 0o700 })
   await mkdir(home, { mode: 0o700 })
   await writeFile(join(scratch, OWNER_FILE), JSON.stringify({ kind: "scratch", token: scratchToken }), { mode: 0o600 })
   await writeFile(join(evidence, OWNER_FILE), JSON.stringify({ kind: "evidence", token: randomUUID() }), { mode: 0o600 })
   return {
-    parent,
+    parent: temporaryParent,
     home,
     scratch: { directory: scratch, token: scratchToken, kind: "scratch" },
     evidence: { directory: evidence, token: "unused", kind: "evidence" },
@@ -69,11 +70,16 @@ function fakeEngine(options = {}) {
   return {
     async inspectBuilder() {
       inspectCalls += 1
-      if (options.builderDrift && inspectCalls > 1) return { ...fingerprint, nodes: [{ ...fingerprint.nodes[0], pidsLimit: 127 }] }
+      if (options.builderDrift && inspectCalls > 1) {
+        return {
+          ...fingerprint,
+          nodes: [{ ...fingerprint.nodes[0], pidsLimit: 127 }],
+        }
+      }
       return structuredClone(fingerprint)
     },
     async historyList() {
-      return row ? `${JSON.stringify(row)}\n` : "",
+      return row ? `${JSON.stringify(row)}\n` : ""
     },
     async historyInspect(id, cwd) {
       assert.equal(id, "solve-001", "production reconciliation must inspect with a bare Buildx ID")
@@ -101,7 +107,7 @@ function fakeEngine(options = {}) {
           if (options.sourceDrift) await writeFile(join(sourceDirectory, "fixture.txt"), `mutated ${invocationId}\n`)
           row = historyRow(row.ref, "error", true)
           terminalInspect = { Status: "error", CompletedAt: new Date(Date.now() + 1_000).toISOString() }
-          return { status: 130, signal: null, interrupted: true }
+          return { status: 130, signal: null, interrupted: true, reaped: true, streamsClosed: true }
         },
       }
     },
