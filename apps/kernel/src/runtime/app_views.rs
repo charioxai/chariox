@@ -239,6 +239,12 @@ impl AppViews {
     }
 }
 
+/// Another Room command holds the slice's exclusive operation slot; the
+/// refusal text comes from the slice environment store.
+pub(crate) fn slice_busy(error: &str) -> bool {
+    error.contains("already has an active")
+}
+
 /// Projects the Room again after a view's first call. Another Room command
 /// may hold the slice briefly, so a busy refusal is retried every `pause`
 /// until `window` ends. False when it gave up: the caller un-marks the Tabs,
@@ -256,10 +262,7 @@ where
     loop {
         match reconcile().await {
             Ok(()) => return true,
-            Err(error)
-                if tokio::time::Instant::now() < deadline
-                    && error.contains("already has an active") =>
-            {
+            Err(error) if tokio::time::Instant::now() < deadline && slice_busy(&error) => {
                 tokio::time::sleep(pause).await;
             }
             Err(_) => return false,
@@ -379,8 +382,14 @@ mod reconnect_tests {
         assert!(reproject(settles, Duration::from_secs(5), pause).await);
         assert_eq!(attempts.get(), 3);
         assert!(!reproject(busy, Duration::from_millis(20), pause).await);
-        let failed = || async { Err::<(), _>("slice is gone".to_owned()) };
+        // Any other refusal gives up at once, without a retry.
+        let failures = std::cell::Cell::new(0);
+        let failed = || {
+            failures.set(failures.get() + 1);
+            async { Err::<(), _>("slice is gone".to_owned()) }
+        };
         assert!(!reproject(failed, Duration::from_secs(5), pause).await);
+        assert_eq!(failures.get(), 1);
     }
 
     #[test]
