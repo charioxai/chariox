@@ -465,7 +465,7 @@ function mountDataRoot(commands, device, filesystemUuid, waitForUdev = false) {
 
 function discoverVolumeDevice(commands, serial) {
   const lsblk = parseJson(commands.run("/usr/bin/lsblk", [
-    "--bytes", "--json", "--output", "PATH,TYPE,SERIAL,MODEL,SIZE,RO,FSTYPE,UUID,MOUNTPOINTS,PKNAME,MAJ:MIN",
+    "--bytes", "--json", "--tree", "--output", "PATH,TYPE,SERIAL,MODEL,SIZE,RO,FSTYPE,UUID,MOUNTPOINTS,PKNAME,MAJ:MIN",
   ]), "lsblk")
   const rootSource = commands.run("/usr/bin/findmnt", ["--noheadings", "--output", "SOURCE", "--target", "/"])
   const rootSourcePath = commands.run("/usr/bin/realpath", ["-e", rootSource])
