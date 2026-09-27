@@ -307,6 +307,16 @@ fn prepare_managed_kernel(
     } else {
         None
     };
+    prepare_managed_kernel_with_documents(config, cloud, now, receipt, envelope)
+}
+
+fn prepare_managed_kernel_with_documents(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    now: DateTime<Utc>,
+    receipt: Option<BootstrapReceipt>,
+    envelope: Option<ManagedBootstrapEnvelope>,
+) -> Result<PreparedManagedKernel, DaemonError> {
     if state::disposable_worker_release_override_path(&config.receipt_path)?.exists() {
         return Err(bootstrap_error(
             "disposable worker release override has no matching worker receipt",
@@ -353,6 +363,17 @@ fn prepare_managed_kernel(
         release,
         confirmation,
     })
+}
+
+#[cfg(test)]
+fn prepare_managed_kernel_with_documents_for_test(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    now: DateTime<Utc>,
+    receipt: BootstrapReceipt,
+    envelope: ManagedBootstrapEnvelope,
+) -> Result<PreparedManagedKernel, DaemonError> {
+    prepare_managed_kernel_with_documents(config, cloud, now, Some(receipt), Some(envelope))
 }
 
 fn reconcile_legacy_confirmed_grant_binding(
