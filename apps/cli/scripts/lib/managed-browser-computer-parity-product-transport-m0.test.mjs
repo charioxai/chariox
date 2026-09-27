@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import "./managed-browser-computer-parity-product-entry.test.mjs"
 import test from "node:test"
 
 import {

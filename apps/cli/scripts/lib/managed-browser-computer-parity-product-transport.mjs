@@ -3,6 +3,8 @@ import { readdir, stat } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { createManagedParityObserverHooks } from "./managed-browser-computer-parity-observer-hooks.mjs"
 
+export const MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY = "chariox-managed-parity-product-transport-v1"
+
 const OPERATOR_ENDPOINT_ENV = "CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL"
 const TARGET_KERNEL_ENV = "CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF"
 const TARGET_MACHINE_ENV = "CHARIOX_MANAGED_PARITY_TARGET_MACHINE_REF"
