@@ -75,6 +75,22 @@ export async function runManagedBrowserComputerParityHarness({
 
   try {
     if (failure) throw failure
+    if (inspectorAuthorized) {
+      if (typeof inspector.begin !== "function"
+        || typeof inspector.observeCreated !== "function"
+        || typeof inspector.beforeRetire !== "function"
+        || typeof transport.setLifecycleObserver !== "function") {
+        throw new HarnessFailure("independent_inspector_lifecycle_required", "inspector.begin")
+      }
+      await runBoundedTransportStep(
+        { run: (_step, request, options) => inspector.begin(request, options) },
+        "inspector.begin",
+        { runId: config.runId, binding: { ...config.expected }, scope: "run_owned_resources" },
+        config.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS,
+        signal,
+      )
+      transport.setLifecycleObserver(inspector)
+    }
     preflight = await run("preflight", {
       resourceCeilings: { ...config.resourceCeilings },
     }, { bound: false })

@@ -219,6 +219,12 @@ test("a loader-proven independent inspector owns the final cleanup inventory", a
   const inspectorCalls = []
   const inspector = {
     authority: { kind: "independent-product-inspector", ...inspectorConfig },
+    async begin(input) {
+      assert.equal(injected.calls.length, 0, "baseline must precede all product operations")
+      inspectorCalls.push({ step: "begin", input })
+    },
+    async observeCreated() {},
+    async beforeRetire() {},
     async run(step, input) {
       inspectorCalls.push({ step, input })
       assert.equal(step, "cleanup.inspect")
@@ -226,6 +232,10 @@ test("a loader-proven independent inspector owns the final cleanup inventory", a
     },
   }
   const injected = transport()
+  injected.setLifecycleObserver = (observer) => {
+    assert.equal(inspectorCalls[0]?.step, "begin")
+    assert.equal(observer, inspector)
+  }
   const report = await runManagedBrowserComputerParityHarness({
     config: config({ inspector: inspectorConfig }),
     transport: injected,
@@ -234,8 +244,17 @@ test("a loader-proven independent inspector owns the final cleanup inventory", a
   })
   assert.equal(report.status, "passed")
   assert.equal(report.cleanup.independent, true)
-  assert.deepEqual(inspectorCalls.map(({ step }) => step), ["cleanup.inspect"])
+  assert.deepEqual(inspectorCalls.map(({ step }) => step), ["begin", "cleanup.inspect"])
   assert.equal(injected.calls.some(({ step }) => step === "cleanup.inspect"), false)
+
+  injected.calls.length = 0
+  inspector.begin = async () => { throw new Error("host baseline unavailable") }
+  const failed = await runManagedBrowserComputerParityHarness({
+    config: config({ inspector: inspectorConfig }), transport: injected,
+    inspector, inspectorVerification: verification,
+  })
+  assert.equal(failed.status, "failed")
+  assert.deepEqual(injected.calls.map(({ step }) => step), ["cleanup.perform"])
 })
 
 test("managed parity harness rejects a run id that could escape its evidence root", async () => {

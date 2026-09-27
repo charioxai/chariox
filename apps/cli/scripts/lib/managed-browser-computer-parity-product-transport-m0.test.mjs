@@ -866,6 +866,16 @@ test("persistence rejects request/response mismatch and stale saved-state identi
 
 test("production persistence defaults to authoritative slice save, stop, and restore requests", async () => {
   const { transport, client } = createCleanupTransport({ inventoryUnavailableWhenStopped: true })
+  const receipts = []
+  transport.setLifecycleObserver({
+    async observeCreated(receipt) { receipts.push(receipt) },
+    async beforeRetire(receipt) {
+      receipts.push(receipt)
+      const variant = Object.keys(receipt.request)[0]
+      assert.equal(client.requests.some((request) => Object.hasOwn(request, variant)), false,
+        "retirement must be inspected before the lifecycle request is sent")
+    },
+  })
   const binding = {
     kernelId: "kernel-1",
     machineId: "machine-1",
@@ -886,6 +896,11 @@ test("production persistence defaults to authoritative slice save, stop, and res
   assert.equal(result.sameRoom, true)
   assert.equal(result.sameEnvironment, true)
   assert.equal(result.sameProfile, true)
+  assert.deepEqual(receipts.map(({ kind }) => kind), [
+    "slice.create", "slice.start", "slice.persist", "slice.persist", "slice.restore",
+  ])
+  assert.equal(receipts.filter(({ kind }) => ["slice.start", "slice.restore"].includes(kind)).length, 2,
+    "the observer receives both generations even when the logical slice id stays the same")
   assert.deepEqual(result.persistenceMutations.map(({ action }) => action), ["save", "remove", "restore"])
   assert.deepEqual(client.requests.filter((request) => [
     "SaveSliceState", "StopSlice", "StartSlice", "GetSliceStateStatus",
@@ -1470,6 +1485,33 @@ function createCleanupTransport({
     activeAgentIds,
   }
 }
+
+test("observer failure after the actual create receipt preserves ownership and admits only cleanup", async () => {
+  const { transport, requests } = createCleanupTransport()
+  const observations = []
+  transport.setLifecycleObserver({
+    async observeCreated(receipt) {
+      observations.push(receipt)
+      assert.equal(receipt.sliceId, "slice-1")
+      assert.equal(Object.hasOwn(requests.at(-1), "CreateSlice"), true)
+      throw new Error("host census unavailable")
+    },
+    async beforeRetire(receipt) {
+      observations.push(receipt)
+      assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSlice")), false)
+    },
+  })
+  await assert.rejects(transport.run("selkies.create", {
+    runId: "run-1", kernelOwnedDefault: true, displayBackend: null,
+    binding: { kernelId: "kernel-1", machineId: "machine-1", roomId: "room-1", environmentId: "environment-1" },
+  }), /host census unavailable/)
+  await assert.rejects(transport.run("selkies.attach", {}), /host census unavailable/)
+  assert.equal(requests.some((request) => Object.hasOwn(request, "StartSlice")), false)
+  await assert.rejects(transport.run("cleanup.perform", {}), /host census unavailable/)
+  assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSlice")), true)
+  assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSession")), true)
+  assert.deepEqual(observations.map(({ kind }) => kind), ["slice.create", "run.cleanup"])
+})
 
 test("cleanup removes the owned Room after slice deletion and proves no public residue", async () => {
   const { transport, requests } = createCleanupTransport()
