@@ -5,6 +5,13 @@ import {
   SLICE_DISK_QUOTA_DATA_ROOT,
   SLICE_DISK_QUOTA_DOCKER_HOST,
 } from "./slice-disk-quota-contract.mjs"
+import {
+  assertProjectQuotaTreeMatches,
+  checkProjectQuotaTree,
+  parseProjectQuotaState,
+  readProjectQuotaIds,
+  readProjectQuotaRow,
+} from "./slice-disk-quota-xfs-readback.mjs"
 
 function fail(message) {
   throw new Error(message)
@@ -59,22 +66,6 @@ function readServiceUid(name) {
   return Number(uid)
 }
 
-function parseQuotaRow(output, projectId) {
-  const line = output.split("\n").map((row) => row.trim()).find((row) => row.startsWith(`${projectId} `) || row === String(projectId))
-  if (!line) return { projectId, found: false, usedBytes: 0, hardLimitBytes: 0 }
-  const fields = line.split(/\s+/)
-  if (fields.length < 4 || fields[0] !== String(projectId)) fail("XFS project quota readback is malformed")
-  const usedKiB = Number(fields[1])
-  const hardKiB = Number(fields[3])
-  if (!Number.isSafeInteger(usedKiB) || usedKiB < 0 || !Number.isSafeInteger(hardKiB) || hardKiB < 0) {
-    fail("XFS project quota usage or limit is malformed")
-  }
-  const usedBytes = usedKiB * 1024
-  const hardLimitBytes = hardKiB * 1024
-  if (!Number.isSafeInteger(usedBytes) || !Number.isSafeInteger(hardLimitBytes)) fail("XFS quota readback exceeds the safe integer range")
-  return { projectId, found: true, usedBytes, hardLimitBytes }
-}
-
 export function createSystemSliceDiskQuotaBackend({
   dataRoot = SLICE_DISK_QUOTA_DATA_ROOT,
   dockerUid = readServiceUid("chariox-docker"),
@@ -93,11 +84,8 @@ export function createSystemSliceDiskQuotaBackend({
         return { supported: false, reason: "managed DockerRootDir must be a dedicated XFS mount with project-quota enforcement" }
       }
       const state = runXfsQuota(mount.target, "state -p")
-      const lines = state.split(/\r?\n/)
-      const projectStateIndex = lines.findIndex((line) => line.includes("Project quota state"))
-      if (projectStateIndex < 0) return { supported: false, reason: "XFS project-quota state could not be read" }
-      const projectState = lines.slice(projectStateIndex).join("\n")
-      if (!projectState.includes("Accounting: ON") || !projectState.includes("Enforcement: ON")) {
+      const projectState = parseProjectQuotaState(state)
+      if (!projectState.accounting || !projectState.enforcement) {
         return { supported: false, reason: "XFS project quota accounting and enforcement are not both active" }
       }
       const xfsInfo = command("/usr/sbin/xfs_info", [mount.target], { env: { PATH: "/usr/bin:/usr/sbin:/bin:/sbin" } })
@@ -119,10 +107,9 @@ export function createSystemSliceDiskQuotaBackend({
     }
   }
 
-  function quotaRow(projectId) {
+  function quotaRow(projectId, required = false) {
     const current = requireSupported()
-    const output = runXfsQuota(current.mountpoint, `quota -p -b -n -N ${projectId}`)
-    return parseQuotaRow(output, projectId)
+    return readProjectQuotaRow(runXfsQuota, current.mountpoint, projectId, { required })
   }
 
   function requireSupported() {
@@ -196,10 +183,9 @@ export function createSystemSliceDiskQuotaBackend({
   function inspectQuotaTarget(paths, projectId) {
     const current = requireSupported()
     for (const path of paths) {
-      const projectCheck = runXfsQuota(current.mountpoint, `project -c -p ${path} ${projectId}`)
-      if (projectCheck.trim() !== "") fail("XFS project quota tree contains files without the reserved project ID")
+      assertProjectQuotaTreeMatches(runXfsQuota, current.mountpoint, path, projectId)
     }
-    return quotaRow(projectId)
+    return quotaRow(projectId, true)
   }
 
   function applyHardQuota({ storageClass, path, paths, projectId, limitBytes, state }) {
@@ -213,7 +199,7 @@ export function createSystemSliceDiskQuotaBackend({
     ))
     const before = quotaRow(projectId)
     const treeMatches = trustedPaths.every((targetPath) =>
-      runXfsQuota(current.mountpoint, `project -c -p ${targetPath} ${projectId}`).trim() === "",
+      checkProjectQuotaTree(runXfsQuota, current.mountpoint, targetPath, projectId),
     )
     const alreadyBound = treeMatches && before.found && before.hardLimitBytes === limitBytes
     if (!alreadyBound && !["absent", "created", "exited", "dead"].includes(state)) {
@@ -242,13 +228,7 @@ export function createSystemSliceDiskQuotaBackend({
 
   function projectIdsInUse() {
     const current = requireSupported()
-    const output = runXfsQuota(current.mountpoint, "report -p -n -N")
-    const ids = []
-    for (const line of output.split(/\r?\n/)) {
-      const match = /^\s*(\d+)\s+/.exec(line)
-      if (match) ids.push(Number(match[1]))
-    }
-    return ids
+    return readProjectQuotaIds(runXfsQuota, current.mountpoint)
   }
 
   function projectUsageBytes(projectId) {
