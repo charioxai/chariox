@@ -3524,6 +3524,8 @@ mod tests {
         config.user_config.artifacts.operational.index_path =
             Some(root.join("artifacts.db").display().to_string());
         config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
+        config.user_config.credential_vault.path =
+            root.join("vault/vault.json").display().to_string();
         config.daemon_id = target_kernel_id.to_string();
         config.host_machine_id = target_machine_id.to_string();
         config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
