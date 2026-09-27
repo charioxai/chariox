@@ -638,6 +638,11 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
   ]) {
     assert.ok(path1Unit.includes(required), `Path-1 unit is missing ${required}`)
   }
+  assert.equal(
+    path1Unit.split(/\r?\n/).find((line) => line.startsWith("Requires="))?.slice("Requires=".length).trim().split(/\s+/)[0],
+    "chariox-rootless-docker.service",
+    "release verifier must accept the required unit as the first Requires value",
+  )
   assert.doesNotMatch(path1Unit, /^Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/m)
   for (const forbidden of [
     "CHARIOX_MANAGED_PROVIDER_ISOLATION",
@@ -687,6 +692,11 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
   ]) {
     assert.ok(workerUnit.includes(required), `Path-1 worker unit is missing ${required}`)
   }
+  assert.equal(
+    workerUnit.split(/\r?\n/).find((line) => line.startsWith("Requires="))?.slice("Requires=".length).trim().split(/\s+/)[0],
+    "chariox-rootless-docker.service",
+    "release verifier must accept the required worker unit as the first Requires value",
+  )
   assert.doesNotMatch(workerUnit, /^Environment=CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH=/m)
 
   const admissionUnit = await readFile(

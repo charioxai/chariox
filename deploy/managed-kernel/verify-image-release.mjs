@@ -491,8 +491,10 @@ async function verifyImageRelease(
       if (hasDataVolumeAdmission) {
         const requiredRootless = lines.filter((line) => line.startsWith("Requires="))
         const workerRequiresRootless = workerLines.filter((line) => line.startsWith("Requires="))
-        if (requiredRootless.length !== 1 || !requiredRootless[0].split(/\s+/).includes("chariox-rootless-docker.service")
-          || workerRequiresRootless.length !== 1 || !workerRequiresRootless[0].split(/\s+/).includes("chariox-rootless-docker.service")) {
+        const rootlessRequirements = requiredRootless[0]?.slice("Requires=".length).trim().split(/\s+/) ?? []
+        const workerRootlessRequirements = workerRequiresRootless[0]?.slice("Requires=".length).trim().split(/\s+/) ?? []
+        if (requiredRootless.length !== 1 || !rootlessRequirements.includes("chariox-rootless-docker.service")
+          || workerRequiresRootless.length !== 1 || !workerRootlessRequirements.includes("chariox-rootless-docker.service")) {
           fail("storage-capable Path-1 supervisors must require rootless Docker")
         }
       }
