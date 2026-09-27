@@ -176,7 +176,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Partial (see verification) |
 | V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial: live remote TUI (`remote-tui/`) |
 | V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Partial (see verification) |
-| V-UX-07 | Freeform trigger | Web right-click and TUI slash-command drill. | Partial (see verification) |
+| V-UX-07 | Freeform trigger | Web right-click and TUI slash-command drill. | Implemented (see verification) |
 | V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (see verification) |
 | V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Partial (see verification) |
 | V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Partial (see verification) |
