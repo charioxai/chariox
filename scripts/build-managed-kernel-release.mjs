@@ -89,6 +89,7 @@ function signalProcessTree(child, signal) {
 
 function runCommand(command, args, {
   env,
+  cwd,
   timeoutMs,
   captureOutput = false,
   streamOutput = false,
@@ -97,6 +98,7 @@ function runCommand(command, args, {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
       env,
+      cwd,
       detached: process.platform !== "win32",
       stdio: captureOutput || streamOutput ? ["ignore", "pipe", "pipe"] : "inherit",
     })
@@ -396,11 +398,12 @@ function validateBuilderContainer(container, node) {
   }
 }
 
-async function dockerOutput(args, options, label, deadlineMs) {
+async function dockerOutput(args, options, label, deadlineMs, cwd) {
   const timeoutMs = deadlineMs - Date.now()
   if (timeoutMs <= 0) throw new Error(`${label} timed out`)
   const result = await runCommand("docker", args, {
     env: options.dockerEnvironment,
+    cwd,
     timeoutMs,
     captureOutput: true,
   })
@@ -447,12 +450,13 @@ async function listManagedBuildHistory(options, deadlineMs) {
   return parseBuildHistoryList(output)
 }
 
-async function inspectManagedBuildHistory(options, reference, deadlineMs) {
+async function inspectManagedBuildHistory(options, reference, deadlineMs, inspectionCwd) {
   const output = await dockerOutput(
     ["buildx", "history", "inspect", "--builder", options.builder, "--format", "json", reference],
     options,
     "docker buildx history inspect",
     deadlineMs,
+    inspectionCwd,
   )
   try {
     const record = JSON.parse(output)
@@ -481,7 +485,7 @@ async function reconcileInvocation(barrier, builder, options) {
     barrier,
     currentBuilderFingerprint: builder,
     historyList: () => listManagedBuildHistory(options, deadlineMs),
-    historyInspect: (reference) => inspectManagedBuildHistory(options, reference, deadlineMs),
+    historyInspect: (reference, inspectionCwd) => inspectManagedBuildHistory(options, reference, deadlineMs, inspectionCwd),
   })
 }
 

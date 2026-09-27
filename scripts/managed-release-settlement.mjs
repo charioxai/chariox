@@ -2,10 +2,11 @@ import { createHash, randomUUID } from "node:crypto"
 import { createReadStream } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
-import { lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
+import { link, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, writeFile } from "node:fs/promises"
 
 const BARRIER_SCHEMA_VERSION = 1
 const MAX_HISTORY_RECORDS = 16_384
+const MAX_BUILD_REFERENCE_LENGTH = 1024
 
 function builderKey(name) {
   return createHash("sha256").update(name).digest("hex")
@@ -68,7 +69,8 @@ function validateBarrier(barrier, builderName) {
       typeof barrier.pendingDirectory !== "string" || !isAbsolute(barrier.pendingDirectory) ||
       typeof barrier.startedAt !== "string" || !Number.isFinite(Date.parse(barrier.startedAt)) ||
       !Array.isArray(barrier.historyBaseline) || barrier.historyBaseline.length > MAX_HISTORY_RECORDS ||
-      barrier.historyBaseline.some((record) => typeof record !== "string" || !record || record.length > 256) ||
+      new Set(barrier.historyBaseline).size !== barrier.historyBaseline.length ||
+      barrier.historyBaseline.some((record) => typeof record !== "string" || !record || record.length > MAX_BUILD_REFERENCE_LENGTH) ||
       !barrier.builderFingerprint || typeof barrier.builderFingerprint !== "object" ||
       !Array.isArray(barrier.builderFingerprint.nodes) || barrier.builderFingerprint.nodes.length === 0) {
     throw new Error("unresolved build barrier is malformed")
@@ -100,6 +102,121 @@ async function readOwner(lockDirectory) {
   }
 }
 
+async function readReaper(reaperPath) {
+  try {
+    const reaper = parseJson(await readFile(reaperPath, "utf8"), "release builder reaper")
+    const keys = reaper && typeof reaper === "object" && !Array.isArray(reaper)
+      ? Object.keys(reaper).sort()
+      : []
+    if (!reaper || typeof reaper !== "object" || Array.isArray(reaper) ||
+        keys.join(",") !== "ownerPid,ownerToken,pid,token" ||
+        !Number.isSafeInteger(reaper.pid) || reaper.pid <= 0 ||
+        typeof reaper.token !== "string" || !/^[a-f0-9-]{36}$/.test(reaper.token) ||
+        !Number.isSafeInteger(reaper.ownerPid) || reaper.ownerPid <= 0 ||
+        typeof reaper.ownerToken !== "string" || !/^[a-f0-9-]{36}$/.test(reaper.ownerToken)) {
+      throw new Error("release builder reaper is malformed")
+    }
+    return reaper
+  } catch (error) {
+    if (isMissing(error)) return null
+    throw error
+  }
+}
+
+function sameOwner(left, right) {
+  return left?.pid === right?.pid && left?.token === right?.token
+}
+
+function sameReaper(left, right) {
+  return left?.pid === right?.pid && left?.token === right?.token &&
+    left?.ownerPid === right?.ownerPid && left?.ownerToken === right?.ownerToken
+}
+
+function reaperBelongsToOwner(reaper, owner) {
+  return reaper.ownerPid === owner.pid && reaper.ownerToken === owner.token
+}
+
+async function restoreReaperMarker(stalePath, reaperPath) {
+  try {
+    await link(stalePath, reaperPath)
+    await rm(stalePath, { force: false })
+  } catch {}
+}
+
+async function removeAbandonedReaperMarker(lockDirectory, owner, observedReaper) {
+  if (pidIsRunning(observedReaper.pid)) {
+    throw new Error("managed release builder lease is already being reclaimed")
+  }
+  if (!reaperBelongsToOwner(observedReaper, owner)) {
+    throw new Error("managed release builder lease changed during reclaim")
+  }
+
+  const reaperPath = join(lockDirectory, "reaper.json")
+  const currentOwner = await readOwner(lockDirectory)
+  const currentReaper = await readReaper(reaperPath)
+  if (!sameOwner(currentOwner, owner) || !sameReaper(currentReaper, observedReaper)) {
+    throw new Error("managed release builder lease changed during reclaim")
+  }
+
+  const stalePath = `${lockDirectory}.reaper-stale-${randomUUID()}`
+  try {
+    await rename(reaperPath, stalePath)
+  } catch {
+    throw new Error("managed release builder lease changed during reclaim")
+  }
+  let movedReaper
+  try {
+    movedReaper = await readReaper(stalePath)
+  } catch (error) {
+    await restoreReaperMarker(stalePath, reaperPath)
+    throw error
+  }
+  if (!sameReaper(movedReaper, observedReaper)) {
+    await restoreReaperMarker(stalePath, reaperPath)
+    throw new Error("managed release builder lease changed during reclaim")
+  }
+  if (pidIsRunning(movedReaper.pid)) {
+    await restoreReaperMarker(stalePath, reaperPath)
+    throw new Error("managed release builder lease is already being reclaimed")
+  }
+
+  const ownerAfterMove = await readOwner(lockDirectory)
+  if (!sameOwner(ownerAfterMove, owner)) {
+    await rm(stalePath, { force: false })
+    throw new Error("managed release builder lease changed during reclaim")
+  }
+  await rm(stalePath, { force: false })
+}
+
+async function removeReclaimedLeaseDirectory(staleDirectory, owner, reaper) {
+  const entries = (await readdir(staleDirectory)).sort()
+  if (entries.length !== 2 || entries[0] !== "owner.json" || entries[1] !== "reaper.json") {
+    throw new Error("managed release builder lease contains unexpected files")
+  }
+  const currentOwner = await readOwner(staleDirectory)
+  const currentReaper = await readReaper(join(staleDirectory, "reaper.json"))
+  if (!sameOwner(currentOwner, owner) || !sameReaper(currentReaper, reaper) ||
+      currentReaper.pid !== process.pid || pidIsRunning(owner.pid)) {
+    throw new Error("managed release builder lease changed during reclaim")
+  }
+  await rm(join(staleDirectory, "owner.json"), { force: false })
+  await rm(join(staleDirectory, "reaper.json"), { force: false })
+  await rmdir(staleDirectory)
+}
+
+async function releaseOwnedLeaseDirectory(lockDirectory, expectedOwner) {
+  const owner = await readOwner(lockDirectory)
+  if (!sameOwner(owner, expectedOwner)) return
+  const entries = await readdir(lockDirectory)
+  if (entries.length !== 1 || entries[0] !== "owner.json") {
+    throw new Error("managed release builder lease contains unexpected files")
+  }
+  const currentOwner = await readOwner(lockDirectory)
+  if (!sameOwner(currentOwner, expectedOwner)) return
+  await rm(join(lockDirectory, "owner.json"), { force: false })
+  await rmdir(lockDirectory)
+}
+
 export async function acquireManagedReleaseBuilderLease({ home = process.env.HOME ?? homedir(), builderName }) {
   if (typeof home !== "string" || !isAbsolute(home) || typeof builderName !== "string" || !builderName) {
     throw new Error("managed release state location or builder identity is malformed")
@@ -126,25 +243,39 @@ export async function acquireManagedReleaseBuilderLease({ home = process.env.HOM
       throw new Error("managed release builder lease is incomplete and cannot be reclaimed safely")
     }
     const reaperPath = join(lockDirectory, "reaper.json")
+    const abandonedReaper = await readReaper(reaperPath)
+    if (abandonedReaper) await removeAbandonedReaperMarker(lockDirectory, owner, abandonedReaper)
+
+    const currentOwner = await readOwner(lockDirectory)
+    if (!sameOwner(currentOwner, owner)) {
+      throw new Error("managed release builder lease changed during reclaim")
+    }
+    const reaper = {
+      pid: process.pid,
+      token: randomUUID(),
+      ownerPid: owner.pid,
+      ownerToken: owner.token,
+    }
     try {
-      await writeFile(reaperPath, JSON.stringify({ pid: process.pid, token: randomUUID() }), {
+      await writeFile(reaperPath, JSON.stringify(reaper), {
         flag: "wx",
         mode: 0o600,
       })
     } catch {
       throw new Error("managed release builder lease is already being reclaimed")
     }
-    const currentOwner = await readOwner(lockDirectory)
-    if (currentOwner?.pid !== owner.pid || currentOwner.token !== owner.token) {
+    const ownerWithMarker = await readOwner(lockDirectory)
+    const currentReaper = await readReaper(reaperPath)
+    if (!sameOwner(ownerWithMarker, owner) || !sameReaper(currentReaper, reaper)) {
       throw new Error("managed release builder lease changed during reclaim")
     }
-    const staleDirectory = `${lockDirectory}.stale-${randomUUID()}`
+    const staleDirectory = `${lockDirectory}.stale-${reaper.token}`
     try {
       await rename(lockDirectory, staleDirectory)
     } catch {
       throw new Error("managed release builder lease changed during reclaim")
     }
-    await rm(staleDirectory, { recursive: true, force: false })
+    await removeReclaimedLeaseDirectory(staleDirectory, owner, reaper)
     await mkdir(lockDirectory, { mode: 0o700 })
   }
 
@@ -155,7 +286,7 @@ export async function acquireManagedReleaseBuilderLease({ home = process.env.HOM
       mode: 0o600,
     })
   } catch (error) {
-    await rm(lockDirectory, { recursive: true, force: true })
+    try { await rmdir(lockDirectory) } catch {}
     throw error
   }
 
@@ -216,30 +347,52 @@ export async function acquireManagedReleaseBuilderLease({ home = process.env.HOM
       return path
     },
     async release() {
-      const owner = await readOwner(lockDirectory)
-      if (owner?.pid === process.pid && owner.token === token) {
-        await rm(lockDirectory, { recursive: true, force: false })
-      }
+      await releaseOwnedLeaseDirectory(lockDirectory, { pid: process.pid, token })
     },
   }
 }
 
 export function parseBuildHistoryList(output) {
-  const records = parseJson(output, "Buildx history list")
-  if (!Array.isArray(records) || records.length > MAX_HISTORY_RECORDS) {
-    throw new Error("Buildx history list is malformed or exceeds the record limit")
+  if (typeof output !== "string") throw new Error("Buildx history list is malformed")
+  const contents = output.trim()
+  if (!contents) return []
+  const rows = contents.split(/\r?\n/)
+  if (rows.length > MAX_HISTORY_RECORDS) {
+    throw new Error("Buildx history list exceeds the record limit")
   }
-  const ids = []
+  const refs = []
   const seen = new Set()
-  for (const record of records) {
-    if (!record || typeof record !== "object" || typeof record.ID !== "string" || !record.ID ||
-        record.ID.length > 256 || /[\s/]/.test(record.ID) || seen.has(record.ID)) {
-      throw new Error("Buildx history list contains an invalid or duplicate record ID")
+  for (const row of rows) {
+    const record = parseJson(row.trim(), "Buildx history list record")
+    if (!record || typeof record !== "object" || Array.isArray(record) ||
+        typeof record.ref !== "string" || !record.ref || record.ref.length > MAX_BUILD_REFERENCE_LENGTH ||
+        typeof record.name !== "string" || record.name.length > 4096 ||
+        typeof record.status !== "string" || !["completed", "error", "running"].includes(record.status.toLowerCase()) ||
+        typeof record.created_at !== "string" || !Number.isFinite(Date.parse(record.created_at)) ||
+        !Number.isSafeInteger(record.total_steps) || record.total_steps < 0 ||
+        !Number.isSafeInteger(record.completed_steps) || record.completed_steps < 0 ||
+        !Number.isSafeInteger(record.cached_steps) || record.cached_steps < 0) {
+      throw new Error("Buildx history list contains a malformed record")
     }
-    seen.add(record.ID)
-    ids.push(record.ID)
+    const [builder, node, id, ...extra] = record.ref.split("/")
+    if (!builder || !node || !id || extra.length !== 0 || /\s/.test(record.ref)) {
+      throw new Error("Buildx history list contains a malformed full reference")
+    }
+    const status = record.status.toLowerCase()
+    if (Object.hasOwn(record, "completed_at")) {
+      if (typeof record.completed_at !== "string" || !Number.isFinite(Date.parse(record.completed_at)) || status === "running") {
+        throw new Error("Buildx history list contains an invalid completion timestamp")
+      }
+    } else if (status !== "running") {
+      throw new Error("Buildx history list is missing a completion timestamp")
+    }
+    if (seen.has(record.ref)) {
+      throw new Error("Buildx history list contains a duplicate full reference")
+    }
+    seen.add(record.ref)
+    refs.push(record.ref)
   }
-  return ids
+  return refs
 }
 
 function parseBuildReference(reference, builderName, nodes) {
@@ -250,14 +403,27 @@ function parseBuildReference(reference, builderName, nodes) {
   return { builder, node, id }
 }
 
-function inspectMatchesInvocation(record, barrier) {
-  if (!record || typeof record !== "object" || Array.isArray(record) ||
-      record.Context !== barrier.sourceDirectory || record.Target !== "managed-release-artifacts" ||
-      typeof record.StartedAt !== "string" || !Number.isFinite(Date.parse(record.StartedAt))) return false
+function inspectInvocationBindingFailure(record, barrier, expectedId) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return "Buildx history inspect did not return a JSON record"
+  }
+  if (record.Ref !== expectedId) return "Buildx history inspect reference does not match the listed build"
+  if (typeof record.Context !== "string" || !record.Context ||
+      resolve(barrier.sourceDirectory, record.Context) !== barrier.sourceDirectory) {
+    return "Buildx history inspect is missing or mismatches the invocation source context binding"
+  }
+  if (record.Target !== "managed-release-artifacts") {
+    return "Buildx history inspect is missing or mismatches the managed release target binding"
+  }
+  if (typeof record.StartedAt !== "string" || !Number.isFinite(Date.parse(record.StartedAt))) {
+    return "Buildx history inspect is missing the invocation start timestamp"
+  }
   const startedAt = Date.parse(record.StartedAt)
   const invocationStart = Date.parse(barrier.startedAt)
-  if (startedAt < invocationStart - 5 * 60_000 || startedAt > Date.now() + 5 * 60_000) return false
-  return typeof record.Ref === "string" && record.Ref.length > 0 && record.Ref.length <= 256 && !/[\s/]/.test(record.Ref)
+  if (startedAt < invocationStart - 5 * 60_000 || startedAt > Date.now() + 5 * 60_000) {
+    return "Buildx history inspect start timestamp does not match the invocation"
+  }
+  return null
 }
 
 export function isTerminalBuildHistoryRecord(record) {
@@ -279,29 +445,52 @@ export async function reconcileManagedReleaseBuild({ barrier, currentBuilderFing
     if (!buildReference) {
       return { settled: false, reason: "build reference does not match the leased builder" }
     }
-    const record = await historyInspect(buildReference.id)
-    if (record.Ref !== buildReference.id || !inspectMatchesInvocation(record, barrier)) {
-      return { settled: false, reason: "build history identity does not match the invocation" }
-    }
+    const record = await historyInspect(buildReference.id, barrier.sourceDirectory)
+    const bindingFailure = inspectInvocationBindingFailure(record, barrier, buildReference.id)
+    if (bindingFailure) return { settled: false, reason: bindingFailure }
     return isTerminalBuildHistoryRecord(record)
       ? { settled: true, buildRef: barrier.buildRef, status: record.Status }
       : { settled: false, reason: "build history has no terminal status" }
   }
 
-  const ids = await historyList()
+  const refs = await historyList()
+  if (!Array.isArray(refs) || refs.length > MAX_HISTORY_RECORDS) {
+    return { settled: false, reason: "Buildx history list is malformed or exceeds the record limit" }
+  }
+  const currentRefs = new Set()
+  for (const ref of refs) {
+    if (!parseBuildReference(ref, barrier.builderName, barrier.builderFingerprint.nodes) || currentRefs.has(ref)) {
+      return { settled: false, reason: "Buildx history list reference does not match the leased builder or is duplicated" }
+    }
+    currentRefs.add(ref)
+  }
   const baseline = new Set(barrier.historyBaseline)
-  const newIds = ids.filter((id) => !baseline.has(id))
-  if (newIds.length === 0) return { settled: false, reason: "no completed history record is visible yet" }
+  for (const ref of baseline) {
+    if (!parseBuildReference(ref, barrier.builderName, barrier.builderFingerprint.nodes)) {
+      return { settled: false, reason: "Buildx history baseline does not match the leased builder" }
+    }
+  }
+  const newRefs = refs.filter((ref) => !baseline.has(ref))
+  if (newRefs.length === 0) return { settled: false, reason: "no new history record is visible yet" }
 
   const matches = []
-  for (const id of newIds) {
-    const record = await historyInspect(id)
-    if (record.Ref === id && inspectMatchesInvocation(record, barrier)) matches.push({ id, record })
+  const bindingFailures = []
+  for (const ref of newRefs) {
+    const buildReference = parseBuildReference(ref, barrier.builderName, barrier.builderFingerprint.nodes)
+    const record = await historyInspect(buildReference.id, barrier.sourceDirectory)
+    const bindingFailure = inspectInvocationBindingFailure(record, barrier, buildReference.id)
+    if (bindingFailure) bindingFailures.push(bindingFailure)
+    else matches.push({ ref, record })
   }
-  if (matches.length !== 1) return { settled: false, reason: "history does not identify exactly one invocation" }
-  const [{ id, record }] = matches
+  if (matches.length !== 1) {
+    const reason = matches.length === 0 && newRefs.length === 1
+      ? bindingFailures[0]
+      : "history does not identify exactly one invocation"
+    return { settled: false, reason }
+  }
+  const [{ ref, record }] = matches
   if (!isTerminalBuildHistoryRecord(record)) return { settled: false, reason: "build history has no terminal status" }
-  return { settled: true, buildRef: record.Ref, status: record.Status }
+  return { settled: true, buildRef: ref, status: record.Status }
 }
 
 export function validateBuildMetadata(metadata, builderName, nodes) {

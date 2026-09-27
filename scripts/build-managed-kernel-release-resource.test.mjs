@@ -6,6 +6,7 @@ import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { test } from "node:test"
+import { parseBuildHistoryList } from "./managed-release-settlement.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const builderScript = join(repositoryRoot, "scripts/build-managed-kernel-release.mjs")
@@ -15,6 +16,7 @@ const sourceBlob = "c".repeat(40)
 const builderName = "chariox-path1-release-20260926-2cpu8g"
 const buildkitNode = "chariox-path1-release-20260926-2cpu8g0"
 const buildkitEndpoint = "unix:///Users/miguel/.chariox/dev/browser-computer-use/path1-build-20260926.sock"
+const historyBuildId = "blix8xemjjxks864hv4fmtwj0"
 const memoryGiB = 1024 ** 3
 
 function stateDirectory(home) {
@@ -138,17 +140,21 @@ fi
 if [ "$1" = buildx ] && [ "$2" = history ] && [ "$3" = ls ]; then
   [ "$4" = --builder ] && [ "$5" = '${builderName}' ] || exit 101
   [ "$6" = --format ] && [ "$7" = json ] && [ "$8" = --no-trunc ] || exit 102
-  if [ ! -f "$bin_dir/build-started" ]; then printf '[]\\n'; exit 0; fi
+  if [ ! -f "$bin_dir/build-started" ]; then exit 0; fi
   case "$scenario" in
     timeout-unreadable) exit 103 ;;
-    timeout-terminal|interrupt-terminal|restart-resolved)
-      build_id=$(cat "$bin_dir/build-id")
-      printf '[{"ID":"%s"}]\\n' "$build_id"
+    timeout-terminal|interrupt-terminal|restart-resolved|timeout-inspect-missing-context|timeout-inspect-missing-target)
+      build_ref=$(cat "$bin_dir/build-ref")
+      created_at=$(cat "$bin_dir/build-started-at")
+      completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      printf '{"ref":"%s","name":"source/apps/kernel/slice-linux-docker/docker (rust-builder)","status":"Completed","created_at":"%s","completed_at":"%s","total_steps":24,"completed_steps":24,"cached_steps":0}\\n' "$build_ref" "$created_at" "$completed_at"
       ;;
     timeout-wrong-reference)
-      printf '[{"ID":"wrong-reference-id"}]\\n'
+      created_at=$(cat "$bin_dir/build-started-at")
+      completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      printf '{"ref":"${builderName}/${buildkitNode}/wrongreferenceid0123456789ab","name":"source/apps/kernel/slice-linux-docker/docker (rust-builder)","status":"Completed","created_at":"%s","completed_at":"%s","total_steps":24,"completed_steps":24,"cached_steps":0}\\n' "$created_at" "$completed_at"
       ;;
-    *) printf '[]\\n' ;;
+    *) exit 0 ;;
   esac
   exit 0
 fi
@@ -157,8 +163,8 @@ if [ "$1" = buildx ] && [ "$2" = history ] && [ "$3" = inspect ]; then
   [ "$6" = --format ] && [ "$7" = json ] || exit 105
   reference=$8
   build_ref=$(cat "$bin_dir/build-ref")
-  context_path=$(cat "$bin_dir/build-context")
   started_at=$(cat "$bin_dir/build-started-at")
+  printf '%s\\n' "$PWD" >> "$bin_dir/history-inspect-cwds"
   history_ref=\${build_ref##*/}
   case "$scenario" in
     timeout-wrong-reference) history_ref='different-reference-id' ;;
@@ -167,8 +173,15 @@ if [ "$1" = buildx ] && [ "$2" = history ] && [ "$3" = inspect ]; then
     timeout-metadata-running) status=running; completed_at='' ;;
     *) status=completed; completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) ;;
   esac
-  printf '{"Ref":"%s","Context":"%s","Target":"managed-release-artifacts","StartedAt":"%s","CompletedAt":"%s","Status":"%s"}\\n' \
-    "$history_ref" "$context_path" "$started_at" "$completed_at" "$status"
+  context_field='"Context":".",'
+  target_field='"Target":"managed-release-artifacts",'
+  completion_field=
+  if [ -n "$completed_at" ]; then completion_field='"CompletedAt":"'"$completed_at"'",'; fi
+  case "$scenario" in
+    timeout-inspect-missing-context) context_field= ;;
+    timeout-inspect-missing-target) target_field= ;;
+  esac
+  printf '{"Name":"source/apps/kernel/slice-linux-docker/docker (rust-builder)","Ref":"%s",%s%s"StartedAt":"%s",%s"Duration":100,"Status":"%s","KeepGitDir":false,"NumCompletedSteps":24,"NumTotalSteps":24,"NumCachedSteps":0,"Config":{}}\\n' "$history_ref" "$context_field" "$target_field" "$started_at" "$completion_field" "$status"
   exit 0
 fi
 if [ "$1" = buildx ] && [ "$2" = build ]; then
@@ -180,9 +193,8 @@ if [ "$1" = buildx ] && [ "$2" = build ]; then
     context_path=$argument
     previous=$argument
   done
-  run_directory=$(dirname "$context_path")
-  build_id=\${run_directory##*/run-}
-  build_ref='${builderName}/${buildkitNode}'"/$build_id"
+  build_id='${historyBuildId}'
+  build_ref='${builderName}/${buildkitNode}/'"$build_id"
   printf '%s\\n' "$context_path" > "$bin_dir/build-context"
   printf '%s\\n' "$build_id" > "$bin_dir/build-id"
   printf '%s\\n' "$build_ref" > "$bin_dir/build-ref"
@@ -247,7 +259,7 @@ exit 98
       await writeFile(join(bin, "inspect-count"), "0")
       await writeFile(trace, "")
     },
-    run(extraArguments = [], includeBuilder = true, executionTimeoutMs) {
+    run(extraArguments = [], includeBuilder = true, executionTimeoutMs, cwd) {
       return spawnSync(process.execPath, [
         builderScript,
         "--source-repository", source,
@@ -259,6 +271,7 @@ exit 98
       ], {
         encoding: "utf8",
         timeout: executionTimeoutMs,
+        cwd,
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
@@ -304,6 +317,17 @@ async function waitForFile(path, timeoutMs = 5_000) {
   }
   throw new Error(`timed out waiting for fixture marker ${path}`)
 }
+
+test("Buildx 0.30.1 history ls parses lowercase newline-delimited full references", () => {
+  const firstRef = `${builderName}/${buildkitNode}/${historyBuildId}`
+  const first = '{"cached_steps":0,"completed_at":"2026-09-26T19:03:38.396206506Z","completed_steps":24,"created_at":"2026-09-26T18:09:56.258036278Z","name":"source/apps/kernel/slice-linux-docker/docker (rust-builder)","ref":"' + firstRef + '","status":"Completed","total_steps":24}'
+  const secondRef = `${builderName}/${buildkitNode}/blix8xemjjxks864hv4fmtwj1`
+  const second = first.replace(firstRef, secondRef)
+  assert.deepEqual(parseBuildHistoryList(""), [])
+  assert.deepEqual(parseBuildHistoryList(first), [firstRef])
+  assert.deepEqual(parseBuildHistoryList(`${first}\n${second}`), [firstRef, secondRef])
+  assert.throws(() => parseBuildHistoryList('[{"ID":"blix8xemjjxks864hv4fmtwj0"}]'))
+})
 
 function waitForChild(child, timeoutMs = 10_000) {
   return new Promise((resolvePromise, reject) => {
@@ -458,7 +482,7 @@ test("managed release build requires a bounded, already-running Buildx builder b
   assert.equal(trace[2], `buildx history ls --builder ${builderName} --format json --no-trunc`)
   assert.ok(trace[3].startsWith(`buildx build --builder ${builderName} --pull --platform linux/amd64 --target managed-release-artifacts --metadata-file `), trace[3])
   assert.ok(trace[4].startsWith(`buildx history inspect --builder ${builderName} --format json `), trace[4])
-  assert.match(trace[4].slice(`buildx history inspect --builder ${builderName} --format json `.length), /^[a-f0-9-]{36}$/)
+  assert.equal(trace[4].slice(`buildx history inspect --builder ${builderName} --format json `.length), historyBuildId)
   assert.equal(trace[5], `buildx inspect ${builderName}`)
   assert.ok(trace[6].startsWith(`--host ${buildkitEndpoint} inspect --type container --format `), trace[6])
   assert.doesNotMatch(trace.join("\n"), /--bootstrap|buildx create|buildx stop|buildx rm/)
@@ -497,6 +521,8 @@ test("managed release build preserves its durable barrier when history is absent
     "timeout-unreadable",
     "timeout-metadata-running",
     "timeout-wrong-reference",
+    "timeout-inspect-missing-context",
+    "timeout-inspect-missing-target",
   ]) {
     const root = await mkdtemp(join(tmpdir(), `chariox-managed-build-${scenario}-`))
     context.after(() => rm(root, { recursive: true, force: true }))
@@ -540,9 +566,12 @@ test("managed release restart keeps the builder leased until the exact prior sou
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-restart-barrier-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
+  const callerOne = join(root, "caller-one")
+  const callerTwo = join(root, "caller-two")
+  await Promise.all([mkdir(callerOne), mkdir(callerTwo)])
   await fixture.configure({ scenario: "timeout-still-running" })
 
-  const first = fixture.run(["--build-timeout-seconds", "1"])
+  const first = fixture.run(["--build-timeout-seconds", "1"], true, undefined, callerOne)
   assert.equal(first.status, 1, first.stderr)
   const barrierPath = builderBarrierPath(fixture.home)
   const barrier = JSON.parse(await readFile(barrierPath, "utf8"))
@@ -551,7 +580,7 @@ test("managed release restart keeps the builder leased until the exact prior sou
 
   await fixture.configure({ scenario: "restart-resolved" })
   await writeFile(originalSourceFile, "tampered source\n")
-  const changedSource = fixture.run()
+  const changedSource = fixture.run([], true, undefined, callerTwo)
   assert.equal(changedSource.status, 1, changedSource.stderr)
   assert.match(changedSource.stderr, /retained source does not match its invocation digest/)
   assert.equal(await readFile(barrierPath).then(() => true, () => false), true)
@@ -559,19 +588,22 @@ test("managed release restart keeps the builder leased until the exact prior sou
 
   await writeFile(originalSourceFile, originalSource)
   await fixture.configure({ scenario: "restart-resolved", containerOutput: builderContainer({ id: "f".repeat(64) }) })
-  const changedBuilder = fixture.run()
+  const changedBuilder = fixture.run([], true, undefined, callerTwo)
   assert.equal(changedBuilder.status, 1, changedBuilder.stderr)
   assert.match(changedBuilder.stderr, /unresolved prior build: builder fingerprint changed/)
   assert.equal(await readFile(barrierPath).then(() => true, () => false), true)
   assert.doesNotMatch(await readFile(fixture.trace, "utf8"), /buildx build/)
 
   await fixture.configure({ scenario: "restart-resolved" })
-  const recovered = fixture.run()
+  const recovered = fixture.run([], true, undefined, callerTwo)
   assert.equal(recovered.status, 0, recovered.stderr)
   const trace = (await readFile(fixture.trace, "utf8")).trim().split("\n")
   const oldHistoryInspect = trace.findIndex((entry) => entry.startsWith(`buildx history inspect --builder ${builderName}`))
   const nextBuild = trace.findIndex((entry) => entry.startsWith(`buildx build --builder ${builderName}`))
   assert.ok(oldHistoryInspect >= 0 && oldHistoryInspect < nextBuild, trace.join("\n"))
+  const inspectedDirectories = (await readFile(join(fixture.bin, "history-inspect-cwds"), "utf8")).trim().split("\n")
+  assert.equal(inspectedDirectories[0], barrier.sourceDirectory)
+  assert.notEqual(inspectedDirectories[0], callerTwo)
   assert.equal(await readFile(barrierPath).then(() => true, () => false), false)
   assert.equal(await readFile(originalSourceFile).then(() => true, () => false), false)
   assert.deepEqual((await readdir(fixture.output)).sort(), [
