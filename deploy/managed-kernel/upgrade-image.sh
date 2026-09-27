@@ -361,6 +361,30 @@ sync_path1_data_volume_unit_links() {
   return 1
 }
 
+stop_path1_runtime_services() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  path1_docker_uid=$(id -u chariox-docker) || return 1
+  case "$path1_docker_uid" in ''|0|*[!0-9]*) return 1 ;; esac
+  systemctl stop chariox-rootless-docker.service || return 1
+  systemctl stop "user@$path1_docker_uid.service" || return 1
+  systemctl stop chariox-slice-disk-quota-allocator.service || return 1
+  systemctl stop chariox-data-volume-admission.service || return 1
+}
+
+start_path1_runtime_services() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  path1_docker_uid=$(id -u chariox-docker) || return 1
+  case "$path1_docker_uid" in ''|0|*[!0-9]*) return 1 ;; esac
+  # The allocator Requires the non-persistent admission oneshot. Starting it
+  # explicitly re-runs admission after upgrade, before rootless Docker starts.
+  systemctl start chariox-slice-disk-quota-allocator.service || return 1
+  systemctl start chariox-rootless-docker.service || return 1
+  systemctl is-active --quiet chariox-slice-disk-quota-allocator.service || return 1
+  systemctl is-active --quiet chariox-rootless-docker.service || return 1
+  systemctl is-active --quiet "user@$path1_docker_uid.service" || return 1
+  mountpoint --quiet /var/lib/chariox-docker/data || return 1
+}
+
 atomic_receipt() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-file "$1" "$receipt_path"
 }
@@ -519,8 +543,8 @@ rollback_transaction() {
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-protocol-transition \
     "$chariox_root/$previous_target" "$previous_protocol" \
     "$releases_root/${target_digest#sha256:}" "$target_protocol" || return 1
-  if ! systemctl stop "$service_name"; then
-    echo "managed kernel rollback could not stop the kernel service" >&2
+  if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
+    echo "managed kernel rollback could not stop the kernel or Path-1 storage services" >&2
     return 1
   fi
   resume_home_migration || return 1
@@ -537,6 +561,7 @@ rollback_transaction() {
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   systemctl daemon-reload || return 1
   assert_path1_units_have_no_dropins || return 1
+  start_path1_runtime_services || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
   systemctl start "$service_name" || return 1
   active_previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
@@ -850,11 +875,11 @@ node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
 pending_transaction=
 transaction_active=1
 
-if ! systemctl stop "$service_name"; then
+if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   if rollback_transaction; then
-    echo "managed kernel service could not be stopped; restored previous managed kernel release" >&2
+    echo "managed kernel or Path-1 storage services could not be stopped; restored previous managed kernel release" >&2
   else
-    echo "managed kernel service could not be stopped; rollback remains pending" >&2
+    echo "managed kernel or Path-1 storage services could not be stopped; rollback remains pending" >&2
   fi
   exit 1
 fi
@@ -898,6 +923,7 @@ fi
 write_phase activated
 if ! systemctl daemon-reload \
   || ! assert_path1_units_have_no_dropins \
+  || ! start_path1_runtime_services \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
   || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then

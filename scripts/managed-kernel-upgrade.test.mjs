@@ -233,6 +233,9 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const attestation = join(rootfs, "usr/lib/chariox/build-attestation.json")
   const attestationSignature = join(rootfs, "usr/lib/chariox/build-attestation.sig")
   const builderKey = join(rootfs, "usr/lib/chariox/builder-public-key")
+  const dataVolumeAdmissionService = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service")
+  const rootlessDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf")
+  const allocatorDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf")
   await put(kernel, `#!/bin/sh\nif [ "\$1" = "--print-local-daemon-protocol-version" ]; then echo ${protocol}; exit 0; fi\nexit 1\n`, 0o755)
   await put(supervisor, `#!/bin/sh\necho supervisor-${label}\n`, 0o755)
   await put(managedService, `[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n# ${label}\n`)
@@ -248,6 +251,15 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const sourceCommit = createHash("sha1").update(`commit-${label}`).digest("hex")
   const sourceTree = createHash("sha1").update(`tree-${label}`).digest("hex")
   if (builderKeys) {
+    for (const sourceFile of [
+      "chariox-data-volume-admission.mjs",
+      "slice-data-volume-device.mjs",
+      "slice-data-volume-protected-io.mjs",
+      "slice-disk-quota-xfs-readback.mjs",
+    ]) {
+      const path = `apps/kernel/slice-linux-docker/${sourceFile}`
+      await put(join(context, path), await readFile(join(repositoryRoot, path)))
+    }
     const relay = join(context, "apps/kernel/slice-linux-docker/prebuilt/chariox-relay")
     await put(relay, `#!/bin/sh\necho relay-${label}\n`, 0o755)
     const attestationBytes = Buffer.from(JSON.stringify({
@@ -293,6 +305,15 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
     const source = join(rootfs, path)
     await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-path1-managed-bootstrap.service")))
     artifactSpecs.push(["chariox-path1-managed-bootstrap.service", path, source, "file"])
+    for (const [name, path, source] of [
+      ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", dataVolumeAdmissionService],
+      ["chariox-rootless-docker.path1-data-volume.conf", "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", rootlessDataVolumeDropIn],
+      ["chariox-slice-disk-quota-allocator.path1-data-volume.conf", "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", allocatorDataVolumeDropIn],
+    ]) {
+      const destination = join(rootfs, path)
+      await put(destination, await readFile(source))
+      artifactSpecs.push([name, path, destination, "file"])
+    }
   }
   for (const [name, path, source, type] of artifactSpecs) {
     artifacts.push({ name, path, sha256: type === "tree" ? await sha256Tree(source) : await sha256File(source) })
@@ -471,6 +492,10 @@ if [ "\${MANAGED_UPGRADE_TEST_ROOTLESS:-0}" = 1 ] \
   printf '0\n'
   exit 0
 fi
+if [ "\${1:-}" = "-u" ] && [ "\${2:-}" = "chariox-docker" ]; then
+  printf '1001\n'
+  exit 0
+fi
 exec /usr/bin/id "$@"
 `, 0o755)
   await put(join(bin, "install"), `#!/bin/bash
@@ -532,6 +557,8 @@ if [ "$1" = "daemon-reload" ]; then
 fi
 presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
+  case "\${2:-}" in
+    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
   if [ -f "$HARNESS_STATE/write-legacy-home-on-stop" ]; then
     legacy_home="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home"
     mkdir -p "$legacy_home"
@@ -539,7 +566,15 @@ if [ "$1" = "stop" ]; then
     rm -f -- "$HARNESS_STATE/write-legacy-home-on-stop"
   fi
   rm -f -- "$presence"
+      ;;
+  esac
 fi
+if [ "$1" = "start" ] && [ "$2" = "chariox-rootless-docker.service" ] \
+  && [ "\${CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-}" = path1 ]; then
+  touch "$HARNESS_STATE/data-volume-mounted"
+fi
+case "\${2:-}" in
+  chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
 if [ "$1" = "start" ]; then
   if [ -f "$HARNESS_STATE/skip-presence-once" ]; then
     rm -f -- "$HARNESS_STATE/skip-presence-once"
@@ -581,14 +616,28 @@ if [ "$1" = "start" ]; then
     fi
   fi
 fi
-if [ "$1" = "is-active" ] && [ -f "$HARNESS_STATE/fail-health-once" ]; then
-  rm -f "$HARNESS_STATE/fail-health-once"
-  exit 1
-fi
-if [ "$1" = "is-active" ] && [ -f "$HARNESS_STATE/fail-health-always" ]; then
-  exit 1
+    ;;
+esac
+if [ "$1" = "is-active" ]; then
+  case "\${3:-}" in
+    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
+      if [ -f "$HARNESS_STATE/fail-health-once" ]; then
+        rm -f "$HARNESS_STATE/fail-health-once"
+        exit 1
+      fi
+      if [ -f "$HARNESS_STATE/fail-health-always" ]; then
+        exit 1
+      fi
+      ;;
+  esac
 fi
 exit 0
+`, 0o755)
+  await put(join(bin, "mountpoint"), `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$HARNESS_STATE/mountpoint.log"
+[ "\${1:-}" = "--quiet" ] && [ "\${2:-}" = "/var/lib/chariox-docker/data" ] \
+  && [ -f "$HARNESS_STATE/data-volume-mounted" ]
 `, 0o755)
   await put(join(bin, "node"), `#!/bin/sh
 set -eu
@@ -858,6 +907,19 @@ test("Path-1 upgrade starts the selected supervisor after both effective units p
   assert.ok(calls.includes("show --property=DropInPaths --value chariox-path1-managed-bootstrap.service"), calls.join("\n"))
   assert.ok(calls.includes("show --property=DropInPaths --value chariox-disposable-worker-bootstrap.service"), calls.join("\n"))
   assert.ok(calls.includes("daemon-reload"), calls.join("\n"))
+  const findCall = (call) => calls.indexOf(call)
+  assert.ok(findCall("stop chariox-path1-managed-bootstrap.service") < findCall("stop chariox-rootless-docker.service"), calls.join("\n"))
+  assert.ok(findCall("stop chariox-rootless-docker.service") < findCall("stop user@1001.service"), calls.join("\n"))
+  assert.ok(findCall("stop user@1001.service") < findCall("stop chariox-slice-disk-quota-allocator.service"), calls.join("\n"))
+  assert.ok(findCall("stop chariox-slice-disk-quota-allocator.service") < findCall("stop chariox-data-volume-admission.service"), calls.join("\n"))
+  assert.ok(findCall("daemon-reload") < findCall("start chariox-rootless-docker.service"), calls.join("\n"))
+  assert.ok(findCall("start chariox-rootless-docker.service") < findCall("start chariox-path1-managed-bootstrap.service"), calls.join("\n"))
+  assert.ok(calls.includes("start chariox-slice-disk-quota-allocator.service"), calls.join("\n"))
+  assert.ok(calls.includes("start chariox-rootless-docker.service"), calls.join("\n"))
+  assert.ok(calls.includes("is-active --quiet chariox-slice-disk-quota-allocator.service"), calls.join("\n"))
+  assert.ok(calls.includes("is-active --quiet chariox-rootless-docker.service"), calls.join("\n"))
+  assert.ok(calls.includes("is-active --quiet user@1001.service"), calls.join("\n"))
+  assert.equal((await readFile(join(harness.state, "mountpoint.log"), "utf8")).trim(), "--quiet /var/lib/chariox-docker/data")
   assert.ok(calls.includes("start chariox-path1-managed-bootstrap.service"), calls.join("\n"))
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.target.digest.slice("sha256:".length)}`)
