@@ -37,7 +37,7 @@ fn sample_event_connection(
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 361);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 362);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -247,6 +247,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                     name: "charioxai/chariox".to_string(),
                     kind: "repository".to_string(),
                     connection_scope: "charioxai/chariox".to_string(),
+                    filter: None,
                 }],
                 next_cursor: Some("opaque-next-resource-cursor".to_string()),
             },
@@ -292,10 +293,11 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonResponse::EventConnectionResourcesPage {
             page: crate::local::EventGeneratorResourcePage {
                 resources: vec![crate::local::EventGeneratorResource {
-                    id: "repository-1".to_string(),
-                    name: "charioxai/chariox".to_string(),
-                    kind: "repository".to_string(),
-                    connection_scope: "charioxai/chariox".to_string(),
+                    id: "C123".to_string(),
+                    name: "#general".to_string(),
+                    kind: "slack_channel".to_string(),
+                    connection_scope: "T123".to_string(),
+                    filter: Some(serde_json::json!({"event.channel": "C123"})),
                 }],
                 next_cursor: None,
             },
@@ -364,7 +366,13 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             .pointer("/responses/3/EventGeneratorResourcesPage/page/resources/0/connection_scope"),
         Some(&serde_json::json!("charioxai/chariox"))
     );
+    // A resource's filter is optional and omitted when absent (protocol 362).
+    assert_eq!(
+        snapshot.pointer("/responses/3/EventGeneratorResourcesPage/page/resources/0/filter"),
+        None
+    );
     let serialized = serde_json::to_string(&snapshot).unwrap();
+    assert!(serialized.contains(r#""connection_scope":"T123","filter":{"event.channel":"C123"}"#));
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),

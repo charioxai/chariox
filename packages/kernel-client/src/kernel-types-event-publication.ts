@@ -82,6 +82,8 @@ export type EventGeneratorResource = {
   name: string
   kind: string
   connection_scope: string
+  /** Narrows a binding to this resource when others share its scope. */
+  filter?: Record<string, unknown> | null
 }
 
 export type EventGeneratorResourcePage = {

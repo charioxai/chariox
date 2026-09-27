@@ -169,7 +169,7 @@ export async function executeWorkflowEventPublicationCommand(
       "page",
     )
     const lines = page.resources.map((resource) =>
-      `${resource.connection_scope}  ${resource.name}  ${resource.kind}`,
+      `${resource.connection_scope}  ${resource.name}  ${resource.kind}${resource.filter ? `  filter ${JSON.stringify(resource.filter)}` : ""}`,
     )
     if (page.next_cursor) lines.push(`next cursor: ${page.next_cursor}`)
     return {

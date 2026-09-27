@@ -140,4 +140,6 @@ pub use workspace::*;
 /// Version 361 adds `GetAppSet`: the owner's App set, a versioned description
 /// of each active installation's release, approved capabilities and
 /// configuration (`AppSet`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 361;
+/// Version 362 adds an optional `filter` to event generator resources: the
+/// filter that narrows a binding to a resource sharing its connection scope.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 362;
