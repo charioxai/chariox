@@ -615,6 +615,32 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].wake.id, "soon");
     assert_eq!(due[0].owner_id, "alice");
+    // A failed delivery is retried later, and the App's log says why.
+    store
+        .app_wakes(AppWakeOperation::Failed {
+            wake: due[0].clone(),
+            now_ms: 10_000,
+            reason: "app_handler_failed: INVALID_ARGUMENT: bad occurrence".into(),
+        })
+        .unwrap();
+    let logs = store
+        .app_logs("alice", &due[0].installation_id, 0, 8)
+        .unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].message, "A due wake failed; it will be retried");
+    assert_eq!(logs[0].fields["wake_id"], "soon");
+    assert_eq!(logs[0].fields["attempt"], 1);
+    assert_eq!(logs[0].fields["kernel"], true);
+    assert!(logs[0].fields["reason"].as_str().unwrap().contains("bad occurrence"));
+    assert_eq!(
+        store
+            .app_wakes(AppWakeOperation::Due {
+                now_ms: 10_000,
+                limit: 8
+            })
+            .unwrap(),
+        AppWakeOutcome::Due(Vec::new())
+    );
     store
         .app_wakes(AppWakeOperation::Delivered(due[0].clone()))
         .unwrap();

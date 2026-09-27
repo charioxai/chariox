@@ -36,6 +36,16 @@ pub(crate) enum AppWorkerError {
     Invalid,
 }
 
+/// Why a wake or event delivery did not complete.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DeliveryError {
+    #[error(transparent)]
+    Worker(#[from] AppWorkerError),
+    /// The App's handler answered with an error: its code and message.
+    #[error("app_handler_failed: {0}")]
+    Handler(String),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Starting,

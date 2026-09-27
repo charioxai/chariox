@@ -1,7 +1,7 @@
 //! Shared validated invocation transport. Runtime MCP and future App view action
 //! dispatch use this after their existing authenticated operation-policy check.
 
-use super::{AppWorkerError, AppWorkerLease, LiveWorker, Phase};
+use super::{AppWorkerError, AppWorkerLease, DeliveryError, LiveWorker, Phase};
 use chariox_app_runtime::{
     app_catalog::{CallerContext, CatalogError, OwnedValidatedToolCall},
     wire::Message,
@@ -166,6 +166,12 @@ fn peer_error(error: PeerError) -> AppWorkerError {
     }
 }
 
+/// The handler's own error, bounded: it may reach the App's log.
+fn handler_error(error: &chariox_app_runtime::wire::RemoteError) -> DeliveryError {
+    let text = format!("{}: {}", error.code, error.message);
+    DeliveryError::Handler(text.chars().take(240).collect())
+}
+
 impl AppWorkerLease {
     /// Deliver one kernel-owned wake. Success means the App's wake handler
     /// returned; delivery is at least once and never implies an external effect.
@@ -174,7 +180,7 @@ impl AppWorkerLease {
         wake: &chariox_app_runtime::managed_state::Wake,
         overdue: bool,
         timeout: Duration,
-    ) -> Result<(), AppWorkerError> {
+    ) -> Result<(), DeliveryError> {
         self.0.available()?;
         self.touch();
         let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
@@ -190,7 +196,11 @@ impl AppWorkerLease {
                 outcome: chariox_app_runtime::wire::Outcome::Success(_),
                 ..
             } => Ok(()),
-            _ => Err(AppWorkerError::Unavailable),
+            Message::Response {
+                outcome: chariox_app_runtime::wire::Outcome::Failure(failure),
+                ..
+            } => Err(handler_error(&failure.error)),
+            _ => Err(AppWorkerError::Unavailable.into()),
         }
     }
 
@@ -200,7 +210,7 @@ impl AppWorkerLease {
         &self,
         item: &chariox_app_runtime::app_inbox::InboxItem,
         timeout: Duration,
-    ) -> Result<(), AppWorkerError> {
+    ) -> Result<(), DeliveryError> {
         self.0.available()?;
         self.touch();
         let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
@@ -216,7 +226,11 @@ impl AppWorkerLease {
                 outcome: chariox_app_runtime::wire::Outcome::Success(_),
                 ..
             } => Ok(()),
-            _ => Err(AppWorkerError::Unavailable),
+            Message::Response {
+                outcome: chariox_app_runtime::wire::Outcome::Failure(failure),
+                ..
+            } => Err(handler_error(&failure.error)),
+            _ => Err(AppWorkerError::Unavailable.into()),
         }
     }
 }

@@ -6,10 +6,22 @@ use rusqlite::Connection;
 use std::sync::mpsc;
 
 pub(crate) enum AppWakeOperation {
-    Due { now_ms: u64, limit: usize },
+    Due {
+        now_ms: u64,
+        limit: usize,
+    },
     Delivered(DueWake),
-    Failed { wake: DueWake, now_ms: u64 },
-    Postponed { wake: DueWake, until_ms: u64 },
+    /// Retried later, or dropped after the last attempt; the App's log
+    /// records why either way.
+    Failed {
+        wake: DueWake,
+        now_ms: u64,
+        reason: String,
+    },
+    Postponed {
+        wake: DueWake,
+        until_ms: u64,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -52,13 +64,43 @@ pub(super) fn execute(connection: &mut Connection, request: AppWakeRequest) {
         AppWakeOperation::Delivered(wake) => {
             managed_state::complete_wake(connection, &wake).map(|()| AppWakeOutcome::Recorded)
         }
-        AppWakeOperation::Failed { wake, now_ms } => {
-            managed_state::defer_wake(connection, &wake, now_ms).map(|_| AppWakeOutcome::Recorded)
-        }
+        AppWakeOperation::Failed {
+            wake,
+            now_ms,
+            reason,
+        } => failed(connection, &wake, now_ms, &reason),
         AppWakeOperation::Postponed { wake, until_ms } => {
             managed_state::postpone_wake(connection, &wake, until_ms)
                 .map(|()| AppWakeOutcome::Recorded)
         }
     };
     let _ = request.response.send(result);
+}
+
+fn failed(
+    connection: &mut Connection,
+    wake: &DueWake,
+    now_ms: u64,
+    reason: &str,
+) -> Result<AppWakeOutcome, StateError> {
+    let transaction = connection.transaction()?;
+    let retried = managed_state::defer_wake(&transaction, wake, now_ms)?;
+    let mut fields = serde_json::Map::new();
+    fields.insert("wake_id".into(), wake.wake.id.clone().into());
+    fields.insert("attempt".into(), (wake.attempts + 1).into());
+    fields.insert("reason".into(), reason.into());
+    super::app_logs::append_kernel_notice_in(
+        &transaction,
+        &wake.owner_id,
+        &wake.installation_id,
+        now_ms,
+        if retried {
+            "A due wake failed; it will be retried"
+        } else {
+            "A due wake failed too often and was dropped"
+        },
+        fields,
+    )?;
+    transaction.commit()?;
+    Ok(AppWakeOutcome::Recorded)
 }

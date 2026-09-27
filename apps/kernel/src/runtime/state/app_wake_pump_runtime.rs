@@ -81,11 +81,15 @@ pub(super) fn after_delivery(delivered: bool, update_pending: bool, now_ms: u64)
     }
 }
 
-fn wake_record(wake: DueWake, settle: Settle, now_ms: u64) -> AppWakeOperation {
+fn wake_record(wake: DueWake, settle: Settle, now_ms: u64, reason: &str) -> AppWakeOperation {
     match settle {
         Settle::Delivered => AppWakeOperation::Delivered(wake),
         Settle::Postponed(until_ms) => AppWakeOperation::Postponed { wake, until_ms },
-        Settle::Failed => AppWakeOperation::Failed { wake, now_ms },
+        Settle::Failed => AppWakeOperation::Failed {
+            wake,
+            now_ms,
+            reason: reason.to_owned(),
+        },
     }
 }
 
@@ -183,7 +187,7 @@ impl KernelRuntimeState {
             .await;
         let mut records: Vec<_> = planned
             .into_iter()
-            .map(|(wake, settle)| wake_record(wake, settle, now_ms))
+            .map(|(wake, settle)| wake_record(wake, settle, now_ms, "the App could not start"))
             .collect();
         let control = self.app_control().clone();
         for wake in deliver {
@@ -200,16 +204,21 @@ impl KernelRuntimeState {
             };
             let delivered = lease
                 .deliver_wake(&wake.wake, overdue, DELIVERY_TIMEOUT)
-                .await
-                .is_ok();
-            let update_pending = !delivered
+                .await;
+            let update_pending = delivered.is_err()
                 && self
                     .app_update_pending(&wake.owner_id, &wake.installation_id)
                     .await;
+            let reason = delivered
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_default();
             records.push(wake_record(
                 wake,
-                after_delivery(delivered, update_pending, now_ms),
+                after_delivery(delivered.is_ok(), update_pending, now_ms),
                 now_ms,
+                &reason,
             ));
         }
         let store = self.owned.durable_state_store.clone();
@@ -346,7 +355,7 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|(_, settle)| *settle == Settle::Failed));
         assert!(matches!(
-            wake_record(due("a", "w"), Settle::Failed, 100),
+            wake_record(due("a", "w"), Settle::Failed, 100, "the App could not start"),
             AppWakeOperation::Failed { now_ms: 100, .. }
         ));
     }
