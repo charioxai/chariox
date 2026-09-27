@@ -279,3 +279,6 @@ mod tests {
         .is_err());
     }
 }
+
+#[cfg(test)]
+mod data_volume_observation_tests;
