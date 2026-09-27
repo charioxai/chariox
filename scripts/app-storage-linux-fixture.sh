@@ -110,7 +110,24 @@ wait "$storage_waiter" || true
 systemctl reset-failed chariox-app-storage.service || true
 systemctl start chariox-app-storage.service
 run_test chariox-storage-actual hosted_recovery_preserves_data_after_abrupt_helper_exit
+# The same abrupt exit while a staged update holds its data: the committed
+# generation must start again on its own data.
+rm -f /var/lib/chariox/home/storage-crash-ready
+run_test chariox-storage-crash hosted_crash_fixture_holds_a_staged_update_until_the_helper_is_killed > "$storage_scratch/evidence/update-crash-holder.log" 2>&1 &
+storage_waiter=$!
+for storage_attempt in $(seq 1 300); do
+  [[ ! -f /var/lib/chariox/home/storage-crash-ready ]] || break
+  kill -0 "$storage_waiter" 2>/dev/null || { wait "$storage_waiter"; exit 1; }
+  sleep 0.1
+done
+[[ -f /var/lib/chariox/home/storage-crash-ready ]]
+systemctl kill --kill-whom=all --signal=SIGKILL chariox-app-storage.service
+systemctl stop chariox-storage-crash.service
+wait "$storage_waiter" || true
+systemctl reset-failed chariox-app-storage.service || true
+systemctl start chariox-app-storage.service
+run_test chariox-storage-actual hosted_an_update_interrupted_by_a_helper_crash_rolls_back_to_committed_data
 systemctl stop chariox-managed-bootstrap.service chariox-app-storage.service
 if findmnt --noheadings --raw --output TARGET | grep -F '/var/lib/chariox-app-storage/' ; then exit 1; fi
 if losetup --list --noheadings --output BACK-FILE | grep -F '/var/lib/chariox-app-storage/' ; then exit 1; fi
-printf 'Production helper quota, host-to-kernel mount propagation, noexec, persistence, abrupt exit recovery and exact reclamation passed.\n'
+printf 'Production helper quota, host-to-kernel mount propagation, noexec, persistence, abrupt exit recovery (also mid-update) and exact reclamation passed.\n'
