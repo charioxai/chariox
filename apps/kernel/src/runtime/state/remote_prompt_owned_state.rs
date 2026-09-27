@@ -475,13 +475,13 @@ impl KernelRuntimeOwnedState {
                     if active.is_some() {
                         let (active_prompt, queued_prompts) =
                             self.prompt_state_owner.state_parts(&session, agent_id);
-                        self.mirror_prompt_owner_agent_state(
+                        self.mirror_prompt_owner_agent_state_with_activity_mutation(
                             session_id,
                             agent_id,
                             active_prompt,
                             queued_prompts,
+                            activity_mutation,
                         )?;
-                        activity_mutation.record();
                     }
                     if let Some(active_prompt) = active.as_ref() {
                         let _ = self.record_started_user_prompt(

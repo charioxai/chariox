@@ -161,13 +161,13 @@ impl KernelRuntimeOwnedState {
                         if let Some(started_next) = started_next.as_ref() {
                             let (active_prompt, queued_prompts) =
                                 self.prompt_state_owner.state_parts(&session, agent_id);
-                            self.mirror_prompt_owner_agent_state(
+                            self.mirror_prompt_owner_agent_state_with_activity_mutation(
                                 session_id,
                                 agent_id,
                                 active_prompt,
                                 queued_prompts,
+                                activity_mutation,
                             )?;
-                            activity_mutation.record();
                             let source_attachment_id = self.promoted_prompt_source_attachment_id(
                                 session_id,
                                 started_next.source_attachment_id(),
