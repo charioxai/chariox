@@ -61,7 +61,7 @@ function fakeAdmission({
         return args[1].startsWith("/dev/disk/by-uuid/") ? "/dev/sdb" : args[1]
       }
       if (command === "/usr/bin/lsblk") return mounted ? `${DATA_ROOT}\n` : ""
-      if (command === "/usr/sbin/blockdev") return `${blockdevSizeBytes}\n`
+      if (command === "/usr/sbin/blockdev") return String(blockdevSizeBytes)
       if (command === "/usr/sbin/wipefs") return filesystem ? `${filesystem}\n` : ""
       if (command === "/usr/sbin/mkfs.xfs") {
         filesystem = "xfs"
@@ -156,6 +156,9 @@ test("rejects duplicate volumes, partitions, mounts, and the root disk", () => {
 test("fresh matching blank volume is formatted once, bound, mounted, and quota-verified across reboot", () => {
   const fake = fakeAdmission()
   const result = admitDataVolume(fake)
+  assert.ok(fake.calls.some(([command, args]) =>
+    command === "/usr/bin/lsblk" && args.includes("--json") && args.includes("--tree"),
+  ))
   assert.deepEqual(result, {
     admitted: true,
     serial: SERIAL,
