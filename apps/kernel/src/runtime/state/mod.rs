@@ -356,6 +356,7 @@ mod workflow_artifact_request_runtime_state;
 mod workflow_blocked_claim_retry;
 mod workflow_code_request_runtime_state;
 mod workflow_code_request_support;
+mod workflow_claim_release;
 mod workflow_completion_owned_state;
 mod workflow_completion_snapshot_owned_state;
 mod workflow_console_tool;
