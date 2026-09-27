@@ -48,7 +48,23 @@ test("Path-1 services keep bootstrap PATH while provider lookup uses the isolate
     /env::split_paths\(&path_var\)[\s\S]*?\.find\(\|path\| is_executable_file\(path\)\)/)
   assert.ok(providerPathSource.includes(".env_clear()"), "login profile probe must start with a cleared environment")
   assert.ok(providerPathSource.includes('.env("PATH", BOOTSTRAP_PATH)'), "probe starts from the system bootstrap PATH")
-  assert.ok(providerPathSource.includes("Only the validated PATH string crosses back"))
+  const probeStart = indexOf(providerPathSource, "fn probe_login_path(home: &Path)", "isolated login PATH probe")
+  const probeEnd = indexOf(providerPathSource, "\n#[cfg(not(unix))]\nfn probe_login_path", "non-Unix login PATH probe", probeStart)
+  const probe = providerPathSource.slice(probeStart, probeEnd)
+  assert.ok(probe.includes('.arg("--login")'), "the resolver must read the user's login PATH")
+  assert.ok(probe.includes('.current_dir("/")'), "the login probe must use a fixed working directory")
+  assert.ok(probe.includes(".env_clear()"), "the probe must clear inherited environment variables")
+  assert.ok(probe.includes('.env("PATH", BOOTSTRAP_PATH)'), "only the system bootstrap PATH seeds the probe")
+  assert.ok(probe.includes("parse_login_path(&output)"), "probe output must pass through the PATH validator")
+
+  const parserStart = indexOf(providerPathSource, "fn parse_login_path(output: &[u8])", "login PATH output parser")
+  const parserEnd = indexOf(providerPathSource, "\n#[cfg(unix)]\nfn stop_probe", "login probe cleanup", parserStart)
+  const parser = providerPathSource.slice(parserStart, parserEnd)
+  assert.ok(parser.includes(".rposition("), "the parser must locate the framed probe value")
+  assert.ok(parser.includes('.strip_suffix(b"\\0")'), "the parser must require a terminated PATH frame")
+  assert.ok(parser.includes("framed.len() > MAX_PROVIDER_PATH_BYTES || framed.contains(&0)"),
+    "the parser must reject oversized or embedded-NUL PATH values")
+  assert.ok(parser.includes("OsString::from_vec(framed.to_vec())"), "only the validated PATH frame is returned")
 })
 
 test("Path-1 role units do not inherit shared-host provider sandbox controls", () => {
@@ -247,16 +263,48 @@ test("upgrade verifies signed current, staged, and already-published releases be
   const stagedVerify = indexOf(upgradeSource, '"$pending_release" "$expected_new_digest" "$next_trusted_public_key"', "staged release verification")
   const activation = indexOf(upgradeSource, 'atomic_symlink "releases/$release_name" "$current_link"', "upgrade current activation")
   const transaction = indexOf(upgradeSource, 'pending_transaction=$chariox_root/.managed-kernel-upgrade.pending', "transaction preparation")
-  const stop = indexOf(upgradeSource, 'if ! systemctl stop "$service_name"; then', "service stop", transaction)
+  const stop = indexOf(
+    upgradeSource,
+    'if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then',
+    "kernel and Path-1 storage stop",
+    transaction,
+  )
 
   assert.ok(currentVerify < imageVerify)
   assert.ok(imageVerify < publishedVerify)
   assert.ok(imageVerify < stagedVerify)
+  assert.ok(currentVerify < stop, "the current release signature is checked before services stop")
+  assert.ok(publishedVerify < stop, "the already-published release signature is checked before services stop")
+  assert.ok(stagedVerify < stop, "the staged release signature is checked before services stop")
   assert.ok(publishedVerify < activation)
   assert.ok(stagedVerify < activation)
   assert.ok(imageVerify < stop)
   assert.ok(stop < activation)
   assert.ok(upgradeSource.includes('node "$script_root/managed-kernel-upgrade-state.mjs" atomic-symlink "$1" "$2"'))
+
+  const storageStop = upgradeSource.match(/stop_path1_runtime_services\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  assert.ok(storageStop, "Path-1 upgrade must define its storage service stop sequence")
+  assert.ok(storageStop.includes('[ "$managed_provider_topology" = path1 ] || return 0'),
+    "shared-host upgrades must leave Path-1 storage services alone")
+  const storageStopCommands = [
+    "systemctl stop chariox-rootless-docker.service",
+    'systemctl stop "user@$path1_docker_uid.service"',
+    "systemctl stop chariox-slice-disk-quota-allocator.service",
+    "systemctl stop chariox-data-volume-admission.service",
+  ]
+  let previousStorageStop = -1
+  for (const command of storageStopCommands) {
+    const index = indexOf(storageStop, command, `${command} storage stop`)
+    assert.ok(index > previousStorageStop, "storage services stop in dependency order")
+    assert.ok(storageStop.slice(index).startsWith(`${command} || return 1`),
+      `${command} failure must abort the Path-1 storage stop sequence`)
+    previousStorageStop = index
+  }
+  const stopFailureEnd = indexOf(upgradeSource, "write_phase stopped", "stopped phase", stop)
+  const stopFailure = upgradeSource.slice(stop, stopFailureEnd)
+  assert.ok(stopFailure.includes("if rollback_transaction; then"), "a failed storage stop must enter rollback")
+  assert.ok(stopFailure.includes("Path-1 storage services could not be stopped; restored previous managed kernel release"))
+  assert.ok(stopFailure.includes("Path-1 storage services could not be stopped; rollback remains pending"))
 })
 
 test("upgrade recovers interrupted phases and rolls back failed migration or health checks", () => {

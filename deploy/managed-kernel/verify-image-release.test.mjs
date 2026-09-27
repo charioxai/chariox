@@ -5,6 +5,10 @@ import { tmpdir } from "node:os"
 import { dirname, join, relative, sep } from "node:path"
 import { spawnSync } from "node:child_process"
 import test from "node:test"
+import {
+  PATH1_DATA_VOLUME_ARTIFACTS,
+  stageReleaseFixtureSourceAssets,
+} from "./verify-image-release-fixture-helper.mjs"
 
 const verifier = new URL("./verify-image-release.mjs", import.meta.url)
 const imagePreparation = new URL("./prepare-hetzner-image.sh", import.meta.url)
@@ -23,6 +27,7 @@ const ARTIFACTS = [
   ["chariox-path1-managed-bootstrap.service", "/etc/systemd/system/chariox-path1-managed-bootstrap.service", "file"],
   ["chariox-disposable-worker-bootstrap.service", "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", "file"],
   ["chariox-rootless-docker.service", "/etc/systemd/system/chariox-rootless-docker.service", "file"],
+  ...PATH1_DATA_VOLUME_ARTIFACTS.map(({ name, path }) => [name, path, "file"]),
   ["chariox-slice-broker.service", "/etc/systemd/system/chariox-slice-broker.service", "file"],
   ["chariox-slice-build-context", "/usr/lib/chariox/slice-build-context", "tree"],
   ["chariox-build-attestation", "/usr/lib/chariox/build-attestation.json", "file"],
@@ -32,6 +37,11 @@ const ARTIFACTS = [
 const KERNEL = Buffer.from("kernel artifact")
 const BOOTSTRAP = Buffer.from("bootstrap artifact")
 const RELAY = Buffer.from("relay artifact")
+const DATA_VOLUME_ARTIFACT_NAMES = new Set(PATH1_DATA_VOLUME_ARTIFACTS.map(({ name }) => name))
+const PATH1_SERVICE_ARTIFACT_NAMES = new Set([
+  "chariox-path1-managed-bootstrap.service",
+  "chariox-disposable-worker-bootstrap.service",
+])
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`
 }
@@ -79,6 +89,8 @@ async function createReleaseFixture(context, {
   malformedAttestation = false,
   invalidBuilderSignature = false,
   wrongTrustedBuilderKey = false,
+  includePath1Services = true,
+  dataVolumeArtifactNames = [...DATA_VOLUME_ARTIFACT_NAMES],
   path1Service = PATH1_SERVICE,
   workerService = WORKER_SERVICE,
 } = {}) {
@@ -98,16 +110,33 @@ async function createReleaseFixture(context, {
     wrongTrustedBuilderKey ? rawPublicKey(unrelatedBuilderKeys.publicKey) : rawPublicKey(builderKeys.publicKey),
   )
 
+  const contentByName = await stageReleaseFixtureSourceAssets(rootfs)
+  contentByName.set(
+    "chariox-path1-managed-bootstrap.service",
+    Buffer.from(path1Service),
+  )
+  contentByName.set(
+    "chariox-disposable-worker-bootstrap.service",
+    Buffer.from(workerService),
+  )
+
   const treeRoot = join(rootfs, "usr/lib/chariox/slice-build-context")
   const relayPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/chariox-relay")
+  const kernelPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/chariox-kernel")
+  const releaseMarkerPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/.managed-release")
   await mkdir(dirname(relayPath), { recursive: true, mode: 0o755 })
   await writeFile(relayPath, RELAY, { mode: 0o755 })
   await chmod(relayPath, 0o755)
+  await writeFile(kernelPath, KERNEL, { mode: 0o755 })
+  await chmod(kernelPath, 0o755)
+  await writeFile(releaseMarkerPath, "builder-attested\n", { mode: 0o644 })
+  await chmod(releaseMarkerPath, 0o644)
   for (const directory of [
     treeRoot,
     join(treeRoot, "apps"),
     join(treeRoot, "apps/kernel"),
     join(treeRoot, "apps/kernel/slice-linux-docker"),
+    join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt"),
     dirname(relayPath),
   ]) {
     await chmod(directory, 0o755)
@@ -129,20 +158,18 @@ async function createReleaseFixture(context, {
   const attestationSigner = invalidBuilderSignature ? unrelatedBuilderKeys.privateKey : builderKeys.privateKey
   const attestationSignature = Buffer.from(sign(null, attestationBytes, attestationSigner).toString("base64"))
   const embeddedBuilderKey = Buffer.from(rawPublicKey(builderKeys.publicKey))
-  const contentByName = new Map([
-    ["chariox-kernel", KERNEL],
-    ["chariox-managed-bootstrap", BOOTSTRAP],
-    ["chariox-managed-bootstrap.service", Buffer.from("[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n")],
-    ["chariox-path1-managed-bootstrap.service", Buffer.from(path1Service)],
-    ["chariox-disposable-worker-bootstrap.service", Buffer.from(workerService)],
-    ["chariox-rootless-docker.service", Buffer.from("[Service]\n")],
-    ["chariox-slice-broker.service", Buffer.from("[Service]\n")],
-    ["chariox-build-attestation", attestationBytes],
-    ["chariox-build-attestation-signature", attestationSignature],
-    ["chariox-builder-public-key", embeddedBuilderKey],
-  ])
+  contentByName.set("chariox-kernel", KERNEL)
+  contentByName.set("chariox-managed-bootstrap", BOOTSTRAP)
+  contentByName.set("chariox-build-attestation", attestationBytes)
+  contentByName.set("chariox-build-attestation-signature", attestationSignature)
+  contentByName.set("chariox-builder-public-key", embeddedBuilderKey)
+  const requestedDataVolumeArtifacts = new Set(dataVolumeArtifactNames)
+  const fixtureArtifacts = ARTIFACTS.filter(([name]) => {
+    if (!includePath1Services && PATH1_SERVICE_ARTIFACT_NAMES.has(name)) return false
+    return !DATA_VOLUME_ARTIFACT_NAMES.has(name) || requestedDataVolumeArtifacts.has(name)
+  })
   const artifacts = []
-  for (const [name, path, type] of ARTIFACTS) {
+  for (const [name, path, type] of fixtureArtifacts) {
     let digest
     if (type === "tree") {
       digest = await sha256Tree(join(rootfs, path.slice(1)))
@@ -234,6 +261,22 @@ test("Path-1 verification refuses to use the image's builder key as its trust ro
   const result = runVerifier(fixture, "path1", embeddedKey)
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /must be supplied outside the image root/)
+})
+
+test("Path-1 verification rejects a signed release with no data-volume admission artifacts", async (context) => {
+  const fixture = await createReleaseFixture(context, { dataVolumeArtifactNames: [] })
+  const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /Error: Path-1 releases must include data-volume admission and both ordering drop-ins/)
+})
+
+test("Path-1 verification rejects a signed release with a partial data-volume artifact set", async (context) => {
+  const fixture = await createReleaseFixture(context, {
+    dataVolumeArtifactNames: [PATH1_DATA_VOLUME_ARTIFACTS[0].name, PATH1_DATA_VOLUME_ARTIFACTS[1].name],
+  })
+  const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /Error: release contains an incomplete Path-1 data-volume admission artifact set/)
 })
 
 test("Path-1 verification accepts signed direct ExecStart commands and static bootstrap PATHs", async (context) => {
@@ -353,7 +396,12 @@ for (const [field, mutateAttestation] of [
 }
 
 test("shared-host rollback retains direct ExecStart and release-signature verification without a builder pin", async (context) => {
-  const fixture = await createReleaseFixture(context, { malformedAttestation: true })
+  // Model a legacy schema-2 rollback before Path-1 worker and storage assets existed.
+  const fixture = await createReleaseFixture(context, {
+    malformedAttestation: true,
+    includePath1Services: false,
+    dataVolumeArtifactNames: [],
+  })
   const result = runVerifier(fixture, "shared_host")
   assert.equal(result.status, 0, result.stderr)
 })
