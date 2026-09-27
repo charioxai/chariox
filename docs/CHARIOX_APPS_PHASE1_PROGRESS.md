@@ -92,49 +92,49 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V1-INT-01 | Chromium sandbox and login persistence | Production launch evidence, deterministic state assertions, redacted live service drill | Unverified |
-| V1-INT-02 | Independent OS boundary | macOS/Linux artifact and policy digests; stable supervisor termination classification | Unverified |
-| V1-INT-03 | Total and aggregate resources | Measured CPU, total memory, disk, queue and latency budgets on named hardware | Unverified |
-| V1-INT-04 | Raw files and state transactions | Fault-injection checkpoints and old/new generation data validation | Unverified |
-| V1-INT-05 | Storage exhaustion | No cross-installation exhaustion or loss of accepted state | Unverified |
-| V1-INT-06 | Event crash windows | One durable enqueue per scoped occurrence; visible terminal outcomes and bounded queues | Unverified |
-| V1-INT-07 | Rollback dedupe and generations | Dedupe receipts survive rollback; incompatible generations cannot operate | Unverified |
-| V1-INT-08 | Ambiguous service effects | Unknown outcome is visible; no unsafe automatic replay | Unverified |
-| V1-INT-09 | Equivalent human and agent operation | Attributed action evidence; no tool/view privilege split | Unverified |
-| V1-INT-10 | Human validation lifecycle | One durable RuntimeInteraction and operation state; execution waits for human decision | Unverified |
-| V1-INT-11 | Approval parameter and effect binding | Only the exact approved effect can execute; stale/changed/reused authority is denied | Unverified |
-| V1-INT-12 | Step-up authentication | Authenticator integration tests plus real human verification drill; test mocks never count as production authentication | Unverified |
-| V1-INT-13 | Capability-expanding update | Decline keeps old release; recovery preserves accepted work; no early capability use | Unverified |
-| V1-INT-14 | App-origin escape | Browser-controlled origin and network policy holds; host loopback and metadata are not ambient authority | Unverified |
-| V1-INT-15 | Concurrent viewer semantics | Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal | Unverified |
-| V1-INT-16 | Transport conformance and SSRF | Measured source adaptations; bounded trusted-side memory and actual connected-address checks | Unverified |
-| V1-INT-17 | Slack contract cutover | Live third-party-style App parity before old code removal; final artifact has no privileged Slack fallback | Unverified |
-| V1-INT-18 | Schedule correctness | Persisted occurrence revision controls enqueue; overdue work recovers within declared budget | Unverified |
-| V1-INT-19 | Rooms and kernels | Update/uninstall/backup isolation matches documented ownership; no credential or handle inheritance | Unverified |
-| V1-INT-20 | Package and review independence | Code remains contained regardless of review; exact signed bytes and extraction rules are verified | Unverified |
-| V1-INT-21 | Fresh installation and upgrade | No hidden manual sandbox setup, no Cloud requirement for local Apps, actionable version failures | Unverified |
-| V1-INT-22 | Runtime lifecycle and throughput | Declared startup/idle/event/input budgets; relay and kernel authority remain responsive | Unverified |
-| V1-INT-23 | One binding and existing permissions | One effective binding path; no redundant prompts, auto-regrant loop or invented authority | Unverified |
-| V1-INT-24 | Focus and single prompt area | No retargeted accepted work; one terminal prompt area; no App-owned provider conversation | Unverified |
-| V1-INT-25 | Private panel isolation | Only trusted terminal renders/reads panel content; App gets layout data without transcript-dependent callbacks | Unverified |
-| V1-INT-26 | Panel accessibility and recovery | Human conversation remains usable from kernel history and is absent from App accessibility tree and stream | Unverified |
-| V1-INT-27 | Information-set consent | No data request/delivery before explicit consent; no repeated consent for an unchanged accepted set; no agent self-approval | Unverified |
-| V1-INT-28 | Correlated intermediate/final outputs | Authorized fields only; bounded repair, ordered idempotent delivery and explicit incomplete state; no transcript scraping | Unverified |
-| V1-INT-29 | App-owned semantics | Kernel enforces generic envelopes and policy; domain checks execute only in sandboxed App code | Unverified |
-| V1-INT-30 | Resume with a second agent | Same opaque App task relation with distinct attributed turns; no raw conversation exported or automatic focus retargeting | Unverified |
-| V1-INT-31 | Create user workflows and agents | Normal user-owned assets and one execution path; dependencies become visible/broken without silently deleting assets | Unverified |
-| V1-INT-32 | Complete App work acceptance | All required Phase 1 terminal/kernel combinations pass the same task; cross-App coordination remains Phase 2 | Unverified |
+| V1-INT-01 | Chromium sandbox and login persistence | Production launch evidence, deterministic state assertions, redacted live service drill | Needs user (see verification) |
+| V1-INT-02 | Independent OS boundary | macOS/Linux artifact and policy digests; stable supervisor termination classification | Partial (see verification) |
+| V1-INT-03 | Total and aggregate resources | Measured CPU, total memory, disk, queue and latency budgets on named hardware | Partial (see verification) |
+| V1-INT-04 | Raw files and state transactions | Fault-injection checkpoints and old/new generation data validation | Partial (see verification) |
+| V1-INT-05 | Storage exhaustion | No cross-installation exhaustion or loss of accepted state | Partial (see verification) |
+| V1-INT-06 | Event crash windows | One durable enqueue per scoped occurrence; visible terminal outcomes and bounded queues | Partial (see verification) |
+| V1-INT-07 | Rollback dedupe and generations | Dedupe receipts survive rollback; incompatible generations cannot operate | Partial (see verification) |
+| V1-INT-08 | Ambiguous service effects | Unknown outcome is visible; no unsafe automatic replay | Partial (see verification) |
+| V1-INT-09 | Equivalent human and agent operation | Attributed action evidence; no tool/view privilege split | Partial (see verification) |
+| V1-INT-10 | Human validation lifecycle | One durable RuntimeInteraction and operation state; execution waits for human decision | Implemented (step-up = Phase 2) (see verification) |
+| V1-INT-11 | Approval parameter and effect binding | Only the exact approved effect can execute; stale/changed/reused authority is denied | Implemented (see verification) |
+| V1-INT-12 | Step-up authentication | Authenticator integration tests plus real human verification drill; test mocks never count as production authentication | Phase 2 (see verification) |
+| V1-INT-13 | Capability-expanding update | Decline keeps old release; recovery preserves accepted work; no early capability use | Partial (see verification) |
+| V1-INT-14 | App-origin escape | Browser-controlled origin and network policy holds; host loopback and metadata are not ambient authority | Partial (see verification) |
+| V1-INT-15 | Concurrent viewer semantics | Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal | Partial [user step: screen reader] (see verification) |
+| V1-INT-16 | Transport conformance and SSRF | Measured source adaptations; bounded trusted-side memory and actual connected-address checks | Partial (see verification) |
+| V1-INT-17 | Slack contract cutover | Live third-party-style App parity before old code removal; final artifact has no privileged Slack fallback | Partial (see verification) |
+| V1-INT-18 | Schedule correctness | Persisted occurrence revision controls enqueue; overdue work recovers within declared budget | Partial [user step: sleep/wake] (see verification) |
+| V1-INT-19 | Rooms and kernels | Update/uninstall/backup isolation matches documented ownership; no credential or handle inheritance | Implemented (see verification) |
+| V1-INT-20 | Package and review independence | Code remains contained regardless of review; exact signed bytes and extraction rules are verified | Partial (see verification) |
+| V1-INT-21 | Fresh installation and upgrade | No hidden manual sandbox setup, no Cloud requirement for local Apps, actionable version failures | Partial [user step: signed macOS installer; reboot] (see verification) |
+| V1-INT-22 | Runtime lifecycle and throughput | Declared startup/idle/event/input budgets; relay and kernel authority remain responsive | Partial (see verification) |
+| V1-INT-23 | One binding and existing permissions | One effective binding path; no redundant prompts, auto-regrant loop or invented authority | Partial (see verification) |
+| V1-INT-24 | Focus and single prompt area | No retargeted accepted work; one terminal prompt area; no App-owned provider conversation | Partial (see verification) |
+| V1-INT-25 | Private panel isolation | Only trusted terminal renders/reads panel content; App gets layout data without transcript-dependent callbacks | Partial (see verification) |
+| V1-INT-26 | Panel accessibility and recovery | Human conversation remains usable from kernel history and is absent from App accessibility tree and stream | Partial [user step: screen reader] (see verification) |
+| V1-INT-27 | Information-set consent | No data request/delivery before explicit consent; no repeated consent for an unchanged accepted set; no agent self-approval | Phase 2 (see verification) |
+| V1-INT-28 | Correlated intermediate/final outputs | Authorized fields only; bounded repair, ordered idempotent delivery and explicit incomplete state; no transcript scraping | Phase 2 (see verification) |
+| V1-INT-29 | App-owned semantics | Kernel enforces generic envelopes and policy; domain checks execute only in sandboxed App code | Verified (macOS kernel) (see verification) |
+| V1-INT-30 | Resume with a second agent | Same opaque App task relation with distinct attributed turns; no raw conversation exported or automatic focus retargeting | Phase 2 (see verification) |
+| V1-INT-31 | Create user workflows and agents | Normal user-owned assets and one execution path; dependencies become visible/broken without silently deleting assets | Phase 2 (see verification) |
+| V1-INT-32 | Complete App work acceptance | All required Phase 1 terminal/kernel combinations pass the same task; cross-App coordination remains Phase 2 | Partial (see verification) |
 
 ### Package lifecycle matrix
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V-PKG-01 | Valid built-in and local developer packages | Contract tests plus local and managed-kernel drill. | Unverified |
-| V-PKG-02 | Archive attacks | Adversarial package corpus on macOS and Linux. | Unverified |
-| V-PKG-03 | Manifest and protocol mismatch | Parser snapshots and client rendering tests. | Unverified |
+| V-PKG-01 | Valid built-in and local developer packages | Contract tests plus local and managed-kernel drill. | Partial (see verification) |
+| V-PKG-02 | Archive attacks | Adversarial package corpus on macOS and Linux. | Verified (component) (see verification) |
+| V-PKG-03 | Manifest and protocol mismatch | Parser snapshots and client rendering tests. | Partial (see verification) |
 | V-PKG-04 | Interrupted installation | Checkpoint fault-injection suite. | Implemented on macOS (`v-pkg-04/`) |
-| V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Unverified |
-| V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Unverified |
+| V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Partial (see verification) |
+| V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Partial [user step: real power loss] (see verification) |
 | V-PKG-07 | Concurrent operations | Four-client concurrency test. | Implemented (`v-pkg-07/`) |
 | V-PKG-08 | Uninstall and reinstall | Lifecycle drill with all three reference Apps. | Implemented on macOS: live drill with all three Apps, reinstall into kept data (#494) and delete-data (#495, #496) (`v-pkg-08/`); Linux delete-data through the storage helper (#497), passed in the Linux storage fixture |
 
@@ -145,41 +145,41 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 | V-RUN-01 | Infinite loop and CPU saturation | Kernel health, local TUI, remote TUI, web terminal. | Partial: live on macOS (#498) |
 | V-RUN-02 | Memory growth | macOS and Linux App worker tests in Phase 1; Windows repeats them in Phase 2. | Partial: live on macOS |
 | V-RUN-03 | Crash loop | CLI, slash command and web status. | Implemented on macOS (#499) |
-| V-RUN-04 | Malformed or oversized IPC | IPC contract and fuzz tests. | Unverified |
+| V-RUN-04 | Malformed or oversized IPC | IPC contract and fuzz tests. | Partial (see verification) |
 | V-RUN-05 | Ignored cancellation or acknowledgement | Tool call, external event, local event and lifecycle callback. | Partial: live event path |
-| V-RUN-06 | Kernel restart and machine reboot | Local and managed machine drills. | Unverified |
-| V-RUN-07 | Sandbox escape attempts | One malicious package on macOS and Linux Phase 1 release builds. Windows reuses the corpus in Phase 2. | Unverified |
+| V-RUN-06 | Kernel restart and machine reboot | Local and managed machine drills. | Partial [user step: machine reboot] (see verification) |
+| V-RUN-07 | Sandbox escape attempts | One malicious package on macOS and Linux Phase 1 release builds. Windows reuses the corpus in Phase 2. | Partial (see verification) |
 | V-RUN-08 | Log flooding | CLI, TUI and web logs. | Partial: live, dropped count (#498) |
-| V-RUN-09 | Sandbox active before App code | Every attempt observes the final default-deny OS policy. No unconfined startup window exists. | Unverified |
-| V-RUN-10 | Cross-installation isolation | Neither installation reads, writes, signals, impersonates, or exhausts the other's worker, supervisor, or HTTP budget. | Unverified |
+| V-RUN-09 | Sandbox active before App code | Every attempt observes the final default-deny OS policy. No unconfined startup window exists. | Partial (see verification) |
+| V-RUN-10 | Cross-installation isolation | Neither installation reads, writes, signals, impersonates, or exhausts the other's worker, supervisor, or HTTP budget. | Partial (see verification) |
 
 ### SDK matrix
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V-SDK-01 | Files | Documents App passes on case-sensitive and case-insensitive filesystems without a Chariox-specific wrapper for ordinary private I/O. | Unverified |
-| V-SDK-02 | Path safety | Zero escape from installation root across macOS and Linux in Phase 1, then Windows in Phase 2. | Unverified |
-| V-SDK-03 | Tool catalog | Catalog matches the active generation and configured bindings; execution checks the same operation policy as App view calls. | Unverified |
-| V-SDK-04 | Tool authorization | Authenticated human, agent and background identities cannot be forged. Agents may use UI or tools. Critical-action validation is identical across routes, and binding changes affect discovery rather than creating an App view prohibition. | Unverified |
-| V-SDK-05 | External event delivery | One workflow enqueue per accepted occurrence, no loss after accepted receipt. | Unverified |
-| V-SDK-06 | Local event delivery | Todo occurrence reaches exactly one configured endpoint or a visible terminal state. | Unverified |
-| V-SDK-07 | HTTP | Pinned representative API clients pass their declared transport contract. Streaming, abort, multipart, SSE, decompression, redirects, DNS and credential scope tests bound trusted-side resources. WebSocket is explicitly supported or documented as excluded in Phase 1; it is never silently bypassed. | Unverified |
-| V-SDK-08 | Lifecycle | Deadlines and ordering match on local and managed kernels. | Unverified |
+| V-SDK-01 | Files | Documents App passes on case-sensitive and case-insensitive filesystems without a Chariox-specific wrapper for ordinary private I/O. | Partial (see verification) |
+| V-SDK-02 | Path safety | Zero escape from installation root across macOS and Linux in Phase 1, then Windows in Phase 2. | Partial (see verification) |
+| V-SDK-03 | Tool catalog | Catalog matches the active generation and configured bindings; execution checks the same operation policy as App view calls. | Partial (see verification) |
+| V-SDK-04 | Tool authorization | Authenticated human, agent and background identities cannot be forged. Agents may use UI or tools. Critical-action validation is identical across routes, and binding changes affect discovery rather than creating an App view prohibition. | Partial (see verification) |
+| V-SDK-05 | External event delivery | One workflow enqueue per accepted occurrence, no loss after accepted receipt. | Partial (see verification) |
+| V-SDK-06 | Local event delivery | Todo occurrence reaches exactly one configured endpoint or a visible terminal state. | Partial (see verification) |
+| V-SDK-07 | HTTP | Pinned representative API clients pass their declared transport contract. Streaming, abort, multipart, SSE, decompression, redirects, DNS and credential scope tests bound trusted-side resources. WebSocket is explicitly supported or documented as excluded in Phase 1; it is never silently bypassed. | Partial (see verification) |
+| V-SDK-08 | Lifecycle | Deadlines and ordering match on local and managed kernels. | Partial (see verification) |
 
 ### UX matrix
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V-UX-01 | App Tab and viewer isolation | Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment. | Unverified |
+| V-UX-01 | App Tab and viewer isolation | Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment. | Partial (see verification) |
 | V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Partial: three widths (`screens/responsive-*`) |
 | V-UX-03 | Accessibility | Automated audit plus manual VoiceOver pass for every App view. | Partial: axe 0 violations; VoiceOver [user] |
-| V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Unverified |
+| V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Partial (see verification) |
 | V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial: live remote TUI (`remote-tui/`) |
-| V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Unverified |
-| V-UX-07 | Freeform trigger | Web right-click and TUI slash-command drill. | Unverified |
-| V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Unverified |
-| V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Unverified |
-| V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Unverified |
+| V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Partial (see verification) |
+| V-UX-07 | Freeform trigger | Web right-click and TUI slash-command drill. | Partial (see verification) |
+| V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (see verification) |
+| V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Partial (see verification) |
+| V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Partial (see verification) |
 
 ### Reference-App acceptance
 
