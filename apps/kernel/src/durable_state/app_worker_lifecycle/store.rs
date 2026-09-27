@@ -44,8 +44,10 @@ pub(super) fn first_committed(
                 && current.phase == WorkerPhase::Starting
                 && current.desired_running => {}
         // A local update moves the installation's worker to the new generation.
+        // A reinstall's base is the uninstall generation; its worker last ran
+        // an older one. The registry has already fenced the base generation.
         Some(current)
-            if token.base_generation > 0 && current.generation == token.base_generation =>
+            if token.base_generation > 0 && current.generation <= token.base_generation =>
         {
             sql(tx.execute("UPDATE app_worker_lifecycle SET generation=?3,attempt=?4,phase='starting',desired_running=1,failure=NULL,updated_ms=?5
                 WHERE installation_id=?1 AND owner_id=?2", params![installation,owner,generation,attempt,now]))?;
