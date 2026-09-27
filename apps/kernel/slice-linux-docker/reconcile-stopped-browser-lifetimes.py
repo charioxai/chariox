@@ -65,11 +65,6 @@ def command(*args, data=None):
                     else:
                         errors.extend(chunk)
         if child.wait(timeout=max(.01, deadline - time.monotonic())):
-            if args[0] == "cp" and len(args) == 3 and args[2] == "-":
-                container, location = args[1].split(":", 1)
-                expected = f"Error response from daemon: Could not find the file {location.rstrip('/.')} in container {container}"
-                if errors.decode().strip() == expected:
-                    raise FileNotFoundError("exact Docker archive path absent")
             raise RuntimeError("Docker reconciliation command failed")
         return bytes(output)
     finally:
@@ -178,32 +173,46 @@ def receipts(archive, proof):
     return output.getvalue(), retired_count, len(records)
 
 
-def legacy_upload_proof(docker, proof):
-    request = (f"HEAD /containers/{proof['id']}/archive?path={UPLOAD_ROOT} HTTP/1.1\r\n"
+def archive_stat(docker, container_id, location, directory):
+    if not re.fullmatch(r"[a-f0-9]{64}", container_id) or location not in (ROOT, UPLOAD_ROOT, UPLOAD_ROOT + "/ledger.json"):
+        raise RuntimeError("exact Docker archive path required")
+    request = (f"HEAD /containers/{container_id}/archive?path={location} HTTP/1.1\r\n"
                "Host: docker\r\nConnection: close\r\n\r\n").encode()
     response = docker("system", "dial-stdio", data=request)
     header, separator, body = response.partition(b"\r\n\r\n")
     if not separator or body or len(header) > 65536:
         raise RuntimeError("invalid Docker archive HEAD response")
     lines = header.decode("latin1").split("\r\n")
-    status = lines[0].split()[1]
+    status_line = re.fullmatch(r"HTTP/1\.[01] ([0-9]{3})(?: [^\r\n]*)?", lines[0])
+    if not status_line:
+        raise RuntimeError("invalid Docker archive HEAD status")
+    status = status_line.group(1)
     if status == "404":
-        return None, 0
+        return None
     if status != "200":
-        raise RuntimeError("upload root stat unavailable")
+        raise RuntimeError("Docker archive stat unavailable")
     values = [line.partition(":")[2].strip() for line in lines[1:] if line.lower().startswith("x-docker-container-path-stat:")]
     if len(values) != 1:
-        raise RuntimeError("exact upload root stat required")
-    metadata = json.loads(base64.b64decode(values[0], validate=True))
+        raise RuntimeError("exact Docker archive stat required")
+    try:
+        metadata = json.loads(base64.b64decode(values[0], validate=True))
+    except (ValueError, UnicodeError) as error:
+        raise RuntimeError("invalid Docker archive stat metadata") from error
     # Docker HEAD exposes Go FileMode but not UID. The consumer independently
     # requires a canonical UID1001/private root before it reads this proof.
-    mode = metadata.get("mode")
-    if type(mode) is not int or mode & 0x80000000 == 0 or mode & 0x08000000 or mode & 0o777 != 0o700 or metadata.get("linkTarget") or metadata.get("name") != UPLOAD_ROOT.rsplit("/", 1)[1]:
-        raise RuntimeError("private nonsymlink upload directory required")
-    try:
-        archive = docker("cp", proof["id"] + ":" + UPLOAD_ROOT + "/ledger.json", "-")
-    except FileNotFoundError:
+    mode = metadata.get("mode") if isinstance(metadata, dict) else None
+    expected_mode = (0x80000000 | 0o700) if directory else 0o600
+    if type(mode) is not int or mode != expected_mode or metadata.get("linkTarget") or metadata.get("name") != location.rsplit("/", 1)[1]:
+        raise RuntimeError("private nonsymlink Docker archive path required")
+    return metadata
+
+
+def legacy_upload_proof(docker, proof):
+    if archive_stat(docker, proof["id"], UPLOAD_ROOT, directory=True) is None:
         return None, 0
+    if archive_stat(docker, proof["id"], UPLOAD_ROOT + "/ledger.json", directory=False) is None:
+        return None, 0
+    archive = docker("cp", proof["id"] + ":" + UPLOAD_ROOT + "/ledger.json", "-")
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as source:
         members = source.getmembers()
         if len(members) != 1:
@@ -238,12 +247,10 @@ def reconcile(target, labels, docker=command):
     before = snapshot(docker, target, labels)
     if before is None:
         return {"retired": 0, "reason": "never-started-container"}
-    # Docker cp missing-path errors cannot establish absence. Inspect the stopped
-    # container's exact path stat through Docker's archive API via cp; fail closed.
-    try:
-        archive = docker("cp", before["id"] + ":" + ROOT, "-")
-    except FileNotFoundError:
-        archive = None
+    # Only the exact archive HEAD 404 establishes absence, never CLI stderr.
+    # A later cp failure is an error, even if the path disappeared after HEAD.
+    metadata = archive_stat(docker, before["id"], ROOT, directory=True)
+    archive = docker("cp", before["id"] + ":" + ROOT, "-") if metadata is not None else None
     output, count, entries = receipts(archive, before) if archive is not None else (None, 0, 0)
     legacy_output, legacy_count = legacy_upload_proof(docker, before)
     if snapshot(docker, before["id"], labels) != before:

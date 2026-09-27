@@ -16,6 +16,10 @@ PROCESS = {"pid": 22, "start": "123", "group": 22, "session": 22, "uid": 1001,
            "boot": "12345678-1234-1234-1234-123456789012", "namespace": "pid:[123]"}
 RECORD = {"version": 1, "instance": INSTANCE, "profile": "/home/slice/profile", "supervisor": PROCESS, "browser": PROCESS}
 
+def head_stat(location, mode):
+    metadata = base64.b64encode(json.dumps({"name": location.rsplit("/", 1)[1], "mode": mode, "linkTarget": ""}).encode())
+    return b"HTTP/1.1 200 OK\r\nX-Docker-Container-Path-Stat: " + metadata + b"\r\n\r\n"
+
 
 def archive(entries=None):
     output = io.BytesIO()
@@ -36,6 +40,8 @@ class Docker:
         if args[0] == "info":
             return b"engine-1\n"
         if args[:2] == ("system", "dial-stdio"):
+            if ("path=" + module.ROOT + " ").encode() in data:
+                return head_stat(module.ROOT, 0x80000000 | 0o700)
             return b"HTTP/1.1 404 Not Found\r\n\r\n"
         if args[0] == "inspect":
             self.reads += 1
@@ -51,6 +57,78 @@ class Docker:
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_missing_lifecycle_uses_head_status_not_docker_cli_error_rendering(self):
+        for message in ("No such file or directory", "Could not find the file", "localized error"):
+            docker = Docker()
+            def request(*args, **kwargs):
+                if args[:2] == ("system", "dial-stdio"):
+                    return b"HTTP/1.1 404 Not Found\r\n\r\n"
+                if args[0] == "cp":
+                    raise RuntimeError(message)
+                return docker(*args, **kwargs)
+            self.assertEqual(module.reconcile(IDENTITY, LABELS, request)["retired"], 0)
+            self.assertEqual(docker.writes, [])
+            self.assertEqual(docker.reads, 3)
+
+    def test_missing_ledger_uses_its_own_exact_head_without_copy(self):
+        docker = Docker()
+        def request(*args, **kwargs):
+            if args[:2] == ("system", "dial-stdio"):
+                if ("path=" + module.UPLOAD_ROOT + " ").encode() in kwargs["data"]:
+                    return head_stat(module.UPLOAD_ROOT, 0x80000000 | 0o700)
+                return b"HTTP/1.1 404 Not Found\r\n\r\n"
+            if args[0] == "cp":
+                raise RuntimeError("older Docker CLI: No such file or directory")
+            return docker(*args, **kwargs)
+        self.assertEqual(module.reconcile(IDENTITY, LABELS, request)["legacyEntries"], 0)
+        self.assertEqual(docker.writes, [])
+
+    def test_head_errors_and_malformed_metadata_never_establish_absence(self):
+        valid = head_stat(module.ROOT, 0x80000000 | 0o700)
+        invalid = [b"404\r\n\r\n", b"HTTP/1.1 403 Forbidden\r\n\r\n",
+            b"HTTP/1.1 500 Internal Server Error\r\n\r\n", b"HTTP/1.1 200 OK\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nX-Docker-Container-Path-Stat: not-base64\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nX-Docker-Container-Path-Stat: W10=\r\n\r\n",
+            valid + b"unexpected body", valid.replace(b"\r\n\r\n", b"\r\nX-Docker-Container-Path-Stat: W10=\r\n\r\n"),
+            head_stat("/wrong-name", 0x80000000 | 0o700), head_stat(module.ROOT, 0o700),
+            head_stat(module.ROOT, 0x88000000 | 0o700)]
+        for response in invalid:
+            with self.subTest(response=response[:60]):
+                docker = Docker()
+                def request(*args, **kwargs):
+                    if args[:2] == ("system", "dial-stdio"):
+                        return response
+                    return docker(*args, **kwargs)
+                with self.assertRaises(RuntimeError):
+                    module.reconcile(IDENTITY, LABELS, request)
+                self.assertEqual(docker.writes, [])
+
+    def test_copy_failure_after_present_head_is_not_absence(self):
+        for error in (FileNotFoundError("exact Docker archive path absent"), RuntimeError("localized CLI error")):
+            docker = Docker()
+            def request(*args, **kwargs):
+                if args[0] == "cp" and args[-1] == "-":
+                    raise error
+                return docker(*args, **kwargs)
+            with self.assertRaises(type(error)):
+                module.reconcile(IDENTITY, LABELS, request)
+            self.assertEqual(docker.writes, [])
+
+    def test_ledger_head_requires_regular_private_file(self):
+        for mode in (0x80000000 | 0o600, 0x08000000 | 0o600, 0o644):
+            docker = Docker()
+            def request(*args, **kwargs):
+                if args[:2] == ("system", "dial-stdio"):
+                    if b"/ledger.json " in kwargs["data"]:
+                        return head_stat(module.UPLOAD_ROOT + "/ledger.json", mode)
+                    if ("path=" + module.UPLOAD_ROOT + " ").encode() in kwargs["data"]:
+                        return head_stat(module.UPLOAD_ROOT, 0x80000000 | 0o700)
+                    return b"HTTP/1.1 404 Not Found\r\n\r\n"
+                return docker(*args, **kwargs)
+            with self.assertRaisesRegex(RuntimeError, "private nonsymlink"):
+                module.reconcile(IDENTITY, LABELS, request)
+            self.assertEqual(docker.writes, [])
+
     def test_interrupted_atomic_write_is_not_lifetime_authority(self):
         docker = Docker(data=archive([(INSTANCE + ".json", RECORD, tarfile.REGTYPE, 1001),
             ("record-abcd1234", {"incomplete": True}, tarfile.REGTYPE, 1001)]))
@@ -131,8 +209,10 @@ class ReconciliationTests(unittest.TestCase):
             target.addfile(item, io.BytesIO(raw))
         def request(*args, **kwargs):
             if args[:2] == ("system", "dial-stdio"):
-                metadata = base64.b64encode(json.dumps({"name": "chariox-browser-uploads-1001", "mode": 0x80000000 | 0o700, "linkTarget": ""}).encode())
-                return b"HTTP/1.1 200 OK\r\nX-Docker-Container-Path-Stat: " + metadata + b"\r\n\r\n"
+                if ("path=" + module.ROOT + " ").encode() in kwargs["data"]:
+                    return b"HTTP/1.1 404 Not Found\r\n\r\n"
+                location = module.UPLOAD_ROOT + "/ledger.json" if b"/ledger.json " in kwargs["data"] else module.UPLOAD_ROOT
+                return head_stat(location, 0o600 if location.endswith("ledger.json") else 0x80000000 | 0o700)
             if args[0] == "cp" and args[-1] == "-":
                 if args[1].endswith("/ledger.json"):
                     return output.getvalue()
@@ -148,7 +228,7 @@ class ReconciliationTests(unittest.TestCase):
         for mode in (0x80000000 | 0o755, 0x08000000 | 0o700, 0o700):
             docker = Docker()
             def request(*args, **kwargs):
-                if args[:2] == ("system", "dial-stdio"):
+                if args[:2] == ("system", "dial-stdio") and ("path=" + module.UPLOAD_ROOT + " ").encode() in kwargs["data"]:
                     value = base64.b64encode(json.dumps({"name": "chariox-browser-uploads-1001", "mode": mode, "linkTarget": ""}).encode())
                     return b"HTTP/1.1 200 OK\r\nX-Docker-Container-Path-Stat: " + value + b"\r\n\r\n"
                 return docker(*args, **kwargs)
