@@ -240,3 +240,26 @@ fn start_gate_refuses_a_failed_current_generation_but_not_an_older_one() {
         StartGate::Allowed
     );
 }
+
+#[test]
+fn a_failed_worker_restarts_with_backoff_then_is_quarantined() {
+    let failed = |failures: u32| WorkerStatus {
+        generation: 1,
+        attempt: "attempt".into(),
+        phase: WorkerPhase::Failed,
+        desired_running: true,
+        failure: Some("app_worker_exited".into()),
+        updated_ms: 10_000,
+        failures,
+    };
+    // Restarts wait 1, 4 and 16 seconds after the failure.
+    for (failures, wait) in [(1, 1_000), (2, 4_000), (3, 16_000)] {
+        assert!(!store::restart_allowed(
+            &failed(failures),
+            10_000 + wait - 1
+        ));
+        assert!(store::restart_allowed(&failed(failures), 10_000 + wait));
+    }
+    // A fourth failure in a row quarantines it until an explicit start.
+    assert!(!store::restart_allowed(&failed(4), u64::MAX / 2));
+}

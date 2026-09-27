@@ -55,6 +55,9 @@ pub(crate) struct WorkerStatus {
     pub(crate) desired_running: bool,
     pub(crate) failure: Option<String>,
     pub(crate) updated_ms: u64,
+    /// Consecutive failures since the last explicit start, install or update,
+    /// or since a run that stayed healthy (see `restart_allowed`).
+    pub(crate) failures: u32,
 }
 /// Only the current writer transaction can mint this retained start snapshot.
 pub(crate) struct ActiveStartAdmission {
