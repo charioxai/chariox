@@ -41,6 +41,20 @@ function validate(request, shareRoot) {
   })
 }
 
+test("broker start and unpause route Docker mutation through quota admission", async () => {
+  const source = await readFile(broker, "utf8")
+  const executeStart = source.indexOf("async function execute(request)")
+  const executeEnd = source.indexOf("\nfunction errorResponse", executeStart)
+  assert.notEqual(executeStart, -1)
+  assert.notEqual(executeEnd, -1)
+  const executeSource = source.slice(executeStart, executeEnd)
+
+  assert.match(source, /import \{ runWithSliceDiskQuotaAdmission \} from "\.\/slice-disk-quota-admission\.mjs"/)
+  assert.match(executeSource, /const runPrepared = \(\) => \{[\s\S]*?prepareDocker\(request\.args\)[\s\S]*?return spawnBounded\(command, args/)
+  assert.match(executeSource, /const isDockerStartOrUnpause = request\.kind === "docker" && \["start", "unpause"\]/)
+  assert.match(executeSource, /const result = isDockerStartOrUnpause\s*\? await runWithSliceDiskQuotaAdmission\(\{[\s\S]*?quotaMarkerPresent: diskQuotaMarkerPresent\(containerName\),[\s\S]*?run: runPrepared,[\s\S]*?\}\)\s*:\s*runPrepared\(\)/)
+})
+
 test("snapshot helpers require bounded isolated resources and matching ownership", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-helper-policy-"))
   context.after(() => rm(root, {recursive: true, force: true}))
