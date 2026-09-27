@@ -141,6 +141,19 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             .expect("temporary relay envelope should send");
     }
 
+    async fn close_claim_test_discovery(socket: &mut WebSocketStream<TcpStream>) {
+        let _ = socket.close(None).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            while let Some(message) = socket.next().await {
+                match message {
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    _ => {}
+                }
+            }
+        })
+        .await;
+    }
+
     async fn accept_claim_test_prompt(
         listener: &TcpListener,
         worker_id: &str,
@@ -184,7 +197,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             },
         )
         .await;
-        drop(discovery);
+        close_claim_test_discovery(&mut discovery).await;
 
         let (stream, _) =
             tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
@@ -444,7 +457,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
             },
         )
         .await;
-        drop(discovery);
+        close_claim_test_discovery(&mut discovery).await;
 
         let (stream, _) =
             tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
