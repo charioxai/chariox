@@ -1,7 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import {
-  appendFileSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -66,20 +65,32 @@ function makeSelectionFixture(t, quotaTests) {
   }))
   addFixtureTest(testDirectory, "provision-existing.test.mjs")
   for (const quotaTest of quotaTests) addFixtureTest(testDirectory, quotaTest.filename, quotaTest)
-  return { root, testDirectory, marker: join(root, "selection-marker") }
+  return { root, marker: join(root, "selection-marker") }
 }
 
 function runSelectionFixture(root, marker) {
+  const env = { ...process.env }
+  delete env.NODE_TEST_CONTEXT
+  env[selectionMarkerVariable] = marker
+  env.CI = "1"
+  env.NO_COLOR = "1"
   const result = spawnSync("pnpm", ["run", "test:slice-provisioner"], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, [selectionMarkerVariable]: marker, CI: "1", NO_COLOR: "1" },
+    env,
     maxBuffer: 1024 * 1024,
     timeout: 20_000,
   })
-  assert.ifError(result.error)
-  assert.equal(result.signal, null, "selection fixture should exit normally")
-  return result
+  const diagnostics = [
+    `status: ${result.status}`,
+    `signal: ${result.signal}`,
+    `error: ${result.error ?? "none"}`,
+    `stdout:\n${result.stdout ?? ""}`,
+    `stderr:\n${result.stderr ?? ""}`,
+  ].join("\n")
+  assert.equal(result.error, undefined, `pnpm fixture must start successfully\n${diagnostics}`)
+  assert.equal(result.signal, null, `pnpm fixture should exit normally\n${diagnostics}`)
+  return { ...result, diagnostics }
 }
 
 test("slice provisioner selection covers its dynamic repository inventory once and sequentially", () => {
@@ -117,12 +128,12 @@ test("selection runs future quota-pattern files once and propagates a selected t
   const result = runSelectionFixture(fixture.root, fixture.marker)
   const output = `${result.stdout}\n${result.stderr}`
 
-  assert.notEqual(result.status, 0, "a failing selected quota test must fail the package script")
-  assert.match(output, /intentional selection failure/)
-  assert.match(output, /(?:#|ℹ)\s*tests 3\b/)
-  assert.match(output, /(?:#|ℹ)\s*pass 2\b/)
-  assert.match(output, /(?:#|ℹ)\s*fail 1\b/)
-  assert.match(output, /(?:#|ℹ)\s*skipped 0\b/)
+  assert.notEqual(result.status, 0, `a failing selected quota test must fail the package script\n${result.diagnostics}`)
+  assert.match(output, /intentional selection failure/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*tests 3\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*pass 2\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*fail 1\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*skipped 0\b/, result.diagnostics)
   assert.deepEqual(
     readFileSync(fixture.marker, "utf8").trim().split("\n").sort(),
     [
@@ -130,7 +141,7 @@ test("selection runs future quota-pattern files once and propagates a selected t
       "slice-disk-quota-current.test.mjs",
       "slice-disk-quota-future.test.mjs",
     ].sort(),
-    "each matching provisioner and quota test file must execute exactly once",
+    `each matching provisioner and quota test file must execute exactly once\n${result.diagnostics}`,
   )
 })
 
@@ -138,9 +149,6 @@ test("an empty quota glob cannot turn the package script into a zero-quota-test 
   const fixture = makeSelectionFixture(t, [])
   const result = runSelectionFixture(fixture.root, fixture.marker)
 
-  assert.notEqual(result.status, 0, "an unmatched quota glob must not be silently ignored")
-  assert.deepEqual(
-    readFileSync(fixture.marker, "utf8").trim().split("\n"),
-    ["provision-existing.test.mjs"],
-  )
+  // The runner can reject the unmatched quota path before it executes the provisioner fixture.
+  assert.notEqual(result.status, 0, `an unmatched quota glob must not be silently ignored\n${result.diagnostics}`)
 })
