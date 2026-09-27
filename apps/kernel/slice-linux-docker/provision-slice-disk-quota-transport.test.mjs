@@ -143,6 +143,56 @@ test("client rejects a response with trailing bytes in a later socket fragment",
   )
 })
 
+test("client rejects an incomplete response frame at EOF", async (context) => {
+  const { socketPath } = await createUnixPeer(context, (socket) => {
+    socket.once("data", () => socket.end('{"protocolVersion":1,"ok":true,"result":{}'))
+  })
+
+  await assert.rejects(
+    requestSliceDiskQuota(PROBE_REQUEST, { socketPath, requestTimeoutMs: 300 }),
+    /frame was complete/,
+  )
+})
+
+test("client rejects malformed UTF-8 in a response frame", async (context) => {
+  const { socketPath } = await createUnixPeer(context, (socket) => {
+    socket.once("data", () => {
+      socket.end(Buffer.concat([
+        Buffer.from('{"protocolVersion":1,"ok":false,"error":"bad '),
+        Buffer.from([0xc3, 0x28]),
+        Buffer.from('"}\n'),
+      ]))
+    })
+  })
+
+  await assert.rejects(
+    requestSliceDiskQuota(PROBE_REQUEST, { socketPath, requestTimeoutMs: 300 }),
+    TypeError,
+  )
+})
+
+test("client validates response envelope keys, protocol version, and error shape", async (context) => {
+  const invalidEnvelopes = [
+    ["extra response key", { protocolVersion: 1, ok: true, result: {}, extra: true }, /response is invalid/],
+    ["missing result field", { protocolVersion: 1, ok: true }, /response is invalid/],
+    ["wrong protocol version", { protocolVersion: 2, ok: true, result: {} }, /protocol version mismatch/],
+    ["non-string error", { protocolVersion: 1, ok: false, error: 7 }, /response is invalid/],
+    ["missing error field", { protocolVersion: 1, ok: false }, /response is invalid/],
+  ]
+
+  for (const [label, envelope, message] of invalidEnvelopes) {
+    await context.test(label, async (subtest) => {
+      const { socketPath } = await createUnixPeer(subtest, (socket) => {
+        socket.once("data", () => socket.end(`${JSON.stringify(envelope)}\n`))
+      })
+      await assert.rejects(
+        requestSliceDiskQuota(PROBE_REQUEST, { socketPath, requestTimeoutMs: 300 }),
+        message,
+      )
+    })
+  }
+})
+
 test("client enforces its absolute deadline while the peer keeps trickling response bytes", async (context) => {
   const { socketPath } = await createUnixPeer(context, (socket) => {
     socket.once("data", () => {
@@ -211,6 +261,65 @@ test("service handles one fragmented request exactly once", async (context) => {
   })
 })
 
+test("client and service handler round-trip a probe through the real Unix socket", async (context) => {
+  const allocator = createTestAllocator()
+  const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 300 })
+
+  assert.deepEqual(
+    await requestSliceDiskQuota(PROBE_REQUEST, { socketPath, requestTimeoutMs: 300 }),
+    { operation: "probe", handled: true },
+  )
+  assert.deepEqual(allocator.calls, [PROBE_REQUEST])
+})
+
+test("client receives the allocator error envelope from the real service handler", async (context) => {
+  const calls = []
+  const allocator = {
+    handle(request) {
+      calls.push(request)
+      throw new Error("fixture allocator rejection")
+    },
+  }
+  const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 300 })
+
+  await assert.rejects(
+    requestSliceDiskQuota(PROBE_REQUEST, { socketPath, requestTimeoutMs: 300 }),
+    /fixture allocator rejection/,
+  )
+  assert.deepEqual(calls, [PROBE_REQUEST])
+})
+
+test("service decoder replaces malformed UTF-8 before allocator dispatch", async (context) => {
+  const allocator = createTestAllocator()
+  const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 300 })
+  const malformedRequest = Buffer.concat([
+    Buffer.from('{"protocolVersion":1,"operation":"pro'),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from('be"}\n'),
+  ])
+  const { data } = await socketExchange(socketPath, (socket) => socket.end(malformedRequest))
+
+  assert.equal(allocator.calls.length, 1)
+  assert.deepEqual(allocator.calls[0], {
+    protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
+    operation: "pro\uFFFD(be",
+  })
+  assert.deepEqual(JSON.parse(data.toString("utf8")), {
+    protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
+    ok: true,
+    result: { operation: "pro\uFFFD(be", handled: true },
+  })
+})
+
+test("service closes an incomplete request frame without allocator dispatch", async (context) => {
+  const allocator = createTestAllocator()
+  const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 300 })
+
+  const { data } = await socketExchange(socketPath, (socket) => socket.end(quotaProbeLine().slice(0, -1)))
+  assert.equal(data.length, 0)
+  assert.equal(allocator.calls.length, 0)
+})
+
 test("service closes an oversized request without an unhandled socket error", async (context) => {
   const allocator = createTestAllocator()
   const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 300 })
@@ -237,7 +346,11 @@ test("service rejects multiple frames before invoking the allocator", async (con
 
 test("service ignores a peer error before request EOF without dispatching", async (context) => {
   const allocator = createTestAllocator()
-  const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 300 })
+  const { socketPath } = await createQuotaServicePeer(context, allocator, {
+    requestTimeoutMs: 1_000,
+    inactivityTimeoutMs: 900,
+  })
+  const startedAt = Date.now()
   const exchange = socketExchange(socketPath, (socket) => {
     socket.write(quotaProbeLine().slice(0, 8))
     setTimeout(() => socket.destroy(new Error("quota peer reset fixture")), 5)
@@ -246,6 +359,7 @@ test("service ignores a peer error before request EOF without dispatching", asyn
 
   assert.equal(data.length, 0)
   assert.equal(allocator.calls.length, 0)
+  assert.ok(Date.now() - startedAt < 500, "peer disconnect should settle before the request timers")
 })
 
 test("service retains its inactivity timeout for a stalled partial request", async (context) => {
