@@ -70,6 +70,33 @@ class FakeProvider:
 
 
 class CleanupTests(unittest.TestCase):
+    def test_equivalent_utc_timestamp_formatting_preserves_identity(self):
+        for receipt_suffix, provider_suffix in [('Z', '+00:00'), ('+00:00', 'Z')]:
+            with self.subTest(receipt_suffix=receipt_suffix):
+                receipt, api = fixture()
+                receipt['server']['created'] = '2026-09-27T18:00:00.123456789' + receipt_suffix
+                receipt['expiresAt'] = '2026-09-27T20:00:00' + provider_suffix
+                api.resources['servers/11']['server']['created'] = '2026-09-27T18:00:00.1234567890' + provider_suffix
+                guard.validate_receipt(receipt)
+                self.assertTrue(guard.cleanup(api, receipt, apply=True)['cleaned'])
+
+    def test_changed_creation_instant_rejected_without_precision_loss(self):
+        for changed in ['2026-09-27T18:00:01+00:00', '2026-09-27T18:00:00.123456788+00:00']:
+            with self.subTest(changed=changed):
+                receipt, api = fixture()
+                receipt['server']['created'] = '2026-09-27T18:00:00.123456789Z'
+                api.resources['servers/11']['server']['created'] = changed
+                with self.assertRaises(ValueError):
+                    guard.cleanup(api, receipt, apply=True)
+                self.assertEqual(api.deletes(), [])
+
+    def test_timestamp_rejects_naive_non_utc_and_invalid_dates(self):
+        for value in [None, '2026-09-27T18:00:00', '2026-09-27T18:00:00+01:00',
+                      '2026-09-27T18:00:00-00:00', '2026-09-27T18:00:00+00:01',
+                      '2026-02-30T18:00:00Z']:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                guard.timestamp(value)
+
     def test_current_location_shape_and_conflicting_legacy_location(self):
         receipt, api = fixture()
         server = api.resources['servers/11']['server']

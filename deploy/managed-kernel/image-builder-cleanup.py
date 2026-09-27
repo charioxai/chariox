@@ -6,6 +6,7 @@ existing manager env file; never copy them to the disposable builder.
 """
 import argparse
 from datetime import datetime, timezone
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -29,9 +30,14 @@ def require(condition, message):
 
 
 def timestamp(value):
-    require(isinstance(value, str) and value.endswith('Z'), 'UTC timestamp required')
-    result = datetime.fromisoformat(value[:-1] + '+00:00')
-    return result.timestamp()
+    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,18}))?(?:Z|\+00:00)', value) \
+        if isinstance(value, str) else None
+    require(match is not None, 'UTC timestamp required')
+    delta = datetime.fromisoformat(match[1] + '+00:00') - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    # Identity comparisons must not lose fractional precision through floats or
+    # datetime's microsecond truncation. Equivalent trailing zeroes are harmless.
+    fraction = match[2] or ''
+    return Fraction(delta.days * 86400 + delta.seconds) + Fraction(int(fraction or '0'), 10 ** len(fraction))
 
 
 def protected_bytes(path, maximum):
@@ -105,7 +111,7 @@ def validate_resource(resource, expected, receipt):
 def validate_server(server, receipt):
     expected = receipt['server']
     validate_resource(server, expected, receipt)
-    require(server.get('created') == expected['created'], 'server creation identity changed')
+    require(timestamp(server.get('created')) == timestamp(expected['created']), 'server creation identity changed')
     locations = [item.get('name') for item in [server.get('location'),
                  (server.get('datacenter') or {}).get('location')] if item is not None]
     require(server.get('server_type', {}).get('name') == expected['type']
