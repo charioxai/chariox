@@ -60,11 +60,11 @@ test("fallback catalog exposes Claude headless and Claude -p as isolated backend
 
   const claudeHeadlessOptions = catalogModelOptions(catalog, "claude-headless")
   assert.deepEqual(claudeHeadlessOptions.map((option) => option.providerId), ["claude-headless"])
-  assert.deepEqual(claudeHeadlessOptions.map((option) => option.id), ["claude-headless/claude-sonnet-4-6"])
+  assert.deepEqual(claudeHeadlessOptions.map((option) => option.id), ["claude-headless/claude-sonnet-5"])
 
   const claudePrintOptions = catalogModelOptions(catalog, "claude-p")
   assert.deepEqual(claudePrintOptions.map((option) => option.providerId), ["claude-p"])
-  assert.deepEqual(claudePrintOptions.map((option) => option.id), ["claude-p/claude-sonnet-4-6"])
+  assert.deepEqual(claudePrintOptions.map((option) => option.id), ["claude-p/claude-sonnet-5"])
 
   const opencodeOptions = catalogModelOptions(catalog, "opencode")
   assert.equal(opencodeOptions.some((option) => option.providerId.startsWith("claude")), false)
