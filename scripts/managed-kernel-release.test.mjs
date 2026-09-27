@@ -18,6 +18,16 @@ const path1Service = join(repositoryRoot, "deploy/managed-kernel/chariox-path1-m
 const workerService = join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")
 const rootlessDockerService = join(repositoryRoot, "deploy/managed-kernel/chariox-rootless-docker.service")
 const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-slice-broker.service")
+const quotaRuntimeAssets = [
+  "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.service",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-allocator.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-client.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-contract.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-service.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-state-store.mjs",
+  "apps/kernel/slice-linux-docker/slice-disk-quota-xfs-backend.mjs",
+  "apps/kernel/slice-linux-docker/probe-slice-disk-quota-backend.mjs",
+]
 const sourceDateEpoch = "946684800"
 
 test("managed prebuilt slice runtime materializes its runtime output directory", async () => {
@@ -200,7 +210,7 @@ async function treeDigest(root) {
   return `sha256:${hash.digest("hex")}`
 }
 
-async function makeFixture(root, variant = "", { dockerfileContents } = {}) {
+async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAsset } = {}) {
   const kernel = join(root, "chariox-kernel")
   const supervisor = join(root, "chariox-managed-bootstrap")
   const relay = join(root, "chariox-relay")
@@ -232,6 +242,9 @@ async function makeFixture(root, variant = "", { dockerfileContents } = {}) {
       const path = `apps/kernel/slice-linux-docker/${name}`
       return [path, await readFile(join(repositoryRoot, path))]
     })),
+    ...await Promise.all(quotaRuntimeAssets
+      .filter((path) => path !== omitQuotaAsset)
+      .map(async (path) => [path, await readFile(join(repositoryRoot, path))])),
     ["apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", "#!/bin/sh\nSLICE_BUILD_IMAGE=fixture\n"],
     ["apps/kernel/slice-linux-docker/managed-publication-access.sh", "#!/bin/sh\nexit 0\n"],
     [
@@ -377,6 +390,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-kernel",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/toolchain/package-lock.json",
+    ...quotaRuntimeAssets.map((path) => `usr/lib/chariox/slice-build-context/${path}`),
     "usr/lib/chariox/slice-build-context/Cargo.lock",
     "usr/lib/chariox/slice-build-context/apps/kernel/src/transport/relay_peer.rs",
     "usr/lib/chariox/slice-build-context/apps/relay/Cargo.toml",
@@ -1307,6 +1321,36 @@ exec /bin/mv "$@"
   return { bin, state, installRoot, chownLog, migrationFaultMarker }
 }
 
+test("managed image installer rejects a signed release missing a quota runtime file", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
+  const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-missing-quota-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const omittedAsset = "apps/kernel/slice-linux-docker/slice-disk-quota-service.mjs"
+  const fixture = await makeFixture(root, "", { omitQuotaAsset: omittedAsset })
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  const harness = await createInstallerHarness(root)
+  const env = {
+    ...process.env,
+    PATH: `${harness.bin}:${process.env.PATH}`,
+    HARNESS_STATE: harness.state,
+    CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+    CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+  }
+  const result = spawnSync(
+    installer,
+    installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture),
+    { encoding: "utf8", env },
+  )
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /managed kernel image contains an invalid file: .*slice-disk-quota-service\.mjs/)
+  assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+})
+
 test("managed image installer verifies, installs twice, and rejects seeded runtime state", async (context) => {
   if (process.platform !== "linux" || process.getuid?.() !== 0) {
     context.skip("requires Linux root ownership semantics")
@@ -1446,7 +1490,34 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(await readFile(installedBrokerService, "utf8"), fixture.sliceBrokerServiceBytes.toString("utf8"))
   assert.equal(await lstat(brokerWantsLink).then(() => true, () => false), false)
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/slice-build-context")), "current/usr/lib/chariox/slice-build-context")
-  assert.match(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), /^releases\/[a-f0-9]{64}$/)
+  const activeReleaseTarget = `releases/${packaged.stdout.trim().slice("sha256:".length)}`
+  assert.equal(await readlink(currentLink), activeReleaseTarget)
+  const allocatorUnitLink = join(
+    harness.installRoot,
+    "etc/systemd/system/chariox-slice-disk-quota-allocator.service",
+  )
+  assert.equal((await lstat(allocatorUnitLink)).isSymbolicLink(), true)
+  assert.equal(
+    await readlink(allocatorUnitLink),
+    `../../../usr/lib/chariox/current/${contextPath}/chariox-slice-disk-quota-allocator.service`,
+  )
+  const signedAllocatorUnit = join(args[0], contextPath, "chariox-slice-disk-quota-allocator.service")
+  assert.deepEqual(await readFile(allocatorUnitLink), await readFile(signedAllocatorUnit))
+  const allocatorUnitContents = await readFile(allocatorUnitLink, "utf8")
+  assert.match(
+    allocatorUnitContents,
+    /ExecStart=\/usr\/bin\/node \/usr\/lib\/chariox\/current\/usr\/lib\/chariox\/slice-build-context\/apps\/kernel\/slice-linux-docker\/slice-disk-quota-service\.mjs/,
+  )
+  const activeQuotaService = join(
+    harness.installRoot,
+    "usr/lib/chariox/current",
+    contextPath,
+    "slice-disk-quota-service.mjs",
+  )
+  assert.deepEqual(
+    await readFile(activeQuotaService),
+    await readFile(join(args[0], contextPath, "slice-disk-quota-service.mjs")),
+  )
   assert.equal(
     await lstat(join(harness.installRoot, "usr/lib/chariox/current/usr/local/bin/unsigned-extra"))
       .then(() => true, () => false),
@@ -1455,15 +1526,19 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   const systemctl = (await readFile(join(harness.state, "systemctl"), "utf8")).trim().split("\n")
   assert.deepEqual(systemctl, [
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
+    "enable chariox-slice-disk-quota-allocator.service",
     "enable chariox-rootless-docker.service",
     "enable chariox-managed-bootstrap.service",
   ])
