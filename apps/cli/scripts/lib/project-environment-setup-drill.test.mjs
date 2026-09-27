@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -262,7 +262,7 @@ test('native kernel build command is run-id scoped and retains bounded worker li
   assert.match(build, /trap finish_build EXIT/)
   assert.match(build, /CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo build --locked --jobs 2 --package chariox-kernel --bin chariox-kernel/)
   assert.match(build, /rm -rf "\$build_dir"; \[ ! -e "\$build_dir" \]/)
-  assert.notMatch(build, /cargo check/)
+  assert.doesNotMatch(build, /cargo check/)
   assert.ok(build.length < 8_192)
   assert.throws(() => projectEnvironmentSetupDrillValidationCommands('../../other'), /UUID/)
   const syntax = spawnSync('/bin/sh', ['-n', '-c', build], { encoding: 'utf8' })
@@ -272,14 +272,15 @@ test('native kernel build command is run-id scoped and retains bounded worker li
 test('generated build shell runs Cargo and cc fixtures, preserves failures, and removes only owned scratch', () => {
   const runId = '123e4567-e89b-42d3-a456-426614174000'
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'chariox-project-native-build-fixture-'))
-  const fakeBin = join(fixtureRoot, 'bin')
-  const cargoArgs = join(fixtureRoot, 'cargo-args')
-  const cargoEnvironment = join(fixtureRoot, 'cargo-environment')
-  const ccArgs = join(fixtureRoot, 'cc-args')
-  const ccOutput = join(fixtureRoot, 'cc-output')
-  const buildDir = join(fixtureRoot, `chariox-project-environment-setup-${runId}`)
+  const canonicalFixtureRoot = realpathSync(fixtureRoot)
+  const fakeBin = join(canonicalFixtureRoot, 'bin')
+  const cargoArgs = join(canonicalFixtureRoot, 'cargo-args')
+  const cargoEnvironment = join(canonicalFixtureRoot, 'cargo-environment')
+  const ccArgs = join(canonicalFixtureRoot, 'cc-args')
+  const ccOutput = join(canonicalFixtureRoot, 'cc-output')
+  const buildDir = join(canonicalFixtureRoot, `chariox-project-environment-setup-${runId}`)
   const collisionRunId = `${runId.slice(0, -1)}1`
-  const unownedDir = join(fixtureRoot, `chariox-project-environment-setup-${collisionRunId}`)
+  const unownedDir = join(canonicalFixtureRoot, `chariox-project-environment-setup-${collisionRunId}`)
   mkdirSync(fakeBin)
   const cargoPath = join(fakeBin, 'cargo')
   const ccPath = join(fakeBin, 'cc')
@@ -311,7 +312,7 @@ test('generated build shell runs Cargo and cc fixtures, preserves failures, and 
     env: {
       ...process.env,
       PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
-      TMPDIR: fixtureRoot,
+      TMPDIR: canonicalFixtureRoot,
       FAKE_CARGO_ARGS: cargoArgs,
       FAKE_CARGO_ENV: cargoEnvironment,
       FAKE_CARGO_EXIT: String(fakeCargoExit),
@@ -349,7 +350,7 @@ test('generated build shell runs Cargo and cc fixtures, preserves failures, and 
       env: {
         ...process.env,
         PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
-        TMPDIR: fixtureRoot,
+        TMPDIR: canonicalFixtureRoot,
         FAKE_CARGO_ARGS: cargoArgs,
         FAKE_CARGO_ENV: cargoEnvironment,
         FAKE_CARGO_EXIT: '0',
