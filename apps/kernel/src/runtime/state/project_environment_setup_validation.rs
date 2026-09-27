@@ -91,14 +91,15 @@ impl WorkerPreparationHome {
             canonical_preparation_directory(workspace_root, "worker project worktree")?;
         let kernel_home = canonical_preparation_directory(kernel_home, "worker kernel home")?;
         verify_preparation_directory_owner(&kernel_home, "worker kernel home")?;
-        if workspace_root.starts_with(&kernel_home) || kernel_home.starts_with(&workspace_root) {
+        if workspace_root.starts_with(&kernel_home) {
             return Err(setup_error(
-                "worker preparation HOME must remain outside the project worktree",
+                "worker project worktree must remain outside kernel-owned home state",
             ));
         }
 
         let home_key = worker_preparation_home_key(&workspace_root, project_id, worker_id);
         reject_legacy_preparation_home(&workspace_root, &home_key)?;
+        reject_preparation_home_inside_git_worktree(&kernel_home)?;
 
         let state_root = kernel_home.join("state");
         ensure_preparation_directory(&state_root, "worker kernel state root", false)?;
@@ -112,6 +113,15 @@ impl WorkerPreparationHome {
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
+}
+
+pub(super) fn resolved_worker_kernel_home(config: &DaemonConfig) -> Result<PathBuf, DaemonError> {
+    let config_home = config
+        .user_config_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| setup_error("worker kernel config has no home directory"))?;
+    canonical_preparation_directory(config_home, "worker kernel home")
 }
 
 fn worker_preparation_home_key(
@@ -174,6 +184,26 @@ fn reject_legacy_preparation_home(
             "legacy worker preparation HOME could not be inspected: {error}"
         ))),
     }
+}
+
+fn reject_preparation_home_inside_git_worktree(kernel_home: &Path) -> Result<(), DaemonError> {
+    for ancestor in kernel_home.ancestors() {
+        let marker = ancestor.join(".git");
+        match std::fs::symlink_metadata(&marker) {
+            Ok(_) => {
+                return Err(setup_error(
+                    "worker preparation HOME would be created inside a Git worktree",
+                ))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(setup_error(&format!(
+                    "kernel state repository boundary could not be inspected: {error}"
+                )))
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ensure_preparation_directory(
@@ -943,7 +973,34 @@ mod tests {
     }
 
     #[test]
-    fn preparation_home_rejects_kernel_state_inside_the_project_worktree() {
+    fn preparation_home_allows_arbitrary_home_ancestor_of_kernel_home() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-preparation-home-ancestor-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("home");
+        let kernel_home = workspace.join("user/.chariox");
+        std::fs::create_dir_all(&kernel_home).expect("home workspace and kernel home should exist");
+
+        let preparation_home = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-home-ancestor",
+            "worker-1",
+        )
+        .expect("an arbitrary /home-like workspace may contain the kernel home as a descendant");
+
+        assert!(preparation_home.path().starts_with(kernel_home.join("state")));
+        assert!(
+            !workspace.join(".git").exists(),
+            "the fixture models an arbitrary directory, not a tracked repository",
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preparation_home_rejects_kernel_state_inside_a_git_worktree() {
         let root = std::env::temp_dir().join(format!(
             "chariox-project-preparation-kernel-home-in-worktree-{}-{}",
             std::process::id(),
@@ -952,19 +1009,83 @@ mod tests {
         let workspace = root.join("workspace");
         let kernel_home = workspace.join("kernel-home");
         std::fs::create_dir_all(&kernel_home).expect("worktree and kernel home should exist");
+        std::fs::create_dir(workspace.join(".git")).expect("git worktree marker should exist");
 
         let result = WorkerPreparationHome::for_project_worker(
             &workspace,
             &kernel_home,
-            "project-kernel-home-inside-worktree",
+            "project-kernel-state-inside-git-worktree",
             "worker-1",
         );
 
-        assert!(result.is_err());
+        let error = match result {
+            Ok(_) => panic!("kernel state inside a Git worktree must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("inside a Git worktree"));
         assert!(
             !kernel_home.join("state").exists(),
-            "preparation must not create Chariox state inside the project worktree",
+            "preparation must not create Chariox state inside the Git worktree",
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preparation_home_resolves_default_kernel_home_without_chariox_home() {
+        let _environment_lock = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-preparation-default-home-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let ordinary_home = root.join("ordinary-home");
+        let config_home = ordinary_home.join(".chariox");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&config_home).expect("default kernel config home should exist");
+        std::fs::create_dir_all(&workspace).expect("project workspace should exist");
+
+        let old_chariox_home = std::env::var_os("CHARIOX_HOME");
+        let old_home = std::env::var_os("HOME");
+        let old_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe {
+            std::env::remove_var("CHARIOX_HOME");
+            std::env::set_var("HOME", &ordinary_home);
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        let config = DaemonConfig::new("preparation-default-home", "worker-1", "worker");
+        let resolved_kernel_home = resolved_worker_kernel_home(&config);
+        unsafe {
+            match old_chariox_home {
+                Some(value) => std::env::set_var("CHARIOX_HOME", value),
+                None => std::env::remove_var("CHARIOX_HOME"),
+            }
+            match old_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match old_xdg_config_home {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert_eq!(
+            config.user_config_path,
+            config_home.join("config.toml"),
+            "ordinary config resolution should use HOME when CHARIOX_HOME is unset",
+        );
+        let kernel_home = resolved_kernel_home.expect("default kernel home should resolve");
+        assert_eq!(kernel_home, config_home.canonicalize().unwrap());
+        let preparation_home = WorkerPreparationHome::for_project_worker(
+            &workspace,
+            &kernel_home,
+            "project-default-home",
+            "worker-1",
+        )
+        .expect("preparation HOME should use the standard kernel config home");
+        assert!(preparation_home
+            .path()
+            .starts_with(kernel_home.join("state/project-environment-preparation")));
         let _ = std::fs::remove_dir_all(root);
     }
 

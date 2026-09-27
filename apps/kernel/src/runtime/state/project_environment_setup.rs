@@ -2226,14 +2226,7 @@ impl KernelRuntimeState {
                 "prepared provider context changed before worker setup",
             ));
         }
-        let kernel_home = std::env::var_os("CHARIOX_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .ok_or_else(|| setup_error("worker kernel home is not configured"))?
-            .canonicalize()
-            .map_err(|error| {
-                setup_error(&format!("worker kernel home could not be resolved: {error}"))
-            })?;
+        let kernel_home = resolved_worker_kernel_home(&config)?;
         let workspace_root = canonical_worker_workspace(
             &execution.workspace_id,
             Some(kernel_home.as_os_str()),
