@@ -338,6 +338,29 @@ atomic_symlink() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-symlink "$1" "$2"
 }
 
+sync_path1_data_volume_unit_links() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  data_service=$install_root/etc/systemd/system/chariox-data-volume-admission.service
+  rootless_dropin=$install_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf
+  allocator_dropin=$install_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf
+  if [ -f "$current_link/etc/systemd/system/chariox-data-volume-admission.service" ] \
+    && [ -f "$current_link/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" ] \
+    && [ -f "$current_link/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" ]; then
+    install -d -o root -g root -m 0755 \
+      "$(dirname "$rootless_dropin")" \
+      "$(dirname "$allocator_dropin")"
+    atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-data-volume-admission.service" "$data_service" \
+      || return 1
+    atomic_symlink "../../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$rootless_dropin" \
+      || return 1
+    atomic_symlink "../../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$allocator_dropin" \
+      || return 1
+    return 0
+  fi
+  echo "Path-1 release is missing required data-volume admission artifacts" >&2
+  return 1
+}
+
 atomic_receipt() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-file "$1" "$receipt_path"
 }
@@ -475,6 +498,17 @@ rollback_transaction() {
     echo "managed kernel upgrade transaction has an invalid previous target" >&2
     return 1
   }
+  if [ "$managed_provider_topology" = path1 ]; then
+    for previous_data_volume_artifact in \
+      etc/systemd/system/chariox-data-volume-admission.service \
+      etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf \
+      etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf; do
+      if [ ! -f "$chariox_root/$previous_target/$previous_data_volume_artifact" ]; then
+        echo "refusing to roll Path-1 back to a release without data-volume admission" >&2
+        return 1
+      fi
+    done
+  fi
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
     "$transaction_root/previous-receipt.json" "$previous_digest" \
     "$transaction_root/previous-release-override.json" || return 1
@@ -498,6 +532,7 @@ rollback_transaction() {
     *) echo "managed kernel upgrade transaction has an invalid release override marker" >&2; return 1 ;;
   esac
   atomic_symlink "$previous_target" "$current_link" || return 1
+  sync_path1_data_volume_unit_links || return 1
   atomic_symlink "$previous_slice_build_context" "$slice_build_context_link" || return 1
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   systemctl daemon-reload || return 1
@@ -743,7 +778,9 @@ else
   install -d -o root -g root -m 0755 \
     "$pending_release/usr/local/bin" \
     "$pending_release/usr/lib/chariox" \
-    "$pending_release/etc/systemd/system"
+    "$pending_release/etc/systemd/system" \
+    "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
+    "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   for release_file in release-manifest.json release-manifest.sig release-public-key build-attestation.json build-attestation.sig builder-public-key; do
@@ -752,6 +789,9 @@ else
   for unit in chariox-managed-bootstrap.service chariox-rootless-docker.service chariox-slice-broker.service; do
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$unit" "$pending_release/etc/systemd/system/$unit"
   done
+  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
+  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
+  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
   path1_unit=chariox-path1-managed-bootstrap.service
   if [ -f "$image_root/etc/systemd/system/$path1_unit" ]; then
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$path1_unit" "$pending_release/etc/systemd/system/$path1_unit"
@@ -834,6 +874,9 @@ else
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
   atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
+fi
+if [ "${activation_failed:-0}" -eq 0 ]; then
+  sync_path1_data_volume_unit_links || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
   atomic_symlink "$signed_slice_build_context_target" "$slice_build_context_link" \

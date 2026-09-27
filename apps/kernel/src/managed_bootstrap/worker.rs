@@ -20,9 +20,11 @@ use crate::error::DaemonError;
 use super::cloud::{HttpBootstrapCloudClient, ManagedCloudRelayProfile};
 use super::release::{verify_release, VerifiedRelease};
 use super::state::{
-    default_disposable_worker_receipt_path, managed_home_paths, managed_repository_root_for_schema,
-    read_bounded_json, remove_envelope, valid_digest, valid_identifier, valid_secret,
-    validate_cloud_url, validate_managed_state_path,
+    default_disposable_worker_receipt_path, managed_home_paths,
+    managed_repository_root_for_schema, read_bounded_json, remove_envelope, valid_digest,
+    valid_identifier, valid_secret, validate_cloud_url, validate_managed_state_path,
+    validate_protected_bootstrap_file, validate_volume_binding_for_schema,
+    PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH,
 };
 use super::{
     jittered, managed_provider_topology, normalized_api_url, persisted_profile,
@@ -132,6 +134,10 @@ struct WorkerEnvelope {
     runtime_release_digest: String,
     #[serde(default)]
     managed_repository_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_data_volume_serial: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_data_volume_size_gb: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -755,9 +761,19 @@ fn stop_child(child: &mut Child) -> Result<(), DaemonError> {
 impl WorkerConfig {
     fn from_env() -> Result<Self, DaemonError> {
         let (process_home, chariox_home) = managed_home_paths()?;
-        let envelope_path = required_path(
+        let configured_envelope_path = env::var_os("CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH")
+            .filter(|value| !value.is_empty());
+        if configured_envelope_path.as_ref().is_some_and(|value| {
+            PathBuf::from(value) != Path::new(PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH)
+        }) {
+            return Err(worker_error(
+                "Path-1 worker bootstrap must use the protected bootstrap path",
+            ));
+        }
+        let envelope_path = PathBuf::from(PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH);
+        validate_managed_state_path(
+            &envelope_path,
             "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
-            Some("/var/lib/chariox/disposable-worker-bootstrap.json"),
         )?;
         let receipt_path = env::var_os(ACTIVITY_RECEIPT_ENV)
             .filter(|value| !value.is_empty())
@@ -810,8 +826,13 @@ impl WorkerConfig {
 
 impl WorkerEnvelope {
     fn read(path: &Path) -> Result<Self, DaemonError> {
+        let protected_storage_input = path == Path::new(PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH);
+        if protected_storage_input {
+            validate_protected_bootstrap_file(path, PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH)?;
+        }
         let value: Self = read_bounded_json(path, "disposable worker envelope")?;
-        if !matches!(value.schema_version, 1 | 2)
+        if !(matches!(value.schema_version, 1 | 2) && !protected_storage_input
+            || value.schema_version == 2 && protected_storage_input)
             || !valid_identifier(&value.allocation_id)
             || !valid_secret(&value.token, "mboot_")
             || !valid_digest(&value.runtime_release_digest)
@@ -819,6 +840,13 @@ impl WorkerEnvelope {
         {
             return Err(worker_error("disposable worker envelope is invalid"));
         }
+        validate_volume_binding_for_schema(
+            value.schema_version,
+            protected_storage_input,
+            value.expected_data_volume_serial.as_deref(),
+            value.expected_data_volume_size_gb,
+        )
+        .map_err(|error| worker_error(error.to_string()))?;
         validate_cloud_url(&value.cloud_api_url)?;
         value.expires_at()?;
         Ok(value)
@@ -3012,6 +3040,8 @@ mod tests {
             expires_at: "2026-09-13T12:00:00Z".to_string(),
             runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
             managed_repository_root: None,
+            expected_data_volume_serial: None,
+            expected_data_volume_size_gb: None,
         }
     }
 

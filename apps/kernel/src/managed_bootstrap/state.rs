@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::os::unix::fs::MetadataExt;
 use url::Url;
 
 use crate::config::write_private_file;
@@ -19,6 +20,15 @@ use super::freshness::{
 const MAX_STATE_BYTES: u64 = 96 * 1024;
 pub(super) const DEFAULT_MANAGED_REPOSITORY_ROOT: &str = "/home/chariox";
 pub(super) const TRUSTED_BUILDER_PUBLIC_KEY_ENV: &str = "CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY";
+pub(super) const MANAGED_BOOTSTRAP_PATH: &str = "/var/lib/chariox/managed-bootstrap.json";
+pub(super) const PROTECTED_BOOTSTRAP_DIRECTORY: &str = "/etc/chariox/bootstrap";
+pub(super) const PROTECTED_MANAGED_BOOTSTRAP_PATH: &str =
+    "/etc/chariox/bootstrap/managed-bootstrap.json";
+pub(super) const PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH: &str =
+    "/etc/chariox/bootstrap/disposable-worker-bootstrap.json";
+const MIN_HETZNER_VOLUME_SIZE_GB: u32 = 10;
+const MAX_HETZNER_VOLUME_SIZE_GB: u32 = 10_000;
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BootstrapConfig {
@@ -54,6 +64,10 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) managed_repository_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) provider_rebuild_action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) expected_data_volume_serial: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) expected_data_volume_size_gb: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,10 +174,24 @@ impl BootstrapConfig {
     pub(super) fn from_env() -> Result<Self, DaemonError> {
         trusted_builder_public_key_path()?;
         let (process_home, chariox_home) = managed_home_paths()?;
-        let envelope_path = absolute_env_path(
-            "CHARIOX_MANAGED_BOOTSTRAP_PATH",
-            "/var/lib/chariox/managed-bootstrap.json",
-        )?;
+        let configured_envelope_path = env::var_os("CHARIOX_MANAGED_BOOTSTRAP_PATH")
+            .filter(|value| !value.is_empty());
+        let envelope_path = match super::managed_provider_topology()? {
+            super::ManagedProviderTopology::Path1 => {
+                if configured_envelope_path.as_ref().is_some_and(|value| {
+                    PathBuf::from(value) != Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH)
+                }) {
+                    return Err(state_error(
+                        "Path-1 managed bootstrap must use the protected bootstrap path",
+                    ));
+                }
+                PathBuf::from(PROTECTED_MANAGED_BOOTSTRAP_PATH)
+            }
+            super::ManagedProviderTopology::SharedHost => configured_envelope_path
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(MANAGED_BOOTSTRAP_PATH)),
+        };
+        validate_managed_state_path(&envelope_path, "CHARIOX_MANAGED_BOOTSTRAP_PATH")?;
         let receipt_path = env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
@@ -263,10 +291,21 @@ pub(super) fn validate_managed_state_path(
 
 impl BootstrapEnvelope {
     pub(super) fn read(path: &Path) -> Result<Self, DaemonError> {
+        let protected_path = path == Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH);
+        if protected_path {
+            validate_protected_bootstrap_file(path, PROTECTED_MANAGED_BOOTSTRAP_PATH)?;
+        }
         let envelope: Self = read_bounded_json(path, "managed bootstrap envelope")?;
         match &envelope {
-            Self::ManagedEnvironment(value) => value.validate()?,
-            Self::DisposableWorker(value) => value.validate()?,
+            Self::ManagedEnvironment(value) => value.validate(protected_path)?,
+            Self::DisposableWorker(value) => {
+                if protected_path {
+                    return Err(state_error(
+                        "protected managed bootstrap file has the wrong envelope kind",
+                    ));
+                }
+                value.validate()?;
+            }
         }
         Ok(envelope)
     }
@@ -279,8 +318,9 @@ impl ManagedBootstrapEnvelope {
             .map_err(|_| state_error("managed bootstrap expiry is invalid"))
     }
 
-    fn validate(&self) -> Result<(), DaemonError> {
-        if !matches!(self.schema_version, 1 | 2)
+    fn validate(&self, protected_storage_input: bool) -> Result<(), DaemonError> {
+        if !(matches!(self.schema_version, 1 | 2) && !protected_storage_input
+            || self.schema_version == 3 && protected_storage_input)
             || !valid_identifier(&self.environment_id)
             || !valid_secret(&self.token, "mkboot_")
             || !valid_digest(&self.runtime_release_digest)
@@ -296,6 +336,12 @@ impl ManagedBootstrapEnvelope {
         {
             return Err(state_error("managed bootstrap envelope is invalid"));
         }
+        validate_volume_binding_for_schema(
+            self.schema_version,
+            protected_storage_input,
+            self.expected_data_volume_serial.as_deref(),
+            self.expected_data_volume_size_gb,
+        )?;
         self.expires_at()?;
         validate_cloud_url(&self.cloud_api_url)
     }
@@ -433,7 +479,7 @@ pub(super) fn managed_repository_root_for_schema(
 ) -> Result<String, DaemonError> {
     match (schema_version, value) {
         (1, None) => Ok(DEFAULT_MANAGED_REPOSITORY_ROOT.to_string()),
-        (2, Some(value)) => {
+        (2 | 3, Some(value)) => {
             let normalized = normalize_managed_repository_root(value)?;
             if normalized != value {
                 return Err(state_error("managed repository root must be normalized"));
@@ -444,6 +490,97 @@ pub(super) fn managed_repository_root_for_schema(
             "managed repository root does not match the bootstrap schema",
         )),
     }
+}
+
+pub(super) fn validate_protected_bootstrap_file(
+    path: &Path,
+    expected_path: &str,
+) -> Result<(), DaemonError> {
+    if path != Path::new(expected_path) {
+        return Err(state_error("protected bootstrap path is not canonical"));
+    }
+    let directory = Path::new(PROTECTED_BOOTSTRAP_DIRECTORY);
+    let root_directory = Path::new("/");
+    let root_metadata = fs::symlink_metadata(root_directory)
+        .map_err(|error| state_error(&format!("inspect / for protected bootstrap: {error}")))?;
+    let etc_metadata = fs::symlink_metadata("/etc")
+        .map_err(|error| state_error(&format!("inspect /etc for protected bootstrap: {error}")))?;
+    let chariox_directory = Path::new("/etc/chariox");
+    let chariox_metadata = fs::symlink_metadata(chariox_directory).map_err(|error| {
+        state_error(&format!("inspect /etc/chariox for protected bootstrap: {error}"))
+    })?;
+    let directory_metadata = fs::symlink_metadata(directory)
+        .map_err(|error| state_error(&format!("inspect protected bootstrap directory: {error}")))?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| state_error(&format!("inspect protected bootstrap file: {error}")))?;
+    let expected_gid = unsafe { libc::getegid() };
+    let root_mode = root_metadata.mode();
+    let etc_mode = etc_metadata.mode();
+    let chariox_mode = chariox_metadata.mode();
+    if root_metadata.file_type().is_symlink()
+        || !root_metadata.is_dir()
+        || root_metadata.uid() != 0
+        || root_mode & 0o022 != 0
+        || root_mode & 0o001 == 0
+        || etc_metadata.file_type().is_symlink()
+        || !etc_metadata.is_dir()
+        || etc_metadata.uid() != 0
+        || etc_mode & 0o022 != 0
+        || etc_mode & 0o001 == 0
+        || chariox_metadata.file_type().is_symlink()
+        || !chariox_metadata.is_dir()
+        || chariox_metadata.uid() != 0
+        || chariox_mode & 0o022 != 0
+        || !(chariox_metadata.gid() == expected_gid && chariox_mode & 0o010 != 0
+            || chariox_mode & 0o001 != 0)
+        || directory_metadata.file_type().is_symlink()
+        || !directory_metadata.is_dir()
+        || directory_metadata.uid() != 0
+        || directory_metadata.gid() != expected_gid
+        || directory_metadata.mode() & 0o7777 != 0o750
+        || metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.gid() != expected_gid
+        || metadata.mode() & 0o7777 != 0o640
+    {
+        return Err(state_error(
+            "protected bootstrap input must be root:chariox with directory mode 0750 and file mode 0640",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_volume_binding_for_schema(
+    schema_version: u32,
+    protected_storage_input: bool,
+    serial: Option<&str>,
+    size_gb: Option<u32>,
+) -> Result<(), DaemonError> {
+    let storage_schema = protected_storage_input && matches!(schema_version, 2 | 3);
+    if !storage_schema {
+        if serial.is_some() || size_gb.is_some() {
+            return Err(state_error(
+                "legacy bootstrap envelope cannot include a data-volume binding",
+            ));
+        }
+        return Ok(());
+    }
+    let valid_serial = serial.is_some_and(|value| {
+        !value.is_empty()
+            && value.bytes().all(|byte| byte.is_ascii_digit())
+            && value.parse::<u64>().is_ok_and(|number| {
+                number > 0 && number <= MAX_SAFE_INTEGER && number.to_string() == value
+            })
+    });
+    if !valid_serial
+        || !size_gb.is_some_and(|value| {
+            (MIN_HETZNER_VOLUME_SIZE_GB..=MAX_HETZNER_VOLUME_SIZE_GB).contains(&value)
+        })
+    {
+        return Err(state_error("data-volume bootstrap binding is invalid"));
+    }
+    Ok(())
 }
 
 pub(super) fn normalize_managed_repository_root(value: &str) -> Result<String, DaemonError> {
@@ -562,6 +699,14 @@ pub(super) fn disposable_worker_release_override_path(
 }
 
 pub(super) fn remove_envelope(path: &Path) -> Result<(), DaemonError> {
+    if path == Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH)
+        || path == Path::new(PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH)
+    {
+        // Cloud writes this root-owned input before systemd. Keep it available
+        // for root disk admission on every boot; the chariox supervisor cannot
+        // remove or replace files beneath the protected directory.
+        return Ok(());
+    }
     let metadata = fs::symlink_metadata(path).map_err(|error| state_error(&error.to_string()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(state_error(

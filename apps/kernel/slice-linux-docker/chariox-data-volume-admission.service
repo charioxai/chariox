@@ -1,0 +1,26 @@
+[Unit]
+Description=Chariox dedicated Hetzner data-volume admission
+After=local-fs.target
+Before=chariox-slice-disk-quota-allocator.service chariox-rootless-docker.service chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service
+RequiresMountsFor=/var/lib/chariox-docker/data
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/node /usr/lib/chariox/current/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-data-volume-admission.mjs
+RemainAfterExit=yes
+TimeoutStartSec=120
+StateDirectory=chariox-data-volume
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/chariox-docker/data /var/lib/chariox-data-volume
+UMask=0077

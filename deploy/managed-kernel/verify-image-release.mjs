@@ -32,6 +32,18 @@ const EXPECTED_ARTIFACTS = new Map([
     { path: "/etc/systemd/system/chariox-rootless-docker.service", type: "file" },
   ],
   [
+    "chariox-data-volume-admission.service",
+    { path: "/etc/systemd/system/chariox-data-volume-admission.service", type: "file" },
+  ],
+  [
+    "chariox-rootless-docker.path1-data-volume.conf",
+    { path: "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", type: "file" },
+  ],
+  [
+    "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+    { path: "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", type: "file" },
+  ],
+  [
     "chariox-slice-broker.service",
     { path: "/etc/systemd/system/chariox-slice-broker.service", type: "file" },
   ],
@@ -314,9 +326,25 @@ async function verifyImageRelease(
   const hasPath1Service = manifest.artifacts.some(
     (artifact) => artifact?.name === "chariox-path1-managed-bootstrap.service",
   )
+  const dataVolumeArtifactNames = [
+    "chariox-data-volume-admission.service",
+    "chariox-rootless-docker.path1-data-volume.conf",
+    "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+  ]
+  const dataVolumeArtifactCount = manifest.artifacts.filter(
+    (artifact) => dataVolumeArtifactNames.includes(artifact?.name),
+  ).length
+  if (dataVolumeArtifactCount !== 0 && dataVolumeArtifactCount !== dataVolumeArtifactNames.length) {
+    fail("release contains an incomplete Path-1 data-volume admission artifact set")
+  }
+  const hasDataVolumeAdmission = dataVolumeArtifactCount === dataVolumeArtifactNames.length
+  if (selectedTopology === "path1" && !hasDataVolumeAdmission) {
+    fail("Path-1 releases must include data-volume admission and both ordering drop-ins")
+  }
   const expectedArtifactCount = EXPECTED_ARTIFACTS.size
     - (hasWorkerService ? 0 : 1)
     - (hasPath1Service ? 0 : 1)
+    - (hasDataVolumeAdmission ? 0 : dataVolumeArtifactNames.length)
   if (!hasWorkerService) {
     const workerPath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get("chariox-disposable-worker-bootstrap.service").path)
     const workerExists = await lstat(workerPath).then(() => true, (error) => {
@@ -332,6 +360,16 @@ async function verifyImageRelease(
       return false
     })
     if (path1Exists) fail("release contains an undeclared Path-1 managed-home service")
+  }
+  if (!hasDataVolumeAdmission) {
+    for (const name of dataVolumeArtifactNames) {
+      const artifactPathname = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(name).path)
+      const artifactExists = await lstat(artifactPathname).then(() => true, (error) => {
+        if (error.code !== "ENOENT") throw error
+        return false
+      })
+      if (artifactExists) fail(`release contains an undeclared data-volume artifact: ${name}`)
+    }
   }
   if (manifest.artifacts.length !== expectedArtifactCount) {
     fail("release manifest does not contain the exact image artifacts")
@@ -399,13 +437,16 @@ async function verifyImageRelease(
       if (workerExecStarts.length !== 1 || workerExecStarts[0] !== PATH1_WORKER_EXEC_START) {
         fail("selected Path-1 disposable-worker service has an incompatible ExecStart")
       }
+      if (hasDataVolumeAdmission
+        && workerLines.some((line) => line.startsWith("Environment=CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH="))) {
+        fail("selected Path-1 disposable-worker service must use the protected bootstrap path")
+      }
       const workerPaths = workerLines.filter((line) => line.startsWith("Environment=PATH="))
       if (workerPaths.length !== 1 || workerPaths[0] !== PATH1_BOOTSTRAP_PATH) {
         fail("selected Path-1 disposable-worker service has an incompatible bootstrap PATH")
       }
       for (const [name, required] of [
         ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"],
-        ["CHARIOX_MANAGED_BOOTSTRAP_PATH", "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json"],
         ["CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY", "Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key"],
         ["HOME", "Environment=HOME=/home/chariox"],
         ["CHARIOX_HOME", "Environment=CHARIOX_HOME=/home/chariox/.chariox"],
@@ -422,10 +463,75 @@ async function verifyImageRelease(
         || brokerPrestarts[0] !== "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service") {
         fail("selected Path-1 managed bootstrap service must restart the one-shot broker before launch")
       }
-      for (const dependency of ["After=", "Wants="]) {
-        const declarations = lines.filter((line) => line.startsWith(dependency))
-        if (declarations.length !== 1 || !declarations[0].split(/\s+/).includes("chariox-rootless-docker.service")) {
-          fail(`selected Path-1 managed bootstrap service must declare ${dependency}chariox-rootless-docker.service`)
+      const afterRootless = lines.filter((line) => line.startsWith("After="))
+      if (afterRootless.length !== 1 || !afterRootless[0].split(/\s+/).includes("chariox-rootless-docker.service")) {
+        fail("selected Path-1 managed bootstrap service must start after rootless Docker")
+      }
+      const workerAfterRootless = workerLines.filter((line) => line.startsWith("After="))
+      if (workerAfterRootless.length !== 1 || !workerAfterRootless[0].split(/\s+/).includes("chariox-rootless-docker.service")) {
+        fail("selected Path-1 disposable-worker service must start after rootless Docker")
+      }
+      if (hasDataVolumeAdmission) {
+        const requiredRootless = lines.filter((line) => line.startsWith("Requires="))
+        const workerRequiresRootless = workerLines.filter((line) => line.startsWith("Requires="))
+        if (requiredRootless.length !== 1 || !requiredRootless[0].split(/\s+/).includes("chariox-rootless-docker.service")
+          || workerRequiresRootless.length !== 1 || !workerRequiresRootless[0].split(/\s+/).includes("chariox-rootless-docker.service")) {
+          fail("storage-capable Path-1 supervisors must require rootless Docker")
+        }
+      }
+      if (hasDataVolumeAdmission && lines.some((line) => line.startsWith("Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH="))) {
+        fail("selected Path-1 managed bootstrap service must use the protected bootstrap path")
+      }
+      if (hasDataVolumeAdmission && workerLines.some((line) => line.startsWith("Environment=CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH="))) {
+        fail("selected Path-1 disposable-worker service must use the protected bootstrap path")
+      }
+      if (hasDataVolumeAdmission) {
+        const dataAdmissionPath = artifactPath(
+          rootfs,
+          EXPECTED_ARTIFACTS.get("chariox-data-volume-admission.service").path,
+        )
+        const dataAdmission = (await readRegularFile(
+          dataAdmissionPath,
+          "Path-1 data-volume admission service",
+          64 * 1024,
+        )).toString("utf8")
+        const dataAdmissionLines = dataAdmission.split(/\r?\n/)
+        for (const required of [
+          "Type=oneshot",
+          "User=root",
+          "Group=root",
+          "ExecStart=/usr/bin/node /usr/lib/chariox/current/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-data-volume-admission.mjs",
+          "RequiresMountsFor=/var/lib/chariox-docker/data",
+        ]) {
+          if (!dataAdmissionLines.includes(required)) {
+            fail(`Path-1 data-volume admission service is missing ${required}`)
+          }
+        }
+        const admissionBefore = dataAdmissionLines.filter((line) => line.startsWith("Before="))
+        if (admissionBefore.length !== 1 || [
+          "chariox-slice-disk-quota-allocator.service",
+          "chariox-rootless-docker.service",
+          "chariox-path1-managed-bootstrap.service",
+          "chariox-disposable-worker-bootstrap.service",
+        ].some((unit) => !admissionBefore[0].split(/\s+/).includes(unit))) {
+          fail("Path-1 data-volume admission must precede quota allocation, Docker, and both supervisors")
+        }
+        for (const [artifactName, label] of [
+          ["chariox-rootless-docker.path1-data-volume.conf", "rootless Docker"],
+          ["chariox-slice-disk-quota-allocator.path1-data-volume.conf", "quota allocator"],
+        ]) {
+          const dropInPath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(artifactName).path)
+          const dropIn = (await readRegularFile(dropInPath, `Path-1 ${label} data-volume drop-in`, 16 * 1024))
+            .toString("utf8")
+          const dropInLines = dropIn.split(/\r?\n/)
+          for (const directive of [
+            "Requires=chariox-data-volume-admission.service",
+            "After=chariox-data-volume-admission.service",
+          ]) {
+            if (dropInLines.filter((line) => line === directive).length !== 1) {
+              fail(`Path-1 ${label} must declare ${directive}`)
+            }
+          }
         }
       }
       for (const forbidden of [

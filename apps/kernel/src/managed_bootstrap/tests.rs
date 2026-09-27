@@ -839,6 +839,8 @@ fn disposable_worker_systemd_unit_runs_path1_without_provider_isolation() {
         "Environment=CHARIOX_MANAGED_PROVIDER_HOME=/var/lib/chariox/provider-home",
         "Environment=CHARIOX_MANAGED_VAULT_PATH=/home/chariox/.chariox/vault/vault.json",
         "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "After=network-online.target chariox-rootless-docker.service",
+        "Requires=chariox-rootless-docker.service",
         "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker",
         // Managed-machine automatic shutdown triggers stay on the Path-1 unit.
         "Conflicts=chariox-managed-bootstrap.service",
@@ -849,6 +851,7 @@ fn disposable_worker_systemd_unit_runs_path1_without_provider_isolation() {
             "missing disposable worker contract: {required}"
         );
     }
+    assert!(!unit.contains("CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH="));
     // Path 1 executes providers directly in the disposable VM. The VM is the
     // provider boundary, so this unit must not carry Bubblewrap/provider
     // isolation or the managed shared-host systemd hardening restrictions.

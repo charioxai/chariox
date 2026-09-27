@@ -1328,6 +1328,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
                 runtime_release_digest: receipt.runtime_release_digest.clone(),
                 managed_repository_root: None,
                 provider_rebuild_action_id: None,
+                expected_data_volume_serial: None,
+                expected_data_volume_size_gb: None,
             },
             receipt,
             profile,

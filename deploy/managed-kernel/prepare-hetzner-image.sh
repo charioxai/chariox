@@ -108,6 +108,7 @@ apt-get install -y --no-install-recommends \
   lsof \
   nodejs \
   npm \
+  psmisc \
   pkg-config \
   protobuf-compiler \
   ripgrep \
@@ -321,7 +322,14 @@ systemctl stop chariox-slice-disk-quota-allocator.service
 if systemctl is-active --quiet chariox-slice-disk-quota-allocator.service; then
   fail "slice disk quota allocator remained active while freezing the image"
 fi
-rm -rf /var/lib/chariox-docker/data /var/lib/chariox-docker/home/.docker
+if [ -e /var/lib/chariox-docker/data ] || [ -L /var/lib/chariox-docker/data ]; then
+  [ -d /var/lib/chariox-docker/data ] && [ ! -L /var/lib/chariox-docker/data ] \
+    || fail "Docker data-root is not a real directory"
+  if find /var/lib/chariox-docker/data -mindepth 1 -print -quit | grep -q .; then
+    fail "Docker data-root contains volume data; refusing to erase it while preparing the image"
+  fi
+fi
+rm -rf /var/lib/chariox-docker/home/.docker
 if [ "$remove_seeded_rootless_quota_config" -eq 1 ] \
   && [ -f "$rootless_docker_config" ] \
   && cmp -s "$rootless_docker_config" - <<'EOF'
@@ -350,6 +358,23 @@ for bootstrap_service in "$managed_bootstrap_service" "$other_managed_bootstrap_
     fail "bootstrap service $bootstrap_service started while the image was being built"
   fi
 done
+
+for state_directory in /var/lib/chariox-slice-disk-quota /var/lib/chariox-data-volume; do
+  if [ -e "$state_directory" ] || [ -L "$state_directory" ]; then
+    [ -d "$state_directory" ] && [ ! -L "$state_directory" ] \
+      || fail "managed image runtime state path is not a real directory: $state_directory"
+    if find "$state_directory" -mindepth 1 -print -quit | grep -q .; then
+      fail "managed image contains persisted quota or data-volume binding state: $state_directory"
+    fi
+  fi
+done
+if [ -e /etc/chariox/bootstrap ] || [ -L /etc/chariox/bootstrap ]; then
+  [ -d /etc/chariox/bootstrap ] && [ ! -L /etc/chariox/bootstrap ] \
+    || fail "protected bootstrap path is not a real directory"
+  if find /etc/chariox/bootstrap -mindepth 1 -print -quit | grep -q .; then
+    fail "protected bootstrap input must not be captured in the image"
+  fi
+fi
 
 if find /var/lib/chariox -mindepth 1 -print -quit | grep -q .; then
   fail "managed runtime state entered the image"
