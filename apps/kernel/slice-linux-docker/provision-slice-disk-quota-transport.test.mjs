@@ -289,7 +289,7 @@ test("client receives the allocator error envelope from the real service handler
   assert.deepEqual(calls, [PROBE_REQUEST])
 })
 
-test("service decoder replaces malformed UTF-8 before allocator dispatch", async (context) => {
+test("service rejects malformed UTF-8 before allocator dispatch", async (context) => {
   const allocator = createTestAllocator()
   const { socketPath } = await createQuotaServicePeer(context, allocator, { requestTimeoutMs: 300 })
   const malformedRequest = Buffer.concat([
@@ -299,16 +299,11 @@ test("service decoder replaces malformed UTF-8 before allocator dispatch", async
   ])
   const { data } = await socketExchange(socketPath, (socket) => socket.end(malformedRequest))
 
-  assert.equal(allocator.calls.length, 1)
-  assert.deepEqual(allocator.calls[0], {
-    protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
-    operation: "pro\uFFFD(be",
-  })
-  assert.deepEqual(JSON.parse(data.toString("utf8")), {
-    protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
-    ok: true,
-    result: { operation: "pro\uFFFD(be", handled: true },
-  })
+  assert.equal(allocator.calls.length, 0)
+  const response = JSON.parse(data.toString("utf8"))
+  assert.equal(response.protocolVersion, SLICE_DISK_QUOTA_PROTOCOL_VERSION)
+  assert.equal(response.ok, false)
+  assert.match(response.error, /encoded data was not valid/i)
 })
 
 test("service closes an incomplete request frame without allocator dispatch", async (context) => {

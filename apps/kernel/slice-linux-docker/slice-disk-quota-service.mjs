@@ -1,6 +1,7 @@
-import { chmodSync, chownSync, mkdirSync, readFileSync } from "node:fs"
+import { chmodSync, mkdirSync } from "node:fs"
 import { createServer } from "node:net"
 import { dirname, resolve } from "node:path"
+import { TextDecoder } from "node:util"
 import { pathToFileURL } from "node:url"
 import {
   SLICE_DISK_QUOTA_FRAME_MAX_BYTES,
@@ -14,13 +15,6 @@ import { createSystemSliceDiskQuotaBackend } from "./slice-disk-quota-xfs-backen
 
 function fail(message) {
   throw new Error(message)
-}
-
-function serviceGid(name) {
-  const row = readFileSync("/etc/group", "utf8").split("\n").find((line) => line.startsWith(`${name}:`))
-  const gid = row?.split(":")[2]
-  if (!/^[0-9]+$/.test(gid ?? "")) fail(`quota socket group ${name} is unavailable`)
-  return Number(gid)
 }
 
 export function handleSliceDiskQuotaConnection(socket, allocator, {
@@ -71,7 +65,8 @@ export function handleSliceDiskQuotaConnection(socket, allocator, {
     settled = true
     cleanup()
     try {
-      const result = allocator.handle(JSON.parse(input.subarray(0, newline).toString("utf8")))
+      const body = new TextDecoder("utf-8", { fatal: true }).decode(input.subarray(0, newline))
+      const result = allocator.handle(JSON.parse(body))
       socket.end(`${JSON.stringify({ protocolVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION, ok: true, result })}\n`)
     } catch (error) {
       socket.end(`${JSON.stringify({
@@ -88,11 +83,9 @@ function createServerService() {
   const stateStore = createFileSliceDiskQuotaStateStore()
   const allocator = createSliceDiskQuotaAllocator({ backend: createSystemSliceDiskQuotaBackend(), stateStore })
   mkdirSync(dirname(SLICE_DISK_QUOTA_SOCKET_PATH), { recursive: true, mode: 0o750 })
-  chownSync(dirname(SLICE_DISK_QUOTA_SOCKET_PATH), 0, serviceGid("chariox-docker"))
   chmodSync(dirname(SLICE_DISK_QUOTA_SOCKET_PATH), 0o750)
   const server = createServer({ allowHalfOpen: true }, (socket) => handleSliceDiskQuotaConnection(socket, allocator))
   server.listen(SLICE_DISK_QUOTA_SOCKET_PATH, () => {
-    chownSync(SLICE_DISK_QUOTA_SOCKET_PATH, 0, serviceGid("chariox-docker"))
     chmodSync(SLICE_DISK_QUOTA_SOCKET_PATH, 0o660)
   })
 }
