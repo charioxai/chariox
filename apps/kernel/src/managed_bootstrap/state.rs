@@ -425,7 +425,7 @@ impl BootstrapReceipt {
             }
             _ => false,
         };
-        if !matches!(self.schema_version, 1 | 2)
+        if !matches!(self.schema_version, 1 | 2 | 3)
             || !valid_identifier(&self.environment_id)
             || !valid_identifier(&self.machine_id)
             || !valid_identifier(&self.kernel_id)
@@ -447,6 +447,7 @@ impl BootstrapReceipt {
                 .is_some_and(|value| !valid_provider_rebuild_action_id(value))
             || self.freshness_evidence.as_ref().is_some_and(|evidence| {
                 self.provider_rebuild_action_id.is_none()
+                    && !(self.schema_version == 3 && self.generation > 1)
                     || validate_freshness_evidence(evidence, &self.runtime_release_digest).is_err()
             })
             || !confirmation_is_valid

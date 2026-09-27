@@ -23,7 +23,7 @@ use super::{
     validate_rebuild_volume_evidence, ConfirmedManagedKernelRegistration,
     ManagedKernelContextPlan, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV,
 };
-use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
+use crate::config::{DaemonConfig, ManagedRuntimeIdentity, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
 
 mod disposable_worker;
@@ -391,20 +391,35 @@ fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
     )
     .unwrap();
     let mut response = fixture.exchange_response();
-    response.generation = 4;
+    response.generation = 1;
     response.managed_repository_root = Some("/srv/managed workspaces".to_string());
     let cloud = FakeCloud::new(response);
 
-    let prepared = prepare_managed_kernel(&fixture.config, &cloud, fixture.now)
+    let mut prepared = prepare_managed_kernel(&fixture.config, &cloud, fixture.now)
         .expect("schema two bootstrap should exchange");
     assert!(prepared.confirmation.is_some());
     let receipt = BootstrapReceipt::read(&fixture.config.receipt_path)
         .unwrap()
         .unwrap();
     assert_eq!(receipt.schema_version, 2);
-    assert_eq!(receipt.generation, 4);
+    assert_eq!(receipt.generation, 1);
     assert_eq!(
         receipt.managed_repository_root().unwrap(),
+        "/srv/managed workspaces"
+    );
+    prepared
+        .confirmation
+        .take()
+        .expect("confirmation remains pending")
+        .confirm(&fixture.config, &cloud, fixture.now)
+        .expect("schema two confirmation preserves the repository root");
+    assert_eq!(cloud.confirm_calls.lock().expect("confirm calls").len(), 1);
+    assert_eq!(
+        BootstrapReceipt::read(&fixture.config.receipt_path)
+            .unwrap()
+            .unwrap()
+            .managed_repository_root()
+            .unwrap(),
         "/srv/managed workspaces"
     );
 
@@ -412,6 +427,75 @@ fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
         Some(value) => std::env::set_var("CHARIOX_HOME", value),
         None => std::env::remove_var("CHARIOX_HOME"),
     }
+    fixture.cleanup();
+}
+
+#[test]
+fn schema_three_exchange_receipt_and_confirmation_preserve_the_exact_repository_root() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("schema-three-repository-root");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let repository_root = "/srv/path1 managed workspaces";
+    let envelope = ManagedBootstrapEnvelope {
+        schema_version: 3,
+        cloud_api_url: "https://cloud.example.test".to_string(),
+        environment_id: "managed-env-1".to_string(),
+        token: fixture.token.clone(),
+        expires_at: (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
+        runtime_release_digest: fixture.release_digest.clone(),
+        managed_repository_root: Some(repository_root.to_string()),
+        provider_rebuild_action_id: None,
+        expected_data_volume_serial: Some("12345".to_string()),
+        expected_data_volume_size_gb: Some(20),
+    };
+    let identity = ManagedRuntimeIdentity {
+        machine_id: "machine-1".to_string(),
+        kernel_id: "kernel-1".to_string(),
+        relay_public_key: "relay-public-key".to_string(),
+    };
+    let mut response = fixture.exchange_response();
+    response.generation = 1;
+    response.managed_repository_root = Some(repository_root.to_string());
+    let cloud = FakeCloud::new(response);
+    let release = verify_release(
+        &fixture.config.manifest_path,
+        &fixture.config.signature_path,
+        &fixture.config.public_key_path,
+        &fixture.release_digest,
+        &fixture.config.kernel_binary,
+    )
+    .expect("fixture release is verified");
+
+    let pending = super::begin_registration(
+        &fixture.config,
+        &cloud,
+        fixture.now,
+        &envelope,
+        &identity,
+        &release,
+    )
+    .expect("schema three exchange succeeds")
+    .expect("exchange requires confirmation");
+    let receipt = BootstrapReceipt::read(&fixture.config.receipt_path)
+        .expect("read exchanged receipt")
+        .expect("receipt is persisted");
+    assert_eq!(receipt.schema_version, 3);
+    assert_eq!(receipt.generation, 1);
+    assert_eq!(receipt.managed_repository_root().unwrap(), repository_root);
+    assert_eq!(cloud.exchange_calls.lock().expect("exchange calls").len(), 1);
+
+    pending
+        .confirm(&fixture.config, &cloud, fixture.now)
+        .expect("schema three confirmation preserves the repository root");
+    let confirmed = BootstrapReceipt::read(&fixture.config.receipt_path)
+        .expect("read confirmed receipt")
+        .expect("confirmed receipt remains persisted");
+    assert_eq!(confirmed.status, BootstrapReceiptStatus::Confirmed);
+    assert_eq!(confirmed.managed_repository_root().unwrap(), repository_root);
+    assert_eq!(cloud.confirm_calls.lock().expect("confirm calls").len(), 1);
+
+    restore_env("CHARIOX_HOME", previous_home);
     fixture.cleanup();
 }
 
