@@ -173,6 +173,7 @@ export async function runManagedShutdownTrigger(options, deps) {
       actionDeadline,
       askForAction,
       monotonic,
+      now,
       remaining,
       pause,
       waitForAction,

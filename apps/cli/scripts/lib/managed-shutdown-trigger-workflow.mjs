@@ -7,7 +7,7 @@ import {
 import { requireValue } from "./managed-shutdown-trigger-config.mjs"
 
 export async function runManagedShutdownScenario({ options, product, context, actionDeadline, askForAction,
-  monotonic, remaining, pause, waitForAction }) {
+  monotonic, now, remaining, pause, waitForAction }) {
   const { lifecycle, poll, snapshot, waitForExactOperation } = product
   const target = () => context.target
 
@@ -35,7 +35,9 @@ export async function runManagedShutdownScenario({ options, product, context, ac
     return idle
   }
 
-  const awaitAutomaticStop = async (baselineIds, baselineRevision, deadlineAt) => poll(({ summary, operations }) => {
+  const awaitAutomaticStop = async (baselineIds, baselineRevision, deadlineAt, idleActivityAt) => poll(({ summary, operations }) => {
+    requireValue(summary.runningAgentCount === 0 && summary.lastActivityChangedAt === idleActivityAt,
+      "automatic stop no longer matches the idle activity transition")
     if (!Array.isArray(operations)) return false
     const matches = operations.filter((operation) => !baselineIds.has(operation.operationId)
       && operation.kind === "stop" && operation.environmentId === target().environmentId
@@ -94,26 +96,39 @@ export async function runManagedShutdownScenario({ options, product, context, ac
       requireValue(stopped.summary.observedState === "stopped", "explicit stop is not observed")
       break
     }
-    case "agents_done":
-      await finishOneAgent()
+    case "agents_done": {
+      const idle = await finishOneAgent()
+      const baselineIds = new Set(requireOperationHistory(idle).map((operation) => operation.operationId))
+      await awaitAutomaticStop(baselineIds, idle.summary.desiredRevision, idle.summary.autoStopDeadlineAt,
+        idle.summary.lastActivityChangedAt)
       break
+    }
     case "idle_stop": {
       const idle = await finishOneAgent()
       const baselineIds = new Set(requireOperationHistory(idle).map((operation) => operation.operationId))
-      await awaitAutomaticStop(baselineIds, idle.summary.desiredRevision, idle.summary.autoStopDeadlineAt)
+      await awaitAutomaticStop(baselineIds, idle.summary.desiredRevision, idle.summary.autoStopDeadlineAt,
+        idle.summary.lastActivityChangedAt)
       break
     }
     case "minimum_runtime": {
       const idle = await finishOneAgent()
       requireValue(idle.summary.autoStopPolicy.minimumRuntimeSeconds === 10_800
-        && idle.summary.autoStopPolicy.idleDelaySeconds === 14_400,
+        && idle.summary.autoStopPolicy.idleDelaySeconds === 900,
       "minimum-runtime policy changed")
       const deadlineAt = verifyIdleDeadline(idle.summary)
       const stopBaseline = new Set(requireOperationHistory(idle).map((operation) => operation.operationId))
-      const minimumObservationUntil = monotonic() + 10_800_000
+      const runtimeStartedAt = timestamp(idle.summary.runtimeStartedAt, "runtime start time")
+      const minimumRuntimeDeadline = Date.parse(runtimeStartedAt) + 10_800_000
+      const timeUntilMinimumDeadline = minimumRuntimeDeadline - now().getTime()
+      requireValue(timeUntilMinimumDeadline > 0,
+        "runtime minimum already elapsed before the drill could observe its full three-hour boundary")
+      const minimumObservationUntil = monotonic() + timeUntilMinimumDeadline
+      let nextProofObservation = monotonic() + 3_600_000
       while (monotonic() < minimumObservationUntil) {
         requireValue(remaining(actionDeadline) > 0, "managed shutdown time bound expired before minimum runtime")
-        const current = await snapshot(actionDeadline)
+        const untilMinimum = minimumObservationUntil - monotonic()
+        const forceObservation = monotonic() >= nextProofObservation || untilMinimum <= 60_000
+        const current = await snapshot(actionDeadline, forceObservation)
         requireValue(current.summary.desiredState === "running" && current.summary.observedState === "ready"
           && current.summary.runningAgentCount === 0
           && current.summary.desiredRevision === idle.summary.desiredRevision
@@ -122,15 +137,13 @@ export async function runManagedShutdownScenario({ options, product, context, ac
         "managed target left its ready state during the minimum-runtime observation")
         requireValue(!requireOperationHistory(current).some((operation) => !stopBaseline.has(operation.operationId)
           && operation.kind === "stop"), "a stop operation appeared during minimum-runtime observation")
-        await waitForAction(pause(Math.min(60_000, minimumObservationUntil - monotonic(), remaining(actionDeadline))))
+        if (forceObservation && monotonic() >= nextProofObservation) nextProofObservation += 3_600_000
+        const waitMilliseconds = Math.min(60_000, minimumObservationUntil - monotonic(), remaining(actionDeadline))
+        requireValue(waitMilliseconds > 0, "managed shutdown time bound expired before minimum runtime")
+        await waitForAction(pause(waitMilliseconds))
       }
-      const final = await snapshot(actionDeadline, true)
-      requireValue(final.summary.desiredState === "running" && final.summary.observedState === "ready"
-        && final.summary.runningAgentCount === 0
-        && final.summary.desiredRevision === idle.summary.desiredRevision
-        && final.summary.lastActivityChangedAt === idle.summary.lastActivityChangedAt
-        && final.summary.autoStopDeadlineAt === deadlineAt,
-      "managed target did not remain running through the minimum-runtime observation")
+      await awaitAutomaticStop(stopBaseline, idle.summary.desiredRevision, deadlineAt,
+        idle.summary.lastActivityChangedAt)
       break
     }
     case "disabled": {
@@ -190,6 +203,31 @@ export async function runManagedShutdownScenario({ options, product, context, ac
         "auto-stop policy was not preserved through reconciliation")
         return remaining(observeUntil) <= 0
       }, observeUntil, 2_000, actionDeadline)
+      await awaitAutomaticStop(baselineIds, idle.summary.desiredRevision, deadlineAt,
+        idle.summary.lastActivityChangedAt)
+      break
+    }
+    case "all_clients_disconnected": {
+      const idle = await finishOneAgent()
+      const baselineIds = new Set(requireOperationHistory(idle).map((operation) => operation.operationId))
+      const deadlineAt = verifyIdleDeadline(idle.summary)
+      const stopAtMonotonic = monotonic() + Date.parse(deadlineAt) - now().getTime()
+      requireValue(stopAtMonotonic > monotonic(), "client-disconnect action started after the idle deadline")
+      await askForAction("disconnect_all_clients_from_managed_environment",
+        "Disconnect every interactive Chariox client from this managed environment now. Keep this local owner-IPC observation process running, and do not start agents or send prompts until shutdown.")
+      requireValue(monotonic() < stopAtMonotonic,
+        "all-client disconnect was not completed before the Cloud auto-stop deadline")
+      const disconnected = await snapshot(actionDeadline)
+      requireValue(disconnected.summary.desiredState === "running" && disconnected.summary.observedState === "ready"
+        && disconnected.summary.runningAgentCount === 0
+        && disconnected.summary.desiredRevision === idle.summary.desiredRevision
+        && disconnected.summary.lastActivityChangedAt === idle.summary.lastActivityChangedAt
+        && disconnected.summary.autoStopDeadlineAt === deadlineAt
+        && !requireOperationHistory(disconnected).some((operation) => !baselineIds.has(operation.operationId)
+          && operation.kind === "stop"),
+      "managed target changed before the all-client-disconnected deadline")
+      await awaitAutomaticStop(baselineIds, idle.summary.desiredRevision, deadlineAt,
+        idle.summary.lastActivityChangedAt)
       break
     }
     case "deployment_reconciliation": {
@@ -197,7 +235,8 @@ export async function runManagedShutdownScenario({ options, product, context, ac
       const baselineIds = new Set(requireOperationHistory(idle).map((operation) => operation.operationId))
       await askForAction("signed_kernel_deployment_reconciliation",
         "Perform the approved signed managed-kernel deployment reconciliation on this target.")
-      await awaitAutomaticStop(baselineIds, idle.summary.desiredRevision, idle.summary.autoStopDeadlineAt)
+      await awaitAutomaticStop(baselineIds, idle.summary.desiredRevision, idle.summary.autoStopDeadlineAt,
+        idle.summary.lastActivityChangedAt)
       break
     }
     default:

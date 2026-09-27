@@ -6,6 +6,8 @@ import { join } from "node:path"
 import test from "node:test"
 
 import { parseArguments, runManagedShutdownTrigger, SHUTDOWN_SCENARIOS } from "./live-managed-shutdown-trigger-drill.mjs"
+import { MANAGED_SHUTDOWN_WARNING_SECONDS } from "./lib/managed-shutdown-trigger-config.mjs"
+import { projectSummary, verifyIdleDeadline } from "./lib/managed-shutdown-trigger-observation.mjs"
 
 const CONFIRMATION = "CREATE-AND-DELETE-ONE-MANAGED-TARGET"
 const baseTime = "2026-09-26T05:00:00.000Z"
@@ -43,6 +45,7 @@ function environment({ state = "ready", revision = 1, policy = { minimumRuntimeS
     lastActivityChangedAt: null,
     autoStopWarningAt: null,
     autoStopDeadlineAt: null,
+    runtimeStartedAt: baseTime,
     createdAt: baseTime,
     updatedAt: baseTime,
   }
@@ -67,6 +70,26 @@ function fakeProductPath({ includeHistory = true, policy } = {}) {
   let current = environment({ policy })
   const operations = []
   const calls = []
+  const advanceAutomaticStop = (observedAt) => {
+    if (current.observedState !== "ready" || current.desiredState !== "running"
+      || current.autoStopDeadlineAt === null || Date.parse(observedAt) < Date.parse(current.autoStopDeadlineAt)) {
+      return false
+    }
+    const deadlineAt = current.autoStopDeadlineAt
+    const revision = current.desiredRevision + 1
+    current = {
+      ...current,
+      desiredState: "stopped",
+      observedState: "stopped",
+      desiredRevision: revision,
+      observedRevision: revision,
+      autoStopWarningAt: null,
+      autoStopDeadlineAt: null,
+      updatedAt: deadlineAt,
+    }
+    operations.push(operation(`auto-stop-op-${revision}`, "stop", revision, "succeeded", deadlineAt))
+    return true
+  }
   const send = async (request) => {
     const [name] = Object.keys(request)
     calls.push([name, request[name]])
@@ -113,6 +136,7 @@ function fakeProductPath({ includeHistory = true, policy } = {}) {
     send,
     requests,
     operations,
+    advanceAutomaticStop,
     updateCurrent(update) { current = { ...current, ...update } },
   }
 }
@@ -128,10 +152,11 @@ async function scratch(t) {
   return root
 }
 
-test("CLI accepts only the eleven bounded scenarios and no operator-supplied result flags", () => {
+test("CLI accepts only the twelve bounded scenarios and no operator-supplied result flags", () => {
   assert.deepEqual(Object.keys(SHUTDOWN_SCENARIOS), [
     "shutdown_agents_done", "shutdown_idle_15m", "shutdown_idle_30m", "shutdown_minimum_3h",
-    "shutdown_disabled", "shutdown_keep_running", "shutdown_restart_reconciliation", "shutdown_manual",
+    "shutdown_disabled", "shutdown_keep_running", "shutdown_restart_reconciliation",
+    "shutdown_all_clients_disconnected", "shutdown_manual",
     "shutdown_custom", "shutdown_explicit_lifecycle_reconciliation", "shutdown_deployment_reconciliation",
   ])
   const valid = argumentsFor("/tmp/evidence.json")
@@ -146,6 +171,28 @@ test("CLI accepts only the eleven bounded scenarios and no operator-supplied res
   const belowMinimum = argumentsFor("/tmp/evidence.json", "shutdown_minimum_3h")
   belowMinimum[belowMinimum.indexOf("--max-billable-seconds") + 1] = "12599"
   assert.throws(() => parseArguments(belowMinimum), /time bound/)
+})
+
+test("idle deadline validation matches Cloud's exact 30-second warning and three-way deadline maximum", () => {
+  const policy = { minimumRuntimeSeconds: 10_800, idleDelaySeconds: 900 }
+  const summary = projectSummary({
+    ...environment({ policy }),
+    runtimeStartedAt: baseTime,
+    lastActivityChangedAt: atSecond(2),
+    lastActivityReportedAt: atSecond(3),
+    autoStopDeadlineAt: atSecond(10_800),
+    autoStopWarningAt: atSecond(10_800 - MANAGED_SHUTDOWN_WARNING_SECONDS),
+  })
+  assert.equal(verifyIdleDeadline(summary), atSecond(10_800))
+  assert.throws(() => verifyIdleDeadline({
+    ...summary,
+    autoStopWarningAt: atSecond(10_800 - 300),
+  }), /30-second warning/)
+  assert.throws(() => verifyIdleDeadline({
+    ...summary,
+    autoStopDeadlineAt: atSecond(10_801),
+    autoStopWarningAt: atSecond(10_801 - MANAGED_SHUTDOWN_WARNING_SECONDS),
+  }), /Cloud deadline/)
 })
 
 test("explicit lifecycle uses owner IPC stop and delete receipts and writes private external raw observations", async (t) => {
@@ -327,9 +374,8 @@ test("a never-settling owner prompt expires at the action deadline and leaves ti
 for (const [scenario, expectedActions] of [
   ["shutdown_disabled", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path"]],
   ["shutdown_keep_running", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path", "keep_running_via_cloud_ui"]],
-  ["shutdown_restart_reconciliation", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path", "restart_cloud_auto_stop_reconciliation"]],
 ]) {
-  test(`${scenario} accepts a final read-only observation at its existing observation deadline`, async (t) => {
+  test(`${scenario} retains its no-stop negative at the existing observation deadline`, async (t) => {
     const root = await scratch(t)
     const output = join(root, `${scenario}.json`)
     const policy = SHUTDOWN_SCENARIOS[scenario].policy
@@ -360,9 +406,14 @@ for (const [scenario, expectedActions] of [
         } else if (message.includes("Finish that agent")) {
           requestedActions.push("finish_agent_via_normal_provider_path")
           const idleAt = atSecond(2)
-          const deadline = policy.idleDelaySeconds === null
+          const deadlineTime = policy.idleDelaySeconds === null
             ? null
-            : new Date(Date.parse(idleAt) + policy.idleDelaySeconds * 1_000).toISOString()
+            : Math.max(
+              Date.parse(baseTime) + policy.minimumRuntimeSeconds * 1_000,
+              Date.parse(idleAt) + policy.idleDelaySeconds * 1_000,
+              Date.parse(idleAt) + MANAGED_SHUTDOWN_WARNING_SECONDS * 1_000,
+            )
+          const deadline = deadlineTime === null ? null : new Date(deadlineTime).toISOString()
           product.updateCurrent({
             runningAgentCount: 0,
             lastActivityReportedAt: idleAt,
@@ -370,14 +421,12 @@ for (const [scenario, expectedActions] of [
             autoStopDeadlineAt: deadline,
             autoStopWarningAt: deadline === null
               ? null
-              : new Date(Date.parse(deadline) - 300_000).toISOString(),
+              : new Date(Date.parse(deadline) - MANAGED_SHUTDOWN_WARNING_SECONDS * 1_000).toISOString(),
             updatedAt: idleAt,
           })
         } else if (message.includes("Keep running")) {
           requestedActions.push("keep_running_via_cloud_ui")
           product.updateCurrent({ autoStopDeadlineAt: null, autoStopWarningAt: null, updatedAt: atSecond(3) })
-        } else if (message.includes("restart auto-stop reconciliation")) {
-          requestedActions.push("restart_cloud_auto_stop_reconciliation")
         } else {
           assert.fail(`unexpected owner action prompt: ${message}`)
         }
@@ -397,6 +446,132 @@ for (const [scenario, expectedActions] of [
     assert.equal("verdict" in result, false)
   })
 }
+
+for (const [scenario, expectedActions] of [
+  ["shutdown_agents_done", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path"]],
+  ["shutdown_restart_reconciliation", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path", "restart_cloud_auto_stop_reconciliation"]],
+  ["shutdown_all_clients_disconnected", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path", "disconnect_all_clients_from_managed_environment"]],
+]) {
+  test(`${scenario} observes the exact eventual automatic STOP receipt`, async (t) => {
+    const root = await scratch(t)
+    const output = join(root, `${scenario}.json`)
+    const policy = SHUTDOWN_SCENARIOS[scenario].policy
+    const product = fakeProductPath({ policy })
+    let monotonicNow = 0
+    const requestedActions = []
+    const result = await runManagedShutdownTrigger(parseArguments(argumentsFor(output, scenario)), {
+      client: { send: product.send, close: async () => {} },
+      requests: product.requests,
+      send: product.send,
+      id: () => `${scenario}-fixture`,
+      now: () => new Date(Date.parse(baseTime) + monotonicNow),
+      monotonic: () => monotonicNow,
+      pause: async (milliseconds) => {
+        monotonicNow += milliseconds
+        product.advanceAutomaticStop(new Date(Date.parse(baseTime) + monotonicNow).toISOString())
+      },
+      ask: async (message) => {
+        if (message.includes("start exactly one agent")) {
+          requestedActions.push("start_agent_via_normal_path")
+          product.updateCurrent({
+            runningAgentCount: 1,
+            lastActivityReportedAt: atSecond(1),
+            lastActivityChangedAt: atSecond(1),
+            updatedAt: atSecond(1),
+          })
+        } else if (message.includes("Finish that agent")) {
+          requestedActions.push("finish_agent_via_normal_provider_path")
+          const idleAt = atSecond(2)
+          const deadline = new Date(Math.max(
+            Date.parse(baseTime) + policy.minimumRuntimeSeconds * 1_000,
+            Date.parse(idleAt) + policy.idleDelaySeconds * 1_000,
+            Date.parse(idleAt) + MANAGED_SHUTDOWN_WARNING_SECONDS * 1_000,
+          )).toISOString()
+          product.updateCurrent({
+            runningAgentCount: 0,
+            lastActivityReportedAt: idleAt,
+            lastActivityChangedAt: idleAt,
+            autoStopDeadlineAt: deadline,
+            autoStopWarningAt: new Date(Date.parse(deadline)
+              - MANAGED_SHUTDOWN_WARNING_SECONDS * 1_000).toISOString(),
+            updatedAt: idleAt,
+          })
+        } else if (message.includes("restart auto-stop reconciliation")) {
+          requestedActions.push("restart_cloud_auto_stop_reconciliation")
+        } else if (message.includes("Disconnect every interactive Chariox client")) {
+          requestedActions.push("disconnect_all_clients_from_managed_environment")
+        } else {
+          assert.fail(`unexpected owner action prompt: ${message}`)
+        }
+      },
+    })
+
+    assert.deepEqual(requestedActions, expectedActions)
+    const automaticStop = result.operations.find(({ kind }) => kind === "stop")
+    assert.ok(automaticStop)
+    assert.equal(automaticStop.status, "succeeded")
+    assert.equal(automaticStop.createdAt, atSecond(902))
+    assert.equal(automaticStop.desiredRevision, 2)
+    assert.equal(monotonicNow >= 902_000, true)
+    assert.equal(result.observations.some(({ environment: observed }) => observed.observedState === "stopped"), true)
+    assert.equal(result.requiredUserActions.some(({ action }) => action === expectedActions.at(-1)), true)
+    assert.equal("verdict" in result, false)
+  })
+}
+
+test("three-hour minimum scenario observes through runtime start plus three hours and then the automatic stop", async (t) => {
+  const root = await scratch(t)
+  const output = join(root, "minimum-runtime.json")
+  const scenario = "shutdown_minimum_3h"
+  const policy = SHUTDOWN_SCENARIOS[scenario].policy
+  const product = fakeProductPath({ policy })
+  let monotonicNow = 0
+  const result = await runManagedShutdownTrigger(parseArguments(argumentsFor(output, scenario)), {
+    client: { send: product.send, close: async () => {} },
+    requests: product.requests,
+    send: product.send,
+    id: () => "minimum-runtime-fixture",
+    now: () => new Date(Date.parse(baseTime) + monotonicNow),
+    monotonic: () => monotonicNow,
+    pause: async (milliseconds) => {
+      monotonicNow += milliseconds
+      product.advanceAutomaticStop(new Date(Date.parse(baseTime) + monotonicNow).toISOString())
+    },
+    ask: async (message) => {
+      if (message.includes("start exactly one agent")) {
+        product.updateCurrent({
+          runningAgentCount: 1,
+          lastActivityReportedAt: atSecond(1),
+          lastActivityChangedAt: atSecond(1),
+          updatedAt: atSecond(1),
+        })
+      } else if (message.includes("Finish that agent")) {
+        const idleAt = atSecond(2)
+        const deadline = atSecond(10_800)
+        product.updateCurrent({
+          runningAgentCount: 0,
+          lastActivityReportedAt: idleAt,
+          lastActivityChangedAt: idleAt,
+          autoStopDeadlineAt: deadline,
+          autoStopWarningAt: atSecond(10_800 - MANAGED_SHUTDOWN_WARNING_SECONDS),
+          updatedAt: idleAt,
+        })
+      } else {
+        assert.fail(`unexpected owner action prompt: ${message}`)
+      }
+    },
+  })
+
+  const lastReady = result.observations.filter(({ environment: observed }) => observed.observedState === "ready")
+    .findLast(({ capturedAt }) => Date.parse(capturedAt) < Date.parse(atSecond(10_800)))
+  const automaticStop = result.operations.find(({ kind }) => kind === "stop")
+  assert.ok(lastReady)
+  assert.ok(Date.parse(lastReady.capturedAt) >= Date.parse(atSecond(10_800 - 60)))
+  assert.equal(automaticStop?.createdAt, atSecond(10_800))
+  assert.equal(monotonicNow, 10_800_000)
+  assert.deepEqual(result.requestedAutoStopPolicy, { minimumRuntimeSeconds: 10_800, idleDelaySeconds: 900 })
+  assert.equal("verdict" in result, false)
+})
 
 test("interrupting a required user action still deletes the one created target", async (t) => {
   const root = await scratch(t)

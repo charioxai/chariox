@@ -1,4 +1,9 @@
-import { nonEmpty, requireValue, SHUTDOWN_TRIGGER_LIMITS } from "./managed-shutdown-trigger-config.mjs"
+import {
+  MANAGED_SHUTDOWN_WARNING_SECONDS,
+  nonEmpty,
+  requireValue,
+  SHUTDOWN_TRIGGER_LIMITS,
+} from "./managed-shutdown-trigger-config.mjs"
 
 const DESIRED_STATES = new Set(["running", "stopped", "deleted"])
 const OBSERVED_STATES = new Set([
@@ -45,7 +50,7 @@ export function projectSummary(value) {
     createdAt: timestamp(value.createdAt, "environment creation time"),
     updatedAt: timestamp(value.updatedAt, "environment update time"),
   }
-  for (const key of ["runtimeMachineId", "runtimeKernelId", "runningAgentCount", "lastActivityReportedAt",
+  for (const key of ["runtimeMachineId", "runtimeKernelId", "runtimeStartedAt", "runningAgentCount", "lastActivityReportedAt",
     "lastActivityChangedAt", "autoStopWarningAt", "autoStopDeadlineAt"]) {
     if (!Object.hasOwn(value, key)) continue
     const field = value[key]
@@ -131,6 +136,7 @@ export function recordSummary(capture, summary, capturedAt, force = false) {
     desiredRevision: summary.desiredRevision,
     observedRevision: summary.observedRevision,
     runningAgentCount: summary.runningAgentCount,
+    runtimeStartedAt: summary.runtimeStartedAt,
     lastActivityChangedAt: summary.lastActivityChangedAt,
     autoStopWarningAt: summary.autoStopWarningAt,
     autoStopDeadlineAt: summary.autoStopDeadlineAt,
@@ -141,6 +147,7 @@ export function recordSummary(capture, summary, capturedAt, force = false) {
     desiredRevision: previous.desiredRevision,
     observedRevision: previous.observedRevision,
     runningAgentCount: previous.runningAgentCount,
+    runtimeStartedAt: previous.runtimeStartedAt,
     lastActivityChangedAt: previous.lastActivityChangedAt,
     autoStopWarningAt: previous.autoStopWarningAt,
     autoStopDeadlineAt: previous.autoStopDeadlineAt,
@@ -170,12 +177,20 @@ export function exactOperation(operations, expected, targetId) {
 
 export function verifyIdleDeadline(summary) {
   const idleAt = timestamp(summary.lastActivityChangedAt, "last-agent-finished time")
+  const runtimeStartedAt = timestamp(summary.runtimeStartedAt, "runtime start time", true)
+  const reportedAt = timestamp(summary.lastActivityReportedAt, "last activity report time", true)
   const delay = summary.autoStopPolicy.idleDelaySeconds
-  requireValue(delay !== null && delay >= 300, "idle shutdown deadline cannot be derived from activity evidence")
+  requireValue(delay !== null && runtimeStartedAt !== null && reportedAt !== null,
+    "idle shutdown deadline cannot be derived from activity evidence")
   const deadline = timestamp(summary.autoStopDeadlineAt, "auto-stop deadline")
-  requireValue(Date.parse(deadline) >= Date.parse(idleAt) + delay * 1_000
-    && summary.autoStopWarningAt === new Date(Date.parse(deadline) - 300_000).toISOString(),
-  "Cloud deadline is inconsistent with the signed last-agent-finished time")
+  const expectedDeadline = Math.max(
+    Date.parse(runtimeStartedAt) + summary.autoStopPolicy.minimumRuntimeSeconds * 1_000,
+    Date.parse(idleAt) + delay * 1_000,
+    Date.parse(reportedAt) + MANAGED_SHUTDOWN_WARNING_SECONDS * 1_000,
+  )
+  requireValue(Date.parse(deadline) === expectedDeadline
+    && summary.autoStopWarningAt === new Date(expectedDeadline - MANAGED_SHUTDOWN_WARNING_SECONDS * 1_000).toISOString(),
+  "Cloud deadline or 30-second warning is inconsistent with projected activity and runtime times")
   return deadline
 }
 

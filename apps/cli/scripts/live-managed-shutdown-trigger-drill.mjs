@@ -47,7 +47,7 @@ async function main(argv = process.argv.slice(2)) {
   const options = parseArguments(argv)
   await validateCaptureOutput(options.output)
   if (["agents_done", "idle_stop", "minimum_runtime", "disabled", "keep_running",
-    "restart_reconciliation", "deployment_reconciliation", "manual"]
+    "restart_reconciliation", "all_clients_disconnected", "deployment_reconciliation", "manual"]
     .includes(options.descriptor.mode)) {
     if (!stdin.isTTY) throw new Error("this scenario requires an interactive owner")
   }

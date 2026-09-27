@@ -1,15 +1,18 @@
 import { isAbsolute, resolve } from "node:path"
 
 export const SHUTDOWN_TRIGGER_SCHEMA = "chariox.managed-shutdown-trigger-observation/v1"
+// Cloud projects autoStopWarningAt exactly this far ahead of autoStopDeadlineAt.
+export const MANAGED_SHUTDOWN_WARNING_SECONDS = 30
 
 export const SHUTDOWN_SCENARIOS = Object.freeze({
-  shutdown_agents_done: Object.freeze({ mode: "agents_done", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 600 }),
+  shutdown_agents_done: Object.freeze({ mode: "agents_done", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_800 }),
   shutdown_idle_15m: Object.freeze({ mode: "idle_stop", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_500 }),
   shutdown_idle_30m: Object.freeze({ mode: "idle_stop", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 1_800 }, minimumSeconds: 2_400 }),
-  shutdown_minimum_3h: Object.freeze({ mode: "minimum_runtime", policy: { minimumRuntimeSeconds: 10_800, idleDelaySeconds: 14_400 }, minimumSeconds: 12_600 }),
+  shutdown_minimum_3h: Object.freeze({ mode: "minimum_runtime", policy: { minimumRuntimeSeconds: 10_800, idleDelaySeconds: 900 }, minimumSeconds: 12_600 }),
   shutdown_disabled: Object.freeze({ mode: "disabled", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: null }, minimumSeconds: 600 }),
   shutdown_keep_running: Object.freeze({ mode: "keep_running", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_500 }),
-  shutdown_restart_reconciliation: Object.freeze({ mode: "restart_reconciliation", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_500 }),
+  shutdown_restart_reconciliation: Object.freeze({ mode: "restart_reconciliation", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_800 }),
+  shutdown_all_clients_disconnected: Object.freeze({ mode: "all_clients_disconnected", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_800 }),
   shutdown_manual: Object.freeze({ mode: "manual", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: null }, minimumSeconds: 600 }),
   shutdown_custom: Object.freeze({ mode: "idle_stop", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 600 }, minimumSeconds: 1_200 }),
   shutdown_explicit_lifecycle_reconciliation: Object.freeze({ mode: "explicit_lifecycle", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: null }, minimumSeconds: 600 }),
@@ -30,6 +33,7 @@ const CONFIRMATION = "CREATE-AND-DELETE-ONE-MANAGED-TARGET"
 export const USER_ACTIONS = new Set([
   "start_agent_via_normal_path", "finish_agent_via_normal_provider_path", "manual_stop_via_cloud_ui",
   "keep_running_via_cloud_ui", "restart_cloud_auto_stop_reconciliation", "signed_kernel_deployment_reconciliation",
+  "disconnect_all_clients_from_managed_environment",
 ])
 
 export function requireValue(condition, message) {
