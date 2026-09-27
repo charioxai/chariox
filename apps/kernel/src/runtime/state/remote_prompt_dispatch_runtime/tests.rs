@@ -915,7 +915,10 @@ impl ClaimTestRelayLifecycleProbe {
 mod receipt_reconciliation {
     use super::*;
 
-    #[tokio::test]
+    // Completion projection synchronously bridges its best-effort worker git
+    // observation through `block_on_relay_future`; keep this fake relay on a
+    // second executor worker so it can answer that request while the bridge waits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn claimed_receipt_recovery_routes_one_cancellation_then_drains_completion() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -1085,7 +1088,7 @@ mod receipt_reconciliation {
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
                         home_session_id: session_id,
                         home_agent_id: agent_id,
-                        provider_run_id: run_id,
+                        provider_run_id: run_id.clone(),
                         provider_run: None,
                         prompts: Vec::new(),
                         output_chunks: Vec::new(),
@@ -1101,6 +1104,44 @@ mod receipt_reconciliation {
             )
             .await;
             server_lifecycle_probe.record("drain_response_send_completed", None);
+
+            let observation_request = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+                Some((&server_lifecycle_probe, "completion_observation")),
+            )
+            .await;
+            assert_eq!(observation_request.target_id, worker_id);
+            assert!(matches!(
+                &observation_request.request,
+                RelayPeerRequest::ObserveLeasedGitAfter {
+                    leased_agent_id: requested_agent,
+                    provider_run_id: requested_run,
+                } if requested_agent == &leased_agent_id && requested_run == &run_id
+            ));
+            server_lifecycle_probe.record(
+                "completion_observation_response_send_started",
+                None,
+            );
+            send_fake_worker_peer_response(
+                observation_request,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedGitObserved {
+                    provider_run_id: run_id.clone(),
+                    git_observations: Vec::new(),
+                    workspace_live_sync_change: None,
+                },
+            )
+            .await;
+            server_lifecycle_probe.record(
+                "completion_observation_response_send_completed",
+                None,
+            );
 
             let (
                 mut successor_peer,
