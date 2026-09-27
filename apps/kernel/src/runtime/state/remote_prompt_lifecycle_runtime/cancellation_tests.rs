@@ -244,6 +244,68 @@ async fn send_temporary_relay_envelope(
         .expect("temporary relay envelope should send");
 }
 
+async fn close_temporary_relay_discovery(socket: &mut WebSocketStream<TcpStream>) {
+    let _ = socket.close(None).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        while let Some(message) = socket.next().await {
+            match message {
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+}
+
+async fn serve_worker_metadata_query(listener: TcpListener, worker_public_key: String) {
+    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+        .await
+        .expect("relay should accept worker metadata lookup before timeout")
+        .expect("relay metadata listener should accept");
+    let mut socket = accept_async(stream)
+        .await
+        .expect("relay should upgrade worker metadata lookup");
+    let RelayEnvelope::ClientMetadataRequest {
+        request_id, query, ..
+    } = receive_temporary_relay_envelope(&mut socket).await
+    else {
+        panic!("expected worker metadata lookup");
+    };
+    assert!(matches!(
+        query,
+        chariox_relay::protocol::RelayMetadataQuery::GetLiveKernel { kernel_ref }
+            if kernel_ref == WORKER_ID
+    ));
+    send_temporary_relay_envelope(
+        &mut socket,
+        RelayEnvelope::ClientMetadataResponse {
+            request_id,
+            machines: None,
+            kernels: None,
+            kernel: Some(chariox_relay::protocol::RelayKernelPresence {
+                kernel_id: WORKER_ID.to_string(),
+                machine_id: "worker-machine-cancel-successor".to_string(),
+                machine_alias: None,
+                relay_alias: None,
+                kernel_alias: None,
+                available_providers: Vec::new(),
+                provider_accounts: Vec::new(),
+                capabilities: Vec::new(),
+                accepting_remote_leases: true,
+                leased_agent_count: 0,
+                local_session_count: 0,
+                public_key: worker_public_key,
+            }),
+            error: None,
+        },
+    )
+    .await;
+
+    // Match the production metadata client: finish the WebSocket close handshake
+    // before the fixture releases its discovery connection.
+    close_temporary_relay_discovery(&mut socket).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -355,7 +417,7 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
             },
         )
         .await;
-        drop(discovery);
+        close_temporary_relay_discovery(&mut discovery).await;
 
         let (stream, _) = listener
             .accept()
@@ -453,13 +515,21 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
 
 #[tokio::test]
 async fn direct_settled_cancel_dispatches_queued_successor_once() {
+    let metadata_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("metadata relay listener should bind");
+    let relay_url = format!("ws://{}", metadata_listener.local_addr().unwrap());
     let mut config = crate::config::DaemonConfig::for_tests();
-    config.relay_url = Some(RELAY_URL.to_string());
+    config.relay_url = Some(relay_url.clone());
     config.relay_token = Some("cancel-successor-test-token".to_string());
     config.relay_request_timeout_ms = 2_000;
     let home_public_key = config.relay_public_key.clone();
     let worker_config = crate::config::DaemonConfig::for_tests();
     let worker_private_key = worker_config.relay_private_key.clone();
+    let metadata_server = tokio::spawn(serve_worker_metadata_query(
+        metadata_listener,
+        worker_config.relay_public_key.clone(),
+    ));
 
     let mut app = crate::test_support::bootstrap_authenticated_app(config)
         .expect("home app should bootstrap with an authenticated Codex test profile");
@@ -556,7 +626,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         crate::transport::relay_client::RelayOutgoingSender::channel(8);
     {
         let mut relay = relay_state.write().await;
-        relay.test_set_connected_sender(outgoing_tx, RELAY_URL);
+        relay.test_set_connected_sender(outgoing_tx, relay_url);
         relay.remember_peer_public_key(WORKER_ID, worker_config.relay_public_key.clone());
     }
 
@@ -621,6 +691,9 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         .expect("cancellation task should join")
         .expect("settled cancellation should finalize")
         .expect("direct remote cancellation should be handled");
+    metadata_server
+        .await
+        .expect("worker metadata fixture should join");
     assert_eq!(
         cancellation.cancellation.prompt.id(),
         home_prompt_id,
