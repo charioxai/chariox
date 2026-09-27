@@ -123,16 +123,18 @@ impl DurableKernelStateStore {
         Ok((release.generation(), catalog))
     }
 
-    /// The active release's signed capabilities (protocol 361 App sets).
+    /// The active release's package digest and signed capabilities (protocol
+    /// 361 App sets).
     pub(crate) fn active_app_capabilities(
         &self,
         owner: &str,
         installation: &str,
-    ) -> Result<serde_json::Value, ActiveReleaseError> {
+    ) -> Result<(String, serde_json::Value), ActiveReleaseError> {
         let release = self.active_app_release(owner, installation)?;
         let verified = release.verify()?;
-        serde_json::to_value(&verified.manifest().capabilities)
-            .map_err(|_| ActiveReleaseError::Invalid)
+        let capabilities = serde_json::to_value(&verified.manifest().capabilities)
+            .map_err(|_| ActiveReleaseError::Invalid)?;
+        Ok((verified.package_digest().to_owned(), capabilities))
     }
 
     /// The active release's signed `capabilities.connections` (protocol 359).

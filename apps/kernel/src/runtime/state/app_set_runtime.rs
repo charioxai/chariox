@@ -2,7 +2,10 @@
 //! installation — its release, the signed capabilities the owner approved,
 //! and its configuration (automations, inbox routes, connection grants). A
 //! kernel copy (Phase 2) installs from it; App data is never part of it. It is
-//! read through the same owner-scoped requests the clients use.
+//! read through the same owner-scoped requests the clients use. It fails
+//! closed: an installation that cannot be read completely (an update in
+//! between, a revoked publisher, an unavailable archive) fails the whole set,
+//! because a copy must not install from a partial record.
 use super::KernelRuntimeState;
 use crate::local::{
     AppRequestErrorCode, AppSetInstallation, AppWorkerRequest, LocalDaemonRequest,
@@ -89,12 +92,30 @@ impl KernelRuntimeState {
             let store = self.owned.durable_state_store.clone();
             let (capability_owner, capability_installation) =
                 (owner.to_owned(), installation_id.clone());
-            let capabilities = tokio::task::spawn_blocking(move || {
+            let permit = self.app_control().try_admit()?;
+            let (digest, capabilities) = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
                 store.active_app_capabilities(&capability_owner, &capability_installation)
             })
             .await
             .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
-            .map_err(|_| AppRequestErrorCode::Conflict)?;
+            .map_err(|error| {
+                use crate::durable_state::app_active_release::ActiveReleaseError;
+                match error {
+                    ActiveReleaseError::NotActive => AppRequestErrorCode::NotFound,
+                    ActiveReleaseError::Untrusted | ActiveReleaseError::Invalid => {
+                        AppRequestErrorCode::Conflict
+                    }
+                    ActiveReleaseError::Unavailable | ActiveReleaseError::Storage => {
+                        AppRequestErrorCode::StorageUnavailable
+                    }
+                }
+            })?;
+            // One generation per entry: an update that committed while the
+            // set was read would pair one release with another's capabilities.
+            if digest != release.package_digest {
+                return Err(AppRequestErrorCode::Conflict);
+            }
             set.push(AppSetInstallation {
                 installation_id,
                 app_id,
