@@ -8,6 +8,7 @@ use crate::durable_state::{
         AppEventClassification, AppEventMaintenanceOperation, AppEventMaintenanceOutcome,
     },
 };
+use crate::error::DaemonError;
 use crate::runtime::{
     app_event_pump::{AppCursor, AppEventPass},
     app_operation_budget::AppOperationBudget,
@@ -288,7 +289,16 @@ fn classify_failure(error: &AppEventDeliveryError) -> Option<AppEventClassificat
         AppEventDeliveryError::Outbox(
             OutboxError::Invalid | OutboxError::Schema | OutboxError::Corrupt | OutboxError::TooOld,
         ) => Some(Failed),
-        AppEventDeliveryError::Target(AppAutomationError::InvalidTarget) => Some(TargetGone),
+        // The target's publication was disabled, or its workflow, endpoint or
+        // queue no longer exists: nothing the App or a retry can fix.
+        AppEventDeliveryError::Target(
+            AppAutomationError::InvalidTarget
+            | AppAutomationError::Storage(
+                DaemonError::WorkflowNotFound { .. }
+                | DaemonError::WorkflowEndpointNotFound { .. }
+                | DaemonError::InvalidWorkflowGraphReference { .. },
+            ),
+        ) => Some(TargetGone),
         AppEventDeliveryError::Target(
             AppAutomationError::NotOwner | AppAutomationError::TargetChanged,
         ) => Some(Failed),
@@ -323,5 +333,24 @@ mod tests {
         assert!(classify_failure(&AppEventDeliveryError::CommitUnknown).is_none());
         assert!(classify_failure(&AppEventDeliveryError::Conflict).is_none());
         assert!(classify_failure(&AppEventDeliveryError::Outbox(OutboxError::Inactive)).is_none());
+    }
+    #[test]
+    fn a_target_that_no_longer_resolves_is_gone() {
+        let gone = |error: AppAutomationError| {
+            matches!(
+                classify_failure(&AppEventDeliveryError::Target(error)),
+                Some(AppEventClassification::TargetGone)
+            )
+        };
+        assert!(gone(AppAutomationError::InvalidTarget));
+        assert!(gone(AppAutomationError::Storage(DaemonError::WorkflowEndpointNotFound {
+            session_id: "s".into(),
+            workflow_id: "w".into(),
+            endpoint_id: "e".into(),
+        })));
+        assert!(!gone(AppAutomationError::TargetChanged));
+        assert!(!gone(AppAutomationError::Storage(DaemonError::SessionNotFound {
+            session_id: "s".into(),
+        })));
     }
 }
