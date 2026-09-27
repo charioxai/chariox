@@ -1,0 +1,282 @@
+# Chariox Apps Phase 1: verification matrix audit (2026-09-27)
+
+## Updates after the audit (2026-09-27)
+
+Evidence paths are under the evidence folder `chariox-apps-phase1/` (outside the repository).
+
+- **Remote TUI (was: no evidence anywhere).** A TUI attached to the stack's kernel through the local relay with a scoped client token (`remote-tui/`). It ran `/app list`, `status`, `worker`, `logs`, `inbox list`, `connection list`, `automation list`, `set` and `open`, and `/workflow from-agent agent-1 trigger http` (workflow `agent-1-trigger-5`). This adds remote-TUI evidence to these released-terminal rows: install/inspect (inspect only), shared App Tab (open), events/automation (list), logs, and V-UX-05.
+- **V-UX-10 (one App Tab, many terminals).** Todo was opened from the local IPC client twice and from the remote TUI. The Room kept one Todo Tab (`tab-4`), four Tabs in total, and every open returned the same `target_id` (`remote-tui/room-tabs-after-remote-open.txt`).
+- **Web install, update, logs and automation add (was: web cannot install, update or show logs).**
+  - Added in chariox-cloud#233.
+  - Live, `/app update` moved Todo to 1.2.5 from the web terminal: upload, approval, start, complete; generation 12 (`web-app-update-live.json`).
+  - `/app automation add` configured Todo's `reminders` automation from the web.
+- **Todo reminder to workflow (was: never reached a workflow live).** A Todo due 30 s later emitted `todo_due` through the scheduled `reminders` automation and started a run of its workflow (`caller.kind: app_event`; `p1-12-todo-reminder-workflow.json`). The run's agent could not launch because the credential vault is locked (user action).
+  - Found on the way: with a non-scheduled automation, the kernel refuses the App's scheduled occurrence and the wake was retried silently. Each failed wake now writes a kernel notice with the reason to the App's log (branch `apps/p1-wake-failure-notice`).
+- **V-UX-07 (Freeform trigger).** Web guided trigger (chariox-cloud#232) and TUI `/workflow from-agent … trigger http|schedule|notification`, local and remote (#486; the TUI command had never worked because of an unwired controller).
+- **Slack cutover (V1-INT-16/17 in the revised numbering).** Old deliveries for a moved binding reach the App once (#482 follow-up, live). Resource filters (protocol 362, #485, chariox-aegs-slack#9) and a generic web trigger UI (chariox-cloud#231). The workflow reply surface (`reply_to_event`, `reply_mode`) remains in the kernel as a generator-neutral workflow feature; whether to delete it is an owner decision.
+- **Ledger corrections.** P1.15 no longer claims live validation evidence. P1.11 is Partial until the reply-surface decision is made and the agent-reply, fan-out and disconnect drills have run.
+
+Read-only audit of every row in `docs/CHARIOX_APPS_PHASE1_PROGRESS.md` § "Phase 1 verification baseline" (91 rows) and § "Release gates" (13 gates). I checked each row against:
+- the ledger's dated progress sections and its "Implementation status (2026-09-26)" table;
+- PR bodies and comments for charioxai/chariox #429–#486 and chariox-cloud #218–#232;
+- evidence in `/Users/miguel/.codex/evidence/chariox-apps-phase1/` (cited below as `ev:`);
+- the stack drill scripts and logs, plus a read-only `mode=ro` look at the stack `kernel.db` App tables.
+
+## Read this first: the plan changed
+
+The plan the task pointed to (`/Users/miguel/arroba-cloud/docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html`, sha256 `e8fe9f8b…`) is the version from before 2026-09-24. The repo now carries a revised plan: `chariox/docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html`, sha256 `4b92cc6e…`, recorded in commit `583a27492`. The revised plan is what PR #430 and the ledger's P1.18/P1.19 rows follow. It makes these changes:
+- **Moved to Phase 2:** step-up authentication (now V2-AUTH-01), information sets (removed as redundant), structured outputs, second-agent continuation, App-created workflow/agent assets and compiled proprietary backends.
+- **V1-INT renumbered from 32 rows to 27.** Old 12, 27, 28, 30 and 31 are gone, and old 13–26 become 12–25. Old 29 becomes 26 and old 32 becomes 27.
+- **Terminal matrix shrinks to 12 rows.** The critical-action row keeps only trusted terminal confirmation.
+- **New rows:** V-PKG-09 (live view content and joint release) and V-RUN-11 (open App lifecycle). The old plan's V-PKG-09/10 (compiled artifacts) are Phase 2.
+
+I kept the ledger's row list and numbering, as the task asked, and give the revised-plan ID where it differs. "Phase 2" below means the revised plan moved the row. The two rows the revised plan added are audited at the end of their matrices and are not in the counts.
+
+**Status rule.** "Needs user" means the only work left needs the human. If feasible work also remains, the row is Partial or Unverified and the user-only part is tagged **[user step]**. "Verified" requires evidence that meets the row's own pass criterion. Unit tests alone count only where the row asks for unit or contract tests. Nothing in the stack is merged, and no release candidate exists. So even a Verified row still needs a rerun on the candidate for the Evidence gate.
+
+## Summary
+
+### Counts (91 ledger rows + 13 gates)
+
+| Status | Matrix rows | Gates | Total |
+|---|---|---|---|
+| Verified | 2 (V1-INT-29, V-PKG-02) | 0 | 2 |
+| Partial | 76 | 11 | 87 |
+| Unverified | 4 (Kernel "Offline/sleep/multi-Room…", V1-INT-19, V-UX-02, V-UX-05) | 1 (Evidence) | 5 |
+| Needs user | 2 (Kernel "Managed Chromium…", V1-INT-01) | 1 (Browser persistence) | 3 |
+| Phase 2 | 7 (2 terminal rows, V1-INT-12/27/28/30/31) | 0 | 7 |
+
+By matrix: terminal 12 Partial + 2 Phase 2. Kernel: 4 Partial, 1 Needs user, 1 Unverified. Integration: 24 Partial, 1 Verified, 1 Unverified, 1 Needs user, 5 Phase 2. Package: 7 Partial, 1 Verified. Worker: 10 Partial. SDK: 8 Partial. UX: 8 Partial, 2 Unverified. Reference: 3 Partial. The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
+
+**Coverage pattern:**
+- Live evidence is almost entirely **macOS kernel + web terminal**, with some local-TUI pseudo-terminal captures.
+- **Remote TUI has no evidence at all.**
+- The **Linux kernel** has only hosted and colima fixture evidence, from 2026-09-07/08 plus #471. No reference App has run on a Linux kernel.
+- **Managed kernels are not provisioned for Apps.** The ledger's 2026-09-24 merge note says so, which blocks every "managed-kernel drill" cell.
+
+### Findings that change the picture
+
+1. **The P1.15 live claim has no evidence.** The ledger says "Live validation prompts and exact-effect receipts". But:
+   - no reference App declares a `criticalValidation` action;
+   - `app_validations` in the stack `kernel.db` has 0 rows (retention deletes terminal rows after 24 h, so this alone is not proof);
+   - #443 says the approval pump "is exercised in the live drill, which is pending";
+   - a #444 comment says "the live effect drill" is still open.
+
+   Treat critical-action validation as unit-tested only.
+2. **The web terminal cannot install, update or show logs.** `chariox-cloud/apps/web/src/terminal/app-slash-command-runtime.ts` offers list/status/worker/start/stop/restart/uninstall/open/automation list|disable/inbox/connection/file save. `/app install` is refused (see the test file), and there is no `/app update`, `/app logs` or `automation add`. Every live install and update was driven through `~/.chariox/dev/apps-phase1/stack/drill.mjs`, which uses the CLI's `AppFileInstaller` over local IPC, with approvals answered in the web terminal.
+3. **The kernel still carries the old workflow reply surface.** On the integration branch, `reply_to_event` / `reply_mode` / `event_action` appear in 33 kernel files; `session/workflow_publication.rs:49-51` documents `reply_mode` as selecting "the originating Slack thread/channel". #482 said this surface would be removed after live Slack parity. The ledger's P1.11 claim only covers clients ("no privileged Slack path remains in the clients"). This matters for the Migration gate and the Slack release blocker.
+4. **Todo reminders have never reached a workflow live.** `app_automations` in the stack DB holds only Slack automations, and `app-set-drill.json` shows Todo with 0 automations. The overdue drill proves the wake was delivered and the Todo marked `reminded`, not that the Todo event reached a workflow endpoint through its automation.
+5. **Implementation gaps turned up while auditing:**
+   - Uninstall has no delete-data choice; #439 retains data only.
+   - There is no .cxapp file association on macOS or Linux; nothing in the tree implements one.
+   - Standalone `chariox app install` and `chariox app update` are rejected, so CLI↔slash parity is incomplete.
+   - The branch browser controller and main's `browser_controller_*` modules still coexist (merge note).
+6. **The full kernel suite is not green.** On 2026-09-25, `ev:integration2-failures.txt` lists 157 failing tests on the integration branch, against 126 on the main baseline (`ev:main-failures.txt`). Most are likely caused by the test environment (`CHARIOX_HOME`), but the Evidence gate needs a green candidate. Hosted CI has not run on the stack, per repo policy.
+7. **The evidence path differs from the plan's.** Evidence lives in `.codex/evidence/chariox-apps-phase1/`; the plan's rule names `/Users/miguel/.codex/evidence/chariox-apps/<release>/`.
+
+### Prioritized work that needs no user (highest value first)
+
+1. **Remote TUI end-to-end drill (M).** Run a fresh relayed TUI against the stack's local relay and cover list, status, logs, install, update, open view, relay reconnect, token refresh and detach. This single drill fills the empty remote column across ~12 terminal rows, V-UX-05, V-UX-10, V-PKG-05 and V1-INT-32.
+2. **Live critical-action validation drill (M).**
+   - Build a small test App with one `criticalValidation` action whose `effectRoutes` POST to a public HTTPS echo.
+   - From both web and TUI, cover approve, deny, expire, cancel, kernel restart mid-wait, replay a consumed receipt, changed parameters and an unvalidated call.
+   - Closes the terminal "critical-action" row, V1-INT-10 and V1-INT-11, and the Human validation gate; supplies the critical-effect half of the kernel "Node transports" row.
+   - The SDK already exposes `validation`. If the enrolled darwin-6 runtime lacks it, that becomes a sudo re-enrollment **[user step]**.
+3. **Web install, update and logs (M; implementation plus drill).** Add `.cxapp` upload/install, `/app update` and `/app logs` to the web `/app` runtime. Unblocks the web cells of "Install…", "Local developer .cxapp", "Logs…" and V-RUN-08.
+4. **Finish the Slack cutover (S–M).**
+   - Remove, or explicitly justify as generic, the kernel's `reply_to_event` / `reply_mode` / `event_action` surface.
+   - Add three live drills: an agent replying through the Slack App's MCP tool, a deliberate automation fan-out case, and a connection disconnect.
+   - Closes V1-INT-17, the Migration gate and the Slack reference row.
+5. **Todo automation → workflow drill (M).**
+   - Configure the `reminders` automation to a workflow endpoint and let a wake fall due with the worker stopped (the App must start on demand).
+   - Then run a failed update that restores the App data and replay the reminder: it must be deduplicated.
+   - Also cover a deleted Todo, a changed schedule, a disabled automation and a broken target (visible state).
+   - Closes V-SDK-06, V1-INT-07, the Todo reference row, the Workflow gate and V-RUN-11 (macOS).
+6. **Linux kernel end-to-end in a colima Ubuntu VM (L).**
+   - Cross-build the kernel with `tools/xbuild-linux.sh`, then run the privileged installer step and enrollment.
+   - Start the kernel as an ordinary user and install Todo and Documents; run the native probe, ENOSPC/quota, snapshot rollback and one malicious package.
+   - Fills the Linux column of the kernel matrix, V1-INT-02, V1-INT-21 (Linux part), V-RUN-02/07/09, V-SDK-01/02 and V-PKG-02 rerun.
+7. **Kill -9 fault injection at install checkpoints and event crash windows (M).** Reuse the `p1-10-live-kernel-kill` harness at upload, verify, approval, health and activate for installs; at receipt, App mutation, outbox commit, enqueue and ack for events. Closes V-PKG-04, V1-INT-06 and part of V-PKG-06.
+8. **Hostile-App corpus on macOS with numeric budgets (L).**
+   - Test Apps: infinite loop, Buffer/thread growth, crash loop, log flood, escape attempts, and a second App trying to interfere.
+   - Record kernel and other-App latency on this Mac as named hardware.
+   - Surface status in CLI, TUI and web. Closes much of V-RUN-01..10, V1-INT-03, V1-INT-22 and the non-signing half of the Isolation gate.
+9. **Viewer and UX evidence (M):**
+   - V-UX-02 screenshot matrix: 5 widths × 200 % zoom × light/dark × 3 Apps.
+   - V-UX-03 automated audit: axe-core in the slice Chromium.
+   - Two concurrent viewers of different sizes, with IME and paste (V1-INT-15, non-screen-reader part).
+   - An App-origin attack page in real Chromium, covering WebRTC, workers, nested frames, downloads, loopback and metadata IP (V1-INT-14, V-UX-01), plus a DevTools capture.
+10. **Interactive TUI drills plus a command-parity snapshot (S–M).** Drive `/app install|update|dev|logs|file grant|file save|automation add|open` in the TUI (`tui-drive.py`) and snapshot the command catalog against the CLI (V-UX-04). Fills the local-TUI cells of most terminal rows.
+11. **Uninstall/reinstall of all three reference Apps plus a four-client concurrency test (M).** The uninstall/reinstall part needs the delete-data option implemented first. Closes V-PKG-07 and V-PKG-08.
+12. **Rooms and kernels, offline use, many active Apps (M–L).** Covers V1-INT-19, the feasible part of kernel row 6, and V1-INT-22.
+13. **Freeform closers (S–M):**
+    - HTTP trigger plus an alias edit and normal lifecycle (V-UX-07);
+    - a connected-ingress deploy, using the cloudflared tunnel already used for Slack (V-UX-08);
+    - broken automation shown the same in the App view, the workflow and the TUI (V-UX-09).
+14. **Unit-level closers (S):** an IPC frame fuzz/proptest (V-RUN-04), client rendering tests for manifest error codes (V-PKG-03), and a rerun of the package corpus and native probes on the candidate.
+15. **Evidence gate (L).** Merge the stack, run hosted CI on the candidate, triage the 157 full-suite failures, and republish dated evidence with revisions, digests and budgets under the plan's evidence path.
+
+**Needs user:**
+- Real Google session persistence (V1-INT-01, Chromium kernel row, Browser persistence gate).
+- VoiceOver passes (V-UX-03, terminal accessibility row, V1-INT-15, V1-INT-26, Client gate).
+- macOS Developer ID signing and notarization (Installer kernel row, V1-INT-21, Architecture/Isolation gates).
+- Machine sleep/reboot and a hard power loss (kernel row 6, V-RUN-06, V1-INT-18, Lifecycle gate).
+- Sudo runtime re-enrollment after any SDK/bootstrap change.
+- A hosted managed-kernel environment for managed-topology cells. Apps must first be provisioned on Path-1 managed kernels, which is an implementation gap.
+
+---
+
+## Released-terminal matrix
+
+Revised plan: 12 rows. Critical-action validation keeps confirmation only; the information-set and user-asset rows moved to Phase 2.
+
+| Row | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| Install, inspect, update, restart and uninstall | Partial | Live installs and updates of Todo (1.0.1→1.2.3), Documents (→1.3.0) and Slack (→1.1.3) on the macOS kernel were driven by `stack/drill.mjs`, which uses the CLI's `AppFileInstaller`, with approvals in the web terminal (stack `logs/install*.out`, `update-*.out`; cloud #218 live approvals). Web `/app status/worker/start/stop/restart/uninstall` (cloud #218). TUI `/app install/update/uninstall` unit tests (#439, #445; 41–50 CLI tests). | The web has **no install or update path** (implementation gap). There is no interactive local-TUI capture and no remote TUI. Next: add web upload/install/update; drive a TUI pty drill of install → update → restart → uninstall; repeat over the relay. | M–L |
+| Local developer .cxapp package installation | Partial | `chariox app create/pack/validate` and `/app install FILE` (#439 era, 41 CLI tests); `/app dev` watch loop (#446, 50 CLI tests); live packs of Todo/Documents/Slack (stack `pkg-build.log`, `p1-10-migration/README.md`). | Web has no .cxapp path. No live `/app dev` loop run. **OS file associations for .cxapp are not implemented** (plan: "local .cxapp installation and file associations on macOS and Linux"). No remote TUI. Next: live `/app dev` drill editing Todo; web upload; file associations. | M |
+| Shared App Tab, reconnect and human takeover | Partial | Web: `live-app-view-drill.mjs` (`ev:app-view-drill-after.json`, `ev:view-drill-review.json`); one Tab per installation, reopen returns the same `target_id` (#473); kernel-restart reconnect with a typed Add (`ev:p1-464-view-reconnect/`, #464 comment). Local TUI: `/room view` opened the same Room viewer (`ev:p1-19-tui/run3/04-room-view.txt`, `opened-urls.txt`). | No takeover drill on an App Tab (takeover exists from earlier Room work but was not exercised with Apps). No simultaneous web+TUI `tab_id` assertion. Remote TUI none. Next: attach web and TUI viewer at once, take over, assert Environment/`tab_id`; then add remote. | M |
+| Tool discovery and medium-independent operation policy | Partial | Web prompt: the focus agent called Todo tools (`ev:p1-19-acceptance/drill.txt`). TUI prompt: the focus agent added a Todo through App tools (`ev:p1-19-tui/run3/05-reply.txt`). View calls use the same catalog/admission path as `Actor::Human` (#436; `view_calls_run_as_the_views_owner_in_its_room` test). `UNKNOWN_TOOL` live. | Remote TUI. No live check that an unbound agent loses discovery but can still use the view. Next: unbind, prompt, assert catalog; repeat from TUI and remote. | M |
+| Critical-action validation and trusted step-up page | Partial (step-up = Phase 2) | #443 store/broker/pump and #444 effect-receipt unit tests (26 + 35 tests). Kernel-operation decisions render in web (cloud #218, live for install approvals) and TUI (`ev:tui-approval-open.txt`, `tui-approval-narrow.txt`, `tui-approval-dismissed.txt`, 2026-09-08 renderer tests). | **No live critical action on any terminal.** No reference App declares `criticalValidation`; `app_validations` is empty; the #444 comment says the live effect drill is still open. Next: priority item 2, then TUI and remote. | M |
+| Events, automation health and workflow configuration | Partial | Inbox drills (`ev:p1-06-inbox/drill.txt`, `scripted-drill.json`); generator-fed routes (`ev:app-event-routes-dummy-drill.json`); cutover (`ev:event-binding-cutover-drill.json`); web `/app inbox`/`/app connection` (`ev:web-app-connections.json`); generic trigger UI (`ev:p1-11-generic-trigger-ui.json`). | Web cannot `automation add`. The broken-automation state (#466) is unit-tested only, never shown live. No TUI capture; no remote. Next: add web `automation add`; break an automation live (schema-changing update) and show it in web and TUI. | M |
+| File picker, import/export, clipboard and links | Partial | Web: trusted picker and grant (`ev:p1-13-file-grants/drill.txt`, `ev:file-grant-drill.json`); App-side import (`ev:p1-13-import/README.md`); export/save plus retry (`ev:web-file-save-retry.json`). | TUI `/app file grant` / `/app file save` are unit-tested only. Clipboard and links are untested everywhere. No remote. Next: TUI pty drill of grant/save; copy/paste and link-open drill in the web viewer and TUI viewer. | M |
+| Canonical viewport, text input and accessibility | Partial [user step: VoiceOver] | App window fullscreen, page coordinates = desktop coordinates (#456, `ev:app-view-fullscreen.png`). Typed input into App views in the Room desktop (`ev:p1-11-live-slack-reply.json`, #464 comment). Accessibility outline: web "Read as text" and TUI `/room read` (`ev:p1-07-accessibility/web-read-as-text.md`, `tui-room-read.txt`; #470, cloud #227). | No canonical-viewport transfer between differently sized viewers; no IME; no remote viewer; screen reader **[user step]**. Next: two-viewer drill (desktop + 390 px) with IME composition in Chromium. | M |
+| Logs, denied operations and crash recovery | Partial | `/app logs` TUI/CLI plus broker rate limit, unit only (#442). Denied operations live (`ev:app-route-create-checks.json`, UNKNOWN_TOOL). Crash recovery live (`ev:p1-10-failed-update/drill.txt`, `ev:p1-10-live-kernel-kill.json`). | **Web has no `/app logs`** (gap). The stack DB `app_logs` has 0 rows, so logs were never viewed live. No remote. Next: add web logs; drill a logging App through a crash from all three terminals. | M |
+| Foreground/self-grant binding with existing permission modes | Partial | Opening a view binds the focus agent (`ev:app-panel-drill.json` `bound_agent_id`; #447 router test under Ask). Extensions panel revoke and grant round trip, live (cloud #221). | No live YOLO-vs-Ask comparison, no live self-grant tool call, no TUI `/app open` binding capture, no remote. Next: one drill per mode on web and TUI asserting no redundant prompt. | M |
+| Private conversation panel and single prompt area | Partial | Web live (cloud #220; `ev:web-app-panel-other-agent.json`, `ev:todo-reserves-panel.png`). Isolation drill: no transcript in 6 Tab accessibility trees; reserved desktop area empty (`ev:p1-17-ax-isolation/`). TUI single prompt area (`ev:p1-19-tui`). | The panel inside the TUI-opened `/view` page was not captured. No remote. Next: screenshot the panel in the viewer opened by `/room view`; then remote. | S–M |
+| Information-set consent, validated outputs and agent continuation | Phase 2 | Revised plan §"App outputs, agent continuation and App-created assets (to revisit)"; #430 removes information sets and the SDK outputs API. | (Second-agent continuation still has a live web demo: `ev:p1-19-acceptance/drill.txt`.) | — |
+| Generic user-asset creation and App work experience | Phase 2 | App-created assets were postponed in the revised plan; ledger P1.19 says the same. The "App work experience" part lives on as revised V1-INT-27 (row V1-INT-32 below). | — | — |
+| Slack replacement, Todo and Documents acceptance | Partial | See Reference-App rows: web + macOS only. | Local-TUI and remote-TUI runs of each reference flow are missing. See the reference rows. | L |
+
+## Kernel and Environment matrix
+
+| Row | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| Installer provisions sandbox and resource facilities | Partial [user step: macOS Developer ID signing + notarization] | macOS: developer-signed runtime enrolled with sudo `chariox-app-runtime-install` (darwin-6); APFS storage hosted drill 34177801710. Linux: RuntimeInstaller root setup, quota and code views (hosted 34183605009); ext4 helper (34182187733); storage helper in the colima `storage-test` VM (#471). | Linux: no packaged "one privileged step, then ordinary user" install on a clean VM. macOS signed/notarized artifact **[user step]**. Next: priority item 6 in a fresh colima VM. | L |
+| App worker containment and native probe | Partial | macOS: reference Apps run live under the Seatbelt launcher (#431). The native probe passed on hosted macOS 14 (34170581264, 23 records) **before** the Seatbelt policy change in `b821464a`; its new assertions (#431) are not recorded as run. Linux: bubblewrap probe with 28 checks (34169010393); confined Node 24 with SDK 0.6/0.7 (34194246935, 34195099961). | Rerun both probes on the current launcher sources. No reference App on a Linux kernel. Next: run the macOS probe test locally and the Linux fixture in colima. | M |
+| Private filesystem quota, snapshot and update recovery | Partial | APFS quota and crash recovery (hosted 34177801710); ext4 ENOSPC at 491,782,144 B (34182187733). macOS file-image snapshot restore, live (#469, `ev:p1-10-failed-update/drill.txt`). Linux data snapshot plus helper SIGKILL in the colima VM (#471, `ev:linux-storage-snapshot.log`). `files.snapshot` live (`ev:files-snapshot-live.json`). | App-level quota exhaustion (Documents hitting ENOSPC) not shown on either OS. Linux recovery used the fixture "sleep" main, not a real App. Next: fill Documents to quota on macOS; repeat on the Linux VM kernel. | M |
+| Supported Node transports and critical-effect enforcement | Partial | Fetch/stream/decompression SDK tests (`ev:sdk-fetch-node24-tests.log`, `fetch-pinned-client-node24-tests.log`, `bootstrap-fetch-node24-tests.log`); confined Linux SDK 0.7 (34195099961); #444 effect-receipt unit tests. `WebSocket is excluded` documented (`apps/kernel/src/runtime/app_http/README.md:79`). | No live App HTTP call through the macOS enrolled runtime against a real TLS host. No live critical effect. No Linux kernel run. Next: test App doing Fetch GET/POST/stream/abort to a public HTTPS host, plus priority item 2. | M |
+| Managed Chromium sandbox and profile persistence | Needs user | #483 live in disposable slice containers: sandbox on after restore, fallback, restart and cold fallbacks; deterministic auth state survives; legacy `--no-sandbox` profile restores sandboxed (`ev:p1-14-browser-profile-drill.log`, `p1-14-browser-profile-drill-legacy.log`). Hosted 34171378772 / 34193432289. | Real Google session **[user: credentials]**. The Linux "managed container topology" needs a hosted managed kernel **[user: hosted environment]**. | — |
+| Offline, sleep/reboot, multiple Rooms/kernels and aggregate pressure | Unverified [user step: sleep/reboot] | Only kernel restart (`ev:p1-12-overdue/drill.txt`). | Offline, multiple Rooms/kernels and aggregate pressure have no evidence. Next: network-off drill (local Apps keep working, relay down); two Rooms and a second kernel with its own `CHARIOX_HOME`; many-App pressure. Sleep/reboot **[user]**. | L |
+
+## Integration/adversarial matrix
+
+The ledger uses the old numbering; the revised-plan ID is in brackets.
+
+| Row | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| V1-INT-01 Chromium sandbox and login persistence [01] | Needs user | Production launch/fallback/restore sandbox evidence plus deterministic state (#483 live; hosted 34171378772, 34193432289; `chromium-34171378772/results.json` records `googleAuthenticationValidated=false`). | Redacted live Google session drill **[user: credentials]**. | — |
+| V1-INT-02 Independent OS boundary [02] | Partial | Native probes (macOS 34170581264; Linux 34169010393 with 2 negative controls); stable exit classification (122 initialization failure, #431; 136 migration failure, #455). | macOS probe not rerun after the policy change; no release artifact or policy digests for macOS; weakened-policy detection shown on Linux only. Next: rerun both probes and record launcher/policy digests. | M |
+| V1-INT-03 Total and aggregate resources [03] | Partial | macOS accounting fixture: growth detected at 107 ms, reaped 624 µs later (`ev:worker-resource-tests.log`). Linux cgroup 1 GiB / 1 CPU fixtures. Four aggregate live slots in the lifecycle owner. | No real App growing Buffer/WASM/thread pools; no many-App or slow-consumer run; no numeric budgets on named hardware. Next: priority item 8. | L |
+| V1-INT-04 Raw files and state transactions [04] | Partial | Private single-file publication tests (5); state savepoint/CAS tests (6); mid-migration rewind (#477); quiescent snapshot fence (#474). | No node:fs-vs-SDK race test; no live fence of old writers and descriptors around a snapshot. Next: Documents race drill (raw `fs.writeFile` while `atomicReplace` runs), plus kill during snapshot. | M |
+| V1-INT-05 Storage exhaustion [05] | Partial | ext4/APFS quota fixtures; snapshot host reserve (2 GiB, #474); `app_storage_capacity` seen live when host disk was low (#464 comment). | No cross-installation exhaustion; nothing during import, log writes, browser cache, staging or rollback. Next: two Apps, one filling its quota and host reserve, the other still working. | M–L |
+| V1-INT-06 Event crash windows [06] | Partial | Writer-fence and uncertain-commit unit tests; inbox dedupe live (`ev:p1-06-inbox`); lost-ack replay acknowledged once (`ev:p1-11-moved-binding-replay.json`). | No kill at each window (receipt, App mutation, outbox commit, emit, enqueue, ack). Next: priority item 7. | M |
+| V1-INT-07 Rollback dedupe and generations [07] | Partial | Receipts kept out of snapshots (#474); replay floors (SDK 0.4); `APP_VIEW_STALE`/reload (#445, #464); kill-9 update drill (`ev:p1-10-live-kernel-kill.json`). | Live reminder → failed update → data restore → replay deduped is missing; stale MCP call after a generation switch not shown live. Next: priority item 5. | M |
+| V1-INT-08 Ambiguous service effects [08] | Partial | Unit: uncertain file-publication outcome, HTTP lost-reply retirement, connection-action idempotency key (#480). | No live lost-response drill. Next: generator action with the response dropped (proxy kill), assert an "unknown outcome" state and no automatic replay. | M |
+| V1-INT-09 Equivalent human and agent operation [09] | Partial | Live human view calls and agent MCP calls on the same tool (`ev:p1-19-acceptance/drill.txt`, view drills); #436 attribution test. | No background-request equivalence; no "change bindings, agent still operates view"; no attributed action log captured. Next: one operation three ways, with an attribution dump. | M |
+| V1-INT-10 Human validation lifecycle [10] | Partial | Unit: #443 (decide once, expiry, owner-only answer, restart re-show); #437 orphaned approval cleanup. | No live critical request from any route; no race between two terminals. Next: priority item 2. | M |
+| V1-INT-11 Approval parameter and effect binding [11] | Partial | Unit: #444 exact-route policy, digest-bound single-use consume, spend-before-send (35 tests). | Live changed-parameter, replay and concurrent-consume attempts are missing. Next: priority item 2. | M |
+| V1-INT-12 Step-up authentication [—] | Phase 2 | Revised plan: "Step-up authentication… Moved from Phase 1 on 2026-09-24" (V2-AUTH-01). | — | — |
+| V1-INT-13 Capability-expanding update [12] | Partial | Unit: decline keeps generation 1 (#446). Live approved capability expansions: Documents 1.1.0 `externalFiles` (`ev:p1-13-file-grants`), Slack 1.1.0 connections (`ev:app-event-routes-dummy-drill.json`). | No live decline; no "no early capability use" assertion; no crash of a capability-expanding update. Next: decline drill plus kill at quiesce on a capability update. | S–M |
+| V1-INT-14 App-origin escape [13] | Partial | Controller tests: CSP sandbox, `BlockedByClient`, WebRTC removal, popups, DNS prefetch, 404/non-GET (#436, 145 tests). | No live attack App in real Chromium (#436 comment: the real-Chromium WebRTC check is pending). Next: hostile view probing cookies, IndexedDB, workers, frames, fetch, WebSocket, WebRTC, downloads, loopback and metadata IP across two Apps and Rooms. | M |
+| V1-INT-15 Concurrent viewer semantics [14] | Partial [user step: screen reader] | Accessibility outline projection (#470). | Two differently sized viewers, viewport transfer, IME, select and paste are all missing. Next: two-viewer drill; screen reader **[user]**. | M |
+| V1-INT-16 Transport conformance and SSRF [15] | Partial | SDK Fetch/SSE/Octokit tests against broker fixtures; kernel numeric-peer and TLS design; 23 kernel HTTP fixtures assigned to hosted CI (execution not recorded). | No measured source adaptations; no live DNS-rebinding, redirect or IPv6 checks. Next: run the kernel HTTP fixtures locally (`tools/ctest.sh`), plus a live Fetch conformance App. | M–L |
+| V1-INT-17 Slack contract cutover [16] | Partial | Live Slack parity with the real workspace (`ev:p1-11-live-slack-reply.json`, `ev:screens/slack-live-*.png`). Binding moves and undo (`ev:event-binding-cutover-drill.json`, `event-binding-move-drill.json`). Lost-ack replay (`ev:p1-11-moved-binding-replay.json`). Generic client UI and filters (`ev:p1-11-generic-trigger-ui.json`, `p1-11-resource-filter.json`, `p1-11-web-channel-bindings.json`). | The kernel still has the old reply surface (finding 3), so "final artifact has no privileged Slack fallback" is not established. Deliberate fan-out case not run. Next: priority item 4. | S–M |
+| V1-INT-18 Schedule correctness [17] | Partial [user step: sleep/wake] | Overdue wake after kernel restart (`ev:p1-12-overdue/drill.txt`); wake revision in Todo (#438); wake tests (#433, #458). | Nothing covers >25 days, a clock jump, a TZ/DST change, edit/delete across the due time, or an update across the due time. Next: wake unit/integration tests with a mocked clock plus live edit/delete/update drills. | M |
+| V1-INT-19 Rooms and kernels [18] | Unverified | — | Next: open Todo in two Rooms (separate view partitions, shared data); a second kernel with its own `CHARIOX_HOME` and installations; check no grant or handle inheritance. | M |
+| V1-INT-20 Package and review independence [19] | Partial | Package adversarial corpus (`packages/app-package/tests/packages.rs`); Documents HTML sanitizer tests (#441); strict view CSP. | No malicious-App drill (fetched-text eval, imports from private data, hidden hooks); no parser/IPC fuzz. Next: a hostile package in the corpus run, plus a frame fuzzer. | M |
+| V1-INT-21 Fresh installation and upgrade [20] | Partial [user step: signed macOS installer; reboot] | Actionable compatibility codes (`compatibility_has_distinct_actionable_codes`); the macOS developer runtime needs sudo enrollment. | Linux clean-VM install as an ordinary user; mixed old and new clients; offline use. Next: priority item 6, plus an old-client-vs-new-kernel protocol mismatch drill. | L |
+| V1-INT-22 Runtime lifecycle and throughput [21] | Partial | 20 App calls overlapping 209 Room commands with 0 busy (`ev:app-view-drill-after.json`); idle stop and on-demand start (#434 test); headless inbox delivery with no view (`ev:p1-06-inbox`). | No declared startup/idle/event/input budgets; no restart storms, many Apps or display saturation. Next: timing harness over N Apps with results recorded. | M–L |
+| V1-INT-23 One binding and existing permissions [22] | Partial | Foreground binding live; Extensions grant/revoke live (cloud #221); router test under Ask (#447). | No YOLO run, no live self-grant, no faked-foreground attempt, no revoke-then-replay-activation, no provider reload readiness check. Next: scripted drill across both modes. | M |
+| V1-INT-24 Focus and single prompt area [23] | Partial | Focus switch between agents with one prompt area (`ev:p1-19-acceptance/drill.txt`); TUI and web on the same session (`ev:p1-19-tui`). | Focus change during a running call, the zero-focus case and close/reopen during a call were not covered. Next: a focus switch mid-tool-call drill. | M |
+| V1-INT-25 Private panel isolation [24] | Partial | `ev:p1-17-ax-isolation/` (unique marker absent from 6 Tab accessibility trees; desktop capture empty); cloud #220 input-isolation test. | No hostile App probing canvas, screenshots, clipboard or message bridges. Next: hostile view in the #14 attack App. | M |
+| V1-INT-26 Panel accessibility and recovery [25] | Partial [user step: screen reader] | Panel hidden/shown and history loading (cloud #220 comments; `ev:web-app-panel-other-agent.json`). | No panel reconnect with the App worker stopped or hostile. Next: stop the worker, reconnect the viewer, assert history renders. Screen reader **[user]**. | S–M |
+| V1-INT-27 Information-set consent [—] | Phase 2 | Revised plan; #430. | — | — |
+| V1-INT-28 Correlated intermediate/final outputs [—] | Phase 2 | Revised plan; #430. | — | — |
+| V1-INT-29 App-owned semantics [26] | Verified (macOS kernel) | Three unrelated domains (Todo, Documents, Slack) run with no domain code in the kernel, only generic contracts (protocols 353/358/359/362). A live schema change (Todo 1.2.0 migration adding `priority`) ran on an unchanged kernel (`ev:p1-10-migration/README.md`). Domain checks (CAS, conflicts, sanitizing) live in the Apps (#438, #441, #479). | Rerun on the candidate and on the Linux kernel for the Evidence gate. | S |
+| V1-INT-30 Resume with a second agent [—] | Phase 2 | Revised plan postpones second-agent continuation. A web demo exists anyway (`ev:p1-19-acceptance/drill.txt`). | — | — |
+| V1-INT-31 Create user workflows and agents [—] | Phase 2 | App-created assets postponed (revised plan; ledger P1.19). | — | — |
+| V1-INT-32 Complete App work acceptance [27] | Partial | Todo on web + macOS: foreground, prompt, tool calls, private panel, reconnect (`ev:p1-19-acceptance`); partial TUI (`ev:p1-19-tui`). | The "create automation" step is missing; no remote TUI or Linux kernel; not run with Slack or Documents. Next: repeat one scripted task across web, local TUI and remote TUI after priority items 1 and 6. | L |
+
+## Package lifecycle matrix
+
+| Row | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| V-PKG-01 Valid built-in and local developer packages | Partial | Contract tests (package, upload and staging suites); local installs of three Apps. | No **managed-kernel drill**: Apps are not provisioned on Path-1 managed kernels (implementation gap). The package digest was not shown matching across CLI, TUI and web. Next: capture `/app status` digest on all three; provision Apps on a managed kernel. | M–L |
+| V-PKG-02 Archive attacks | Verified (component) | Hostile archive corpus: traversal, collisions, links, special files, depth/entries/limits, compression/truncation (`packages/app-package/tests/packages.rs`). Passed on hosted Linux and macOS 14 (runs 34164893075, 34172680883). | Rerun on the release candidate (the package crate has changed since). | S |
+| V-PKG-03 Manifest and protocol mismatch | Partial | Stable error-code spelling and distinct compatibility-code tests; closed-manifest and schema corpus tests; CLI message for update schema errors (#445, #455). | Client rendering tests of each code in web and TUI not found. Next: snapshot tests of the rendered messages in both clients. | S |
+| V-PKG-04 Interrupted installation | Partial | Unit: upload durability, preparing-ack replay, cancel, uncertain-commit fence (#295-era tests, #437). | No kill -9 during a live install at download, verify, approval, health or activate. Next: priority item 7. | S–M |
+| V-PKG-05 Update success | Partial | Live updates (Todo, Documents, Slack via drill.mjs + web approval); wakes and inbox wait through updates (#458, #460); view reconnect after kernel restart (#464 live). #464's in-place reload after an **update** was only partly live: the old slice kernel refused `reload`. | No TUI or remote TUI updates; no live view reload after an update on the cross-built slice. Next: update with a view open, in each terminal. | M |
+| V-PKG-06 Update failure | Partial [user step: real power loss] | Unit #461/#477 (quiesce, mid-migration, commit→activation); live kill -9 at quiesce, staged start and failing release (`ev:p1-10-live-kernel-kill.json`); data restored on failed update: macOS live (#469), Linux VM (#471). | No live kill at a migration step; external-effect receipts after commit untested live. Next: kill during `migrations/001.js`, and after a committed update with a new write. | M |
+| V-PKG-07 Concurrent operations | Partial | Unit: one unfinished operation per installation (#445), deferred-stop races (2026-09-08 tests). | No four-client concurrency test. Next: four clients (2 web, TUI, CLI) issue install/update/uninstall/restart at once; assert one operation and shared status. | M |
+| V-PKG-08 Uninstall and reinstall | Partial | Relay test `uninstall_is_owner_scoped…` (#439); uninstall revokes grants (#447). | **No delete-data choice** (#439 retains data only). No live lifecycle drill with all three Apps; reinstall permission inheritance untested. Next: implement delete-data, then drill. | M |
+| *(revised plan) V-PKG-09 Live view content and joint release* | Partial | Joint signed release; view replaced via local update and reloaded in place (#445, #464). | No timed-campaign refresh or offline cache; no API mismatch/stale bridge drill. | M |
+
+## Worker containment/lifecycle matrix
+
+| Row | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| V-RUN-01 Infinite loop and CPU saturation | Partial | Mechanisms: macOS monitored 1-core CPU with burst credit (`b06238105`); Linux cgroup 1 CPU fixtures. | No infinite-loop App; no latency budget; no status on kernel health, TUIs or web. Next: priority item 8. | M |
+| V-RUN-02 Memory growth | Partial | macOS fixture detection and reap (`ev:worker-resource-tests.log`); Linux 1 GiB/no-swap cgroup fixtures. | No real Node App growth on either OS; "durable event remains pending" and restart cause not shown. Next: memory-hog App with a pending inbox event. | M |
+| V-RUN-03 Crash loop | Partial | A failed start stays failed until `/app start` (seen live, #464 comment, cutover drill); wake backoff to 8 attempts (#433). | No bounded exponential restart ending in quarantine, and no CLI/slash/web status of it (may need implementation). Next: crash-on-register App; check `/app worker` in all clients. | M |
+| V-RUN-04 Malformed or oversized IPC | Partial | Bounded frame, strict JSON and namespace tests (10 transport tests; worker-peer tests; `worker.*` namespace enforcement). | No fuzz tests (no proptest/cargo-fuzz found). Next: frame-decoder fuzz. | S–M |
+| V-RUN-05 Ignored cancellation or acknowledgement | Partial | Deadline/cancel unit tests (transport, catalog deadlines, wake postpone, 20 s on-demand start). | No live App that ignores cancellation for a tool call, external event, local event and lifecycle callback. Next: stalling test App plus kernel responsiveness probe. | M |
+| V-RUN-06 Kernel restart and machine reboot | Partial [user step: machine reboot] | Kernel restart: overdue wake (`ev:p1-12-overdue`), view reconnect (`ev:p1-464-view-reconnect`), kill -9 updates (`ev:p1-10-live-kernel-kill.json`). | No "bindings return" assertion. The managed machine drill is blocked (Apps not provisioned on managed kernels). Next: restart drill asserting bindings and automations. | M |
+| V-RUN-07 Sandbox escape attempts | Partial | Linux confined Node denials: host/escaped reads, package writes, descriptors, subprocess, add-ons, raw TCP/UDP (34194246935). macOS probe records (34170581264) and local native tests. | No single malicious package through the installed runtime on macOS live or on a Linux kernel; not on release builds **[user step for signed macOS]**. Next: malicious test App in the priority 8 corpus. | M |
+| V-RUN-08 Log flooding | Partial | 50/s rate limit, 1000-entry bound and escaping tests (#442). | Nothing live; web has no logs view; no dropped-count display. Next: log-flood App plus viewing in CLI, TUI and (after the fix) web. | S–M |
+| V-RUN-09 Sandbox active before App code | Partial | Launcher confines before loading the runtime (Ready/Continue); Linux identity/seccomp checked before Continue (34169010393); macOS constructor-ordering test. | No instrumented attempts from preload, module resolution, migration or first handler. Next: a probe App attempting access at each phase. | M |
+| V-RUN-10 Cross-installation isolation | Partial | Unit owner/installation scoping (e.g. another installation's pick is invisible, #462; relay owner tests). | No two-hostile-Apps drill. Next: part of priority item 8. | M |
+| *(revised plan) V-RUN-11 Open App lifecycle* | Partial | Idle stop and dormant catalog (#434 test); inbox delivery starts a stopped worker, and a user stop waits (`ev:p1-06-inbox/drill.txt`); App automation forwarded to a workflow run without a view (`ev:event-binding-cutover-drill.json`). | macOS only. No in-process-timer keep-alive test and no "disable one of several integrations". Next: priority item 5 plus a Linux rerun. | M |
+
+## SDK matrix
+
+| Row | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| V-SDK-01 Files | Partial | Documents live on the macOS private image: CRUD, atomic replace, versions, import/export/grants, snapshot (`ev:p1-13-*`, `ev:files-snapshot-live.json`); `restore_tree` into an isolated installation (kernel test, #474). | No Linux run; the case-sensitive vs case-insensitive distinction was not asserted; no append/watch/revoke live. Next: Documents on the Linux VM kernel plus a case-collision test. | M |
+| V-SDK-02 Path safety | Partial | Descriptor-relative hostile-path unit tests (`ev:app-private-data-tests.log`, private-file tests; macOS + Linux CI, 2026-09-08). | No race-rename, Unicode-collision or deleted-parent attempts from App code on both OSes. Next: hostile App fs corpus. | M |
+| V-SDK-03 Tool catalog | Partial | Catalog tests; live bind, call and `UNKNOWN_TOOL`; stale views (#445). | No live invalid-output, deadline, cancellation or restart cases. Next: fixture App with bad output and slow tools. | S–M |
+| V-SDK-04 Tool authorization | Partial | View calls as the human owner and agent calls through MCP use the same policy (#436, #447 tests); two agents live. | Deleted/copied agents, workflow node, Freeform and concurrent runs not covered; critical-validation parity untested live. Next: authorization drill after priority item 2. | M |
+| V-SDK-05 External event delivery | Partial | Duplicate deduped (dummy + Slack), malformed and schema refusal, App offline/user-stopped waits, moved-binding replay (`ev:p1-06-inbox`, `ev:app-event-routes-dummy-drill.json`, `ev:p1-11-moved-binding-replay.json`). | No kernel-offline delivery, revoked connection, reordered/delayed events or update-in-flight case; no count assertion of "one workflow enqueue per occurrence". Next: stop the kernel while AEDS queues events, restart, count workflow runs. | S–M |
+| V-SDK-06 Local event delivery | Partial | On-time and overdue wakes (`ev:p1-12-overdue`). | A Todo occurrence never reached a configured workflow endpoint (finding 4); no deleted, changed, disabled or broken-target cases. Next: priority item 5. | M |
+| V-SDK-07 HTTP | Partial | Fetch adapter plus pinned Octokit/SSE tests against broker fixtures; WebSocket documented as excluded (app_http README:79). | Kernel HTTP fixtures not recorded as executed; no live DNS, redirect, TLS-failure or credential-scope run. Next: `ctest.sh … app_http` plus the live Fetch App. | M |
+| V-SDK-08 Lifecycle | Partial | Lifecycle, idle-stop and migration ordering tests (#434, #455, #477); local live. | Managed kernel impossible today (gap). Next: provision Apps on Path-1 managed kernels, then compare ordering and deadlines. | M–L |
+
+## UX matrix
+
+| Row | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| V-UX-01 App Tab and viewer isolation | Partial | Controller security tests (#436); renderer sandbox live (#483); viewer admission hardening (cloud #229, still in progress). | No DevTools capture from the Environment of an App Tab (CSP, origin, sandbox); no live cross-origin, stale-session or token-redaction checks. Next: CDP capture of App Tab security state plus a stale viewer token attempt. | M |
+| V-UX-02 Responsive App view | Unverified | Only 1280×800 captures (`ev:screens/*.png`); an older capture shows a clipped Folder field (`documents-view-2-saved.png`). | Next: screenshot matrix (1440/1024/768/430/390 px, 200 % zoom, long content, reduced motion, light/dark) for all three Apps; fix clipping. | M |
+| V-UX-03 Accessibility | Partial [user step: VoiceOver] | Accessibility outline with names and states (`ev:p1-07-accessibility/tab-4-outline.json`, #470 control states). | No automated audit. Next: axe-core (or Chromium audit) run over each App view, then the VoiceOver pass **[user]**. | S–M |
+| V-UX-04 Local TUI commands | Partial | Shared `app` command for CLI and `/app`, with catalog tests (#435, #439, #442, #445, #446); TUI pty drills (`ev:p1-19-tui`, `ev:tui-guided-trigger/01-notification.txt`). | Standalone `chariox app install/update` are rejected (parity gap); no parity snapshot; `/app` itself not driven interactively. Next: priority item 10. | S–M |
+| V-UX-05 Remote TUI | Unverified | — | Next: priority item 1. | M |
+| V-UX-06 Agent App selector | Partial | Extensions panel lists installed Apps; grant/revoke live (cloud #221); inspector keeps App bindings (tests). | No screenshots; no runtime-catalog assertion; uninstall's missing-binding display not captured. Next: bind, then assert `tools/list`; uninstall and screenshot. | S |
+| V-UX-07 Freeform trigger | Partial | Web actions menu: notification and schedule setups opened (`ev:p1-09-guided-trigger.json`, cloud #222/#232); TUI `/workflow from-agent … trigger notification` with origin `surface: tui` (#486, `ev:tui-guided-trigger/`). | HTTP class not shown live; editable alias and normal lifecycle not captured. Next: HTTP trigger, alias rename, run and delete. | S |
+| V-UX-08 Freeform deploy | Partial | Deploy created `agent-1-deploy-2` and opened the wizard (cloud #222). | No connected-ingress or hosted deployment, rollback or Deployed view. Next: connected-ingress deploy through a local tunnel; hosted may need a Cloud account **[user?]**. | M |
+| V-UX-09 Broken automation | Partial | `broken` state set on schema-changing updates, shown by `/app automation list` (#466 unit). | Not shown live in the App view, the workflow or the TUI; no delete-target/stop-deployment/restore cases. Next: break an automation live and capture all three surfaces. | M |
+| V-UX-10 One App Tab, many terminals | Partial | One Tab per installation, reopen gives the same `target_id` (#473); TUI `/room view` on the same Room (`ev:p1-19-tui/run3`). | Web, local TUI viewer and remote TUI viewer not attached at once; refresh and close-viewer assertions missing. Next: after priority item 1. | M |
+
+## Reference-App acceptance
+
+| App | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| Slack | Partial | Human: connection authorized (`InstallEventConnection`), notification routes chosen (`/app inbox add`), state inspected in the view (`ev:p1-11-live-slack-reply.json`, screens). Event: generator → App → automation → one workflow run; re-emit deduplicated (`ev:app-event-routes-dummy-drill.json`, `ev:event-binding-cutover-drill.json`). | Disconnect (revoke) is unit-tested only. **Agent path not shown live**: replies came from the view, not an agent calling `reply`/`react` via MCP. Release blocker: old kernel reply surface (finding 3). No TUI or remote. Next: priority item 4. | M |
+| Todo | Partial | Human create/complete/view and reopen after restart (`ev:screens/todo-view-11-after-restart.png`); agent create/complete (`ev:p1-19-acceptance`, `ev:p1-19-tui`); CAS under concurrent edits (#438 test); overdue wake after restart (`ev:p1-12-overdue`). | Edit, schedule and filter not captured. **No automation → workflow emission** (finding 4). Dedupe after App-data rollback not live. No TUI/remote runs. Next: priority item 5. | M |
+| Documents | Partial | Create/edit/versions, import, export and snapshot live (`ev:p1-13-*`, `ev:files-snapshot-live.json`); unsaved edits survive reload (#464); sanitizer tests (#441). | Folders and HTML preview not captured live; agent planning-file edits through tools not captured; no live "outside installation storage" or unsafe-HTML attack; no TUI/remote. Next: agent-driven Documents drill plus a hostile-HTML document in the viewer. | M |
+
+## Release gates
+
+| Gate | Status | Evidence | Missing / next action | Effort |
+|---|---|---|---|---|
+| Architecture | Partial [user step: Developer ID-signed macOS worker] | Supervisor plus bounded IPC, sandboxed Chromium (#483), single runtime MCP (P1.05). | Two browser controllers still coexist (merge note); no signed worker; Phase 1 review obligations not all closed. Next: consolidate onto main's controller. | M |
+| Workflow | Partial | App events reach workflows only through automations (`ev:event-binding-cutover-drill.json`); "binding creates no workflow" (#457); one automation, one target (#435). | No drill asserting that binding or opening a view starts no run. Todo automation path not live. Next: that assertion plus priority item 5. | S |
+| Migration | Partial | Slack runs as an installed App with live parity; clients generic. | Kernel old reply surface still present (finding 3). Next: priority item 4. | S–M |
+| Reference | Partial | See reference rows. | Priority items 4 and 5, Documents agent drill, TUI and remote runs. | L |
+| Isolation | Partial [user step: signed macOS build] | Fixture and hosted containment evidence (see V-RUN rows). | Hostile-App drills on production Linux and macOS builds. Next: priority items 6 and 8. | L |
+| Browser persistence | Needs user | #483 plus hosted fixtures cover sandbox and deterministic state. | Real Google-session regression **[user]**. | — |
+| Human validation | Partial (step-up = Phase 2) | #443/#444 unit tests; one operation model for view, agent and background calls. | Live critical effect with trusted confirmation (finding 1). Next: priority item 2. | M |
+| App work (revised: V1-INT-22..27) | Partial | See V1-INT-23..26, 29 and 32. | Remote, Linux, automation step, mode matrix. | M–L |
+| Client | Partial [user step: screen reader] | CLI/TUI shared commands; web and TUI viewers on the same Tab; accessibility outline. | Remote viewer; responsive screenshots; web install/update/logs gap; standalone CLI parity. | L |
+| Lifecycle | Partial [user step: reboot] | Install/update/migration/rollback/restart fault tests plus live kill drills (P1.10). | Install-checkpoint kills; uninstall/reinstall drill; delete-data. | M |
+| Storage | Partial | Documents private I/O, grants, versions, snapshots (macOS); quota fixtures on both OSes. | Denial outside storage shown live; quota hit by an App; Linux Documents run. | M |
+| Freeform | Partial | Trigger live on web and TUI; deploy wizard opened. | Deploy not completed "in a single guided action"; HTTP trigger. | S–M |
+| Evidence | Unverified | — | Nothing merged; no release candidate or digests; hosted CI not run on the stack; 157 full-suite failures (2026-09-25); evidence not under the plan's path. Next: priority item 15. | L |
