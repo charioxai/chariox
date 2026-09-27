@@ -10,6 +10,31 @@ fail() {
   exit 1
 }
 
+assert_unmounted_probe_root() {
+  probe_root=$1
+  [ -d "$probe_root" ] && [ ! -L "$probe_root" ] || fail "probe data-root is not a real directory"
+  probe_mounts=$(findmnt --noheadings --raw --output TARGET) || fail "could not inspect probe mounts"
+  probe_mounted=$(printf '%s\n' "$probe_mounts" | awk -v root="$probe_root" '$0 == root || index($0, root "/") == 1 { print "mounted" }') \
+    || fail "could not parse probe mounts"
+  [ -z "$probe_mounted" ] || fail "probe data-root contains a mount"
+}
+
+claim_empty_probe_root() {
+  assert_unmounted_probe_root "$1"
+  probe_entry=$(find "$1" -mindepth 1 -print -quit) || fail "could not inspect probe data-root"
+  [ -z "$probe_entry" ] || fail "probe data-root contains pre-existing data"
+  probe_root_identity=$(stat -c '%d:%i' "$1") || fail "could not identify probe data-root"
+}
+
+clear_owned_probe_root() {
+  assert_unmounted_probe_root "$1"
+  [ -n "${probe_root_identity:-}" ] && [ "$(stat -c '%d:%i' "$1")" = "$probe_root_identity" ] \
+    || fail "probe data-root identity changed"
+  # Called only after the storage services are verified inactive. The directory
+  # was empty before this invocation's probes; never erase an inherited store.
+  find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + || fail "could not clear probe-owned engine metadata"
+}
+
 assert_path1_unit_has_no_dropins() {
   drop_in_paths=$(systemctl show --property=DropInPaths --value "$1") \
     || fail "could not inspect effective systemd drop-ins for $1"
@@ -411,6 +436,10 @@ if [ ! -e "$rootless_docker_config" ] && [ ! -L "$rootless_docker_config" ]; the
 fi
 bypass_path1_data_volume_dropins
 assert_path1_builder_storage_pristine
+if [ ! -e /var/lib/chariox-docker/data ] && [ ! -L /var/lib/chariox-docker/data ]; then
+  install -d -o chariox-docker -g chariox-docker -m 0700 /var/lib/chariox-docker/data
+fi
+claim_empty_probe_root /var/lib/chariox-docker/data
 systemctl start chariox-rootless-docker.service
 rootless_docker_ready=0
 for _attempt in $(seq 1 30); do
@@ -451,17 +480,22 @@ if runuser -u chariox -- env DOCKER_HOST=unix:///run/chariox-docker/docker.sock 
 fi
 systemctl stop chariox-rootless-docker.service
 systemctl stop chariox-slice-disk-quota-allocator.service
+if systemctl is-active --quiet chariox-rootless-docker.service; then
+  fail "rootless Docker remained active while freezing the image"
+fi
 if systemctl is-active --quiet chariox-slice-disk-quota-allocator.service; then
   fail "slice disk quota allocator remained active while freezing the image"
 fi
 assert_path1_builder_storage_pristine
 restore_path1_data_volume_dropins
+clear_owned_probe_root /var/lib/chariox-docker/data
 if [ -e /var/lib/chariox-docker/data ] || [ -L /var/lib/chariox-docker/data ]; then
   [ -d /var/lib/chariox-docker/data ] && [ ! -L /var/lib/chariox-docker/data ] \
     || fail "Docker data-root is not a real directory"
   if find /var/lib/chariox-docker/data -mindepth 1 -print -quit | grep -q .; then
     fail "Docker data-root contains volume data; refusing to erase it while preparing the image"
   fi
+  rmdir /var/lib/chariox-docker/data
 fi
 rm -rf /var/lib/chariox-docker/home/.docker
 if [ "$remove_seeded_rootless_quota_config" -eq 1 ] \
