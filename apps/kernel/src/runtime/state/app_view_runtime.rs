@@ -161,7 +161,7 @@ impl KernelRuntimeState {
                 Err(error)
                     if (open
                         && tokio::time::Instant::now() < deadline
-                        && error.to_string().contains("already has an active"))
+                        && crate::runtime::app_views::slice_busy(&error.to_string()))
                         || (respond && attempt < RESPOND_ATTEMPTS) =>
                 {
                     tokio::time::sleep(COMMAND_RETRY).await;
