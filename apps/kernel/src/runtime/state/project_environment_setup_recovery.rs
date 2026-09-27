@@ -58,10 +58,26 @@ impl ValidationCommandLease {
         command_index: usize,
         scratch_path: &Path,
     ) -> Result<Self, String> {
-        if operation_id.is_empty() || attempt == 0 {
+        let boot_id = current_boot_id()?;
+        Self::scratch_intent_for_boot(
+            operation_id,
+            attempt,
+            command_index,
+            scratch_path,
+            &boot_id,
+        )
+    }
+
+    fn scratch_intent_for_boot(
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+        scratch_path: &Path,
+        boot_id: &str,
+    ) -> Result<Self, String> {
+        if operation_id.is_empty() || attempt == 0 || !valid_boot_id(boot_id) {
             return Err("validation recovery identity is incomplete".to_string());
         }
-        let boot_id = current_boot_id()?;
         Ok(Self {
             version: RECOVERY_VERSION,
             operation_id: operation_id.to_string(),
@@ -149,7 +165,24 @@ impl ValidationProcessIdentity {
 }
 
 pub(super) fn recover_validation_command(lease: &ValidationCommandLease) -> Result<(), String> {
+    let boot_id = current_boot_id()?;
+    recover_validation_command_for_boot(lease, &boot_id)
+}
+
+fn recover_validation_command_for_boot(
+    lease: &ValidationCommandLease,
+    current_boot_id: &str,
+) -> Result<(), String> {
     validate_lease(lease)?;
+    if !valid_boot_id(current_boot_id) {
+        return Err("current worker boot identity is invalid".to_string());
+    }
+    if current_boot_id != lease.boot_id {
+        // A verified boot transition proves that none of the prior boot's
+        // command processes or output-pipe holders can still be running. Keep
+        // the filesystem owner check as the independent authority for removal.
+        return remove_owned_validation_scratch(lease);
+    }
     if lease.output_pipe_unsettled {
         return Err(
             "validation output remained open after process-group settlement; scratch ownership recovery is incomplete"
@@ -157,10 +190,6 @@ pub(super) fn recover_validation_command(lease: &ValidationCommandLease) -> Resu
         );
     }
     match lease.process.as_ref() {
-        Some(process) if current_boot_id()? != process.boot_id => {
-            // A Linux boot ID change proves that no process from the old boot
-            // can still own a numeric PID or process group in this boot.
-        }
         Some(process) => settle_process_group(process)?,
         None => {
             // Intent is committed before spawn and the wrapper cannot run the
@@ -998,34 +1027,136 @@ mod tests {
             });
         }
         let mut child = command.spawn().expect("the foreign fixture process should start");
-        let identity = ValidationProcessIdentity::from_child(
-            child.id(),
-            &current_boot_id().expect("the Linux boot id should be available"),
-        )
-        .expect("the foreign fixture identity should be readable");
-        let mut lease = ValidationCommandLease::scratch_intent(
+        let proc_identity = read_proc_identity(child.id())
+            .expect("the fixture process identity should be readable without boot-file access");
+        let prior_boot = "00000000-0000-0000-0000-000000000001";
+        let current_boot = "00000000-0000-0000-0000-000000000002";
+        let identity = ValidationProcessIdentity {
+            boot_id: prior_boot.to_string(),
+            pid: proc_identity.pid,
+            process_group_id: proc_identity.process_group_id,
+            session_id: proc_identity.session_id,
+            start_time_ticks: proc_identity.start_time_ticks,
+        };
+        let mut lease = ValidationCommandLease::scratch_intent_for_boot(
             "different-boot-op",
             1,
             0,
             scratch.path(),
+            prior_boot,
         )
         .expect("the test lease should be created");
         lease
             .bind_process(identity.clone())
             .expect("the test process should initially bind");
-        lease
-            .process
-            .as_mut()
-            .expect("the test process identity should be present")
-            .boot_id = "00000000-0000-0000-0000-000000000001".to_string();
-        lease.boot_id = "00000000-0000-0000-0000-000000000001".to_string();
+        lease.mark_output_pipe_unsettled();
 
-        recover_validation_command(&lease)
-            .expect("a previous boot proves the recorded process cannot remain");
-        assert!(!scratch.path().exists());
-        assert!(!process_group_is_absent(identity.process_group_id).expect("the foreign group should be readable"));
+        let recovery = recover_validation_command_for_boot(&lease, current_boot);
+        let group_absent = process_group_is_absent(identity.process_group_id);
+        let scratch_remains = scratch.path().exists();
         let _ = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };
         let _ = child.wait();
+        recovery.expect("a verified prior boot permits owner-checked cleanup despite uncertain pipes");
+        assert_eq!(group_absent, Ok(false), "the modeled old PID must not be signalled");
+        assert!(!scratch_remains);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn same_boot_unsettled_output_remains_fail_closed() {
+        let root = test_root("same-boot-output-unsettled");
+        let scratch = make_scratch(&root, "same-boot-output-unsettled-op", 1, 0);
+        let boot_id = "00000000-0000-0000-0000-000000000001";
+        let mut lease = ValidationCommandLease::scratch_intent_for_boot(
+            "same-boot-output-unsettled-op",
+            1,
+            0,
+            scratch.path(),
+            boot_id,
+        )
+        .expect("the modeled lease should be valid");
+        lease.mark_output_pipe_unsettled();
+
+        let error = recover_validation_command_for_boot(&lease, boot_id)
+            .expect_err("same-boot uncertainty must remain nonretryable");
+        assert!(error.contains("output remained open"));
+        assert!(scratch.path().exists());
+        let _ = fs::remove_dir_all(scratch.path());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scratch_intent_without_process_stays_incomplete_same_boot_and_cleans_after_boot_change() {
+        let root = test_root("intent-boot-change");
+        let scratch = make_scratch(&root, "intent-boot-change-op", 1, 0);
+        let prior_boot = "00000000-0000-0000-0000-000000000011";
+        let current_boot = "00000000-0000-0000-0000-000000000012";
+        let lease = ValidationCommandLease::scratch_intent_for_boot(
+            "intent-boot-change-op",
+            1,
+            0,
+            scratch.path(),
+            prior_boot,
+        )
+        .expect("the modeled scratch intent should be valid");
+
+        assert!(recover_validation_command_for_boot(&lease, prior_boot).is_err());
+        assert!(scratch.path().exists(), "same-boot missing process identity is not absence proof");
+        recover_validation_command_for_boot(&lease, current_boot)
+            .expect("a verified reboot proves the gated child cannot remain");
+        assert!(!scratch.path().exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prior_boot_output_uncertainty_still_requires_exact_marker_and_allowed_root() {
+        let root = test_root("prior-boot-owner-check");
+        let scratch = make_scratch(&root, "prior-boot-owner-check-op", 1, 0);
+        let prior_boot = "00000000-0000-0000-0000-000000000021";
+        let current_boot = "00000000-0000-0000-0000-000000000022";
+        let mut lease = ValidationCommandLease::scratch_intent_for_boot(
+            "prior-boot-owner-check-op",
+            1,
+            0,
+            scratch.path(),
+            prior_boot,
+        )
+        .expect("the modeled lease should be valid");
+        lease.mark_output_pipe_unsettled();
+
+        fs::write(scratch.path().join(OWNER_MARKER), b"foreign owner")
+            .expect("the owner marker should be tampered");
+        assert!(recover_validation_command_for_boot(&lease, current_boot).is_err());
+        assert!(scratch.path().exists(), "cross-boot cleanup must preserve a foreign marker");
+        fs::write(
+            scratch.path().join(OWNER_MARKER),
+            lease.owner_token.as_bytes(),
+        )
+        .expect("the exact owner marker should be restored for the path check");
+
+        let foreign_parent = root.join("outside-allowed-scratch-roots");
+        let foreign_path = foreign_parent.join(
+            lease
+                .scratch_path
+                .file_name()
+                .expect("the owned scratch should have an operation-derived name"),
+        );
+        fs::create_dir_all(&foreign_path).expect("the outside scratch fixture should be created");
+        fs::write(
+            foreign_path.join(OWNER_MARKER),
+            lease.owner_token.as_bytes(),
+        )
+        .expect("the outside fixture should carry the matching owner marker");
+        lease.scratch_path = foreign_path.clone();
+        assert!(recover_validation_command_for_boot(&lease, current_boot).is_err());
+        assert!(foreign_path.exists(), "a matching marker cannot authorize an outside root");
+        assert!(scratch.path().exists(), "failed outside-path validation leaves original scratch intact");
+
+        let _ = fs::remove_dir_all(foreign_parent);
+        let _ = fs::remove_dir_all(scratch.path());
         let _ = fs::remove_dir_all(&root);
     }
 
