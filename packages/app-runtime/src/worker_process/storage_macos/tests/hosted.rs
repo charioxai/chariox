@@ -269,7 +269,15 @@ fn hosted_storage_failed_updates_roll_back_to_the_committed_snapshot() {
         b"migrated by 8"
     );
     assert_eq!(snapshots(&storage), 0);
-    storage.release_blocking().unwrap();
+    // Deleting the App's data removes every image, the snapshot a staged
+    // update took, and the journal.
+    drop(start(9, 8));
+    store
+        .delete_blocking("fixture-owner", "fixture-rollback")
+        .unwrap();
+    assert!(!path
+        .join(storage_name("fixture-owner", "fixture-rollback"))
+        .exists());
 }
 
 #[test]

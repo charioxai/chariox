@@ -90,6 +90,19 @@ impl PreparedWorker {
             .and_then(|root| root.recover_all_blocking())
             .map_err(|error| error.code())
     }
+    /// Deletes one installation's macOS storage once its workers are reaped:
+    /// the owner deleted the App's data. Deleting again finishes an interrupted
+    /// deletion. The error is a stable code such as `app_storage_busy`.
+    #[cfg(target_os = "macos")]
+    pub fn delete_macos_storage(
+        storage_root: &std::path::Path,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(), &'static str> {
+        storage_macos::StorageRoot::open(storage_root)
+            .and_then(|root| root.delete_blocking(owner, installation))
+            .map_err(|error| error.code())
+    }
 }
 
 /// To be implemented by the enrolled platform provisioner, not by callers of

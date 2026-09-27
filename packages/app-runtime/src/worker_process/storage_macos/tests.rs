@@ -365,3 +365,33 @@ fn failed_updates_roll_back_to_the_committed_generations_snapshot() {
     assert_eq!(snapshot_step(5, 5, 5, true), Discard);
     assert_eq!(snapshot_step(8, 8, 8, true), Discard);
 }
+
+#[test]
+fn deleting_storage_removes_the_installation_journal_last_and_is_repeatable() {
+    let scratch = Scratch::new();
+    let root = StorageRoot::open(&scratch.0).unwrap();
+    // Absent storage is already deleted.
+    root.delete_blocking("owner", "app").unwrap();
+    let name = storage_name("owner", "app");
+    let dir = Dir::open_or_create_private_child(&scratch.0, OsStr::new(&name)).unwrap();
+    record(&dir).save(&dir).unwrap();
+    fs::write(
+        scratch.0.join(&name).join("data-snapshot-3.dmg"),
+        b"snapshot",
+    )
+    .unwrap();
+    drop(dir);
+    // Another owner's request names other storage; this one is untouched.
+    root.delete_blocking("other", "app").unwrap();
+    assert!(scratch.0.join(&name).join(journal::NAME).exists());
+    root.delete_blocking("owner", "app").unwrap();
+    assert!(!scratch.0.join(&name).exists());
+    root.delete_blocking("owner", "app").unwrap();
+    // Storage recorded for another identity under this name is refused.
+    let dir = Dir::open_or_create_private_child(&scratch.0, OsStr::new(&name)).unwrap();
+    let mut foreign = record(&dir);
+    foreign.installation = "other-app".into();
+    foreign.save(&dir).unwrap();
+    drop(dir);
+    assert_eq!(root.delete_blocking("owner", "app"), Err(Error::Identity));
+}

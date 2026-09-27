@@ -71,6 +71,9 @@ impl From<FsError> for Error {
 type Result<T> = std::result::Result<T, Error>;
 
 const MAX_INSTALLATIONS: usize = 64;
+/// Entries one deletion removes: the images, snapshots, journal temporaries and
+/// the empty mount directories, with room for what an App left in them.
+const MAX_DELETED_ENTRIES: usize = 4096;
 const MAX_RESERVED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const HOST_RESERVE: u64 = 8 * 1024 * 1024 * 1024;
 /// Storage last used by `recorded` admits `generation` when it is not older,
@@ -197,6 +200,71 @@ impl StorageRoot {
         Ok(())
     }
 
+    /// Deletes one installation's storage, with its snapshots, after its
+    /// workers are reaped: the owner deleted the App's data. Volumes are
+    /// detached first. The journal goes last, so an interrupted deletion is
+    /// storage recovery still recognizes, and deleting again finishes it.
+    /// Absent storage is already deleted.
+    pub fn delete_blocking(&self, owner: &str, installation: &str) -> Result<()> {
+        journal::identifier(owner)?;
+        journal::identifier(installation)?;
+        let global = Dir::open_private(&self.path)?;
+        if FileIdentity::of(&global.0)? != FileIdentity::of(&self.dir.0)? {
+            return Err(Error::Identity);
+        }
+        if !global.try_lock()? {
+            return Err(Error::Busy);
+        }
+        let name = storage_name(owner, installation);
+        let open = || -> Result<Option<Dir>> {
+            let Some(dir) = Dir::open_private_child_if_present(&self.path, OsStr::new(&name))?
+            else {
+                return Ok(None);
+            };
+            if !dir.try_lock()? {
+                return Err(Error::Busy);
+            }
+            Ok(Some(dir))
+        };
+        let Some(dir) = open()? else {
+            return Ok(());
+        };
+        journal::recover_temporaries(&dir)?;
+        if let Some(journal) = journal::load(&dir)? {
+            if journal.owner != owner || journal.installation != installation {
+                return Err(Error::Identity);
+            }
+            let mut storage = MountedStorage {
+                root: dir,
+                path: self.path.join(&name),
+                journal,
+                images: [None, None],
+                mounted: [None, None],
+                released: false,
+                cleanup_attempted: false,
+                deadline: std::time::Instant::now(),
+            };
+            storage.release_blocking()?;
+        }
+        let Some(dir) = open()? else {
+            return Ok(());
+        };
+        let mut remaining = MAX_DELETED_ENTRIES;
+        crate::private_fs::remove_contents_preserving(
+            &dir,
+            &mut remaining,
+            OsStr::new(journal::NAME),
+            &mut || Ok(()),
+        )?;
+        dir.remove_file(OsStr::new(journal::NAME))?;
+        dir.sync()?;
+        FileIdentity::of(&dir.0)?.require(&self.dir, OsStr::new(&name), &dir.0)?;
+        drop(dir);
+        self.dir.remove_directory(OsStr::new(&name))?;
+        self.dir.sync()?;
+        Ok(())
+    }
+
     fn prepare_with_capacities(
         &self,
         owner: &str,
@@ -217,8 +285,7 @@ impl StorageRoot {
         if !global.try_lock()? {
             return Err(Error::Busy);
         }
-        let digest = Sha256::digest(format!("{owner}\0{installation}").as_bytes());
-        let name = format!("installation-{digest:x}");
+        let name = storage_name(owner, installation);
         self.check_capacity(&name, capacities, generation, committed)?;
         let dir = Dir::open_or_create_private_child(&self.path, OsStr::new(&name))?;
         if !dir.try_lock()? {
@@ -417,6 +484,11 @@ fn snapshot_reservation(
                 })
         }
     }
+}
+
+fn storage_name(owner: &str, installation: &str) -> String {
+    let digest = Sha256::digest(format!("{owner}\0{installation}").as_bytes());
+    format!("installation-{digest:x}")
 }
 
 fn require_capacity(total: u64, unallocated: u64, available: u64) -> Result<()> {
