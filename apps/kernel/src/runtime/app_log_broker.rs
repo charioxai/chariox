@@ -18,6 +18,8 @@ pub(crate) struct AppLogBroker {
     installation: String,
     admission: Arc<Semaphore>,
     window: Arc<Mutex<(u64, u32)>>,
+    /// Writes refused since the last admitted one.
+    dropped: Arc<std::sync::atomic::AtomicU32>,
 }
 
 #[derive(Deserialize)]
@@ -42,7 +44,14 @@ impl AppLogBroker {
             installation,
             admission,
             window: Arc::new(Mutex::new((0, 0))),
+            dropped: Arc::default(),
         }
+    }
+
+    fn drop_write(&self, code: &str) -> RemoteError {
+        self.dropped
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        error(code, true)
     }
 
     fn admit(&self, now_ms: u64) -> bool {
@@ -62,25 +71,27 @@ impl AppLogBroker {
         let write: Write =
             serde_json::from_value(request.params).map_err(|_| error("INVALID_ARGUMENT", false))?;
         if !self.admit(crate::session::unix_epoch_ms()) {
-            return Err(error("RATE_LIMITED", true));
+            return Err(self.drop_write("RATE_LIMITED"));
         }
         let permit = self
             .admission
             .clone()
             .try_acquire_owned()
-            .map_err(|_| error("APP_BUSY", true))?;
+            .map_err(|_| self.drop_write("APP_BUSY"))?;
+        let dropped = self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
         let service = self.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let fields = write
                 .fields
                 .unwrap_or_else(|| Value::Object(Default::default()));
-            service.store.append_app_log(
+            service.store.append_app_log_after_drops(
                 &service.owner,
                 &service.installation,
                 &write.level,
                 &write.message,
                 &fields,
+                dropped,
             )
         })
         .await
@@ -124,6 +135,26 @@ mod tests {
         assert!((0..PER_SECOND).all(|_| broker.admit(10_000)));
         assert!(!broker.admit(10_500));
         assert!(broker.admit(11_000), "a new second admits again");
+        // Refused writes are noted before the next admitted one.
+        broker.drop_write("RATE_LIMITED");
+        broker.drop_write("APP_BUSY");
+        let dropped = broker.dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
+        broker
+            .store
+            .append_app_log_after_drops(
+                "alice",
+                "todo",
+                "info",
+                "after",
+                &serde_json::json!({}),
+                dropped,
+            )
+            .unwrap();
+        let entries = broker.store.app_logs("alice", "todo", 0, 10).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].message.starts_with("2 log writes were dropped"));
+        assert_eq!(entries[0].fields["dropped"], 2);
+        assert_eq!(entries[1].message, "after");
         drop(broker);
         let _ = std::fs::remove_dir_all(root);
     }

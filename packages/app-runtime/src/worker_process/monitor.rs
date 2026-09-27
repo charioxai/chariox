@@ -367,6 +367,13 @@ pub(super) fn run(
             )
         })
         .unwrap_or_default();
+    // Termination is by signal. A running worker that exited with a status
+    // before the cancellation reached it (an uncaught exception, say) exited
+    // on its own; it was not cancelled.
+    let failure = match failure {
+        Some(WorkerError::Cancelled) if running && code.is_some() => None,
+        other => other,
+    };
     WorkerExit {
         code,
         signal,

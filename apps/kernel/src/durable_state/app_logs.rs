@@ -30,6 +30,8 @@ pub(super) struct AppLogRequest {
     level: String,
     message: String,
     fields: String,
+    /// Writes refused since the last admitted one; noted before this entry.
+    dropped: u32,
     response: mpsc::Sender<Result<(), &'static str>>,
 }
 impl std::fmt::Debug for AppLogRequest {
@@ -82,6 +84,20 @@ impl DurableKernelStateStore {
         message: &str,
         fields: &serde_json::Value,
     ) -> Result<(), &'static str> {
+        self.append_app_log_after_drops(owner, installation, level, message, fields, 0)
+    }
+
+    /// Like `append_app_log`, first noting how many earlier writes were
+    /// refused (rate limit or busy), so the owner sees the gap.
+    pub(crate) fn append_app_log_after_drops(
+        &self,
+        owner: &str,
+        installation: &str,
+        level: &str,
+        message: &str,
+        fields: &serde_json::Value,
+        dropped: u32,
+    ) -> Result<(), &'static str> {
         let fields = validate(level, message, fields)?;
         let (response, receiver) = mpsc::channel();
         self.writer
@@ -91,6 +107,7 @@ impl DurableKernelStateStore {
                 level: level.into(),
                 message: message.into(),
                 fields,
+                dropped,
                 response,
             })))
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
@@ -143,11 +160,27 @@ impl DurableKernelStateStore {
 pub(super) fn execute(connection: &mut Connection, request: AppLogRequest) {
     let result = (|| -> rusqlite::Result<()> {
         let transaction = connection.transaction()?;
+        let now = crate::session::unix_epoch_ms();
+        if request.dropped > 0 {
+            let mut fields = serde_json::Map::new();
+            fields.insert("dropped".into(), request.dropped.into());
+            append_kernel_notice_in(
+                &transaction,
+                &request.owner,
+                &request.installation,
+                now,
+                &format!(
+                    "{} log writes were dropped: the App wrote faster than its log rate limit or while busy.",
+                    request.dropped
+                ),
+                fields,
+            )?;
+        }
         insert(
             &transaction,
             &request.owner,
             &request.installation,
-            crate::session::unix_epoch_ms(),
+            now,
             &request.level,
             &request.message,
             &request.fields,
