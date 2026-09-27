@@ -3,7 +3,11 @@ import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { SLICE_DISK_QUOTA_HOST_RESERVE_MIN_BYTES } from "./slice-disk-quota-contract.mjs"
+import {
+  SLICE_DISK_QUOTA_HOST_RESERVE_MIN_BYTES,
+  SLICE_DISK_QUOTA_PROJECT_ID_MIN,
+  sliceDiskQuotaIdentityKey,
+} from "./slice-disk-quota-contract.mjs"
 import {
   createSliceDiskQuotaAllocator,
 } from "./slice-disk-quota-allocator.mjs"
@@ -19,7 +23,7 @@ const identity = {
 const limits = { writableLayerBytes: 512 * 1024 * 1024, persistentHomeBytes: 2_048 * 1024 * 1024 }
 
 function fixture(overrides = {}) {
-  let state = { schemaVersion: 1, nextProjectId: 1_073_741_824, reservations: {} }
+  let state = structuredClone(overrides.initialState ?? { schemaVersion: 1, nextProjectId: 1_073_741_824, reservations: {} })
   let availableBytes = 48 * 1024 ** 3
   const calls = []
   const actual = { layerUsed: 48 * 1024 * 1024, homeUsed: 256 * 1024 * 1024 }
@@ -71,6 +75,7 @@ function fixture(overrides = {}) {
     actual,
     getState: () => state,
     backend,
+    stateStore,
     setAvailable: value => { availableBytes = value },
   }
 }
@@ -85,6 +90,41 @@ function identityLabels(value) {
 
 function reserve(allocator, capLimits = limits) {
   return allocator.handle({ protocolVersion: 1, operation: "reserve", identity, limits: capLimits })
+}
+
+function stateWithReservationCount(count) {
+  const reservations = {}
+  let targetIdentity
+  let targetProjectIds
+  for (let index = 0; index < count; index += 1) {
+    const containerName = `chariox-slice-${index}`
+    const reservationIdentity = {
+      ownerKernelId: identity.ownerKernelId,
+      ownerMachineId: identity.ownerMachineId,
+      sliceId: `slice-${index}`,
+      containerName,
+      homeVolumeName: `${containerName}-home`,
+    }
+    const firstProjectId = SLICE_DISK_QUOTA_PROJECT_ID_MIN + index * 2
+    reservations[sliceDiskQuotaIdentityKey(reservationIdentity)] = {
+      identity: reservationIdentity,
+      limits,
+      projectIds: { writableLayer: firstProjectId, persistentHome: firstProjectId + 1 },
+    }
+    if (index === count - 1) {
+      targetIdentity = reservationIdentity
+      targetProjectIds = { writableLayer: firstProjectId, persistentHome: firstProjectId + 1 }
+    }
+  }
+  return {
+    identity: targetIdentity,
+    projectIds: targetProjectIds,
+    state: {
+      schemaVersion: 1,
+      nextProjectId: SLICE_DISK_QUOTA_PROJECT_ID_MIN + count * 2,
+      reservations,
+    },
+  }
 }
 
 test("reserve is durable, idempotent, and assigns independent IDs to both storage classes", () => {
@@ -119,6 +159,17 @@ test("filesystem reservations survive allocator recreation and unsafe state mode
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test("restarted allocator can release from 70,000 valid durable reservations", () => {
+  const { identity: releaseIdentity, projectIds, state } = stateWithReservationCount(70_000)
+  const seeded = fixture({ initialState: state })
+  const restarted = createSliceDiskQuotaAllocator({ backend: seeded.backend, stateStore: seeded.stateStore })
+
+  assert.deepEqual(restarted.handle({ protocolVersion: 1, operation: "release", identity: releaseIdentity }), { released: true })
+  assert.equal(Object.keys(seeded.getState().reservations).length, 69_999)
+  assert.equal(seeded.getState().reservations[sliceDiskQuotaIdentityKey(releaseIdentity)], undefined)
+  assert.deepEqual(seeded.calls, [["clear", projectIds.writableLayer], ["clear", projectIds.persistentHome]])
 })
 
 test("reserve rejects unsupported backends and preserves the host recovery reserve", () => {

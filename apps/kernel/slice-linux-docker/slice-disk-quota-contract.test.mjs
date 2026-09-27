@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import {
+  SLICE_DISK_QUOTA_PROJECT_ID_MIN,
   SLICE_DISK_QUOTA_PROTOCOL_VERSION,
   sliceDiskQuotaIdentityKey,
   validateSliceDiskQuotaIdentity,
@@ -87,4 +88,32 @@ test("durable reservation state rejects stale keys, duplicate IDs, and unsupport
       },
     },
   }), /container name is duplicated/)
+})
+
+test("durable state validates 70,000 reservations without a spread-argument limit", () => {
+  const count = 70_000
+  const reservations = {}
+  for (let index = 0; index < count; index += 1) {
+    const containerName = `chariox-slice-${index}`
+    const reservationIdentity = {
+      ownerKernelId: identity.ownerKernelId,
+      ownerMachineId: identity.ownerMachineId,
+      sliceId: `slice-${index}`,
+      containerName,
+      homeVolumeName: `${containerName}-home`,
+    }
+    const firstProjectId = SLICE_DISK_QUOTA_PROJECT_ID_MIN + index * 2
+    reservations[sliceDiskQuotaIdentityKey(reservationIdentity)] = {
+      identity: reservationIdentity,
+      limits: request.limits,
+      projectIds: { writableLayer: firstProjectId, persistentHome: firstProjectId + 1 },
+    }
+  }
+  const state = {
+    schemaVersion: SLICE_DISK_QUOTA_PROTOCOL_VERSION,
+    nextProjectId: SLICE_DISK_QUOTA_PROJECT_ID_MIN + count * 2,
+    reservations,
+  }
+
+  assert.equal(validateSliceDiskQuotaState(state), state)
 })

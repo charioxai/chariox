@@ -93,6 +93,7 @@ export function validateSliceDiskQuotaState(state) {
   }
   const projectIds = new Set()
   const containerNames = new Set()
+  let maxProjectId = 0
   for (const [key, record] of Object.entries(state.reservations)) {
     exactKeys(record, ["identity", "limits", "projectIds"], "quota reservation")
     validateSliceDiskQuotaIdentity(record.identity)
@@ -111,9 +112,10 @@ export function validateSliceDiskQuotaState(state) {
         fail("quota project ID is stale or duplicated")
       }
       projectIds.add(id)
+      if (id > maxProjectId) maxProjectId = id
     }
   }
-  if (state.nextProjectId <= Math.max(0, ...projectIds)) fail("quota state allocator would replay an allocated project ID")
+  if (state.nextProjectId <= maxProjectId) fail("quota state allocator would replay an allocated project ID")
   return state
 }
 
