@@ -68,8 +68,13 @@ export class AppFileInstaller {
   }
 
   /** On a conflict, what another client's update of the installation is doing,
-   * judged against the generation this attempt read before it began. */
+   * judged against the generation this attempt read before it began, or that
+   * the installation cannot be reinstalled into because its data was deleted. */
   private async competingUpdate(installation: string, read?: string): Promise<string | null> {
+    const current = (await this.send(getAppInstallationRequest(installation))).AppInstallation as { installation?: AppInstallationSummary } | undefined
+    if (current?.installation && !current.installation.active_release && current.installation.data_kept === false) {
+      return `App ${installation} is uninstalled and its data was deleted, so nothing is left to reinstall into. Install the App again instead.`
+    }
     const reply = await this.send(getAppInstallationJournalRequest(installation))
     const journal = reply.AppInstallationJournal as { updates?: Array<{ phase: string; generation: string; release?: { version?: string } }> } | undefined
     const latest = journal?.updates?.[0]

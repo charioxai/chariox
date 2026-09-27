@@ -192,6 +192,22 @@ test("an update refused because another client's update is running says what tha
   assert.equal(aborted.length, 3)
 })
 
+test("an update of an installation whose data was deleted says to install again", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  const send = async (request: Message): Promise<Message> => {
+    if (request.BeginAppUpdate) return { AppRequestFailed: { code: "conflict" } }
+    if (request.GetAppInstallation) return { AppInstallation: { installation: { installation_id: "todo", app_id: "com.chariox.todo",
+      generation: "7", active_release: null, pending_generation: null, admission_paused: false, data_kept: false } } }
+    if (request.CancelAppInstallOperation) return { AppRequestFailed: { code: "not_found" } }
+    return k.send(request)
+  }
+  const installer = new AppFileInstaller(send, () => {}, f.root)
+  t.after(() => installer.dispose())
+  const message = await installer.update("todo", f.path, "s1").then(() => assert.fail("refused"), (error: Error) => error.message)
+  assert.match(message, /App todo is uninstalled and its data was deleted, so nothing is left to reinstall into\. Install the App again instead\./)
+})
+
 test("a resumed attempt whose status read fails keeps the kernel operation", async t => {
   const f = await sourceFixture(t)
   const k = kernel()
