@@ -162,15 +162,7 @@ impl Dir {
         try_lock_file(&self.0)
     }
     pub(crate) fn try_lock_shared(&self) -> Result<bool> {
-        if unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
-            return Ok(true);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::WouldBlock {
-            Ok(false)
-        } else {
-            Err(error.into())
-        }
+        try_flock(&self.0, libc::LOCK_SH)
     }
     pub(crate) fn create_private_file(&self, name: &OsStr) -> Result<File> {
         let name = cstring(name)?;
@@ -266,7 +258,11 @@ impl Dir {
 }
 
 pub(crate) fn try_lock_file(file: &File) -> Result<bool> {
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+    try_flock(file, libc::LOCK_EX)
+}
+
+fn try_flock(file: &File, operation: libc::c_int) -> Result<bool> {
+    if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } == 0 {
         return Ok(true);
     }
     let error = std::io::Error::last_os_error();
