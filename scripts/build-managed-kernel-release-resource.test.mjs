@@ -38,20 +38,23 @@ function builderContainer({
   cpuPeriod = 100_000,
   memory = 8 * memoryGiB,
   memorySwap = 8 * memoryGiB,
+  pidsLimit = 1024,
+  omitPidsLimit = false,
 } = {}) {
+  const hostConfig = {
+    NanoCpus: nanoCpus,
+    CpuQuota: cpuQuota,
+    CpuPeriod: cpuPeriod,
+    CpusetCpus: "",
+    Memory: memory,
+    MemorySwap: memorySwap,
+  }
+  if (!omitPidsLimit) hostConfig.PidsLimit = pidsLimit
   return JSON.stringify({
     Id: id,
     Name: `/${name}`,
     State: { Running: true, StartedAt: "2026-09-27T10:00:00Z" },
-    HostConfig: {
-      NanoCpus: nanoCpus,
-      CpuQuota: cpuQuota,
-      CpuPeriod: cpuPeriod,
-      CpusetCpus: "",
-      Memory: memory,
-      MemorySwap: memorySwap,
-      PidsLimit: null,
-    },
+    HostConfig: hostConfig,
   })
 }
 
@@ -118,7 +121,7 @@ if [ "$1" = inspect ]; then
   [ ! -f "$bin_dir/inspect-count" ] || inspect_count=$(cat "$bin_dir/inspect-count")
   inspect_count=$((inspect_count + 1))
   printf '%s\\n' "$inspect_count" > "$bin_dir/inspect-count"
-  if [ "$scenario" = post-build-identity-change ] && [ "$inspect_count" -eq 2 ]; then
+  if [ "$inspect_count" -eq 2 ] && { [ "$scenario" = post-build-identity-change ] || [ "$scenario" = post-build-pid-limit-change ]; }; then
     cat "$bin_dir/container-inspect-second.json"
   else cat "$bin_dir/container-inspect.json"; fi
   exit 0
@@ -167,10 +170,11 @@ exit 98
     source,
     temp,
     trace,
-    async configure({ scenario = "bounded", builderOutput, containerOutput } = {}) {
+    async configure({ scenario = "bounded", builderOutput, containerOutput, secondContainerOutput } = {}) {
       await writeFile(scenarioPath, scenario)
       await writeFile(inspectPath, builderOutput ?? buildxInspect())
       await writeFile(containerPath, containerOutput ?? builderContainer())
+      await writeFile(join(bin, "container-inspect-second.json"), secondContainerOutput ?? builderContainer({ id: "e".repeat(64) }))
       await writeFile(join(bin, "inspect-count"), "0")
       await writeFile(trace, "")
     },
@@ -214,6 +218,36 @@ test("managed release build requires a bounded, already-running Buildx builder b
       scenario: "uncapped",
       container: builderContainer({ nanoCpus: 0, cpuQuota: 0, cpuPeriod: 0, memory: 0, memorySwap: 0 }),
       message: /no hard CPU limit/,
+    },
+    {
+      label: "missing PID limit",
+      container: builderContainer({ omitPidsLimit: true }),
+      message: /explicit finite positive PID limit/,
+    },
+    {
+      label: "unlimited PID limit",
+      container: builderContainer({ pidsLimit: null }),
+      message: /explicit finite positive PID limit/,
+    },
+    {
+      label: "zero PID limit",
+      container: builderContainer({ pidsLimit: 0 }),
+      message: /explicit finite positive PID limit/,
+    },
+    {
+      label: "negative PID limit",
+      container: builderContainer({ pidsLimit: -1 }),
+      message: /explicit finite positive PID limit/,
+    },
+    {
+      label: "malformed PID limit",
+      container: builderContainer({ pidsLimit: "1024" }),
+      message: /explicit finite positive PID limit/,
+    },
+    {
+      label: "PID limit above the release-build envelope",
+      container: builderContainer({ pidsLimit: 1025 }),
+      message: /PID cap exceeds the release-build limit/,
     },
     {
       label: "CPU cap above the release-build envelope",
@@ -362,14 +396,18 @@ test("managed release build withholds signing if its inspected builder changes d
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-builder-change-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
-  await fixture.configure({ scenario: "post-build-identity-change" })
-
-  const result = fixture.run()
-  assert.equal(result.status, 1, result.stderr)
-  assert.match(result.stderr, /identity or resource limits changed during the release build/)
-  const trace = (await readFile(fixture.trace, "utf8")).trim().split("\n")
-  assert.ok(trace[2].startsWith(`buildx build --builder ${builderName}`))
-  assert.equal(await readdir(root).then((entries) => entries.includes("output")), false)
-  assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".new-output-")), [])
-  assert.deepEqual(await readdir(fixture.temp), [])
+  for (const changed of [
+    { scenario: "post-build-identity-change", secondContainerOutput: builderContainer({ id: "e".repeat(64) }) },
+    { scenario: "post-build-pid-limit-change", secondContainerOutput: builderContainer({ pidsLimit: 512 }) },
+  ]) {
+    await fixture.configure(changed)
+    const result = fixture.run()
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /identity or resource limits changed during the release build/)
+    const trace = (await readFile(fixture.trace, "utf8")).trim().split("\n")
+    assert.ok(trace[2].startsWith(`buildx build --builder ${builderName}`))
+    assert.equal(await readdir(root).then((entries) => entries.includes("output")), false)
+    assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".new-output-")), [])
+    assert.deepEqual(await readdir(fixture.temp), [])
+  }
 })

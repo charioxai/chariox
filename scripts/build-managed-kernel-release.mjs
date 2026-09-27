@@ -23,6 +23,7 @@ const MAX_DOCKER_OUTPUT_BYTES = 4 * 1024 * 1024
 const POST_EXIT_OUTPUT_DRAIN_MS = 1_000
 const FORCED_OUTPUT_CLOSE_MS = 250
 const MAX_BUILDKIT_CPUS = 8
+const MAX_BUILDKIT_PIDS = 1024
 const MAX_BUILDKIT_MEMORY_BYTES = 16 * 1024 ** 3
 const MAX_BUILDKIT_MEMORY_WITH_SWAP_BYTES = 32 * 1024 ** 3
 const MIN_BUILDKIT_MEMORY_BYTES = 4 * 1024 ** 3
@@ -336,6 +337,13 @@ function validateBuilderContainer(container, node) {
   if (!host || typeof host !== "object" || Array.isArray(host)) {
     throw new Error("managed builder container resource configuration is missing")
   }
+  const pidsLimit = host.PidsLimit
+  if (!Number.isSafeInteger(pidsLimit) || pidsLimit <= 0) {
+    throw new Error("managed builder requires an explicit finite positive PID limit")
+  }
+  if (pidsLimit > MAX_BUILDKIT_PIDS) {
+    throw new Error("managed builder PID cap exceeds the release-build limit")
+  }
 
   const nanoCpus = nonnegativeInteger(host.NanoCpus, "NanoCpus")
   const cpuQuota = nonnegativeInteger(host.CpuQuota, "CpuQuota")
@@ -372,6 +380,7 @@ function validateBuilderContainer(container, node) {
     endpoint: node.endpoint,
     containerId: container.Id,
     startedAt: container.State.StartedAt,
+    pidsLimit,
     effectiveCpus,
     memoryBytes: memory,
     memoryWithSwapBytes: memoryWithSwap,
