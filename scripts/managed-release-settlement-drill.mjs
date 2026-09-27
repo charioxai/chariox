@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
+import { constants as fsConstants } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
-import { mkdir, lstat, readFile, realpath, writeFile } from "node:fs/promises"
+import { open, mkdir, lstat, readFile, readdir, realpath, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import {
   acquireManagedReleaseBuilderLease,
@@ -23,6 +24,19 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 const OWNER_FILE = ".managed-release-settlement-owner.json"
 const BUILDER_PATTERN = /^chariox-settlement-[a-z0-9-]{8,80}$/
 const BASE_IMAGE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*@sha256:[a-f0-9]{64}$/
+const OCI_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/
+const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
+const OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
+const OCI_CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
+const OCI_LAYER_MEDIA_TYPES = new Set([
+  "application/vnd.oci.image.layer.v1.tar",
+  "application/vnd.oci.image.layer.v1.tar+gzip",
+  "application/vnd.oci.image.layer.v1.tar+zstd",
+])
+const MAX_OCI_JSON_BYTES = 1024 * 1024
+const MAX_OCI_BLOB_BYTES = 256 * 1024 * 1024
+const MAX_OCI_CLOSURE_BYTES = 512 * 1024 * 1024
+const MAX_OCI_LAYERS = 32
 const MAX_CPUS = 2
 const MAX_PIDS = 256
 const MAX_MEMORY_BYTES = 8 * 1024 ** 3
@@ -30,9 +44,9 @@ const MAX_SWAP_BYTES = 12 * 1024 ** 3
 
 function usage() {
   return [
-    "Usage: node scripts/managed-release-settlement-drill.mjs --builder NAME --container-id SHA256 --base-image IMAGE@sha256:DIGEST",
+    "Usage: node scripts/managed-release-settlement-drill.mjs --builder NAME --container-id SHA256 (--base-image IMAGE@sha256:DIGEST | --base-oci-layout ABSOLUTE_PATH --base-oci-index-digest sha256:DIGEST --base-oci-manifest-digest sha256:DIGEST)",
     "       [--scratch-parent ABSOLUTE_PATH] [--evidence-parent ABSOLUTE_PATH]",
-    "Requires an isolated, resource-capped Buildx builder and a digest-pinned base already in its cache; the drill does not seed or pull it, and network=none makes a cache miss fail offline.",
+    "Requires an isolated, resource-capped Buildx builder. OCI mode reads a canonical external, read-only OCI layout and verifies the pinned linux/amd64 index-to-manifest closure; the drill does not seed or pull images, and network=none makes a cache miss fail offline.",
   ].join("\n")
 }
 
@@ -50,18 +64,324 @@ function parseArgs(argv) {
   const builder = values.get("builder")
   const containerId = values.get("container-id")
   const baseImage = values.get("base-image")
-  const allowed = new Set(["builder", "container-id", "base-image", "scratch-parent", "evidence-parent"])
+  const baseOciLayout = values.get("base-oci-layout")
+  const baseOciIndexDigest = values.get("base-oci-index-digest")
+  const baseOciManifestDigest = values.get("base-oci-manifest-digest")
+  const cachedMode = baseImage !== undefined && baseOciLayout === undefined &&
+    baseOciIndexDigest === undefined && baseOciManifestDigest === undefined
+  const ociMode = baseImage === undefined && baseOciLayout !== undefined &&
+    baseOciIndexDigest !== undefined && baseOciManifestDigest !== undefined
+  const allowed = new Set([
+    "builder", "container-id", "base-image", "base-oci-layout", "base-oci-index-digest",
+    "base-oci-manifest-digest", "scratch-parent", "evidence-parent",
+  ])
   if ([...values.keys()].some((key) => !allowed.has(key)) ||
       !BUILDER_PATTERN.test(builder ?? "") || !/^[a-f0-9]{64}$/.test(containerId ?? "") ||
-      !BASE_IMAGE_PATTERN.test(baseImage ?? "")) {
+      !(cachedMode || ociMode) ||
+      (cachedMode && !BASE_IMAGE_PATTERN.test(baseImage ?? "")) ||
+      (ociMode && (!isAbsolute(baseOciLayout) || !OCI_DIGEST_PATTERN.test(baseOciIndexDigest) ||
+        !OCI_DIGEST_PATTERN.test(baseOciManifestDigest)))) {
     throw new Error(usage())
   }
   return {
     builder,
     containerId,
-    baseImage,
+    baseInput: cachedMode
+      ? { mode: "cached-image", reference: baseImage }
+      : {
+          mode: "oci-layout",
+          layoutPath: resolve(baseOciLayout),
+          indexDigest: baseOciIndexDigest,
+          manifestDigest: baseOciManifestDigest,
+        },
     scratchParent: values.get("scratch-parent") ?? join(homedir(), ".chariox", "dev", "path1-buildkit-settlement-drill", "scratch"),
     evidenceParent: values.get("evidence-parent") ?? join(homedir(), ".chariox", "dev", "path1-buildkit-settlement-drill", "evidence"),
+  }
+}
+
+function sha256(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+}
+
+function parseOciJson(bytes, label) {
+  try {
+    const value = JSON.parse(bytes.toString("utf8"))
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error()
+    return value
+  } catch {
+    throw new Error(`${label} is malformed JSON`)
+  }
+}
+
+function assertReadOnly(metadata, label, directory) {
+  if ((directory && !metadata.isDirectory()) || (!directory && !metadata.isFile()) ||
+      (metadata.mode & 0o222) !== 0 || (!directory && metadata.nlink !== 1)) {
+    throw new Error(`${label} must be a read-only ${directory ? "directory" : "regular file"}`)
+  }
+}
+
+async function readLayoutFile(path, label, maximumBytes) {
+  const before = await lstat(path)
+  if (before.isSymbolicLink()) throw new Error(`${label} must not be a symlink`)
+  assertReadOnly(before, label, false)
+  if (before.size > maximumBytes) throw new Error(`${label} exceeds the size limit`)
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
+  try {
+    const opened = await handle.stat()
+    assertReadOnly(opened, label, false)
+    if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      throw new Error(`${label} changed while being opened`)
+    }
+    const bytes = await handle.readFile()
+    const after = await lstat(path)
+    if (after.isSymbolicLink() || after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) {
+      throw new Error(`${label} changed while being read`)
+    }
+    return bytes
+  } finally {
+    await handle.close()
+  }
+}
+
+async function hashLayoutBlob(layoutPath, descriptor, label, { retainBytes = false } = {}) {
+  validateOciDescriptor(descriptor, label, new Set([
+    OCI_INDEX_MEDIA_TYPE,
+    OCI_MANIFEST_MEDIA_TYPE,
+    OCI_CONFIG_MEDIA_TYPE,
+    ...OCI_LAYER_MEDIA_TYPES,
+  ]))
+  if (descriptor.size > MAX_OCI_BLOB_BYTES) throw new Error(`${label} exceeds the blob size limit`)
+  const digestHex = descriptor.digest.slice("sha256:".length)
+  const path = join(layoutPath, "blobs", "sha256", digestHex)
+  const before = await lstat(path)
+  if (before.isSymbolicLink()) throw new Error(`${label} blob must not be a symlink`)
+  assertReadOnly(before, `${label} blob`, false)
+  if (before.size !== descriptor.size) throw new Error(`${label} blob size does not match its descriptor`)
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
+  const hash = createHash("sha256")
+  const chunks = retainBytes ? [] : null
+  let size = 0
+  try {
+    const opened = await handle.stat()
+    assertReadOnly(opened, `${label} blob`, false)
+    if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== descriptor.size) {
+      throw new Error(`${label} blob changed while being opened`)
+    }
+    const stream = handle.createReadStream({ autoClose: false })
+    for await (const chunk of stream) {
+      size += chunk.length
+      if (size > descriptor.size || size > MAX_OCI_BLOB_BYTES) throw new Error(`${label} blob exceeds its declared size`)
+      hash.update(chunk)
+      if (chunks) chunks.push(chunk)
+    }
+    const after = await lstat(path)
+    if (after.isSymbolicLink() || after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) {
+      throw new Error(`${label} blob changed while being read`)
+    }
+  } finally {
+    await handle.close()
+  }
+  if (size !== descriptor.size || `sha256:${hash.digest("hex")}` !== descriptor.digest) {
+    throw new Error(`${label} blob does not match its content digest`)
+  }
+  return chunks ? Buffer.concat(chunks, size) : null
+}
+
+function validateOciDescriptor(descriptor, label, allowedMediaTypes) {
+  if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor) ||
+      Object.keys(descriptor).some((key) => !["mediaType", "digest", "size", "platform", "annotations"].includes(key)) ||
+      Object.hasOwn(descriptor, "urls") || Object.hasOwn(descriptor, "data") ||
+      !allowedMediaTypes.has(descriptor.mediaType) || !OCI_DIGEST_PATTERN.test(descriptor.digest ?? "") ||
+      !Number.isSafeInteger(descriptor.size) || descriptor.size < 1 || descriptor.size > MAX_OCI_BLOB_BYTES) {
+    throw new Error(`${label} descriptor is malformed or uses an unsupported media type`)
+  }
+  if (descriptor.annotations !== undefined && (!descriptor.annotations || typeof descriptor.annotations !== "object" ||
+      Array.isArray(descriptor.annotations) || Object.values(descriptor.annotations).some((value) => typeof value !== "string"))) {
+    throw new Error(`${label} descriptor annotations are malformed`)
+  }
+  if (descriptor.platform !== undefined) {
+    const platform = descriptor.platform
+    if (!platform || typeof platform !== "object" || Array.isArray(platform) ||
+        Object.keys(platform).some((key) => !["os", "architecture", "variant", "os.version", "os.features", "features"].includes(key)) ||
+        typeof platform.os !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(platform.os) ||
+        typeof platform.architecture !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(platform.architecture) ||
+        (platform.variant !== undefined && (typeof platform.variant !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(platform.variant))) ||
+        (platform["os.version"] !== undefined && typeof platform["os.version"] !== "string") ||
+        [platform["os.features"], platform.features].some((items) => items !== undefined &&
+          (!Array.isArray(items) || items.some((item) => typeof item !== "string" || item.length > 128)))) {
+      throw new Error(`${label} descriptor platform is malformed`)
+    }
+  }
+  return descriptor
+}
+
+function validateOciIndex(index, label) {
+  if (index.schemaVersion !== 2 || index.mediaType !== OCI_INDEX_MEDIA_TYPE ||
+      !Array.isArray(index.manifests) || index.manifests.length < 1 || index.manifests.length > 128) {
+    throw new Error(`${label} is not a bounded OCI image index`)
+  }
+  if (Object.keys(index).some((key) => !["schemaVersion", "mediaType", "manifests", "annotations"].includes(key)) ||
+      (index.annotations !== undefined && (!index.annotations || typeof index.annotations !== "object" ||
+        Array.isArray(index.annotations) || Object.values(index.annotations).some((value) => typeof value !== "string"))) {
+    throw new Error(`${label} contains unsupported index fields`)
+  }
+  const seen = new Set()
+  for (let position = 0; position < index.manifests.length; position++) {
+    const descriptor = validateOciDescriptor(index.manifests[position], `${label} manifest ${position + 1}`, new Set([
+      OCI_INDEX_MEDIA_TYPE,
+      OCI_MANIFEST_MEDIA_TYPE,
+    ]))
+    if (seen.has(descriptor.digest)) throw new Error(`${label} contains a duplicate or ambiguous descriptor`)
+    seen.add(descriptor.digest)
+    if (descriptor.mediaType === OCI_MANIFEST_MEDIA_TYPE && !descriptor.platform) {
+      throw new Error(`${label} image manifest descriptor has no platform`)
+    }
+  }
+  return index.manifests
+}
+
+async function validateLayoutTree(layoutPath) {
+  const root = await lstat(layoutPath)
+  if (root.isSymbolicLink()) throw new Error("OCI layout root must not be a symlink")
+  assertReadOnly(root, "OCI layout root", true)
+  const rootEntries = (await readdir(layoutPath)).sort()
+  if (rootEntries.join(",") !== "blobs,index.json,oci-layout") {
+    throw new Error("OCI layout root must contain only blobs, index.json, and oci-layout")
+  }
+  for (const name of ["blobs"]) {
+    const metadata = await lstat(join(layoutPath, name))
+    if (metadata.isSymbolicLink()) throw new Error("OCI layout blob directory must not be a symlink")
+    assertReadOnly(metadata, "OCI layout blob directory", true)
+  }
+  const algorithmEntries = await readdir(join(layoutPath, "blobs"))
+  if (algorithmEntries.length !== 1 || algorithmEntries[0] !== "sha256") {
+    throw new Error("OCI layout must contain only sha256 blobs")
+  }
+  const algorithmDirectory = join(layoutPath, "blobs", "sha256")
+  const algorithmMetadata = await lstat(algorithmDirectory)
+  if (algorithmMetadata.isSymbolicLink()) throw new Error("OCI sha256 blob directory must not be a symlink")
+  assertReadOnly(algorithmMetadata, "OCI sha256 blob directory", true)
+  const blobs = await readdir(algorithmDirectory)
+  if (blobs.length > 4096 || blobs.some((name) => !/^[a-f0-9]{64}$/.test(name))) {
+    throw new Error("OCI layout blob inventory is malformed or exceeds its entry limit")
+  }
+  let blobInventoryBytes = 0
+  for (const name of blobs) {
+    const metadata = await lstat(join(algorithmDirectory, name))
+    if (metadata.isSymbolicLink()) throw new Error("OCI layout contains a symlink blob")
+    assertReadOnly(metadata, "OCI layout blob", false)
+    if (metadata.size > MAX_OCI_BLOB_BYTES) throw new Error("OCI layout contains a blob larger than the drill limit")
+    blobInventoryBytes += metadata.size
+    if (blobInventoryBytes > MAX_OCI_CLOSURE_BYTES) throw new Error("OCI layout blob inventory exceeds the drill transfer limit")
+  }
+  for (const name of ["index.json", "oci-layout"]) {
+    const metadata = await lstat(join(layoutPath, name))
+    if (metadata.isSymbolicLink()) throw new Error(`OCI ${name} must not be a symlink`)
+    assertReadOnly(metadata, `OCI ${name}`, false)
+  }
+  return blobInventoryBytes
+}
+
+async function verifyOciBaseLayout({ layoutPath, indexDigest, manifestDigest, repository }) {
+  if (typeof layoutPath !== "string" || !isAbsolute(layoutPath) || !OCI_DIGEST_PATTERN.test(indexDigest ?? "") ||
+      !OCI_DIGEST_PATTERN.test(manifestDigest ?? "")) {
+    throw new Error("offline OCI base input is malformed")
+  }
+  const canonicalLayout = await realpath(layoutPath)
+  if (canonicalLayout !== resolve(layoutPath) || !isStateDirectoryExternal(canonicalLayout, repository)) {
+    throw new Error("OCI layout path must be canonical and external to the source repository")
+  }
+  if (/[\s?#@]/.test(canonicalLayout)) throw new Error("OCI layout path contains characters unsupported by the Buildx OCI context URI")
+  const layoutBlobBytes = await validateLayoutTree(canonicalLayout)
+  const layoutBytes = await readLayoutFile(join(canonicalLayout, "oci-layout"), "OCI layout marker", MAX_OCI_JSON_BYTES)
+  const layout = parseOciJson(layoutBytes, "OCI layout marker")
+  if (layout.imageLayoutVersion !== "1.0.0" || Object.keys(layout).some((key) => key !== "imageLayoutVersion")) {
+    throw new Error("OCI layout marker does not declare the supported image-layout version")
+  }
+  const rootIndexBytes = await readLayoutFile(join(canonicalLayout, "index.json"), "OCI root index", MAX_OCI_JSON_BYTES)
+  const rootIndex = parseOciJson(rootIndexBytes, "OCI root index")
+  const rootIndexDigest = sha256(rootIndexBytes)
+  const rootDescriptors = validateOciIndex(rootIndex, "OCI root index")
+  const rootMatchesDigest = rootIndexDigest === indexDigest
+  const indexDescriptors = rootDescriptors.filter((descriptor) => descriptor.digest === indexDigest)
+  if (rootMatchesDigest === (indexDescriptors.length > 0) || indexDescriptors.length > 1) {
+    throw new Error("OCI index digest is ambiguous or does not identify a verified index")
+  }
+
+  let pinnedIndex = rootIndex
+  let pinnedIndexBytes = rootIndexBytes
+  if (!rootMatchesDigest) {
+    const [descriptor] = indexDescriptors
+    if (descriptor.mediaType !== OCI_INDEX_MEDIA_TYPE) {
+      throw new Error("pinned OCI index digest points to a non-index descriptor")
+    }
+    if (descriptor.size > MAX_OCI_JSON_BYTES) throw new Error("pinned OCI index exceeds the JSON size limit")
+    pinnedIndexBytes = await hashLayoutBlob(canonicalLayout, descriptor, "pinned OCI index", { retainBytes: true })
+    pinnedIndex = parseOciJson(pinnedIndexBytes, "pinned OCI index blob")
+    validateOciIndex(pinnedIndex, "pinned OCI index")
+  }
+  if (pinnedIndexBytes.length > MAX_OCI_JSON_BYTES) throw new Error("pinned OCI index exceeds the JSON size limit")
+  if (sha256(pinnedIndexBytes) !== indexDigest) throw new Error("pinned OCI index blob digest does not match the supplied digest")
+
+  const pinnedDescriptors = validateOciIndex(pinnedIndex, "pinned OCI index")
+  if (pinnedDescriptors.some((descriptor) => descriptor.mediaType !== OCI_MANIFEST_MEDIA_TYPE)) {
+    throw new Error("pinned OCI index contains a nested or unsupported descriptor")
+  }
+  const candidates = pinnedDescriptors.filter((descriptor) =>
+    descriptor.platform?.os === "linux" && descriptor.platform?.architecture === "amd64")
+  if (candidates.length !== 1 || candidates[0].digest !== manifestDigest) {
+    throw new Error("pinned OCI index does not identify exactly the requested linux/amd64 manifest")
+  }
+  const selectedManifest = candidates[0]
+  if (selectedManifest.size > MAX_OCI_JSON_BYTES) throw new Error("OCI image manifest exceeds the JSON size limit")
+  const manifestBytes = await hashLayoutBlob(canonicalLayout, selectedManifest, "linux/amd64 image manifest", { retainBytes: true })
+  if (manifestBytes.length > MAX_OCI_JSON_BYTES) throw new Error("OCI image manifest exceeds the JSON size limit")
+  const manifest = parseOciJson(manifestBytes, "OCI image manifest")
+  if (manifest.schemaVersion !== 2 || manifest.mediaType !== OCI_MANIFEST_MEDIA_TYPE ||
+      !manifest.config || !Array.isArray(manifest.layers) || manifest.layers.length > MAX_OCI_LAYERS ||
+      Object.keys(manifest).some((key) => !["schemaVersion", "mediaType", "config", "layers", "annotations", "artifactType", "subject"].includes(key)) ||
+      manifest.artifactType !== undefined || manifest.subject !== undefined) {
+    throw new Error("OCI image manifest has unsupported or malformed fields")
+  }
+  const configDescriptor = validateOciDescriptor(manifest.config, "OCI image config", new Set([OCI_CONFIG_MEDIA_TYPE]))
+  if (configDescriptor.platform !== undefined) throw new Error("OCI config descriptor must not declare a platform")
+  if (configDescriptor.size > MAX_OCI_JSON_BYTES) throw new Error("OCI image config exceeds the JSON size limit")
+  let closureBytes = pinnedIndexBytes.length + selectedManifest.size + configDescriptor.size
+  if (closureBytes > MAX_OCI_CLOSURE_BYTES) throw new Error("OCI base closure exceeds the size limit")
+  const configBytes = await hashLayoutBlob(canonicalLayout, configDescriptor, "OCI image config", { retainBytes: true })
+  if (configBytes.length > MAX_OCI_JSON_BYTES) throw new Error("OCI image config exceeds the JSON size limit")
+  const config = parseOciJson(configBytes, "OCI image config")
+  const layerDescriptors = manifest.layers.map((descriptor, index) =>
+    validateOciDescriptor(descriptor, `OCI layer ${index + 1}`, OCI_LAYER_MEDIA_TYPES))
+  if (layerDescriptors.some((descriptor) => descriptor.platform !== undefined)) {
+    throw new Error("OCI layer descriptors must not declare a platform")
+  }
+  if (!config.rootfs || config.rootfs.type !== "layers" || !Array.isArray(config.rootfs.diff_ids) ||
+      config.rootfs.diff_ids.length !== layerDescriptors.length ||
+      config.rootfs.diff_ids.some((digest) => !OCI_DIGEST_PATTERN.test(digest)) ||
+      config.os !== "linux" || config.architecture !== "amd64") {
+    throw new Error("OCI config does not match the selected linux/amd64 layer closure")
+  }
+  const layers = []
+  for (let index = 0; index < layerDescriptors.length; index++) {
+    const descriptor = layerDescriptors[index]
+    closureBytes += descriptor.size
+    if (closureBytes > MAX_OCI_CLOSURE_BYTES) throw new Error("OCI base closure exceeds the size limit")
+    await hashLayoutBlob(canonicalLayout, descriptor, `OCI layer ${index + 1}`)
+    layers.push({ digest: descriptor.digest, mediaType: descriptor.mediaType, size: descriptor.size })
+  }
+  return {
+    mode: "oci-layout",
+    layoutPath: canonicalLayout,
+    sourceContext: `oci-layout://${canonicalLayout}@${manifestDigest}`,
+    indexDigest,
+    rootIndexDigest,
+    manifestDigest,
+    platform: "linux/amd64",
+    config: { digest: configDescriptor.digest, size: configDescriptor.size },
+    layers,
+    closureBytes,
+    layoutBlobBytes,
   }
 }
 
@@ -84,6 +404,7 @@ function trackChild(child, timeoutMs) {
   let outputBytes = 0
   let timedOut = false
   let outputLimitExceeded = false
+  let forcedPipeClose = false
   let finished = false
   let exitResult = null
   let spawnError = null
@@ -109,10 +430,12 @@ function trackChild(child, timeoutMs) {
       stderr,
       timedOut,
       outputLimitExceeded,
+      forcedPipeClose,
       ...result,
     })
   }
   const closeStreams = () => {
+    forcedPipeClose = true
     for (const stream of [child.stdout, child.stderr]) {
       if (stream && !stream.destroyed) stream.destroy()
     }
@@ -326,11 +649,12 @@ function inspectResources(container, node, expectedContainerId) {
 }
 
 class DockerBuildxEngine {
-  constructor({ builder, containerId }) {
+  constructor({ builder, containerId, dockerEnvironment = process.env, dockerCommand = "docker" }) {
     this.builder = builder
     this.containerId = containerId
     this.node = null
-    this.dockerEnvironment = process.env
+    this.dockerEnvironment = dockerEnvironment
+    this.dockerCommand = dockerCommand
   }
 
   async inspectBuilder() {
@@ -370,15 +694,21 @@ class DockerBuildxEngine {
     }
   }
 
-  startBuild(sourceDirectory, { baseImage, invocationId }) {
-    const args = [
-      "buildx", "build", "--builder", this.builder, "--pull=false", "--network=none",
+  startBuild(sourceDirectory, { baseInput, invocationId }) {
+    if (!baseInput || !["cached-image", "oci-layout"].includes(baseInput.mode)) {
+      throw new Error("Buildx base input was not verified")
+    }
+    const args = ["buildx", "build", "--builder", this.builder, "--pull=false", "--network=none"]
+    if (baseInput.mode === "oci-layout") {
+      args.push("--platform", baseInput.platform, "--build-context", `settlementbase=${baseInput.sourceContext}`)
+    }
+    args.push(
       "--target", "managed-release-artifacts", "--output", "type=cacheonly",
       "--progress=plain", "--build-arg", `DRILL_NONCE=${invocationId}`, sourceDirectory,
-    ]
+    )
     let child
     try {
-      child = spawn("docker", args, {
+      child = spawn(this.dockerCommand, args, {
         cwd: sourceDirectory,
         env: this.dockerEnvironment,
         stdio: ["ignore", "pipe", "pipe"],
@@ -389,6 +719,25 @@ class DockerBuildxEngine {
     }
     return trackBuildClient(child, CLIENT_TIMEOUT_MS)
   }
+}
+
+async function writeBuildContext(sourceDirectory, baseInput, invocationId) {
+  if (!baseInput || !["cached-image", "oci-layout"].includes(baseInput.mode)) {
+    throw new Error("controlled build context requires a verified base input")
+  }
+  const dockerfileBase = baseInput.mode === "oci-layout" ? "settlementbase" : baseInput.reference
+  if (baseInput.mode === "cached-image" && !BASE_IMAGE_PATTERN.test(dockerfileBase ?? "")) {
+    throw new Error("cached base image is not digest pinned")
+  }
+  await writeFile(join(sourceDirectory, "Dockerfile"), [
+    `FROM ${dockerfileBase} AS managed-release-artifacts`,
+    "ARG DRILL_NONCE",
+    "RUN test -n \"$DRILL_NONCE\" && sleep 60",
+    "COPY fixture.txt /fixture.txt",
+    "",
+  ].join("\n"), { flag: "wx", mode: 0o600 })
+  await writeFile(join(sourceDirectory, "fixture.txt"), `BuildKit settlement fixture ${invocationId}\n`, { flag: "wx", mode: 0o600 })
+  await writeFile(join(sourceDirectory, "settlement-base-input.json"), JSON.stringify(baseInput), { flag: "wx", mode: 0o600 })
 }
 
 function trackBuildClient(child, timeoutMs) {
@@ -536,13 +885,14 @@ async function pause(ms) {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 }
 
-async function scenario({ ownedScratch, evidence, home, builderName, baseImage, repository, engine, sleep = pause }) {
+async function scenario({ ownedScratch, evidence, home, builderName, baseImage, baseInput: requestedBaseInput, repository, engine, sleep = pause }) {
   const events = []
   let lease
   let barrier
   let barrierPath
   let client
   let terminalProof
+  let baseInput
   let cleanupComplete = false
   const evidencePath = join(evidence.directory, "settlement-report.json")
   const record = async (phase, details = {}) => {
@@ -552,7 +902,7 @@ async function scenario({ ownedScratch, evidence, home, builderName, baseImage, 
     schemaVersion: 1,
     scope: "BuildKit settlement seam only; no signed release acceptance",
     builderName,
-    baseImage,
+    baseInput,
     scratchPath: ownedScratch.directory,
     scratchRemoved: cleanupComplete,
     terminalProof,
@@ -561,6 +911,16 @@ async function scenario({ ownedScratch, evidence, home, builderName, baseImage, 
   }, null, 2), { mode: 0o600 })
 
   try {
+    if (requestedBaseInput?.mode === "oci-layout") {
+      baseInput = await verifyOciBaseLayout({ ...requestedBaseInput, repository })
+    } else {
+      baseInput = {
+        mode: "cached-image",
+        reference: requestedBaseInput?.reference ?? baseImage,
+      }
+      if (!BASE_IMAGE_PATTERN.test(baseInput.reference ?? "")) throw new Error("cached base image is not digest pinned")
+    }
+    await record("base-input-verified", { baseInput })
     const builderFingerprint = await engine.inspectBuilder()
     if (builderFingerprint.name !== builderName || builderFingerprint.nodes.length !== 1) {
       throw new Error("builder fingerprint does not match the single admitted node")
@@ -571,14 +931,7 @@ async function scenario({ ownedScratch, evidence, home, builderName, baseImage, 
     const runDirectory = await leaseAndRunDirectory(invocationId)
     const sourceDirectory = join(runDirectory, "source")
     await mkdir(sourceDirectory, { mode: 0o700 })
-    await writeFile(join(sourceDirectory, "Dockerfile"), [
-      `FROM ${baseImage} AS managed-release-artifacts`,
-      "ARG DRILL_NONCE",
-      "RUN test -n \"$DRILL_NONCE\" && sleep 60",
-      "COPY fixture.txt /fixture.txt",
-      "",
-    ].join("\n"), { flag: "wx", mode: 0o600 })
-    await writeFile(join(sourceDirectory, "fixture.txt"), `BuildKit settlement fixture ${invocationId}\n`, { flag: "wx", mode: 0o600 })
+    await writeBuildContext(sourceDirectory, baseInput, invocationId)
     const canonicalSource = await realpath(sourceDirectory)
     if (canonicalSource !== sourceDirectory) throw new Error("controlled build context path was not canonical")
     const identity = await gitIdentity(repository)
@@ -598,7 +951,14 @@ async function scenario({ ownedScratch, evidence, home, builderName, baseImage, 
     await lease.writeBarrier(barrier)
     await record("barrier-persisted", { invocationId, sourceDigest, historyBaselineCount: historyBaseline.length })
 
-    client = await engine.startBuild(sourceDirectory, { baseImage, invocationId, timeoutMs: CLIENT_TIMEOUT_MS })
+    if (requestedBaseInput?.mode === "oci-layout") {
+      const confirmedBaseInput = await verifyOciBaseLayout({ ...requestedBaseInput, repository })
+      if (JSON.stringify(confirmedBaseInput) !== JSON.stringify(baseInput)) {
+        throw new Error("offline OCI base input changed after initial verification")
+      }
+      await record("base-input-confirmed-before-solve", { manifestDigest: baseInput.manifestDigest, platform: baseInput.platform })
+    }
+    client = await engine.startBuild(sourceDirectory, { baseInput, invocationId, timeoutMs: CLIENT_TIMEOUT_MS })
     const runningDeadline = Date.now() + RUNNING_TIMEOUT_MS
     let fullRef
     while (Date.now() < runningDeadline) {
@@ -667,6 +1027,14 @@ async function scenario({ ownedScratch, evidence, home, builderName, baseImage, 
     if (!terminalProof) throw new Error(`Buildx Solve did not reach an exact terminal proof: ${lastResult?.reason ?? "settlement deadline elapsed"}`)
     await record("terminal-proof", terminalProof)
 
+    if (requestedBaseInput?.mode === "oci-layout") {
+      const terminalBaseInput = await verifyOciBaseLayout({ ...requestedBaseInput, repository })
+      if (JSON.stringify(terminalBaseInput) !== JSON.stringify(baseInput)) {
+        throw new Error("offline OCI base input changed during the Solve")
+      }
+      await record("base-input-confirmed-after-settlement", { manifestDigest: baseInput.manifestDigest, platform: baseInput.platform })
+    }
+
     await lease.removeRunArtifacts(barrier)
     await lease.removeBarrier()
     await lease.release()
@@ -729,7 +1097,7 @@ async function main(argv = process.argv.slice(2)) {
       evidence: evidenceOwned,
       home,
       builderName: args.builder,
-      baseImage: args.baseImage,
+      baseInput: args.baseInput,
       repository,
       engine,
     })
@@ -750,8 +1118,12 @@ if (process.argv[1] && resolve(process.argv[1]) === modulePath) {
 
 export {
   BUILDER_PATTERN,
+  DockerBuildxEngine,
   OWNER_FILE,
   parseHistoryRows,
   removeOwnedDirectory,
   scenario as runSettlementScenario,
+  trackChild,
+  verifyOciBaseLayout,
+  writeBuildContext,
 }

@@ -1,12 +1,22 @@
 import assert from "node:assert/strict"
-import { randomUUID } from "node:crypto"
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { spawn } from "node:child_process"
+import { delimiter, dirname, join } from "node:path"
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 import { acquireManagedReleaseBuilderLease } from "./managed-release-settlement.mjs"
-import { OWNER_FILE, parseHistoryRows, removeOwnedDirectory, runSettlementScenario } from "./managed-release-settlement-drill.mjs"
+import {
+  DockerBuildxEngine,
+  OWNER_FILE,
+  parseHistoryRows,
+  removeOwnedDirectory,
+  runSettlementScenario,
+  trackChild,
+  verifyOciBaseLayout,
+  writeBuildContext,
+} from "./managed-release-settlement-drill.mjs"
 
 const BUILDER = "chariox-settlement-test-00000000"
 const NODE = "builder0"
@@ -26,6 +36,134 @@ const FINGERPRINT = {
   }],
 }
 const REPOSITORY = await realpath(dirname(dirname(fileURLToPath(import.meta.url))))
+const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
+const OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
+const OCI_CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
+const OCI_LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar"
+
+function digest(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+}
+
+function ociDescriptor(mediaType, bytes, platform) {
+  return { mediaType, digest: digest(bytes), size: bytes.length, ...(platform ? { platform } : {}) }
+}
+
+async function makeOciLayout(parent, { symlinkLayer = false, missingLayer = false, ambiguousPlatform = false, foreignDescriptor = false } = {}) {
+  const layout = join(parent, "layout")
+  const blobs = join(layout, "blobs", "sha256")
+  await mkdir(blobs, { recursive: true, mode: 0o700 })
+  const layerBytes = Buffer.alloc(1024)
+  const layer = ociDescriptor(OCI_LAYER_MEDIA_TYPE, layerBytes)
+  const configBytes = Buffer.from(JSON.stringify({
+    architecture: "amd64",
+    os: "linux",
+    rootfs: { type: "layers", diff_ids: [digest(layerBytes)] },
+  }))
+  const config = ociDescriptor(OCI_CONFIG_MEDIA_TYPE, configBytes)
+  const manifestBytes = Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    mediaType: OCI_MANIFEST_MEDIA_TYPE,
+    config,
+    layers: [layer],
+  }))
+  const manifest = ociDescriptor(OCI_MANIFEST_MEDIA_TYPE, manifestBytes, { os: "linux", architecture: "amd64" })
+  const nonselected = {
+    mediaType: OCI_MANIFEST_MEDIA_TYPE,
+    digest: `sha256:${"f".repeat(64)}`,
+    size: 123,
+    platform: { os: "linux", architecture: "arm64" },
+  }
+  const indexManifests = [nonselected, manifest]
+  if (ambiguousPlatform) {
+    indexManifests.push({ ...manifest, digest: `sha256:${"e".repeat(64)}` })
+  }
+  if (foreignDescriptor) {
+    indexManifests.push({
+      mediaType: "application/vnd.docker.distribution.manifest.v2+json",
+      digest: `sha256:${"d".repeat(64)}`,
+      size: 123,
+      platform: { os: "linux", architecture: "s390x" },
+      urls: ["https://example.invalid/foreign"],
+    })
+  }
+  const indexBytes = Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    mediaType: OCI_INDEX_MEDIA_TYPE,
+    manifests: indexManifests,
+  }))
+  const index = ociDescriptor(OCI_INDEX_MEDIA_TYPE, indexBytes)
+  const rootIndex = Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    mediaType: OCI_INDEX_MEDIA_TYPE,
+    manifests: [index],
+  }))
+  await writeFile(join(layout, "oci-layout"), JSON.stringify({ imageLayoutVersion: "1.0.0" }))
+  await writeFile(join(layout, "index.json"), rootIndex)
+  for (const [descriptor, bytes] of [[index, indexBytes], [manifest, manifestBytes], [config, configBytes]]) {
+    await writeFile(join(blobs, descriptor.digest.slice("sha256:".length)), bytes)
+  }
+  const externalLayer = join(parent, "external-layer.blob")
+  if (symlinkLayer) {
+    await writeFile(externalLayer, layerBytes)
+    await symlink(externalLayer, join(blobs, layer.digest.slice("sha256:".length)))
+  } else if (!missingLayer) {
+    await writeFile(join(blobs, layer.digest.slice("sha256:".length)), layerBytes)
+  }
+  const freeze = async (path) => {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      const child = join(path, entry.name)
+      if (entry.isDirectory()) {
+        await freeze(child)
+        await chmod(child, 0o555)
+      } else if (!entry.isSymbolicLink()) {
+        await chmod(child, 0o444)
+      }
+    }
+  }
+  await freeze(layout)
+  await chmod(layout, 0o555)
+  if (symlinkLayer) await chmod(externalLayer, 0o444)
+  const expected = {
+    mode: "oci-layout",
+    layoutPath: await realpath(layout),
+    indexDigest: index.digest,
+    manifestDigest: manifest.digest,
+  }
+  return { layout: expected.layoutPath, expected, index, manifest, layer, externalLayer }
+}
+
+async function makeWritableAndRemove(path) {
+  let metadata
+  try { metadata = await lstat(path) } catch { return }
+  if (metadata.isSymbolicLink()) {
+    await unlink(path)
+    return
+  }
+  if (metadata.isDirectory()) {
+    await chmod(path, 0o700)
+    for (const entry of await readdir(path)) await makeWritableAndRemove(join(path, entry))
+    await rmdir(path)
+  } else {
+    await chmod(path, 0o600)
+    await rm(path, { force: true })
+  }
+}
+
+async function stopFixtureProcess(pid) {
+  try { process.kill(pid, "SIGKILL") } catch (error) {
+    if (error?.code === "ESRCH") return
+    throw error
+  }
+  for (let attempt = 0; attempt < 80; attempt++) {
+    try { process.kill(pid, 0) } catch (error) {
+      if (error?.code === "ESRCH") return
+      throw error
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25))
+  }
+  throw new Error("owned escaped-pipe fixture process did not exit after termination")
+}
 
 function historyRow(ref, status, completed = false) {
   return {
@@ -140,6 +278,159 @@ test("parses actual newline-delimited Buildx history and its empty output", () =
   assert.throws(() => parseHistoryRows(`${JSON.stringify(historyRow(`${BUILDER}/${NODE}/solve-001`, "error"))}\n`), /missing a completion timestamp/)
 })
 
+test("verifies only the pinned linux/amd64 OCI index-to-manifest closure", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "managed-release-oci-"))
+  try {
+    const fixture = await makeOciLayout(await realpath(parent))
+    const input = await verifyOciBaseLayout({ ...fixture.expected, repository: REPOSITORY })
+    assert.equal(input.indexDigest, fixture.index.digest)
+    assert.equal(input.manifestDigest, fixture.manifest.digest)
+    assert.equal(input.platform, "linux/amd64")
+    assert.equal(input.layers.length, 1)
+    assert.equal(input.layers[0].digest, fixture.layer.digest)
+    assert.match(input.sourceContext, /^oci-layout:\/\/\/.+@sha256:[a-f0-9]{64}$/)
+  } finally {
+    await makeWritableAndRemove(parent)
+  }
+})
+
+test("rejects an OCI base digest that does not match its verified index", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "managed-release-oci-wrong-digest-"))
+  try {
+    const fixture = await makeOciLayout(await realpath(parent))
+    await assert.rejects(verifyOciBaseLayout({
+      ...fixture.expected,
+      manifestDigest: `sha256:${"e".repeat(64)}`,
+      repository: REPOSITORY,
+    }), /requested linux\/amd64 manifest/)
+  } finally {
+    await makeWritableAndRemove(parent)
+  }
+})
+
+test("rejects symlink and absent blobs in the selected OCI closure", async () => {
+  for (const mode of ["symlink", "missing"]) {
+    const parent = await mkdtemp(join(tmpdir(), `managed-release-oci-${mode}-`))
+    try {
+      const fixture = await makeOciLayout(await realpath(parent), {
+        symlinkLayer: mode === "symlink",
+        missingLayer: mode === "missing",
+      })
+      await assert.rejects(verifyOciBaseLayout({ ...fixture.expected, repository: REPOSITORY }),
+        mode === "symlink" ? /symlink/ : /ENOENT|layer/i)
+    } finally {
+      await makeWritableAndRemove(parent)
+    }
+  }
+})
+
+test("rejects ambiguous platform selection and foreign OCI descriptors", async () => {
+  for (const mode of ["ambiguous", "foreign"]) {
+    const parent = await mkdtemp(join(tmpdir(), `managed-release-oci-${mode}-`))
+    try {
+      const fixture = await makeOciLayout(await realpath(parent), {
+        ambiguousPlatform: mode === "ambiguous",
+        foreignDescriptor: mode === "foreign",
+      })
+      await assert.rejects(verifyOciBaseLayout({ ...fixture.expected, repository: REPOSITORY }),
+        mode === "ambiguous" ? /requested linux\/amd64 manifest/ : /unsupported media type/)
+    } finally {
+      await makeWritableAndRemove(parent)
+    }
+  }
+})
+
+test("passes the fixed OCI base context and offline platform flags through the executable Buildx argv", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "managed-release-oci-argv-"))
+  try {
+    const canonicalParent = await realpath(parent)
+    const fixture = await makeOciLayout(canonicalParent)
+    const baseInput = await verifyOciBaseLayout({ ...fixture.expected, repository: REPOSITORY })
+    const source = join(canonicalParent, "source")
+    const bin = join(canonicalParent, "bin")
+    const trace = join(canonicalParent, "argv.json")
+    await mkdir(source, { mode: 0o700 })
+    await mkdir(bin, { mode: 0o700 })
+    await writeBuildContext(source, baseInput, randomUUID())
+    const docker = join(bin, "docker")
+    await writeFile(docker, "#!/usr/bin/env node\nrequire('node:fs').writeFileSync(process.env.DRILL_ARGV_TRACE, JSON.stringify(process.argv.slice(2)))\n", { mode: 0o755 })
+    await chmod(docker, 0o755)
+    const engine = new DockerBuildxEngine({
+      builder: BUILDER,
+      containerId: FINGERPRINT.nodes[0].containerId,
+      dockerEnvironment: {
+        ...process.env,
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+        DRILL_ARGV_TRACE: trace,
+      },
+    })
+    const client = engine.startBuild(source, { baseInput, invocationId: randomUUID() })
+    const result = await client.completion
+    assert.equal(result.status, 0)
+    assert.equal(result.reaped, true)
+    assert.equal(result.streamsClosed, true)
+    const args = JSON.parse(await readFile(trace, "utf8"))
+    const contextIndex = args.indexOf("--build-context")
+    assert.ok(contextIndex >= 0)
+    assert.equal(args[contextIndex + 1], `settlementbase=${baseInput.sourceContext}`)
+    assert.ok(args.includes("--pull=false"))
+    assert.ok(args.includes("--network=none"))
+    assert.equal(args[args.indexOf("--platform") + 1], "linux/amd64")
+    assert.match(await readFile(join(source, "Dockerfile"), "utf8"), /^FROM settlementbase AS managed-release-artifacts\n/)
+  } finally {
+    await makeWritableAndRemove(parent)
+  }
+})
+
+test("tracked child deadlines and output limits wait for close and reap", async () => {
+  const timed = await trackChild(spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  }), 75).completion
+  assert.equal(timed.timedOut, true)
+  assert.equal(timed.reaped, true)
+  assert.equal(timed.streamsClosed, true)
+
+  const limited = await trackChild(spawn(process.execPath, ["-e", "process.stdout.write(Buffer.alloc(3 * 1024 * 1024)); setInterval(() => {}, 1000)"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  }), 5_000).completion
+  assert.equal(limited.outputLimitExceeded, true)
+  assert.equal(limited.reaped, true)
+  assert.equal(limited.streamsClosed, true)
+})
+
+test("tracked child closes an escaped inherited pipe without claiming a remote Solve settled", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "managed-release-child-pipe-"))
+  const pidFile = join(parent, "escaped.pid")
+  let escapedPid
+  try {
+    const source = [
+      "const { spawn } = require('node:child_process')",
+      "const escaped = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 1, 2] })",
+      "escaped.unref()",
+      "require('node:fs').writeFileSync(process.env.ESCAPED_PID_FILE, String(escaped.pid))",
+    ].join(";")
+    const startedAt = Date.now()
+    const result = await trackChild(spawn(process.execPath, ["-e", source], {
+      env: { ...process.env, ESCAPED_PID_FILE: pidFile },
+      stdio: ["ignore", "pipe", "pipe"],
+    }), 5_000).completion
+    assert.equal(result.status, 0)
+    assert.equal(result.timedOut, false)
+    assert.equal(result.reaped, true)
+    assert.equal(result.streamsClosed, true)
+    assert.equal(result.forcedPipeClose, true)
+    assert.ok(Date.now() - startedAt < 4_000)
+    escapedPid = Number(await readFile(pidFile, "utf8"))
+    assert.ok(Number.isSafeInteger(escapedPid) && escapedPid > 0)
+  } finally {
+    if (!escapedPid) {
+      try { escapedPid = Number(await readFile(pidFile, "utf8")) } catch {}
+    }
+    if (escapedPid) await stopFixtureProcess(escapedPid)
+    await makeWritableAndRemove(parent)
+  }
+})
+
 test("persists a running full ref, rejects the successor, and settles from exact bare-ID terminal proof", async () => {
   const { roots, result, error } = await runFake()
   try {
@@ -150,6 +441,7 @@ test("persists a running full ref, rejects the successor, and settles from exact
     const report = JSON.parse(await readFile(result.evidencePath, "utf8"))
     assert.equal(report.scope, "BuildKit settlement seam only; no signed release acceptance")
     assert.deepEqual(report.events.map((event) => event.phase), [
+      "base-input-verified",
       "builder-admitted",
       "barrier-persisted",
       "running-full-ref-persisted",
