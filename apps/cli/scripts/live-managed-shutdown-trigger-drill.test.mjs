@@ -6,7 +6,10 @@ import { join } from "node:path"
 import test from "node:test"
 
 import { parseArguments, runManagedShutdownTrigger, SHUTDOWN_SCENARIOS } from "./live-managed-shutdown-trigger-drill.mjs"
-import { MANAGED_SHUTDOWN_WARNING_SECONDS } from "./lib/managed-shutdown-trigger-config.mjs"
+import {
+  MANAGED_SHUTDOWN_WARNING_SECONDS,
+  SHUTDOWN_TRIGGER_LIMITS,
+} from "./lib/managed-shutdown-trigger-config.mjs"
 import { projectSummary, verifyIdleDeadline } from "./lib/managed-shutdown-trigger-observation.mjs"
 
 const CONFIRMATION = "CREATE-AND-DELETE-ONE-MANAGED-TARGET"
@@ -286,7 +289,9 @@ test("missing owner operation history cannot become a completed observation", as
 test("a never-settling owner prompt expires at the action deadline and leaves time for exact delete cleanup", async (t) => {
   const root = await scratch(t)
   const output = join(root, "prompt-timeout.json")
-  const product = fakeProductPath({ policy: SHUTDOWN_SCENARIOS.shutdown_agents_done.policy })
+  const options = parseArguments(argumentsFor(output, "shutdown_agents_done"))
+  const actionBoundMs = options.maxBillableSeconds * 1_000 - SHUTDOWN_TRIGGER_LIMITS.cleanupReserveMs
+  const product = fakeProductPath({ policy: options.descriptor.policy })
   const controller = new AbortController()
   const signal = controller.signal
   let runSignalAbortEvents = 0
@@ -301,7 +306,7 @@ test("a never-settling owner prompt expires at the action deadline and leaves ti
   let timerDelay
   let timerCallback
   let timerCleared = false
-  const run = runManagedShutdownTrigger(parseArguments(argumentsFor(output, "shutdown_agents_done")), {
+  const run = runManagedShutdownTrigger(options, {
     client: { send: product.send, close: async () => { clientClosed = true } },
     requests: product.requests,
     send: product.send,
@@ -340,7 +345,7 @@ test("a never-settling owner prompt expires at the action deadline and leaves ti
   await ownerActionStarted
 
   const boundedTimerWasScheduled = typeof timerCallback === "function"
-  monotonicNow = 300_000
+  monotonicNow = actionBoundMs
   const stillWaitingAtActionBound = !runSettled
   if (boundedTimerWasScheduled) timerCallback()
   else controller.abort()
@@ -356,7 +361,7 @@ test("a never-settling owner prompt expires at the action deadline and leaves ti
   assert.equal(controller.signal.aborted, false)
   assert.equal(promptSignal.aborted, true)
   assert.equal(getEventListeners(promptSignal, "abort").length, 0)
-  assert.equal(timerDelay, 300_000)
+  assert.equal(timerDelay, actionBoundMs)
   assert.equal(timerCleared, true)
   const lifecycle = product.calls.filter(([name]) => name === "RequestManagedEnvironmentLifecycle")
   assert.equal(lifecycle.length, 1)
@@ -516,6 +521,76 @@ for (const [scenario, expectedActions] of [
     assert.equal(result.observations.some(({ environment: observed }) => observed.observedState === "stopped"), true)
     assert.equal(result.requiredUserActions.some(({ action }) => action === expectedActions.at(-1)), true)
     assert.equal("verdict" in result, false)
+  })
+}
+
+for (const [scenario, expectedActions] of [
+  ["shutdown_agents_done", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path"]],
+  ["shutdown_restart_reconciliation", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path", "restart_cloud_auto_stop_reconciliation"]],
+  ["shutdown_all_clients_disconnected", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path", "disconnect_all_clients_from_managed_environment"]],
+]) {
+  test(`${scenario} with no automatic STOP expires within its bound and still deletes`, async (t) => {
+    const root = await scratch(t)
+    const output = join(root, `${scenario}-never-stops.json`)
+    const options = parseArguments(argumentsFor(output, scenario))
+    const actionBoundMs = options.maxBillableSeconds * 1_000 - SHUTDOWN_TRIGGER_LIMITS.cleanupReserveMs
+    const product = fakeProductPath({ policy: options.descriptor.policy })
+    let monotonicNow = 0
+    const requestedActions = []
+    await assert.rejects(runManagedShutdownTrigger(options, {
+      client: { send: product.send, close: async () => {} },
+      requests: product.requests,
+      send: product.send,
+      id: () => `${scenario}-never-stops-fixture`,
+      now: () => new Date(Date.parse(baseTime) + monotonicNow),
+      monotonic: () => monotonicNow,
+      pause: async (milliseconds) => { monotonicNow += milliseconds },
+      ask: async (message) => {
+        if (message.includes("start exactly one agent")) {
+          requestedActions.push("start_agent_via_normal_path")
+          product.updateCurrent({
+            runningAgentCount: 1,
+            lastActivityReportedAt: atSecond(1),
+            lastActivityChangedAt: atSecond(1),
+            updatedAt: atSecond(1),
+          })
+        } else if (message.includes("Finish that agent")) {
+          requestedActions.push("finish_agent_via_normal_provider_path")
+          const idleAt = atSecond(2)
+          const deadline = new Date(Math.max(
+            Date.parse(baseTime) + options.descriptor.policy.minimumRuntimeSeconds * 1_000,
+            Date.parse(idleAt) + options.descriptor.policy.idleDelaySeconds * 1_000,
+            Date.parse(idleAt) + MANAGED_SHUTDOWN_WARNING_SECONDS * 1_000,
+          )).toISOString()
+          product.updateCurrent({
+            runningAgentCount: 0,
+            lastActivityReportedAt: idleAt,
+            lastActivityChangedAt: idleAt,
+            autoStopDeadlineAt: deadline,
+            autoStopWarningAt: new Date(Date.parse(deadline)
+              - MANAGED_SHUTDOWN_WARNING_SECONDS * 1_000).toISOString(),
+            updatedAt: idleAt,
+          })
+        } else if (message.includes("restart auto-stop reconciliation")) {
+          requestedActions.push("restart_cloud_auto_stop_reconciliation")
+        } else if (message.includes("Disconnect every interactive Chariox client")) {
+          requestedActions.push("disconnect_all_clients_from_managed_environment")
+        } else {
+          assert.fail(`unexpected owner action prompt: ${message}`)
+        }
+      },
+    }), /no acceptance verdict/)
+
+    assert.equal(monotonicNow, actionBoundMs)
+    assert.deepEqual(requestedActions, expectedActions)
+    assert.deepEqual(product.calls.filter(([name]) => name === "RequestManagedEnvironmentLifecycle")
+      .map(([, request]) => request.action), ["delete"])
+    const incomplete = JSON.parse(await readFile(output, "utf8"))
+    assert.equal("verdict" in incomplete, false)
+    assert.equal("passed" in incomplete, false)
+    assert.equal(incomplete.operations.some(({ kind }) => kind === "stop"), false)
+    assert.equal(incomplete.operations.find(({ kind }) => kind === "delete")?.status, "succeeded")
+    assert.deepEqual(incomplete.requiredUserActions.map(({ action }) => action), expectedActions)
   })
 }
 
