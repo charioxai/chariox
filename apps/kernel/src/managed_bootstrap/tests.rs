@@ -73,6 +73,12 @@ fn path1_rebuild_freshness_must_match_the_protected_volume_identity() {
     assert_eq!(expected_data_volume_identity(&envelope).unwrap(), Some(("12345", 20)));
     validate_rebuild_volume_evidence(&config, Some(&envelope), &evidence)
         .expect("protected volume identity is matched");
+    let mut missing_serial = evidence.clone();
+    missing_serial.data_volume_serial = None;
+    assert!(validate_rebuild_volume_evidence(&config, Some(&envelope), &missing_serial).is_err());
+    let mut missing_size = evidence.clone();
+    missing_size.data_volume_size_gb = None;
+    assert!(validate_rebuild_volume_evidence(&config, Some(&envelope), &missing_size).is_err());
     let mut wrong_serial = evidence.clone();
     wrong_serial.data_volume_serial = Some("54321".to_string());
     assert!(validate_rebuild_volume_evidence(&config, Some(&envelope), &wrong_serial).is_err());
@@ -84,7 +90,7 @@ fn path1_rebuild_freshness_must_match_the_protected_volume_identity() {
 #[test]
 fn pre_reimage_observation_binding_requires_exact_confirmed_generation_and_current_identity() {
     let receipt = BootstrapReceipt {
-        schema_version: 1,
+        schema_version: 3,
         status: BootstrapReceiptStatus::Confirmed,
         environment_id: "environment-1".to_string(),
         machine_id: "machine-1".to_string(),
@@ -92,7 +98,7 @@ fn pre_reimage_observation_binding_requires_exact_confirmed_generation_and_curre
         generation: 4,
         relay_public_key: "relay-public-key".to_string(),
         runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
-        managed_repository_root: None,
+        managed_repository_root: Some("/srv/path1 managed workspaces".to_string()),
         confirmed_at: Some("2026-09-22T00:00:00Z".to_string()),
         context_plan: None,
         provider_rebuild_action_id: None,
@@ -494,9 +500,309 @@ fn schema_three_exchange_receipt_and_confirmation_preserve_the_exact_repository_
     assert_eq!(confirmed.status, BootstrapReceiptStatus::Confirmed);
     assert_eq!(confirmed.managed_repository_root().unwrap(), repository_root);
     assert_eq!(cloud.confirm_calls.lock().expect("confirm calls").len(), 1);
+    assert_eq!(
+        cloud.confirm_calls.lock().expect("confirm calls")[0]
+            .freshness_evidence
+            .as_ref(),
+        None,
+        "generation one does not claim reimage evidence"
+    );
 
     restore_env("CHARIOX_HOME", previous_home);
     fixture.cleanup();
+}
+
+#[test]
+fn schema_three_generation_two_exchange_rejects_a_stale_repository_root() {
+    let fixture = Fixture::new("schema-three-stale-repository-root");
+    let root = "/srv/path1 managed workspaces";
+    let envelope = path1_test_envelope(&fixture.release_digest, root);
+    let identity = path1_test_identity();
+    let mut response = fixture.exchange_response();
+    response.environment_id = envelope.environment_id.clone();
+    response.kernel_id = identity.kernel_id.clone();
+    response.generation = 2;
+    response.runtime_release_digest = envelope.runtime_release_digest.clone();
+    response.managed_repository_root = Some("/srv/old managed workspaces".to_string());
+    response.cloud_relay.machine_id = identity.machine_id.clone();
+
+    assert!(super::validate_exchange_response(&envelope, &identity, &response).is_err());
+
+    fixture.cleanup();
+}
+
+#[test]
+fn schema_three_generation_two_receipt_roundtrips_and_rejects_incomplete_freshness() {
+    let fixture = Fixture::new("schema-three-generation-two-receipt");
+    let evidence = path1_test_evidence(&fixture.release_digest);
+    let receipt = path1_test_receipt(
+        &fixture.release_digest,
+        2,
+        BootstrapReceiptStatus::Exchanged,
+        Some(evidence.clone()),
+    );
+    receipt
+        .persist(&fixture.config.receipt_path)
+        .expect("persist generation-two freshness evidence");
+    assert_eq!(
+        BootstrapReceipt::read(&fixture.config.receipt_path)
+            .expect("read durable generation-two receipt")
+            .expect("generation-two receipt remains present"),
+        receipt
+    );
+
+    let mut incomplete = serde_json::to_value(&receipt).expect("serialize receipt fixture");
+    incomplete["freshnessEvidence"]["dataVolumeSizeGb"] = serde_json::Value::Null;
+    fs::write(
+        &fixture.config.receipt_path,
+        serde_json::to_vec(&incomplete).expect("serialize incomplete receipt"),
+    )
+    .expect("write incomplete receipt fixture");
+    assert!(BootstrapReceipt::read(&fixture.config.receipt_path).is_err());
+
+    let generation_one_with_rebuild_proof = path1_test_receipt(
+        &fixture.release_digest,
+        1,
+        BootstrapReceiptStatus::Exchanged,
+        Some(evidence),
+    );
+    fs::write(
+        &fixture.config.receipt_path,
+        serde_json::to_vec(&generation_one_with_rebuild_proof)
+            .expect("serialize generation-one receipt with reimage proof"),
+    )
+    .expect("write generation-one receipt fixture");
+    assert!(BootstrapReceipt::read(&fixture.config.receipt_path).is_err());
+
+    fixture.cleanup();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn path1_generation_two_no_action_confirmation_carries_durable_signed_volume_evidence() {
+    let _env = crate::env_lock::lock();
+    let fixture = AttestedReleaseFixture::new(
+        "generation-two-confirm",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let _restore = EnvironmentRestoreGuard::capture(
+        RELEASE_EVIDENCE_ENV_NAMES
+            .into_iter()
+            .chain([super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV]),
+    );
+    configure_path1_builder_trust(&fixture);
+    let mut config = fixture.config.clone();
+    config.envelope_path = PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
+    let repository_root = "/srv/path1 managed workspaces";
+    let envelope = path1_test_envelope(&fixture.release_digest, repository_root);
+    let evidence = path1_test_evidence(&fixture.release_digest);
+    let receipt = path1_test_receipt(
+        &fixture.release_digest,
+        2,
+        BootstrapReceiptStatus::Exchanged,
+        Some(evidence.clone()),
+    );
+    receipt
+        .persist(&config.receipt_path)
+        .expect("persist before simulated restart");
+    let receipt_after_restart = BootstrapReceipt::read(&config.receipt_path)
+        .expect("read receipt after simulated restart")
+        .expect("exchanged receipt remains present");
+    let cloud = FakeCloud::new(path1_test_cloud_response(
+        &fixture.release_digest,
+        repository_root,
+    ));
+
+    super::confirm_registration(
+        &config,
+        &cloud,
+        Utc.with_ymd_and_hms(2026, 9, 27, 0, 0, 0).unwrap(),
+        &envelope,
+        receipt_after_restart,
+        &path1_test_profile(),
+    )
+    .expect("generation-two confirmation accepts signed, volume-bound evidence");
+
+    let confirm_calls = cloud.confirm_calls.lock().expect("confirm calls");
+    assert_eq!(confirm_calls.len(), 1);
+    assert_eq!(confirm_calls[0].freshness_evidence.as_ref(), Some(&evidence));
+    drop(confirm_calls);
+    let confirmed = BootstrapReceipt::read(&config.receipt_path)
+        .expect("read confirmed receipt")
+        .expect("confirmed receipt remains present");
+    assert_eq!(confirmed.generation, 2);
+    assert_eq!(confirmed.status, BootstrapReceiptStatus::Confirmed);
+    assert!(confirmed.freshness_evidence.is_none());
+    assert!(confirmed.provider_rebuild_action_id.is_none());
+
+    fixture.cleanup();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn path1_generation_two_no_action_confirmation_rejects_missing_or_mismatched_proof() {
+    let _env = crate::env_lock::lock();
+    let fixture = AttestedReleaseFixture::new(
+        "generation-two-confirm-rejections",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let _restore = EnvironmentRestoreGuard::capture(
+        RELEASE_EVIDENCE_ENV_NAMES
+            .into_iter()
+            .chain([super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV]),
+    );
+    configure_path1_builder_trust(&fixture);
+    let mut config = fixture.config.clone();
+    config.envelope_path = PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
+    let repository_root = "/srv/path1 managed workspaces";
+    let envelope = path1_test_envelope(&fixture.release_digest, repository_root);
+    let valid = path1_test_evidence(&fixture.release_digest);
+    let mut missing_serial = valid.clone();
+    missing_serial.data_volume_serial = None;
+    let mut wrong_volume = valid.clone();
+    wrong_volume.data_volume_serial = Some("54321".to_string());
+    let mut wrong_source = valid.clone();
+    wrong_source.runtime_source_commit = "c".repeat(40);
+
+    for (label, evidence) in [
+        ("missing evidence", None),
+        ("incomplete volume identity", Some(missing_serial)),
+        ("wrong volume identity", Some(wrong_volume)),
+        ("wrong signed source", Some(wrong_source)),
+    ] {
+        let receipt = path1_test_receipt(
+            &fixture.release_digest,
+            2,
+            BootstrapReceiptStatus::Exchanged,
+            evidence,
+        );
+        let cloud = FakeCloud::new(path1_test_cloud_response(
+            &fixture.release_digest,
+            repository_root,
+        ));
+        assert!(
+            super::confirm_registration(
+                &config,
+                &cloud,
+                Utc.with_ymd_and_hms(2026, 9, 27, 0, 0, 0).unwrap(),
+                &envelope,
+                receipt,
+                &path1_test_profile(),
+            )
+            .is_err(),
+            "confirmation must reject {label}"
+        );
+        assert!(
+            cloud.confirm_calls.lock().expect("confirm calls").is_empty(),
+            "Cloud confirmation must not receive {label}"
+        );
+    }
+
+    fixture.cleanup();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn path1_confirmed_generation_two_retry_preserves_validated_freshness_evidence() {
+    let _env = crate::env_lock::lock();
+    let fixture = AttestedReleaseFixture::new(
+        "generation-two-confirmed-retry",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let _restore = EnvironmentRestoreGuard::capture(
+        RELEASE_EVIDENCE_ENV_NAMES
+            .into_iter()
+            .chain([super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV]),
+    );
+    configure_path1_builder_trust(&fixture);
+    let mut config = fixture.config.clone();
+    config.envelope_path = PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
+    let repository_root = "/srv/path1 managed workspaces";
+    let envelope = path1_test_envelope(&fixture.release_digest, repository_root);
+    let evidence = path1_test_evidence(&fixture.release_digest);
+    let receipt = path1_test_receipt(
+        &fixture.release_digest,
+        2,
+        BootstrapReceiptStatus::Confirmed,
+        Some(evidence.clone()),
+    );
+    receipt
+        .persist(&config.receipt_path)
+        .expect("persist confirmed retry receipt");
+    let restarted_receipt = BootstrapReceipt::read(&config.receipt_path)
+        .expect("read confirmed retry receipt")
+        .expect("confirmed retry receipt remains present");
+    let release = verify_release(
+        &config.manifest_path,
+        &config.signature_path,
+        &config.public_key_path,
+        &fixture.release_digest,
+        &config.kernel_binary,
+    )
+    .expect("fixture release signature verifies");
+
+    let resumed = super::ensure_rebuild_freshness_evidence(
+        &config,
+        Some(&envelope),
+        restarted_receipt,
+        &release,
+    )
+    .expect("confirmed retry validates its existing proof");
+
+    assert_eq!(resumed.status, BootstrapReceiptStatus::Confirmed);
+    assert_eq!(resumed.generation, 2);
+    assert_eq!(resumed.freshness_evidence, Some(evidence));
+
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn confirmed_generation_one_receipt_cannot_consume_a_new_generation_envelope() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("stale-confirmed-generation-one-receipt");
+    let _restore = EnvironmentRestoreGuard::capture(["HOME", "CHARIOX_HOME"]);
+    std::env::set_var("HOME", &fixture.config.process_home);
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let profile = path1_test_profile();
+    crate::config::persist_managed_cloud_relay_profile(profile)
+        .expect("persist Cloud profile for restore path");
+    let mut config = fixture.config.clone();
+    config.envelope_path = PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
+    let envelope =
+        path1_test_envelope(&fixture.release_digest, "/srv/path1 managed workspaces");
+    let receipt = path1_test_receipt(
+        &fixture.release_digest,
+        1,
+        BootstrapReceiptStatus::Confirmed,
+        None,
+    );
+    let identity = path1_test_identity();
+    let release = verify_release(
+        &config.manifest_path,
+        &config.signature_path,
+        &config.public_key_path,
+        &fixture.release_digest,
+        &config.kernel_binary,
+    )
+    .expect("fixture release signature verifies");
+
+    let resumed =
+        super::resume_registration(&config, Some(&envelope), receipt, &identity, &release);
+    let incorrectly_accepted_as_current = matches!(&resumed, Ok(None));
+    drop(resumed);
+    fixture.cleanup();
+
+    assert!(
+        !incorrectly_accepted_as_current,
+        "a confirmed generation-one receipt must not finish restore with an unchecked generation-two envelope"
+    );
 }
 
 #[test]
@@ -1491,6 +1797,124 @@ impl AttestedReleaseFixture {
     fn cleanup(self) {
         let _ = fs::remove_dir_all(self.root);
     }
+}
+
+fn path1_test_envelope(
+    runtime_release_digest: &str,
+    managed_repository_root: &str,
+) -> ManagedBootstrapEnvelope {
+    ManagedBootstrapEnvelope {
+        schema_version: 3,
+        cloud_api_url: "https://cloud.example.test".to_string(),
+        environment_id: "managed-env-1".to_string(),
+        token: format!("mkboot_{}", "x".repeat(43)),
+        expires_at: "2026-09-27T00:00:00Z".to_string(),
+        runtime_release_digest: runtime_release_digest.to_string(),
+        managed_repository_root: Some(managed_repository_root.to_string()),
+        provider_rebuild_action_id: None,
+        expected_data_volume_serial: Some("12345".to_string()),
+        expected_data_volume_size_gb: Some(20),
+    }
+}
+
+fn path1_test_evidence(runtime_release_digest: &str) -> ManagedKernelFreshnessEvidence {
+    ManagedKernelFreshnessEvidence {
+        schema_version: Some(3),
+        linux_boot_id: "01234567-89ab-cdef-0123-456789abcdef".to_string(),
+        os_machine_id: "b".repeat(32),
+        runtime_release_digest: runtime_release_digest.to_string(),
+        runtime_source_commit: "a".repeat(40),
+        runtime_source_tree: "b".repeat(40),
+        residue_checks: ManagedKernelResidueChecks {
+            old_services_absent: true,
+            old_processes_absent: true,
+            old_state_absent: true,
+        },
+        data_volume_serial: Some("12345".to_string()),
+        data_volume_size_gb: Some(20),
+    }
+}
+
+fn path1_test_receipt(
+    runtime_release_digest: &str,
+    generation: u64,
+    status: BootstrapReceiptStatus,
+    freshness_evidence: Option<ManagedKernelFreshnessEvidence>,
+) -> BootstrapReceipt {
+    BootstrapReceipt {
+        schema_version: 3,
+        status,
+        environment_id: "managed-env-1".to_string(),
+        machine_id: "managed-machine-1".to_string(),
+        kernel_id: "managed-kernel-1".to_string(),
+        generation,
+        relay_public_key: "relay-public-key".to_string(),
+        runtime_release_digest: runtime_release_digest.to_string(),
+        managed_repository_root: Some("/srv/path1 managed workspaces".to_string()),
+        confirmed_at: (status == BootstrapReceiptStatus::Confirmed)
+            .then_some("2026-09-27T00:00:00Z".to_string()),
+        context_plan: None,
+        provider_rebuild_action_id: None,
+        freshness_evidence,
+    }
+}
+
+fn path1_test_identity() -> ManagedRuntimeIdentity {
+    ManagedRuntimeIdentity {
+        machine_id: "managed-machine-1".to_string(),
+        kernel_id: "managed-kernel-1".to_string(),
+        relay_public_key: "relay-public-key".to_string(),
+    }
+}
+
+fn path1_test_profile() -> PersistedCloudRelayProfile {
+    PersistedCloudRelayProfile {
+        api_url: "https://cloud.example.test".to_string(),
+        user_id: "owner-1".to_string(),
+        machine_id: Some("managed-machine-1".to_string()),
+        machine_credential: Some(format!("mcred_{}", "b".repeat(43))),
+        relay_url: "wss://relay.example.test".to_string(),
+        ..PersistedCloudRelayProfile::default()
+    }
+}
+
+fn path1_test_cloud_response(
+    runtime_release_digest: &str,
+    managed_repository_root: &str,
+) -> ExchangeResponse {
+    ExchangeResponse {
+        environment_id: "managed-env-1".to_string(),
+        kernel_id: "managed-kernel-1".to_string(),
+        generation: 2,
+        runtime_release_digest: runtime_release_digest.to_string(),
+        managed_repository_root: Some(managed_repository_root.to_string()),
+        context_plan: ManagedKernelContextPlan::empty_for_tests("managed_ctx_bootstrap"),
+        cloud_relay: ManagedCloudRelayProfile {
+            api_url: "https://cloud.example.test".to_string(),
+            email: "owner@example.test".to_string(),
+            account_id: "account-1".to_string(),
+            user_id: "owner-1".to_string(),
+            account_slug: "account-one".to_string(),
+            realm_id: "realm-1".to_string(),
+            relay_url: "wss://relay.example.test".to_string(),
+            issuer_id: "issuer-1".to_string(),
+            machine_id: "managed-machine-1".to_string(),
+            machine_alias: "Managed agents".to_string(),
+            machine_credential: format!("mcred_{}", "b".repeat(43)),
+        },
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn configure_path1_builder_trust(fixture: &AttestedReleaseFixture) {
+    set_release_evidence_env(fixture);
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
+    let packaged_key = fixture
+        .release_root
+        .join("usr/lib/chariox/builder-public-key");
+    let external_key = fixture.root.join("trusted-builder-public-key");
+    fs::copy(&packaged_key, &external_key).expect("copy fixture builder key outside release");
+    std::env::set_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV, external_key);
 }
 
 #[cfg(unix)]
