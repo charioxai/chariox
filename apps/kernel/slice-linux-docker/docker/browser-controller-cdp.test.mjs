@@ -612,6 +612,7 @@ test("download and upload requests stay target-bound and return no file paths", 
     downloadDirectory: "/safe/downloads",
     uploadRoots: ["/safe/uploads"],
     fileSystem,
+    stageUploads: async ({ files }) => ({ files, markExposed() {}, async discard() {} }),
   });
   await browser.reconcile(viewport);
 

@@ -58,6 +58,7 @@ export class BrowserCdpClient {
     minimumDownloadFreeBytes = DEFAULT_MINIMUM_DOWNLOAD_FREE_BYTES,
     uploadRoots = [],
     fileSystem,
+    stageUploads,
     eventJournal = new BrowserEventJournal(),
   } = {}) {
     this.debuggerEndpoint = new URL(debuggerEndpoint);
@@ -69,6 +70,7 @@ export class BrowserCdpClient {
     this.minimumDownloadFreeBytes = minimumDownloadFreeBytes;
     this.uploadRoots = uploadRoots;
     this.fileSystem = fileSystem;
+    this.stageUploads = stageUploads;
     this.eventJournal = eventJournal;
     this.connection = null;
     this.connectionOpening = null;
@@ -702,6 +704,7 @@ export class BrowserCdpClient {
           filePaths: rawRequest?.file_paths,
           uploadRoots: this.uploadRoots,
           fileSystem: this.fileSystem,
+          stageUploads: this.stageUploads,
           signal,
         }, uploadBrowserFiles),
       };
@@ -1258,7 +1261,11 @@ async function connectToBrowser({
   );
   const socket = webSocketFactory(debuggerUrl);
   await waitForSocketOpen(socket, requestTimeoutMs);
-  return new CdpConnection(socket, requestTimeoutMs);
+  const connection = new CdpConnection(socket, requestTimeoutMs);
+  // This is Chromium's physical browser endpoint, not our reconnect counter.
+  // Upload staging must survive websocket and controller-process replacement.
+  connection.browserInstanceId = debuggerUrl;
+  return connection;
 }
 
 function waitForSocketOpen(socket, timeoutMs) {

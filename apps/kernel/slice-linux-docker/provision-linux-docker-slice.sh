@@ -466,6 +466,7 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller files"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-upload-staging.mjs" "Browser Controller upload staging module"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-frames.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-frames.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller frames"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-history.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-history.mjs" \
@@ -500,6 +501,7 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-controller-compatibility.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \
+    /opt/chariox-slice/browser-controller-upload-staging.mjs \
     /opt/chariox-slice/browser-controller-frames.mjs \
     /opt/chariox-slice/browser-controller-history.mjs \
     /opt/chariox-slice/browser-controller-permissions.mjs \

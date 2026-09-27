@@ -29,6 +29,7 @@ const requiredOverlayDestinations = [
     "browser-controller-compatibility.mjs",
     "browser-controller-events.mjs",
     "browser-controller-files.mjs",
+    "browser-controller-upload-staging.mjs",
     "browser-controller-frames.mjs",
     "browser-controller-history.mjs",
     "browser-controller-permissions.mjs",

@@ -187,6 +187,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs /opt/chariox-slice/browser-controller-compatibility.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs /opt/chariox-slice/browser-controller-upload-staging.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-frames.mjs /opt/chariox-slice/browser-controller-frames.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-history.mjs /opt/chariox-slice/browser-controller-history.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-permissions.mjs /opt/chariox-slice/browser-controller-permissions.mjs
@@ -218,6 +219,7 @@ RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-compatibility.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \
+    /opt/chariox-slice/browser-controller-upload-staging.mjs \
     /opt/chariox-slice/browser-controller-frames.mjs \
     /opt/chariox-slice/browser-controller-history.mjs \
     /opt/chariox-slice/browser-controller-permissions.mjs \
