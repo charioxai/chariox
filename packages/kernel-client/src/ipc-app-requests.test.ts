@@ -8,7 +8,7 @@ import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRo
 import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 359)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 360)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -104,4 +104,34 @@ test("an owner grants, lists and revokes an App's generator connections (protoco
   assert.deepEqual(sent, [grantAppConnectionRequest("slack", "dev.chariox.slack", "connection-1")])
   assert.equal(result.message, "connection-1 · dev.chariox.slack · actions: notification.reply")
   assert.equal((await executeAppCommand(["connection", "grant", "slack", "no-slash"], { send: async () => ({}) })).ok, false)
+})
+
+test("app inbox move turns an event binding into an App route (protocol 360)", async () => {
+  const { executeAppCommand } = await import("./shell-app-command.js")
+  const sent: unknown[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      sent.push(request)
+      return { EventBindingMovedToApp: {
+        binding_id: "binding-1", installation_id: "slack",
+        route: { route_id: "mentions", event_name: "mentioned", source_event_type: "app.mentioned", source_event_version: 1,
+          active: true, connection: { generator_id: "dev.chariox.slack", connection_id: "connection-1", connection_scope: "T1" },
+          pending: 0, delivered: 0, failed: 0, expired: 0 },
+        connection: { generator_id: "dev.chariox.slack", connection_id: "connection-1", granted_at_ms: 1, actions: ["notification.reply"] },
+        automation: null,
+      } }
+    },
+  }
+  const result = await executeAppCommand(["inbox", "move", "slack", "mentions", "mentioned", "binding-1",
+    "--automation", "notifications/notification"], client, { sessionId: "session-1" })
+  assert.deepEqual(sent, [{ MoveEventBindingToApp: {
+    session_id: "session-1", binding_id: "binding-1", installation_id: "slack", route_id: "mentions", event_name: "mentioned",
+    automation: { automation_id: "notifications", event_name: "notification" },
+  } }])
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /^Event binding binding-1 is paused; slack receives its events:\nmentions · app\.mentioned v1 from dev\.chariox\.slack \(T1\)/)
+  assert.match(result.message ?? "", /Granted connection-1 · actions: notification\.reply/)
+  const sessionless = await executeAppCommand(["inbox", "move", "slack", "mentions", "mentioned", "binding-1"], client)
+  assert.deepEqual([sessionless.ok, sessionless.message], [false, "Attach to the binding's session or pass --session."])
+  assert.equal((await executeAppCommand(["inbox", "move", "slack", "mentions", "mentioned", "binding-1", "--automation", "x"], client)).ok, false)
 })

@@ -1959,6 +1959,20 @@ Workflow trigger and deployment direction:
   endpoint as the owner's pseudonymous event owner, with an idempotency key
   scoped to the installation. The App never holds the provider credential;
   anything else is refused (`CONNECTION_NOT_GRANTED`, `CAPABILITY_REQUIRED`).
+- protocol 360: an event binding moves to an App. `MoveEventBindingToApp
+  {session_id, binding_id, installation_id, route_id, event_name,
+  automation?: {automation_id, event_name}}` turns a workflow event binding in
+  the kernel's event environment into an App inbox route on the same
+  connection, scope, filter and event type (checked with the generator as
+  `CreateAppInboxRoute` is). Under the event interest lock the binding is
+  paused first, so the event service never routes its events twice; then the
+  optional App automation sends the App's outgoing event to the binding's
+  publication and queue, the route is created, and a binding with actions
+  becomes a connection grant when the App's manifest declares that generator.
+  Any refusal undoes the earlier steps, reactivates the binding and answers
+  `AppRequestFailed`; success answers `EventBindingMovedToApp {binding_id,
+  installation_id, route, connection?, automation?}`. The paused binding is
+  kept for the owner to remove once the App serves its events.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

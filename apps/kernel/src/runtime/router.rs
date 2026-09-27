@@ -34,6 +34,7 @@ pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
 };
 mod meta_runtime_command;
+mod app_event_routes;
 mod pre_lane_dispatch;
 mod priority_dispatch;
 mod refresh_dispatch;

@@ -125,6 +125,22 @@ export function createAppInboxRouteRequest(options: {
   } }
 }
 
+/** Protocol 360: a workflow event binding becomes an App inbox route on the
+ * same connection; its actions become a grant and, optionally, the App's
+ * outgoing event goes to the binding's workflow. The kernel undoes it on failure. */
+export function moveEventBindingToAppRequest(options: {
+  sessionId: string; bindingId: string; installationId: string; routeId: string; eventName: string;
+  automation?: { automationId: string; eventName: string };
+}) {
+  return { MoveEventBindingToApp: {
+    session_id: options.sessionId, binding_id: options.bindingId, installation_id: options.installationId,
+    route_id: options.routeId, event_name: options.eventName,
+    ...(options.automation ? { automation: {
+      automation_id: options.automation.automationId, event_name: options.automation.eventName,
+    } } : {}),
+  } }
+}
+
 /** Protocol 359: let an App act through one of the owner's generator connections. */
 export function grantAppConnectionRequest(installationId: string, generatorId: string, connectionId: string) {
   return { GrantAppConnection: { installation_id: installationId, generator_id: generatorId, connection_id: connectionId } }

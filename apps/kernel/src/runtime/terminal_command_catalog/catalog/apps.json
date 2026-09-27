@@ -208,6 +208,16 @@
             ]
           },
           {
+            "id": "app-inbox-move",
+            "label": "move",
+            "description": "Move a workflow event binding to an App inbox route",
+            "value": "/app inbox move ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
             "id": "app-inbox-remove",
             "label": "remove",
             "description": "Remove an App inbox route",

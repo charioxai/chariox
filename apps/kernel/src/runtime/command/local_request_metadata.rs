@@ -547,6 +547,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RemoveAppInboxRoute(_) => "app.inbox.route.remove",
         LocalDaemonRequest::ListAppInboxRoutes(_) => "app.inbox.route.list",
         LocalDaemonRequest::GrantAppConnection(_) => "app.connection.grant",
+        LocalDaemonRequest::MoveEventBindingToApp(_) => "app.inbox.route.move_binding",
         LocalDaemonRequest::RevokeAppConnection(_) => "app.connection.revoke",
         LocalDaemonRequest::ListAppConnections(_) => "app.connection.list",
         LocalDaemonRequest::TestAppInboxRoute(_) => "app.inbox.route.test",

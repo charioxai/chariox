@@ -133,6 +133,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ListAppInboxRoutes(_)
             | LocalDaemonRequest::TestAppInboxRoute(_)
             | LocalDaemonRequest::GrantAppConnection(_)
+            | LocalDaemonRequest::MoveEventBindingToApp(_)
             | LocalDaemonRequest::RevokeAppConnection(_)
             | LocalDaemonRequest::ListAppConnections(_)
             | LocalDaemonRequest::GrantAppFile(_)

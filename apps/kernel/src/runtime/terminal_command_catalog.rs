@@ -767,6 +767,7 @@ mod tests {
                 "app-inbox",
                 "app-inbox-list",
                 "app-inbox-add",
+                "app-inbox-move",
                 "app-inbox-remove",
                 "app-inbox-test",
                 "app-file",

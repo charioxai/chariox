@@ -58,93 +58,14 @@ impl CommandRouter {
         {
             return Ok(Some(response));
         }
-        // Protocol 358: an App inbox route fed by a generator connection is
-        // checked with that generator first, like a workflow event binding,
-        // then stored while the connection lane and the interest lock are held.
+        // Protocols 358–360: App routes and grants on a generator connection
+        // are checked with that generator before the App lane stores them.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let LocalDaemonRequest::CreateAppInboxRoute(
-            route @ crate::local::CreateAppInboxRouteRequest {
-                connection: Some(connection),
-                ..
-            },
-        ) = request
+        if let Some(response) = self
+            .dispatch_app_event_request(command, request, caller_user_id)
+            .await?
         {
-            let _connection_guard = self
-                .event_connection_lanes
-                .lock(caller_user_id, &connection.connection_id)
-                .await;
-            validate_event_connection(
-                &self.runtime_state,
-                &self.config_projection,
-                &self.aegs_management_http_client,
-                caller_user_id,
-                &connection.generator_id,
-                &connection.connection_id,
-            )
-            .await?;
-            crate::runtime::event_catalog_control::validate_app_route_event(
-                &self.runtime_state,
-                &self.config_projection,
-                caller_user_id,
-                &connection.generator_id,
-                &connection.connection_id,
-                &route.source_event_type,
-                route.source_event_version,
-            )
-            .await?;
-            let _interest = self.event_interest_lock.lock().await;
-            let config = self.config_projection.snapshot();
-            let event_interest_key = chariox_event_protocol::event_interest_key(
-                &connection.generator_id,
-                &route.source_event_type,
-                route.source_event_version,
-                &connection.connection_scope,
-                &connection.filter,
-            )
-            .map_err(|error| route_error(format!("the event filter is invalid: {error}")))?;
-            if let Some(existing) = self
-                .runtime_state
-                .event_interest_claimed_by(
-                    &config.daemon_id,
-                    &config.event_delivery_environment_id,
-                    &chariox_app_runtime::app_inbox::route_binding_id(
-                        caller_user_id,
-                        &route.installation_id,
-                        &route.route_id,
-                    ),
-                    &event_interest_key,
-                )
-                .map_err(route_error)?
-            {
-                return Err(route_error(format!(
-                    "another route (`{existing}`) already receives these events; remove it or use a different filter"
-                )));
-            }
-            return Ok(self
-                .runtime_state
-                .execute_app_control_request(command, request)
-                .await);
-        }
-        // Protocol 359: so is a connection an owner lets an App act through.
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let LocalDaemonRequest::GrantAppConnection(grant) = request {
-            let _connection_guard = self
-                .event_connection_lanes
-                .lock(caller_user_id, &grant.connection_id)
-                .await;
-            validate_event_connection(
-                &self.runtime_state,
-                &self.config_projection,
-                &self.aegs_management_http_client,
-                caller_user_id,
-                &grant.generator_id,
-                &grant.connection_id,
-            )
-            .await?;
-            return Ok(self
-                .runtime_state
-                .execute_app_control_request(command, request)
-                .await);
+            return Ok(Some(response));
         }
         if let Some(response) = self
             .runtime_state
@@ -584,55 +505,5 @@ impl CommandRouter {
             .map(Some);
         }
         Ok(None)
-    }
-}
-
-impl CommandRouter {
-    /// A workflow binding may not take an interest an App route already
-    /// receives; other workflow bindings are checked where they are stored.
-    fn refuse_app_route_interest(
-        &self,
-        binding: &crate::local::CreateWorkflowEventBindingRequest,
-    ) -> Result<(), DaemonError> {
-        let config = self.config_projection.snapshot();
-        let environment = binding
-            .environment_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&config.event_delivery_environment_id);
-        if environment != config.event_delivery_environment_id {
-            return Ok(());
-        }
-        let Ok(key) = chariox_event_protocol::event_interest_key(
-            &binding.generator_id,
-            &binding.event_type,
-            binding.event_type_version,
-            &binding.connection_scope,
-            &binding.filter,
-        ) else {
-            // The binding's own validation reports the filter.
-            return Ok(());
-        };
-        match self.runtime_state.app_route_claiming(&key) {
-            Ok(None) => Ok(()),
-            Ok(Some(existing)) => Err(DaemonError::LocalTransport {
-                operation: "create workflow event binding",
-                message: format!(
-                    "an App inbox route (`{existing}`) already receives these events; remove it or use a different filter"
-                ),
-            }),
-            Err(message) => Err(DaemonError::LocalTransport {
-                operation: "create workflow event binding",
-                message,
-            }),
-        }
-    }
-}
-
-fn route_error(message: String) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "create App inbox route",
-        message,
     }
 }

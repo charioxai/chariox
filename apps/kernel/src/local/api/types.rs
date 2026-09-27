@@ -134,4 +134,7 @@ pub use workspace::*;
 /// connections (`GrantAppConnection`, `RevokeAppConnection`,
 /// `ListAppConnections` → `AppConnections`); the App acts through it only with
 /// the actions its signed `capabilities.connections` declares.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 359;
+/// Version 360 adds `MoveEventBindingToApp`: a workflow event binding becomes
+/// an App inbox route on the same generator connection
+/// (`EventBindingMovedToApp`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 360;

@@ -408,6 +408,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::SetWorkflowEventBindingStatus(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::MoveEventBindingToApp(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::TransferWorkflowEventBinding(request) => Some(
             SessionMembershipScope::SessionId(request.source_session_id.clone()),
         ),
