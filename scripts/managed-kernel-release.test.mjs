@@ -703,15 +703,24 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     join(output, "rootfs/etc/systemd/system/chariox-data-volume-admission.service"),
     "utf8",
   )
+  const admissionSections = parseUnitSections(admissionUnit)
   for (const required of [
     "Type=oneshot",
     "User=root",
     "Group=root",
     "ExecStart=/usr/bin/node /usr/lib/chariox/current/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-data-volume-admission.mjs",
-    "RequiresMountsFor=/var/lib/chariox-docker/data",
   ]) {
-    assert.ok(admissionUnit.includes(required), `data-volume admission unit is missing ${required}`)
+    assert.ok((admissionSections.get("Service") ?? []).includes(required), `data-volume admission [Service] is missing ${required}`)
   }
+  const admissionUnitDirectives = admissionSections.get("Unit") ?? []
+  assert.ok(admissionUnitDirectives.includes("RequiresMountsFor=/var/lib/chariox-docker/data"))
+  const admissionBefore = admissionUnitDirectives.filter((line) => line.startsWith("Before="))
+  assert.equal(admissionBefore.length, 1, "data-volume admission must have one [Unit] Before directive")
+  assert.equal(
+    admissionBefore[0].slice("Before=".length).trim().split(/\s+/)[0],
+    "chariox-slice-disk-quota-allocator.service",
+    "release verifier must parse the first data-volume admission Before value",
+  )
   assert.doesNotMatch(admissionUnit, /^RemainAfterExit=/m)
   for (const [relativePath, label] of [
     ["chariox-rootless-docker.service.d/50-chariox-data-volume.conf", "rootless Docker"],
@@ -821,13 +830,48 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
   )
   assert.equal(path1WithoutDataVolume.status, 1)
   assert.match(path1WithoutDataVolume.stderr, /Path-1 releases must include data-volume admission and both ordering drop-ins/)
+  const oldSharedHostHarnessRoot = join(root, "old-shared-host-harness")
+  await mkdir(oldSharedHostHarnessRoot)
+  const oldSharedHostHarness = await createInstallerHarness(oldSharedHostHarnessRoot)
+  const oldSharedHostInstall = spawnSync(
+    installer,
+    installerArguments(releaseRoot, noVolumeDigest, fixture),
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${oldSharedHostHarness.bin}:${process.env.PATH}`,
+        HARNESS_STATE: oldSharedHostHarness.state,
+        CHARIOX_IMAGE_INSTALL_ROOT: oldSharedHostHarness.installRoot,
+        CHARIOX_IMAGE_INSTALL_LOCK: join(oldSharedHostHarness.state, "install.lock"),
+      },
+    },
+  )
+  assert.equal(oldSharedHostInstall.status, 0, oldSharedHostInstall.stderr)
+  const oldSharedHostReleasePath = join(
+    oldSharedHostHarness.installRoot,
+    "usr/lib/chariox/releases",
+    noVolumeDigest.slice("sha256:".length),
+  )
+  for (const relativePath of dataVolumeArtifactPaths) {
+    assert.equal(
+      await lstat(join(oldSharedHostReleasePath, relativePath)).then(() => true, () => false),
+      false,
+      `legacy shared-host release must omit undeclared ${relativePath}`,
+    )
+    assert.equal(
+      await lstat(join(oldSharedHostHarness.installRoot, relativePath)).then(() => true, () => false),
+      false,
+      `legacy shared-host install must not activate ${relativePath}`,
+    )
+  }
   for (const [relativePath, contents] of originalDataVolumeArtifacts) {
     await writeFile(join(releaseRoot, relativePath), contents)
   }
   await writeFile(manifestPath, originalManifestBytes)
   await writeFile(signaturePath, originalSignature)
 
-  const assertPath1UnitRejected = async (unitPath, artifactName, originalUnit, changedUnit, error) => {
+  const assertPath1ArtifactRejected = async (unitPath, artifactName, originalUnit, changedUnit, error) => {
     await writeFile(unitPath, changedUnit)
     const manifest = JSON.parse(originalManifestBytes)
     const artifact = manifest.artifacts.find((entry) => entry.name === artifactName)
@@ -849,21 +893,33 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     await writeFile(manifestPath, originalManifestBytes)
     await writeFile(signaturePath, originalSignature)
   }
-  await assertPath1UnitRejected(
+  const admissionWithoutAllocatorOrdering = admissionUnit.replace(
+    "Before=chariox-slice-disk-quota-allocator.service chariox-rootless-docker.service chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service",
+    "Before=chariox-rootless-docker.service chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service",
+  )
+  assert.notEqual(admissionWithoutAllocatorOrdering, admissionUnit)
+  await assertPath1ArtifactRejected(
+    join(releaseRoot, "etc/systemd/system/chariox-data-volume-admission.service"),
+    "chariox-data-volume-admission.service",
+    admissionUnit,
+    admissionWithoutAllocatorOrdering,
+    /Path-1 data-volume admission must precede quota allocation, Docker, and both supervisors/,
+  )
+  await assertPath1ArtifactRejected(
     path1UnitPath,
     "chariox-path1-managed-bootstrap.service",
     path1Unit,
     path1Unit.replace("Requires=chariox-rootless-docker.service\n", ""),
     /storage-capable Path-1 supervisors must require rootless Docker/,
   )
-  await assertPath1UnitRejected(
+  await assertPath1ArtifactRejected(
     workerUnitPath,
     "chariox-disposable-worker-bootstrap.service",
     workerUnit,
     workerUnit.replace("Requires=chariox-rootless-docker.service\n", ""),
     /storage-capable Path-1 supervisors must require rootless Docker/,
   )
-  await assertPath1UnitRejected(
+  await assertPath1ArtifactRejected(
     path1UnitPath,
     "chariox-path1-managed-bootstrap.service",
     path1Unit,
@@ -873,7 +929,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     ),
     /selected Path-1 managed bootstrap service must start after rootless Docker/,
   )
-  await assertPath1UnitRejected(
+  await assertPath1ArtifactRejected(
     workerUnitPath,
     "chariox-disposable-worker-bootstrap.service",
     workerUnit,
@@ -883,7 +939,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     ),
     /selected Path-1 disposable-worker service must start after rootless Docker/,
   )
-  await assertPath1UnitRejected(
+  await assertPath1ArtifactRejected(
     path1UnitPath,
     "chariox-path1-managed-bootstrap.service",
     path1Unit,
@@ -893,7 +949,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     ),
     /selected Path-1 managed bootstrap service must use the protected bootstrap path/,
   )
-  await assertPath1UnitRejected(
+  await assertPath1ArtifactRejected(
     workerUnitPath,
     "chariox-disposable-worker-bootstrap.service",
     workerUnit,
@@ -1700,6 +1756,24 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     "usr/lib/chariox/releases",
     packaged.stdout.trim().slice("sha256:".length),
   )
+  for (const [relativePath, expectedBytes] of [
+    ["etc/systemd/system/chariox-data-volume-admission.service", fixture.dataVolumeAdmissionServiceBytes],
+    [
+      "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+      fixture.rootlessDockerDataVolumeDropInBytes,
+    ],
+    [
+      "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+      fixture.quotaAllocatorDataVolumeDropInBytes,
+    ],
+  ]) {
+    assert.deepEqual(await readFile(join(deterministicRelease, relativePath)), expectedBytes)
+    assert.equal(
+      await lstat(join(harness.installRoot, relativePath)).then(() => true, () => false),
+      false,
+      `shared-host installation must not activate ${relativePath}`,
+    )
+  }
   for (const relativePath of ["usr", "usr/local", "usr/lib", "etc", "etc/systemd"]) {
     assert.equal(
       (await stat(join(deterministicRelease, relativePath))).mode & 0o777,

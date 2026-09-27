@@ -514,17 +514,21 @@ async function verifyImageRelease(
           "Path-1 data-volume admission service",
           64 * 1024,
         )).toString("utf8")
-        const dataAdmissionLines = dataAdmission.split(/\r?\n/)
+        const dataAdmissionSections = parseUnitSections(dataAdmission)
+        const dataAdmissionUnitLines = dataAdmissionSections.get("Unit") ?? []
+        const dataAdmissionServiceLines = dataAdmissionSections.get("Service") ?? []
         for (const required of [
           "Type=oneshot",
           "User=root",
           "Group=root",
           "ExecStart=/usr/bin/node /usr/lib/chariox/current/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-data-volume-admission.mjs",
-          "RequiresMountsFor=/var/lib/chariox-docker/data",
         ]) {
-          if (!dataAdmissionLines.includes(required)) {
+          if (!dataAdmissionServiceLines.includes(required)) {
             fail(`Path-1 data-volume admission service is missing ${required}`)
           }
+        }
+        if (!dataAdmissionUnitLines.includes("RequiresMountsFor=/var/lib/chariox-docker/data")) {
+          fail("Path-1 data-volume admission service is missing RequiresMountsFor=/var/lib/chariox-docker/data")
         }
         const sliceRoot = artifactPath(
           rootfs,
@@ -538,13 +542,14 @@ async function verifyImageRelease(
         ]) {
           await readRegularFile(join(sliceRoot, sourceFile), `Path-1 admission source ${sourceFile}`, 256 * 1024)
         }
-        const admissionBefore = dataAdmissionLines.filter((line) => line.startsWith("Before="))
+        const admissionBefore = dataAdmissionUnitLines.filter((line) => line.startsWith("Before="))
+        const admissionBeforeUnits = admissionBefore[0]?.slice("Before=".length).trim().split(/\s+/) ?? []
         if (admissionBefore.length !== 1 || [
           "chariox-slice-disk-quota-allocator.service",
           "chariox-rootless-docker.service",
           "chariox-path1-managed-bootstrap.service",
           "chariox-disposable-worker-bootstrap.service",
-        ].some((unit) => !admissionBefore[0].split(/\s+/).includes(unit))) {
+        ].some((unit) => !admissionBeforeUnits.includes(unit))) {
           fail("Path-1 data-volume admission must precede quota allocation, Docker, and both supervisors")
         }
         for (const [artifactName, label] of [

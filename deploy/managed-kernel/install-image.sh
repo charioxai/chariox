@@ -532,7 +532,10 @@ if [ ! -e "$published_release" ]; then
   fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$pending_release/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service" "$pending_release/etc/systemd/system/chariox-rootless-docker.service"
-  if [ "$managed_provider_topology" = path1 ]; then
+  # Modern signed releases include these artifacts for shared-host verification too;
+  # older shared-host releases omit the set and remain installable.
+  if [ "$managed_provider_topology" = path1 ] \
+    || path_exists "$image_root/etc/systemd/system/chariox-data-volume-admission.service"; then
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
