@@ -99,6 +99,7 @@ test("gateway materializes exported publication packages through the kernel", as
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      // Pre-365 packages may still name a direct event-bindings document; it is ignored.
       event_bindings_path: "event-bindings.local.json",
       deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       hooks: [{
@@ -213,9 +214,6 @@ test("gateway materializes exported publication packages through the kernel", as
           if ("ListScripts" in request) return { ScriptsListed: { scripts: [{ name: "deploy" }] } }
           if ("ListConnectors" in request) return { ConnectorsListed: { connectors: [{ name: "github" }] } }
           if ("ListCredentials" in request) return { CredentialsListed: { credentials: [{ id: "github-token" }] } }
-          if ("CreateWorkflowEventBinding" in request) {
-            return { WorkflowEventBindingCreated: { binding: { id: "runtime-binding-1" } } }
-          }
           if ("ActivateWorkflowPublicationRuntime" in request) {
             return { WorkflowPublicationRuntimeActivated: { publication_id: "pub-1", runtime_keys: ["deployment-a:replica-0"] } }
           }
@@ -240,7 +238,6 @@ test("gateway materializes exported publication packages through the kernel", as
       "ListConnectors",
       "ListCredentials",
       "MaterializeWorkflowPublication",
-      "CreateWorkflowEventBinding",
       "AttachToSession",
       "ActivateWorkflowPublicationRuntime",
     ])
