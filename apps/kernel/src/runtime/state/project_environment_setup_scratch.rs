@@ -16,8 +16,25 @@ pub(super) struct WorkerValidationScratch {
 }
 
 impl WorkerValidationScratch {
-    pub(super) fn create(
-        temporary_root: &Path,
+    pub(super) fn create_for_worker(
+        workspace_root: &Path,
+        durable_home: &Path,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+    ) -> Result<Self, String> {
+        Self::create_from_roots(
+            &worker_temporary_roots(),
+            workspace_root,
+            durable_home,
+            operation_id,
+            attempt,
+            command_index,
+        )
+    }
+
+    fn create_from_roots(
+        temporary_roots: &[PathBuf],
         workspace_root: &Path,
         durable_home: &Path,
         operation_id: &str,
@@ -27,21 +44,50 @@ impl WorkerValidationScratch {
         if operation_id.is_empty() || attempt == 0 {
             return Err("validation scratch identity is incomplete".to_string());
         }
-        let temporary_root = canonical_directory(temporary_root, "worker temporary root")?;
         let workspace_root = canonical_directory(workspace_root, "worker project worktree")?;
         let durable_home = canonical_directory(durable_home, "durable worker HOME")?;
         let owner_token = owner_token(operation_id, attempt, command_index);
-        let path = temporary_root.join(format!("{SCRATCH_PREFIX}{}", &owner_token[7..]));
-        if paths_overlap(&path, &workspace_root) {
-            return Err("validation scratch overlaps the project worktree".to_string());
-        }
-        if paths_overlap(&path, &durable_home) {
-            return Err("validation scratch overlaps durable worker HOME".to_string());
+
+        let mut safe_roots = 0;
+        let mut last_error = None;
+        for temporary_root in temporary_roots {
+            let temporary_root = match canonical_directory(temporary_root, "worker temporary root")
+            {
+                Ok(path) => path,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            let path = temporary_root.join(format!("{SCRATCH_PREFIX}{}", &owner_token[7..]));
+            if paths_overlap(&path, &workspace_root) || paths_overlap(&path, &durable_home) {
+                continue;
+            }
+            safe_roots += 1;
+            match fs::create_dir(&path) {
+                Ok(()) => return Self::initialize_owned_directory(path, owner_token),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(format!(
+                        "operation-owned validation scratch already exists: {error}"
+                    ));
+                }
+                Err(error) => last_error = Some(error.to_string()),
+            }
         }
 
-        fs::create_dir(&path).map_err(|error| {
-            format!("operation-owned validation scratch could not be created: {error}")
-        })?;
+        if safe_roots == 0 {
+            return Err(
+                "worker has no external temporary directory outside the project worktree and durable HOME"
+                    .to_string(),
+            );
+        }
+        Err(format!(
+            "worker could not create operation-owned validation scratch in an external temporary directory{}",
+            last_error.map_or_else(String::new, |error| format!(": {error}")),
+        ))
+    }
+
+    fn initialize_owned_directory(path: PathBuf, owner_token: String) -> Result<Self, String> {
         #[cfg(unix)]
         if let Err(error) = fs::set_permissions(
             &path,
@@ -106,14 +152,16 @@ impl WorkerValidationScratch {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
         }
-        let mut marker = options
+        let marker = options
             .open(&marker_path)
             .map_err(|error| format!("validation scratch owner marker could not be read: {error}"))?;
-        let mut actual_owner = String::new();
+        let max_marker_bytes = self.owner_token.len() + 1;
+        let mut actual_owner = Vec::with_capacity(max_marker_bytes);
         marker
-            .read_to_string(&mut actual_owner)
+            .take(max_marker_bytes as u64)
+            .read_to_end(&mut actual_owner)
             .map_err(|error| format!("validation scratch owner marker could not be read: {error}"))?;
-        if actual_owner != self.owner_token {
+        if actual_owner.as_slice() != self.owner_token.as_bytes() {
             return Err("validation scratch owner marker changed".to_string());
         }
 
@@ -152,6 +200,13 @@ fn owner_token(operation_id: &str, attempt: u32, command_index: usize) -> String
     format!("sha256:{:x}", digest.finalize())
 }
 
+fn worker_temporary_roots() -> Vec<PathBuf> {
+    let mut roots = vec![std::env::temp_dir()];
+    #[cfg(unix)]
+    roots.extend([PathBuf::from("/var/tmp"), PathBuf::from("/tmp")]);
+    roots
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,8 +240,8 @@ mod tests {
         }
 
         fn scratch(&self, operation_id: &str, attempt: u32, command_index: usize) -> WorkerValidationScratch {
-            WorkerValidationScratch::create(
-                &self.temporary_root,
+            WorkerValidationScratch::create_from_roots(
+                std::slice::from_ref(&self.temporary_root),
                 &self.workspace,
                 &self.durable_home,
                 operation_id,
@@ -234,8 +289,8 @@ mod tests {
     #[test]
     fn validation_scratch_rejects_worktree_or_durable_home_overlap() {
         let fixture = ScratchFixture::new();
-        assert!(WorkerValidationScratch::create(
-            &fixture.workspace,
+        assert!(WorkerValidationScratch::create_from_roots(
+            std::slice::from_ref(&fixture.workspace),
             &fixture.workspace,
             &fixture.durable_home,
             "setup-overlap-workspace",
@@ -243,8 +298,8 @@ mod tests {
             0,
         )
         .is_err());
-        assert!(WorkerValidationScratch::create(
-            &fixture.durable_home,
+        assert!(WorkerValidationScratch::create_from_roots(
+            std::slice::from_ref(&fixture.durable_home),
             &fixture.workspace,
             &fixture.durable_home,
             "setup-overlap-home",
@@ -255,6 +310,28 @@ mod tests {
     }
 
     #[test]
+    fn validation_scratch_uses_external_fallback_when_workspace_is_the_standard_temp_root() {
+        let fixture = ScratchFixture::new();
+        let standard_temp = fixture.root.join("modeled-tmp");
+        let fallback_temp = fixture.root.join("modeled-var-tmp");
+        fs::create_dir(&standard_temp).expect("modeled standard temp root should exist");
+        fs::create_dir(&fallback_temp).expect("modeled fallback temp root should exist");
+        let scratch = WorkerValidationScratch::create_from_roots(
+            &[standard_temp.clone(), fallback_temp.clone()],
+            &standard_temp,
+            &fixture.durable_home,
+            "setup-under-tmp",
+            1,
+            0,
+        )
+        .expect("a disjoint fallback temp root should be selected");
+
+        let canonical_fallback = fs::canonicalize(&fallback_temp).unwrap();
+        assert_eq!(scratch.path().parent(), Some(canonical_fallback.as_path()));
+        scratch.cleanup().unwrap();
+    }
+
+    #[test]
     fn validation_scratch_cleanup_rejects_foreign_owner_marker() {
         let fixture = ScratchFixture::new();
         let scratch = fixture.scratch("setup-foreign-marker", 1, 0);
@@ -262,6 +339,32 @@ mod tests {
             .expect("foreign marker should replace fixture marker");
         assert!(scratch.cleanup().unwrap_err().contains("marker changed"));
         assert!(scratch.path.exists(), "foreign-owned scratch must be preserved");
+    }
+
+    #[test]
+    fn validation_scratch_rejects_large_and_non_utf8_markers_without_deleting_them() {
+        let fixture = ScratchFixture::new();
+        let large = fixture.scratch("setup-large-marker", 1, 0);
+        let large_marker = large.path.join(OWNER_MARKER);
+        let marker_file = OpenOptions::new()
+            .write(true)
+            .open(&large_marker)
+            .expect("owner marker should be openable for fixture mutation");
+        marker_file
+            .set_len(8 * 1024 * 1024)
+            .expect("fixture marker should become oversized");
+        assert!(large.cleanup().unwrap_err().contains("marker changed"));
+        assert_eq!(
+            fs::metadata(&large_marker).unwrap().len(),
+            8 * 1024 * 1024,
+            "oversized marker must be preserved after bounded validation",
+        );
+
+        let non_utf8 = fixture.scratch("setup-non-utf8-marker", 1, 0);
+        let non_utf8_marker = non_utf8.path.join(OWNER_MARKER);
+        fs::write(&non_utf8_marker, [0xff]).expect("binary marker fixture should be written");
+        assert!(non_utf8.cleanup().unwrap_err().contains("marker changed"));
+        assert_eq!(fs::read(&non_utf8_marker).unwrap().as_slice(), &[0xff]);
     }
 
     #[cfg(unix)]
@@ -292,7 +395,7 @@ mod tests {
         fs::write(fixture.durable_home.join(".cargo/registry/cache/keep"), b"preserve")
             .expect("Cargo cache fixture should be written");
 
-        for (operation_id, command, expected_exit) in [
+        for (operation_id, expected_exit) in [
             ("setup-success", 0),
             ("setup-failure", 29),
         ] {

@@ -2348,7 +2348,6 @@ impl KernelRuntimeState {
             .get("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| setup_error("prepared worker validation environment has no durable HOME"))?;
-        let temporary_root = std::env::temp_dir();
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
             .begin_execution(&operation_id, attempt)
@@ -2367,8 +2366,7 @@ impl KernelRuntimeState {
                 {
                     break;
                 }
-                let scratch = match WorkerValidationScratch::create(
-                    &temporary_root,
+                let scratch = match WorkerValidationScratch::create_for_worker(
                     &workspace_root,
                     &durable_home,
                     &operation_id,
