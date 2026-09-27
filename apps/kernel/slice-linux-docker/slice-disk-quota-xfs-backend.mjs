@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { lstatSync, readFileSync, realpathSync, statSync, statfsSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import {
   SLICE_DISK_QUOTA_DATA_ROOT,
   SLICE_DISK_QUOTA_DOCKER_HOST,
@@ -35,7 +35,7 @@ function runXfsQuota(mountpoint, expression) {
   })
 }
 
-function assertTrustedPath(targetPath, expectedPrefix, dockerUid) {
+export function assertTrustedPath(targetPath, expectedPrefix, dockerUid) {
   if (typeof targetPath !== "string" || !targetPath.startsWith(`${expectedPrefix}/`) || /[^A-Za-z0-9_./-]/.test(targetPath)) {
     fail("Docker returned a writable-layer or volume path outside its fixed root")
   }
@@ -43,7 +43,7 @@ function assertTrustedPath(targetPath, expectedPrefix, dockerUid) {
   if (canonical !== targetPath || !canonical.startsWith(`${expectedPrefix}/`)) fail("Docker storage path is not canonical")
   let prefix = "/"
   for (const component of canonical.slice(1).split("/")) {
-    prefix = `${prefix}${component}`
+    prefix = join(prefix, component)
     const info = lstatSync(prefix)
     if (info.isSymbolicLink()) fail("Docker storage path contains a symbolic link")
   }
