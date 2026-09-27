@@ -60,6 +60,18 @@ test("standalone App command rejects unsupported actions and invalid flags befor
   }
 })
 
+test("standalone App install and update name a session and read the file before connecting", async () => {
+  for (const args of [["install", "missing.cxapp"], ["install", "missing.cxapp", "--session"],
+    ["update", "missing.cxapp", "--session", "s1"], ["install", "a.cxapp", "b.cxapp", "--session", "s1"]]) {
+    const h = harness()
+    await assert.rejects(runAppCommand(["app", ...args], h.deps), /usage: app install FILE\.cxapp --session SESSION/)
+    assert.deepEqual(h.connections, [], args.join(" "))
+  }
+  const h = harness()
+  await assert.rejects(runAppCommand(["app", "install", "/nonexistent/app.cxapp", "--session", "s1"], h.deps))
+  assert.deepEqual(h.connections, [])
+})
+
 test("standalone App command accepts an existing terminal pairing link", async () => {
   const h = harness()
   const link = "chariox-terminal-pair-v1." + Buffer.from(JSON.stringify({
