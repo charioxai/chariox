@@ -9,12 +9,26 @@ import re
 import shutil
 import stat
 import sys
+import time
 
 spec = importlib.util.spec_from_file_location("browser_lifecycle", Path(__file__).with_name("browser-lifecycle.py"))
 lifecycle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lifecycle)
 MAX_BYTES = 1024 * 1024 * 1024
 MAX_FILES = 128
+
+
+def lock_quota(stream):
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(0.02, remaining))
 
 
 def process_state(owner):
@@ -97,7 +111,7 @@ def transact(root, request):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o777 != 0o600:
             raise RuntimeError("invalid upload quota lock")
-        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_quota(stream)
         # No earlier mutator can still own a transaction once flock succeeds.
         for temporary in root.glob("record-*"):
             info = temporary.lstat()
@@ -129,13 +143,18 @@ def transact(root, request):
                 raise RuntimeError("invalid upload reservation")
             if len(ledger) >= 128 or sum(item["bytes"] for item in ledger) + entry["bytes"] > min(request["maximumBytes"], MAX_BYTES) or sum(item["count"] for item in ledger) + entry["count"] > min(request["maximumFiles"], MAX_FILES):
                 raise RuntimeError("upload staging quota is full; browser retirement proof is required")
-            entry.update(phase="preparing", owner=lifecycle.identity(os.getppid()), lifetime=browser_owner(request.get("browserPid"), request.get("browserPort")))
+            lifetime = browser_owner(request.get("browserPid"), request.get("browserPort"))
+            if lifetime is None:
+                raise RuntimeError("upload requires an owned browser lifetime")
+            entry.update(phase="preparing", owner=lifecycle.identity(os.getppid()), lifetime=lifetime)
             ledger.append(entry)
         elif action in ("expose", "discard"):
             entry = next((item for item in ledger if item["id"] == request["id"]), None)
             if entry is None or entry.get("owner") != lifecycle.identity(os.getppid()):
                 raise RuntimeError("upload reservation owner changed")
             if action == "expose":
+                if not entry.get("lifetime"):
+                    raise RuntimeError("upload requires an owned browser lifetime")
                 if retired(entry.get("lifetime")):
                     raise RuntimeError("browser retired before upload dispatch")
                 entry["phase"] = "exposed"
