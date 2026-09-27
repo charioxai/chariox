@@ -30,42 +30,26 @@ const BASE_VALIDATION_COMMANDS = Object.freeze([
   'cc --version',
   'pkg-config --version',
 ])
-const FIXTURE_RUN_ID = '00000000-0000-4000-8000-000000000000'
 export const PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_PACKAGE = 'chariox-kernel'
 export const PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_BINARY = 'chariox-kernel'
 export const PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_JOBS = 2
+export const PROJECT_ENVIRONMENT_SETUP_DRILL_SCRATCH_DIR_ENV = 'CHARIOX_PROJECT_ENVIRONMENT_SETUP_SCRATCH_DIR'
 
-export function projectEnvironmentSetupDrillNativeBuildCommand(runId) {
-  assert.ok(/^[0-9a-f-]{36}$/.test(runId), 'validation scratch identity must be a UUID')
-  // The worker kernel SIGKILLs the command process group on cancellation or
-  // timeout, which bypasses EXIT traps. A successful exit therefore verifies
-  // cleanup; a hard-killed attempt remains a failed, incomplete validation.
+export function projectEnvironmentSetupDrillNativeBuildCommand() {
   const buildCommand = [
     'set -eu',
-    'build_root="${TMPDIR:-/tmp}"',
-    'case "$build_root" in /*) ;; *) build_root=/tmp ;; esac',
-    'workspace_root=$(pwd -P)',
-    'build_root=$(CDPATH= cd "$build_root" && pwd -P)',
-    'case "$build_root/" in "$workspace_root/"*) exit 72 ;; esac',
-    `build_dir="$build_root/chariox-project-environment-setup-${runId}"`,
-    'owner_file="$build_dir/.chariox-project-setup-owner"',
-    `if [ -e "$build_dir" ]; then [ ! -L "$build_dir" ] && [ -d "$build_dir" ] && [ -f "$owner_file" ] && [ "$(cat "$owner_file")" = "${runId}" ] || exit 73; rm -rf "$build_dir"; fi`,
-    'mkdir -m 700 "$build_dir"',
-    `printf '%s\\n' '${runId}' > "$owner_file"`,
-    `cleanup_build_dir() { if [ ! -e "$build_dir" ]; then return 0; fi; [ ! -L "$build_dir" ] && [ -d "$build_dir" ] && [ -f "$owner_file" ] && [ "$(cat "$owner_file")" = "${runId}" ] || return 74; rm -rf "$build_dir"; [ ! -e "$build_dir" ]; }`,
-    'finish_build() { build_status=$?; trap - EXIT; if cleanup_build_dir; then exit "$build_status"; else exit 74; fi; }',
-    'trap finish_build EXIT',
+    `build_dir="\${${PROJECT_ENVIRONMENT_SETUP_DRILL_SCRATCH_DIR_ENV}:?worker kernel did not assign validation scratch}"`,
+    'case "$build_dir" in /*) ;; *) exit 72 ;; esac',
     `CARGO_TARGET_DIR="$build_dir/target" CARGO_BUILD_JOBS=${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_JOBS} CARGO_INCREMENTAL=0 cargo build --locked --jobs ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_JOBS} --package ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_PACKAGE} --bin ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_BINARY}`,
   ].join('; ')
   return buildCommand
 }
 
-export function projectEnvironmentSetupDrillValidationCommands(runId) {
-  assert.ok(/^[0-9a-f-]{36}$/.test(runId), 'validation scratch identity must be a UUID')
-  return Object.freeze([...BASE_VALIDATION_COMMANDS, projectEnvironmentSetupDrillNativeBuildCommand(runId)])
+export function projectEnvironmentSetupDrillValidationCommands() {
+  return Object.freeze([...BASE_VALIDATION_COMMANDS, projectEnvironmentSetupDrillNativeBuildCommand()])
 }
 
-export const PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS = projectEnvironmentSetupDrillValidationCommands(FIXTURE_RUN_ID)
+export const PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS = projectEnvironmentSetupDrillValidationCommands()
 
 export function parseProjectEnvironmentSetupDrillArgs(argv) {
   const options = {}

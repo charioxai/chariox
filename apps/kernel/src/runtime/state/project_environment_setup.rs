@@ -93,6 +93,8 @@ mod project_environment_setup_dispatch;
 mod project_environment_setup_policy;
 #[path = "project_environment_setup_storage.rs"]
 mod project_environment_setup_storage;
+#[path = "project_environment_setup_scratch.rs"]
+mod project_environment_setup_scratch;
 #[path = "project_environment_setup_validation.rs"]
 mod project_environment_setup_validation;
 use project_environment_setup_dispatch::*;
@@ -101,6 +103,7 @@ pub(super) use project_environment_setup_storage::ProjectEnvironmentSetupStore;
 use project_environment_setup_storage::{
     RemoteSetupRecoveryDecision, RemoteSetupRecoveryReservationGuard, SetupEntry, SetupExecution,
 };
+use project_environment_setup_scratch::{WorkerValidationScratch, VALIDATION_SCRATCH_DIR_ENV};
 use project_environment_setup_validation::*;
 
 pub(super) fn current_worker_platform() -> String {
@@ -2341,6 +2344,11 @@ impl KernelRuntimeState {
         let operation_id = execution.operation_id.clone();
         let workspace_root = context.workspace_root;
         let environment = context.environment;
+        let durable_home = environment
+            .get("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| setup_error("prepared worker validation environment has no durable HOME"))?;
+        let temporary_root = std::env::temp_dir();
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
             .begin_execution(&operation_id, attempt)
@@ -2351,7 +2359,7 @@ impl KernelRuntimeState {
             let started = Instant::now();
             let overall_deadline = started + VALIDATION_TOTAL_TIMEOUT;
             let mut results = Vec::with_capacity(commands.len());
-            for command in commands {
+            for (command_index, command) in commands.into_iter().enumerate() {
                 if cancellation.is_cancelled(&operation_id, attempt)
                     || overall_deadline
                         .saturating_duration_since(Instant::now())
@@ -2359,10 +2367,30 @@ impl KernelRuntimeState {
                 {
                     break;
                 }
-                let result = run_worker_validation_command(
+                let scratch = match WorkerValidationScratch::create(
+                    &temporary_root,
+                    &workspace_root,
+                    &durable_home,
+                    &operation_id,
+                    attempt,
+                    command_index,
+                ) {
+                    Ok(scratch) => scratch,
+                    Err(_) => {
+                        results.push(ProjectEnvironmentCommandResult {
+                            command_digest: command_digest(&command),
+                            exit_code: -1,
+                            stdout_bytes: 0,
+                            stderr_bytes: 0,
+                        });
+                        break;
+                    }
+                };
+                let result = run_worker_validation_command_with_scratch(
                     &command,
                     &workspace_root,
                     &environment,
+                    &scratch,
                     || cancellation.is_cancelled(&operation_id, attempt),
                     Some(overall_deadline),
                 );

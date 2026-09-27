@@ -511,6 +511,39 @@ pub(super) fn run_worker_validation_command(
     Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
 }
 
+pub(super) fn run_worker_validation_command_with_scratch(
+    command_text: &str,
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    scratch: &WorkerValidationScratch,
+    should_cancel: impl Fn() -> bool,
+    overall_deadline: Option<Instant>,
+) -> Result<(i32, usize, usize), String> {
+    let mut command_environment = environment.clone();
+    command_environment.insert(
+        VALIDATION_SCRATCH_DIR_ENV.to_string(),
+        scratch.path().display().to_string(),
+    );
+    let command_result = run_worker_validation_command(
+        command_text,
+        workspace_root,
+        &command_environment,
+        should_cancel,
+        overall_deadline,
+    );
+    let cleanup_result = scratch.cleanup();
+    match (command_result, cleanup_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(format!(
+            "worker validation scratch cleanup failed: {cleanup_error}"
+        )),
+        (Err(error), Err(cleanup_error)) => Err(format!(
+            "{error}; worker validation scratch cleanup failed: {cleanup_error}"
+        )),
+    }
+}
+
 pub(super) fn run_worker_setup_steps(
     commands: &[String],
     workspace_root: &Path,

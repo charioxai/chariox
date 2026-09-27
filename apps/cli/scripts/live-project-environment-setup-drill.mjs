@@ -314,7 +314,7 @@ async function main() {
 
   const input = await loadExternalInputs(parsed)
   const runId = randomUUID()
-  const validationCommands = projectEnvironmentSetupDrillValidationCommands(runId)
+  const validationCommands = projectEnvironmentSetupDrillValidationCommands()
   const ownedScratch = await createOwnedScratch(input.scratchDir, runId)
   const evidencePath = path.join(input.evidenceDir, `project-environment-setup-live-${runId}.json`)
   const createClient = async () => newHomeClient(input.homeKernel)
@@ -337,7 +337,7 @@ async function main() {
       kernelAggregateValidationDeadlineMs: 300_000,
       cargoBuildJobs: PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_JOBS,
       cargoIncremental: false,
-      targetDirectory: 'external-worker-TMPDIR/run-id-owned directory; CARGO_TARGET_DIR points inside it; owner marker and verified EXIT cleanup',
+      targetDirectory: 'kernel-created external temp directory scoped to setup operation, attempt, and command; owner marker and reserved scratch path are passed to the validation shell; kernel verifies cleanup after command-group settlement',
       nativeDependencyBuild: `cargo build --locked --jobs ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_JOBS} --package ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_PACKAGE} --bin ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_BINARY}; links bundled rusqlite/libsqlite3-sys SQLite`,
       cargoSourceAndCache: 'materialized pinned Project worktree and Cargo.lock; Cargo uses inherited CARGO_HOME when set, otherwise durable worker HOME/.cargo; cache contents are not preflighted',
       targetBuildScratchCleanupProven: false,
@@ -369,7 +369,7 @@ async function main() {
     limitations: [
       'Target CPU, memory, and disk telemetry are not exposed by the setup status API; the drill enforces kernel command deadlines and Cargo build-job limits but does not claim resource-metric proof.',
       'Retry is observed only if the home kernel returns a retryable setup failure; the drill does not inject a failure. --allow-one-retry permits at most one service-authorized retry.',
-      'The kernel runs validation in a worker-local process group and sends SIGKILL on cancellation or timeout, bypassing the shell EXIT trap. That validation remains failed and the drill cannot pass without successful Ready-bound command results; a terminal timeout with no retry can leave its run-id-owned target directory because the public home API has no target-filesystem cleanup request. A retry removes only a prior directory with the same run-id owner marker.',
+      'The worker kernel now owns the external validation scratch lifecycle: after command completion or process-group kill and reap, it removes only the operation/attempt/command-scoped directory whose owner marker matches. A cleanup error makes validation fail and prevents Ready; a hard termination of the worker kernel itself can still bypass this in-process cleanup.',
       'The live worker/provider/build gate remains open until root runs this campaign against its reviewed disposable target and reviews the evidence.',
       'Worker machine enrollment and materialized target worktree are not deleted or certified clean by the home-kernel setup API; root owns their post-campaign disposition.',
     ],
