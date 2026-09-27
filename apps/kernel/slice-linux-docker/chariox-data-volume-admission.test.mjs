@@ -12,7 +12,7 @@ import {
 const SERIAL = "12345"
 const UUID = "12345678-1234-1234-1234-123456789abc"
 
-function makeDevices({ sizeBytes = 10 * HETZNER_BYTES_PER_GB, filesystem = "", uuid = "", mounted = false } = {}) {
+function makeDevices({ sizeBytes = 10 * HETZNER_BYTES_PER_GB, filesystem = "", uuid = "", mounted = false, partitionedVolume = false } = {}) {
   return [
     {
       path: "/dev/vda",
@@ -32,7 +32,9 @@ function makeDevices({ sizeBytes = 10 * HETZNER_BYTES_PER_GB, filesystem = "", u
       uuid,
       mountpoints: mounted ? [DATA_ROOT] : [],
       "maj:min": "8:16",
-      children: [],
+      children: partitionedVolume
+        ? [{ path: "/dev/sdb1", type: "part", pkname: "sdb", size: sizeBytes }]
+        : [],
     },
   ]
 }
@@ -44,6 +46,7 @@ function fakeAdmission({
   busyDevice = false,
   busyFilesystem = false,
   hasHolder = false,
+  partitionedVolume = false,
 } = {}) {
   let filesystem = initialFilesystem
   let filesystemUuid = initialFilesystem ? UUID : ""
@@ -54,7 +57,7 @@ function fakeAdmission({
     run(command, args) {
       calls.push([command, args])
       if (command === "/usr/bin/lsblk" && args.includes("--json")) {
-        return JSON.stringify({ blockdevices: makeDevices({ sizeBytes, filesystem, uuid: filesystemUuid, mounted }) })
+        return JSON.stringify({ blockdevices: makeDevices({ sizeBytes, filesystem, uuid: filesystemUuid, mounted, partitionedVolume }) })
       }
       if (command === "/usr/bin/findmnt" && args.includes("--target")) return "/dev/vda1"
       if (command === "/usr/bin/realpath") {
@@ -151,6 +154,12 @@ test("rejects duplicate volumes, partitions, mounts, and the root disk", () => {
     /already mounted/,
   )
   assert.throws(() => selectHetznerVolumeDevice(makeDevices(), SERIAL, "/dev/sdb"), /root filesystem disk/)
+})
+
+test("production lsblk tree output with a data-volume partition fails before formatting", () => {
+  const fake = fakeAdmission({ partitionedVolume: true })
+  assert.throws(() => admitDataVolume(fake), /partitions or child devices/)
+  assert.equal(fake.calls.some(([command]) => command === "/usr/sbin/mkfs.xfs"), false)
 })
 
 test("fresh matching blank volume is formatted once, bound, mounted, and quota-verified across reboot", () => {

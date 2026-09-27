@@ -36,6 +36,10 @@ prepare_fresh_overlay2_backend() {
     exit 1
   fi
   if ! quota_storage_ready; then
+    if [ "${CHARIOX_PATH1_DATA_VOLUME_REQUIRED:-0}" = 1 ]; then
+      echo "Path-1 rootless Docker requires its admitted XFS project-quota mount" >&2
+      exit 1
+    fi
     # Existing image builders and self-hosted engines keep their current
     # driver. Bounded managed admission separately requires the executable
     # allocator probe to prove this exact XFS project-quota backend.
