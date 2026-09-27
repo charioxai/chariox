@@ -2,13 +2,47 @@ import { createHash } from "node:crypto"
 import { isAbsolute } from "node:path"
 
 export const PROJECT_SETUP_SELECTION_SCHEMA = "chariox.managed-ordinary-project-setup-selection/v1"
-export const PROJECT_SETUP_OBSERVER_SCHEMA = "chariox.managed-ordinary-project-setup-observer/v1"
+export const PROJECT_SETUP_PROOF_SCHEMA = "chariox.managed-ordinary-project-setup-proof/v1"
 export const PROJECT_SETUP_MAX_STATUS_AGE_MS = 15 * 60 * 1000
 export const PROJECT_SETUP_OBSERVATION_TIMEOUT_MS = 60 * 1000
 export const PROJECT_SETUP_REQUEST_TIMEOUT_MS = 10 * 1000
 
+export const PROJECT_SETUP_PROOF_KEYS = Object.freeze([
+  "schema",
+  "product_api_observation",
+  "ready_validation_verified",
+  "status_fresh",
+  "before_after_identity_stable",
+  "home_kernel_identity_fingerprint",
+  "session_identity_fingerprint",
+  "agent_identity_fingerprint",
+  "project_identity_fingerprint",
+  "operation_identity_fingerprint",
+  "operation_attempt",
+  "operation_created_at_ms",
+  "status_updated_at_ms",
+  "observation_started_at_ms",
+  "observation_finished_at_ms",
+  "worker_identity_fingerprint",
+  "worker_kernel_identity_fingerprint",
+  "target_identity_digest",
+  "platform",
+  "definition_digest",
+  "definition_origin",
+  "definition_source",
+  "definition_identity_verified",
+  "validation_command_count",
+  "validation_receipts",
+  "before_snapshot_digest",
+  "after_snapshot_digest",
+  "transport_kind",
+  "endpoint_fingerprint",
+])
+
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/
 const SHA256 = /^sha256:[0-9a-f]{64}$/i
+const DEFINITION_ORIGINS = new Set(["user_authored", "utility_generated"])
+const DEFINITION_SOURCES = new Set(["commands", "dockerfile", "devcontainer", "setup_script"])
 const NODE_URL = new URL(import.meta.url)
 
 export class ProjectSetupObserverError extends Error {
@@ -35,6 +69,119 @@ function stable(value) {
 
 function stableJson(value) {
   return JSON.stringify(stable(value))
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+function exactKeys(value, expected) {
+  return isPlainObject(value)
+    && Object.keys(value).length === expected.length
+    && expected.every((key) => Object.hasOwn(value, key))
+}
+
+export function projectSetupTargetIdentityDigest(workerIdentityFingerprint, workerKernelIdentityFingerprint, platform) {
+  return fingerprint(stableJson({
+    worker_identity_fingerprint: workerIdentityFingerprint,
+    worker_kernel_identity_fingerprint: workerKernelIdentityFingerprint,
+    platform,
+  }))
+}
+
+export function validateProjectSetupProof(value) {
+  const invalid = (code) => ({ ok: false, code })
+  if (!exactKeys(value, PROJECT_SETUP_PROOF_KEYS)) return invalid("proof_shape_invalid")
+  if (value.schema !== PROJECT_SETUP_PROOF_SCHEMA) return invalid("proof_schema_mismatch")
+  if (value.product_api_observation !== "kernel-public-api") return invalid("public_api_observation_required")
+  if (value.transport_kind !== "kernel-public-api" && value.transport_kind !== "relay") {
+    return invalid("public_api_transport_required")
+  }
+  for (const field of [
+    "ready_validation_verified",
+    "status_fresh",
+    "before_after_identity_stable",
+    "definition_identity_verified",
+  ]) {
+    if (value[field] !== true) return invalid(`${field}_required`)
+  }
+  for (const field of [
+    "home_kernel_identity_fingerprint",
+    "session_identity_fingerprint",
+    "agent_identity_fingerprint",
+    "project_identity_fingerprint",
+    "operation_identity_fingerprint",
+    "worker_identity_fingerprint",
+    "worker_kernel_identity_fingerprint",
+    "target_identity_digest",
+    "definition_digest",
+    "before_snapshot_digest",
+    "after_snapshot_digest",
+    "endpoint_fingerprint",
+  ]) {
+    if (typeof value[field] !== "string" || !SHA256.test(value[field])) return invalid(`${field}_invalid`)
+  }
+  if (!Number.isSafeInteger(value.operation_attempt) || value.operation_attempt < 1) {
+    return invalid("operation_attempt_invalid")
+  }
+  for (const field of [
+    "operation_created_at_ms",
+    "status_updated_at_ms",
+    "observation_started_at_ms",
+    "observation_finished_at_ms",
+  ]) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0) return invalid(`${field}_invalid`)
+  }
+  if (value.operation_created_at_ms > value.status_updated_at_ms
+    || value.status_updated_at_ms > value.observation_finished_at_ms
+    || value.observation_started_at_ms > value.observation_finished_at_ms) {
+    return invalid("proof_timestamps_out_of_order")
+  }
+  if (value.observation_finished_at_ms - value.status_updated_at_ms > PROJECT_SETUP_MAX_STATUS_AGE_MS) {
+    return invalid("operation_status_stale")
+  }
+  if (value.observation_finished_at_ms - value.observation_started_at_ms > PROJECT_SETUP_OBSERVATION_TIMEOUT_MS) {
+    return invalid("observation_too_long")
+  }
+  if (typeof value.platform !== "string" || !value.platform.trim()) return invalid("platform_invalid")
+  if (!DEFINITION_ORIGINS.has(value.definition_origin)) return invalid("definition_origin_invalid")
+  if (!DEFINITION_SOURCES.has(value.definition_source)) return invalid("definition_source_invalid")
+  if (!Number.isSafeInteger(value.validation_command_count) || value.validation_command_count < 1) {
+    return invalid("validation_command_count_invalid")
+  }
+  if (!Array.isArray(value.validation_receipts)
+    || value.validation_receipts.length !== value.validation_command_count
+    || value.validation_receipts.length === 0) {
+    return invalid("validation_receipts_missing")
+  }
+  for (const receipt of value.validation_receipts) {
+    if (!exactKeys(receipt, ["command_digest", "exit_code", "stdout_bytes", "stderr_bytes"])) {
+      return invalid("validation_receipt_shape_invalid")
+    }
+    if (typeof receipt.command_digest !== "string" || !SHA256.test(receipt.command_digest)) {
+      return invalid("validation_receipt_digest_invalid")
+    }
+    if (receipt.exit_code !== 0
+      || !Number.isSafeInteger(receipt.stdout_bytes) || receipt.stdout_bytes < 0
+      || !Number.isSafeInteger(receipt.stderr_bytes) || receipt.stderr_bytes < 0) {
+      return invalid("validation_receipt_failed")
+    }
+  }
+  if (value.before_snapshot_digest !== value.after_snapshot_digest) return invalid("before_after_identity_mismatch")
+  if (value.target_identity_digest !== projectSetupTargetIdentityDigest(
+    value.worker_identity_fingerprint,
+    value.worker_kernel_identity_fingerprint,
+    value.platform,
+  )) return invalid("target_identity_digest_mismatch")
+  return { ok: true, code: null }
+}
+
+export function assertProjectSetupProof(value) {
+  const validation = validateProjectSetupProof(value)
+  if (!validation.ok) fail(validation.code, `Project setup proof failed validation: ${validation.code}`)
+  return value
 }
 
 function validIdentifier(value) {
@@ -79,6 +226,13 @@ function parseSelection(value) {
     || value.schema !== PROJECT_SETUP_SELECTION_SCHEMA) {
     fail("selection_missing", "Project setup evidence has no reviewed product-observation selection")
   }
+  const selectionKeys = [
+    "schema", "kernel_endpoint", "kernel_id", "machine_id", "session_id", "agent_id", "project_id",
+    "operation_id", "attempt", "created_at_ms", "worker_id", "worker_kernel_id", "platform",
+  ]
+  if (!exactKeys(value, selectionKeys)) {
+    fail("selection_invalid", "Project setup selection has unsupported or missing fields")
+  }
 
   const endpoint = parseEndpoint(value.kernel_endpoint)
   const selection = {
@@ -99,9 +253,7 @@ function parseSelection(value) {
   if (!Number.isSafeInteger(selection.attempt) || selection.attempt < 1) {
     fail("selection_invalid", "Project setup selection is missing a valid operation attempt")
   }
-  if (value.worker_kernel_id !== undefined && value.worker_kernel_id !== null) {
-    selection.worker_kernel_id = requiredIdentifier(value.worker_kernel_id, "worker kernel ID")
-  }
+  selection.worker_kernel_id = requiredIdentifier(value.worker_kernel_id, "worker kernel ID")
   return selection
 }
 
@@ -136,12 +288,10 @@ function verifySession(envelope, selection) {
   if (!Array.isArray(session.agents)) fail("agent_identity_mismatch", "live kernel session has no agent inventory")
   const agent = session.agents.find((candidate) => candidate?.id === selection.agent_id)
   if (!agent) fail("agent_identity_mismatch", "selected agent is not present in the live kernel session")
-  if (selection.worker_kernel_id !== undefined) {
-    const remote = agent.remote_execution
-    if (remote?.worker_machine_id !== selection.worker_id
-      || remote?.worker_kernel_id !== selection.worker_kernel_id) {
-      fail("agent_worker_mismatch", "selected agent is not bound to the selected worker and kernel")
-    }
+  const remote = agent.remote_execution
+  if (remote?.worker_machine_id !== selection.worker_id
+    || remote?.worker_kernel_id !== selection.worker_kernel_id) {
+    fail("agent_worker_mismatch", "selected agent is not bound to the selected worker and kernel")
   }
   return { session, agent }
 }
@@ -163,7 +313,7 @@ function verifyProject(envelope, selection) {
   if (!new Set(["user_authored", "utility_generated"]).has(definition.origin)) {
     fail("definition_origin_missing", "live Project definition has no supported origin")
   }
-  if (typeof definition.source !== "string" || !definition.source) {
+  if (!DEFINITION_SOURCES.has(definition.source)) {
     fail("definition_source_missing", "live Project definition has no source")
   }
   if (definition.target_platform !== selection.platform) {
@@ -217,12 +367,22 @@ function validateSetupStatus(status, selection, definitionDigest, nowMs) {
   }
 }
 
-function sameStatusIdentity(left, right) {
-  const fields = [
-    "operation_id", "project_id", "session_id", "agent_id", "worker_id", "platform", "phase",
-    "attempt", "progress_percent", "definition_digest", "created_at_ms", "updated_at_ms", "validation",
-  ]
-  return fields.every((field) => stableJson(left?.[field]) === stableJson(right?.[field]))
+function snapshotDigest({ kernel, session, agent, project, status }) {
+  return fingerprint(stableJson({
+    kernel: { kernel_id: kernel.kernel_id, machine_id: kernel.machine_id },
+    session: { id: session.id, project_id: session.project_id },
+    agent: {
+      id: agent.id,
+      worker_machine_id: agent.remote_execution?.worker_machine_id,
+      worker_kernel_id: agent.remote_execution?.worker_kernel_id,
+    },
+    project: {
+      id: project.id,
+      status: project.status,
+      environment_definition: project.environment_definition,
+    },
+    setup_status: status,
+  }))
 }
 
 function sameKernelIdentity(left, right) {
@@ -249,15 +409,13 @@ async function defaultDependencies() {
 }
 
 async function resolveDependencies(options) {
-  if (options.clientFactory && options.requestBuilders) {
-    return { ...options, injected: true }
-  }
+  const injected = Boolean(options.clientFactory || options.requestBuilders)
   const defaults = await defaultDependencies()
   return {
     ...options,
     clientFactory: options.clientFactory ?? defaults.clientFactory,
     requestBuilders: options.requestBuilders ?? defaults.requestBuilders,
-    injected: false,
+    injected,
   }
 }
 
@@ -306,7 +464,10 @@ export async function observeManagedOrdinaryProjectSetup(evidence, {
   requestBuilders,
   nowMs = Date.now,
 } = {}) {
-  const selection = parseSelection(evidence?.selection)
+  if (!exactKeys(evidence, ["selection"])) {
+    fail("caller_assertion_rejected", "Project setup input must contain only the product-observation selection")
+  }
+  const selection = parseSelection(evidence.selection)
   const relayAuthToken = typeof environment?.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN === "string"
     ? environment.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN.trim()
     : ""
@@ -319,6 +480,10 @@ export async function observeManagedOrdinaryProjectSetup(evidence, {
   const client = dependencies.clientFactory(selection.endpoint, clientOptions)
   const deadline = Date.now() + PROJECT_SETUP_OBSERVATION_TIMEOUT_MS
   try {
+    const observationStartedAtMs = nowMs()
+    if (!Number.isSafeInteger(observationStartedAtMs) || observationStartedAtMs < 0) {
+      fail("clock_invalid", "Project setup observer clock returned an invalid start timestamp")
+    }
     const readKernel = async () => verifyKernelIdentity(
       await requestWithTimeout(client, dependencies.requestBuilders.relayStatusRequest(), "identity request", deadline),
       selection,
@@ -360,7 +525,7 @@ export async function observeManagedOrdinaryProjectSetup(evidence, {
     if (!sameKernelIdentity(initialKernel, finalKernel)) {
       fail("kernel_identity_changed", "kernel identity changed during Project setup observation")
     }
-    if (!sameStatusIdentity(initialStatus, finalStatus)) {
+    if (stableJson(initialStatus) !== stableJson(finalStatus)) {
       fail("operation_status_changed", "Project setup status changed during product observation")
     }
     if (initialProject.digest !== finalProject.digest) {
@@ -368,15 +533,17 @@ export async function observeManagedOrdinaryProjectSetup(evidence, {
     }
     if (initialSession.session.id !== finalSession.session.id
       || initialSession.agent.id !== finalSession.agent.id
-      || initialSession.session.project_id !== finalSession.session.project_id) {
+      || initialSession.session.project_id !== finalSession.session.project_id
+      || stableJson(initialSession.agent.remote_execution) !== stableJson(finalSession.agent.remote_execution)) {
       fail("session_identity_changed", "session or agent binding changed during Project setup observation")
     }
 
-    const observedAtMs = nowMs()
-    if (!Number.isSafeInteger(observedAtMs) || observedAtMs < 0) {
-      fail("clock_invalid", "Project setup observer clock returned an invalid timestamp")
+    const observationFinishedAtMs = nowMs()
+    if (!Number.isSafeInteger(observationFinishedAtMs)
+      || observationFinishedAtMs < observationStartedAtMs) {
+      fail("clock_invalid", "Project setup observer clock returned an invalid finish timestamp")
     }
-    validateSetupStatus(finalStatus, selection, finalProject.digest, observedAtMs)
+    validateSetupStatus(finalStatus, selection, finalProject.digest, observationFinishedAtMs)
 
     const { assertReadySetupValidation } = await import("./project-environment-setup-drill.mjs")
     const expected = {
@@ -396,12 +563,29 @@ export async function observeManagedOrdinaryProjectSetup(evidence, {
       fail("validation_incomplete", "live Project setup validation does not satisfy the shared Ready contract", error)
     }
 
-    return {
-      schema: PROJECT_SETUP_OBSERVER_SCHEMA,
+    const beforeSnapshotDigest = snapshotDigest({
+      kernel: initialKernel,
+      session: initialSession.session,
+      agent: initialSession.agent,
+      project: initialProject.project,
+      status: initialStatus,
+    })
+    const afterSnapshotDigest = snapshotDigest({
+      kernel: finalKernel,
+      session: finalSession.session,
+      agent: finalSession.agent,
+      project: finalProject.project,
+      status: finalStatus,
+    })
+    const workerIdentityFingerprint = fingerprint(finalStatus.worker_id)
+    const workerKernelIdentityFingerprint = fingerprint(finalSession.agent.remote_execution.worker_kernel_id)
+    const proof = {
+      schema: PROJECT_SETUP_PROOF_SCHEMA,
       product_api_observation: dependencies.injected ? "injected-test-transport" : "kernel-public-api",
       ready_validation_verified: true,
       status_fresh: true,
-      kernel_identity_fingerprint: fingerprint(`${finalKernel.kernel_id}\0${finalKernel.machine_id}`),
+      before_after_identity_stable: beforeSnapshotDigest === afterSnapshotDigest,
+      home_kernel_identity_fingerprint: fingerprint(`${finalKernel.kernel_id}\0${finalKernel.machine_id}`),
       session_identity_fingerprint: fingerprint(finalSession.session.id),
       agent_identity_fingerprint: fingerprint(finalSession.agent.id),
       project_identity_fingerprint: fingerprint(finalProject.project.id),
@@ -409,22 +593,32 @@ export async function observeManagedOrdinaryProjectSetup(evidence, {
       operation_attempt: finalStatus.attempt,
       operation_created_at_ms: finalStatus.created_at_ms,
       status_updated_at_ms: finalStatus.updated_at_ms,
-      worker_identity_fingerprint: fingerprint(finalStatus.worker_id),
-      worker_kernel_identity_fingerprint: finalSession.agent.remote_execution?.worker_kernel_id
-        ? fingerprint(finalSession.agent.remote_execution.worker_kernel_id)
-        : null,
+      observation_started_at_ms: observationStartedAtMs,
+      observation_finished_at_ms: observationFinishedAtMs,
+      worker_identity_fingerprint: workerIdentityFingerprint,
+      worker_kernel_identity_fingerprint: workerKernelIdentityFingerprint,
+      target_identity_digest: projectSetupTargetIdentityDigest(workerIdentityFingerprint, workerKernelIdentityFingerprint, finalStatus.platform),
       platform: finalStatus.platform,
       validation_command_count: finalStatus.validation.commands.length,
-      validation_command_digests: finalStatus.validation.commands.map((entry) => entry.command_digest),
+      validation_receipts: finalStatus.validation.commands.map((entry) => ({
+        command_digest: entry.command_digest,
+        exit_code: entry.exit_code,
+        stdout_bytes: entry.stdout_bytes,
+        stderr_bytes: entry.stderr_bytes,
+      })),
       definition_digest: finalStatus.definition_digest,
       definition_origin: finalProject.definition.origin,
       definition_source: finalProject.definition.source,
       definition_identity_verified: true,
+      before_snapshot_digest: beforeSnapshotDigest,
+      after_snapshot_digest: afterSnapshotDigest,
       transport_kind: dependencies.injected
         ? "injected-test-transport"
         : relayAuthToken ? "relay" : "kernel-public-api",
       endpoint_fingerprint: fingerprint(selection.endpoint),
     }
+    if (!dependencies.injected) assertProjectSetupProof(proof)
+    return proof
   } catch (error) {
     if (error instanceof ProjectSetupObserverError) throw error
     fail("product_observation_failed", "Project setup could not be observed through the kernel public API", error)

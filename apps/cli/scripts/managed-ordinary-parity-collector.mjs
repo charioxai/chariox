@@ -18,6 +18,7 @@ import {
   createSignedManifest,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
+import { validateProjectSetupProof } from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 export const DEFAULT_TIMEOUT_MS = 45_000
 export const OFFICIAL_PROVIDERS = Object.freeze(["claude", "codex", "opencode"])
@@ -211,7 +212,6 @@ const GENERIC_REQUIREMENTS = Object.freeze({
   "MP-08/session_agent_launch": ["session_created", "agent_created", "official_command"],
   "MP-08/terminal_file_git": ["terminal_ok", "file_ok", "git_ok"],
   "MP-08/attachments_permissions_capabilities": ["attachments_ok", "permissions_ok", "capabilities_ok"],
-  "MP-08/project_setup": ["project_setup_ok"],
   "MP-08/reconnect_orphan_recovery": ["reconnect_ok", "orphan_recovered"],
   "MP-08/restart_recovery": ["restart_recovered"],
   "MP-08/reconnect_history_result_identity": ["history_preserved", "result_identity_preserved"],
@@ -242,6 +242,24 @@ function normalizeGenericResult(result, rowId, checkId) {
     normalized.child_enumeration_denied = result.child_enumeration_denied === true
   }
   return normalized
+}
+
+function normalizeProjectSetupResult(result) {
+  requireObserved(result, "MP-08", "project_setup")
+  expectedBoolean(result, "project_setup_ok", "MP-08", "project_setup", true)
+  const validation = validateProjectSetupProof(result.project_setup_proof)
+  if (!validation.ok) {
+    throw new CollectorError(
+      "project_setup_proof_invalid",
+      `MP-08/project_setup did not provide production observer proof (${validation.code})`,
+      { rowId: "MP-08", checkId: "project_setup" },
+    )
+  }
+  return {
+    observed: true,
+    project_setup_ok: true,
+    project_setup_proof: result.project_setup_proof,
+  }
 }
 
 function normalizeProviderAncestry(result) {
@@ -871,6 +889,8 @@ export function createParityCollector({
           checks[checkId] = await runProbe(ctx, definition.id, checkId, normalizeProviderAncestry)
         } else if (definition.id === "MP-01" && checkId === "managed_isolation_environment") {
           checks[checkId] = await runProbe(ctx, definition.id, checkId, normalizeManagedIsolation)
+        } else if (definition.id === "MP-08" && checkId === "project_setup") {
+          checks[checkId] = await runProbe(ctx, definition.id, checkId, normalizeProjectSetupResult)
         } else {
           checks[checkId] = await runProbe(ctx, definition.id, checkId, (result) => normalizeGenericResult(result, definition.id, checkId))
         }

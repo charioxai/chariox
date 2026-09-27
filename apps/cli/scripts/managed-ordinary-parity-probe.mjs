@@ -656,16 +656,20 @@ async function observeAttachments(identity) {
 
 async function observeProjectSetup(identity) {
   const evidence = parseJsonEnv("CHARIOX_PARITY_PROJECT_SETUP_EVIDENCE_JSON")
-  const { observeManagedOrdinaryProjectSetup } = await import("./lib/managed-ordinary-project-setup-observer.mjs")
+  const {
+    assertProjectSetupProof,
+    observeManagedOrdinaryProjectSetup,
+  } = await import("./lib/managed-ordinary-project-setup-observer.mjs")
   const observation = await observeManagedOrdinaryProjectSetup(evidence, {
     environment: process.env,
   })
-  // MP-08 currently persists only project_setup_ok. Keep the fully bound
-  // product observation diagnostic until the parity row has schema ownership
-  // for the kernel, session, agent, operation, validation, and definition IDs.
+  // The environment supplies only the operation selector. The acceptance
+  // result comes from the observer's production kernel API transport and its
+  // complete Ready, identity, definition, and validation checks.
+  assertProjectSetupProof(observation)
   return identityResult(identity, {
-    project_setup_diagnostic_only: true,
-    project_setup_observation: observation,
+    project_setup_ok: true,
+    project_setup_proof: observation,
   })
 }
 

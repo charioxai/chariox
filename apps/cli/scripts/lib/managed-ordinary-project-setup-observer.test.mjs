@@ -6,6 +6,7 @@ import {
   observeManagedOrdinaryProjectSetup,
   PROJECT_SETUP_MAX_STATUS_AGE_MS,
   PROJECT_SETUP_SELECTION_SCHEMA,
+  validateProjectSetupProof,
 } from "./managed-ordinary-project-setup-observer.mjs"
 
 const NOW = 1_800_000_000_000
@@ -124,7 +125,7 @@ function fixture(overrides = {}) {
     }
   }
   return {
-    evidence: { observed: true, project_setup_ok: true, project_identity: "claim-only", selection },
+    evidence: { selection },
     requestBuilders,
     clientFactory,
     calls,
@@ -150,11 +151,15 @@ test("Project setup observation binds fresh Ready validation to kernel, session,
   assert.equal(observation.product_api_observation, "injected-test-transport")
   assert.equal(observation.ready_validation_verified, true)
   assert.equal(observation.status_fresh, true)
+  assert.equal(observation.before_after_identity_stable, true)
   assert.equal(observation.definition_identity_verified, true)
   assert.equal(observation.definition_digest, value.projectDefinitionDigest)
   assert.equal(observation.definition_origin, "user_authored")
   assert.equal(observation.operation_attempt, 2)
-  assert.equal(Object.hasOwn(observation, "project_setup_ok"), false)
+  assert.equal(observation.validation_receipts.length, 1)
+  assert.equal(observation.validation_receipts[0].exit_code, 0)
+  assert.equal(observation.before_snapshot_digest, observation.after_snapshot_digest)
+  assert.equal(validateProjectSetupProof(observation).code, "public_api_observation_required")
   assert.equal(value.calls.some((entry) => entry?.GetProjectEnvironmentSetupStatus?.operationId === "operation-1"), true)
   assert.equal(value.calls.at(-1), "Close")
   assert.equal(JSON.stringify(observation).includes("127.0.0.1"), false)
@@ -169,7 +174,20 @@ test("assertion-only environment evidence is rejected before opening a kernel cl
   }
   await assert.rejects(
     observeManagedOrdinaryProjectSetup(assertionOnly, observerOptions(value)),
-    { code: "selection_missing" },
+    { code: "caller_assertion_rejected" },
+  )
+  assert.equal(value.calls.length, 0)
+})
+
+test("caller claims beside a valid selector are rejected before opening a kernel client", async () => {
+  const value = fixture()
+  await assert.rejects(
+    observeManagedOrdinaryProjectSetup({
+      selection: value.evidence.selection,
+      project_setup_ok: true,
+      project_identity: "caller-claim",
+    }, observerOptions(value)),
+    { code: "caller_assertion_rejected" },
   )
   assert.equal(value.calls.length, 0)
 })
@@ -222,6 +240,23 @@ test("wrong kernel, session, agent, and Project bindings fail closed", async (co
       code: "agent_identity_mismatch",
     },
     {
+      name: "agent connected to a different worker and kernel",
+      overrides: {
+        session: {
+          agents: [{
+            id: "agent-1",
+            remote_execution: { worker_machine_id: "worker-other", worker_kernel_id: "worker-kernel-other" },
+          }],
+        },
+      },
+      code: "agent_worker_mismatch",
+    },
+    {
+      name: "agent disconnected from the selected target",
+      overrides: { session: { agents: [{ id: "agent-1", remote_execution: null }] } },
+      code: "agent_worker_mismatch",
+    },
+    {
       name: "wrong Project",
       overrides: { session: { project_id: "project-other" } },
       code: "session_identity_mismatch",
@@ -243,9 +278,24 @@ test("wrong kernel, session, agent, and Project bindings fail closed", async (co
   }
 })
 
+test("selection without a worker kernel identity cannot produce target-bound evidence", async () => {
+  const value = fixture()
+  const selection = { ...value.evidence.selection }
+  delete selection.worker_kernel_id
+  await assert.rejects(
+    observeManagedOrdinaryProjectSetup({ selection }, observerOptions(value)),
+    { code: "selection_invalid" },
+  )
+  assert.equal(value.calls.length, 0)
+})
+
 test("missing Ready state, validation results, or matching definition identity fail closed", async (context) => {
   const variants = [
     { name: "not Ready", status: { phase: "validating", progress_percent: 90 }, code: "setup_not_ready" },
+    { name: "failed", status: { phase: "failed" }, code: "setup_not_ready" },
+    { name: "cancelled", status: { phase: "cancelled" }, code: "setup_not_ready" },
+    { name: "wrong status worker", status: { worker_id: "worker-other" }, code: "validation_binding_mismatch" },
+    { name: "wrong status platform", status: { platform: "linux-aarch64" }, code: "validation_binding_mismatch" },
     { name: "missing validation", status: { validation: null }, code: "validation_missing" },
     { name: "wrong definition digest", status: { definition_digest: digest("other-definition") }, code: "definition_identity_mismatch" },
     { name: "failed command", status: { validation: { worker_id: "worker-1", platform: "linux-x86_64", commands: [{ command_digest: digest(VALIDATION_COMMAND), exit_code: 1, stdout_bytes: 0, stderr_bytes: 1 }] } }, code: "validation_incomplete" },

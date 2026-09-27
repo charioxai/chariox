@@ -9,6 +9,8 @@ import { CAPTURE_PROVENANCE_SCHEMA } from "./lib/managed-ordinary-provider-turn-
 
 export { CAPTURE_PROVENANCE_SCHEMA }
 
+import { validateProjectSetupProof } from "./lib/managed-ordinary-project-setup-observer.mjs"
+
 const execFileAsync = promisify(execFile)
 
 export const MATRIX_SCHEMA = "chariox.managed-ordinary-parity-matrix/v3"
@@ -242,7 +244,6 @@ const GENERIC_RESULT_REQUIREMENTS = Object.freeze({
   "MP-08/session_agent_launch": Object.freeze(["session_created", "agent_created", "official_command"]),
   "MP-08/terminal_file_git": Object.freeze(["terminal_ok", "file_ok", "git_ok"]),
   "MP-08/attachments_permissions_capabilities": Object.freeze(["attachments_ok", "permissions_ok", "capabilities_ok"]),
-  "MP-08/project_setup": Object.freeze(["project_setup_ok"]),
   "MP-08/reconnect_orphan_recovery": Object.freeze(["reconnect_ok", "orphan_recovered"]),
   "MP-08/restart_recovery": Object.freeze(["restart_recovered"]),
   "MP-08/reconnect_history_result_identity": Object.freeze(["history_preserved", "result_identity_preserved"]),
@@ -787,6 +788,20 @@ function validateCheckResult(result, manifest, topology, rowId, checkId, failure
     }
     if (result.executable_basename !== manifest?.provider?.executable) {
       addFailure(failures, "check_result_identity_mismatch", topology, rowId, checkId, "executable_basename")
+    }
+    return
+  }
+  if (rowId === "MP-08" && checkId === "project_setup") {
+    if (!checkResultIsObject(result) || !sameKeys(result, ["observed", "project_setup_ok", "project_setup_proof"])) {
+      addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
+      return
+    }
+    if (result.observed !== true || result.project_setup_ok !== true) {
+      addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, "project_setup_ok")
+    }
+    const proofValidation = validateProjectSetupProof(result.project_setup_proof)
+    if (!proofValidation.ok) {
+      addFailure(failures, "project_setup_proof_invalid", topology, rowId, checkId, proofValidation.code)
     }
     return
   }

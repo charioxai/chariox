@@ -14,7 +14,12 @@ import {
   createSignedManifest,
   runEvidenceCommand,
   serializeReport,
+  validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
+import {
+  PROJECT_SETUP_PROOF_SCHEMA,
+  projectSetupTargetIdentityDigest,
+} from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 const SIGNING_KEY = Buffer.from("managed-ordinary-parity-matrix-fixture-key-20260920")
 const REVIEWED_COMMIT = "c899b9ce9fe3ca91d49e771d9bd6bbde07416576"
@@ -69,6 +74,49 @@ function provenanceFingerprint(proof) {
   return `sha256:${createHash("sha256").update(canonicalJson(proof)).digest("hex")}`
 }
 
+function projectSetupProof(overrides = {}) {
+  const workerIdentity = `sha256:${"2".repeat(64)}`
+  const workerKernelIdentity = `sha256:${"3".repeat(64)}`
+  const platform = "linux-x86_64"
+  return {
+    schema: PROJECT_SETUP_PROOF_SCHEMA,
+    product_api_observation: "kernel-public-api",
+    ready_validation_verified: true,
+    status_fresh: true,
+    before_after_identity_stable: true,
+    home_kernel_identity_fingerprint: `sha256:${"1".repeat(64)}`,
+    session_identity_fingerprint: `sha256:${"4".repeat(64)}`,
+    agent_identity_fingerprint: `sha256:${"5".repeat(64)}`,
+    project_identity_fingerprint: `sha256:${"6".repeat(64)}`,
+    operation_identity_fingerprint: `sha256:${"7".repeat(64)}`,
+    operation_attempt: 1,
+    operation_created_at_ms: 1_790_000_000_000,
+    status_updated_at_ms: 1_790_000_000_500,
+    observation_started_at_ms: 1_790_000_000_600,
+    observation_finished_at_ms: 1_790_000_000_700,
+    worker_identity_fingerprint: workerIdentity,
+    worker_kernel_identity_fingerprint: workerKernelIdentity,
+    target_identity_digest: projectSetupTargetIdentityDigest(workerIdentity, workerKernelIdentity, platform),
+    platform,
+    definition_digest: `sha256:${"8".repeat(64)}`,
+    definition_origin: "utility_generated",
+    definition_source: "commands",
+    definition_identity_verified: true,
+    validation_command_count: 1,
+    validation_receipts: [{
+      command_digest: `sha256:${"9".repeat(64)}`,
+      exit_code: 0,
+      stdout_bytes: 1,
+      stderr_bytes: 0,
+    }],
+    before_snapshot_digest: `sha256:${"a".repeat(64)}`,
+    after_snapshot_digest: `sha256:${"a".repeat(64)}`,
+    transport_kind: "relay",
+    endpoint_fingerprint: `sha256:${"b".repeat(64)}`,
+    ...overrides,
+  }
+}
+
 const RESULT_TRUE_FIELDS = Object.freeze({
   "MP-01/mount_visibility": ["mounts_match_ordinary", "mount_probe_complete"],
   "MP-01/privilege_state": ["capabilities_match_ordinary", "umask_matches_ordinary"],
@@ -94,7 +142,6 @@ const RESULT_TRUE_FIELDS = Object.freeze({
   "MP-08/session_agent_launch": ["session_created", "agent_created", "official_command"],
   "MP-08/terminal_file_git": ["terminal_ok", "file_ok", "git_ok"],
   "MP-08/attachments_permissions_capabilities": ["attachments_ok", "permissions_ok", "capabilities_ok"],
-  "MP-08/project_setup": ["project_setup_ok"],
   "MP-08/reconnect_orphan_recovery": ["reconnect_ok", "orphan_recovered"],
   "MP-08/restart_recovery": ["restart_recovered"],
   "MP-08/reconnect_history_result_identity": ["history_preserved", "result_identity_preserved"],
@@ -134,6 +181,9 @@ function ordinaryResult(rowId, checkId, topology = "ordinary") {
       executable_basename: "codex",
       provider_version_observed: true,
     }
+  }
+  if (rowId === "MP-08" && checkId === "project_setup") {
+    return { observed: true, project_setup_ok: true, project_setup_proof: projectSetupProof() }
   }
   if (rowId === "MP-10" && checkId === "capture_boundary") {
     return {
@@ -346,6 +396,61 @@ test("matrix v3 rejects remote-command boundary claims without an authority", ()
   const report = compare(ordinary, makeManifest("path1"))
   assert.equal(report.status, "fail")
   assert.ok(report.failures.some((failure) => failure.code === "capture_boundary_invalid"))
+})
+
+test("version 2 boolean-only MP-08 evidence is rejected explicitly", () => {
+  const legacy = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+    manifest.schema = "chariox.managed-ordinary-parity-matrix/v2"
+    manifest.rows["MP-08"].checks.project_setup.result = {
+      observed: true,
+      project_setup_ok: true,
+    }
+  })
+  const validation = validateManifest(legacy, {
+    expectedTopology: "ordinary",
+    expectedReviewedCommit: REVIEWED_COMMIT,
+    expectedBuildId: BUILD_ID,
+    signingKey: SIGNING_KEY,
+    allowFixture: true,
+  })
+  assert.equal(validation.ok, false)
+  assert.ok(validation.failures.some((failure) => failure.code === "schema_mismatch"))
+  assert.ok(validation.failures.some((failure) => (
+    failure.code === "check_result_shape_invalid"
+      && failure.rowId === "MP-08"
+      && failure.checkId === "project_setup"
+  )))
+})
+
+test("MP-08 rejects injected, stale, mismatched, and incomplete Project setup proof", () => {
+  const variants = [
+    { name: "injected transport", proof: { product_api_observation: "injected-test-transport" } },
+    { name: "not ready", proof: { ready_validation_verified: false } },
+    { name: "stale status", proof: { status_updated_at_ms: 1_789_000_000_000 } },
+    { name: "target digest mismatch", proof: { target_identity_digest: `sha256:${"c".repeat(64)}` } },
+    { name: "changed after snapshot", proof: { after_snapshot_digest: `sha256:${"d".repeat(64)}` } },
+    { name: "failed validation receipt", proof: { validation_receipts: [{
+      command_digest: `sha256:${"9".repeat(64)}`,
+      exit_code: 1,
+      stdout_bytes: 1,
+      stderr_bytes: 0,
+    }] } },
+    { name: "unsupported proof key", proof: { caller_project_identity: `sha256:${"e".repeat(64)}` } },
+  ]
+  for (const variant of variants) {
+    const ordinary = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+      Object.assign(manifest.rows["MP-08"].checks.project_setup.result.project_setup_proof, variant.proof)
+    })
+    const validation = validateManifest(ordinary, {
+      expectedTopology: "ordinary",
+      expectedReviewedCommit: REVIEWED_COMMIT,
+      expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY,
+      allowFixture: true,
+    })
+    assert.equal(validation.ok, false, variant.name)
+    assert.ok(validation.failures.some((failure) => failure.code === "project_setup_proof_invalid"), variant.name)
+  }
 })
 
 test("missing row and missing shutdown check fail closed", () => {

@@ -14,9 +14,14 @@ import {
 import {
   CAPTURE_PROVENANCE_SCHEMA,
   SHUTDOWN_EXPECTATIONS,
+  MATRIX_SCHEMA,
   compareManifests,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
+import {
+  PROJECT_SETUP_PROOF_SCHEMA,
+  projectSetupTargetIdentityDigest,
+} from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 const SIGNING_KEY = Buffer.from("managed-ordinary-parity-collector-fixture-key-20260920")
 const REVIEWED_COMMIT = "d1e925f2b3e318b66160d65cac05973409c99b68"
@@ -121,6 +126,51 @@ function procStat(pid, startTime = 123456) {
   return `${pid} (chariox-kernel fixture) ${fields.join(" ")}\n`
 }
 
+// A production-shaped result fixture exercises the live observer schema. It
+// models the probe response shape and does not claim that this test contacted a kernel.
+function projectSetupProofFixture(overrides = {}) {
+  const workerIdentity = `sha256:${"2".repeat(64)}`
+  const workerKernelIdentity = `sha256:${"3".repeat(64)}`
+  const platform = "linux-x86_64"
+  return {
+    schema: PROJECT_SETUP_PROOF_SCHEMA,
+    product_api_observation: "kernel-public-api",
+    ready_validation_verified: true,
+    status_fresh: true,
+    before_after_identity_stable: true,
+    home_kernel_identity_fingerprint: `sha256:${"1".repeat(64)}`,
+    session_identity_fingerprint: `sha256:${"4".repeat(64)}`,
+    agent_identity_fingerprint: `sha256:${"5".repeat(64)}`,
+    project_identity_fingerprint: `sha256:${"6".repeat(64)}`,
+    operation_identity_fingerprint: `sha256:${"7".repeat(64)}`,
+    operation_attempt: 1,
+    operation_created_at_ms: 1_790_000_000_000,
+    status_updated_at_ms: 1_790_000_000_500,
+    observation_started_at_ms: 1_790_000_000_600,
+    observation_finished_at_ms: 1_790_000_000_700,
+    worker_identity_fingerprint: workerIdentity,
+    worker_kernel_identity_fingerprint: workerKernelIdentity,
+    target_identity_digest: projectSetupTargetIdentityDigest(workerIdentity, workerKernelIdentity, platform),
+    platform,
+    definition_digest: `sha256:${"8".repeat(64)}`,
+    definition_origin: "utility_generated",
+    definition_source: "commands",
+    definition_identity_verified: true,
+    validation_command_count: 1,
+    validation_receipts: [{
+      command_digest: `sha256:${"9".repeat(64)}`,
+      exit_code: 0,
+      stdout_bytes: 1,
+      stderr_bytes: 0,
+    }],
+    before_snapshot_digest: `sha256:${"a".repeat(64)}`,
+    after_snapshot_digest: `sha256:${"a".repeat(64)}`,
+    transport_kind: "relay",
+    endpoint_fingerprint: `sha256:${"b".repeat(64)}`,
+    ...overrides,
+  }
+}
+
 function memoryFilesystem() {
   const files = new Map()
   const directories = new Set(["/repo"])
@@ -179,6 +229,13 @@ function genericResult(rowId, checkId, topology) {
       inside_provider_turn: true,
       independent: true,
       capture_provenance: CAPTURE_PROVENANCE,
+    }
+  }
+  if (rowId === "MP-08" && checkId === "project_setup") {
+    return {
+      observed: true,
+      project_setup_ok: true,
+      project_setup_proof: projectSetupProofFixture(),
     }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
@@ -255,7 +312,6 @@ function genericResult(rowId, checkId, topology) {
     "MP-08/session_agent_launch": { session_created: true, agent_created: true, official_command: true },
     "MP-08/terminal_file_git": { terminal_ok: true, file_ok: true, git_ok: true },
     "MP-08/attachments_permissions_capabilities": { attachments_ok: true, permissions_ok: true, capabilities_ok: true },
-    "MP-08/project_setup": { project_setup_ok: true },
     "MP-08/reconnect_orphan_recovery": { reconnect_ok: true, orphan_recovered: true },
     "MP-08/restart_recovery": { restart_recovered: true },
     "MP-08/reconnect_history_result_identity": { history_preserved: true, result_identity_preserved: true },
@@ -404,6 +460,62 @@ test("collects a real-command ordinary snapshot and validates all required rows"
   assert.equal(binding.kernel_process.executable_sha256, KERNEL_DIGEST)
   assert.equal(binding.stable_across_capture, true)
   assert.ok(filesystem.files.size > 30)
+})
+
+test("MP-08 production-shaped Project setup proof fixture roundtrips for ordinary and Path-1", async () => {
+  for (const topology of ["ordinary", "path1"]) {
+    const { manifest } = await collect(topology)
+    const check = manifest.rows["MP-08"].checks.project_setup
+    assert.equal(manifest.schema, MATRIX_SCHEMA)
+    assert.equal(check.status, "pass")
+    assert.equal(check.result.project_setup_ok, true)
+    assert.equal(check.result.project_setup_proof.schema, PROJECT_SETUP_PROOF_SCHEMA)
+    assert.equal(check.result.project_setup_proof.product_api_observation, "kernel-public-api")
+    assert.equal(validateManifest(manifest, {
+      expectedTopology: topology,
+      expectedReviewedCommit: REVIEWED_COMMIT,
+      expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY,
+    }).ok, true)
+  }
+})
+
+test("collector rejects injected or legacy Project setup assertions", async (context) => {
+  const variants = [
+    {
+      name: "injected observer transport",
+      result: {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture({ product_api_observation: "injected-test-transport" }),
+      },
+    },
+    {
+      name: "legacy boolean only",
+      result: { observed: true, project_setup_ok: true },
+    },
+    {
+      name: "mismatched target digest",
+      result: {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture({ target_identity_digest: `sha256:${"c".repeat(64)}` }),
+      },
+    },
+  ]
+  for (const variant of variants) {
+    await context.test(variant.name, async () => {
+      const harness = makeHarness("ordinary", {
+        results: { "MP-08/project_setup": variant.result },
+      })
+      await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+        assert.equal(error.code, "project_setup_proof_invalid")
+        assert.equal(error.rowId, "MP-08")
+        assert.equal(error.checkId, "project_setup")
+        return true
+      })
+    })
+  }
 })
 
 test("collects a fresh Path-1 managed snapshot and the comparator accepts ordinary-versus-managed parity", async () => {
@@ -726,12 +838,22 @@ test("partial cleanup is rejected instead of becoming an MP-08 pass", async () =
 test("evidence output is deterministic and redacts credentials", async () => {
   const first = makeHarness("ordinary", {
     results: {
-      "MP-08/project_setup": { observed: true, project_setup_ok: true, token: "supersecret-token" },
+      "MP-08/project_setup": {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture(),
+        token: "supersecret-token",
+      },
     },
   })
   const second = makeHarness("ordinary", {
     results: {
-      "MP-08/project_setup": { observed: true, project_setup_ok: true, token: "supersecret-token" },
+      "MP-08/project_setup": {
+        observed: true,
+        project_setup_ok: true,
+        project_setup_proof: projectSetupProofFixture(),
+        token: "supersecret-token",
+      },
     },
   })
   await first.collector.collect(first.options)
