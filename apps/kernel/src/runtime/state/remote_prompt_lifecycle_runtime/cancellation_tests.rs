@@ -849,12 +849,23 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         "the successor ACK should stay bound to its exact worker run"
     );
     assert_eq!(submit_count, 1);
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(300), peer_requests.recv())
-            .await
-            .is_err(),
-        "settled cancellation should neither replay nor submit the successor twice"
-    );
+    // Keep the full duplicate-observation bound while distinguishing a closed test channel
+    // from an unexpected envelope, which the old is_err() assertion did not report.
+    match tokio::time::timeout(std::time::Duration::from_millis(300), peer_requests.recv()).await {
+        Err(_) => {}
+        Ok(None) => panic!(
+            "fake relay outgoing request channel closed during the 300 ms duplicate observation window"
+        ),
+        Ok(Some(envelope @ RelayEnvelope::DaemonPeerRequest { .. })) => {
+            let (_, target_id, request) = decode_peer_request(envelope, &worker_private_key);
+            panic!(
+                "unexpected worker peer request during the 300 ms duplicate observation window: target={target_id}, request={request:?}"
+            );
+        }
+        Ok(Some(envelope)) => panic!(
+            "unexpected relay outgoing envelope during the 300 ms duplicate observation window: {envelope:?}"
+        ),
+    }
 }
 
 #[tokio::test]
