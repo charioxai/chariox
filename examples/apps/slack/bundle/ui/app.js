@@ -34,6 +34,7 @@ function item(notification) {
 function replyForm(notification) {
   const form = document.createElement("form")
   form.className = "reply"
+  form.dataset.id = notification.id
   const input = document.createElement("input")
   input.required = true
   input.maxLength = 4000
@@ -74,12 +75,24 @@ async function refresh() {
     const kind = $("kind").value
     const { notifications } = await window.chariox.call("list_notifications", kind ? { kind, limit: 50 } : { limit: 50 })
     const next = JSON.stringify(notifications)
-    // Never rebuild the list under a reply being written.
-    const drafting = [...list.querySelectorAll(".reply input")]
-      .some((input) => input.value || input === document.activeElement)
-    if (next !== shown && !drafting) {
+    if (next !== shown) {
       shown = next
+      // A reply being written survives the rebuild: its text, request id and
+      // focus move to the same notification's new row.
+      const drafts = new Map([...list.querySelectorAll("form.reply")].map((form) => [form.dataset.id, {
+        value: form.querySelector("input").value,
+        requestId: form.dataset.requestId,
+        focused: form.contains(document.activeElement),
+      }]))
       list.replaceChildren(...notifications.map(item))
+      for (const form of list.querySelectorAll("form.reply")) {
+        const draft = drafts.get(form.dataset.id)
+        if (!draft) continue
+        const input = form.querySelector("input")
+        input.value = draft.value
+        if (draft.requestId) form.dataset.requestId = draft.requestId
+        if (draft.focused) input.focus()
+      }
     }
     $("empty").hidden = notifications.length > 0
     if (status.classList.contains("error")) say("")

@@ -70,7 +70,7 @@
     },
     {
       "name": "react",
-      "description": "Add an emoji reaction (for example eyes or white_check_mark) to the Slack message behind a notification.",
+      "description": "Add an emoji reaction (for example eyes or white_check_mark) to the Slack message behind a notification. A failure can mean the reaction is already there; do not retry it repeatedly.",
       "inputSchema": {
         "type": "object",
         "properties": {
