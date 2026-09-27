@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -23,10 +24,18 @@ function selectionCommand() {
 }
 
 function selectionGlobs(command) {
-  const tokens = command.trim().split(/\s+/)
-  assert.deepEqual(tokens.slice(0, 3), ["node", "--test", "--test-concurrency=1"])
+  const shellPrefix = "sh -c '"
+  assert.ok(command.startsWith(shellPrefix), "the selection command should use the POSIX glob guard")
+  assert.ok(command.endsWith("'"), "the POSIX guard should be one shell script")
+  const shellScript = command.slice(shellPrefix.length, -1)
+  const patterns = [
+    `${sliceTestDirectory}/provision-*.test.mjs`,
+    `${sliceTestDirectory}/slice-disk-quota*.test.mjs`,
+  ]
+  const expectedScript = `for file in ${patterns.join(" ")}; do [ -f \"$file\" ] || exit 1; done; exec node --test --test-concurrency=1 ${patterns.join(" ")}`
+  assert.equal(shellScript, expectedScript, "both test globs must be guarded before the sequential Node run")
   assert.doesNotMatch(command, /--test-(?:skip|name)-pattern/)
-  return tokens.slice(3)
+  return patterns
 }
 
 function expandOneLevelGlob(pattern) {
@@ -54,7 +63,7 @@ function addFixtureTest(directory, filename, { fail = false } = {}) {
   writeFileSync(join(directory, filename), source)
 }
 
-function makeSelectionFixture(t, quotaTests) {
+function makeSelectionFixture(t, quotaTests, { includeProvisioner = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "slice-provisioner-selection-"))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const testDirectory = join(root, sliceTestDirectory)
@@ -63,7 +72,7 @@ function makeSelectionFixture(t, quotaTests) {
     private: true,
     scripts: { "test:slice-provisioner": selectionCommand() },
   }))
-  addFixtureTest(testDirectory, "provision-existing.test.mjs")
+  if (includeProvisioner) addFixtureTest(testDirectory, "provision-existing.test.mjs")
   for (const quotaTest of quotaTests) addFixtureTest(testDirectory, quotaTest.filename, quotaTest)
   return { root, marker: join(root, "selection-marker") }
 }
@@ -149,6 +158,18 @@ test("an empty quota glob cannot turn the package script into a zero-quota-test 
   const fixture = makeSelectionFixture(t, [])
   const result = runSelectionFixture(fixture.root, fixture.marker)
 
-  // The runner can reject the unmatched quota path before it executes the provisioner fixture.
   assert.notEqual(result.status, 0, `an unmatched quota glob must not be silently ignored\n${result.diagnostics}`)
+  assert.equal(existsSync(fixture.marker), false, `the guard should fail before starting Node\n${result.diagnostics}`)
+})
+
+test("an empty provisioner glob fails before the quota tests start", (t) => {
+  const fixture = makeSelectionFixture(
+    t,
+    [{ filename: "slice-disk-quota-present.test.mjs" }],
+    { includeProvisioner: false },
+  )
+  const result = runSelectionFixture(fixture.root, fixture.marker)
+
+  assert.notEqual(result.status, 0, `an unmatched provisioner glob must not be silently ignored\n${result.diagnostics}`)
+  assert.equal(existsSync(fixture.marker), false, `the guard should fail before starting Node\n${result.diagnostics}`)
 })
