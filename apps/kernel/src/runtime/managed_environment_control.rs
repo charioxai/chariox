@@ -10,7 +10,7 @@ use crate::runtime::cloud_api_client::{
     cloud_url_component, get_cloud_json_authenticated, post_cloud_json_authenticated,
 };
 
-mod cloud_contract;
+pub(super) mod cloud_contract;
 use cloud_contract::{
     EnvironmentDetailsResponse, EnvironmentResult, EnvironmentsResponse, OptionsResponse,
     ReimageReceipt, ReimageResult,
@@ -274,7 +274,7 @@ pub(crate) async fn execute_managed_environment_control_request(
     }
 }
 
-fn preflight_provider_account_exports(
+pub(super) fn preflight_provider_account_exports(
     config: &DaemonConfig,
     cloud: &PersistedCloudRelayProfile,
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
@@ -304,7 +304,7 @@ fn preflight_provider_account_exports(
     Ok(())
 }
 
-fn authorized_cloud_profile<'a>(
+pub(super) fn authorized_cloud_profile<'a>(
     config: &'a DaemonConfig,
     caller_user_id: &str,
 ) -> Result<&'a PersistedCloudRelayProfile, DaemonError> {

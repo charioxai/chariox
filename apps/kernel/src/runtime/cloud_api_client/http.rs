@@ -77,6 +77,32 @@ where
     })?
 }
 
+pub(crate) async fn delete_cloud_json_authenticated<T>(
+    api_url: String,
+    path: String,
+    bearer_token: String,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(CLOUD_API_REQUEST_TIMEOUT)
+            .build();
+        let response = agent
+            .delete(&format!("{api_url}{path}"))
+            .set("authorization", &format!("Bearer {bearer_token}"))
+            .call()
+            .map_err(cloud_transport_error)?;
+        decode_cloud_response(response)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "delete authenticated cloud json",
+        message: error.to_string(),
+    })?
+}
+
 pub(crate) async fn post_cloud_json_authenticated<T>(
     api_url: String,
     path: String,

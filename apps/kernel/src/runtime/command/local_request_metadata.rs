@@ -194,6 +194,24 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ListManagedEnvironmentCatalog(_) => {
             LocalRequestMetadata::new("managed_environment.catalog", Normal)
         }
+        LocalDaemonRequest::GetDisposableWorker(_) => {
+            LocalRequestMetadata::new("disposable_worker.get", Normal)
+        }
+        LocalDaemonRequest::CreateDisposableWorker(_) => {
+            LocalRequestMetadata::new("disposable_worker.create", Interactive)
+        }
+        LocalDaemonRequest::ReleaseDisposableWorker(_) => {
+            LocalRequestMetadata::new("disposable_worker.release", Interactive)
+        }
+        LocalDaemonRequest::KeepDisposableWorkerRunning(_) => {
+            LocalRequestMetadata::new("disposable_worker.keep_running", Interactive)
+        }
+        LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_) => {
+            LocalRequestMetadata::new("disposable_worker.context_transfer.prepare", Interactive)
+        }
+        LocalDaemonRequest::KeepManagedEnvironmentRunning(_) => {
+            LocalRequestMetadata::new("managed_environment.keep_running", Interactive)
+        }
         LocalDaemonRequest::GetManagedEnvironment(_) => {
             LocalRequestMetadata::new("managed_environment.get", Normal)
         }
@@ -929,6 +947,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
+        | LocalDaemonRequest::CreateDisposableWorker(_)
+        | LocalDaemonRequest::GetDisposableWorker(_)
+        | LocalDaemonRequest::ReleaseDisposableWorker(_)
+        | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
+        | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
+        | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)

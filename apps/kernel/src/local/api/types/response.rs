@@ -152,6 +152,9 @@ pub enum LocalDaemonResponse {
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
+    DisposableWorker { allocation: DisposableWorkerAllocation, },
+    DisposableWorkerContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
+    ManagedEnvironmentKeptRunning { environment: ManagedEnvironmentSummary, },
     ManagedEnvironment {
         environment: ManagedEnvironmentSummary,
         #[serde(default)]

@@ -34,8 +34,8 @@ pub(super) struct EnvironmentsResponse {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct EnvironmentDetailsResponse {
-    pub(super) environment: EnvironmentSummary,
+pub(in crate::runtime) struct EnvironmentDetailsResponse {
+    pub(in crate::runtime) environment: EnvironmentSummary,
     #[serde(default)]
     pub(super) operations: Vec<OperationSummary>,
 }
@@ -102,7 +102,7 @@ pub(super) struct ReimageReceipt {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ContextTransferTicket {
+pub(in crate::runtime) struct ContextTransferTicket {
     environment_id: String,
     context_plan: ContextPlan,
     target: ContextTransferTarget,
@@ -136,7 +136,7 @@ pub(super) struct ContextSourceOption {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct EnvironmentSummary {
+pub(in crate::runtime) struct EnvironmentSummary {
     environment_id: String,
     account_id: String,
     created_by_user_id: String,
@@ -538,7 +538,7 @@ impl From<ReimageResult> for ManagedEnvironmentReimageResult {
 }
 
 impl ContextTransferTicket {
-    pub(super) fn into_ticket(self) -> Result<ManagedContextTransferTicket, DaemonError> {
+    pub(in crate::runtime) fn into_ticket(self) -> Result<ManagedContextTransferTicket, DaemonError> {
         let context_plan = ManagedEnvironmentContextPlan::from(self.context_plan);
         let context_plan = serde_json::from_value(
             serde_json::to_value(context_plan).map_err(ticket_decode_error)?,

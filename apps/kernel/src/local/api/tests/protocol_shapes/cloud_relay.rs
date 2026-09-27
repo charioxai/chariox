@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {

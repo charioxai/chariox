@@ -18,6 +18,7 @@ mod capability;
 mod cloud_relay;
 mod config_capabilities;
 mod daemon;
+mod disposable_worker;
 mod event_publication;
 mod external_provider_session;
 mod history;
@@ -49,6 +50,7 @@ pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
 pub use daemon::*;
+pub use disposable_worker::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
@@ -108,4 +110,5 @@ pub use workspace::*;
 /// Version 349 binds CLI relay and display requests to a persisted terminal key.
 /// Version 350 exposes paired writable-layer and persistent-home slice caps in user config and
 /// coordinates the signed managed auto-stop quiescence HTTP contract.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 350;
+/// Version 351 adds home-bound disposable Cloud worker controls and managed keep-running.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 351;
