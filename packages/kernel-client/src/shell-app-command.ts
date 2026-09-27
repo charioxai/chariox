@@ -84,7 +84,7 @@ export async function executeAppCommand(
   } else return { ok: false, message: usage }
 
   const response = await client.send(request)
-  if (response.AppRequestFailed) return appFailure(response, action)
+  if (response.AppRequestFailed) return appFailure(response, action === "connection" ? `connection ${rest[0]}` : action)
   if (response.AppLogs) {
     const data = expect<{ installation_id: string; entries: AppLogEntry[] }>(response, "AppLogs")
     const lines = data.entries.map(formatLogEntry)
@@ -244,11 +244,11 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
     not_found: action === "automation"
       ? "Not found: check the App installation, session, workflow or automation."
       : action === "inbox" ? "Not found: check the App installation and route."
-      : action === "connection" ? "Not found: check the App installation and the connection id."
+      : action?.startsWith("connection") ? "Not found: check the App installation and the connection id."
       : "App installation not found.",
     invalid_request: action === "inbox"
       ? "Invalid App request: the event must be one the App declares as incoming, and a payload must match its schema."
-      : action === "connection"
+      : action === "connection grant"
         ? "Invalid App request: the App's signed manifest must declare this generator under capabilities.connections."
         : "Invalid App request.",
     busy: "App requests are busy. Try again shortly.",
