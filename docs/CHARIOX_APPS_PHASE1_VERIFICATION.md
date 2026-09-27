@@ -19,6 +19,7 @@ Evidence paths are under the evidence folder `chariox-apps-phase1/` (outside the
 - **V-PKG-08 delete-data choice.** Needs a new privileged runtime-helper operation (the helper owns private data storage); a helper change needs the owner's sudo runtime re-enrollment before it can be validated live. Retain-data uninstall works (used to clean up drill installations).
 - **V1-INT-06 (event crash windows).** kill -9 between a Todo reminder's outbox commit and its workflow handoff: after restart exactly one workflow run for the occurrence. kill -9 with an inbox occurrence accepted but undelivered: delivered once after restart, one Todo, a replay is a duplicate (`v1-int-06/`).
 - **V-UX-03 (automated part).** axe-core on the three reference views: contrast, landmark and a hidden-editor defect fixed; 0 violations after (#491, `v-ux-03/`). The VoiceOver pass remains the owner's.
+- **V1-INT-18 (one installation in two Rooms).** Todo open in two Rooms (separate slices and Chromium): a view setting in one Room does not reach the other, and a Todo added from Room 2 appears in Room 1 (`v1-int-18/`). The two-kernel half is not run yet.
 - **Ledger corrections.** P1.15 no longer claims live validation evidence. P1.11 is Partial until the reply-surface decision is made and the agent-reply, fan-out and disconnect drills have run.
 
 Read-only audit of every row in `docs/CHARIOX_APPS_PHASE1_PROGRESS.md` § "Phase 1 verification baseline" (91 rows) and § "Release gates" (13 gates). I checked each row against:
