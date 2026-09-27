@@ -1397,6 +1397,10 @@
             <div class="workstream-id">P1.18</div>
             <div><h3>Managed kernel App provisioning (deferred within Phase 1)</h3><p>Deferred until P1.01–P1.17 are complete and the Path-1 managed-home topology is finished, but still part of the Phase 1 release. Extend App worker, storage and cgroup provisioning from the shared-host managed image to every managed kernel topology, including Path-1, through the same signed release, one-time privileged installer step and verifier contract.</p><p class="exit">Exit: an App installs and runs on each supported managed kernel topology with the same containment, storage quota and lifecycle evidence as a local Linux kernel.</p></div>
           </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.19</div>
+            <div><h3>Deploy workflows together with their Apps</h3><p>Added 2026-09-27 at the owner's request. A deployed workflow whose agents or triggers use Apps carries those Apps, so the deployed copy runs the same way as on the owner kernel. The publication package declares each App dependency (signed release reference, grants, automations and inbox routes; no user data unless the owner opts in). The deployment verifier and worker admit it. The deployed runtime installs the releases through the normal install path, re-creates grants, automations and routes against the destination environment's connections and credentials, and delivers App events to the deployed copy. Replaces the current refusal ("App-bound workflow publication requires installation dependency packaging") and the disabled Deploy action for App-event triggers.</p><p class="exit">Exit: a workflow with an App-event trigger (Todo reminders) and an App-granted agent deploys through connected ingress and a hosted container; a reminder in the deployed copy runs the deployed workflow; missing destination connections or credentials show as setup requirements rather than failures; rollback restores the previous release's App set.</p></div>
+          </article>
         </section>
 
         <section class="section" id="implementation-order">
@@ -1559,6 +1563,7 @@
                   <tr><td class="id">V-UX-08</td><td>Freeform deploy</td><td>One uninterrupted walkthrough, workflow creation, connected ingress or hosted container, rollback and visibility in Deployed.</td><td>Hosted and connected-ingress drill.</td></tr>
                   <tr><td class="id">V-UX-09</td><td>Broken automation</td><td>Delete workflow, endpoint or queue; stop deployment; uninstall App; restore target.</td><td>App view, workflow and TUI all show the same state and recovery action.</td></tr>
                   <tr><td class="id">V-UX-10</td><td>One App Tab, many terminals</td><td>Attach Web, local TUI viewer, and remote TUI viewer at once. Alternate human and agent actions, refresh one viewer, and close another.</td><td>Every client reports the same Environment and <code>tab_id</code>. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab.</td></tr>
+                  <tr><td class="id">V-UX-11</td><td>Deploy with Apps</td><td>Deploy a workflow whose agent has an App granted and whose trigger is an App event, through connected ingress and a hosted container; fire the App event in the deployed copy; roll back.</td><td>The deployed copy installs the same App releases, the App event runs the deployed workflow once, missing destination connections appear as setup requirements, and rollback restores the prior App set.</td></tr>
                 </tbody>
               </table>
             </div>
