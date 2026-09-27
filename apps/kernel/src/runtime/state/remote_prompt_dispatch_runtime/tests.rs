@@ -955,6 +955,13 @@ mod receipt_reconciliation {
         let run_id = "worker-run-cancel-claimed".to_string();
         let relay_lifecycle_probe = ClaimTestRelayLifecycleProbe::new();
         let server_lifecycle_probe = relay_lifecycle_probe.clone();
+        let heartbeat_probe = relay_lifecycle_probe.clone();
+        let executor_heartbeat = tokio::spawn(async move {
+            for beat in 1..=4 {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                heartbeat_probe.record(&format!("fake_relay_executor_heartbeat_{beat}"), None);
+            }
+        });
         let server = tokio::spawn(async move {
             let receipt_request = receive_fake_worker_peer_request(
                 &listener,
@@ -1218,6 +1225,7 @@ mod receipt_reconciliation {
         server
             .await
             .expect("fake worker should serve receipt, cancellation, and terminal projection");
+        executor_heartbeat.abort();
 
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
