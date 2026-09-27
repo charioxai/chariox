@@ -1477,6 +1477,35 @@ fn a_workflow_binding_cannot_take_an_interest_an_app_route_receives() {
         .insert("dev.chariox.dummy".to_string(), target);
     let harness = LocalRouterTestHarness::with_config(config);
     let graph = create_publication_test_graph(&harness, "app-route-first");
+    let target = create_publication_test_graph(&harness, "app-route-first-target");
+    let publish = |graph: &PublicationTestGraph, alias: &str| match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                expected_workflow_revision: None,
+                operation_key: Some(format!("publish-{alias}")),
+                queue_ref: Some("default".to_string()),
+                alias: Some(alias.to_string()),
+                kind: Some("event_based".to_string()),
+                route: None,
+                methods: Vec::new(),
+                transport: None,
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: None,
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    let target_publication = publish(&target, "app-route-first-target");
     let publication = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
             CreateWorkflowPublicationRequest {
@@ -1608,11 +1637,20 @@ fn a_workflow_binding_cannot_take_an_interest_an_app_route_receives() {
             },
         )
         .unwrap();
+    let transfer = harness.dispatch(LocalDaemonRequest::TransferWorkflowEventBinding(
+        TransferWorkflowEventBindingRequest {
+            source_session_id: graph.session_id.clone(),
+            binding_id: binding.id.clone(),
+            target_session_id: target.session_id.clone(),
+            target_publication_ref: target_publication.id().to_string(),
+        },
+    ));
     for refused in [
         bind("taken").unwrap_err().to_string(),
         set(&binding.id, WorkflowEventBindingStatus::Active)
             .unwrap_err()
             .to_string(),
+        transfer.unwrap_err().to_string(),
     ] {
         assert!(refused.contains("an App inbox route"), "{refused}");
     }
