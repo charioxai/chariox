@@ -11,6 +11,7 @@ import { normalizeMountInfo } from "./managed-ordinary-parity-probe.mjs"
 const execFileAsync = promisify(execFile)
 const probeSource = fileURLToPath(new URL("./managed-ordinary-parity-probe.mjs", import.meta.url))
 const matrixSource = fileURLToPath(new URL("./managed-ordinary-parity-matrix.mjs", import.meta.url))
+const projectSetupObserverSource = fileURLToPath(new URL("./lib/managed-ordinary-project-setup-observer.mjs", import.meta.url))
 const providerTurnBindingSource = fileURLToPath(new URL("./lib/managed-ordinary-provider-turn-binding.mjs", import.meta.url))
 const PROBE_FIXTURE_PATHS = Object.freeze([
   "apps/cli/scripts/managed-ordinary-parity-probe.mjs",
@@ -254,6 +255,62 @@ test("probe fails closed when a required product observation is absent", async (
   const payload = JSON.parse(result.stdout)
   assert.equal(payload.ok, false)
   assert.match(payload.error, /missing observation context|session[ /]agent product observation is missing|session agent/i)
+})
+
+test("MP-08 Project setup external assertions cannot satisfy the product observer", async (context) => {
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-project-setup-assertion-only-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const destination = join(root, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
+  const matrixDestination = join(root, "apps/cli/scripts/managed-ordinary-parity-matrix.mjs")
+  const observerDestination = join(root, "apps/cli/scripts/lib/managed-ordinary-project-setup-observer.mjs")
+  await mkdir(dirname(destination), { recursive: true })
+  await mkdir(dirname(observerDestination), { recursive: true })
+  await writeFile(destination, await readFile(probeSource))
+  await writeFile(matrixDestination, await readFile(matrixSource))
+  await writeFile(observerDestination, await readFile(projectSetupObserverSource))
+  await git(root, ["init", "--quiet"])
+  await git(root, ["config", "user.name", "parity-probe-test"])
+  await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
+  await git(root, [
+    "add",
+    "apps/cli/scripts/managed-ordinary-parity-probe.mjs",
+    "apps/cli/scripts/managed-ordinary-parity-matrix.mjs",
+    "apps/cli/scripts/lib/managed-ordinary-project-setup-observer.mjs",
+  ])
+  await git(root, ["commit", "--quiet", "-m", "probe fixture"])
+  const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
+  const result = await execFileAsync(process.execPath, [
+    destination,
+    "--source-root", root,
+    "--reviewed-commit", reviewedCommit,
+    "--parity-row", "MP-08",
+    "--parity-check", "project_setup",
+    "--topology", "ordinary",
+    "--json",
+    "--home-path", root,
+    "--tmp-path", os.tmpdir(),
+    "--nested-path", join(os.tmpdir(), `chariox-parity-project-setup-nested-${process.pid}`),
+    "--new-directory", join(os.tmpdir(), `chariox-parity-project-setup-created-${process.pid}`),
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CHARIOX_PARITY_PROJECT_SETUP_EVIDENCE_JSON: JSON.stringify({
+        observed: true,
+        project_setup_ok: true,
+        project_identity: "externally-asserted-project",
+      }),
+    },
+  }).then(({ stdout, stderr }) => ({ code: 0, stdout, stderr })).catch((error) => ({
+    code: error.code,
+    stdout: String(error.stdout ?? ""),
+    stderr: String(error.stderr ?? error.message ?? ""),
+  }))
+  assert.equal(result.code, 1, result.stdout || result.stderr)
+  const payload = JSON.parse(result.stdout)
+  assert.equal(payload.ok, false)
+  assert.match(payload.error, /selection/)
 })
 
 test("mount normalization preserves comparable topology facts", () => {

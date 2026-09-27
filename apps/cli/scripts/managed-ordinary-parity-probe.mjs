@@ -655,11 +655,18 @@ async function observeAttachments(identity) {
 }
 
 async function observeProjectSetup(identity) {
-  const evidence = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_PROJECT_SETUP_EVIDENCE_JSON"), "project setup evidence")
-  if (evidence.project_setup_ok !== true || typeof evidence.project_identity !== "string" || evidence.project_identity.length === 0) {
-    throw new ProbeError("project setup evidence is incomplete")
-  }
-  return identityResult(identity, { project_setup_ok: true, project_identity_fingerprint: fingerprint(evidence.project_identity) })
+  const evidence = parseJsonEnv("CHARIOX_PARITY_PROJECT_SETUP_EVIDENCE_JSON")
+  const { observeManagedOrdinaryProjectSetup } = await import("./lib/managed-ordinary-project-setup-observer.mjs")
+  const observation = await observeManagedOrdinaryProjectSetup(evidence, {
+    environment: process.env,
+  })
+  // MP-08 currently persists only project_setup_ok. Keep the fully bound
+  // product observation diagnostic until the parity row has schema ownership
+  // for the kernel, session, agent, operation, validation, and definition IDs.
+  return identityResult(identity, {
+    project_setup_diagnostic_only: true,
+    project_setup_observation: observation,
+  })
 }
 
 const REPOSITORY_ROOT_REQUIREMENTS = Object.freeze({
