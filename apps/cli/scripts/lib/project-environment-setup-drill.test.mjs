@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import {
   PROJECT_ENVIRONMENT_SETUP_DRILL_PIN_SCHEMA,
@@ -10,6 +13,7 @@ import {
   assertLoopbackHomeKernelUrl,
   commandDigest,
   parseProjectEnvironmentSetupDrillArgs,
+  projectEnvironmentSetupDrillNativeBuildCommand,
   projectEnvironmentSetupDrillValidationCommands,
   requireVariant,
   runBoundedProjectEnvironmentSetupOperation as runBoundedProjectEnvironmentSetupOperationWithBuilders,
@@ -249,18 +253,117 @@ test('cold request omits a definition and stored request omits both definition a
   assert.equal('validationCommands' in stored, false)
 })
 
-test('Cargo validation is run-id scoped, bounded, and only removes its own marked target directory', () => {
+test('native kernel build command is run-id scoped and retains bounded worker limits', () => {
   const runId = '123e4567-e89b-42d3-a456-426614174000'
   const commands = projectEnvironmentSetupDrillValidationCommands(runId)
   const build = commands.at(-1)
   assert.match(build, new RegExp(`chariox-project-environment-setup-${runId}`))
   assert.match(build, /\.chariox-project-setup-owner/)
-  assert.match(build, /trap cleanup_build_dir EXIT/)
-  assert.match(build, /CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo check --workspace --locked --jobs 2/)
+  assert.match(build, /trap finish_build EXIT/)
+  assert.match(build, /CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo build --locked --jobs 2 --package chariox-kernel --bin chariox-kernel/)
+  assert.match(build, /rm -rf "\$build_dir"; \[ ! -e "\$build_dir" \]/)
+  assert.notMatch(build, /cargo check/)
   assert.ok(build.length < 8_192)
   assert.throws(() => projectEnvironmentSetupDrillValidationCommands('../../other'), /UUID/)
   const syntax = spawnSync('/bin/sh', ['-n', '-c', build], { encoding: 'utf8' })
   assert.equal(syntax.status, 0, syntax.stderr)
+})
+
+test('generated build shell runs Cargo and cc fixtures, preserves failures, and removes only owned scratch', () => {
+  const runId = '123e4567-e89b-42d3-a456-426614174000'
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'chariox-project-native-build-fixture-'))
+  const fakeBin = join(fixtureRoot, 'bin')
+  const cargoArgs = join(fixtureRoot, 'cargo-args')
+  const cargoEnvironment = join(fixtureRoot, 'cargo-environment')
+  const ccArgs = join(fixtureRoot, 'cc-args')
+  const ccOutput = join(fixtureRoot, 'cc-output')
+  const buildDir = join(fixtureRoot, `chariox-project-environment-setup-${runId}`)
+  const collisionRunId = `${runId.slice(0, -1)}1`
+  const unownedDir = join(fixtureRoot, `chariox-project-environment-setup-${collisionRunId}`)
+  mkdirSync(fakeBin)
+  const cargoPath = join(fakeBin, 'cargo')
+  const ccPath = join(fakeBin, 'cc')
+  writeFileSync(cargoPath, [
+    '#!/bin/sh',
+    'set -eu',
+    'printf \'%s\\n\' "$@" > "$FAKE_CARGO_ARGS"',
+    'printf \'%s\\n\' "$CARGO_BUILD_JOBS" "$CARGO_INCREMENTAL" "$CARGO_TARGET_DIR" > "$FAKE_CARGO_ENV"',
+    'mkdir -p "$CARGO_TARGET_DIR"',
+    'cc -o "$CARGO_TARGET_DIR/linked-native-fixture"',
+    'exit "$FAKE_CARGO_EXIT"',
+    '',
+  ].join('\n'), { mode: 0o700 })
+  writeFileSync(ccPath, [
+    '#!/bin/sh',
+    'set -eu',
+    'printf \'%s\\n\' "$@" > "$FAKE_CC_ARGS"',
+    '[ "$#" -eq 2 ] && [ "$1" = "-o" ] || exit 51',
+    'printf \'linked\\n\' > "$2"',
+    'printf \'%s\\n\' "$2" > "$FAKE_CC_OUTPUT"',
+    '',
+  ].join('\n'), { mode: 0o700 })
+  chmodSync(cargoPath, 0o700)
+  chmodSync(ccPath, 0o700)
+
+  const execute = (fakeCargoExit) => spawnSync('/bin/sh', ['-c', projectEnvironmentSetupDrillNativeBuildCommand(runId)], {
+    encoding: 'utf8',
+    timeout: 5_000,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+      TMPDIR: fixtureRoot,
+      FAKE_CARGO_ARGS: cargoArgs,
+      FAKE_CARGO_ENV: cargoEnvironment,
+      FAKE_CARGO_EXIT: String(fakeCargoExit),
+      FAKE_CC_ARGS: ccArgs,
+      FAKE_CC_OUTPUT: ccOutput,
+    },
+  })
+
+  try {
+    const success = execute(0)
+    assert.equal(success.error, undefined, success.error?.message)
+    assert.equal(success.status, 0, success.stderr)
+    assert.deepEqual(readFileSync(cargoArgs, 'utf8').trim().split('\n'), [
+      'build', '--locked', '--jobs', '2', '--package', 'chariox-kernel', '--bin', 'chariox-kernel',
+    ])
+    assert.deepEqual(readFileSync(cargoEnvironment, 'utf8').trim().split('\n'), [
+      '2', '0', join(buildDir, 'target'),
+    ])
+    assert.equal(readFileSync(ccArgs, 'utf8').trim(), `-o\n${join(buildDir, 'target', 'linked-native-fixture')}`)
+    assert.equal(readFileSync(ccOutput, 'utf8').trim(), join(buildDir, 'target', 'linked-native-fixture'))
+    assert.equal(existsSync(buildDir), false, 'successful shell exit must prove owned target scratch was removed')
+
+    const failedCargo = execute(29)
+    assert.equal(failedCargo.error, undefined, failedCargo.error?.message)
+    assert.equal(failedCargo.status, 29, 'Cargo failure must survive the EXIT cleanup trap')
+    assert.equal(existsSync(buildDir), false, 'failed Cargo command must still remove its owned scratch')
+
+    mkdirSync(unownedDir)
+    writeFileSync(join(unownedDir, '.chariox-project-setup-owner'), 'another-run')
+    writeFileSync(join(unownedDir, 'keep'), 'preserve')
+    rmSync(cargoArgs, { force: true })
+    const collision = spawnSync('/bin/sh', ['-c', projectEnvironmentSetupDrillNativeBuildCommand(collisionRunId)], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+        TMPDIR: fixtureRoot,
+        FAKE_CARGO_ARGS: cargoArgs,
+        FAKE_CARGO_ENV: cargoEnvironment,
+        FAKE_CARGO_EXIT: '0',
+        FAKE_CC_ARGS: ccArgs,
+        FAKE_CC_OUTPUT: ccOutput,
+      },
+    })
+    assert.equal(collision.error, undefined, collision.error?.message)
+    assert.equal(collision.status, 73, 'an unowned run-id directory must stop before Cargo')
+    assert.equal(existsSync(cargoArgs), false, 'Cargo must not run when the run-id directory belongs to another run')
+    assert.equal(readFileSync(join(unownedDir, 'keep'), 'utf8'), 'preserve')
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true })
+  }
 })
 
 test('preflight accepts a utility-generated definition that retains required bounded checks', () => {
@@ -297,6 +400,37 @@ test('Ready requires every requested bounded target validation command to pass o
     },
   }), { expected, commands }), /failed/)
   assert.throws(() => assertReadySetupValidation(readyStatus({ platform: 'another-platform' }), { expected, commands }), /platform changed/)
+})
+
+test('Cargo check cannot satisfy the native kernel build Ready gate', () => {
+  const requiredCommands = PROJECT_ENVIRONMENT_SETUP_DRILL_VALIDATION_COMMANDS
+  const checkOnlyCommands = requiredCommands.map((command) => command.replace(
+    'cargo build --locked --jobs 2 --package chariox-kernel --bin chariox-kernel',
+    'cargo check --workspace --locked --jobs 2',
+  ))
+  const status = readyStatus({
+    validation: {
+      worker_id: 'machine-drill',
+      platform: 'linux-x86_64',
+      commands: checkOnlyCommands.map((command) => ({
+        command_digest: commandDigest(command),
+        exit_code: 0,
+        stdout_bytes: 10,
+        stderr_bytes: 0,
+      })),
+    },
+  })
+  assert.throws(() => assertReadySetupValidation(status, {
+    expected: {
+      operation_id: status.operation_id,
+      project_id: 'project-drill',
+      session_id: 'session-drill',
+      agent_id: 'agent-utility',
+      worker_id: 'machine-drill',
+      platform: 'linux-x86_64',
+    },
+    commands: requiredCommands,
+  }), /commands changed or were reordered/)
 })
 
 test('stored setup replays the same operation idempotently, reconnects, and recovers the same attempt', async () => {

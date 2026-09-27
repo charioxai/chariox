@@ -6,6 +6,9 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   PROJECT_ENVIRONMENT_SETUP_DRILL_CONTROL_TIMEOUT_MS,
+  PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_BINARY,
+  PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_JOBS,
+  PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_PACKAGE,
   PROJECT_ENVIRONMENT_SETUP_DRILL_POLL_MS,
   assertProjectEnvironmentSetupDrillPreflight,
   assertReadySetupValidation,
@@ -332,10 +335,12 @@ async function main() {
       statusPollIntervalMs: PROJECT_ENVIRONMENT_SETUP_DRILL_POLL_MS,
       kernelCommandDeadlineMs: 120_000,
       kernelAggregateValidationDeadlineMs: 300_000,
-      cargoBuildJobs: 2,
+      cargoBuildJobs: PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_JOBS,
       cargoIncremental: false,
-      targetDirectory: 'drill-run-id-bound-worker-temp-directory-with-owner-marker-and-exit-trap',
-      nativeDependencyBuild: 'cargo check --workspace builds bundled libsqlite3-sys SQLite C code',
+      targetDirectory: 'external-worker-TMPDIR/run-id-owned directory; CARGO_TARGET_DIR points inside it; owner marker and verified EXIT cleanup',
+      nativeDependencyBuild: `cargo build --locked --jobs ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_JOBS} --package ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_PACKAGE} --bin ${PROJECT_ENVIRONMENT_SETUP_DRILL_NATIVE_BUILD_BINARY}; links bundled rusqlite/libsqlite3-sys SQLite`,
+      cargoSourceAndCache: 'materialized pinned Project worktree and Cargo.lock; Cargo uses inherited CARGO_HOME when set, otherwise durable worker HOME/.cargo; cache contents are not preflighted',
+      targetBuildScratchCleanupProven: false,
       validationCommandDigests: validationCommands.map(commandDigest),
       targetResourceTelemetry: 'unavailable-through-public-setup-status-api',
     },
@@ -364,7 +369,7 @@ async function main() {
     limitations: [
       'Target CPU, memory, and disk telemetry are not exposed by the setup status API; the drill enforces kernel command deadlines and Cargo build-job limits but does not claim resource-metric proof.',
       'Retry is observed only if the home kernel returns a retryable setup failure; the drill does not inject a failure. --allow-one-retry permits at most one service-authorized retry.',
-      'A kernel hard timeout can SIGKILL the worker shell before its EXIT trap runs; the run-id owner marker allows exact cleanup on a retry, but a terminal timeout with no retry can leave that uniquely marked temp directory because the public home API has no target-filesystem cleanup request.',
+      'The kernel runs validation in a worker-local process group and sends SIGKILL on cancellation or timeout, bypassing the shell EXIT trap. That validation remains failed and the drill cannot pass without successful Ready-bound command results; a terminal timeout with no retry can leave its run-id-owned target directory because the public home API has no target-filesystem cleanup request. A retry removes only a prior directory with the same run-id owner marker.',
       'The live worker/provider/build gate remains open until root runs this campaign against its reviewed disposable target and reviews the evidence.',
       'Worker machine enrollment and materialized target worktree are not deleted or certified clean by the home-kernel setup API; root owns their post-campaign disposition.',
     ],
@@ -460,6 +465,11 @@ async function main() {
     const currentColdReady = await assertProjectSetupReadyAgain(createClient, coldOperationId, coldExpected, coldValidationCommands)
     const currentStoredReady = await assertProjectSetupReadyAgain(createClient, storedOperationId, setupStatusBinding(input.pin, storedOperationId), storedValidationCommands)
     const readyStatuses = [currentColdReady, currentStoredReady]
+    const nativeBuildCommandDigest = commandDigest(validationCommands.at(-1))
+    evidence.executionBounds.targetBuildScratchCleanupProven = readyStatuses.every((status) =>
+      status.validation?.commands?.some((result) => result.command_digest === nativeBuildCommandDigest && result.exit_code === 0) === true,
+    )
+    assert.equal(evidence.executionBounds.targetBuildScratchCleanupProven, true, 'both Ready records must prove successful build-command cleanup before provider launch')
     evidence.providerLaunch.attempted = true
     await launchOfficialProvider(createClient, input.pin, readyStatuses, evidence.providerLaunch)
     evidence.readyBeforeOfficialProviderLaunch = true
@@ -489,7 +499,13 @@ async function main() {
     evidence.cleanup.scratchRemoved = await cleanupOwnedScratch(ownedScratch)
     evidence.cleanup.complete = evidence.cleanup.complete === true && evidence.cleanup.scratchRemoved
     evidence.completedAt = new Date().toISOString()
-    evidence.outcome = passed && evidence.cleanup.complete ? 'completed_scoped_drill' : 'incomplete_or_failed'
+    const buildScratchCleanupProven = evidence.executionBounds.targetBuildScratchCleanupProven === true
+    if (passed && !buildScratchCleanupProven) {
+      passed = false
+      failureCode = 'native_build_target_cleanup_unproven'
+      evidence.failureCode = failureCode
+    }
+    evidence.outcome = passed && buildScratchCleanupProven && evidence.cleanup.complete ? 'completed_scoped_drill' : 'incomplete_or_failed'
     try {
       await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
     } catch {
