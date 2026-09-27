@@ -28,6 +28,7 @@ import { createInterface } from "node:readline"
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { requestSliceDiskQuota, sliceDiskQuotaIdentityFromEnvironment } from "./slice-disk-quota-client.mjs"
+import { runWithSliceDiskQuotaAdmission } from "./slice-disk-quota-admission.mjs"
 
 const MAX_FRAME_BYTES = 12 * 1024 * 1024
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -1530,13 +1531,6 @@ async function execute(request) {
       fail("managed slice start has no broker-owned stable mount record")
     }
   }
-  if (request.kind === "docker" && ["start", "unpause"].includes(request.args[0])) {
-    await requestSliceDiskQuota({
-      protocolVersion: 1,
-      operation: "ensure_before_start",
-      containerName: request.args[1],
-    })
-  }
   let boundedLimits
   if (request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
     const quota = provisionerQuotaRequest(request.environment)
@@ -1578,22 +1572,34 @@ async function execute(request) {
       if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) releaseDiskQuota = true
     }
   }
-  const prepared = request.kind === "docker" ? prepareDocker(request.args) : prepareProvisioner(request)
+  let prepared
   try {
-    const command = request.kind === "docker" ? "/usr/bin/docker" : PROVISIONER
-    const args = request.kind === "docker" ? prepared.args : [request.action]
-    const env = request.kind === "docker"
-      ? dockerEnvironment()
-      : {
-        HOME: "/var/lib/chariox-docker/home",
-        PATH: "/usr/local/bin:/usr/bin:/bin",
-        DOCKER_HOST,
-        ...prepared.environment,
-        ...(SIGNED_BUILD_CONTEXT_DIGEST
-          ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
-          : {}),
-      }
-    const result = spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
+    const runPrepared = () => {
+      prepared = request.kind === "docker" ? prepareDocker(request.args) : prepareProvisioner(request)
+      const command = request.kind === "docker" ? "/usr/bin/docker" : PROVISIONER
+      const args = request.kind === "docker" ? prepared.args : [request.action]
+      const env = request.kind === "docker"
+        ? dockerEnvironment()
+        : {
+          HOME: "/var/lib/chariox-docker/home",
+          PATH: "/usr/local/bin:/usr/bin:/bin",
+          DOCKER_HOST,
+          ...prepared.environment,
+          ...(SIGNED_BUILD_CONTEXT_DIGEST
+            ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
+            : {}),
+        }
+      return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
+    }
+    const containerName = request.kind === "docker" ? request.args[1] : undefined
+    const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])
+    const result = isDockerStartOrUnpause
+      ? await runWithSliceDiskQuotaAdmission({
+        containerName,
+        quotaMarkerPresent: diskQuotaMarkerPresent(containerName),
+        run: runPrepared,
+      })
+      : runPrepared()
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)
     }
@@ -1633,7 +1639,7 @@ async function execute(request) {
     }
     return response
   } finally {
-    cleanupPrepared(prepared)
+    if (prepared) cleanupPrepared(prepared)
   }
 }
 
