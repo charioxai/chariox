@@ -122,6 +122,9 @@ async function installFile(
       value = next
     }
     if (value.phase === "failed" || value.phase === "cancelled") throw new Error(formatInstallOperation(value))
+    if (!terminal.has(value.phase)) {
+      throw new Error(`Still ${value.phase} after waiting; the kernel keeps operation ${value.request_id}. Finish it in session ${session}'s terminal, then check \`chariox app list\`.`)
+    }
   } finally {
     await installer.dispose()
   }
