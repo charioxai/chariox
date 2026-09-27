@@ -3,27 +3,43 @@ use super::*;
 #[tokio::test]
 async fn archived_validated_publication_settlement_releases_claim_and_retries_successor() {
     let worktree = crate::test_support::TestWorktree::new("workflow-claim-release-archived");
-    let mut app =
-        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
-            .expect("daemon bootstrap should succeed");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
     let holder = spawn_shared_worktree_agent(&mut app, session.id(), "holder", worktree.path());
     let successor =
         spawn_shared_worktree_agent(&mut app, session.id(), "successor", worktree.path());
-    let provider_run = app
-        .launch_provider(
-            crate::provider::LaunchProviderRequest::new(
-                session.id(),
-                "codex",
-                "codex",
-                "default",
-                "gpt-test",
-            )
-            .with_agent_id(&holder),
-        )
-        .expect("holder provider should launch");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-test",
+    )
+    .with_agent_id(&holder);
+    let mut provider_run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-workflow-claim-release",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-workflow-claim-release".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("ws://test-workflow-claim-release".to_string()),
+        },
+    );
+    provider_run.mark_running();
+    spawn_inert_pty_for_run(&mut app, provider_run.id());
+    app.providers_mut().insert_run_for_test(provider_run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(provider_run.id().to_string()))
+        .expect("active provider run should be set");
     app.update_provider_run_projection(provider_run.clone());
     let successor_provider = app
         .launch_provider(
@@ -153,6 +169,10 @@ async fn archived_validated_publication_settlement_releases_claim_and_retries_su
     );
 
     let app = Arc::new(Mutex::new(app));
+    let _pty_cleanup = InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: provider_run.id().to_string(),
+    };
     let runtime = owned_runtime_state(&app).await;
     let running_workflow = runtime
         .owned
