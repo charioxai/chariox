@@ -1207,16 +1207,21 @@ fn test_aegs_connection(
     )
 }
 
-/// A provider action the generator did not perform. Its own refusal (a 4xx
-/// other than 429) repeats on retry; anything else may not.
+/// A provider action that did not complete. Its own refusal (a 4xx other
+/// than 429) repeats on retry; anything else may not. A request that may have
+/// reached the generator without an answer has an unknown outcome.
 #[derive(Debug)]
 pub(crate) struct AegsActionFailure {
     status: Option<u16>,
+    sent: bool,
     message: String,
 }
 impl AegsActionFailure {
     pub(crate) fn retryable(&self) -> bool {
         !matches!(self.status, Some(status) if (400..500).contains(&status) && status != 429)
+    }
+    pub(crate) fn outcome_unknown(&self) -> bool {
+        self.sent && self.status.is_none()
     }
 }
 impl std::fmt::Display for AegsActionFailure {
@@ -1285,10 +1290,10 @@ fn send_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
         })
-        .ok_or_else(|| failure(None, "AEGS request is missing owner_id".to_string()))?;
+        .ok_or_else(|| unsent("AEGS request is missing owner_id".to_string()))?;
     let target = select_event_generator_management_target(targets, generator_id, &owner_id)
-        .map_err(|error| failure(None, error.to_string()))?;
-    let body = serde_json::to_string(request).map_err(|error| failure(None, error.to_string()))?;
+        .map_err(|error| unsent(error.to_string()))?;
+    let body = serde_json::to_string(request).map_err(|error| unsent(error.to_string()))?;
     let mut http_request = management_client
         .agent_builder(&target)
         .timeout_connect(Duration::from_secs(3))
@@ -1302,14 +1307,24 @@ fn send_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
         .set("content-type", "application/json")
         .send_string(&body)
         .map_err(|error| {
-            let status = match &error {
-                ureq::Error::Status(status, _) => Some(*status),
-                ureq::Error::Transport(_) => None,
-            };
-            failure(
-                status,
-                format!("AEGS {generator_id} request failed: {error}"),
-            )
+            let message = format!("AEGS {generator_id} request failed: {error}");
+            match &error {
+                ureq::Error::Status(status, _) => failure(Some(*status), message),
+                // Failed before the request could reach the generator.
+                ureq::Error::Transport(transport)
+                    if !matches!(
+                        transport.kind(),
+                        ureq::ErrorKind::Io
+                            | ureq::ErrorKind::BadStatus
+                            | ureq::ErrorKind::BadHeader
+                            | ureq::ErrorKind::TooManyRedirects
+                            | ureq::ErrorKind::HTTP
+                    ) =>
+                {
+                    unsent(message)
+                }
+                ureq::Error::Transport(_) => failure(None, message),
+            }
         })?
         .into_string()
         .map_err(|error| failure(None, error.to_string()))?;
@@ -1318,7 +1333,18 @@ fn send_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
 }
 
 fn failure(status: Option<u16>, message: String) -> AegsActionFailure {
-    AegsActionFailure { status, message }
+    AegsActionFailure {
+        status,
+        sent: true,
+        message,
+    }
+}
+fn unsent(message: String) -> AegsActionFailure {
+    AegsActionFailure {
+        status: None,
+        sent: false,
+        message,
+    }
 }
 
 pub(crate) fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -> String {
@@ -1936,5 +1962,8 @@ mod tests {
         assert!(retryable(Some(429)));
         assert!(retryable(Some(503)));
         assert!(retryable(None));
+        assert!(failure(None, String::new()).outcome_unknown());
+        assert!(!failure(Some(503), String::new()).outcome_unknown());
+        assert!(!unsent(String::new()).outcome_unknown());
     }
 }
