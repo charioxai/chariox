@@ -128,6 +128,7 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 )
                 .await?;
             }
+            persist_publication_deployment(runtime_state, &request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
                 publication,
                 action: WorkflowPublicationRuntimeAction::Stop,
@@ -199,6 +200,7 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
                 .running(&process_key)
                 .await?
             {
+                persist_publication_deployment(runtime_state, &request.session_id)?;
                 return Ok(bound_publication_response(
                     publication,
                     binding,
@@ -255,6 +257,7 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
             "publication runtime launch returned an unexpected response",
         ));
     };
+    persist_publication_deployment(runtime_state, &request.session_id)?;
     let Some(local_url) = local_url else {
         return Ok(bound_publication_response(
             publication,
@@ -285,6 +288,7 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
             "publication endpoint registration returned an unexpected response",
         ));
     };
+    persist_publication_deployment(runtime_state, publication.session_id())?;
     Ok(bound_publication_response(
         publication,
         binding,
@@ -1267,6 +1271,18 @@ async fn stop_publication_runtime(
     Ok(())
 }
 
+/// A deployment's binding (or its removal) survives a kernel restart, so
+/// recovery serves the deployment again.
+fn persist_publication_deployment(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .owned
+        .persist_workflow_runtime_session(session_id, "workflow_publication_deployment")
+        .map(|_| ())
+}
+
 fn mark_publication_runtime_status(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
@@ -1374,6 +1390,7 @@ async fn remove_orphaned_deployment_copies(runtime_state: &KernelRuntimeState) {
         .filter(|publication| publication.apps().is_some() && !is_deployment_copy(publication))
         .collect::<Vec<_>>();
     let mut live = std::collections::BTreeMap::new();
+    let mut retired = Vec::new();
     for publication in sources {
         let process_key =
             publication_runtime_process_key(publication.session_id(), publication.id());
@@ -1398,9 +1415,74 @@ async fn remove_orphaned_deployment_copies(runtime_state: &KernelRuntimeState) {
                 ),
                 publication_deployment_binding(&publication).map(|binding| binding.deployment_id),
             );
+        } else {
+            retired.push((publication, process_key));
+        }
+    }
+    // A retired source stops serving its copy before the copy goes.
+    for (publication, process_key) in retired {
+        if let Err(error) =
+            stop_retired_publication_runtime(runtime_state, &publication, &process_key).await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.publication_runtime",
+                "failed to stop a retired App-bound publication runtime",
+                serde_json::json!({
+                    "session_id": publication.session_id(),
+                    "publication_id": publication.id(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+    // A runtime whose source session was deleted serves nothing.
+    for process_key in runtime_state
+        .owned
+        .workflow_publication_runtimes
+        .keys()
+        .await
+    {
+        let Some((session_id, _)) = process_key.split_once(':') else {
+            continue;
+        };
+        if runtime_state
+            .owned
+            .session_store
+            .read()
+            .get_session(session_id)
+            .is_err()
+        {
+            let _ = stop_publication_runtime(runtime_state, &process_key).await;
         }
     }
     runtime_state.remove_orphaned_deployment_copies(&live).await;
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+async fn stop_retired_publication_runtime(
+    runtime_state: &KernelRuntimeState,
+    publication: &WorkflowPublicationDefinition,
+    process_key: &str,
+) -> Result<(), DaemonError> {
+    if runtime_state
+        .owned
+        .workflow_publication_runtimes
+        .running(process_key)
+        .await?
+        .is_none()
+    {
+        return Ok(());
+    }
+    stop_publication_runtime(runtime_state, process_key).await?;
+    mark_publication_runtime_status(
+        runtime_state,
+        publication.session_id(),
+        publication.id(),
+        "stopped",
+        Some(None),
+        Some(stopped_publication_runtime_metadata(publication, false)),
+    )?;
+    persist_publication_deployment(runtime_state, publication.session_id())
 }
 
 #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
@@ -1668,6 +1750,10 @@ impl WorkflowPublicationRuntimeProcessStore {
 
     async fn remove(&self, key: &str) -> Option<WorkflowPublicationRuntimeProcess> {
         self.inner.lock().await.remove(key)
+    }
+
+    async fn keys(&self) -> Vec<String> {
+        self.inner.lock().await.keys().cloned().collect()
     }
 }
 

@@ -126,13 +126,20 @@ impl KernelRuntimeState {
             .await;
         // A copy that could not be applied takes no occurrences: its runtime
         // does not start, so the owner's routes it would take over resume.
-        let withdrawn = match &applied {
-            Err(_) => self.withdraw_copy_routes(&owner, deployment_id).await,
-            Ok(()) => Ok(()),
-        };
+        if applied.is_err() {
+            if let Err(error) = self.withdraw_copy_routes(&owner, deployment_id).await {
+                crate::logging::warn_with_fields(
+                    "daemon.publication_runtime",
+                    "failed to withdraw the routes of a copy that could not be applied",
+                    serde_json::json!({
+                        "deployment_id": deployment_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
         let balanced = self.balance_owner_inbox_routes(&owner, None).await;
         applied?;
-        withdrawn?;
         balanced?;
         Ok(Some(DeploymentAppCopy { session_id }))
     }

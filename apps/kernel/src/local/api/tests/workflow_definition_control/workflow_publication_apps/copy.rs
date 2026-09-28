@@ -325,6 +325,30 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
             },
         ))
         .expect("stop");
+    // The stop is durable: a restarted kernel does not serve it again.
+    let durable_owner = harness
+        .runtime_state()
+        .fixture_session(&deployed.graph.session_id)
+        .unwrap()
+        .host_daemon_id()
+        .to_owned();
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let durable = states
+        .iter()
+        .find(|(id, _)| *id == deployed.graph.session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == deployed.publication.id())
+        })
+        .expect("the durable publication");
+    assert_eq!(durable.status(), Some("stopped"));
     let set = app_set(&harness);
     assert!(set
         .iter()
