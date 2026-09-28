@@ -353,12 +353,44 @@ impl KernelRuntimeState {
     }
 
     /// Returns whether a new start was accepted (an owner thread was spawned).
+    /// A start that finds every live worker slot taken stops the
+    /// least-recently-used idle worker (it stays dormant and restarts on use)
+    /// and tries once more, as an on-demand start does.
     async fn control_app_worker(
         &self,
         owner: &str,
         installation: &str,
         action: AppWorkerAction,
     ) -> Result<bool, AppRequestErrorCode> {
+        use crate::runtime::app_lifecycle::LifecycleError;
+        let result = match self
+            .control_app_worker_once(owner, installation, action)
+            .await
+        {
+            Err(LifecycleError::LiveLimit)
+                if matches!(action, AppWorkerAction::Start | AppWorkerAction::Restart) =>
+            {
+                self.evict_idle_app(owner, installation).await;
+                self.control_app_worker_once(owner, installation, AppWorkerAction::Start)
+                    .await
+            }
+            result => result,
+        };
+        result.map_err(|error| match error {
+            LifecycleError::Busy | LifecycleError::LiveLimit => AppRequestErrorCode::Busy,
+            LifecycleError::Storage | LifecycleError::Supervisor => {
+                AppRequestErrorCode::StorageUnavailable
+            }
+            _ => AppRequestErrorCode::Conflict,
+        })
+    }
+
+    async fn control_app_worker_once(
+        &self,
+        owner: &str,
+        installation: &str,
+        action: AppWorkerAction,
+    ) -> Result<bool, crate::runtime::app_lifecycle::LifecycleError> {
         let lifecycle = self.app_control().lifecycle().clone();
         let (owner, installation) = (owner.to_owned(), installation.to_owned());
         let handle = tokio::runtime::Handle::current();
@@ -374,20 +406,10 @@ impl KernelRuntimeState {
                     crate::runtime::app_lifecycle::StartDisposition::Starting { .. }
                 ));
             }
-            Ok::<_, crate::runtime::app_lifecycle::LifecycleError>(false)
+            Ok(false)
         })
         .await
-        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
-        .map_err(|error| {
-            use crate::runtime::app_lifecycle::LifecycleError;
-            match error {
-                LifecycleError::Busy | LifecycleError::LiveLimit => AppRequestErrorCode::Busy,
-                LifecycleError::Storage | LifecycleError::Supervisor => {
-                    AppRequestErrorCode::StorageUnavailable
-                }
-                _ => AppRequestErrorCode::Conflict,
-            }
-        })
+        .map_err(|_| crate::runtime::app_lifecycle::LifecycleError::Supervisor)?
     }
 
     /// The active release's verified catalog. Automations are durable

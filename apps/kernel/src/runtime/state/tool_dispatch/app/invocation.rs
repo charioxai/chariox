@@ -161,7 +161,7 @@ impl KernelRuntimeState {
 
     /// Stop the least-recently-used idle worker (other than the target),
     /// keeping it dormant, so an on-demand start can take its live slot.
-    async fn evict_idle_app(&self, owner: &str, installation: &str) {
+    pub(crate) async fn evict_idle_app(&self, owner: &str, installation: &str) {
         let control = self.app_control().clone();
         let now = crate::session::unix_epoch_ms();
         let mut leases = control.active_app_leases(None, 16);
