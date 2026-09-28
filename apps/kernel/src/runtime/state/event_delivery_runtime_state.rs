@@ -32,11 +32,18 @@ impl KernelRuntimeState {
             .map_err(|error| format!("App event routes could not be read: {error}"))
     }
 
-    /// Active App inbox routes fed by an event generator; 0 when they cannot
-    /// be read.
+    /// Active App inbox routes fed by an event generator; 0, with a warning,
+    /// when they cannot be read.
     pub(crate) fn active_app_route_count(&self) -> usize {
         self.app_event_routes()
-            .unwrap_or_default()
+            .unwrap_or_else(|error| {
+                crate::logging::warn_with_fields(
+                    "daemon.event_delivery",
+                    "App event routes could not be read for the delivery status",
+                    serde_json::json!({ "error": error }),
+                );
+                Vec::new()
+            })
             .iter()
             .filter_map(app_route_subscription)
             .filter(|claim| claim.active)

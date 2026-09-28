@@ -91,7 +91,8 @@ impl DurableKernelStateStore {
             .map_err(|_| "STORAGE_UNAVAILABLE")
     }
 
-    /// The installations granted one of the owner's connections.
+    /// The active installations granted one of the owner's connections. A grant
+    /// that outlived its installation is not a dependency.
     pub(crate) fn app_connection_grantees(
         &self,
         owner: &str,
@@ -102,8 +103,10 @@ impl DurableKernelStateStore {
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         let mut statement = connection
             .prepare(
-                "SELECT installation_id FROM app_connection_grants
-                 WHERE owner_id=?1 AND connection_id=?2 ORDER BY installation_id",
+                "SELECT g.installation_id FROM app_connection_grants g
+                 JOIN app_installations i ON i.installation_id=g.installation_id
+                 WHERE g.owner_id=?1 AND g.connection_id=?2 AND i.active_json IS NOT NULL
+                 ORDER BY g.installation_id",
             )
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         let rows = statement
