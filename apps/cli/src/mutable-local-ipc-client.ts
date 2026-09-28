@@ -78,6 +78,12 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     supportsKernelEvents() {
       return currentClient.supportsKernelEvents()
     },
+    getRelayClientIdentity() {
+      return currentClient.getRelayClientIdentity()
+    },
+    isRelayTransport() {
+      return currentClient.isRelayTransport()
+    },
     send<TResponse>(request: unknown): Promise<TResponse> {
       return currentClient.send<TResponse>(request)
     },
