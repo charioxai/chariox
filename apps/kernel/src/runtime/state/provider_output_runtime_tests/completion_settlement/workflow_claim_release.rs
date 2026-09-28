@@ -2,6 +2,15 @@ use super::*;
 
 #[tokio::test]
 async fn archived_validated_publication_settlement_releases_claim_and_retries_successor() {
+    exercise_archived_claim_release(false).await;
+}
+
+#[tokio::test]
+async fn archived_completed_claim_reconciliation_preserves_live_owner_and_retries_successor() {
+    exercise_archived_claim_release(true).await;
+}
+
+async fn exercise_archived_claim_release(reconcile_orphan: bool) {
     let worktree = crate::test_support::TestWorktree::new("workflow-claim-release-archived");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -249,11 +258,25 @@ async fn archived_validated_publication_settlement_releases_claim_and_retries_su
     );
     assert!(runtime.owned.prompt_workspace_claims.contains(&claim_id));
 
+    if reconcile_orphan {
+        runtime.owned.workflow_retry_blocked_claims();
+        assert!(runtime.owned.prompt_workspace_claims.contains(&claim_id),
+            "archived completion must not release an active provider prompt's claim");
+        let current = runtime.owned.session_store.get_session(session.id()).unwrap();
+        runtime.owned.prompt_state_owner.complete_active_prompt_only(&current, &holder)
+            .expect("test must finish the actual authoritative prompt owner");
+        runtime.owned.workflow_retry_blocked_claims();
+        assert!(runtime.owned.prompt_workspace_claims.contains(&claim_id),
+            "a remaining provider turn must retain its claim even without a prompt mirror");
+        runtime.owned.active_turns.clear_agent(session.id(), &holder);
+        runtime.owned.workflow_retry_blocked_claims();
+    } else {
     let settlement = runtime
         .settle_owned_provider_prompt(session.id(), provider_run.id(), true, false, false)
         .await
         .expect("provider completion should settle the archived validated workflow");
     assert!(settlement.had_active_prompt);
+    }
     assert!(
         !runtime.owned.prompt_workspace_claims.contains(&claim_id),
         "archived completion should release the write claim"
