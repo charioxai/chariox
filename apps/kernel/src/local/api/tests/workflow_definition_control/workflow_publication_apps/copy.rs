@@ -466,17 +466,46 @@ fn an_app_bound_bind_without_the_owners_consent_is_refused() {
 }
 
 #[test]
-fn a_bind_the_kernel_cannot_verify_is_refused_before_anything_changes() {
+fn a_bind_the_kernel_cannot_verify_is_refused_before_the_running_release_stops() {
     let root = temp_root("copy-unverified");
     let harness = harness_with_app(&root);
     let deployed = deployed(&harness, "copy-unverified", true);
-    // A release this kernel never exported (as a rollback to a release whose
-    // source changed since): refused before the running release is touched.
+    let runtime = harness.runtime_state();
+    let (session_id, publication_id) = (
+        deployed.graph.session_id.clone(),
+        deployed.publication.id().to_owned(),
+    );
+    // The release that runs now.
+    let running = {
+        let (runtime, session_id, publication_id) =
+            (runtime.clone(), session_id.clone(), publication_id.clone());
+        move || {
+            let (runtime, session_id, publication_id) =
+                (runtime.clone(), session_id.clone(), publication_id.clone());
+            async move {
+                runtime
+                    .fixture_publication_runtime_running(&session_id, &publication_id)
+                    .await
+            }
+        }
+    };
+    harness.block_on_test_task({
+        let (runtime, session_id, publication_id) =
+            (runtime.clone(), session_id.clone(), publication_id.clone());
+        async move {
+            runtime
+                .fixture_run_publication_runtime(&session_id, &publication_id)
+                .await
+        }
+    });
+    assert!(harness.block_on_test_task(running()));
+    // A release this kernel cannot verify (as a rollback to a release whose
+    // source changed since) is refused before the running release stops.
     let error = harness
         .dispatch(LocalDaemonRequest::BindWorkflowPublicationDeployment(
             crate::local::BindWorkflowPublicationDeploymentRequest {
-                session_id: deployed.graph.session_id.clone(),
-                publication_ref: deployed.publication.id().into(),
+                session_id: session_id.clone(),
+                publication_ref: publication_id.clone(),
                 setup_id: "setup-1".into(),
                 operation_key: "deployment-setup:setup-1:runtime".into(),
                 deployment_id: DEPLOYMENT.into(),
@@ -491,6 +520,24 @@ fn a_bind_the_kernel_cannot_verify_is_refused_before_anything_changes() {
     assert!(
         error.to_string().contains("export the release again"),
         "{error}"
+    );
+    assert!(
+        harness.block_on_test_task(running()),
+        "the running release still runs"
+    );
+    let publication = harness
+        .runtime_state()
+        .fixture_session(&session_id)
+        .expect("session")
+        .workflow_publications()
+        .iter()
+        .find(|publication| publication.id() == publication_id)
+        .cloned()
+        .expect("publication");
+    assert_ne!(
+        publication.status(),
+        Some("error"),
+        "nothing was marked failed"
     );
     let set = app_set(&harness);
     assert_eq!(set.len(), 1, "nothing was copied");

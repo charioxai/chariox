@@ -233,7 +233,13 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
         &publication,
         &binding.package_digest,
         None,
-    )?;
+    )
+    .map_err(|error| match error {
+        DaemonError::LocalTransport { message, .. } => {
+            publication_runtime_error("bind workflow publication deployment", message)
+        }
+        other => other,
+    })?;
     if let Err(message) = validate_bound_release(&publication, &binding.package_digest, &digests) {
         return Err(publication_runtime_error(
             "bind workflow publication deployment",
@@ -1709,6 +1715,47 @@ impl KernelRuntimeState {
         let digests =
             bound_release_package_digests(self, session_id, &publication, expected, None)?;
         Ok(validate_bound_release(&publication, expected, &digests))
+    }
+
+    /// A launched gateway for this publication: a long-running child.
+    pub(crate) async fn fixture_run_publication_runtime(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+    ) {
+        let child = Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("runtime child");
+        let process_id = child.id();
+        self.owned
+            .workflow_publication_runtimes
+            .insert(
+                publication_runtime_process_key(session_id, publication_id),
+                WorkflowPublicationRuntimeProcess {
+                    child,
+                    process_id,
+                    host: DEFAULT_PUBLICATION_RUNTIME_HOST.to_string(),
+                    port: 0,
+                    local_url: None,
+                },
+            )
+            .await;
+    }
+
+    pub(crate) async fn fixture_publication_runtime_running(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+    ) -> bool {
+        self.owned
+            .workflow_publication_runtimes
+            .running(&publication_runtime_process_key(session_id, publication_id))
+            .await
+            .ok()
+            .flatten()
+            .is_some()
     }
 }
 
