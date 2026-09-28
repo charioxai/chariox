@@ -83,20 +83,22 @@ fn publish(
     }
 }
 
+fn export_request(graph: &PublicationTestGraph, publication_id: &str) -> LocalDaemonRequest {
+    LocalDaemonRequest::ExportWorkflowPublicationPackage(ExportWorkflowPublicationPackageRequest {
+        session_id: graph.session_id.clone(),
+        publication_ref: publication_id.into(),
+        kernel_url: None,
+        agent_app: None,
+        agent_app_assets_dir: None,
+    })
+}
+
 fn export(
     harness: &LocalRouterTestHarness,
     graph: &PublicationTestGraph,
     publication_id: &str,
 ) -> Result<(String, Vec<crate::local::WorkflowPublicationPackageFile>), crate::DaemonError> {
-    match harness.dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
-        ExportWorkflowPublicationPackageRequest {
-            session_id: graph.session_id.clone(),
-            publication_ref: publication_id.into(),
-            kernel_url: None,
-            agent_app: None,
-            agent_app_assets_dir: None,
-        },
-    ))? {
+    match harness.dispatch(export_request(graph, publication_id))? {
         LocalDaemonResponse::WorkflowPublicationPackageExported {
             package_digest,
             package_files,
@@ -229,6 +231,36 @@ fn an_app_automation_feeding_an_event_trigger_is_pinned_and_packaged() {
         LocalDaemonResponse::AppAutomation { .. } => {}
         response => panic!("unexpected response: {response:?}"),
     }
+    // The automation makes the trigger App-bound: only its owner prepares it.
+    let invite = match harness
+        .dispatch(LocalDaemonRequest::CreateSessionInvite(
+            crate::local::CreateSessionInviteRequest {
+                session_id: graph.session_id.clone(),
+                expires_in_ms: None,
+                max_uses: Some(1),
+                collaboration_level: crate::session::CollaborationLevel::Full,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionInviteCreated { invite, .. } => invite,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::JoinSessionInvite(
+            crate::local::JoinSessionInviteRequest {
+                invite_token: invite.invite_token,
+                user_id: "someone-else".into(),
+            },
+        ))
+        .unwrap();
+    let error = harness
+        .dispatch_as_user("someone-else", export_request(&graph, publication.id()))
+        .expect_err("an App-bound trigger without a plan does not export");
+    assert!(
+        error.to_string().contains("uses Apps but has no App plan"),
+        "{error}"
+    );
     let (_, files) = export(&harness, &graph, publication.id()).expect("export");
     let apps = package_json_file(&files, "apps.json");
     let app = &apps["apps"][0];
@@ -243,6 +275,86 @@ fn an_app_automation_feeding_an_event_trigger_is_pinned_and_packaged() {
     let contract = package_json_file(&files, "deployment-contract.json");
     assert_eq!(contract["capabilities"]["apps"], apps["apps"]);
     assert!(contract_schema().is_valid(&contract));
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A failed export pins nothing; the next successful one pins the plan it
+/// packaged and persists it.
+#[test]
+fn only_a_successful_export_pins_and_persists_the_app_plan() {
+    let root = temp_root("failed-export");
+    let harness = harness_with_app(&root);
+    let graph = create_publication_test_graph(&harness, "app-failed-export");
+    harness
+        .dispatch(LocalDaemonRequest::GrantAgentExtension(
+            GrantAgentExtensionRequest {
+                workspace_id: None,
+                agent_ref: graph.agent_id.clone(),
+                kind: crate::local::ExtensionKind::App,
+                name: "installed".into(),
+                environment: None,
+                credential: None,
+                max_safety: None,
+            },
+        ))
+        .unwrap();
+    let publication = publish(&harness, &graph, "todo-failed-export", "ingress");
+    let pinned = || match harness
+        .dispatch(LocalDaemonRequest::GetWorkflowPublication(
+            GetWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::WorkflowPublication { publication } => publication.apps().cloned(),
+        response => panic!("unexpected response: {response:?}"),
+    };
+    let mut failing = export_request(&graph, publication.id());
+    if let LocalDaemonRequest::ExportWorkflowPublicationPackage(request) = &mut failing {
+        request.agent_app = Some(serde_json::json!({ "enabled": true }));
+        request.agent_app_assets_dir = Some(root.join("missing").display().to_string());
+    }
+    // The plan in the durable workflow state.
+    let store = harness.with_app(|app| app.durable_state_store());
+    let persisted = || {
+        let owner = store
+            .load_subject_events(&graph.session_id, 100)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "workflow.runtime.updated")
+            .expect("the session is persisted")
+            .payload["owner_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        store
+            .load_workflow_hot_states(&owner)
+            .unwrap()
+            .into_iter()
+            .find(|(session_id, _)| *session_id == graph.session_id)
+            .and_then(|(_, state)| {
+                state
+                    .workflow_publications
+                    .into_iter()
+                    .find(|candidate| candidate.id() == publication.id())
+            })
+            .expect("the publication is persisted")
+            .apps()
+            .cloned()
+    };
+    harness
+        .dispatch(failing)
+        .expect_err("missing agent app assets fail the export");
+    assert_eq!(pinned(), None);
+    assert_eq!(persisted(), None);
+
+    let (_, files) = export(&harness, &graph, publication.id()).expect("export");
+    let apps = package_json_file(&files, "apps.json");
+    assert_eq!(pinned(), Some(apps.clone()));
+    assert_eq!(persisted(), Some(apps));
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }

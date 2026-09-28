@@ -1,7 +1,8 @@
 //! Protocol 366: a client's export of a workflow publication is its deployment
 //! preparation. The first one pins the publication's App plan, read from the
 //! owner's App set, so later exports — the deployment bind re-verifies its
-//! package digest — do not follow App updates.
+//! package digest — do not follow App updates. The plan is pinned only once
+//! the export that packaged it succeeds.
 use std::collections::BTreeMap;
 
 use super::KernelRuntimeState;
@@ -9,13 +10,14 @@ use crate::error::DaemonError;
 use crate::workflow_publication_apps::publication_app_plan;
 
 impl KernelRuntimeState {
-    /// Returns the session to persist when a plan was pinned.
-    pub(super) async fn pin_workflow_publication_apps(
+    /// The App plan the owner's first export packages and pins; `None` when a
+    /// plan is pinned, the caller is not the owner or the workflow uses no App.
+    pub(super) async fn workflow_publication_apps_to_pin(
         &self,
         session_id: &str,
         publication_ref: &str,
         caller_user_id: &str,
-    ) -> Result<Option<crate::session::RuntimeSession>, DaemonError> {
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
         let (publication, snapshot) = {
             let sessions = self.owned.session_store.read();
             let publication =
@@ -31,19 +33,10 @@ impl KernelRuntimeState {
         if publication.apps().is_some() || publication.created_by_user_id() != caller_user_id {
             return Ok(None);
         }
-        let Some((plan, _)) = self
+        Ok(self
             .read_publication_app_plan(&publication, &snapshot, caller_user_id)
             .await?
-        else {
-            return Ok(None);
-        };
-        self.owned
-            .session_store
-            .write()
-            .pin_workflow_publication_apps(session_id, publication.id(), plan)?;
-        self.owned
-            .session_snapshot_without_projection_update(session_id)
-            .map(Some)
+            .map(|(plan, _)| plan))
     }
 }
 

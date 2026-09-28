@@ -157,6 +157,55 @@ impl DurableKernelStateStore {
         Ok(InstallationRegistry::new(&mut connection).list(owner_id, after, limit)?)
     }
 
+    /// Protocol 367: the owner's installations without deployment copies,
+    /// which belong to their deployment. The page query excludes them, so
+    /// only the last page is short.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    pub(crate) fn list_app_installations_without_copies(
+        &self,
+        owner_id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<InstallationPage, AppRegistryError> {
+        validate_owner(owner_id)?;
+        let mut connection =
+            self.lock_connection("durable_state.list_app_installations_without_copies")?;
+        let mut ids = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT i.installation_id FROM app_installations i
+                     WHERE i.owner_id=?1 AND i.installation_id>?2 AND NOT EXISTS(
+                       SELECT 1 FROM app_installation_deployments d
+                       WHERE d.installation_id=i.installation_id)
+                     ORDER BY i.installation_id LIMIT ?3",
+                )
+                .map_err(InstallationError::from)?;
+            let rows = statement
+                .query_map(
+                    rusqlite::params![owner_id, after.unwrap_or(""), limit as i64 + 1],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(InstallationError::from)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(InstallationError::from)?
+        };
+        let next_cursor = if ids.len() > limit {
+            ids.truncate(limit);
+            ids.last().cloned()
+        } else {
+            None
+        };
+        let registry = InstallationRegistry::new(&mut connection);
+        let installations = ids
+            .iter()
+            .map(|id| registry.get(id))
+            .collect::<Result<_, _>>()?;
+        Ok(InstallationPage {
+            installations,
+            next_cursor,
+        })
+    }
+
     pub(crate) fn app_installation_journal(
         &self,
         owner_id: &str,

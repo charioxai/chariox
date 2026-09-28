@@ -197,6 +197,39 @@ fn app_owner_filter_applies_to_every_mutation_and_read() {
     assert!(store.list_app_installations("", None, 1).is_err());
 }
 
+/// Protocol 367: the App list pages past deployment copies, so a page is
+/// short only at the end.
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[test]
+fn the_app_list_excludes_deployment_copies_in_its_page_query() {
+    let database = Database::new();
+    let store = database.open();
+    for id in ["a", "b", "c", "d"] {
+        store.mutate_app_installation("owner", create(id)).unwrap();
+    }
+    store.fixture_tag_app_installation("owner", "a", "deployment");
+    store.fixture_tag_app_installation("owner", "c", "deployment");
+    let ids = |page: &chariox_app_runtime::installation::InstallationPage| {
+        page.installations
+            .iter()
+            .map(|installation| installation.installation_id.clone())
+            .collect::<Vec<_>>()
+    };
+    let first = store
+        .list_app_installations_without_copies("owner", None, 1)
+        .unwrap();
+    assert_eq!(ids(&first), ["b"]);
+    assert_eq!(first.next_cursor.as_deref(), Some("b"));
+    let last = store
+        .list_app_installations_without_copies("owner", Some("b"), 1)
+        .unwrap();
+    assert_eq!(ids(&last), ["d"]);
+    assert!(last.next_cursor.is_none());
+    assert!(store
+        .list_app_installations_without_copies("", None, 1)
+        .is_err());
+}
+
 fn enqueue_event(
     sender: &SyncSender<DurableWriterRequest>,
     id: &str,

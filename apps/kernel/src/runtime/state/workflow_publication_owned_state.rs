@@ -104,14 +104,20 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    /// Exports the publication's package; `apps_to_pin` is the App plan the
+    /// owner's first export packages, pinned by the caller once it succeeds.
     pub(super) fn workflow_export_publication_package(
         &self,
         request: crate::local::ExportWorkflowPublicationPackageRequest,
+        apps_to_pin: Option<&serde_json::Value>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let publication = self
+        let mut publication = self
             .session_store
             .read()
             .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
+        if let Some(plan) = apps_to_pin {
+            publication.pin_apps(plan.clone());
+        }
         let snapshot = self
             .session_store
             .read()
@@ -137,12 +143,22 @@ impl KernelRuntimeOwnedState {
                 &snapshot.agents,
                 &workspaces,
             )?;
+        // App grants and the owner's App automations feeding the publication
+        // both make it App-bound.
         if publication.apps().is_none()
-            && !crate::workflow_publication_requirements::app_grant_uses(
+            && (!crate::workflow_publication_requirements::app_grant_uses(
                 &snapshot.workflow,
                 &snapshot.agents,
             )
             .is_empty()
+                || !self
+                    .durable_state_store
+                    .app_installations_feeding_publication(
+                        publication.created_by_user_id(),
+                        publication.session_id(),
+                        publication.id(),
+                    )?
+                    .is_empty())
         {
             return Err(DaemonError::LocalTransport {
                 operation: "export workflow publication package",
@@ -170,6 +186,30 @@ impl KernelRuntimeOwnedState {
             package_archive_base64,
             package_files,
         })
+    }
+
+    /// Protocol 366: pins the App plan a successful export packaged. A plan
+    /// another export pinned meanwhile is kept, and this export fails.
+    pub(super) fn pin_workflow_publication_apps(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+        plan: serde_json::Value,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let pinned = self.session_store.write().pin_workflow_publication_apps(
+            session_id,
+            publication_id,
+            plan.clone(),
+        )?;
+        if pinned.apps() != Some(&plan) {
+            return Err(DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!(
+                    "workflow trigger `{publication_id}` pinned another App plan meanwhile; export again"
+                ),
+            });
+        }
+        self.session_snapshot_without_projection_update(session_id)
     }
 
     pub(super) fn workflow_disable_publication(

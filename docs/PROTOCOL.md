@@ -2048,8 +2048,8 @@ Workflow trigger and deployment direction:
   removed turn-context fields are read with them ignored (relay peer
   protocol 58).
 - protocol 366: a workflow publication carries its App plan. The first
-  `ExportWorkflowPublicationPackage` by the publication's owner (the deployment
-  preparation) pins `WorkflowPublicationDefinition.apps`
+  successful `ExportWorkflowPublicationPackage` by the publication's owner (the
+  deployment preparation) pins `WorkflowPublicationDefinition.apps`
   (`chariox.publication-apps.v1`): each App granted to an agent of the
   publication snapshot or feeding the publication through an active App
   automation, with its source installation, app id, release version, publisher
@@ -2062,10 +2062,11 @@ Workflow trigger and deployment direction:
   deployment bind's digest check — do not follow App updates. The package of
   an App-bound workflow adds `apps.json` (the plan) and the deployment contract
   `capabilities.apps` (its `apps`); an App granted to an agent but not
-  installed fails the preparation, and an App-bound publication without a plan
-  (never prepared by its owner) fails the export. `requirements.json` follows
-  the publication snapshot's agents instead of the source agents' current
-  grants, and App grants are no longer refused there.
+  installed fails the preparation, and an App-bound publication (an App granted
+  or an App automation feeding it) without a plan (never prepared by its
+  owner) fails the export; a failed export pins nothing. `requirements.json`
+  follows the publication snapshot's agents instead of the source agents'
+  current grants, and App grants are no longer refused there.
 - protocol 367: `PrepareDeploymentApps {session_id, request_id,
   publication_ref, deployment_id, release_id, package_digest}` asks the
   publication's owner once, in one kernel-operation interaction of the
@@ -2078,8 +2079,10 @@ Workflow trigger and deployment direction:
   `DeploymentAppsConsent {consent: {request_id, interaction_id, deployment_id,
   release_id, package_digest, status, expires_at_ms}}` with `status`
   `awaiting_approval`, `approved`, `declined` or `expired` (the owner has five
-  minutes); the same `request_id` replays the record and reports the answer,
-  other facts under it are a `Conflict`, and a new `request_id` asks again.
+  minutes to answer, and an approval approves installs for five minutes after
+  it, then reports `expired`); the same `request_id` replays the record and
+  reports the answer, other facts under it are a `Conflict`, and a new
+  `request_id` asks again.
   The answer is recorded durably by the kernel; no request can supply an
   approval. A deployment copy's install (from the local release store, tagged
   with its deployment) is approved by the `kernel_deployment_consent:<interaction>`
@@ -2087,8 +2090,8 @@ Workflow trigger and deployment direction:
   fingerprint, package and capabilities digests — whose capabilities digest
   the owner approved interactively before (`kernel_operation_human`); anything
   else asks the owner as for any install. Copy installations are absent from
-  `ListAppInstallations` and carry `AppSetInstallation.deployment_id` in the
-  App set. `PreviewDeploymentApps {session_id, publication_ref}` is read-only
+  `ListAppInstallations` (its page query excludes them) and carry
+  `AppSetInstallation.deployment_id` in the App set. `PreviewDeploymentApps {session_id, publication_ref}` is read-only
   and needs no export: it answers `DeploymentAppsPreview {publication_id,
   pinned, plan}` with the pinned plan (`pinned: true`) or else the plan the
   owner's current App set gives, each App with its signed `capabilities`
