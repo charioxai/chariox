@@ -1,0 +1,485 @@
+//! P1.20: an App-bound deployment runs as a pinned independent copy.
+use super::*;
+use crate::durable_state::app_inbox::AppInboxOperation;
+use chariox_app_runtime::app_inbox::{InboxRoute, InboxSource};
+
+const DEPLOYMENT: &str = "deployment-1";
+const RELEASE: &str = "release-1";
+const PEM: &str = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n";
+
+/// An event trigger fed by the fixture App, whose agent is also granted it,
+/// with an owner route on a generator connection; prepared (pinned) and
+/// consented for `DEPLOYMENT`/`RELEASE` when `consent`.
+struct Deployed {
+    graph: PublicationTestGraph,
+    publication: crate::session::WorkflowPublicationDefinition,
+    digest: String,
+}
+
+fn deployed(harness: &LocalRouterTestHarness, label: &str, consent: bool) -> Deployed {
+    let graph = create_publication_test_graph(harness, label);
+    harness
+        .dispatch(LocalDaemonRequest::GrantAgentExtension(
+            GrantAgentExtensionRequest {
+                workspace_id: None,
+                agent_ref: graph.agent_id.clone(),
+                kind: crate::local::ExtensionKind::App,
+                name: "installed".into(),
+                environment: None,
+                credential: None,
+                max_safety: None,
+            },
+        ))
+        .unwrap();
+    let publication = publish(harness, &graph, label, "event_based");
+    harness
+        .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
+            ConfigureAppAutomationRequest {
+                installation_id: "installed".into(),
+                automation_id: "reminders".into(),
+                expected_revision: 0,
+                event_name: "changed".into(),
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+                queue_ref: None,
+                scheduled: false,
+            },
+        ))
+        .unwrap();
+    // The owner's route as the router would store it after checking the
+    // connection with its generator.
+    harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .app_inbox(AppInboxOperation::CreateRoute {
+                    route: InboxRoute {
+                        route_id: "mentions".into(),
+                        owner_id: DEFAULT_LOCAL_USER_ID.into(),
+                        installation_id: "installed".into(),
+                        event_name: "received".into(),
+                        source_event_type: "slack.app_mention".into(),
+                        source_event_version: 1,
+                        active: true,
+                        source: Some(InboxSource {
+                            generator_id: "slack".into(),
+                            connection_id: "connection-1".into(),
+                            connection_scope: "team-1".into(),
+                            filter_json: r#"{"channel":"social"}"#.into(),
+                        }),
+                    },
+                    now_ms: 1,
+                })
+        })
+        .unwrap();
+    let (digest, _) = export(harness, &graph, publication.id()).expect("prepare the package");
+    let deployed = Deployed {
+        graph,
+        publication,
+        digest,
+    };
+    if consent {
+        approve(harness, &deployed, RELEASE);
+    }
+    deployed
+}
+
+/// The owner approves deploying `release` with its Apps.
+fn approve(harness: &LocalRouterTestHarness, deployed: &Deployed, release: &str) {
+    let request_id = format!("consent-{release}");
+    let request = || match harness
+        .dispatch(LocalDaemonRequest::PrepareDeploymentApps(
+            crate::local::PrepareDeploymentAppsRequest {
+                session_id: deployed.graph.session_id.clone(),
+                request_id: request_id.clone(),
+                publication_ref: deployed.publication.id().into(),
+                deployment_id: DEPLOYMENT.into(),
+                release_id: release.into(),
+                package_digest: deployed.digest.clone(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::DeploymentAppsConsent { consent } => consent,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::RespondToInteraction(
+            crate::local::RespondToInteractionRequest {
+                session_id: deployed.graph.session_id.clone(),
+                interaction_id: request().interaction_id,
+                choice_id: "approve".into(),
+                custom_reply: None,
+            },
+        ))
+        .unwrap();
+    for _ in 0..200 {
+        if request().status == crate::local::DeploymentAppsConsentStatus::Approved {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("the consent was not recorded");
+}
+
+fn app_set(harness: &LocalRouterTestHarness) -> Vec<crate::local::AppSetInstallation> {
+    match harness
+        .dispatch(LocalDaemonRequest::GetAppSet(
+            crate::local::GetAppSetRequest {},
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::AppSet { installations, .. } => installations,
+        response => panic!("unexpected response: {response:?}"),
+    }
+}
+
+fn installation<'a>(
+    set: &'a [crate::local::AppSetInstallation],
+    id: &str,
+) -> &'a crate::local::AppSetInstallation {
+    set.iter()
+        .find(|installation| installation.installation_id == id)
+        .unwrap_or_else(|| panic!("installation `{id}` in {set:?}"))
+}
+
+fn ensure(
+    harness: &LocalRouterTestHarness,
+    deployed: &Deployed,
+) -> Result<Option<String>, crate::DaemonError> {
+    ensure_release(harness, deployed, RELEASE)
+}
+
+fn ensure_release(
+    harness: &LocalRouterTestHarness,
+    deployed: &Deployed,
+    release: &str,
+) -> Result<Option<String>, crate::DaemonError> {
+    let runtime = harness.runtime_state();
+    let (session_id, publication_id, digest, release) = (
+        deployed.graph.session_id.clone(),
+        deployed.publication.id().to_owned(),
+        deployed.digest.clone(),
+        release.to_owned(),
+    );
+    harness.block_on_test_task(async move {
+        runtime
+            .fixture_ensure_deployment_app_copy(
+                &session_id,
+                &publication_id,
+                DEPLOYMENT,
+                &release,
+                &digest,
+            )
+            .await
+    })
+}
+
+/// Applies the copy while the kernel's pump drives App installs.
+fn pumped_ensure(
+    harness: &LocalRouterTestHarness,
+    deployed: &Deployed,
+) -> Result<Option<String>, crate::DaemonError> {
+    let runtime = harness.runtime_state();
+    let (session_id, publication_id, digest) = (
+        deployed.graph.session_id.clone(),
+        deployed.publication.id().to_owned(),
+        deployed.digest.clone(),
+    );
+    let task = harness.spawn_test_task(async move {
+        runtime
+            .fixture_ensure_deployment_app_copy(
+                &session_id,
+                &publication_id,
+                DEPLOYMENT,
+                RELEASE,
+                &digest,
+            )
+            .await
+    });
+    while !task.is_finished() {
+        harness.pump_transport_runtime();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    harness.block_on_test_task(task).unwrap()
+}
+
+#[test]
+fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
+    let root = temp_root("copy-run");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-run", true);
+    // The deployment's own installation of the pinned release (a worker
+    // would commit it; the fixture stages and commits it directly).
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+
+    let session_id = ensure(&harness, &deployed).unwrap().expect("a copy");
+    assert_ne!(session_id, deployed.graph.session_id);
+    let copy_session = harness
+        .runtime_state()
+        .fixture_session(&session_id)
+        .unwrap();
+    assert!(copy_session.is_hidden());
+    let copy_publication = &copy_session.workflow_publications()[0];
+    assert_eq!(copy_publication.id(), deployed.publication.id());
+    assert_eq!(
+        copy_publication.kind(),
+        crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED,
+        "an App-event trigger stays event-based"
+    );
+    assert_eq!(
+        copy_publication.runtime_materialization().unwrap().key,
+        format!("deployment:{DEPLOYMENT}:{RELEASE}")
+    );
+    // The copy's agent uses the copy, not the owner's installation.
+    let agents = harness.runtime_state().fixture_session_agents(&session_id);
+    assert_eq!(agents.len(), 1);
+    assert!(agents[0].has_extension_grant(crate::extension::ExtensionKind::App, "copy"));
+    assert!(!agents[0].has_extension_grant(crate::extension::ExtensionKind::App, "installed"));
+
+    let set = app_set(&harness);
+    let copy = installation(&set, "copy");
+    assert_eq!(copy.deployment_id.as_deref(), Some(DEPLOYMENT));
+    // The automation feeds the copy's publication.
+    assert_eq!(copy.automations.len(), 1);
+    assert_eq!(copy.automations[0].automation_id, "reminders");
+    assert_eq!(copy.automations[0].session_id, session_id);
+    assert_eq!(
+        copy.automations[0].publication_id,
+        deployed.publication.id()
+    );
+    // The route moved to the copy with the owner's filter; the owner's pauses.
+    assert_eq!(copy.inbox_routes.len(), 1);
+    let route = &copy.inbox_routes[0];
+    assert_eq!(route.route_id, "mentions");
+    assert!(route.active);
+    let connection = route.connection.as_ref().unwrap();
+    assert_eq!(connection.connection_id, "connection-1");
+    assert_eq!(connection.filter, serde_json::json!({"channel": "social"}));
+    let owner = installation(&set, "installed");
+    assert!(
+        !owner.inbox_routes[0].active,
+        "the owner's route is handed over"
+    );
+    assert_eq!(owner.automations[0].session_id, deployed.graph.session_id);
+
+    // Applying again (a retried bind, a recovery) changes nothing.
+    assert_eq!(
+        ensure(&harness, &deployed).unwrap(),
+        Some(session_id.clone())
+    );
+    assert_eq!(app_set(&harness), set);
+
+    // Recovery re-applies what is missing.
+    harness
+        .dispatch(LocalDaemonRequest::RemoveAppInboxRoute(
+            crate::local::AppInboxRouteRequest {
+                installation_id: "copy".into(),
+                route_id: "mentions".into(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        ensure(&harness, &deployed).unwrap(),
+        Some(session_id.clone())
+    );
+    let set = app_set(&harness);
+    assert!(installation(&set, "copy").inbox_routes[0].active);
+    assert!(!installation(&set, "installed").inbox_routes[0].active);
+
+    // Stopping the bound deployment removes the copy and resumes the owner.
+    harness.runtime_state().fixture_mark_publication_deployment(
+        &deployed.graph.session_id,
+        deployed.publication.id(),
+        serde_json::json!({
+            "kind": "local_runtime",
+            "status": "running",
+            "binding": {
+                "setup_id": "setup-1",
+                "operation_key": "deployment-setup:setup-1:runtime",
+                "deployment_id": DEPLOYMENT,
+                "environment_id": "environment-1",
+                "release_id": RELEASE,
+                "package_digest": deployed.digest,
+                "desired_revision": 1,
+                "caller_claims_public_key_pem": PEM,
+            },
+        }),
+    );
+    harness
+        .dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+            crate::local::ControlWorkflowPublicationRuntimeRequest {
+                session_id: deployed.graph.session_id.clone(),
+                publication_ref: deployed.publication.id().into(),
+                action: crate::local::WorkflowPublicationRuntimeAction::Stop,
+                host: None,
+                port: None,
+                kernel_url: None,
+            },
+        ))
+        .expect("stop");
+    let set = app_set(&harness);
+    assert!(set
+        .iter()
+        .all(|installation| installation.installation_id != "copy"));
+    assert!(installation(&set, "installed").inbox_routes[0].active);
+    assert!(harness
+        .runtime_state()
+        .fixture_session(&session_id)
+        .is_err());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn an_app_bound_bind_without_the_owners_consent_is_refused() {
+    let root = temp_root("copy-refused");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-refused", false);
+    let error = harness
+        .dispatch(LocalDaemonRequest::BindWorkflowPublicationDeployment(
+            crate::local::BindWorkflowPublicationDeploymentRequest {
+                session_id: deployed.graph.session_id.clone(),
+                publication_ref: deployed.publication.id().into(),
+                setup_id: "setup-1".into(),
+                operation_key: "deployment-setup:setup-1:runtime".into(),
+                deployment_id: DEPLOYMENT.into(),
+                environment_id: "environment-1".into(),
+                release_id: RELEASE.into(),
+                package_digest: deployed.digest.clone(),
+                desired_revision: 1,
+                caller_claims_public_key_pem: PEM.into(),
+            },
+        ))
+        .expect_err("no consent");
+    assert!(error.to_string().contains("approve"), "{error}");
+    // Nothing was copied and the owner's route still receives.
+    let set = app_set(&harness);
+    assert_eq!(set.len(), 1);
+    assert!(set[0].inbox_routes[0].active);
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_copy_install_the_consent_does_not_cover_fails_the_deployment_clearly() {
+    let root = temp_root("copy-prompt");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-prompt", true);
+    // The fixture's capabilities were never approved by the owner in a prompt,
+    // so the consent does not cover the copy's install: the owner is asked.
+    let error = pumped_ensure(&harness, &deployed).expect_err("the owner must answer");
+    assert!(error.to_string().contains("approval"), "{error}");
+    // Deploying again waits for the same prompt; a cancelled (or declined)
+    // install is spent, and the next deployment asks anew.
+    let attempt = |attempt| {
+        crate::runtime::state::fixture_copy_request_id(
+            DEPLOYMENT,
+            RELEASE,
+            "com.example.state",
+            attempt,
+        )
+    };
+    let status = |attempt: String| {
+        harness.with_app(|app| {
+            app.durable_state_store()
+                .first_app_install_status(DEFAULT_LOCAL_USER_ID, &attempt)
+                .map(|operation| operation.phase)
+        })
+    };
+    assert!(pumped_ensure(&harness, &deployed).is_err());
+    assert!(status(attempt(1)).is_err(), "the prompt is still open");
+    harness
+        .dispatch(LocalDaemonRequest::CancelAppInstallOperation(
+            crate::local::AppInstallOperationRequest {
+                request_id: attempt(0),
+            },
+        ))
+        .unwrap();
+    let error = pumped_ensure(&harness, &deployed).expect_err("asked again");
+    assert!(error.to_string().contains("approval"), "{error}");
+    assert_eq!(
+        status(attempt(1)),
+        Ok(crate::durable_state::app_installation_operations::InstallPhase::AwaitingApproval)
+    );
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_copy_whose_data_schema_differs_from_the_release_fails_closed() {
+    let root = temp_root("copy-schema");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-schema", true);
+    let newer = crate::durable_state::app_state::fixture_release_package("1.1.0", 1, false);
+    stage_release(&harness, newer.clone());
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            newer,
+        )
+    });
+    let error = ensure(&harness, &deployed).expect_err("a rollback across data schemas");
+    assert!(error.to_string().contains("schema version"), "{error}");
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Rollback: binding another release of the deployment moves the copy to that
+/// release's session and plan, keeping the copy's installation (and its data)
+/// when the release pins the same App release.
+#[test]
+fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
+    let root = temp_root("copy-release");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-release", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    let first = ensure(&harness, &deployed).unwrap().unwrap();
+    // Another release needs its own consent.
+    let refused = ensure_release(&harness, &deployed, "release-2").expect_err("no consent");
+    assert!(refused.to_string().contains("approve"), "{refused}");
+    approve(&harness, &deployed, "release-2");
+    let second = ensure_release(&harness, &deployed, "release-2")
+        .unwrap()
+        .unwrap();
+    assert_ne!(first, second);
+    assert!(harness.runtime_state().fixture_session(&first).is_err());
+    let copy_publication = harness.runtime_state().fixture_session(&second).unwrap();
+    assert_eq!(
+        copy_publication.workflow_publications()[0]
+            .runtime_materialization()
+            .unwrap()
+            .key,
+        format!("deployment:{DEPLOYMENT}:release-2")
+    );
+    let set = app_set(&harness);
+    let copy = installation(&set, "copy");
+    assert_eq!(copy.automations[0].session_id, second);
+    assert!(copy.inbox_routes[0].active);
+    assert!(!installation(&set, "installed").inbox_routes[0].active);
+    assert!(harness.runtime_state().fixture_session_agents(&second)[0]
+        .has_extension_grant(crate::extension::ExtensionKind::App, "copy"));
+    // Rolling back applies release 1 again.
+    assert_ne!(ensure(&harness, &deployed).unwrap().unwrap(), second);
+    assert!(harness.runtime_state().fixture_session(&second).is_err());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}

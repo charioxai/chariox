@@ -18,6 +18,14 @@ pub(crate) enum AppInboxOperation {
         installation: String,
         route_id: String,
     },
+    /// P1.20: a deployment copy's route takes over the owner's (see
+    /// `balance_owner_inbox_routes`).
+    SetRouteActive {
+        owner: String,
+        installation: String,
+        route_id: String,
+        active: bool,
+    },
     Routes {
         owner: String,
         installation: String,
@@ -126,6 +134,15 @@ fn apply(
             let tx = connection.transaction()?;
             app_inbox::remove_route_in(&tx, &owner, &installation, &route_id)?;
             tx.commit()?;
+            Ok(AppInboxOutcome::Recorded(None))
+        }
+        AppInboxOperation::SetRouteActive {
+            owner,
+            installation,
+            route_id,
+            active,
+        } => {
+            app_inbox::set_route_active_in(connection, &owner, &installation, &route_id, active)?;
             Ok(AppInboxOutcome::Recorded(None))
         }
         AppInboxOperation::Routes {

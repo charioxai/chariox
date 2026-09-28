@@ -893,6 +893,15 @@ impl KernelRuntimeState {
         let session_id = self
             .resolve_session_ref_id(session_ref, workspace_id)
             .await?;
+        self.delete_session_id(&session_id).await
+    }
+
+    /// Deletes a session by id, including a hidden one (a deployment copy's).
+    pub(crate) async fn delete_session_id(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session_id = session_id.to_string();
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(&session_id)?;
         let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
@@ -908,7 +917,7 @@ impl KernelRuntimeState {
         self.stop_managed_environment_for_session_lifecycle(&session_id)
             .await;
         let (session, terminated_run_ids, removed_project) =
-            owned.delete_session_ref(session_ref, workspace_id)?;
+            owned.delete_session(owned.session_store.get_session(&session_id)?)?;
         debug_assert_eq!(
             removed_project.as_ref().map(|project| project.id()),
             durable_project_delete.as_ref().map(|project| project.id()),

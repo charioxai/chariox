@@ -245,6 +245,24 @@ impl KernelRuntimeOwnedState {
         request: crate::local::MaterializeWorkflowPublicationRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.workflow_materialize_publication_as(
+            request,
+            caller_user_id,
+            crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS,
+            Some("default".to_string()),
+        )
+    }
+
+    /// Materializes a publication of `kind` with `queue_ref`. A hosted runtime
+    /// serves ingress; a deployment copy (P1.20) keeps its source's kind, so an
+    /// App-event trigger stays event-based.
+    pub(super) fn workflow_materialize_publication_as(
+        &self,
+        request: crate::local::MaterializeWorkflowPublicationRequest,
+        caller_user_id: &str,
+        kind: &str,
+        queue_ref: Option<String>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let runtime_key = materialization::normalized_runtime_key(request.runtime_key.as_deref())?;
         // A retry must not race the first creation into a second session. This
         // lock also serializes the existing independent instance provisioning.
@@ -464,9 +482,9 @@ impl KernelRuntimeOwnedState {
             session_id.clone(),
             workflow_id.clone(),
             endpoint_id,
-            Some("default".to_string()),
+            queue_ref,
             None,
-            crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS,
+            kind,
             None,
             Vec::new(),
             None,

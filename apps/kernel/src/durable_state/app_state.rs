@@ -290,6 +290,26 @@ pub(crate) fn fixture_inbox_installation(
     package
 }
 
+/// P1.20: a deployment's own active installation of `package`, as a
+/// committed deployment install leaves it (the owner already trusts the
+/// fixture publisher).
+#[cfg(test)]
+pub(crate) fn fixture_copy_installation(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+    deployment_id: &str,
+    package: (Vec<u8>, chariox_app_package::TrustedPublisher),
+) {
+    tests::install_package(store, owner, installation_id, package);
+    store.fixture_tag_app_installation(owner, installation_id, deployment_id);
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_inbox_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::inbox_package()
+}
+
 #[cfg(test)]
 pub(crate) fn fixture_event_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::package()

@@ -216,7 +216,7 @@ impl KernelRuntimeState {
         catalog.validate(&item.event_name, &item.payload).is_ok()
     }
 
-    async fn inbox(
+    pub(super) async fn inbox(
         &self,
         operation: AppInboxOperation,
     ) -> Result<AppInboxOutcome, AppRequestErrorCode> {

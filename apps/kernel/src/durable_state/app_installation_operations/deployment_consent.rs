@@ -320,7 +320,50 @@ pub(super) fn tag_installation(
     Ok(())
 }
 
+/// P1.20: a deployment updates only its own copy.
+pub(super) fn require_copy_of(
+    tx: &Transaction<'_>,
+    owner: &str,
+    installation_id: &str,
+    deployment_id: &str,
+) -> Result<()> {
+    let tagged: bool = sql(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_installation_deployments
+         WHERE installation_id=?1 AND owner_id=?2 AND deployment_id=?3)",
+        params![installation_id, owner, deployment_id],
+        |r| r.get(0),
+    ))?;
+    if tagged {
+        Ok(())
+    } else {
+        Err(InstallOperationError::Invalid)
+    }
+}
+
 impl DurableKernelStateStore {
+    /// P1.20: the interaction of the owner's latest approved consent to run
+    /// exactly this release of the deployment with its Apps.
+    pub(crate) fn approved_deployment_consent(
+        &self,
+        owner: &str,
+        deployment_id: &str,
+        release_id: &str,
+        package_digest: &str,
+    ) -> Result<Option<String>> {
+        let connection = self
+            .lock_connection("durable_state.approved_deployment_consent")
+            .map_err(|_| InstallOperationError::Storage)?;
+        sql(connection
+            .query_row(
+                "SELECT interaction_id FROM app_deployment_consents
+                 WHERE owner_id=?1 AND deployment_id=?2 AND release_id=?3 AND package_digest=?4
+                 AND status='approved' ORDER BY updated_ms DESC, rowid DESC LIMIT 1",
+                params![owner, deployment_id, release_id, package_digest],
+                |r| r.get(0),
+            )
+            .optional())
+    }
+
     pub(crate) fn begin_deployment_consent(
         &self,
         owner: &str,

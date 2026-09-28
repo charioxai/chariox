@@ -80,6 +80,16 @@ pub(super) fn catalog_for_owner(
             },
         )
         .unwrap();
+    install_package(store, owner, "installed", package_bytes)
+}
+/// Installs and activates `installation_id` from `package_bytes` for an
+/// owner who already trusts the fixture publisher.
+pub(super) fn install_package(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+    package_bytes: (Vec<u8>, TrustedPublisher),
+) -> Arc<EventCatalog> {
     let (bytes, publisher) = package_bytes;
     let trust = store
         .trusted_app_publisher(owner, "com.example", "state-key")
@@ -94,7 +104,7 @@ pub(super) fn catalog_for_owner(
         .mutate_verified_app_installation(
             owner,
             AppVerifiedInstallationMutation::CreateAndStage {
-                installation_id: "installed".into(),
+                installation_id: installation_id.into(),
                 candidate,
                 now_ms: 1,
             },

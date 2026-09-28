@@ -469,6 +469,21 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .resolve_session_ref(session_ref, workspace_id)?;
+        self.delete_session(session)
+    }
+
+    /// Deletes `session`, including a hidden one (a deployment copy's).
+    pub(super) fn delete_session(
+        &self,
+        session: crate::session::RuntimeSession,
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Vec<String>,
+            Option<crate::session::RuntimeProject>,
+        ),
+        DaemonError,
+    > {
         let session_id = session.id().to_string();
         let (ended, terminated_run_ids) =
             if session.status() == crate::session::SessionStatus::Ended {

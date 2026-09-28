@@ -39,6 +39,8 @@ const PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS: u64 = 60_000;
 // subsequent launches remain effectively immediate.
 const PUBLICATION_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(60);
 const PUBLICATION_RUNTIME_START_POLL: Duration = Duration::from_millis(50);
+/// P1.20: the runtime keys of App-bound deployment copies.
+pub(super) const DEPLOYMENT_COPY_KEY_PREFIX: &str = "deployment:";
 
 #[derive(Clone, Default)]
 pub(crate) struct WorkflowPublicationRuntimeProcessStore {
@@ -106,6 +108,8 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
         }
         WorkflowPublicationRuntimeAction::Stop => {
             stop_publication_runtime(runtime_state, &process_key).await?;
+            let copied = publication_deployment_binding(&publication)
+                .filter(|_| publication.apps().is_some());
             let publication = mark_publication_runtime_status(
                 runtime_state,
                 &request.session_id,
@@ -114,6 +118,16 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 Some(None),
                 Some(stopped_publication_runtime_metadata(&publication, true)),
             )?;
+            // A stopped App-bound deployment keeps no copy; the owner's
+            // routes it had taken over resume.
+            if let Some(binding) = copied {
+                remove_deployment_app_copy(
+                    runtime_state,
+                    publication.created_by_user_id(),
+                    &binding.deployment_id,
+                )
+                .await?;
+            }
             Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
                 publication,
                 action: WorkflowPublicationRuntimeAction::Stop,
@@ -258,7 +272,7 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
             session_id: request.session_id,
             publication_ref: publication_id,
             local_url: local_url.clone(),
-            runtime_session_id: Some(publication.session_id().to_string()),
+            runtime_session_id: Some(publication_runtime_session_id(&publication).to_string()),
             ttl_ms: None,
         },
         caller_user_id,
@@ -293,6 +307,7 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
             session
                 .workflow_publications()
                 .iter()
+                .filter(|publication| !is_deployment_copy(publication))
                 .filter_map(|publication| {
                     publication_runtime_recovery_binding(publication)
                         .map(|binding| (publication.clone(), binding))
@@ -338,70 +353,41 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
             .workflow_publication_runtimes
             .recovery_due(&process_key, now_ms)
             .await
+            || runtime_state
+                .owned
+                .workflow_publication_runtimes
+                .launching(&process_key)
+                .await
         {
             continue;
         }
-        let port = if is_schedule_only_publication(&publication) {
-            None
-        } else {
-            match reserve_ephemeral_publication_runtime_port() {
-                Ok(port) => Some(port),
-                Err(error) => {
-                    runtime_state
-                        .owned
-                        .workflow_publication_runtimes
-                        .record_recovery_failure(&process_key, now_ms)
-                        .await;
-                    crate::logging::warn_with_fields(
-                        "daemon.publication_runtime",
-                        "failed to reserve bound publication runtime port",
-                        serde_json::json!({
-                            "session_id": publication.session_id(),
-                            "publication_id": publication.id(),
-                            "deployment_id": binding.deployment_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                    continue;
-                }
-            }
-        };
-        let result = start_publication_runtime(
-            runtime_state,
-            ControlWorkflowPublicationRuntimeRequest {
-                session_id: publication.session_id().to_string(),
-                publication_ref: publication.id().to_string(),
-                action: WorkflowPublicationRuntimeAction::Start,
-                host: Some(DEFAULT_PUBLICATION_RUNTIME_HOST.to_string()),
-                port,
-                kernel_url: None,
-            },
-            publication.clone(),
-            process_key.clone(),
-            PublicationRuntimeLaunchContext {
-                cloud_deployment_id: Some(binding.deployment_id.clone()),
-                expected_package_digest: Some(binding.package_digest.clone()),
-                binding: Some(binding.clone()),
-            },
-        )
-        .await;
-        match result {
-            Ok(_) => {
-                runtime_state
-                    .owned
-                    .workflow_publication_runtimes
-                    .record_recovery_success(&process_key)
-                    .await;
-                crate::logging::info_with_fields(
-                    "daemon.publication_runtime",
-                    "recovered bound publication runtime",
-                    serde_json::json!({
-                        "session_id": publication.session_id(),
-                        "publication_id": publication.id(),
-                        "deployment_id": binding.deployment_id,
-                    }),
-                );
-            }
+        // An App-bound deployment's copy may wait for App installs, which this
+        // pump drives: recover it beside the pump.
+        if publication.apps().is_some() {
+            let state = runtime_state.clone();
+            tokio::spawn(async move {
+                recover_bound_publication_runtime(&state, publication, binding, process_key, now_ms)
+                    .await
+            });
+            continue;
+        }
+        recover_bound_publication_runtime(runtime_state, publication, binding, process_key, now_ms)
+            .await;
+    }
+}
+
+async fn recover_bound_publication_runtime(
+    runtime_state: &KernelRuntimeState,
+    publication: WorkflowPublicationDefinition,
+    binding: WorkflowPublicationDeploymentBinding,
+    process_key: String,
+    now_ms: u64,
+) {
+    let port = if is_schedule_only_publication(&publication) {
+        None
+    } else {
+        match reserve_ephemeral_publication_runtime_port() {
+            Ok(port) => Some(port),
             Err(error) => {
                 runtime_state
                     .owned
@@ -410,7 +396,7 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
                     .await;
                 crate::logging::warn_with_fields(
                     "daemon.publication_runtime",
-                    "failed to recover bound publication runtime",
+                    "failed to reserve bound publication runtime port",
                     serde_json::json!({
                         "session_id": publication.session_id(),
                         "publication_id": publication.id(),
@@ -418,7 +404,62 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
                         "error": error.to_string(),
                     }),
                 );
+                return;
             }
+        }
+    };
+    let result = start_publication_runtime(
+        runtime_state,
+        ControlWorkflowPublicationRuntimeRequest {
+            session_id: publication.session_id().to_string(),
+            publication_ref: publication.id().to_string(),
+            action: WorkflowPublicationRuntimeAction::Start,
+            host: Some(DEFAULT_PUBLICATION_RUNTIME_HOST.to_string()),
+            port,
+            kernel_url: None,
+        },
+        publication.clone(),
+        process_key.clone(),
+        PublicationRuntimeLaunchContext {
+            cloud_deployment_id: Some(binding.deployment_id.clone()),
+            expected_package_digest: Some(binding.package_digest.clone()),
+            binding: Some(binding.clone()),
+        },
+    )
+    .await;
+    match result {
+        Ok(_) => {
+            runtime_state
+                .owned
+                .workflow_publication_runtimes
+                .record_recovery_success(&process_key)
+                .await;
+            crate::logging::info_with_fields(
+                "daemon.publication_runtime",
+                "recovered bound publication runtime",
+                serde_json::json!({
+                    "session_id": publication.session_id(),
+                    "publication_id": publication.id(),
+                    "deployment_id": binding.deployment_id,
+                }),
+            );
+        }
+        Err(error) => {
+            runtime_state
+                .owned
+                .workflow_publication_runtimes
+                .record_recovery_failure(&process_key, now_ms)
+                .await;
+            crate::logging::warn_with_fields(
+                "daemon.publication_runtime",
+                "failed to recover bound publication runtime",
+                serde_json::json!({
+                    "session_id": publication.session_id(),
+                    "publication_id": publication.id(),
+                    "deployment_id": binding.deployment_id,
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 }
@@ -708,6 +749,24 @@ async fn start_publication_runtime_claimed(
             ));
         }
     }
+    // P1.20: a bound App-bound publication runs as its deployment's copy.
+    let copy_session_id = match launch_context.binding.as_ref() {
+        Some(binding) if publication.apps().is_some() => {
+            match deployment_app_copy(runtime_state, &publication, binding).await {
+                Ok(session_id) => Some(session_id),
+                Err(error) => {
+                    let _ = mark_publication_runtime_error(
+                        runtime_state,
+                        &request.session_id,
+                        publication.id(),
+                        &error.to_string(),
+                    );
+                    return Err(error);
+                }
+            }
+        }
+        _ => None,
+    };
     let local_url = if is_schedule_only {
         None
     } else {
@@ -717,7 +776,7 @@ async fn start_publication_runtime_claimed(
     command
         .arg("serve")
         .arg("source")
-        .arg(&request.session_id)
+        .arg(copy_session_id.as_deref().unwrap_or(&request.session_id))
         .arg(publication.id())
         .arg(port.to_string())
         .arg("--host")
@@ -789,21 +848,35 @@ async fn start_publication_runtime_claimed(
         )
         .await;
     let runtime_status = launched_publication_runtime_status(is_schedule_only);
+    let mut deployment = publication_runtime_deployment_metadata(
+        runtime_status,
+        &host,
+        port,
+        local_url.as_deref(),
+        &kernel_url,
+        process_id,
+        launch_context.binding.as_ref(),
+    );
+    if let Some(copy_session_id) = copy_session_id.as_deref() {
+        deployment["app_copy_session_id"] = serde_json::json!(copy_session_id);
+        // The gateway registers the copy's endpoint: the same binding gives it
+        // the deployment's stable tunnel.
+        mark_publication_runtime_status(
+            runtime_state,
+            copy_session_id,
+            publication.id(),
+            runtime_status,
+            Some(local_url.clone()),
+            Some(deployment.clone()),
+        )?;
+    }
     let publication = mark_publication_runtime_status(
         runtime_state,
         &request.session_id,
         publication.id(),
         runtime_status,
         Some(local_url.clone()),
-        Some(publication_runtime_deployment_metadata(
-            runtime_status,
-            &host,
-            port,
-            local_url.as_deref(),
-            &kernel_url,
-            process_id,
-            launch_context.binding.as_ref(),
-        )),
+        Some(deployment),
     )?;
     Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
         publication,
@@ -1217,17 +1290,91 @@ fn publication_runtime_metadata_preserving_binding(
     publication: &WorkflowPublicationDefinition,
     mut metadata: serde_json::Value,
 ) -> serde_json::Value {
-    let Some(binding) = publication
-        .deployment()
-        .and_then(|deployment| deployment.get("binding"))
-        .cloned()
-    else {
-        return metadata;
-    };
-    if let Some(object) = metadata.as_object_mut() {
-        object.insert("binding".to_string(), binding);
+    for key in ["binding", "app_copy_session_id"] {
+        let Some(value) = publication
+            .deployment()
+            .and_then(|deployment| deployment.get(key))
+            .cloned()
+        else {
+            continue;
+        };
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert(key.to_string(), value);
+        }
     }
     metadata
+}
+
+/// The session a publication's runtime serves: its deployment's copy, if any.
+fn publication_runtime_session_id(publication: &WorkflowPublicationDefinition) -> &str {
+    publication
+        .deployment()
+        .and_then(|deployment| deployment.get("app_copy_session_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(publication.session_id())
+}
+
+/// P1.20: the publication of an App-bound deployment's copy; its runtime is
+/// served, bound and recovered through the source publication.
+fn is_deployment_copy(publication: &WorkflowPublicationDefinition) -> bool {
+    publication
+        .runtime_materialization()
+        .is_some_and(|materialization| materialization.key.starts_with(DEPLOYMENT_COPY_KEY_PREFIX))
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+async fn deployment_app_copy(
+    runtime_state: &KernelRuntimeState,
+    publication: &WorkflowPublicationDefinition,
+    binding: &WorkflowPublicationDeploymentBinding,
+) -> Result<String, DaemonError> {
+    runtime_state
+        .ensure_deployment_app_copy(
+            publication,
+            &binding.deployment_id,
+            &binding.release_id,
+            &binding.package_digest,
+        )
+        .await?
+        .map(|copy| copy.session_id)
+        .ok_or_else(|| {
+            publication_runtime_error(
+                "start workflow publication runtime",
+                "the publication's App plan names no App",
+            )
+        })
+}
+
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+async fn deployment_app_copy(
+    _runtime_state: &KernelRuntimeState,
+    _publication: &WorkflowPublicationDefinition,
+    _binding: &WorkflowPublicationDeploymentBinding,
+) -> Result<String, DaemonError> {
+    Err(publication_runtime_error(
+        "start workflow publication runtime",
+        "Apps are not supported on this platform",
+    ))
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+async fn remove_deployment_app_copy(
+    runtime_state: &KernelRuntimeState,
+    owner: &str,
+    deployment_id: &str,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .remove_deployment_app_copy(owner, deployment_id)
+        .await
+}
+
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+async fn remove_deployment_app_copy(
+    _runtime_state: &KernelRuntimeState,
+    _owner: &str,
+    _deployment_id: &str,
+) -> Result<(), DaemonError> {
+    Ok(())
 }
 
 fn stopped_publication_runtime_metadata(
@@ -1249,6 +1396,9 @@ fn stopped_publication_runtime_metadata(
     );
     if preserve_stopped_intent {
         metadata["desired_state"] = serde_json::json!("stopped");
+    }
+    if let Some(object) = metadata.as_object_mut() {
+        object.remove("app_copy_session_id");
     }
     metadata
 }
@@ -1405,6 +1555,10 @@ struct RunningPublicationRuntime {
 impl WorkflowPublicationRuntimeProcessStore {
     async fn claim_launch(&self, key: &str) -> bool {
         self.launching.lock().await.insert(key.to_string())
+    }
+
+    async fn launching(&self, key: &str) -> bool {
+        self.launching.lock().await.contains(key)
     }
 
     async fn release_launch(&self, key: &str) {

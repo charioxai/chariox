@@ -13,8 +13,19 @@ fn harness_with_app(root: &std::path::Path) -> LocalRouterTestHarness {
     config.user_config.state.path = Some(root.join("state.db").display().to_string());
     let harness = LocalRouterTestHarness::with_config(config);
     let store = harness.with_app(|app| app.durable_state_store());
-    let (bytes, publisher) =
-        crate::durable_state::app_state::fixture_inbox_installation(&store, DEFAULT_LOCAL_USER_ID);
+    stage_release(
+        &harness,
+        crate::durable_state::app_state::fixture_inbox_installation(&store, DEFAULT_LOCAL_USER_ID),
+    );
+    harness
+}
+
+/// Stores a release in the local release store, as an install leaves it.
+fn stage_release(
+    harness: &LocalRouterTestHarness,
+    (bytes, publisher): (Vec<u8>, chariox_app_package::TrustedPublisher),
+) {
+    let store = harness.with_app(|app| app.durable_state_store());
     let verified = chariox_app_package::verify(
         &bytes,
         &chariox_app_package::VerificationPolicy::new(
@@ -35,7 +46,6 @@ fn harness_with_app(root: &std::path::Path) -> LocalRouterTestHarness {
             },
         )
         .unwrap();
-    harness
 }
 
 fn temp_root(label: &str) -> std::path::PathBuf {
@@ -465,3 +475,5 @@ fn a_publication_previews_its_apps_before_and_after_preparation() {
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
+
+mod copy;

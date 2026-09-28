@@ -730,6 +730,65 @@ mod deployment_consent {
         assert!(prompts(arm_copy(&f, "copy-2", "app_deploy_1")));
     }
 
+    /// P1.20: the bind finds the approved consent by deployment, release and
+    /// package; a deployment updates only an installation of its own copy.
+    #[test]
+    fn a_deployment_finds_its_consent_and_updates_only_its_own_copy() {
+        let f = Fixture::new();
+        let find = || {
+            f.store
+                .approved_deployment_consent(
+                    "alice",
+                    "deployment",
+                    "release",
+                    &format!("sha256:{}", "d".repeat(64)),
+                )
+                .unwrap()
+        };
+        consent(&f, "consent", "app_deploy_1");
+        assert_eq!(find(), None, "not answered yet");
+        f.store
+            .decide_deployment_consent("alice", "app_deploy_1", true, budget())
+            .unwrap();
+        assert_eq!(find().as_deref(), Some("app_deploy_1"));
+        assert_eq!(
+            f.store
+                .approved_deployment_consent("alice", "deployment", "release-2", "sha256:x")
+                .unwrap(),
+            None
+        );
+        let update = |request: &str| {
+            f.store.reserve_app_install(
+                "alice",
+                request,
+                InstallInput {
+                    session_id: "session".into(),
+                    upload_handle: String::new(),
+                    update: Some(UpdateTarget {
+                        installation_id: "installed".into(),
+                        expected_generation: 1,
+                    }),
+                    deployment: Some(DeploymentInstall {
+                        consent: "app_deploy_1".into(),
+                        deployment_id: "deployment".into(),
+                    }),
+                },
+                &f.candidate().release_metadata().package_digest.clone(),
+                budget(),
+            )
+        };
+        assert!(matches!(
+            update("owner-install"),
+            Err(InstallOperationError::Invalid)
+        ));
+        f.store
+            .fixture_tag_app_installation("alice", "installed", "deployment");
+        assert_eq!(
+            update("copy-update").unwrap().phase,
+            InstallPhase::Preparing
+        );
+    }
+
     #[test]
     fn capabilities_never_approved_interactively_ask_the_owner() {
         let f = Fixture::new();

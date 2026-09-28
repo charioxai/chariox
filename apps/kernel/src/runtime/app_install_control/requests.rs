@@ -225,21 +225,22 @@ impl AppInstallControl {
     /// local release store, tagged with its deployment. The owner's consent
     /// `consent` (an interaction of `PrepareDeploymentApps`) approves it only
     /// for a consented release whose capabilities the owner approved before;
-    /// otherwise the owner is asked as for any install.
-    #[cfg_attr(not(test), allow(dead_code))] // Bound by the deployment bind next.
+    /// otherwise the owner is asked as for any install. `update` moves the
+    /// deployment's own copy to another release (P1.20).
     pub(crate) async fn begin_deployment_install(
         &self,
         owner: &str,
         request_id: &str,
         session_id: &str,
         deployment: DeploymentInstall,
+        update: Option<UpdateTarget>,
         package_digest: &str,
     ) -> Result<InstallOperation, InstallOperationError> {
         let store = self.0.shared.store.clone();
         let input = InstallInput {
             session_id: session_id.into(),
             upload_handle: String::new(),
-            update: None,
+            update,
             deployment: Some(deployment),
         };
         let (reserve_owner, reserve_request, digest) = (

@@ -267,11 +267,12 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             identity(&request_id)?;
             identity(&input.session_id)?;
             let source_valid = match &input.deployment {
-                // A deployment copy installs a stored release, never an update.
+                // A deployment copy installs a stored release; it updates
+                // only an installation of its own deployment (below).
                 Some(deployment) => {
                     identity(&deployment.consent)?;
                     identity(&deployment.deployment_id)?;
-                    input.upload_handle.is_empty() && input.update.is_none()
+                    input.upload_handle.is_empty()
                 }
                 None => {
                     input.upload_handle.len() == 71 && input.upload_handle.starts_with("upload_")
@@ -300,6 +301,14 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 None => (format!("app_{:032x}", rand::random::<u128>()), 0, 1),
                 Some(target) => {
                     require_updatable(&tx, &owner, target)?;
+                    if let Some(deployment) = &input.deployment {
+                        super::deployment_consent::require_copy_of(
+                            &tx,
+                            &owner,
+                            &target.installation_id,
+                            &deployment.deployment_id,
+                        )?;
+                    }
                     (
                         target.installation_id.clone(),
                         target.expected_generation,

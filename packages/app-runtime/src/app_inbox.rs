@@ -318,6 +318,25 @@ pub fn remove_route_in(
     Ok(())
 }
 
+/// Pauses or resumes a route. A paused route accepts no occurrence; those it
+/// already accepted are still delivered.
+pub fn set_route_active_in(
+    tx: &Connection,
+    owner_id: &str,
+    installation_id: &str,
+    route_id: &str,
+    active: bool,
+) -> Result<()> {
+    let changed = tx.execute(
+        "UPDATE app_inbox_routes SET active=?4 WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3",
+        params![owner_id, installation_id, route_id, active],
+    )?;
+    if changed == 0 {
+        return Err(InboxError::NotFound);
+    }
+    Ok(())
+}
+
 /// An uninstalled App keeps no routes: a reinstall starts with none, and the
 /// owner adds them again.
 pub fn remove_all_routes_in(
