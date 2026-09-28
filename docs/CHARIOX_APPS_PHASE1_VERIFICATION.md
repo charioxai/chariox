@@ -91,7 +91,7 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
    - There is no .cxapp file association on macOS or Linux; nothing in the tree implements one.
    - Standalone `chariox app install` and `chariox app update` are rejected, so CLI↔slash parity is incomplete.
    - The branch browser controller and main's `browser_controller_*` modules still coexist (merge note).
-6. **The full kernel suite is not green.** On 2026-09-25, `ev:integration2-failures.txt` lists 157 failing tests on the integration branch, against 126 on the main baseline (`ev:main-failures.txt`). Most are likely caused by the test environment (`CHARIOX_HOME`), but the Evidence gate needs a green candidate. Hosted CI has not run on the stack, per repo policy.
+6. **The full kernel suite is not green, but the Apps-owned failures are fixed.** On 2026-09-28 the full kernel lib suite on the top of the stack (#510 + #430 + #518) had 4395 pass and 124 fail (`ev:full-suite/`). 122 of those also fail on main, whose CI has been red since June. Most are #425's strict working-directory preflight rejecting the tests' fake relative workspace names. The other two are a renamed environment-only test and a flake under load. The three Apps-owned failures (two stale promotion tests and a publisher-recovery test) are fixed in #518, along with one real bug they exposed. The Evidence gate still needs main's baseline fixed and a hosted CI run.
 7. **The evidence path differs from the plan's.** Evidence lives in `.codex/evidence/chariox-apps-phase1/`; the plan's rule names `/Users/miguel/.codex/evidence/chariox-apps/<release>/`.
 
 ### Prioritized work that needs no user (highest value first)
@@ -133,7 +133,7 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
     - a connected-ingress deploy past the credentials step once a destination Claude account exists (V-UX-08, user step);
     - broken automation for a stopped deployment target (V-UX-09).
 14. **Unit-level closers (S):** an IPC frame fuzz/proptest (V-RUN-04), client rendering tests for manifest error codes (V-PKG-03), and a rerun of the package corpus and native probes on the candidate.
-15. **Evidence gate (L).** Merge the stack, run hosted CI on the candidate, triage the 157 full-suite failures, and republish dated evidence with revisions, digests and budgets under the plan's evidence path.
+15. **Evidence gate (L).** Merge the stack, run hosted CI on the candidate, fix main's 122 baseline failures (Apps triage done in #518), and republish dated evidence with revisions, digests and budgets under the plan's evidence path.
 
 **Needs user:**
 - Real Google session persistence (V1-INT-01, Chromium kernel row, Browser persistence gate).
@@ -299,4 +299,4 @@ The ledger uses the old numbering; the revised-plan ID is in brackets.
 | Lifecycle | Partial [user step: reboot] | Install/update/migration/rollback/restart fault tests plus live kill drills (P1.10). | Install-checkpoint kills; uninstall/reinstall drill; delete-data. | M |
 | Storage | Partial | Documents private I/O, grants, versions, snapshots (macOS); quota fixtures on both OSes. | Denial outside storage shown live; quota hit by an App; Linux Documents run. | M |
 | Freeform | Partial | Trigger live on web and TUI; deploy wizard opened. | Deploy not completed "in a single guided action"; HTTP trigger. | S–M |
-| Evidence | Unverified | — | Nothing merged; no release candidate or digests; hosted CI not run on the stack; 157 full-suite failures (2026-09-25); evidence not under the plan's path. Next: priority item 15. | L |
+| Evidence | Unverified | — | Nothing merged; no release candidate or digests; hosted CI not run on the stack; full kernel suite 4395 pass / 124 fail on the stack top (2026-09-28): 122 are main's baseline, the Apps-owned three are fixed in #518 (`ev:full-suite/`); evidence not under the plan's path. Next: priority item 15. | L |
