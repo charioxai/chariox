@@ -282,7 +282,7 @@ const installFailures: Record<string, string> = {
   app_install_package_archive_limit: "The package exceeds the archive size or file-count limits.",
   app_install_package_invalid_path: "The package contains an invalid file path.",
   app_install_package_duplicate_path: "The package contains the same file path twice.",
-  app_install_package_invalid_manifest: "The package manifest is invalid: unknown, missing or duplicate fields.",
+  app_install_package_invalid_manifest: "The package manifest is invalid.",
   app_install_package_invalid_schema: "A tool, event or state schema in the package is invalid.",
   app_install_package_incompatible_protocol: "The App needs a kernel protocol version this kernel does not support.",
   app_install_package_incompatible_sdk: "The App was built with an SDK version this kernel does not support.",
@@ -294,6 +294,12 @@ const installFailures: Record<string, string> = {
   app_install_package_missing_entry: "The package is missing a file its manifest declares.",
   app_install_package_unexpected_entry: "The package contains a file its manifest does not declare.",
   app_install_package_unsupported_feature: "The App uses a feature this kernel does not support.",
+  app_install_invalid_request: "The kernel rejected the App install request.",
+  app_install_upload_conflict: "Another upload of this package is in progress. Try again.",
+  app_install_upload_digest_mismatch: "The uploaded file changed during upload. Select the file again.",
+  app_install_release_limit: "The App release exceeds the kernel's size or file-count limits.",
+  app_install_release_unsafe: "The kernel refused to store this App release safely.",
+  app_install_release_archive_mismatch: "The staged package no longer matches the upload. Try again.",
   app_install_upload_missing_or_expired: "The upload expired before preparation. Select the file again.",
   app_install_approval_expired: "The approval request expired.",
   app_install_insufficient_storage: "The kernel has insufficient App storage.",
@@ -302,7 +308,8 @@ const installFailures: Record<string, string> = {
 
 /** Friendly text for an operation's kernel failure code; unknown codes are shown only when well-formed. */
 export function formatInstallFailure(failure: string): string {
-  return installFailures[failure] ?? (/^app_(?:install|update)_[a-z_]{1,96}$/.test(failure) ? `Kernel failure: ${failure}.` : "The kernel could not complete the App operation.")
+  if (Object.hasOwn(installFailures, failure)) return installFailures[failure]!
+  return (/^app_(?:install|update)_[a-z_]{1,96}$/.test(failure) ? `Kernel failure: ${failure}.` : "The kernel could not complete the App operation.")
 }
 
 export function formatInstallOperation(value: AppInstallOperationSummary): string {

@@ -387,7 +387,7 @@ test("each stable package error code renders its own message (V-PKG-03)", () => 
       archive_limit: "The package exceeds the archive size or file-count limits.",
       invalid_path: "The package contains an invalid file path.",
       duplicate_path: "The package contains the same file path twice.",
-      invalid_manifest: "The package manifest is invalid: unknown, missing or duplicate fields.",
+      invalid_manifest: "The package manifest is invalid.",
       invalid_schema: "A tool, event or state schema in the package is invalid.",
       incompatible_protocol: "The App needs a kernel protocol version this kernel does not support.",
       incompatible_sdk: "The App was built with an SDK version this kernel does not support.",
@@ -401,4 +401,12 @@ test("each stable package error code renders its own message (V-PKG-03)", () => 
       unsupported_feature: "The App uses a feature this kernel does not support.",
     },
   )
+})
+
+test("release and upload failures render their own messages; inherited keys fall back", () => {
+  const codes = ["invalid_request", "upload_conflict", "upload_digest_mismatch", "release_limit", "release_unsafe", "release_archive_mismatch"]
+  const rendered = codes.map((code) => formatInstallFailure(`app_install_${code}`))
+  assert.equal(new Set(rendered).size, codes.length)
+  for (const message of rendered) assert.doesNotMatch(message, /^Kernel failure:|could not complete/)
+  for (const key of ["constructor", "toString", "__proto__"]) assert.equal(formatInstallFailure(key), "The kernel could not complete the App operation.")
 })

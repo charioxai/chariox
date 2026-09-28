@@ -37,6 +37,7 @@ pub(crate) enum PreparationError {
     PackageRejected(ErrorCode),
     InsufficientStorage,
     UnsafeRelease,
+    ArchiveMismatch,
     PublicationInterrupted,
     StorageUnavailable,
 }
@@ -272,9 +273,7 @@ fn release_error(error: ReleaseStoreError) -> PreparationError {
         ReleaseStoreError::UnsafeEntry | ReleaseStoreError::InvalidExisting => {
             PreparationError::UnsafeRelease
         }
-        ReleaseStoreError::ArchiveMismatch => {
-            PreparationError::PackageRejected(ErrorCode::IntegrityMismatch)
-        }
+        ReleaseStoreError::ArchiveMismatch => PreparationError::ArchiveMismatch,
         ReleaseStoreError::InvalidRoot => PreparationError::StorageUnavailable,
         ReleaseStoreError::Io(_) => PreparationError::PublicationInterrupted,
     }

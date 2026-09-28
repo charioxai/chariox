@@ -55,7 +55,14 @@ fn preparation(error: PreparationError) -> Error {
             Error::Storage
         }
         PreparationError::PackageRejected(code) => Error::Failed(package_failure(code)),
-        _ => Error::Failed("app_install_package_rejected"),
+        PreparationError::InvalidRequest => Error::Failed("app_install_invalid_request"),
+        PreparationError::UploadConflict => Error::Failed("app_install_upload_conflict"),
+        PreparationError::UploadDigestMismatch => {
+            Error::Failed("app_install_upload_digest_mismatch")
+        }
+        PreparationError::LimitExceeded => Error::Failed("app_install_release_limit"),
+        PreparationError::UnsafeRelease => Error::Failed("app_install_release_unsafe"),
+        PreparationError::ArchiveMismatch => Error::Failed("app_install_release_archive_mismatch"),
     }
 }
 
