@@ -34,6 +34,8 @@ const DEFAULT_PUBLICATION_RUNTIME_HOST: &str = "127.0.0.1";
 const DEFAULT_PUBLICATION_RUNTIME_PORT: u16 = 3000;
 const PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS: u64 = 1_000;
 const PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS: u64 = 60_000;
+/// A recovered runtime that stays up this long clears its backoff.
+const PUBLICATION_RUNTIME_RECOVERY_STABLE_MS: u64 = 60_000;
 // A source checkout may need to build the TypeScript gateway before it can
 // listen. Keep the readiness deadline long enough for that one-time build;
 // subsequent launches remain effectively immediate.
@@ -61,6 +63,8 @@ struct WorkflowPublicationRuntimeProcess {
 struct WorkflowPublicationRuntimeRecovery {
     failures: u32,
     next_attempt_at_ms: u64,
+    /// When recovery last launched the runtime.
+    launched_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -346,7 +350,7 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
                 runtime_state
                     .owned
                     .workflow_publication_runtimes
-                    .record_recovery_success(&process_key)
+                    .record_recovery_running(&process_key, now_ms)
                     .await;
                 continue;
             }
@@ -446,10 +450,12 @@ async fn recover_bound_publication_runtime(
     .await;
     match result {
         Ok(_) => {
+            // A gateway can report started and still exit during startup: the
+            // launch keeps its backoff until the runtime has stayed up.
             runtime_state
                 .owned
                 .workflow_publication_runtimes
-                .record_recovery_success(&process_key)
+                .record_recovery_launch(&process_key, now_ms)
                 .await;
             crate::logging::info_with_fields(
                 "daemon.publication_runtime",
@@ -1768,6 +1774,17 @@ struct RunningPublicationRuntime {
     local_url: Option<String>,
 }
 
+impl WorkflowPublicationRuntimeRecovery {
+    fn back_off(&mut self, now_ms: u64) {
+        self.failures = self.failures.saturating_add(1);
+        let exponent = self.failures.saturating_sub(1).min(6);
+        let delay = PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS
+            .saturating_mul(1_u64 << exponent)
+            .min(PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS);
+        self.next_attempt_at_ms = now_ms.saturating_add(delay);
+    }
+}
+
 impl WorkflowPublicationRuntimeProcessStore {
     async fn claim_launch(&self, key: &str) -> bool {
         self.launching.lock().await.insert(key.to_string())
@@ -1789,19 +1806,33 @@ impl WorkflowPublicationRuntimeProcessStore {
             .map_or(true, |recovery| recovery.next_attempt_at_ms <= now_ms)
     }
 
-    async fn record_recovery_success(&self, key: &str) {
-        self.recoveries.lock().await.remove(key);
+    /// A running runtime clears its backoff, unless recovery launched it
+    /// less than `PUBLICATION_RUNTIME_RECOVERY_STABLE_MS` ago.
+    async fn record_recovery_running(&self, key: &str, now_ms: u64) {
+        let mut guard = self.recoveries.lock().await;
+        let settling = guard
+            .get(key)
+            .and_then(|recovery| recovery.launched_at_ms)
+            .is_some_and(|launched| {
+                now_ms < launched.saturating_add(PUBLICATION_RUNTIME_RECOVERY_STABLE_MS)
+            });
+        if !settling {
+            guard.remove(key);
+        }
+    }
+
+    /// A recovery launch counts as an attempt: if the runtime exits soon
+    /// after, the next launch waits out a growing delay.
+    async fn record_recovery_launch(&self, key: &str, now_ms: u64) {
+        let mut guard = self.recoveries.lock().await;
+        let recovery = guard.entry(key.to_string()).or_default();
+        recovery.back_off(now_ms);
+        recovery.launched_at_ms = Some(now_ms);
     }
 
     async fn record_recovery_failure(&self, key: &str, now_ms: u64) {
         let mut guard = self.recoveries.lock().await;
-        let recovery = guard.entry(key.to_string()).or_default();
-        recovery.failures = recovery.failures.saturating_add(1);
-        let exponent = recovery.failures.saturating_sub(1).min(6);
-        let delay = PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS
-            .saturating_mul(1_u64 << exponent)
-            .min(PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS);
-        recovery.next_attempt_at_ms = now_ms.saturating_add(delay);
+        guard.entry(key.to_string()).or_default().back_off(now_ms);
     }
 
     async fn running(&self, key: &str) -> Result<Option<RunningPublicationRuntime>, DaemonError> {
@@ -2142,6 +2173,14 @@ mod tests {
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
+        // Removed however the test ends.
+        struct Cleanup<'a>(&'a std::path::Path);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(self.0);
+            }
+        }
+        let _cleanup = Cleanup(&config);
         fs::write(&config, "{}").expect("config");
         // The gateway consumes the file after it starts; the kernel waits for that.
         let mut child = tokio::process::Command::new("sh")
@@ -2175,7 +2214,6 @@ mod tests {
         .expect_err("exited before starting");
         assert!(error.contains("exited before becoming ready"), "{error}");
         assert!(error.contains("no deployment config"), "{error}");
-        let _ = fs::remove_file(&config);
     }
 
     #[tokio::test]
@@ -2188,7 +2226,29 @@ mod tests {
         store.record_recovery_failure("publication-1", 1_100).await;
         assert!(!store.recovery_due("publication-1", 3_099).await);
         assert!(store.recovery_due("publication-1", 3_100).await);
-        store.record_recovery_success("publication-1").await;
+        store.record_recovery_running("publication-1", 3_100).await;
         assert!(store.recovery_due("publication-1", 3_100).await);
+    }
+
+    #[tokio::test]
+    async fn a_recovered_runtime_that_exits_soon_waits_before_relaunching() {
+        let store = WorkflowPublicationRuntimeProcessStore::default();
+        let stable = super::PUBLICATION_RUNTIME_RECOVERY_STABLE_MS;
+        store.record_recovery_launch("publication-1", 100).await;
+        // Seen running on a tick, then gone: no immediate relaunch.
+        store.record_recovery_running("publication-1", 600).await;
+        assert!(!store.recovery_due("publication-1", 1_099).await);
+        assert!(store.recovery_due("publication-1", 1_100).await);
+        // Each launch that does not stay up waits longer.
+        store.record_recovery_launch("publication-1", 1_100).await;
+        assert!(!store.recovery_due("publication-1", 3_099).await);
+        // Up for the stable period: the backoff is cleared.
+        store
+            .record_recovery_running("publication-1", 1_100 + stable)
+            .await;
+        store
+            .record_recovery_launch("publication-1", 1_100 + stable)
+            .await;
+        assert!(store.recovery_due("publication-1", 2_100 + stable).await);
     }
 }
