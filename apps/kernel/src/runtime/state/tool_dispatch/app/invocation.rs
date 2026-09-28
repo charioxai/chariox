@@ -112,10 +112,20 @@ impl KernelRuntimeState {
         if let Some(lease) = control.active_app_lease(owner, installation) {
             return Ok(lease);
         }
-        if !control.is_app_dormant(owner, installation) {
-            return Err(unavailable());
-        }
         let deadline = tokio::time::Instant::now() + ON_DEMAND_START;
+        if !control.is_app_dormant(owner, installation) {
+            // A start already under way (a user start, a restart after a
+            // crash) is waited for; a stopped or failed worker is not started.
+            while self.app_worker_phase(owner, installation).await
+                == Some(crate::durable_state::app_worker_lifecycle::WorkerPhase::Starting)
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            return control
+                .active_app_lease(owner, installation)
+                .ok_or_else(unavailable);
+        }
         let mut started = false;
         let mut evicted = false;
         loop {
@@ -216,6 +226,15 @@ impl KernelRuntimeState {
     }
 
     async fn app_start_failed(&self, owner: &str, installation: &str) -> bool {
+        self.app_worker_phase(owner, installation).await
+            == Some(crate::durable_state::app_worker_lifecycle::WorkerPhase::Failed)
+    }
+
+    async fn app_worker_phase(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Option<crate::durable_state::app_worker_lifecycle::WorkerPhase> {
         let store = self.owned.durable_state_store.clone();
         let (owner, installation) = (owner.to_owned(), installation.to_owned());
         tokio::task::spawn_blocking(move || store.app_worker_status(&owner, &installation))
@@ -223,9 +242,7 @@ impl KernelRuntimeState {
             .ok()
             .and_then(Result::ok)
             .flatten()
-            .is_some_and(|status| {
-                status.phase == crate::durable_state::app_worker_lifecycle::WorkerPhase::Failed
-            })
+            .map(|status| status.phase)
     }
 }
 
