@@ -256,7 +256,8 @@ export function publicationConfigFromPackage(
     kernel_endpoint: kernelEndpoint,
   }
   if (transport) config.transport = transport
-  if (transport !== "schedule_only") {
+  const takesRequests = publicationTakesRequests({ transport })
+  if (takesRequests) {
     config.route = hook.route ?? defaultRouteForTransport(transport)
     config.mode = hook.mode ?? defaultModeForTransport(transport)
     if (parser) config.parser = parser
@@ -272,7 +273,7 @@ export function publicationConfigFromPackage(
     config.trace_exposure = traceExposure
     config.trace_context = publicationTraceContextFromSnapshot(snapshot)
   }
-  const methods = transport === "schedule_only"
+  const methods = !takesRequests
     ? null
     : normalizeHttpMethods(hook.methods) ?? defaultMethodsForTransport(transport)
   if (methods) config.methods = methods
@@ -316,7 +317,9 @@ export async function loadPublicationConfigFromKernel(
 /** Schedule-only and App-event triggers take no requests: no HTTP routes and
  * no endpoint registration. */
 export function publicationTakesRequests(publication: { transport?: string | undefined; kind?: string | undefined }): boolean {
-  return publication.transport !== "schedule_only" && publication.kind !== "event_based"
+  return publication.transport !== "schedule_only"
+    && publication.transport !== "event_based"
+    && publication.kind !== "event_based"
 }
 
 export function publicationConfigFromKernelRecord(
@@ -459,7 +462,7 @@ function publicationTransportKind(value: unknown): string | undefined {
 
 export function assertWorkflowPublicationTransport(transport: unknown): void {
   const kind = publicationTransportKind(transport)
-  if (!kind || kind === "human_http" || kind === "schedule_only") return
+  if (!kind || kind === "human_http" || kind === "schedule_only" || kind === "event_based") return
   throw new Error(`unsupported workflow publication transport \`${kind}\``)
 }
 

@@ -47,7 +47,7 @@ export async function publicationStatusPayload(
 }
 
 function basePublicationStatusPayload(publication: WorkflowPublicationConfig) {
-  const transport = publication.transport ?? "human_http"
+  const transport = publication.transport ?? (publication.kind === "event_based" ? "event_based" : "human_http")
   const payload: Record<string, unknown> = {
     status: "running",
     publication_id: publication.publication_id,

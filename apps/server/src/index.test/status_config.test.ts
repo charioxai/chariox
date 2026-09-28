@@ -487,6 +487,8 @@ test("an App-event trigger's gateway takes no requests and registers no endpoint
   assert.equal(config.methods, undefined)
   assert.equal(config.mode, undefined)
   assert.equal(publicationTakesRequests(config), false)
+  // An exported App-event package names the transport itself.
+  assert.equal(publicationTakesRequests({ transport: "event_based" }), false)
 
   let invocations = 0
   const { app } = buildServer(config, {
@@ -499,6 +501,7 @@ test("an App-event trigger's gateway takes no requests and registers no endpoint
     const status = await app.inject({ method: "GET", url: "/.well-known/chariox/publication/status" })
     assert.equal(status.statusCode, 200)
     assert.equal(status.json().route, undefined)
+    assert.equal(status.json().transport, "event_based")
     assert.equal((await app.inject({ method: "GET", url: "/" })).statusCode, 404)
     assert.equal((await app.inject({ method: "POST", url: "/", payload: { prompt: "hello" } })).statusCode, 404)
     assert.equal(invocations, 0)
