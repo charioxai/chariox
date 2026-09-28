@@ -129,7 +129,7 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
 11. **Uninstall/reinstall of all three reference Apps plus a four-client concurrency test (M).** The uninstall/reinstall part needs the delete-data option implemented first. Closes V-PKG-07 and V-PKG-08.
 12. **Rooms and kernels, offline use, many active Apps (M–L).** Covers V1-INT-19, the feasible part of kernel row 6, and V1-INT-22. Also recover the Room environment automatically after a slice restart: it can go failed with `browser_cdp_timeout` on Page.enable until a manual retry or stop/start.
 13. **Deploy closers (S–M):**
-    - invoking an HTTP deployment (a signed-in audience or a public local deployment, V-UX-08 **[user step]**) and a rollback from release #2 in the web after #533 (V-UX-08, V-UX-11);
+    - invoking an HTTP deployment (a signed-in audience or a public local deployment, V-UX-08 **[user step]**) a rollback from release #2 in the web after #533 (V-UX-08, V-UX-11), Cloud readiness 4/4 after #533 and one run per mention on a deployment pinned to Slack ≥ 1.1.6 (V-UX-11);
     - automation state in the App's own view (V-UX-09).
 14. **Candidate reruns (S):** the package corpus, the native probes and the `wire_decode` fuzz target on the release candidate. (The wire fuzzing, V-RUN-04, and the manifest error-code rendering tests, V-PKG-03, are done.)
 15. **Evidence gate (L).** Merge the stack, run hosted CI on the candidate, fix main's 122 baseline failures and follow up the 2 non-baseline ones (renamed environment-only test, load flake) (Apps triage done in #518), and republish dated evidence with revisions, digests and budgets under the plan's evidence path.
