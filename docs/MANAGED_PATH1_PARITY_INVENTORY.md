@@ -290,9 +290,18 @@ node apps/cli/scripts/path1-cloud-reimage-capture.mjs \
 Build `@chariox/kernel-client` first. The output parent must already exist and
 must resolve outside the repository. The command never starts or authorizes
 reimage. It rejects pending receipts, wrong operation/generation/release
-bindings, unchanged identities and incomplete retirement observations. It
+bindings, unchanged worker identities and incomplete retirement observations. It
 retains only allowlisted data in a mode-0600 file and refuses overwrite.
 Cloud's receipt digest is retained, not independently recomputed or verified.
+If the selected source controller deliberately retains the old relay realm,
+add `--shared-controller-target <selected-source-target-id>`. The capture then
+requires current managed-context, Cloud account/profile, and connected local
+kernel identity reads to agree on that controller, distinct from both retired
+and replacement workers. Bracketing reads check identity, not physical socket
+continuity. Only public bindings are retained; profile credentials are excluded.
+The shared realm may remain active, but all old-worker generation, credential,
+target, heartbeat and host-residue retirement checks remain mandatory. Without
+that explicit verified binding, the old realm must be disabled and rotated.
 This capture alone cannot close MP-07 or MP-10. Host, provider, relay, signed
 release and cleanup observations plus the ordinary-kernel comparison are still
 required. Focused fixture tests are not an executed Cloud or VM capture.

@@ -65,6 +65,99 @@ test("captures the exact finalized Cloud operation through one read-only kernel 
   assert.equal(capture.status, undefined, "a capture is not a full acceptance verdict")
 })
 
+function sharedControllerFixture() {
+  const input = fixture()
+  input.binding.sharedControllerTargetId = "controller-target"
+  input.receipt.oldRelayRealmId = "shared-realm"
+  input.receipt.newRelayRealmId = "shared-realm"
+  input.receipt.residueChecks.cloudOldRelayRealmDisabled = false
+  const source = {
+    sourceTargetId: "controller-target", relayRealmId: "shared-realm",
+    machineId: "controller-machine", kernelId: "controller-kernel", keyThumbprint: "9".repeat(64),
+  }
+  const environment = {
+    environmentId: input.binding.environmentId, accountId: "account-1",
+    runtimeGeneration: input.binding.generation, runtimeReleaseDigest: input.binding.releaseDigest,
+    runtimeMachineId: input.receipt.newMachineId, runtimeKernelId: input.receipt.newKernelId,
+    runtimeRelayRealmId: "shared-realm", contextPlan: { source },
+  }
+  const status = { configured: true, connected: true, machine_id: source.machineId, daemon_id: source.kernelId }
+  const profile = { account_id: "account-1", realm_id: "shared-realm", machine_id: source.machineId,
+    machine_credential: "NEVER-RETAIN-CREDENTIAL", cloud_session_token: "NEVER-RETAIN-TOKEN" }
+  Object.assign(input.requestContract, {
+    getManagedEnvironmentRequest: (environmentId) => ({ GetManagedEnvironment: { environmentId } }),
+    relayStatusRequest: () => ({ RelayStatus: null }),
+    cloudRelayStatusRequest: () => ({ CloudRelayStatus: null }),
+  })
+  input.client.send = async (request) => {
+    input.requests.push(request)
+    if ("GetManagedEnvironment" in request) return { ManagedEnvironment: { environment } }
+    if ("RelayStatus" in request) return { RelayStatus: { status } }
+    if ("CloudRelayStatus" in request) return { CloudRelayStatus: { profile } }
+    return { ManagedEnvironmentReimageReceipt: { receipt: input.receipt } }
+  }
+  return { ...input, environment, source, status, profile }
+}
+
+test("captures a retained shared controller realm only with explicit current product bindings", async () => {
+  const input = sharedControllerFixture()
+  const capture = await capturePath1CloudReimage(input)
+  assert.deepEqual(capture.retainedController, {
+    sourceTargetId: "controller-target", machineId: "controller-machine", kernelId: "controller-kernel",
+    relayRealmId: "shared-realm", accountId: "account-1",
+  })
+  assert.equal(capture.residueChecks.cloudOldRelayRealmDisabled, false)
+  assert.equal(capture.residueChecks.cloudOldGenerationRetired, true)
+  assert.equal(input.requests.length, 5)
+  assert.ok(!JSON.stringify(capture).includes("NEVER-RETAIN"))
+})
+
+for (const [name, mutate] of [
+  ["implicit shared realm", (f) => { delete f.binding.sharedControllerTargetId }],
+  ["unselected controller target", (f) => { f.source.sourceTargetId = "other-target" }],
+  ["foreign account", (f) => { f.profile.account_id = "other-account" }],
+  ["foreign realm", (f) => { f.profile.realm_id = "other-realm" }],
+  ["disconnected controller", (f) => { f.status.connected = false }],
+  ["different local kernel", (f) => { f.status.daemon_id = "different-kernel" }],
+  ["retired controller identity", (f) => { f.source.machineId = f.receipt.oldMachineId }],
+  ["replacement as controller", (f) => { f.source.machineId = f.receipt.newMachineId }],
+  ["stale environment generation", (f) => { f.environment.runtimeGeneration++ }],
+  ["stale environment release", (f) => { f.environment.runtimeReleaseDigest = `sha256:${"f".repeat(64)}` }],
+  ["unretired old credentials", (f) => { f.receipt.residueChecks.cloudOldCredentialsRevoked = false }],
+  ["unretired old targets", (f) => { f.receipt.residueChecks.cloudOldTargetsRevoked = false }],
+  ["unretired old generation", (f) => { f.receipt.residueChecks.cloudOldGenerationRetired = false }],
+  ["missing disabled-realm assertion", (f) => { delete f.receipt.residueChecks.cloudOldRelayRealmDisabled }],
+]) {
+  test(`rejects shared-controller capture with ${name}`, async () => {
+    const input = sharedControllerFixture()
+    mutate(input)
+    await assert.rejects(capturePath1CloudReimage(input))
+  })
+}
+
+test("rejects controller identity changes between the bracketing reads", async () => {
+  const input = sharedControllerFixture()
+  const send = input.client.send
+  let statusReads = 0
+  input.client.send = async (request) => {
+    const response = await send(request)
+    if ("RelayStatus" in request && ++statusReads === 2) {
+      return { RelayStatus: { status: { ...input.status, daemon_id: "replacement-connection" } } }
+    }
+    return response
+  }
+  await assert.rejects(capturePath1CloudReimage(input), /connected local kernel/)
+  assert.equal(statusReads, 2)
+})
+
+test("bounds all shared-controller reads by the capture deadline", async () => {
+  const input = sharedControllerFixture()
+  const send = input.client.send
+  input.client.send = (request) => "CloudRelayStatus" in request ? new Promise(() => {}) : send(request)
+  await assert.rejects(capturePath1CloudReimage({ ...input, timeoutMs: 20 }), /timed out/)
+  assert.equal(input.requests.filter((request) => "RelayStatus" in request).length, 1)
+})
+
 for (const [name, mutate, message] of [
   ["wrong operation", (r) => { r.operationId = "operation-other" }, /selected reimage/],
   ["wrong environment", (r) => { r.environmentId = "environment-other" }, /selected reimage/],
@@ -83,6 +176,7 @@ for (const [name, mutate, message] of [
   ["unchanged control identity", (r) => { r.newMachineId = r.oldMachineId }, /rotated control/],
   ["missing rebuild", (r) => { delete r.resourceObservation.rebuildActionId }, /provider rebuild/],
   ["incomplete retirement", (r) => { r.residueChecks.cloudOldHeartbeatsAbsent = false }, /retirement/],
+  ["nonshared realm not retired", (r) => { r.residueChecks.cloudOldRelayRealmDisabled = false }, /realm retirement/],
   ["future completion", (r) => { r.completedAt = "2026-09-27T05:00:00.000Z" }, /completion times/],
 ]) {
   test(`rejects ${name}`, async () => {

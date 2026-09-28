@@ -24,6 +24,59 @@ function validTimestamp(value) {
     && new Date(value).toISOString() === value
 }
 
+async function boundedRead(client, request, deadline) {
+  requireValue(Date.now() < deadline, "Cloud receipt capture timed out")
+  let timer
+  try {
+    return await Promise.race([
+      client.send(request),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Cloud receipt capture timed out")), Math.max(0, deadline - Date.now()))
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function verifyRetainedController({ client, requestContract, binding, receipt, deadline }) {
+  requireValue(validId(binding.sharedControllerTargetId)
+    && ["getManagedEnvironmentRequest", "relayStatusRequest", "cloudRelayStatusRequest"]
+      .every((name) => typeof requestContract[name] === "function"),
+  "shared realm requires an explicit controller target and product binding reads")
+  const read = (request) => boundedRead(client, request, deadline)
+  const before = (await read(requestContract.relayStatusRequest()))?.RelayStatus?.status
+  const environment = (await read(requestContract.getManagedEnvironmentRequest(binding.environmentId)))?.ManagedEnvironment?.environment
+  const profile = (await read(requestContract.cloudRelayStatusRequest()))?.CloudRelayStatus?.profile
+  const after = (await read(requestContract.relayStatusRequest()))?.RelayStatus?.status
+  const source = environment?.contextPlan?.source
+  requireValue(environment?.environmentId === binding.environmentId
+    && environment.runtimeGeneration === binding.generation
+    && environment.runtimeReleaseDigest === binding.releaseDigest
+    && environment.runtimeMachineId === receipt.newMachineId
+    && environment.runtimeKernelId === receipt.newKernelId
+    && environment.runtimeRelayRealmId === receipt.newRelayRealmId
+    && validId(environment.accountId)
+    && source?.sourceTargetId === binding.sharedControllerTargetId
+    && source.relayRealmId === receipt.oldRelayRealmId
+    && validId(source.machineId) && validId(source.kernelId)
+    && source.machineId !== receipt.oldMachineId && source.machineId !== receipt.newMachineId
+    && source.kernelId !== receipt.oldKernelId && source.kernelId !== receipt.newKernelId
+    && /^[a-f0-9]{64}$/.test(source.keyThumbprint),
+  "shared realm controller is not bound to the current managed context")
+  requireValue(before?.configured === true && before.connected === true
+    && after?.configured === true && after.connected === true
+    && before.machine_id === source.machineId && after.machine_id === source.machineId
+    && before.daemon_id === source.kernelId && after.daemon_id === source.kernelId
+    && profile?.machine_id === source.machineId
+    && profile.realm_id === source.relayRealmId && profile.account_id === environment.accountId,
+  "shared realm controller does not match the connected local kernel and Cloud account")
+  // Never retain the profile, which may contain credentials. These existing
+  // reads bracket kernel identity, not physical WebSocket continuity.
+  return { sourceTargetId: source.sourceTargetId, machineId: source.machineId,
+    kernelId: source.kernelId, relayRealmId: source.relayRealmId, accountId: environment.accountId }
+}
+
 export async function resolveCaptureOutput(output, repo = resolve(import.meta.dirname, "../../..")) {
   requireValue(typeof output === "string" && isAbsolute(output), "capture output must be an absolute external evidence path")
   const canonicalRepo = await realpath(repo)
@@ -43,16 +96,9 @@ export async function capturePath1CloudReimage({ client, requestContract, bindin
     && Number.isSafeInteger(requestContract.minimumProtocolVersion) && requestContract.minimumProtocolVersion > 0,
   "kernel receipt request contract is unavailable")
   requireValue(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 30_000, "invalid capture timeout")
-  let timer
-  let response
-  try {
-    response = await Promise.race([
-      client.send(requestContract.getManagedEnvironmentReimageReceiptRequest(binding.environmentId)),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Cloud receipt capture timed out")), timeoutMs) }),
-    ])
-  } finally {
-    clearTimeout(timer)
-  }
+  const deadline = Date.now() + timeoutMs
+  const response = await boundedRead(client,
+    requestContract.getManagedEnvironmentReimageReceiptRequest(binding.environmentId), deadline)
   const receipt = response?.ManagedEnvironmentReimageReceipt?.receipt
   requireValue(receipt && receipt.environmentId === binding.environmentId
     && receipt.operationId === binding.operationId && receipt.generation === binding.generation
@@ -81,18 +127,28 @@ export async function capturePath1CloudReimage({ client, requestContract, bindin
   requireValue(validTimestamp(old.observedAt) && validTimestamp(receipt.requestedAt)
     && Date.parse(old.observedAt) <= Date.parse(receipt.requestedAt),
   "Cloud receipt has an invalid retained baseline time")
-  for (const kind of ["MachineId", "KernelId", "RelayRealmId", "RelayTargetId", "BootstrapGrantId"]) {
+  for (const kind of ["MachineId", "KernelId", "RelayTargetId", "BootstrapGrantId"]) {
     requireValue(validId(receipt[`old${kind}`]) && validId(receipt[`new${kind}`])
       && receipt[`old${kind}`] !== receipt[`new${kind}`], "Cloud receipt lacks rotated control identities")
   }
+  requireValue(validId(receipt.oldRelayRealmId) && validId(receipt.newRelayRealmId),
+    "Cloud receipt lacks relay realm identities")
+  const sharedRealm = receipt.oldRelayRealmId === receipt.newRelayRealmId
+  requireValue(sharedRealm
+    ? receipt.residueChecks?.cloudOldRelayRealmDisabled === false
+    : receipt.residueChecks?.cloudOldRelayRealmDisabled === true && binding.sharedControllerTargetId === undefined,
+  "Cloud receipt has incomplete realm retirement evidence")
   requireValue(/^[1-9][0-9]{0,17}$/.test(receipt.resourceObservation?.rebuildActionId)
     && validId(receipt.providerServerId) && validId(receipt.providerImageId), "Cloud receipt lacks the provider rebuild binding")
   const requiredResidue = ["oldServicesAbsent", "oldProcessesAbsent", "oldStateAbsent",
     "cloudOldMachineRevoked", "cloudOldCredentialsRevoked", "cloudOldTargetsRevoked",
-    "cloudOldHeartbeatsAbsent", "cloudOldRelayRealmDisabled", "cloudOldGenerationRetired"]
+    "cloudOldHeartbeatsAbsent", "cloudOldGenerationRetired"]
   requireValue(requiredResidue.every((key) => receipt.residueChecks?.[key] === true)
     && receipt.cleanupState?.oldGenerationRetired === true
     && receipt.cleanupState?.newGenerationEnrolled === true, "Cloud receipt has incomplete retirement evidence")
+  const retainedController = sharedRealm
+    ? await verifyRetainedController({ client, requestContract, binding, receipt, deadline })
+    : null
   const capturedAt = now().toISOString()
   requireValue(validTimestamp(receipt.requestedAt) && validTimestamp(receipt.completedAt)
     && Date.parse(receipt.completedAt) >= Date.parse(receipt.requestedAt)
@@ -112,37 +168,46 @@ export async function capturePath1CloudReimage({ client, requestContract, bindin
     after: { bootId: fresh.linuxBootId, machineId: fresh.osMachineId },
     controlIdentities: Object.fromEntries(["MachineId", "KernelId", "RelayRealmId", "RelayTargetId", "BootstrapGrantId"]
       .map((kind) => [kind, { before: receipt[`old${kind}`], after: receipt[`new${kind}`] }])),
-    residueChecks: Object.fromEntries(requiredResidue.map((key) => [key, true])),
+    residueChecks: { ...Object.fromEntries(requiredResidue.map((key) => [key, true])),
+      cloudOldRelayRealmDisabled: receipt.residueChecks.cloudOldRelayRealmDisabled },
+    ...(retainedController ? { retainedController } : {}),
     requestedAt: receipt.requestedAt, completedAt: receipt.completedAt,
   }
 }
 
 async function main() {
   const args = process.argv.slice(2)
-  requireValue(args.length === 16, "required flags: --kernel --environment --operation --generation --release --commit --tree --output")
+  requireValue(args.length === 16 || args.length === 18, "required flags: --kernel --environment --operation --generation --release --commit --tree --output; optional: --shared-controller-target")
   const flags = new Map()
-  const allowed = new Set(["--kernel", "--environment", "--operation", "--generation", "--release", "--commit", "--tree", "--output"])
+  const required = ["--kernel", "--environment", "--operation", "--generation", "--release", "--commit", "--tree", "--output"]
+  const allowed = new Set([...required, "--shared-controller-target"])
   for (let index = 0; index < args.length; index += 2) {
     requireValue(allowed.has(args[index]) && !flags.has(args[index]) && args[index + 1], "invalid capture arguments")
     flags.set(args[index], args[index + 1])
   }
+  requireValue(required.every((flag) => flags.has(flag)), "missing required capture argument")
   const endpoint = flags.get("--kernel")
   requireValue(/^ws:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[1-9][0-9]*\/?$/.test(endpoint), "capture requires the reviewed local home kernel loopback endpoint")
   const output = await resolveCaptureOutput(flags.get("--output"))
-  const [ipc, requests] = await Promise.all([
+  const [ipc, requests, relayRequests] = await Promise.all([
     import("../../../packages/kernel-client/dist/ipc.js"),
     import("../../../packages/kernel-client/dist/ipc-managed-environment-requests.js"),
+    import("../../../packages/kernel-client/dist/ipc-relay-control-requests.js"),
   ])
   const { LocalIpcClient } = ipc
-  const client = new LocalIpcClient(endpoint, { controlRequestRetryDeadlineMs: 15_000 })
+  const client = new LocalIpcClient(endpoint, { controlRequestRetryDeadlineMs: 0 })
   try {
     const capture = await capturePath1CloudReimage({ client, binding: {
       environmentId: flags.get("--environment"), operationId: flags.get("--operation"),
       generation: Number(flags.get("--generation")), releaseDigest: flags.get("--release"),
       sourceCommit: flags.get("--commit"), sourceTree: flags.get("--tree"),
+      ...(flags.has("--shared-controller-target") ? { sharedControllerTargetId: flags.get("--shared-controller-target") } : {}),
     }, requestContract: {
       getManagedEnvironmentReimageReceiptRequest: requests.getManagedEnvironmentReimageReceiptRequest,
       minimumProtocolVersion: requests.managedEnvironmentReimageReceiptMinimumProtocolVersion,
+      getManagedEnvironmentRequest: requests.getManagedEnvironmentRequest,
+      relayStatusRequest: relayRequests.relayStatusRequest,
+      cloudRelayStatusRequest: relayRequests.cloudRelayStatusRequest,
     } })
     await writeFile(output, `${JSON.stringify(capture, null, 2)}\n`, { flag: "wx", mode: 0o600 })
     process.stdout.write("Captured finalized Cloud reimage bindings. Full MP-10 evidence remains required.\n")
