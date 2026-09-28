@@ -544,6 +544,13 @@ async fn daemon_health_reads_terminal_projection_without_app_lock() {
 #[tokio::test]
 async fn relay_status_uses_config_projection_without_app_lock() {
     let mut config = DaemonConfig::for_tests();
+    // The isolated runner has no HOME; keep vault configuration in this test's
+    // unique scratch namespace instead of resolving the operator's profile.
+    config.user_config.credential_vault.path = config
+        .local_socket_path
+        .with_extension("vault.json")
+        .display()
+        .to_string();
     config.relay_url = Some("ws://127.0.0.1:9".to_string());
     config.relay_token = Some("secret".to_string());
     config.host_machine_id = "machine-projected".to_string();
