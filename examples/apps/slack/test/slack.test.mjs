@@ -194,3 +194,18 @@ test('without the App\'s identity in the event, any bot message is kept but star
   assert.equal((await kernel.tools.get('list_notifications')({})).notifications.length, 1);
   assert.equal(kernel.occurrences.length, 0);
 });
+
+test('an edit or unfurl of a message starts no run, whoever wrote it', async () => {
+  const kernel = fakeKernel();
+  const own = { api_app_id: 'A1', authorizations: [{ user_id: 'UBOT', is_bot: true }] };
+  const changed = (id, author) => {
+    const base = { ...mention('z'), source: { ...mention('').source, event_type: 'message.channels' } };
+    return [id, { ...base, metadata: { ...base.metadata, ...own, event: {
+      type: 'message', subtype: 'message_changed', hidden: true, channel: 'C1',
+      message: { text: 'https://example.test', ts: base.metadata.event.ts, ...author },
+    } } }];
+  };
+  await kernel.deliver('channel_message', ...changed('EvUnfurl', { user: 'UBOT', bot_id: 'B1', app_id: 'A1' }));
+  await kernel.deliver('channel_message', ...changed('EvEdit', { user: 'U1' }));
+  assert.equal(kernel.occurrences.length, 0);
+});
