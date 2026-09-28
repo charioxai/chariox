@@ -86,7 +86,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | Private filesystem quota, snapshot and update recovery | macOS kernel: Required; Linux kernel: Required | Unverified |
 | Supported Node transports and critical-effect enforcement | macOS kernel: Required; Linux kernel: Required | Unverified |
 | Managed Chromium sandbox and profile persistence | macOS kernel: Actual supported Environment topology; Linux kernel: Local and managed container topology | Unverified |
-| Offline, sleep/reboot, multiple Rooms/kernels and aggregate pressure | macOS kernel: Required; Linux kernel: Required | Unverified |
+| Offline, sleep/reboot, multiple Rooms/kernels and aggregate pressure | macOS kernel: Required; Linux kernel: Required | Partial: relay-offline drill (`offline/`); network-off, sleep/wake [user] and multiple Rooms missing |
 
 ### Integration/adversarial matrix
 
