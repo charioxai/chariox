@@ -158,6 +158,77 @@ pub(super) fn install_package(
         .unwrap(),
     )
 }
+/// Updates the owner's installation to `package` as an approved update
+/// leaves it.
+pub(super) fn update_package(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+    package_bytes: (Vec<u8>, TrustedPublisher),
+) {
+    let (bytes, publisher) = package_bytes;
+    let trust = store
+        .trusted_app_publisher(owner, "com.example", "state-key")
+        .unwrap();
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let candidate = VerifiedInstallCandidate::from_verified(&package, &trust).unwrap();
+    let expected_generation = store
+        .get_app_installation(owner, installation_id)
+        .unwrap()
+        .generation;
+    let AppRegistryOutcome::Update(record) = store
+        .mutate_verified_app_installation(
+            owner,
+            AppVerifiedInstallationMutation::Stage {
+                installation_id: installation_id.into(),
+                expected_generation,
+                candidate,
+                now_ms: 10,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("expected stage")
+    };
+    for operation in [
+        AppRegistryMutation::Decide {
+            token: record.token.clone(),
+            decision: CapabilityDecision::Approved {
+                approval: CapabilityApproval {
+                    decision_id: "state-update".into(),
+                    authority_ref: "kernel-fixture".into(),
+                },
+            },
+            now_ms: 11,
+        },
+        AppRegistryMutation::Quiesce {
+            token: record.token.clone(),
+            now_ms: 12,
+        },
+        AppRegistryMutation::MarkPrepared {
+            token: record.token.clone(),
+            now_ms: 13,
+        },
+    ] {
+        store.mutate_app_installation(owner, operation).unwrap();
+    }
+    store
+        .mutate_verified_app_installation(
+            owner,
+            AppVerifiedInstallationMutation::Commit {
+                token: record.token,
+                now_ms: 14,
+            },
+        )
+        .unwrap();
+}
+pub(super) fn inbox_package_version(version: &str) -> (Vec<u8>, TrustedPublisher) {
+    package_build(false, false, version, 0, true)
+}
 pub(super) fn package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(false)
 }
@@ -226,23 +297,20 @@ fn package_build(
             "ui/index.html".into(),
             b"<!doctype html><title>State fixture</title>".to_vec(),
         ),
-        (
-            "schemas/events.json".into(),
-            {
-                let mut events = vec![json!({
-                    "name":"changed","direction":"outgoing","schemaVersion":1,
-                    "payloadSchema":{"type":"object","additionalProperties":false,
-                        "required":["text"],"properties":{"text":{"type":"string"}}}
-                })];
-                if incoming {
-                    events.push(json!({"name":"received","direction":"incoming",
+        ("schemas/events.json".into(), {
+            let mut events = vec![json!({
+                "name":"changed","direction":"outgoing","schemaVersion":1,
+                "payloadSchema":{"type":"object","additionalProperties":false,
+                    "required":["text"],"properties":{"text":{"type":"string"}}}
+            })];
+            if incoming {
+                events.push(json!({"name":"received","direction":"incoming",
                         "schemaVersion":1,"payloadSchema":{"type":"object","additionalProperties":false,
                         "properties":{"text":{"type":"string"},"source":{},"occurred_at":{"type":"string"},
                             "metadata":{},"artifacts":{"type":"array"},"reply_context":{}}}}));
-                }
-                serde_json::to_vec(&json!({ "events": events })).unwrap()
-            },
-        ),
+            }
+            serde_json::to_vec(&json!({ "events": events })).unwrap()
+        }),
     ]);
     if schema > 0 {
         manifest.migrations = Some(chariox_app_package::Migrations {
@@ -641,7 +709,10 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
     assert_eq!(logs[0].fields["wake_id"], "soon");
     assert_eq!(logs[0].fields["attempt"], 1);
     assert_eq!(logs[0].fields["kernel"], true);
-    assert!(logs[0].fields["reason"].as_str().unwrap().contains("bad occurrence"));
+    assert!(logs[0].fields["reason"]
+        .as_str()
+        .unwrap()
+        .contains("bad occurrence"));
     assert_eq!(
         store
             .app_wakes(AppWakeOperation::Due {

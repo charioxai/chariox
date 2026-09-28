@@ -1,4 +1,4 @@
-//! P1.20: an App-bound deployment runs as a pinned independent copy.
+//! P1.20: an App-bound deployment runs as an independent copy of its release's Apps.
 use super::*;
 use crate::durable_state::app_inbox::AppInboxOperation;
 use chariox_app_runtime::app_inbox::{InboxRoute, InboxSource};
@@ -102,11 +102,16 @@ fn approve(harness: &LocalRouterTestHarness, deployed: &Deployed, release: &str)
         LocalDaemonResponse::DeploymentAppsConsent { consent } => consent,
         response => panic!("unexpected response: {response:?}"),
     };
+    let asked = request();
+    // Protocol 368: App releases approved before are not asked about again.
+    if asked.status == crate::local::DeploymentAppsConsentStatus::Approved {
+        return;
+    }
     harness
         .dispatch(LocalDaemonRequest::RespondToInteraction(
             crate::local::RespondToInteractionRequest {
                 session_id: deployed.graph.session_id.clone(),
-                interaction_id: request().interaction_id,
+                interaction_id: asked.interaction_id,
                 choice_id: "approve".into(),
                 custom_reply: None,
             },
@@ -513,7 +518,7 @@ fn a_copy_install_the_consent_does_not_cover_fails_the_deployment_clearly() {
 }
 
 #[test]
-fn a_copy_whose_data_schema_differs_from_the_release_fails_closed() {
+fn a_release_with_an_older_data_schema_than_the_copy_fails_closed() {
     let root = temp_root("copy-schema");
     let harness = harness_with_app(&root);
     let deployed = deployed(&harness, "copy-schema", true);
@@ -580,7 +585,8 @@ fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
         )
     });
     let first = ensure(&harness, &deployed).unwrap().unwrap();
-    // Another release needs its own consent.
+    // Another release needs its own consent; with the same App releases it
+    // is approved without asking again (protocol 368).
     let refused = ensure_release(&harness, &deployed, "release-2").expect_err("no consent");
     assert!(refused.to_string().contains("approve"), "{refused}");
     approve(&harness, &deployed, "release-2");

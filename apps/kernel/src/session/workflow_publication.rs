@@ -167,13 +167,26 @@ pub struct WorkflowPublicationDefinition {
     creation_request_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_materialization: Option<WorkflowPublicationRuntimeMaterialization>,
-    /// Protocol 366: the App plan (`chariox.publication-apps.v1`) pinned at the
-    /// first deployment preparation. Immutable once pinned.
+    /// The App plan (`chariox.publication-apps.v1`) of the owner's latest
+    /// deployment export (protocol 366; per release since 368).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     apps: Option<Value>,
+    /// Protocol 368: each exported release's App plan by package digest, the
+    /// newest last. Bind, recovery and rollback use the release's own plan.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    release_app_plans: Vec<ReleaseAppPlan>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
+}
+
+/// Rollback reaches this many past releases' App plans.
+const MAX_RELEASE_APP_PLANS: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseAppPlan {
+    pub package_digest: String,
+    pub plan: Value,
 }
 
 impl WorkflowPublicationDefinition {
@@ -237,6 +250,7 @@ impl WorkflowPublicationDefinition {
             creation_request_digest: None,
             runtime_materialization: None,
             apps: None,
+            release_app_plans: Vec::new(),
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -499,11 +513,37 @@ impl WorkflowPublicationDefinition {
         self.apps.as_ref()
     }
 
-    /// Pins the App plan once; a pinned plan is never replaced.
-    pub(crate) fn pin_apps(&mut self, plan: Value) {
-        if self.apps.is_none() {
-            self.apps = Some(plan);
+    /// The App plan an export packages.
+    pub(crate) fn use_apps(&mut self, plan: Value) {
+        self.apps = Some(plan);
+    }
+
+    /// Records the App plan a successful export packaged as its release's.
+    pub(crate) fn record_release_app_plan(&mut self, package_digest: &str, plan: Value) {
+        self.release_app_plans
+            .retain(|release| release.package_digest != package_digest);
+        self.release_app_plans.push(ReleaseAppPlan {
+            package_digest: package_digest.to_owned(),
+            plan: plan.clone(),
+        });
+        let excess = self
+            .release_app_plans
+            .len()
+            .saturating_sub(MAX_RELEASE_APP_PLANS);
+        self.release_app_plans.drain(..excess);
+        self.apps = Some(plan);
+    }
+
+    /// The App plan of the release with this package digest. A publication
+    /// prepared before protocol 368 kept a single plan for all its releases.
+    pub fn release_app_plan(&self, package_digest: &str) -> Option<&Value> {
+        if self.release_app_plans.is_empty() {
+            return self.apps.as_ref();
         }
+        self.release_app_plans
+            .iter()
+            .find(|release| release.package_digest == package_digest)
+            .map(|release| &release.plan)
     }
 
     pub fn creation_request_digest(&self) -> Option<&str> {

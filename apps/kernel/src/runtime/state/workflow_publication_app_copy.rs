@@ -102,9 +102,17 @@ impl KernelRuntimeState {
         release_id: &str,
         package_digest: &str,
     ) -> Result<Option<DeploymentAppCopy>, DaemonError> {
-        let Some(plan) = publication.apps() else {
+        if publication.apps().is_none() {
             return Ok(None);
-        };
+        }
+        // Protocol 368: the release's own plan, so a rollback restores its Apps.
+        let plan = publication
+            .release_app_plan(package_digest)
+            .ok_or_else(|| {
+                copy_error(
+                    "this release's App plan is not recorded on this kernel; export it again",
+                )
+            })?;
         let apps = plan["apps"].as_array().cloned().unwrap_or_default();
         let owner = publication.created_by_user_id().to_owned();
         let consent = self
@@ -431,8 +439,8 @@ impl KernelRuntimeState {
     }
 
     /// The deployment's installation of a planned App: the existing copy of
-    /// the same release, the copy updated to it, or a new copy. A copy whose
-    /// data schema differs from the release's fails closed.
+    /// the same release, the copy updated to it (migrating a newer data
+    /// schema), or a new copy. A release with an older schema fails closed.
     #[allow(clippy::too_many_arguments)]
     async fn ensure_copy_installation(
         &self,
@@ -453,10 +461,12 @@ impl KernelRuntimeState {
                 return Ok(copy.installation_id.clone());
             }
             Some(copy) => {
+                // A newer schema migrates the copy's data forward as any App
+                // update does; App data is never migrated to an older one.
                 let schema = app["schema_version"].as_u64();
-                if schema != Some(u64::from(copy.release.schema_version)) {
+                if schema.is_none_or(|schema| schema < u64::from(copy.release.schema_version)) {
                     return Err(copy_error(format!(
-                        "App `{app_id}` of this release keeps its data in schema version {}, but the deployment's copy has version {}; stop the deployment to start its Apps anew",
+                        "App `{app_id}` of this release keeps its data in schema version {}, older than the deployment copy's version {}; stop the deployment to start its Apps anew",
                         schema.unwrap_or_default(),
                         copy.release.schema_version
                     )));

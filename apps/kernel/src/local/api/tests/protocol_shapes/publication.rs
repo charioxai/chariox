@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -226,8 +226,8 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             agent_id_map: BTreeMap::from([("agent-1".to_string(), "runtime-agent-1".to_string())]),
         },
     );
-    // Protocol 366: the pinned App plan.
-    publication.pin_apps(serde_json::json!({
+    // Protocol 368: a release's App plan, recorded by its package digest.
+    publication.record_release_app_plan(&format!("sha256:{}", "b".repeat(64)), serde_json::json!({
         "schema": "chariox.publication-apps.v1",
         "apps": [{
             "installation_id": "todo",
@@ -669,13 +669,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "2501932d942dbfb9b065f4cb28053bbe86af82b9c7c75398987a7d02a1274bb9"
+        "170f4e9b00090ab2e2804ce7037bb331e900237c4d3d33a3d0e906426654f4ea"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

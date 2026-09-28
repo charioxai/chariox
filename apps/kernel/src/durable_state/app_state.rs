@@ -305,6 +305,25 @@ pub(crate) fn fixture_copy_installation(
     store.fixture_tag_app_installation(owner, installation_id, deployment_id);
 }
 
+/// The owner's installation updated to `package` (approved and committed).
+#[cfg(test)]
+pub(crate) fn fixture_update_installation(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+    package: (Vec<u8>, chariox_app_package::TrustedPublisher),
+) {
+    tests::update_package(store, owner, installation_id, package);
+}
+
+/// The fixture inbox App at another version (same data schema).
+#[cfg(test)]
+pub(crate) fn fixture_inbox_package_version(
+    version: &str,
+) -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::inbox_package_version(version)
+}
+
 #[cfg(test)]
 pub(crate) fn fixture_inbox_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::inbox_package()

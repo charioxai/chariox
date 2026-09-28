@@ -16,6 +16,15 @@ use crate::local::{
 use crate::runtime::{app_operation_budget::AppOperationBudget, command::KernelCommand};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 
+/// Publication id, whether a release was prepared, the plan the next release
+/// packages and the requested release's plan.
+type PreviewedApps = (
+    String,
+    bool,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+);
+
 impl KernelRuntimeState {
     pub(super) async fn prepare_deployment_apps(
         &self,
@@ -49,11 +58,14 @@ impl KernelRuntimeState {
         request: &PreviewDeploymentAppsRequest,
     ) -> LocalDaemonResponse {
         match self.deployment_apps_preview(command, request).await {
-            Ok((publication_id, pinned, plan)) => LocalDaemonResponse::DeploymentAppsPreview {
-                publication_id,
-                pinned,
-                plan,
-            },
+            Ok((publication_id, pinned, plan, release_plan)) => {
+                LocalDaemonResponse::DeploymentAppsPreview {
+                    publication_id,
+                    pinned,
+                    plan,
+                    release_plan,
+                }
+            }
             Err(code) => LocalDaemonResponse::AppRequestFailed { code },
         }
     }
@@ -62,7 +74,7 @@ impl KernelRuntimeState {
         &self,
         command: &KernelCommand,
         request: &PreviewDeploymentAppsRequest,
-    ) -> Result<(String, bool, Option<serde_json::Value>), AppRequestErrorCode> {
+    ) -> Result<PreviewedApps, AppRequestErrorCode> {
         let owner = crate::runtime::app_control::owner(command)?;
         if !identity(&request.session_id) || !identity(&request.publication_ref) {
             return Err(AppRequestErrorCode::InvalidRequest);
@@ -82,25 +94,43 @@ impl KernelRuntimeState {
             return Err(AppRequestErrorCode::Unauthorized);
         }
         let id = publication.id().to_owned();
-        let Some(mut plan) = publication.apps().cloned() else {
-            // Not prepared yet: the plan the owner's current App set gives.
-            let Some((mut plan, capabilities)) = self
-                .read_publication_app_plan(&publication, &snapshot, &owner)
-                .await
-                .map_err(|_| AppRequestErrorCode::Conflict)?
-            else {
-                return Ok((id, false, None));
-            };
-            for app in plan["apps"].as_array_mut().into_iter().flatten() {
-                let installation = app["installation_id"].as_str().unwrap_or_default();
-                app["capabilities"] = capabilities.get(installation).cloned().unwrap_or_default();
-            }
-            return Ok((id, false, Some(plan)));
+        let prepared = publication.apps().is_some();
+        // The release's recorded plan, with its releases' stored capabilities.
+        let release_plan = match request.package_digest.as_deref() {
+            Some(digest) => match publication.release_app_plan(digest).cloned() {
+                Some(mut plan) => {
+                    self.stored_plan_capabilities(&owner, &mut plan).await?;
+                    Some(plan)
+                }
+                None => return Err(AppRequestErrorCode::NotFound),
+            },
+            None => None,
         };
-        // Pinned: the pinned releases' capabilities, from the release store.
+        // Protocol 368: the plan the next release packages, from the owner's
+        // current App set.
+        let Some((mut plan, capabilities)) = self
+            .read_publication_app_plan(&publication, &snapshot, &owner)
+            .await
+            .map_err(|_| AppRequestErrorCode::Conflict)?
+        else {
+            return Ok((id, prepared, None, release_plan));
+        };
+        for app in plan["apps"].as_array_mut().into_iter().flatten() {
+            let installation = app["installation_id"].as_str().unwrap_or_default();
+            app["capabilities"] = capabilities.get(installation).cloned().unwrap_or_default();
+        }
+        Ok((id, prepared, Some(plan), release_plan))
+    }
+
+    /// Adds each planned release's capabilities, from the release store.
+    async fn stored_plan_capabilities(
+        &self,
+        owner: &str,
+        plan: &mut serde_json::Value,
+    ) -> Result<(), AppRequestErrorCode> {
         for app in plan["apps"].as_array_mut().into_iter().flatten() {
             let text = |key: &str| app[key].as_str().unwrap_or_default().to_owned();
-            let (store, reader) = (self.owned.durable_state_store.clone(), owner.clone());
+            let (store, reader) = (self.owned.durable_state_store.clone(), owner.to_owned());
             let (publisher, key, digest) = (
                 text("publisher_id"),
                 text("publisher_key_id"),
@@ -113,7 +143,7 @@ impl KernelRuntimeState {
             .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
             .map_err(AppRequestErrorCode::from)?;
         }
-        Ok((id, true, Some(plan)))
+        Ok(())
     }
 
     async fn deployment_apps_consent(
@@ -179,8 +209,9 @@ impl KernelRuntimeState {
                 Err(AppRequestErrorCode::Conflict)
             };
         }
+        // Protocol 368: exactly the plan this release was exported with.
         let plan = publication
-            .apps()
+            .release_app_plan(&request.package_digest)
             .cloned()
             .ok_or(AppRequestErrorCode::InvalidRequest)?;
         let mut apps = Vec::new();
@@ -250,6 +281,43 @@ impl KernelRuntimeState {
             apps.push(consented);
         }
         let consent = DeploymentConsent { apps, ..consent };
+        // Protocol 368: a release with exactly the App releases the owner
+        // already approved for this deployment is approved without asking
+        // again; its install window starts now.
+        let store = self.owned.durable_state_store.clone();
+        let (reader, deployment, apps) = (
+            owner.clone(),
+            consent.deployment_id.clone(),
+            consent.apps.clone(),
+        );
+        let approved_before = tokio::task::spawn_blocking(move || {
+            store.deployment_apps_approved_before(&reader, &deployment, &apps)
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
+        if approved_before {
+            let store = self.owned.durable_state_store.clone();
+            let (writer, pending) = (owner.clone(), consent.clone());
+            return tokio::task::spawn_blocking(move || {
+                let budget = || AppOperationBudget::from_supervisor(|| false);
+                let recorded = store.begin_deployment_consent(&writer, pending, budget())?;
+                if recorded.status == ConsentStatus::Pending {
+                    store.decide_deployment_consent(
+                        &writer,
+                        &recorded.interaction_id,
+                        true,
+                        budget(),
+                    )?;
+                }
+                store
+                    .deployment_consent(&writer, &recorded.request_id)?
+                    .ok_or(crate::durable_state::app_installation_operations::InstallOperationError::Storage)
+            })
+            .await
+            .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+            .map_err(|_| AppRequestErrorCode::StorageUnavailable);
+        }
         let interaction = RuntimeInteraction::for_kernel_operation(
             consent.interaction_id.clone(),
             format!("deploy:{}", consent.deployment_id),

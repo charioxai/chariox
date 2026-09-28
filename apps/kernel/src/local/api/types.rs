@@ -175,4 +175,11 @@ pub use workspace::*;
 /// before, is approved by the `kernel_deployment_consent:<interaction>`
 /// policy. Copy installations are tagged with their deployment: absent from
 /// `ListAppInstallations`, marked by `AppSetInstallation.deployment_id`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 367;
+/// Version 368 makes App plans per release: each owner export packages the
+/// owner's current App set and records that plan by package digest
+/// (`WorkflowPublicationDefinition.release_app_plans`; `apps` is the latest).
+/// Bind, recovery and rollback use the release's own plan, and a release with
+/// exactly the App releases the owner approved before for the deployment is
+/// consented without asking again. `PreviewDeploymentApps.package_digest`
+/// also returns that release's plan (`DeploymentAppsPreview.release_plan`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 368;

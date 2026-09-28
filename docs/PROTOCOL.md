@@ -2144,6 +2144,29 @@ Workflow trigger and deployment direction:
   or bound to another deployment; the owner's routes resume. Events an
   automation accepted but could not deliver are recorded in the App's log.
   App data is never copied from the owner's installations.
+- protocol 368: App plans are per release, not pinned per publication. Every
+  successful `ExportWorkflowPublicationPackage` by the owner (a new deployment
+  release) reads the owner's current App set and packages that plan; the
+  kernel records it by the export's package digest in
+  `WorkflowPublicationDefinition.release_app_plans` (`{package_digest, plan}`,
+  newest last, the last 16 kept) and `apps` is the latest plan. A granted App
+  that is no longer installed fails the export. The deployment bind, recovery
+  and a rollback (binding an earlier release) re-export with that release's
+  recorded plan, so the package digest still verifies and each release runs
+  with the App versions it was exported with; an App-bound release whose plan
+  is not recorded fails the bind (a publication prepared before 368 keeps its
+  single plan for all releases). A copy is updated in place to the release's
+  App release; a newer data schema migrates the copy's data as any App update
+  does, and a release with an older schema than the copy fails closed.
+  `PrepareDeploymentApps` consents to the plan of exactly the requested
+  package digest (unknown: `InvalidRequest`); when the owner already approved
+  this deployment with exactly the same App releases (app, publisher, key
+  fingerprint, package and capabilities digests) the consent is recorded
+  approved without a prompt, and its install window starts then.
+  `PreviewDeploymentApps` answers the plan the next release would package (the
+  owner's current App set; `pinned` now means a release was prepared) and,
+  with the new optional `package_digest`, that release's recorded plan as
+  `release_plan`, each App with its stored release's capabilities.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -736,6 +736,23 @@ async fn start_publication_runtime_claimed(
         return Err(error);
     }
     if let Some(expected) = launch_context.expected_package_digest.as_deref() {
+        // Protocol 368: the bound release re-exports with its own App plan.
+        let release_apps = publication.release_app_plan(expected).cloned();
+        if publication.apps().is_some() && release_apps.is_none() {
+            let message = format!(
+                "release package {expected} has no App plan recorded on this kernel; export the release again"
+            );
+            let _ = mark_publication_runtime_error(
+                runtime_state,
+                &request.session_id,
+                publication.id(),
+                &message,
+            );
+            return Err(publication_runtime_error(
+                "start workflow publication runtime",
+                message,
+            ));
+        }
         let package = runtime_state.owned.workflow_export_publication_package(
             crate::local::ExportWorkflowPublicationPackageRequest {
                 session_id: request.session_id.clone(),
@@ -744,7 +761,7 @@ async fn start_publication_runtime_claimed(
                 agent_app: None,
                 agent_app_assets_dir: None,
             },
-            None,
+            release_apps.as_ref(),
         )?;
         let LocalDaemonResponse::WorkflowPublicationPackageExported { package_digest, .. } =
             package
