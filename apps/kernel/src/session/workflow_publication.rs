@@ -792,15 +792,31 @@ mod release_app_plan_tests {
         assert_eq!(publication.release_app_plan("sha256:new"), Some(&newer));
         assert_eq!(publication.release_app_plan("sha256:old"), Some(&pinned));
         // Pruning keeps the bound release's plan however many exports follow.
-        publication.deployment = Some(serde_json::json!({"binding": {"package_digest": "sha256:new"}}));
+        publication.deployment =
+            Some(serde_json::json!({"binding": {"package_digest": "sha256:new"}}));
         for export in 0..(MAX_RELEASE_APP_PLANS + 4) {
-            publication.record_release_app_plan(&format!("sha256:later-{export}"), serde_json::json!({"n": export}));
+            publication.record_release_app_plan(
+                &format!("sha256:later-{export}"),
+                serde_json::json!({"n": export}),
+            );
         }
         assert_eq!(publication.release_app_plans.len(), MAX_RELEASE_APP_PLANS);
         assert_eq!(publication.release_app_plan("sha256:new"), Some(&newer));
-        assert_eq!(publication.release_app_plan("sha256:later-0"), None, "a pruned release has no plan");
-        assert_eq!(publication.release_app_plan("sha256:old"), Some(&pinned), "a pre-368 release keeps its plan");
-        assert!(publication.release_app_plans.iter().any(|release| release.package_digest == format!("sha256:later-{}", MAX_RELEASE_APP_PLANS + 3)));
+        assert_eq!(
+            publication.release_app_plan("sha256:later-0"),
+            None,
+            "a pruned release has no plan"
+        );
+        assert_eq!(
+            publication.release_app_plan("sha256:old"),
+            Some(&pinned),
+            "a pre-368 release keeps its plan"
+        );
+        assert!(publication
+            .release_app_plans
+            .iter()
+            .any(|release| release.package_digest
+                == format!("sha256:later-{}", MAX_RELEASE_APP_PLANS + 3)));
         // A publication first prepared at 368 has no such fallback.
         let mut fresh = self::publication();
         fresh.record_release_app_plan("sha256:new", newer.clone());
