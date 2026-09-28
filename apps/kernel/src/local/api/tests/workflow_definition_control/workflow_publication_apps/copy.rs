@@ -375,6 +375,42 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
         .runtime_state()
         .fixture_session(&session_id)
         .is_err());
+    // Starting again is durable before the copy is prepared, so a start that
+    // waits for App approvals does not leave the source looking stopped (the
+    // reconcile would remove the copies it installed). The start itself may
+    // fail here; its intent must not.
+    let _ = harness.dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+        crate::local::ControlWorkflowPublicationRuntimeRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            action: crate::local::WorkflowPublicationRuntimeAction::Start,
+            host: None,
+            port: None,
+            kernel_url: None,
+        },
+    ));
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let durable = states
+        .iter()
+        .find(|(id, _)| *id == deployed.graph.session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == deployed.publication.id())
+        })
+        .expect("the durable publication");
+    let deployment = durable.deployment().expect("the deployment metadata");
+    assert!(deployment.get("desired_state").is_none());
+    assert_eq!(
+        deployment.pointer("/binding/deployment_id"),
+        Some(&serde_json::json!(DEPLOYMENT)),
+    );
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
