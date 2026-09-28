@@ -334,12 +334,27 @@ impl KernelRuntimeState {
         publication: &WorkflowPublicationDefinition,
         key: &str,
     ) -> Result<(String, BTreeMap<String, String>), DaemonError> {
-        let snapshot = self
-            .owned
-            .session_store
-            .read()
-            .resolve_workflow_publication_snapshot(publication.session_id(), publication.id())?
-            .ok_or_else(|| copy_error("the workflow trigger has no immutable source snapshot"))?;
+        let (mut snapshot, source) = {
+            let sessions = self.owned.session_store.read();
+            (
+                sessions
+                    .resolve_workflow_publication_snapshot(
+                        publication.session_id(),
+                        publication.id(),
+                    )?
+                    .ok_or_else(|| {
+                        copy_error("the workflow trigger has no immutable source snapshot")
+                    })?,
+                sessions.get_session(publication.session_id())?,
+            )
+        };
+        // The snapshot names a portable workspace; on its owner's kernel the
+        // copy works in the source session's own workspace, as the source's
+        // local deployment did.
+        if let Some(captured) = snapshot.source_session.as_mut() {
+            captured.workspace_id = source.workspace_id().to_owned();
+            captured.worktree_id = source.worktree_id().to_owned();
+        }
         match self.owned.workflow_materialize_publication_as(
             MaterializeWorkflowPublicationRequest {
                 publication_id: publication.id().to_owned(),

@@ -227,6 +227,13 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
         .fixture_session(&session_id)
         .unwrap();
     assert!(copy_session.is_hidden());
+    // On its owner's kernel the copy works in the source session's workspace.
+    let source = harness
+        .runtime_state()
+        .fixture_session(&deployed.graph.session_id)
+        .unwrap();
+    assert_eq!(copy_session.workspace_id(), source.workspace_id());
+    assert_eq!(copy_session.worktree_id(), source.worktree_id());
     let copy_publication = &copy_session.workflow_publications()[0];
     assert_eq!(copy_publication.id(), deployed.publication.id());
     assert_eq!(
