@@ -331,7 +331,13 @@ export class LocalIpcClient {
   }
 
   async send<TResponse>(request: unknown): Promise<TResponse> {
-    await requireKernelControlCapability(query => this.sendUnchecked(query), request)
+    let admittedSocket: WebSocket | undefined
+    await requireKernelControlCapability(async query => {
+      if (!isWebSocketEndpoint(this.socketPath)) return this.sendUnchecked(query)
+      admittedSocket = await this.ensureWebSocket("control")
+      return this.sendWebSocket(query, "control", admittedSocket)
+    }, request)
+    if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket)
     return this.sendUnchecked<TResponse>(request)
   }
 
@@ -518,7 +524,7 @@ export class LocalIpcClient {
     return sendLocalSocketRequest(this.socketPath, request, IPC_TIMEOUT_MS)
   }
 
-  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control"): Promise<TResponse> {
+  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket): Promise<TResponse> {
     const lifetime = this.requestLifetime.capture()
     const requestId = randomUUID()
     const retryUntilMs = lane === "control"
@@ -530,10 +536,13 @@ export class LocalIpcClient {
       lifetime.throwIfAborted()
       let socket: WebSocket
       try {
-        socket = await this.ensureWebSocket(lane)
+        socket = admittedSocket ?? await this.ensureWebSocket(lane)
+        if (admittedSocket && (this.getWebSocket(lane) !== admittedSocket || admittedSocket.readyState !== WebSocket.OPEN)) {
+          throw new LocalIpcError("admit kernel control", "Kernel connection changed after capability admission; reconcile before retrying")
+        }
       } catch (error) {
         lifetime.throwIfAborted()
-        if (!this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
+        if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
         this.destroyWebSocket(lane)
@@ -581,7 +590,7 @@ export class LocalIpcClient {
         return await pending.promise
       } catch (error) {
         lifetime.throwIfAborted()
-        if (!this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
+        if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
         this.destroyWebSocket(lane)

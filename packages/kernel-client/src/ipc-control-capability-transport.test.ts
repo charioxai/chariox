@@ -2,7 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { LocalIpcClient } from "./ipc.js"
 
-for (const endpoint of ["/tmp/unused-chariox-capability-test.sock", "ws://127.0.0.1:1"]) {
+// WebSocket behavior is covered against real sockets in ipc-control-generation.test.ts.
+for (const endpoint of ["/tmp/unused-chariox-capability-test.sock"]) {
   test(`control requests require connected kernel capability on ${endpoint}`, async () => {
     const client = new LocalIpcClient(endpoint)
     const seen: unknown[] = []
