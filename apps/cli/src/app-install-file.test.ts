@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm, rename, symlink, open } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
+import { AppFileInstaller, formatInstallFailure, formatInstallOperation } from "./app-install-file.js"
 import { AppFileSource, chunkBytes, maxArchiveBytes, InstallFileChanged } from "./app-install-file/source.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
@@ -365,4 +365,40 @@ test("cancelling a lost upload Begin reply recovers its original handle before A
   assert.equal(k.upload!.phase, "aborted")
   assert.ok(!k.requests.some(v => v.PutAppPackageUploadChunk || v.BeginAppInstall))
   await installer.dispose()
+})
+
+test("each stable package error code renders its own message (V-PKG-03)", () => {
+  const codes = [
+    "invalid_arguments", "io", "invalid_developer_key", "invalid_archive", "archive_limit", "invalid_path",
+    "duplicate_path", "invalid_manifest", "invalid_schema", "incompatible_protocol", "incompatible_sdk",
+    "incompatible_contract", "incompatible_resource_policy", "untrusted_publisher", "invalid_signature",
+    "integrity_mismatch", "missing_entry", "unexpected_entry", "unsupported_feature",
+  ]
+  const rendered = codes.map((code) => formatInstallFailure(`app_install_package_${code}`))
+  assert.equal(new Set(rendered).size, codes.length, "every code reads differently")
+  for (const message of rendered) assert.doesNotMatch(message, /^Kernel failure:|could not complete/)
+  assert.deepEqual(
+    Object.fromEntries(codes.map((code, index) => [code, rendered[index]])),
+    {
+      invalid_arguments: "The package request was invalid.",
+      io: "The kernel could not read the package.",
+      invalid_developer_key: "The package's developer key is invalid.",
+      invalid_archive: "The file is not a valid .cxapp archive.",
+      archive_limit: "The package exceeds the archive size or file-count limits.",
+      invalid_path: "The package contains an invalid file path.",
+      duplicate_path: "The package contains the same file path twice.",
+      invalid_manifest: "The package manifest is invalid: unknown, missing or duplicate fields.",
+      invalid_schema: "A tool, event or state schema in the package is invalid.",
+      incompatible_protocol: "The App needs a kernel protocol version this kernel does not support.",
+      incompatible_sdk: "The App was built with an SDK version this kernel does not support.",
+      incompatible_contract: "The App's declared contract is not supported by this kernel.",
+      incompatible_resource_policy: "The App requests more resources than this kernel allows.",
+      untrusted_publisher: "The package's publisher is not trusted by this kernel.",
+      invalid_signature: "The package signature is invalid.",
+      integrity_mismatch: "The package contents do not match its signed digest.",
+      missing_entry: "The package is missing a file its manifest declares.",
+      unexpected_entry: "The package contains a file its manifest does not declare.",
+      unsupported_feature: "The App uses a feature this kernel does not support.",
+    },
+  )
 })
