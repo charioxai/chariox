@@ -252,7 +252,7 @@ impl AppInstallControl {
             // deployments needing the same App are not confused.
             let question = match prompt.challenge.deployment_id() {
                 Some(deployment) => format!(
-                    "{question}\n\nThis installs the App's copy for deployment `{deployment}`; its consent did not cover these capabilities."
+                    "{question}\n\nThis installs the App's copy for deployment `{deployment}`."
                 ),
                 None => question.to_string(),
             };
