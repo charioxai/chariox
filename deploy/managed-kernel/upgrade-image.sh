@@ -787,7 +787,6 @@ verify_selected_release \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
 verify_selected_release "$image_root" "$expected_new_digest" "$next_trusted_public_key" "${next_trusted_builder_public_key:-}"
 if [ "$managed_provider_topology" = path1 ]; then
-  trusted_builder_runtime_key=$install_root/etc/chariox/trusted-builder-public-key
   require_root_owned_directory "$install_root/etc"
   if path_exists "$install_root/etc/chariox"; then
     require_root_owned_directory "$install_root/etc/chariox"
@@ -906,8 +905,11 @@ if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
 fi
 write_phase stopped
 if ! activate_builder_pin "$transaction_root" target; then
-  rollback_transaction || true
-  echo "managed builder pin activation failed" >&2
+  if rollback_transaction; then
+    echo "managed builder pin activation failed; restored previous managed kernel release" >&2
+  else
+    echo "managed builder pin activation failed; rollback remains pending" >&2
+  fi
   exit 1
 fi
 if ! resume_home_migration; then

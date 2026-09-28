@@ -329,6 +329,17 @@ test("upgrade verifies signed current, staged, and already-published releases be
   assert.ok(stopFailure.includes("Path-1 storage services could not be stopped; rollback remains pending"))
 })
 
+test("builder pin activation failure reports whether rollback restored the release", () => {
+  const start = indexOf(upgradeSource, 'if ! activate_builder_pin "$transaction_root" target; then', "pin activation");
+  const end = indexOf(upgradeSource, "if ! resume_home_migration; then", "home migration", start);
+  const branch = upgradeSource.slice(start, end);
+  for (const status of [0, 1]) {
+    const result = spawnSync("sh", ["-c", `activate_builder_pin() { return 1; }\nrollback_transaction() { return ${status}; }\n${branch}`], { encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim(), `managed builder pin activation failed; ${status === 0 ? "restored previous managed kernel release" : "rollback remains pending"}`);
+  }
+})
+
 test("upgrade recovers interrupted phases and rolls back failed migration or health checks", () => {
   assert.ok(upgradeSource.includes("prepared|stopped|activated) rollback_transaction"))
   assert.ok(upgradeSource.includes("recover_transaction\nselect_receipt_path"))
