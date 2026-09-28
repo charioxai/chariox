@@ -361,7 +361,7 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
              WHEN NEW.kind = 'workflow.runtime.updated'
                AND instr(
                    NEW.payload_json,
-                   '"reason":"workflow_queued_prompt_promoted"'
+                   '"reason":"workflow_queue_run_created"'
                ) > 0
              BEGIN
                SELECT RAISE(FAIL, 'injected workflow queue promotion append failure');
@@ -486,7 +486,7 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
     assert_eq!(
         events
             .iter()
-            .filter(|event| event.payload["reason"] == "workflow_queued_prompt_promoted")
+            .filter(|event| event.payload["reason"] == "workflow_queue_run_created")
             .count(),
         1,
         "retry must durably promote exactly one prompt"

@@ -155,6 +155,8 @@ async fn recovery_arms_a_fresh_nonce_without_reusing_a_prior_human_wait() {
     );
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
+            // As the kernel pump does: release decisions whose responder closed.
+            f.state.fixture_sweep_kernel_operation_interactions();
             replacement.pump(&f.state).await;
             let waiting = replacement
                 .0

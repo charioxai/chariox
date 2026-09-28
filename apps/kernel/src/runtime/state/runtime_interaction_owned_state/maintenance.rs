@@ -37,3 +37,11 @@ impl KernelRuntimeOwnedState {
         }
     }
 }
+
+#[cfg(test)]
+impl crate::runtime::state::KernelRuntimeState {
+    /// The kernel pump's decision sweep, for tests that drive a single pump.
+    pub(crate) fn fixture_sweep_kernel_operation_interactions(&self) {
+        self.owned.sweep_kernel_operation_interactions(false);
+    }
+}
