@@ -96,21 +96,31 @@ pub(super) fn register(
 ) -> Result<RegisteredStart> {
     check()?;
     let installation = &binding.token().installation_id;
-    let active = ActiveRelease::load(context.store.path(), binding.clone(), trust.clone())
-        .map_err(preparation_failed(installation, "active_release"))?;
+    let active =
+        ActiveRelease::load(context.store.path(), binding.clone(), trust.clone()).map_err(
+            preparation_failed(installation, binding.token().generation, "active_release"),
+        )?;
     budget.check().map_err(|_| LifecycleError::Stopped)?;
-    let verified = active
-        .verify()
-        .map_err(preparation_failed(installation, "verify_release"))?;
+    let verified = active.verify().map_err(preparation_failed(
+        installation,
+        binding.token().generation,
+        "verify_release",
+    ))?;
     let events = active
         .event_catalog(&verified)
         .map_err(|error| match error {
             ActiveReleaseError::Untrusted => LifecycleError::Authority,
-            error => preparation_failed(installation, "event_catalog")(error),
+            error => {
+                preparation_failed(installation, binding.token().generation, "event_catalog")(error)
+            }
         })?;
     let release = ReleaseStore::open_or_create(context.store.path())
         .and_then(|releases| releases.lease_verified(&verified, active.bytes()))
-        .map_err(preparation_failed(installation, "release_lease"))?;
+        .map_err(preparation_failed(
+            installation,
+            binding.token().generation,
+            "release_lease",
+        ))?;
     check()?;
     // A staged worker whose update opened a migration runs its steps first,
     // always from the snapshot: a run a kernel stop interrupted may have
@@ -118,7 +128,11 @@ pub(super) fn register(
     let mut migrate_from = context
         .store
         .app_migration_from(installation, binding.token().generation)
-        .map_err(preparation_failed(installation, "migration_state"))?;
+        .map_err(preparation_failed(
+            installation,
+            binding.token().generation,
+            "migration_state",
+        ))?;
     if migrate_from.is_some() {
         let crate::durable_state::app_state::AppStateOutcome::Rewound(from) = context
             .store
@@ -128,9 +142,17 @@ pub(super) fn register(
                 crate::durable_state::app_state::AppStateOperation::MigrationRewind,
                 budget.fork(|| false),
             )
-            .map_err(preparation_failed(installation, "migration_rewind"))?
+            .map_err(preparation_failed(
+                installation,
+                binding.token().generation,
+                "migration_rewind",
+            ))?
         else {
-            return Err(LifecycleError::Preparation);
+            return Err(preparation_failed(
+                installation,
+                binding.token().generation,
+                "migration_rewind",
+            )("unexpected_outcome"));
         };
         migrate_from = from;
     }
@@ -152,7 +174,11 @@ pub(super) fn register(
         },
         context.event_config.clone(),
     )
-    .map_err(preparation_failed(installation, "backend_broker"))?;
+    .map_err(preparation_failed(
+        installation,
+        binding.token().generation,
+        "backend_broker",
+    ))?;
     let started = if migrate_from.is_some() {
         AppWorkerOwner::start_migrating_blocking(
             process,
@@ -235,14 +261,22 @@ fn spawn(
     {
         let _ = (context, verified);
         let runtime = chariox_app_runtime::runtime_enrollment::EnrolledRuntime::open_installed()
-            .map_err(|_| LifecycleError::Preparation)?;
+            .map_err(preparation_failed(
+                &binding.token().installation_id,
+                binding.token().generation,
+                "enrolled_runtime",
+            ))?;
         // A staged update starts on a data snapshot; the committed generation
         // starting again after it fails restores that snapshot.
         let committed = context
             .store
             .get_app_installation(binding.owner_id(), &binding.token().installation_id)
             .map(|installation| installation.generation)
-            .map_err(|_| LifecycleError::Preparation)?;
+            .map_err(preparation_failed(
+                &binding.token().installation_id,
+                binding.token().generation,
+                "installation",
+            ))?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_linux(
             runtime,
             release,
@@ -250,12 +284,21 @@ fn spawn(
             migrate_from,
             committed,
         )
-        .map_err(|_| LifecycleError::Preparation)?;
+        .map_err(preparation_failed(
+            &binding.token().installation_id,
+            binding.token().generation,
+            "prepare",
+        ))?;
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }
-        let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default())
-            .map_err(|_| LifecycleError::Preparation)?;
+        let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).map_err(
+            preparation_failed(
+                &binding.token().installation_id,
+                binding.token().generation,
+                "spawn",
+            ),
+        )?;
         Ok(PreparedProcess {
             process,
             #[cfg(test)]
@@ -273,6 +316,7 @@ fn spawn(
 /// code; the kernel log names the step and its cause.
 fn preparation_failed<'a, E: std::fmt::Debug>(
     installation: &'a str,
+    generation: u64,
     step: &'static str,
 ) -> impl FnOnce(E) -> LifecycleError + 'a {
     move |error| {
@@ -281,6 +325,7 @@ fn preparation_failed<'a, E: std::fmt::Debug>(
             "App worker preparation failed",
             serde_json::json!({
                 "installation_id": installation,
+                "generation": generation,
                 "step": step,
                 "code": format!("{error:?}"),
             }),
