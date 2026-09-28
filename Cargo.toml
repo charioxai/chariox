@@ -13,6 +13,7 @@ members = [
 # Vendored upstreams and scratch worktrees carry their own Cargo manifests;
 # keep them out of this workspace.
 exclude = [
+    "packages/app-runtime/fuzz",
     "codex-main",
     "happy-main",
     "opencode-dev",
