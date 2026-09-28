@@ -606,7 +606,10 @@ fn a_release_with_a_newer_data_schema_updates_the_copy() {
     });
     let (digest, files) =
         export(&harness, &first.graph, first.publication.id()).expect("the next release");
-    assert_eq!(package_json_file(&files, "apps.json")["apps"][0]["schema_version"], 1);
+    assert_eq!(
+        package_json_file(&files, "apps.json")["apps"][0]["schema_version"],
+        1
+    );
     let next = Deployed {
         graph: first.graph,
         publication: first.publication,
@@ -614,11 +617,14 @@ fn a_release_with_a_newer_data_schema_updates_the_copy() {
     };
     approve(&harness, &next, "release-2");
     // The copy's update is begun rather than refused for its schema; this
-    // harness runs no App worker, so the update itself cannot complete here.
+    // harness runs no App worker, so the update itself cannot complete here:
+    // it fails, or (under load) is still running at the install deadline.
     let error = pumped_ensure_release(&harness, &next, "release-2").expect_err("no App worker");
-    assert!(!error.to_string().contains("schema version"), "{error}");
+    let error = error.to_string();
+    assert!(!error.contains("schema version"), "{error}");
     assert!(
-        error.to_string().contains("could not be installed for the deployment"),
+        error.contains("could not be installed for the deployment")
+            || error.contains("did not finish installing for the deployment"),
         "{error}"
     );
     drop(harness);
