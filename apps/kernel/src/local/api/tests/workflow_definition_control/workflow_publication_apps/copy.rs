@@ -466,6 +466,43 @@ fn an_app_bound_bind_without_the_owners_consent_is_refused() {
 }
 
 #[test]
+fn a_bind_the_kernel_cannot_verify_is_refused_before_anything_changes() {
+    let root = temp_root("copy-unverified");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-unverified", true);
+    // A release this kernel never exported (as a rollback to a release whose
+    // source changed since): refused before the running release is touched.
+    let error = harness
+        .dispatch(LocalDaemonRequest::BindWorkflowPublicationDeployment(
+            crate::local::BindWorkflowPublicationDeploymentRequest {
+                session_id: deployed.graph.session_id.clone(),
+                publication_ref: deployed.publication.id().into(),
+                setup_id: "setup-1".into(),
+                operation_key: "deployment-setup:setup-1:runtime".into(),
+                deployment_id: DEPLOYMENT.into(),
+                environment_id: "environment-1".into(),
+                release_id: RELEASE.into(),
+                package_digest: format!("sha256:{}", "f".repeat(64)),
+                desired_revision: 1,
+                caller_claims_public_key_pem: PEM.into(),
+            },
+        ))
+        .expect_err("unverifiable release");
+    assert!(
+        error.to_string().contains("export the release again"),
+        "{error}"
+    );
+    let set = app_set(&harness);
+    assert_eq!(set.len(), 1, "nothing was copied");
+    assert!(
+        set[0].inbox_routes[0].active,
+        "the owner's route still receives"
+    );
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_copy_install_the_consent_does_not_cover_fails_the_deployment_clearly() {
     let root = temp_root("copy-prompt");
     let harness = harness_with_app(&root);

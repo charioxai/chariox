@@ -225,6 +225,21 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
         }
     }
 
+    // Verify the release before stopping the one that runs (a rollback after
+    // the source changed is refused): a refused bind leaves it serving.
+    let digests = bound_release_package_digests(
+        runtime_state,
+        &request.session_id,
+        &publication,
+        &binding.package_digest,
+        None,
+    )?;
+    if let Err(message) = validate_bound_release(&publication, &binding.package_digest, &digests) {
+        return Err(publication_runtime_error(
+            "bind workflow publication deployment",
+            message,
+        ));
+    }
     if runtime_state
         .owned
         .workflow_publication_runtimes
