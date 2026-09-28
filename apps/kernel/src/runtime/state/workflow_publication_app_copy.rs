@@ -352,6 +352,14 @@ impl KernelRuntimeState {
         // copy works in the source session's own workspace, as the source's
         // local deployment did.
         if let Some(captured) = snapshot.source_session.as_mut() {
+            for agent in &mut snapshot.agents {
+                if agent.workspace_id() == Some(captured.workspace_id.as_str()) {
+                    agent.set_workspace_id(Some(source.workspace_id().to_owned()));
+                }
+                if agent.worktree_id() == Some(captured.worktree_id.as_str()) {
+                    agent.set_worktree_id(Some(source.worktree_id().to_owned()));
+                }
+            }
             captured.workspace_id = source.workspace_id().to_owned();
             captured.worktree_id = source.worktree_id().to_owned();
         }
