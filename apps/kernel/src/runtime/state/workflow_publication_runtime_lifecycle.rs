@@ -258,7 +258,6 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
             "publication runtime launch returned an unexpected response",
         ));
     };
-    persist_publication_deployment(runtime_state, &request.session_id)?;
     let Some(local_url) = local_url else {
         return Ok(bound_publication_response(
             publication,
@@ -885,6 +884,11 @@ async fn start_publication_runtime_claimed(
         Some(local_url.clone()),
         Some(deployment),
     )?;
+    // A bound deployment (a bind or a recovery) survives a restart, with its
+    // copy's binding.
+    if launch_context.binding.is_some() {
+        persist_publication_deployment(runtime_state, &request.session_id)?;
+    }
     Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
         publication,
         action: request.action,
