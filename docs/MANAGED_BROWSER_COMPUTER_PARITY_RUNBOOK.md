@@ -20,8 +20,11 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
    result. Never copy a signing private key to the target or config.
 3. Exact clean OSS and Cloud 40-character SHAs. The image must identify the OSS
    SHA and the attended Web deployment must identify the Cloud SHA.
-4. Kernel protocol 322 or newer, exact relay protocol and released relay
-   version, and a fresh heartbeat for the expected immutable kernel/machine.
+4. A kernel compatible with the released adapter and client, exact relay
+   protocol and released relay version, and a fresh heartbeat for the expected
+   immutable kernel/machine. The complete Path-1 flow additionally requires
+   protocol 351 home controls; an older browser-only capability minimum does
+   not admit the complete flow.
 5. Released Web, local TUI, and remote TUI clients, authenticated through their
    normal product paths. Do not pass their cookies or tokens to this harness.
 6. Codex, OpenCode, and Claude advertised through official provider harnesses.
@@ -49,6 +52,23 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
    closed on a mismatched loader proof or target identity.
 10. Conservative ceilings for RSS, CPU, free memory/disk, heartbeat age, and
    post-cleanup RSS/disk deltas, with enough reserve to complete cleanup.
+
+### Storage and signing-key retention
+
+Keep source worktrees free of build outputs and runtime state. Use an explicit
+remote build-output directory and check its free-space reserve before and
+during builds. Record the exact process or unit that owns each temporary
+directory; settle it before cleanup. Retain small result receipts separately
+from rebuildable compiler caches, archives, and image exports.
+
+Release and builder private signing keys are durable credentials, not build
+artifacts. Store them outside disposable task/build directories with mode0600,
+and maintain a separately protected backup. Record only public fingerprints in
+evidence. Before artifact cleanup, inventory retained credentials and trust
+pins explicitly; never recursively delete their parent as build scratch.
+Recovery must verify the original public identity before signing. If the
+private signer is lost, stop signing and obtain an explicit trust-rotation
+decision. A public key or an unrelated development signer cannot replace it.
 
 Create a regular mode-0600 metadata JSON file outside both repositories. It
 contains no credential or secret value:
