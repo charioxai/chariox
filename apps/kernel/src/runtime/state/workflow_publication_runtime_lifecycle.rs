@@ -121,14 +121,26 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
             // The stop is durable first: a restart never serves it again.
             persist_publication_deployment(runtime_state, &request.session_id)?;
             // A stopped App-bound deployment keeps no copy; the owner's
-            // routes it had taken over resume.
+            // routes it had taken over resume. The stop stands if removal
+            // fails for now: the runtime reconcile removes the copy of a
+            // stopped source.
             if let Some(binding) = copied {
-                remove_deployment_app_copy(
+                if let Err(error) = remove_deployment_app_copy(
                     runtime_state,
                     publication.created_by_user_id(),
                     &binding.deployment_id,
                 )
-                .await?;
+                .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.publication_runtime",
+                        "a stopped deployment's copy will be removed by the reconcile",
+                        serde_json::json!({
+                            "deployment_id": binding.deployment_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
             }
             Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
                 publication,
