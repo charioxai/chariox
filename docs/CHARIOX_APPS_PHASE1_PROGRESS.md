@@ -1534,7 +1534,7 @@ one error in the unfinished publisher-file WIP carried into this merge.
 
 ## Implementation status (2026-09-26)
 
-Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS stack is #433 → #434 → #435 → #436 → #438 → #439 → #441 → #442 → #443 → #444 → #445 → #446 → #447 → #455 → #456 → #457 → #458 → #459 → #460 → #461 → #462 → #463 → #464 → #470 → #471 → #473 → #474 → #477 → #478 → #479 → #480 → #481. Side fixes #467, #468, #472, #476. Side PRs are #430, #431, #437, #440, #448, #452. Web work is in chariox-cloud #218 → #220 → #221 → #222.
+Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS stack is #433 → #434 → #435 → #436 → #438 → #439 → #441 → #442 → #443 → #444 → #445 → #446 → #447 → #455 → #456 → #457 → #458 → #459 → #460 → #461 → #462 → #463 → #464 → #470 → #471 → #473 → #474 → #477 → #478 → #479 → #480 → #481 → #482 → #484 → #485 → #486 → #487 → #488 → #489 → #490 → #491 → #492 → #493 → #494 → #495 → #497 → #498 → #499 → #500 → #501 → #504 → #505 → #507. From #507 it branches: #508 → #510, with #514, #515, #516, #517, #518 (full-suite fixes; lands with or after #430), #519 and #520 each stacked on #510; #509; and #511 → #512 → #513 → #521. Side fixes #467, #468, #472, #476, #503, #506. Side PRs are #430 (merged into #518), #431 → #469 → #496, #437 → #472, #440, #448, #452, #483, #502. Web work is in chariox-cloud #218 → #220 → … → #234 → #240 → #243 → #245 → #247 → #248, with #246 on #240.
 
 "Live" means the scenario was driven on the local isolated stack: macOS kernel, local relay and Docker slice, with the web terminal in a browser. It does not mean the released-terminal matrix row passes.
 
