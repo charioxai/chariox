@@ -150,12 +150,15 @@ function containedPackagePath(root: string, configuredPath: string): string {
   return join(resolve(root), pathname)
 }
 
-// Packages exported before protocol 364 carry the removed `reply_mode`.
+// Packages exported before protocol 364 carry the removed `reply_mode`, and
+// enabled replies as the `notification.reply` action, which 364 refuses.
 function withoutLegacyReplyMode(value: unknown): unknown {
   const record = objectRecord(value)
   if (!record || !("reply_mode" in record)) return value
   const { reply_mode: _removed, ...rest } = record
-  return rest
+  return Array.isArray(rest.action_ids)
+    ? { ...rest, action_ids: rest.action_ids.filter((action) => action !== "notification.reply") }
+    : rest
 }
 
 function exactObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {

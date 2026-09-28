@@ -94,7 +94,7 @@ test("accepts documents exported before protocol 364 that still carry reply_mode
       endpoint_id: "endpoint-1",
       queue_ref: null,
       reply_mode: "thread",
-      action_ids: [],
+      action_ids: ["notification.reply", "pull_request.label"],
       source_environment_id: "source-environment",
       source_revision: 1,
       activation: { connection_id: "connection-1", environment_id: "environment-1", mode: "authorized" },
@@ -122,6 +122,7 @@ test("accepts documents exported before protocol 364 that still carry reply_mode
 
   assert.equal(requests.length, 1)
   assert.equal("reply_mode" in requests[0]!.CreateWorkflowEventBinding!, false)
+  assert.deepEqual(requests[0]!.CreateWorkflowEventBinding!.action_ids, ["pull_request.label"])
 })
 
 test("rejects changed destination authorization before contacting the kernel", async () => {

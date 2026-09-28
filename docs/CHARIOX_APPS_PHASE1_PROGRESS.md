@@ -172,7 +172,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 |---|---|---|---|
 | V-UX-01 | App Tab and viewer isolation | Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment. | Partial (see verification) |
 | V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Partial: three widths (`screens/responsive-*`) |
-| V-UX-03 | Accessibility | Automated audit plus manual VoiceOver pass for every App view. | Partial: axe 0 violations; VoiceOver [user] |
+| V-UX-03 | Accessibility | Automated audit plus manual VoiceOver pass for every App view. | Partial: axe 0 violations; VoiceOver done for Todo, Slack and Documents views [user] |
 | V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Partial (see verification) |
 | V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial: live remote TUI (`remote-tui/`) |
 | V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Partial (see verification) |
@@ -180,7 +180,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (see verification) |
 | V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Partial (see verification) |
 | V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Partial (see verification) |
-| V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Not started (P1.19) |
+| V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Not started (plan P1.20) |
 
 ### Reference-App acceptance
 
