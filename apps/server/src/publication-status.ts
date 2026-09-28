@@ -13,6 +13,7 @@ import type {
 } from "@chariox/kernel-client/kernel-types"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
+import { publicationTakesRequests } from "./publication-config.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { publicationHealthDetails } from "./publication-provider-readiness.js"
@@ -58,7 +59,7 @@ function basePublicationStatusPayload(publication: WorkflowPublicationConfig) {
     queue_ref: publication.queue_ref ?? "default",
     transport,
   }
-  if (transport !== "schedule_only") {
+  if (publicationTakesRequests(publication)) {
     payload.mode = publication.mode ?? "sync"
     payload.route = publication.route ?? "/*"
     payload.methods = publication.methods ?? ["GET", "POST"]

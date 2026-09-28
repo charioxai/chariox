@@ -38,6 +38,7 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
+import { publicationTakesRequests } from "../publication-config.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 
 test("GET /health returns an ok status payload", async () => {
@@ -462,6 +463,44 @@ test("schedule-only publication exposes status without ingress routes", async ()
       payload: { input: { prompt: "hello" } },
     })
     assert.equal(formInvoke.statusCode, 404)
+    assert.equal(invocations, 0)
+  } finally {
+    await app.close()
+  }
+})
+
+test("an App-event trigger's gateway takes no requests and registers no endpoint", async () => {
+  const config = publicationConfigFromKernelRecord({
+    id: "pub-events",
+    session_id: "session-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    kind: "event_based",
+    transport: null,
+    enabled: true,
+    created_by_user_id: "local",
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }, "ws://kernel")
+  assert.equal(config.kind, "event_based")
+  assert.equal(config.route, undefined)
+  assert.equal(config.methods, undefined)
+  assert.equal(config.mode, undefined)
+  assert.equal(publicationTakesRequests(config), false)
+
+  let invocations = 0
+  const { app } = buildServer(config, {
+    invokeWorkflow: async () => {
+      invocations += 1
+      return { accepted: true, workflow_run: { id: "run-event", status: "Running" } }
+    },
+  })
+  try {
+    const status = await app.inject({ method: "GET", url: "/.well-known/chariox/publication/status" })
+    assert.equal(status.statusCode, 200)
+    assert.equal(status.json().route, undefined)
+    assert.equal((await app.inject({ method: "GET", url: "/" })).statusCode, 404)
+    assert.equal((await app.inject({ method: "POST", url: "/", payload: { prompt: "hello" } })).statusCode, 404)
     assert.equal(invocations, 0)
   } finally {
     await app.close()

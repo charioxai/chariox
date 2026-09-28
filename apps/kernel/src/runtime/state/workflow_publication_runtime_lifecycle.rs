@@ -234,7 +234,7 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
     {
         stop_publication_runtime(runtime_state, &process_key).await?;
     }
-    let port = if is_schedule_only_publication(&publication) {
+    let port = if !publication_has_ingress(&publication) {
         None
     } else {
         Some(reserve_ephemeral_publication_runtime_port()?)
@@ -400,7 +400,7 @@ async fn recover_bound_publication_runtime(
     process_key: String,
     now_ms: u64,
 ) {
-    let port = if is_schedule_only_publication(&publication) {
+    let port = if !publication_has_ingress(&publication) {
         None
     } else {
         match reserve_ephemeral_publication_runtime_port() {
@@ -679,8 +679,8 @@ async fn start_publication_runtime_claimed(
         })
         .unwrap_or(DEFAULT_PUBLICATION_RUNTIME_HOST)
         .to_string();
-    let is_schedule_only = is_schedule_only_publication(&publication);
-    let port = publication_runtime_port(request.port, is_schedule_only);
+    let no_ingress = !publication_has_ingress(&publication);
+    let port = publication_runtime_port(request.port, no_ingress);
     if let Some(existing) = runtime_state
         .owned
         .workflow_publication_runtimes
@@ -725,7 +725,7 @@ async fn start_publication_runtime_claimed(
         &kernel_url,
         launch_context.expected_package_digest.as_deref(),
     );
-    if let Err(error) = validate_publication_runtime_bind_address(&host, port, is_schedule_only) {
+    if let Err(error) = validate_publication_runtime_bind_address(&host, port, no_ingress) {
         let message = error.to_string();
         let _ = mark_publication_runtime_error(
             runtime_state,
@@ -785,7 +785,7 @@ async fn start_publication_runtime_claimed(
         }
         _ => None,
     };
-    let local_url = if is_schedule_only {
+    let local_url = if no_ingress {
         None
     } else {
         Some(publication_local_url(&host, port))
@@ -832,7 +832,7 @@ async fn start_publication_runtime_claimed(
     })?;
     let process_id = child.id();
     if let Err(message) =
-        wait_for_publication_runtime_start(&mut child, &host, port, is_schedule_only).await
+        wait_for_publication_runtime_start(&mut child, &host, port, no_ingress).await
     {
         if let Some(path) = caller_claims_config.as_ref() {
             let _ = fs::remove_file(path);
@@ -865,8 +865,7 @@ async fn start_publication_runtime_claimed(
             },
         )
         .await;
-    let has_ingress = publication_has_ingress(&publication);
-    let runtime_status = launched_publication_runtime_status(has_ingress);
+    let runtime_status = launched_publication_runtime_status(no_ingress);
     let mut deployment = publication_runtime_deployment_metadata(
         runtime_status,
         &host,
@@ -910,7 +909,7 @@ async fn start_publication_runtime_claimed(
         open_url: local_url.clone(),
         viewer_url: local_url,
         process_id,
-        message: Some(launched_publication_runtime_message(has_ingress).to_string()),
+        message: Some(launched_publication_runtime_message(no_ingress).to_string()),
     })
 }
 
@@ -1207,7 +1206,7 @@ async fn wait_for_publication_runtime_start(
     child: &mut Child,
     host: &str,
     port: u16,
-    is_schedule_only: bool,
+    no_ingress: bool,
 ) -> Result<(), String> {
     let deadline = Instant::now() + PUBLICATION_RUNTIME_START_TIMEOUT;
     loop {
@@ -1221,7 +1220,7 @@ async fn wait_for_publication_runtime_start(
                 stderr_suffix(&stderr),
             ));
         }
-        if is_schedule_only || TcpStream::connect((host, port)).is_ok() {
+        if no_ingress || TcpStream::connect((host, port)).is_ok() {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -1685,12 +1684,8 @@ fn publication_local_url(host: &str, port: u16) -> String {
     format!("http://{}:{}/", host, port)
 }
 
-fn is_schedule_only_publication(publication: &WorkflowPublicationDefinition) -> bool {
-    publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
-}
-
-/// Schedule-only and App-event triggers take no requests: their runtime is
-/// running once launched, with no endpoint registration to wait for.
+/// Schedule-only and App-event triggers take no requests: their gateway gets
+/// no port or local URL, and its runtime is running once launched.
 fn publication_has_ingress(publication: &WorkflowPublicationDefinition) -> bool {
     !matches!(
         publication.kind(),
@@ -1699,8 +1694,8 @@ fn publication_has_ingress(publication: &WorkflowPublicationDefinition) -> bool 
     )
 }
 
-fn publication_runtime_port(requested_port: Option<u16>, is_schedule_only: bool) -> u16 {
-    if is_schedule_only {
+fn publication_runtime_port(requested_port: Option<u16>, no_ingress: bool) -> u16 {
+    if no_ingress {
         0
     } else {
         requested_port.unwrap_or(DEFAULT_PUBLICATION_RUNTIME_PORT)
@@ -1710,9 +1705,9 @@ fn publication_runtime_port(requested_port: Option<u16>, is_schedule_only: bool)
 fn validate_publication_runtime_bind_address(
     host: &str,
     port: u16,
-    is_schedule_only: bool,
+    no_ingress: bool,
 ) -> Result<(), DaemonError> {
-    if is_schedule_only {
+    if no_ingress {
         return Ok(());
     }
     if port == 0 {
@@ -1729,16 +1724,16 @@ fn validate_publication_runtime_bind_address(
         })
 }
 
-fn launched_publication_runtime_status(has_ingress: bool) -> &'static str {
-    if has_ingress {
-        "starting"
-    } else {
+fn launched_publication_runtime_status(no_ingress: bool) -> &'static str {
+    if no_ingress {
         "running"
+    } else {
+        "starting"
     }
 }
 
-fn launched_publication_runtime_message(has_ingress: bool) -> &'static str {
-    if !has_ingress {
+fn launched_publication_runtime_message(no_ingress: bool) -> &'static str {
+    if no_ingress {
         "publication runtime running; its trigger takes no requests, so no ingress endpoint is exposed"
     } else {
         "publication runtime starting; endpoint registration will publish a relay display URL when available"
@@ -1846,14 +1841,14 @@ mod tests {
 
     #[test]
     fn launched_ingress_runtime_waits_for_endpoint_registration() {
-        assert_eq!(launched_publication_runtime_status(true), "starting");
-        assert!(launched_publication_runtime_message(true).contains("endpoint registration"));
+        assert_eq!(launched_publication_runtime_status(false), "starting");
+        assert!(launched_publication_runtime_message(false).contains("endpoint registration"));
     }
 
     #[test]
     fn launched_runtime_without_ingress_is_running_without_registration() {
-        assert_eq!(launched_publication_runtime_status(false), "running");
-        assert!(launched_publication_runtime_message(false).contains("no ingress endpoint"));
+        assert_eq!(launched_publication_runtime_status(true), "running");
+        assert!(launched_publication_runtime_message(true).contains("no ingress endpoint"));
     }
 
     #[test]

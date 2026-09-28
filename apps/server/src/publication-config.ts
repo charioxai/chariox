@@ -313,6 +313,12 @@ export async function loadPublicationConfigFromKernel(
   }
 }
 
+/** Schedule-only and App-event triggers take no requests: no HTTP routes and
+ * no endpoint registration. */
+export function publicationTakesRequests(publication: { transport?: string | undefined; kind?: string | undefined }): boolean {
+  return publication.transport !== "schedule_only" && publication.kind !== "event_based"
+}
+
 export function publicationConfigFromKernelRecord(
   publication: WorkflowPublicationDefinition,
   kernelEndpoint = defaultKernelEndpoint(),
@@ -329,7 +335,9 @@ export function publicationConfigFromKernelRecord(
     queue_ref: publication.queue_ref ?? "default",
     kernel_endpoint: kernelEndpoint,
   }
-  if (transport !== "schedule_only") {
+  if (publication.kind) config.kind = publication.kind
+  const takesRequests = publicationTakesRequests({ transport, kind: publication.kind ?? undefined })
+  if (takesRequests) {
     config.route = publication.route ?? defaultRouteForTransport(transport)
     config.mode = normalizePublicationMode(publication.mode) ?? defaultModeForTransport(transport)
     if (parser) config.parser = parser
@@ -338,7 +346,7 @@ export function publicationConfigFromKernelRecord(
   if (publication.poll_ms != null) config.poll_ms = publication.poll_ms
   if (traceExposure) config.trace_exposure = traceExposure
   if (transport) config.transport = transport
-  const methods = transport === "schedule_only"
+  const methods = !takesRequests
     ? null
     : normalizeHttpMethods(publication.methods) ?? defaultMethodsForTransport(transport)
   if (methods) config.methods = methods
