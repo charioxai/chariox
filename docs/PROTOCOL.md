@@ -1972,7 +1972,8 @@ Workflow trigger and deployment direction:
   endpoint as the owner's pseudonymous event owner, with an idempotency key
   scoped to the installation. The App never holds the provider credential;
   anything else is refused (`CONNECTION_NOT_GRANTED`, `CAPABILITY_REQUIRED`).
-  An action whose request may have reached the generator without an answer
+  An action whose request may have reached the generator without a definite
+  answer (no reply, or a 5xx from the generator or a gateway in front of it)
   fails with `APP_CONNECTION_OUTCOME_UNCERTAIN`. The kernel never replays it,
   and it is retryable only when the App supplied its own `idempotencyKey`.
 - protocol 360 (retired in 365): an event binding moves to an App. `MoveEventBindingToApp

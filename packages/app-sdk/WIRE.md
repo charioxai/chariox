@@ -147,8 +147,13 @@ generator-fed occurrence carried; the generator binds it to the connection.
 The App never holds the provider credential. A connection that was not granted
 is `CONNECTION_NOT_GRANTED`; an undeclared action is `CAPABILITY_REQUIRED`.
 Calls with the same `idempotencyKey` are performed once, so an App passes one to
-retry safely; without it every call is a new action. `CONNECTION_ACTION_FAILED`
-is retryable unless the generator refused the action itself.
+retry safely; without it every call is a new action. When the request may have
+reached the generator without a definite answer (a lost reply, or a 5xx from the
+generator or a gateway in front of it), the call fails with
+`APP_CONNECTION_OUTCOME_UNCERTAIN`: the kernel never replays it, and it is
+retryable only when the App supplied `idempotencyKey`. Any other
+`CONNECTION_ACTION_FAILED` is retryable unless the generator refused the action
+itself.
 
 ## Worker-to-supervisor requests
 

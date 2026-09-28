@@ -17,8 +17,9 @@ impl Broker for Connections {
 }
 
 /// A generator that accepts every action and records the requests it got.
-/// With `answer` false it acts and then drops the connection unanswered.
-fn fake_generator(answer: bool) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
+/// With `reply` None it acts and then drops the connection unanswered; with a
+/// status it acts and answers that status, as a gateway losing the reply does.
+fn fake_generator(reply: Option<u16>) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let received = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -55,8 +56,16 @@ fn fake_generator(answer: bool) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
             })
             .to_string();
             server_received.lock().unwrap().push(request);
-            if !answer {
-                continue;
+            match reply {
+                None => continue,
+                Some(200) => {}
+                Some(status) => {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    continue;
+                }
             }
             let _ = write!(
                 stream,
@@ -71,7 +80,7 @@ fn fake_generator(answer: bool) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
 #[test]
 fn an_app_acts_only_through_granted_connections_with_declared_actions() {
     let fixture = Fixture::new(Mode::Ready);
-    let (url, received) = fake_generator(true);
+    let (url, received) = fake_generator(Some(200));
     let mut config = crate::config::DaemonConfig::for_tests();
     config.event_generator_management_targets = std::collections::BTreeMap::from([(
         "dev.chariox.slack".to_string(),
@@ -191,8 +200,17 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
 
 #[test]
 fn a_lost_generator_reply_is_uncertain_and_never_replayed() {
+    lost_reply_is_uncertain(None);
+}
+
+#[test]
+fn a_gateway_error_after_sending_is_uncertain_and_never_replayed() {
+    lost_reply_is_uncertain(Some(502));
+}
+
+fn lost_reply_is_uncertain(reply: Option<u16>) {
     let fixture = Fixture::new(Mode::Ready);
-    let (url, received) = fake_generator(false);
+    let (url, received) = fake_generator(reply);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.event_generator_management_targets = std::collections::BTreeMap::from([(
         "dev.chariox.slack".to_string(),

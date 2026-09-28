@@ -1220,8 +1220,10 @@ impl AegsActionFailure {
     pub(crate) fn retryable(&self) -> bool {
         !matches!(self.status, Some(status) if (400..500).contains(&status) && status != 429)
     }
+    /// A sent request the generator did not refuse (no answer, or a 5xx from
+    /// it or a gateway in front of it) may have acted.
     pub(crate) fn outcome_unknown(&self) -> bool {
-        self.sent && self.status.is_none()
+        self.sent && self.status.map_or(true, |status| status >= 500)
     }
 }
 impl std::fmt::Display for AegsActionFailure {
@@ -1963,7 +1965,10 @@ mod tests {
         assert!(retryable(Some(503)));
         assert!(retryable(None));
         assert!(failure(None, String::new()).outcome_unknown());
-        assert!(!failure(Some(503), String::new()).outcome_unknown());
+        assert!(failure(Some(502), String::new()).outcome_unknown());
+        assert!(failure(Some(503), String::new()).outcome_unknown());
+        assert!(!failure(Some(409), String::new()).outcome_unknown());
+        assert!(!failure(Some(429), String::new()).outcome_unknown());
         assert!(!unsent(String::new()).outcome_unknown());
     }
 }
