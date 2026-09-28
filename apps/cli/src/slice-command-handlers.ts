@@ -1002,7 +1002,7 @@ async function openSliceScreen(
       deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
       return
     }
-    if (deps.isRelayConnection?.() && !deps.createViewerPublicKey) {
+    if (deps.isRelayConnection?.() && !await deps.createViewerPublicKey?.()) {
       deps.flashFooter("remote slice viewing requires this CLI's paired key-bound relay identity; issue a bound token with /relay cloud client-token", "error")
       return
     }
@@ -1035,9 +1035,12 @@ async function openSliceScreen(
     }
     let endpoint: SliceDisplayEndpoint
     try {
-      const viewerPublicKey = deps.createViewerPublicKey
-        ? await deps.createViewerPublicKey()
-        : (await createRelayKeypair()).publicKeyBase64
+      const pairedPublicKey = await deps.createViewerPublicKey?.()
+      if (deps.isRelayConnection?.() && !pairedPublicKey) {
+        deps.flashFooter("remote slice viewing requires this CLI's paired key-bound relay identity; issue a bound token with /relay cloud client-token", "error")
+        return
+      }
+      const viewerPublicKey = pairedPublicKey ?? (await createRelayKeypair()).publicKeyBase64
       endpoint = await deps.getSliceDisplayEndpoint(slice.id, {
         sessionId,
         attachmentId,

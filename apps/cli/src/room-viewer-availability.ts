@@ -30,7 +30,7 @@ export type RoomViewerAvailabilityResult = {
 
 export type RoomViewerAvailabilityDeps = {
   attachmentId?: () => string | null
-  createViewerPublicKey?: () => Promise<string>
+  createViewerPublicKey?: () => Promise<string | null>
   isRelayConnection?: () => boolean
   send: <TResponse>(request: unknown) => Promise<TResponse>
 }
@@ -115,15 +115,6 @@ export async function readRoomViewerAvailability(
   if (preflight.state !== "check_required" || !checkEndpoint) {
     return { binding, availability: preflight }
   }
-  if (deps.isRelayConnection?.() && !deps.createViewerPublicKey) {
-    return {
-      binding,
-      availability: {
-        state: "error",
-        message: "remote Room viewing requires this CLI's paired key-bound relay identity; issue a bound token with /relay cloud client-token",
-      },
-    }
-  }
   const attachmentId = deps.attachmentId?.()
   if (!attachmentId) {
     return {
@@ -135,9 +126,17 @@ export async function readRoomViewerAvailability(
     }
   }
   try {
-    const viewerPublicKey = deps.createViewerPublicKey
-      ? await deps.createViewerPublicKey()
-      : (await createRelayKeypair()).publicKeyBase64
+    const pairedPublicKey = await deps.createViewerPublicKey?.()
+    if (deps.isRelayConnection?.() && !pairedPublicKey) {
+      return {
+        binding,
+        availability: {
+          state: "error",
+          message: "remote Room viewing requires this CLI's paired key-bound relay identity; issue a bound token with /relay cloud client-token",
+        },
+      }
+    }
+    const viewerPublicKey = pairedPublicKey ?? (await createRelayKeypair()).publicKeyBase64
     const endpointResponse = await deps.send<SliceDisplayEndpointResponse>(
       getSliceDisplayEndpointRequest(slice.id, {
         sessionId,

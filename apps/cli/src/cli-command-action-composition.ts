@@ -426,7 +426,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     const url = buildHostedCloudViewUrl(apiUrl, target)
     return { url, opened: await openExternalUrl(url) }
   }
-  const relayIdentity = client.getRelayClientIdentity()
   const handlers = createCommandActionHandlers({
     ...(resolveConfiguredCloudRelayApiUrl(preferencesState())
       ? { cloudRelayApiUrl: resolveConfiguredCloudRelayApiUrl(preferencesState()) }
@@ -453,9 +452,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     multiAgentResponseLayout,
     maxAgentsPerScreen,
     isRelayConnection: () => client.isRelayTransport(),
-    ...(relayIdentity
-      ? { createViewerPublicKey: async () => relayIdentity.publicKeyBase64 }
-      : {}),
+    createViewerPublicKey: async () => client.isRelayTransport()
+      ? client.getRelayClientIdentity()?.publicKeyBase64 ?? null
+      : null,
     flashFooter,
     appendNotice,
     sendRoomEnvironmentRequest: (request) => client.send(request),

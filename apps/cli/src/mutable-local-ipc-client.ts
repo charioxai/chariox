@@ -84,6 +84,9 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     isRelayTransport() {
       return currentClient.isRelayTransport()
     },
+    getManagedTargetResourceTelemetry(...args: Parameters<LocalIpcClient["getManagedTargetResourceTelemetry"]>) {
+      return currentClient.getManagedTargetResourceTelemetry(...args)
+    },
     send<TResponse>(request: unknown): Promise<TResponse> {
       return currentClient.send<TResponse>(request)
     },
@@ -114,6 +117,10 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     destroy(): void {
       currentClient.destroy()
     },
+  } satisfies Pick<LocalIpcClient, keyof LocalIpcClient> & {
+    currentClient: () => LocalIpcClient
+    replaceClient: (nextClient: LocalIpcClient) => Promise<void>
+    swapClient: (nextClient: LocalIpcClient) => LocalIpcClient
   }
 
   return proxy as MutableLocalIpcClient
