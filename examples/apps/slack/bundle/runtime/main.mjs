@@ -103,10 +103,7 @@ export default function register(chariox) {
   // Whether Slack says this App itself acted: its bot user (from the event's
   // authorizations) or its app id. Without that identity, any bot counts.
   function ownEvent(metadata) {
-    // An edit or link unfurl names its author inside the changed message.
-    const event = metadata?.event?.subtype === 'message_changed'
-      ? metadata.event.message ?? {}
-      : metadata?.event ?? {};
+    const event = metadata?.event ?? {};
     const bots = (Array.isArray(metadata?.authorizations) ? metadata.authorizations : [])
       .filter(value => value?.is_bot && value.user_id).map(value => value.user_id);
     const app = metadata?.api_app_id;
@@ -135,6 +132,9 @@ export default function register(chariox) {
   // Deliveries are at least once; the occurrence identity keeps a redelivered
   // Slack event from being stored or forwarded twice.
   async function receive(kind, { occurrenceId, payload }) {
+    // Edits, unfurls and deletions (hidden message events) are not new
+    // messages, and their text and author live elsewhere: they are not kept.
+    if (payload.metadata?.event?.hidden) return null;
     const accept = forward => change(items => {
       if (items.some(item => item.id === occurrenceId)) return undefined;
       const item = notification(kind, occurrenceId, payload);
@@ -154,8 +154,7 @@ export default function register(chariox) {
     // This App's own messages and reactions are kept but start no run: a
     // reply or reaction posted by an automation must not trigger it again.
     try {
-      // Edits and unfurls (hidden message events) are not new messages.
-      await accept(!payload.metadata?.event?.hidden && !ownEvent(payload.metadata));
+      await accept(!ownEvent(payload.metadata));
     } catch (error) {
       if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
       await accept(false);

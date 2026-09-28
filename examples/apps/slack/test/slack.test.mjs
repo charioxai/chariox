@@ -195,7 +195,7 @@ test('without the App\'s identity in the event, any bot message is kept but star
   assert.equal(kernel.occurrences.length, 0);
 });
 
-test('an edit or unfurl of a message starts no run, whoever wrote it', async () => {
+test('an edit or unfurl of a message is not kept and starts no run, whoever wrote it', async () => {
   const kernel = fakeKernel();
   const own = { api_app_id: 'A1', authorizations: [{ user_id: 'UBOT', is_bot: true }] };
   const changed = (id, author) => {
@@ -208,4 +208,5 @@ test('an edit or unfurl of a message starts no run, whoever wrote it', async () 
   await kernel.deliver('channel_message', ...changed('EvUnfurl', { user: 'UBOT', bot_id: 'B1', app_id: 'A1' }));
   await kernel.deliver('channel_message', ...changed('EvEdit', { user: 'U1' }));
   assert.equal(kernel.occurrences.length, 0);
+  assert.equal((await kernel.tools.get('list_notifications')({})).notifications.length, 0);
 });
