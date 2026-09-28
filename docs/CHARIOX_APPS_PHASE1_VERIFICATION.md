@@ -51,15 +51,15 @@ The matrix rows are the ledger's 91 plus V-UX-11 (added 2026-09-27). The revised
 |---|---|---|---|
 | Verified | 2 (V1-INT-29, V-PKG-02) | 0 | 2 |
 | Implemented | 11 (V1-INT-10, V1-INT-11, V1-INT-19, V-PKG-03, V-PKG-04, V-PKG-07, V-PKG-08, V-RUN-03, V-RUN-04, V-UX-07, V-UX-10) | 0 | 11 |
-| Partial | 70 | 11 | 81 |
+| Partial | 69 | 11 | 80 |
 | Unverified | 0 | 1 (Evidence) | 1 |
-| Needs user | 2 (Kernel "Managed Chromium…", V1-INT-01) | 1 (Browser persistence) | 3 |
+| Needs user | 3 (Kernel "Managed Chromium…", V1-INT-01, V1-INT-15) | 1 (Browser persistence) | 4 |
 | Phase 2 | 7 (2 terminal rows, V1-INT-12/27/28/30/31) | 0 | 7 |
 
 By matrix:
 - Terminal: 12 Partial, 2 Phase 2.
 - Kernel: 5 Partial, 1 Needs user.
-- Integration: 22 Partial, 3 Implemented, 1 Verified, 1 Needs user, 5 Phase 2.
+- Integration: 21 Partial, 3 Implemented, 1 Verified, 2 Needs user, 5 Phase 2.
 - Package: 3 Partial, 4 Implemented, 1 Verified.
 - Worker: 8 Partial, 2 Implemented.
 - SDK: 8 Partial.
@@ -124,7 +124,6 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
 9. **Viewer and UX evidence (M):**
    - V-UX-02 screenshot matrix: 5 widths × 200 % zoom × light/dark × 3 Apps.
    - V-UX-03 automated audit: axe-core in the slice Chromium.
-   - Two concurrent viewers of different sizes, with IME and paste (V1-INT-15, non-screen-reader part).
    - An App-origin attack page in real Chromium, covering WebRTC, workers, nested frames, downloads, loopback and metadata IP (V1-INT-14, V-UX-01), plus a DevTools capture.
 10. **Interactive TUI drills plus a command-parity snapshot (S–M).** Drive `/app install|update|dev|logs|file grant|file save|automation add|open` in the TUI (`tui-drive.py`) and snapshot the command catalog against the CLI (V-UX-04). Fills the local-TUI cells of most terminal rows.
 11. **Uninstall/reinstall of all three reference Apps plus a four-client concurrency test (M).** The uninstall/reinstall part needs the delete-data option implemented first. Closes V-PKG-07 and V-PKG-08.
@@ -197,7 +196,7 @@ The ledger uses the old numbering; the revised-plan ID is in brackets.
 | V1-INT-12 Step-up authentication [—] | Phase 2 | Revised plan: "Step-up authentication… Moved from Phase 1 on 2026-09-24" (V2-AUTH-01). | — | — |
 | V1-INT-13 Capability-expanding update [12] | Partial | Unit: decline keeps generation 1 (#446); no early capability use: while the owner decides on a network-expanding update, and after a decline, the active generation keeps its own release and approval (`an_update_that_changes_capabilities_asks_the_owner_again`, #512). Live approved capability expansions: Documents 1.1.0 `externalFiles` (`ev:p1-13-file-grants`), Slack 1.1.0 connections (`ev:app-event-routes-dummy-drill.json`). | No live decline; no crash of a capability-expanding update. Next: decline drill plus kill at quiesce on a capability update. | S–M |
 | V1-INT-14 App-origin escape [13] | Partial | Controller tests: CSP sandbox, `BlockedByClient`, WebRTC removal, popups, DNS prefetch, 404/non-GET (#436, 145 tests). | No live attack App in real Chromium (#436 comment: the real-Chromium WebRTC check is pending). Next: hostile view probing cookies, IndexedDB, workers, frames, fetch, WebSocket, WebRTC, downloads, loopback and metadata IP across two Apps and Rooms. | M |
-| V1-INT-15 Concurrent viewer semantics [14] | Partial [user step: screen reader] | Accessibility outline projection (#470). Two web viewers (1280x800 and 375x812) on one Room share one 1280x800 desktop with an unchanged viewport revision, and take/release control from either shows in both at once (`room-two-viewers-state-*.txt`). Paste and IME (`v1-int-15-paste/`): pasting "— café ✓" into Todo through the Room clipboard and ctrl+v works; typed CJK is stored correctly and, after the slice gained CJK and emoji fonts (#525, +86 MB), renders correctly live. | Screen reader **[user step]**. After a slice restart the Room environment can go failed (`browser_cdp_timeout` on Page.enable); retry or stop/start recovers it. | M |
+| V1-INT-15 Concurrent viewer semantics [14] | Needs user | Accessibility outline projection (#470). Two web viewers (1280x800 and 375x812) on one Room share one 1280x800 desktop with an unchanged viewport revision, and take/release control from either shows in both at once (`room-two-viewers-state-*.txt`). Paste and IME (`v1-int-15-paste/`): pasting "— café ✓" into Todo through the Room clipboard and ctrl+v works; typed CJK is stored correctly and, after the slice gained CJK and emoji fonts (#525, +86 MB), renders correctly live. After a slice restart the Room environment can go failed (`browser_cdp_timeout` on Page.enable); retry or stop/start recovers it. | Screen reader **[user]**. | M |
 | V1-INT-16 Transport conformance and SSRF [15] | Partial | SDK Fetch/SSE/Octokit tests against broker fixtures; kernel numeric-peer and TLS design; the kernel HTTP fixtures run locally: the 26 `runtime::app_http` tests pass (policy: exact routes, DNS private/IPv6-mapped/excess answers denied, connected socket must match the checked endpoint; transport: SSE, streaming upload, cancellation, non-replayable interrupted upload, bounded queues; streams), evidence `v1-int-16-http/app-http.log`. | No measured source adaptations; no live DNS-rebinding, redirect or IPv6 checks. Next: a live Fetch conformance App. | M–L |
 | V1-INT-17 Slack contract cutover [16] | Partial | Live Slack parity with the real workspace (`ev:p1-11-live-slack-reply.json`, `ev:screens/slack-live-*.png`). Binding moves and undo (`ev:event-binding-cutover-drill.json`, `event-binding-move-drill.json`) and lost-ack replay (`ev:p1-11-moved-binding-replay.json`) are historical: protocol 365 retired direct bindings and the move. Generic client UI and filters (`ev:p1-11-generic-trigger-ui.json`, `p1-11-resource-filter.json`, `p1-11-web-channel-bindings.json`). | The old reply surface and direct bindings are removed (finding 3, protocols 364–365). Deliberate fan-out case not run. Next: priority item 4. | S–M |
 | V1-INT-18 Schedule correctness [17] | Partial [user step: sleep/wake] | Overdue wake after kernel restart (`ev:p1-12-overdue/drill.txt`); wake revision in Todo (#438); wake tests (#433, #458). | Nothing covers >25 days, a clock jump, a TZ/DST change, edit/delete across the due time, or an update across the due time. Next: wake unit/integration tests with a mocked clock plus live edit/delete/update drills. | M |
