@@ -81,7 +81,7 @@ Chariox must export the exact profile-scoped Keychain item automatically when ma
 - Private signing keys and provider credentials are durable assets, never build
   artifacts. Keep them outside repositories, worktrees, task scratch, evidence,
   container layers, and compiler output. Use a dedicated `~/.chariox/keys/`
-  directory with mode0700 and private files with mode0600.
+  directory with mode 0700 and private files with mode 0600.
 - Before using a key, verify its public fingerprint against the approved public
   inventory. Never print private material, put it in prompts/logs, or transfer it
   to a builder or deployment target. Targets receive public verification pins only.
@@ -102,6 +102,8 @@ Chariox must export the exact profile-scoped Keychain item automatically when ma
   same-machine backup is under
   `/Users/miguel/.chariox-key-backups/managed-release/2026-09-28-v1/`.
   Both trees are excluded from every artifact/worktree cleanup.
+  Open item: an encrypted off-device backup destination needs owner approval.
+  Until its restore is tested, machine-loss recovery remains unproven.
 
 ## Coding style
 
