@@ -7,6 +7,7 @@ import type {
 import type {
   CliOptions,
 } from "./cli-types.js"
+import { cliAppUsage, tuiAppHelp } from "./app-command-catalog.js"
 import { describeCliError } from "./runtime.js"
 
 export function parseArgs(args: string[]): CliOptions {
@@ -213,7 +214,7 @@ function printUsage() {
   process.stdout.write([
     "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
     "       chariox-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]",
-    "       chariox app list|status|journal [args] [kernel or relay connection options]",
+    cliAppUsage(),
     "",
     "commands:",
     "  /stop                 request cancellation of the active provider turn",
@@ -287,9 +288,7 @@ function printUsage() {
     "  /config set <p> <v>   update the Chariox user config",
     "  /config workspace-live-sync off|managed|tracked set global workspace live sync policy",
     "  /notifications ...     discover, install, inspect, reconnect, and remove notification services",
-    "  /app list [--after id] [--limit n] list installed Apps",
-    "  /app status <id>       show an App installation",
-    "  /app journal <id>      show retained App updates",
+    ...tuiAppHelp(),
     "  /cloud                open Chariox Cloud terminal",
     "  /cloud link           link this machine to Chariox Cloud",
     "  /cloud status         show Cloud and relay status",

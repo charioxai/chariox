@@ -3,6 +3,7 @@ import { basename } from "node:path"
 import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-client/ipc-requests"
 import { appCommandArgs, executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
+import { cliOnlyAppVerbs } from "./app-command-catalog.js"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
 import { AppPublisherEnrollment, formatPublisherReview } from "./app-publisher-file.js"
@@ -24,6 +25,10 @@ export async function handleAppSlashCommand(
 ): Promise<void> {
   if (!deps.sendAppRequest) {
     deps.flashFooter("Apps are unavailable in this kernel", "error")
+    return
+  }
+  if (cliOnlyAppVerbs.has(command.args[0] ?? "")) {
+    deps.flashFooter(`app ${command.args[0]} runs in a shell: use chariox app ${command.args[0]}`, "error")
     return
   }
   if (command.args[0] === "publisher") {
