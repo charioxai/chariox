@@ -771,7 +771,7 @@ async fn start_publication_runtime_claimed(
     let copy_session_id = match launch_context.binding.as_ref() {
         Some(binding) if publication.apps().is_some() => {
             match deployment_app_copy(runtime_state, &publication, binding).await {
-                Ok(session_id) => Some(session_id),
+                Ok(session_id) => session_id,
                 Err(error) => {
                     let _ = mark_publication_runtime_error(
                         runtime_state,
@@ -1388,8 +1388,9 @@ async fn deployment_app_copy(
     runtime_state: &KernelRuntimeState,
     publication: &WorkflowPublicationDefinition,
     binding: &WorkflowPublicationDeploymentBinding,
-) -> Result<String, DaemonError> {
-    runtime_state
+) -> Result<Option<String>, DaemonError> {
+    // `None`: the bound release uses no App, so it runs from the source.
+    Ok(runtime_state
         .ensure_deployment_app_copy(
             publication,
             &binding.deployment_id,
@@ -1397,13 +1398,7 @@ async fn deployment_app_copy(
             &binding.package_digest,
         )
         .await?
-        .map(|copy| copy.session_id)
-        .ok_or_else(|| {
-            publication_runtime_error(
-                "start workflow publication runtime",
-                "the publication's App plan names no App",
-            )
-        })
+        .map(|copy| copy.session_id))
 }
 
 #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
@@ -1411,7 +1406,7 @@ async fn deployment_app_copy(
     _runtime_state: &KernelRuntimeState,
     _publication: &WorkflowPublicationDefinition,
     _binding: &WorkflowPublicationDeploymentBinding,
-) -> Result<String, DaemonError> {
+) -> Result<Option<String>, DaemonError> {
     Err(publication_runtime_error(
         "start workflow publication runtime",
         "Apps are not supported on this platform",

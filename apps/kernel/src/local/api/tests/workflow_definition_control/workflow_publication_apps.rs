@@ -321,6 +321,82 @@ fn an_app_automation_feeding_an_event_trigger_is_pinned_and_packaged() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// A publication that had Apps and uses none now: its next release records an
+/// explicit empty plan (never the previous release's) and binds without a copy.
+#[test]
+fn a_release_after_its_last_app_is_removed_records_an_empty_plan() {
+    let root = temp_root("apps-removed");
+    let harness = harness_with_app(&root);
+    let graph = create_publication_test_graph(&harness, "apps-removed");
+    let publication = publish(&harness, &graph, "todo-due", "event_based");
+    harness
+        .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
+            ConfigureAppAutomationRequest {
+                installation_id: "installed".into(),
+                automation_id: "reminders".into(),
+                expected_revision: 0,
+                event_name: "changed".into(),
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+                queue_ref: None,
+                scheduled: false,
+            },
+        ))
+        .expect("automation");
+    let (with_apps, files) = export(&harness, &graph, publication.id()).expect("release 1");
+    assert_eq!(
+        package_json_file(&files, "apps.json")["apps"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    harness
+        .dispatch(LocalDaemonRequest::DisableAppAutomation(
+            crate::local::DisableAppAutomationRequest {
+                installation_id: "installed".into(),
+                automation_id: "reminders".into(),
+                expected_revision: 1,
+            },
+        ))
+        .expect("disable");
+    let (without, files) = export(&harness, &graph, publication.id()).expect("release 2");
+    assert_ne!(without, with_apps);
+    assert_eq!(
+        package_json_file(&files, "apps.json")["apps"],
+        serde_json::json!([])
+    );
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::GetWorkflowPublication(
+            GetWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::WorkflowPublication { publication } => publication,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(
+        publication
+            .release_app_plan(&without)
+            .map(|plan| &plan["apps"]),
+        Some(&serde_json::json!([]))
+    );
+    // Both releases verify for a bind: each re-exports with its own plan.
+    for digest in [&with_apps, &without] {
+        assert_eq!(
+            harness
+                .runtime_state()
+                .fixture_bound_release_package_digest(&graph.session_id, publication.id(), digest)
+                .expect("re-export"),
+            *digest
+        );
+    }
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// A failed export records nothing; the next successful one records the plan
 /// it packaged and persists it.
 #[test]

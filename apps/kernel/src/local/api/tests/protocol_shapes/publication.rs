@@ -229,31 +229,42 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     // Protocol 368: a release's App plan, recorded by its package digest,
     // on a publication prepared before 368 (its single plan is kept).
     publication.use_apps(serde_json::json!({"schema": "chariox.publication-apps.v1", "apps": []}));
-    publication.record_release_app_plan(&format!("sha256:{}", "b".repeat(64)), serde_json::json!({
-        "schema": "chariox.publication-apps.v1",
-        "apps": [{
-            "installation_id": "todo",
-            "app_id": "dev.chariox.todo",
-            "version": "1.0.0",
-            "publisher_id": "dev.chariox",
-            "publisher_key_id": "key-1",
-            "publisher_key_fingerprint": "sha256:key",
-            "package_digest": format!("sha256:{}", "a".repeat(64)),
-            "schema_version": 1,
-            "capabilities_digest": "sha256:capabilities",
-            "grants": [{"agent_id": "agent-1", "node_ids": ["node-1"]}],
-            "automations": [{
-                "automation_id": "reminders",
-                "event_name": "todo_due",
-                "event_version": 1,
-                "endpoint_id": "endpoint-1",
-                "queue_id": "workflow-1:default",
-                "scheduled": true,
+    publication.record_release_app_plan(
+        &format!("sha256:{}", "b".repeat(64)),
+        serde_json::json!({
+            "schema": "chariox.publication-apps.v1",
+            "apps": [{
+                "installation_id": "todo",
+                "app_id": "dev.chariox.todo",
+                "version": "1.0.0",
+                "publisher_id": "dev.chariox",
+                "publisher_key_id": "key-1",
+                "publisher_key_fingerprint": "sha256:key",
+                "package_digest": format!("sha256:{}", "a".repeat(64)),
+                "schema_version": 1,
+                "capabilities_digest": "sha256:capabilities",
+                "grants": [{"agent_id": "agent-1", "node_ids": ["node-1"]}],
+                "automations": [{
+                    "automation_id": "reminders",
+                    "event_name": "todo_due",
+                    "event_version": 1,
+                    "endpoint_id": "endpoint-1",
+                    "queue_id": "workflow-1:default",
+                    "scheduled": true,
+                }],
+                "inbox_routes": [],
+                "connections": [],
             }],
-            "inbox_routes": [],
-            "connections": [],
-        }],
-    }));
+        }),
+    );
+    // Seventeen more releases prune the oldest recorded plan, so
+    // `pruned_release_digests` is part of the shape.
+    for release in 0..17 {
+        publication.record_release_app_plan(
+            &format!("sha256:{release:064x}"),
+            serde_json::json!({"schema": "chariox.publication-apps.v1", "apps": []}),
+        );
+    }
     let session = crate::session::RuntimeSession::new(
         "session-1",
         None,
@@ -671,7 +682,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "f16645df0c4f807735e9909b55869d8a231dcd3dc2794c9f5838a245f25e99e4"
+        "86a3896ad5670b6b84130d1360f28e6d133cd3ff3ac8914541c5066990d034a8"
     );
 }
 

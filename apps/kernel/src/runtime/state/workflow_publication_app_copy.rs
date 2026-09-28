@@ -115,6 +115,12 @@ impl KernelRuntimeState {
             })?;
         let apps = plan["apps"].as_array().cloned().unwrap_or_default();
         let owner = publication.created_by_user_id().to_owned();
+        // A release that uses no App runs from the source, as one without a plan.
+        if apps.is_empty() {
+            self.remove_deployment_copy_sessions(&owner, deployment_id, None)
+                .await?;
+            return Ok(None);
+        }
         let consent = self
             .approved_deployment_consent(&owner, deployment_id, release_id, package_digest)
             .await?;

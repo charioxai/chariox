@@ -2175,7 +2175,11 @@ Workflow trigger and deployment direction:
   publication's single pre-368 plan after later releases record their own; a
   368 release whose plan was pruned (more than 16 releases ago) has none, so
   its bind fails with "no App plan recorded" and `PrepareDeploymentApps` and
-  `PreviewDeploymentApps` refuse it.
+  `PreviewDeploymentApps` refuse it. A publication that had Apps and uses none
+  now (its last grant or feeding automation removed) packages and records an
+  explicit empty plan (`apps: []`) for its next release, never the previous
+  release's; a release whose plan names no App binds and runs from the source,
+  with no copy and no Apps consent.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

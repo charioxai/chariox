@@ -32,10 +32,20 @@ impl KernelRuntimeState {
         if publication.created_by_user_id() != caller_user_id {
             return Ok(None);
         }
-        Ok(self
+        let plan = self
             .read_publication_app_plan(&publication, &snapshot, caller_user_id)
             .await?
-            .map(|(plan, _)| plan))
+            .map(|(plan, _)| plan);
+        // A publication that had Apps and uses none now packages an explicit
+        // empty plan, recorded as its release's: never the previous release's.
+        Ok(plan.or_else(|| {
+            publication.apps().is_some().then(|| {
+                serde_json::json!({
+                    "schema": crate::workflow_publication_apps::PUBLICATION_APPS_SCHEMA,
+                    "apps": [],
+                })
+            })
+        }))
     }
 }
 
