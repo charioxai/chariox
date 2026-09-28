@@ -6,8 +6,18 @@ export default function register(chariox) {
   chariox.tools.register('refuse', async () => {
     throw new chariox.AppError('INVALID_ARGUMENT', 'refused on purpose');
   });
-  chariox.tools.register('slow', async ({ ms }) => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+  // Logs whether the kernel cancelled the call (`app logs` shows it).
+  chariox.tools.register('slow', async ({ ms }, { signal }) => {
+    const started = Date.now();
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+    const afterMs = Date.now() - started;
+    if (signal.aborted) {
+      await chariox.log.write('info', 'slow call cancelled', { ms, afterMs }).catch(() => {});
+      throw new chariox.AppError('CANCELLED', 'cancelled by the caller');
+    }
     return { waited: ms };
   });
 }
