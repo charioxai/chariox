@@ -111,4 +111,6 @@ pub use workspace::*;
 /// Version 350 exposes paired writable-layer and persistent-home slice caps in user config and
 /// coordinates the signed managed auto-stop quiescence HTTP contract.
 /// Version 351 adds home-bound disposable Cloud worker controls and managed keep-running.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 351;
+/// Versions 344–365 also exist on a divergent Apps branch and do not imply these controls.
+/// Version 366 adds explicit kernel control capabilities to RelayStatus.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 366;

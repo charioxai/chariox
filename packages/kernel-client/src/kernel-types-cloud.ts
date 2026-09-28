@@ -5,6 +5,7 @@ import type {
 } from "./kernel-types-session.js"
 
 export type RelayStatus = {
+  capabilities?: string[]
   configured: boolean
   connected: boolean
   relay_url?: string | null

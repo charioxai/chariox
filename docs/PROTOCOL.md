@@ -1781,10 +1781,24 @@ Workflow trigger and deployment direction:
   returned worker machine and kernel. Create preserves `clientRequestId` for
   Cloud idempotency; transport failure must not trigger an automatic mutation
   retry or a fallback to a different home or Cloud authority.
-  Clients consuming these controls require local-daemon protocol 351. Other
-  client minimums remain unchanged. Deploy the matching Cloud allocation,
+  Protocol numbers 344–365 were independently allocated on the Apps branch;
+  a numeric minimum alone does not prove these controls exist. Protocol 366
+  adds `RelayStatus.capabilities`, defaulting to an empty list when absent.
+  Clients consuming these controls require protocol 366 and must query the
+  selected home through its authenticated kernel connection before mutation.
+  Require `disposable_worker_control_v1` for disposable controls and
+  `managed_environment_keep_running_v1` for managed keep-running. Verify the
+  response's daemon and machine binding; reject missing capabilities even on
+  a numerically newer kernel. Relay discovery advertises the same markers but
+  is not sufficient proof of the connected kernel's support. These are kernel
+  implementation capabilities, identical on ordinary and managed kernels,
+  not permission grants or an alternative to operation authorization.
+  Other client minimums remain unchanged. Deploy the matching Cloud allocation,
   context-transfer, and keep-running routes before enabling these controls on
-  a signed 351 home, then connect the updated client. The focused source checks
+  a signed capability-bearing home, then connect the updated client. A 366
+  release does not incorporate the divergent Apps branch or automatically
+  authorize upgrades from its releases; signed compatibility must name proven
+  predecessor contracts. The focused source checks
   are `ipc-disposable-worker-requests.test.ts`,
   `local/api/tests/protocol_shapes/disposable_worker.rs`, and
   `runtime/disposable_worker_control/tests.rs`. Live acceptance must create

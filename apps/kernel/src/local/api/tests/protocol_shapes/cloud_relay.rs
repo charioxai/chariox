@@ -5,8 +5,42 @@ use crate::local::{
 };
 
 #[test]
+fn relay_status_control_capabilities_are_versioned_and_hashed() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 366);
+    let legacy = serde_json::json!({
+        "configured": false, "connected": false, "relay_url": null,
+        "relay_token_configured": false, "daemon_id": "kernel-1",
+        "daemon_alias": null, "machine_id": "machine-1", "machine_alias": null
+    });
+    let mut status: crate::local::RelayStatus = serde_json::from_value(legacy).unwrap();
+    assert!(
+        status.capabilities.is_empty(),
+        "old kernels must not gain implied support"
+    );
+    status.capabilities = crate::local::RUNTIME_CONTROL_CAPABILITIES
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect();
+    let response = serde_json::to_value(LocalDaemonResponse::RelayStatus { status }).unwrap();
+    assert_eq!(
+        response["RelayStatus"]["status"]["capabilities"],
+        serde_json::json!([
+            "disposable_worker_control_v1",
+            "managed_environment_keep_running_v1"
+        ])
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
+        ),
+        "624e094c92db7410d1b7a4a4f50a51997be9ec1d8a23c7384dce28d2e5437ea3"
+    );
+}
+
+#[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 366);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {

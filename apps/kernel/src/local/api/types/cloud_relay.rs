@@ -256,6 +256,9 @@ pub struct CloudCollaborator {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayStatus {
+    /// Implemented control contracts, independent of branch-local protocol numbers.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     pub configured: bool,
     pub connected: bool,
     pub relay_url: Option<String>,
@@ -265,3 +268,10 @@ pub struct RelayStatus {
     pub machine_id: String,
     pub machine_alias: Option<String>,
 }
+
+/// Shared by direct kernel status and relay discovery. These advertise support,
+/// not authorization; every operation still checks its caller and home binding.
+pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
+    "disposable_worker_control_v1",
+    "managed_environment_keep_running_v1",
+];

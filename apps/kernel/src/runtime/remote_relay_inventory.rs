@@ -134,6 +134,10 @@ pub(crate) async fn projected_relay_status(
     let config = config_projection.snapshot();
     let connected = relay_state.read().await.connected();
     RelayStatus {
+        capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
         configured: config.relay_url.is_some() && config.relay_token.is_some(),
         connected,
         relay_url: config.relay_url,
