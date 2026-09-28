@@ -538,24 +538,16 @@ impl WorkflowPublicationDefinition {
         &self.runtime_logs
     }
 
-    /// The publication as concurrency checks compare it: its definition and
-    /// the deployment's lasting intent (`binding`, `desired_state`,
-    /// `app_copy_session_id`), without the runtime observability (status,
+    /// The publication as concurrency checks compare it: its definition,
+    /// without the deployment and runtime observability (binding, status,
     /// URLs, heartbeats, tunnel state, runs, logs, and the time they last
-    /// changed) that changes in memory between durable writes.
+    /// changed), which change in memory between durable writes.
     pub(crate) fn without_runtime_state(&self) -> Self {
-        let deployment = self.deployment.as_ref().and_then(|deployment| {
-            let kept = ["binding", "desired_state", "app_copy_session_id"]
-                .into_iter()
-                .filter_map(|key| Some((key.to_owned(), deployment.get(key)?.clone())))
-                .collect::<serde_json::Map<_, _>>();
-            (!kept.is_empty()).then_some(Value::Object(kept))
-        });
         Self {
             status: None,
             open_url: None,
             viewer_url: None,
-            deployment,
+            deployment: None,
             runtime_last_heartbeat_at_ms: None,
             runtime_last_error: None,
             runtime: None,
