@@ -126,6 +126,17 @@ impl DurableKernelStateStore {
         })?;
         Ok(())
     }
+    /// The latest attempt of an owner's install requests named `<prefix><attempt>`.
+    pub(crate) fn latest_app_install_attempt(
+        &self,
+        owner: &str,
+        prefix: &str,
+    ) -> Result<Option<u32>> {
+        let connection = self
+            .lock_connection("durable_state.latest_app_install_attempt")
+            .map_err(|_| InstallOperationError::Storage)?;
+        store::latest_attempt(&connection, owner, prefix)
+    }
     pub(crate) fn first_app_install_status(
         &self,
         owner: &str,

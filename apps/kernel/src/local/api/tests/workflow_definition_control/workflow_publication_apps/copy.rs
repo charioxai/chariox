@@ -339,6 +339,48 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
 }
 
 #[test]
+fn disabling_the_source_publication_removes_its_copy() {
+    let root = temp_root("copy-orphan");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-orphan", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    let session_id = ensure(&harness, &deployed).unwrap().expect("a copy");
+    // An unbound source keeps its copy: a bind may be starting.
+    harness.pump_transport_runtime();
+    assert!(harness.runtime_state().fixture_session(&session_id).is_ok());
+    assert!(!installation(&app_set(&harness), "installed").inbox_routes[0].active);
+
+    harness
+        .dispatch(LocalDaemonRequest::DisableWorkflowPublication(
+            crate::local::DisableWorkflowPublicationRequest {
+                session_id: deployed.graph.session_id.clone(),
+                publication_ref: deployed.publication.id().into(),
+            },
+        ))
+        .expect("disable");
+    harness.pump_transport_runtime();
+    let set = app_set(&harness);
+    assert!(set
+        .iter()
+        .all(|installation| installation.installation_id != "copy"));
+    assert!(installation(&set, "installed").inbox_routes[0].active);
+    assert!(harness
+        .runtime_state()
+        .fixture_session(&session_id)
+        .is_err());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn an_app_bound_bind_without_the_owners_consent_is_refused() {
     let root = temp_root("copy-refused");
     let harness = harness_with_app(&root);
@@ -409,6 +451,22 @@ fn a_copy_install_the_consent_does_not_cover_fails_the_deployment_clearly() {
         status(attempt(1)),
         Ok(crate::durable_state::app_installation_operations::InstallPhase::AwaitingApproval)
     );
+    // Spent attempts never run out: each deployment continues from the latest.
+    for spent in 1..10 {
+        harness
+            .dispatch(LocalDaemonRequest::CancelAppInstallOperation(
+                crate::local::AppInstallOperationRequest {
+                    request_id: attempt(spent),
+                },
+            ))
+            .unwrap();
+        let error = pumped_ensure(&harness, &deployed).expect_err("asked again");
+        assert!(error.to_string().contains("approval"), "{error}");
+    }
+    assert_eq!(
+        status(attempt(10)),
+        Ok(crate::durable_state::app_installation_operations::InstallPhase::AwaitingApproval)
+    );
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -429,8 +487,36 @@ fn a_copy_whose_data_schema_differs_from_the_release_fails_closed() {
             newer,
         )
     });
+    // A route the copy took over before the failure is withdrawn: the copy's
+    // runtime does not start, so the owner keeps its occurrences.
+    harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .app_inbox(AppInboxOperation::CreateRoute {
+                    route: InboxRoute {
+                        route_id: "mentions".into(),
+                        owner_id: DEFAULT_LOCAL_USER_ID.into(),
+                        installation_id: "copy".into(),
+                        event_name: "received".into(),
+                        source_event_type: "slack.app_mention".into(),
+                        source_event_version: 1,
+                        active: true,
+                        source: Some(InboxSource {
+                            generator_id: "slack".into(),
+                            connection_id: "connection-1".into(),
+                            connection_scope: "team-1".into(),
+                            filter_json: r#"{"channel":"social"}"#.into(),
+                        }),
+                    },
+                    now_ms: 2,
+                })
+        })
+        .unwrap();
     let error = ensure(&harness, &deployed).expect_err("a rollback across data schemas");
     assert!(error.to_string().contains("schema version"), "{error}");
+    let set = app_set(&harness);
+    assert!(installation(&set, "copy").inbox_routes.is_empty());
+    assert!(installation(&set, "installed").inbox_routes[0].active);
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }

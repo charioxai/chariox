@@ -315,6 +315,7 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
+    remove_orphaned_deployment_copies(runtime_state).await;
     let now_ms = crate::session::unix_epoch_ms();
     for (publication, binding) in candidates {
         let process_key =
@@ -1356,6 +1357,53 @@ async fn deployment_app_copy(
         "Apps are not supported on this platform",
     ))
 }
+
+/// Copies of App-bound deployments whose source is gone or no longer bound to
+/// them are removed; not while an App-bound bind or recovery may be creating
+/// one.
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+async fn remove_orphaned_deployment_copies(runtime_state: &KernelRuntimeState) {
+    let sources = runtime_state
+        .owned
+        .session_store
+        .read()
+        .durable_sessions()
+        .into_iter()
+        .flat_map(|session| session.workflow_publications().to_vec())
+        .filter(|publication| publication.apps().is_some() && !is_deployment_copy(publication))
+        .collect::<Vec<_>>();
+    let mut live = std::collections::BTreeMap::new();
+    for publication in sources {
+        let process_key =
+            publication_runtime_process_key(publication.session_id(), publication.id());
+        if runtime_state
+            .owned
+            .workflow_publication_runtimes
+            .launching(&process_key)
+            .await
+        {
+            return;
+        }
+        let stopped = publication
+            .deployment()
+            .and_then(|deployment| deployment.get("desired_state"))
+            .and_then(serde_json::Value::as_str)
+            == Some("stopped");
+        if publication.enabled() && !stopped {
+            live.insert(
+                (
+                    publication.created_by_user_id().to_owned(),
+                    publication.id().to_owned(),
+                ),
+                publication_deployment_binding(&publication).map(|binding| binding.deployment_id),
+            );
+        }
+    }
+    runtime_state.remove_orphaned_deployment_copies(&live).await;
+}
+
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+async fn remove_orphaned_deployment_copies(_runtime_state: &KernelRuntimeState) {}
 
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 async fn remove_deployment_app_copy(

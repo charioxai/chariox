@@ -74,6 +74,22 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The highest attempt among an owner's requests named `<prefix><attempt>`.
+pub(super) fn latest_attempt(
+    connection: &Connection,
+    owner: &str,
+    prefix: &str,
+) -> Result<Option<u32>> {
+    identity(owner)?;
+    identity(prefix)?;
+    let latest: Option<i64> = sql(connection.query_row(
+        "SELECT MAX(CAST(substr(request_id,length(?2)+1) AS INTEGER)) FROM app_installation_operations
+         WHERE owner_id=?1 AND substr(request_id,1,length(?2))=?2",
+        params![owner, prefix],
+        |r| r.get(0),
+    ))?;
+    Ok(latest.and_then(|attempt| u32::try_from(attempt).ok()))
+}
 pub(super) fn load(
     connection: &Connection,
     owner: &str,

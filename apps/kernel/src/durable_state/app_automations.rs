@@ -85,7 +85,7 @@ impl WorkflowAutomationTarget {
             (
                 "publication",
                 publication.id().to_owned(),
-                encode(&publication)?,
+                encode(&publication.without_runtime_state())?,
             ),
             ("workflow", workflow.id().to_owned(), encode(&workflow)?),
             ("queue", queue.id().to_owned(), encode(queue)?),
@@ -116,6 +116,18 @@ impl WorkflowAutomationTarget {
         for (kind, id, payload) in &self.entities {
             let current:Option<String>=tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind=?3 AND entity_id=?4",
                 rusqlite::params![self.durable_owner,self.target.session_id,kind,id],|row|row.get(0)).optional()?;
+            // A deployed publication's runtime state changes in memory without
+            // a durable write and is not part of what the automation targets.
+            let current = match (*kind, current) {
+                ("publication", Some(current)) => Some(encode(
+                    &serde_json::from_str::<crate::session::WorkflowPublicationDefinition>(
+                        &current,
+                    )
+                    .map_err(|_| AppAutomationError::TargetChanged)?
+                    .without_runtime_state(),
+                )?),
+                (_, current) => current,
+            };
             if current.as_deref() != Some(payload) {
                 return Err(AppAutomationError::TargetChanged);
             }

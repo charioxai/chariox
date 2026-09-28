@@ -54,10 +54,11 @@ pub(crate) fn publication_app_plan(
         if uses.is_none() && automations.is_empty() {
             continue;
         }
+        // A route paused while a deployment copy holds its interest is still
+        // the owner's route.
         let inbox_routes = installation
             .inbox_routes
             .iter()
-            .filter(|route| route.active)
             .map(|route| {
                 serde_json::json!({
                     "route_id": route.route_id,

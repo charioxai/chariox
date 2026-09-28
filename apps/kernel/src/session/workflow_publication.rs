@@ -538,6 +538,31 @@ impl WorkflowPublicationDefinition {
         &self.runtime_logs
     }
 
+    /// The definition without the runtime observability (status, URLs,
+    /// deployment, heartbeats, runs, logs) that changes in memory between
+    /// durable writes.
+    pub(crate) fn without_runtime_state(&self) -> Self {
+        Self {
+            status: None,
+            open_url: None,
+            viewer_url: None,
+            deployment: None,
+            runtime_last_heartbeat_at_ms: None,
+            runtime_last_error: None,
+            runtime: None,
+            schedule_count: None,
+            schedules: Vec::new(),
+            watchdog_count: None,
+            watchdogs: Vec::new(),
+            latest_run: None,
+            recent_runs: Vec::new(),
+            latest_output: None,
+            runtime_logs: Vec::new(),
+            updated_at_ms: 0,
+            ..self.clone()
+        }
+    }
+
     pub fn set_runtime_observability(
         &mut self,
         runtime: Option<Value>,

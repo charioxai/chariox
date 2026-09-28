@@ -504,3 +504,35 @@ fn target_snapshot_encoding_checks_encoded_bytes_before_growing_output() {
         Err(AppAutomationError::Outbox(OutboxError::Limit))
     ));
 }
+
+#[test]
+fn a_served_publication_still_matches_its_durable_target() {
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    let (mut sessions, session, publication) = workflow();
+    store
+        .persist_workflow_runtime_transition(&sessions.get_session(&session).unwrap(), "fixture")
+        .unwrap();
+    // A deployed copy's runtime state changes in memory only.
+    sessions
+        .register_workflow_publication_endpoint(
+            &session,
+            &publication,
+            "running",
+            "http://127.0.0.1:1/",
+            json!({"deployment_id": "deployment", "status": "running"}),
+        )
+        .unwrap();
+    let target =
+        WorkflowAutomationTarget::resolve(&sessions, "local", &session, &publication, None)
+            .unwrap();
+    let configured = store
+        .mutate_app_automation(
+            "local",
+            fixture.catalog.clone(),
+            mutation(target, 0),
+            budget(),
+        )
+        .unwrap();
+    assert_eq!(revision(configured), 1);
+}

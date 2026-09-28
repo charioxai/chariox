@@ -175,7 +175,12 @@ fn a_delivery_to_a_deleted_target_breaks_the_automation_and_tells_the_owner() {
     };
     assert_eq!(failed.state, ReceiptState::Failed);
     let AppAutomationOutcome::Listed(automations) = store
-        .mutate_app_automation("local", fixture.catalog.clone(), AppAutomationMutation::List, budget())
+        .mutate_app_automation(
+            "local",
+            fixture.catalog.clone(),
+            AppAutomationMutation::List,
+            budget(),
+        )
         .unwrap()
     else {
         panic!("expected automations");
@@ -189,4 +194,32 @@ fn a_delivery_to_a_deleted_target_breaks_the_automation_and_tells_the_owner() {
         .message
         .starts_with("Automation automation stopped: its workflow target is gone"));
     assert_eq!(logs[0].fields["undelivered"], 1);
+}
+
+#[test]
+fn an_undeliverable_event_tells_the_owner() {
+    let fixture = Fixture::new();
+    let (store, _sessions, _session, receipt) = setup(&fixture);
+    let AppEventMaintenanceOutcome::Classified(failed) = store
+        .maintain_app_events(
+            AppEventMaintenanceOperation::Classify {
+                owner: "local".into(),
+                catalog: fixture.catalog.clone(),
+                receipt,
+                classification: AppEventClassification::Failed,
+            },
+            budget(),
+        )
+        .unwrap()
+    else {
+        panic!("expected a classified receipt");
+    };
+    assert_eq!(failed.state, ReceiptState::Failed);
+    let logs = store
+        .app_logs("local", fixture.catalog.installation_id(), 0, 10)
+        .unwrap();
+    assert_eq!(logs.len(), 1);
+    assert!(logs[0]
+        .message
+        .starts_with("An event for automation automation was not delivered"));
 }

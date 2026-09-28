@@ -210,15 +210,31 @@ fn apply(
                         )?
                     }
                 }
-                AppEventClassification::Failed => AppOutbox::settle_in(
-                    &tx,
-                    &catalog,
-                    &owner,
-                    &receipt.receipt_id,
-                    receipt.revision,
-                    ReceiptState::Failed,
-                    now,
-                )?,
+                AppEventClassification::Failed => {
+                    let failed = AppOutbox::settle_in(
+                        &tx,
+                        &catalog,
+                        &owner,
+                        &receipt.receipt_id,
+                        receipt.revision,
+                        ReceiptState::Failed,
+                        now,
+                    )?;
+                    let mut fields = serde_json::Map::new();
+                    fields.insert("automation_id".into(), receipt.automation_id.clone().into());
+                    super::app_logs::append_kernel_notice_in(
+                        &tx,
+                        &owner,
+                        catalog.installation_id(),
+                        now,
+                        &format!(
+                            "An event for automation {} was not delivered: its target changed or it could not be read. It will not be retried.",
+                            receipt.automation_id
+                        ),
+                        fields,
+                    )?;
+                    failed
+                }
                 AppEventClassification::TargetGone => {
                     let failed = AppOutbox::settle_in(
                         &tx,
@@ -239,7 +255,9 @@ fn apply(
                         let lost = match undelivered {
                             0 => String::new(),
                             1 => ", and 1 more accepted event will not be delivered".into(),
-                            count => format!(", and {count} more accepted events will not be delivered"),
+                            count => {
+                                format!(", and {count} more accepted events will not be delivered")
+                            }
                         };
                         let mut fields = serde_json::Map::new();
                         fields.insert("automation_id".into(), receipt.automation_id.clone().into());

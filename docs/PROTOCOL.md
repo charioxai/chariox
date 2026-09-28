@@ -2121,7 +2121,14 @@ Workflow trigger and deployment direction:
   when no copy route claims that interest. Copies, routes, automations and
   grants the release no longer names are removed; the hidden sessions of the
   deployment's other releases are deleted, so binding a previous release
-  (rollback) re-applies that release's plan. `chariox serve source` then runs
+  (rollback) re-applies that release's plan; this is fail-closed, so a rollback
+  that cannot apply leaves no copy running for either release. When applying
+  the copy fails, the copy's routes are removed so the owner's routes resume.
+  Every install request retries from the latest one it made: a spent request
+  (failed, cancelled, or whose copy a `Stop` removed) moves on to the next, so
+  a deployment can be stopped and started any number of times. Each App's
+  install is awaited in turn inside the bind, so a bind of many new Apps can
+  outlast a client's timeout; recovery completes it. `chariox serve source` then runs
   against the copy session; the source publication keeps the binding and
   records `deployment.app_copy_session_id`, and the copy's publication carries
   the same binding so its endpoint registration uses the deployment's stable
@@ -2129,7 +2136,11 @@ Workflow trigger and deployment direction:
   source. `ControlWorkflowPublicationRuntime` `Stop` of such a deployment
   uninstalls its copies with their data (and so their routes, automations and
   connection grants), resumes the owner's routes and deletes the copy
-  sessions. App data is never copied from the owner's installations.
+  sessions. The kernel also removes, on its runtime reconcile, the copies whose
+  source publication was deleted (with its session), disabled, marked stopped
+  or bound to another deployment; the owner's routes resume. Events an
+  automation accepted but could not deliver are recorded in the App's log.
+  App data is never copied from the owner's installations.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

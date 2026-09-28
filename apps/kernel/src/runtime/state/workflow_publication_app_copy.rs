@@ -46,10 +46,11 @@ fn copy_key(deployment_id: &str, release_id: &str) -> String {
     format!("{COPY_KEY_PREFIX}{deployment_id}:{release_id}")
 }
 
-/// One install request per deployment, release, App and attempt: a retry
-/// replays it; a spent one (failed, cancelled, or whose copy was removed since)
-/// moves on to the next attempt.
-fn copy_request_id(deployment_id: &str, release_id: &str, app_id: &str, attempt: u32) -> String {
+/// Install requests of one deployment, release and App are named
+/// `<prefix><attempt>`: a retry replays the latest; a spent one (failed,
+/// cancelled, or whose copy was removed since, as after a Stop) moves on to the
+/// next attempt.
+fn copy_request_prefix(deployment_id: &str, release_id: &str, app_id: &str) -> String {
     let digest = Sha256::digest(
         [
             deployment_id.as_bytes(),
@@ -60,7 +61,7 @@ fn copy_request_id(deployment_id: &str, release_id: &str, app_id: &str, attempt:
         ]
         .concat(),
     );
-    format!("deploy_{}_{attempt}", &format!("{digest:x}")[..40])
+    format!("deploy_{}_", &format!("{digest:x}")[..40])
 }
 
 fn copy_error(message: impl Into<String>) -> DaemonError {
@@ -123,9 +124,15 @@ impl KernelRuntimeState {
                 &agents,
             )
             .await;
-        // The handover follows the copy's routes, also after a failure.
+        // A copy that could not be applied takes no occurrences: its runtime
+        // does not start, so the owner's routes it would take over resume.
+        let withdrawn = match &applied {
+            Err(_) => self.withdraw_copy_routes(&owner, deployment_id).await,
+            Ok(()) => Ok(()),
+        };
         let balanced = self.balance_owner_inbox_routes(&owner, None).await;
         applied?;
+        withdrawn?;
         balanced?;
         Ok(Some(DeploymentAppCopy { session_id }))
     }
@@ -178,6 +185,87 @@ impl KernelRuntimeState {
             self.apply_copy_automations(&owner, copy, app, session_id, publication.id())
                 .await?;
             self.apply_copy_routes(&owner, copy, app, &set).await?;
+        }
+        Ok(())
+    }
+
+    /// Removes the copies whose source publication was deleted (or its
+    /// session), disabled, stopped or bound to another deployment. `sources`
+    /// maps each live source (owner, publication) to the deployment it is
+    /// bound to, or `None` while unbound (a bind may be starting).
+    pub(super) async fn remove_orphaned_deployment_copies(
+        &self,
+        sources: &BTreeMap<(String, String), Option<String>>,
+    ) {
+        let orphans = self
+            .owned
+            .session_store
+            .read()
+            .list_all_sessions()
+            .into_iter()
+            .filter(|session| session.is_hidden())
+            .flat_map(|session| {
+                let owner = session.owner_user_id().to_owned();
+                session
+                    .workflow_publications()
+                    .iter()
+                    .filter_map(|publication| {
+                        let key = &publication.runtime_materialization()?.key;
+                        let (deployment, _release) =
+                            key.strip_prefix(COPY_KEY_PREFIX)?.rsplit_once(':')?;
+                        let kept = match sources.get(&(owner.clone(), publication.id().to_owned()))
+                        {
+                            Some(None) => true,
+                            Some(Some(bound)) => bound == deployment,
+                            None => false,
+                        };
+                        (!kept).then(|| (owner.clone(), deployment.to_owned()))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<BTreeSet<_>>();
+        for (owner, deployment_id) in orphans {
+            if let Err(error) = self
+                .remove_deployment_app_copy(&owner, &deployment_id)
+                .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.publication_runtime",
+                    "failed to remove an orphaned deployment copy",
+                    serde_json::json!({
+                        "deployment_id": deployment_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+
+    /// Removes the inbox routes of a deployment's copies; applying the copy
+    /// again creates them anew.
+    async fn withdraw_copy_routes(
+        &self,
+        owner: &str,
+        deployment_id: &str,
+    ) -> Result<(), DaemonError> {
+        for copy in self
+            .app_set_for(owner)
+            .await?
+            .into_iter()
+            .filter(|installation| installation.deployment_id.as_deref() == Some(deployment_id))
+        {
+            for route in &copy.inbox_routes {
+                self.copy_request(
+                    owner,
+                    &copy.installation_id,
+                    LocalDaemonRequest::RemoveAppInboxRoute(AppInboxRouteRequest {
+                        installation_id: copy.installation_id.clone(),
+                        route_id: route.route_id.clone(),
+                    }),
+                    "an inbox route could not be removed from the copy",
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -355,14 +443,24 @@ impl KernelRuntimeState {
             consent: consent.to_owned(),
             deployment_id: deployment_id.to_owned(),
         };
-        let mut attempts = 0..COPY_INSTALL_ATTEMPTS;
+        let prefix = copy_request_prefix(deployment_id, release_id, app_id);
+        let store = self.owned.durable_state_store.clone();
+        let (read_owner, read_prefix) = (owner.to_owned(), prefix.clone());
+        let latest = tokio::task::spawn_blocking(move || {
+            store.latest_app_install_attempt(&read_owner, &read_prefix)
+        })
+        .await
+        .map_err(|_| copy_error("an App install could not be read"))?
+        .map_err(|error| copy_error(format!("an App install could not be read ({error:?})")))?
+        .unwrap_or_default();
+        let mut attempts = latest..latest.saturating_add(COPY_INSTALL_ATTEMPTS);
         let request_id = loop {
             let Some(attempt) = attempts.next() else {
                 return Err(copy_error(format!(
                     "App `{app_id}` could not be installed for the deployment after {COPY_INSTALL_ATTEMPTS} attempts"
                 )));
             };
-            let request_id = copy_request_id(deployment_id, release_id, app_id, attempt);
+            let request_id = format!("{prefix}{attempt}");
             match self
                 .app_control()
                 .installs()
@@ -771,7 +869,10 @@ pub(crate) fn fixture_copy_request_id(
     app_id: &str,
     attempt: u32,
 ) -> String {
-    copy_request_id(deployment_id, release_id, app_id, attempt)
+    format!(
+        "{}{attempt}",
+        copy_request_prefix(deployment_id, release_id, app_id)
+    )
 }
 
 #[cfg(test)]
@@ -838,16 +939,12 @@ mod tests {
     #[test]
     fn copy_install_requests_are_stable_and_bounded() {
         let (deployment, release) = ("d".repeat(200), "r".repeat(200));
-        let id = copy_request_id(&deployment, &release, "com.example.state", 7);
+        let prefix = copy_request_prefix(&deployment, &release, "com.example.state");
         assert_eq!(
-            id,
-            copy_request_id(&deployment, &release, "com.example.state", 7)
+            prefix,
+            copy_request_prefix(&deployment, &release, "com.example.state")
         );
-        assert_ne!(
-            id,
-            copy_request_id(&deployment, &release, "com.example.state", 0)
-        );
-        assert_ne!(id, copy_request_id("d", "r2", "com.example.state", 7));
-        assert!(id.len() <= 128);
+        assert_ne!(prefix, copy_request_prefix("d", "r2", "com.example.state"));
+        assert!(format!("{prefix}{}", u32::MAX).len() <= 128);
     }
 }
