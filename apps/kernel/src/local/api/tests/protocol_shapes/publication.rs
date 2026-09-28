@@ -226,7 +226,9 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             agent_id_map: BTreeMap::from([("agent-1".to_string(), "runtime-agent-1".to_string())]),
         },
     );
-    // Protocol 368: a release's App plan, recorded by its package digest.
+    // Protocol 368: a release's App plan, recorded by its package digest,
+    // on a publication prepared before 368 (its single plan is kept).
+    publication.use_apps(serde_json::json!({"schema": "chariox.publication-apps.v1", "apps": []}));
     publication.record_release_app_plan(&format!("sha256:{}", "b".repeat(64)), serde_json::json!({
         "schema": "chariox.publication-apps.v1",
         "apps": [{
@@ -669,7 +671,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "170f4e9b00090ab2e2804ce7037bb331e900237c4d3d33a3d0e906426654f4ea"
+        "f16645df0c4f807735e9909b55869d8a231dcd3dc2794c9f5838a245f25e99e4"
     );
 }
 

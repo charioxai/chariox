@@ -2172,7 +2172,10 @@ Workflow trigger and deployment direction:
   bind and recovery re-export a bound release and compare digests, so a kernel
   protocol bump must not change existing packages. It is raised only when a
   package needs a newer kernel to run. A release exported before 368 keeps the
-  publication's single pre-368 plan after later releases record their own.
+  publication's single pre-368 plan after later releases record their own; a
+  368 release whose plan was pruned (more than 16 releases ago) has none, so
+  its bind fails with "no App plan recorded" and `PrepareDeploymentApps` and
+  `PreviewDeploymentApps` refuse it.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -725,6 +725,8 @@ export type WorkflowPublicationDefinition = {
   release_app_plans?: { package_digest: string; plan: WorkflowPublicationApps }[]
   /** A plan a publication pinned before 368, kept for its releases of then. */
   pre_release_app_plan?: WorkflowPublicationApps
+  /** Releases whose plans were pruned; they have no App plan. */
+  pruned_release_digests?: string[]
   status?: string | null
   open_url?: string | null
   viewer_url?: string | null
