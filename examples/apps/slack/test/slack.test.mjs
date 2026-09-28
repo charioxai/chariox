@@ -152,3 +152,18 @@ test('long multibyte messages stay under the state value cap, newest first, and 
   assert.equal(stored('EvDeep').reply_context, null);
   assert.deepEqual(stored('Ev99').reply_context, mention('').reply_context);
 });
+
+test('a mention in a channel, also sent as a channel message, is one notification and one run', async () => {
+  const kernel = fakeKernel();
+  const asMessage = { ...mention('<@B1> ship it'), source: { ...mention('').source, event_type: 'message.channels' } };
+  await kernel.deliver('mentioned', 'EvA', mention('<@B1> ship it'));
+  await kernel.deliver('channel_message', 'EvB', asMessage);
+  // The other order: the channel message first, then the mention.
+  const later = (text) => ({ ...mention(text), metadata: { ...mention(text).metadata, event: { ...mention(text).metadata.event, ts: '2.3' } } });
+  await kernel.deliver('channel_message', 'EvC', { ...later('<@B1> again'), source: asMessage.source });
+  await kernel.deliver('mentioned', 'EvD', later('<@B1> again'));
+  const { notifications } = await kernel.tools.get('list_notifications')({});
+  assert.deepEqual(notifications.map(item => [item.id, item.kind]), [['EvC', 'mentioned'], ['EvA', 'mentioned']]);
+  assert.equal(kernel.occurrences.length, 2);
+  assert.ok(notifications.every(item => !('message' in item)));
+});

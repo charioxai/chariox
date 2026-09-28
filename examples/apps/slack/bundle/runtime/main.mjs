@@ -93,6 +93,10 @@ export default function register(chariox) {
       // later reply goes to the same conversation.
       reply_context: replyContext(payload.reply_context),
       connection_id: payload.source?.connection_id ?? null,
+      // Slack sends a mention in a channel both as a mention and as a channel
+      // message: the same channel and timestamp name the same message.
+      message: kind !== 'reaction_added' && event.channel && event.ts
+        ? `${String(event.channel).slice(0, 64)}:${String(event.ts).slice(0, 32)}` : null,
     };
   }
 
@@ -119,9 +123,19 @@ export default function register(chariox) {
     const accept = forward => change(items => {
       if (items.some(item => item.id === occurrenceId)) return undefined;
       const item = notification(kind, occurrenceId, payload);
+      // The other kind of a message already kept is not kept or forwarded
+      // again: one message, one notification, one workflow run. A mention
+      // arriving after its channel message marks it as a mention.
+      const same = item.message
+        ? items.findIndex(kept => kept.message === item.message && kept.kind !== kind) : -1;
+      if (same >= 0) {
+        if (kind !== 'mentioned') return undefined;
+        items[same] = { ...items[same], kind };
+        return { merged: true };
+      }
       items.unshift(item);
       return item;
-    }, item => (forward ? { occurrences: [occurrence(item)] } : {}));
+    }, item => (forward && !item.merged ? { occurrences: [occurrence(item)] } : {}));
     try {
       await accept(true);
     } catch (error) {
@@ -138,7 +152,7 @@ export default function register(chariox) {
       notifications: items
         .filter(item => !kind || item.kind === kind)
         .slice(0, limit)
-        .map(({ reply_context: _context, connection_id: _connection, ...item }) => ({
+        .map(({ reply_context: _context, connection_id: _connection, message: _message, ...item }) => ({
           ...item, can_reply: Boolean(_context && _connection),
         })),
     };
