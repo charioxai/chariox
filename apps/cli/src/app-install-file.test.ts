@@ -404,7 +404,7 @@ test("each stable package error code renders its own message (V-PKG-03)", () => 
 })
 
 test("release and upload failures render their own messages; inherited keys fall back", () => {
-  const codes = ["invalid_request", "upload_conflict", "upload_digest_mismatch", "release_limit", "release_unsafe", "release_archive_mismatch"]
+  const codes = ["invalid_request", "upload_aborted", "upload_digest_mismatch", "release_limit", "release_unsafe", "release_archive_mismatch"]
   const rendered = codes.map((code) => formatInstallFailure(`app_install_${code}`))
   assert.equal(new Set(rendered).size, codes.length)
   for (const message of rendered) assert.doesNotMatch(message, /^Kernel failure:|could not complete/)

@@ -56,7 +56,7 @@ fn preparation(error: PreparationError) -> Error {
         }
         PreparationError::PackageRejected(code) => Error::Failed(package_failure(code)),
         PreparationError::InvalidRequest => Error::Failed("app_install_invalid_request"),
-        PreparationError::UploadConflict => Error::Failed("app_install_upload_conflict"),
+        PreparationError::UploadConflict => Error::Failed("app_install_upload_aborted"),
         PreparationError::UploadDigestMismatch => {
             Error::Failed("app_install_upload_digest_mismatch")
         }

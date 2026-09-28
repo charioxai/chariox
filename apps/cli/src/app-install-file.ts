@@ -295,7 +295,7 @@ const installFailures: Record<string, string> = {
   app_install_package_unexpected_entry: "The package contains a file its manifest does not declare.",
   app_install_package_unsupported_feature: "The App uses a feature this kernel does not support.",
   app_install_invalid_request: "The kernel rejected the App install request.",
-  app_install_upload_conflict: "Another upload of this package is in progress. Try again.",
+  app_install_upload_aborted: "The upload was cancelled before preparation. Select the file again.",
   app_install_upload_digest_mismatch: "The uploaded file changed during upload. Select the file again.",
   app_install_release_limit: "The App release exceeds the kernel's size or file-count limits.",
   app_install_release_unsafe: "The kernel refused to store this App release safely.",
