@@ -11,6 +11,7 @@ use crate::runtime::cloud_api_client::{
 };
 
 pub(super) mod cloud_contract;
+mod reimage_stop;
 use cloud_contract::{
     EnvironmentDetailsResponse, EnvironmentResult, EnvironmentsResponse, OptionsResponse,
     ReimageReceipt, ReimageResult,
@@ -255,6 +256,13 @@ pub(crate) async fn execute_managed_environment_control_request(
                 "contextPlan": request.context_plan,
                 "idempotencyKey": request.idempotency_key,
             });
+            reimage_stop::prepare(
+                cloud,
+                token,
+                caller_user_id,
+                &request,
+                &body,
+            ).await?;
             let result: ManagedEnvironmentReimageResult =
                 post_cloud_json_authenticated::<ReimageResult>(
                     cloud.api_url.clone(),
@@ -957,7 +965,10 @@ mod tests {
         .expect("selected-context reimage request");
 
         let requests = server.requests();
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("POST /managed-environments/environment-1/reimage/stop HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /managed-environments/environment-1/reimage HTTP/1.1"));
+        assert_eq!(requests[0].split_once("\r\n\r\n").unwrap().1, requests[1].split_once("\r\n\r\n").unwrap().1);
         let body = requests[0]
             .split_once("\r\n\r\n")
             .map(|(_, body)| serde_json::from_str::<serde_json::Value>(body).expect("JSON body"))
@@ -1422,7 +1433,7 @@ mod tests {
         ));
 
         let requests = server.requests();
-        assert_eq!(requests.len(), 9);
+        assert_eq!(requests.len(), 10);
         assert!(requests.iter().all(|request| request
             .to_ascii_lowercase()
             .contains("authorization: bearer session-secret")));
@@ -1688,6 +1699,25 @@ mod tests {
             let mut receipt = reimage_receipt_json();
             receipt["environmentId"] = serde_json::json!(preflight_environment_id);
             return receipt;
+        }
+        if request.contains("/reimage/stop HTTP/1.1") {
+            use sha2::{Digest, Sha256};
+            let body: serde_json::Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            let mut environment = environment_json();
+            environment["accountId"] = body["accountId"].clone();
+            environment["runtimeGeneration"] = body["expectedGeneration"].clone();
+            environment["desiredState"] = serde_json::json!("stopped");
+            environment["observedState"] = serde_json::json!("stopped");
+            environment["desiredRevision"] = serde_json::json!(2);
+            environment["observedRevision"] = serde_json::json!(2);
+            let mut operation = reimage_operation_json();
+            operation["kind"] = serde_json::json!("stop");
+            operation["operationId"] = serde_json::json!("stop-for-reimage-1");
+            operation["idempotencyKey"] = serde_json::json!(format!("reimage-stop:{:x}", Sha256::digest(body["idempotencyKey"].as_str().unwrap().as_bytes())));
+            operation["requestDigest"] = serde_json::json!(format!("sha256:{}", "a".repeat(64)));
+            operation["status"] = serde_json::json!("succeeded");
+            operation["completedAt"] = serde_json::json!("2026-09-28T00:00:00Z");
+            return serde_json::json!({"environment":environment,"operation":operation});
         }
         if request.contains("/reimage HTTP/1.1") {
             return serde_json::json!({
