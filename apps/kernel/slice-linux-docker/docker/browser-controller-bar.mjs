@@ -33,7 +33,9 @@ export async function applyBrowserBar(connection, pages, appTargetIds, visible, 
     const bounds = (await quietly(() => connection.send("Browser.getWindowBounds", { windowId })))?.bounds;
     if (!bounds) continue;
     const state = bounds.windowState;
-    if (state !== wanted && state !== "minimized") {
+    // A minimized window is set once it is restored: not recorded until then.
+    if (state === "minimized") continue;
+    if (state !== wanted) {
       // Chromium only leaves fullscreen or maximized through the normal state.
       if (state !== "normal") {
         await quietly(() => connection.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } }));

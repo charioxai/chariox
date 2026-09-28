@@ -59,6 +59,17 @@ test("a window that closes while the bar is applied is skipped, not an error", a
   assert.equal(fake.windows[1], "fullscreen");
 });
 
+test("a minimized window is set once it is restored", async () => {
+  const fake = fakeBrowser({ 1: "minimized" }, { a: 1 });
+  const applied = new Map();
+  await applyBrowserBar(fake.connection, [{ targetId: "a" }], new Set(), false, applied);
+  assert.equal(fake.windows[1], "minimized");
+  assert.equal(applied.has(1), false);
+  fake.windows[1] = "normal"; // Restored from the panel.
+  await applyBrowserBar(fake.connection, [{ targetId: "a" }], new Set(), false, applied);
+  assert.equal(fake.windows[1], "fullscreen");
+});
+
 test("a page's own fullscreen is kept on later reconciles; a bar change applies again", async () => {
   const fake = fakeBrowser({ 1: "normal" }, { a: 1 });
   const applied = new Map();

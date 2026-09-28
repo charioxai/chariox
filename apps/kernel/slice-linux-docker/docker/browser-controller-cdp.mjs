@@ -134,7 +134,6 @@ export class BrowserCdpClient {
       // defaults it to hidden (fullscreen), the new default.
       if (typeof browserBarVisible === "boolean") {
         const appTargets = new Set([...(this.appTabs?.apps?.values() ?? [])].map((app) => app.targetId));
-        this.browserBarApplied ??= new Map();
         await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
       }
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
@@ -287,6 +286,8 @@ export class BrowserCdpClient {
     this.networkRequestsBySession.clear();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
+    // A relaunched Chromium numbers its windows from 1 again.
+    this.browserBarApplied = new Map();
     const connection = this.connectionFactory
       ? await this.connectionFactory()
       : await connectToBrowser({
