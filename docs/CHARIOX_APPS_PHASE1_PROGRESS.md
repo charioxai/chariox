@@ -180,7 +180,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (see verification) |
 | V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Partial (see verification) |
 | V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Partial (see verification) |
-| V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Not started (plan P1.20) |
+| V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Partial (plan P1.20): kernel pins the App plan (366), asks one consent (367) and runs a bound local deployment as a pinned independent copy with its own Apps (P1.20 part 3); live drill, clients and hosted pending |
 
 ### Reference-App acceptance
 

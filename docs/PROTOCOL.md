@@ -2095,6 +2095,41 @@ Workflow trigger and deployment direction:
   (the pinned releases' are re-read from the release store and re-verified);
   `plan` is `null` when the workflow uses no App. Only the publication's owner
   may preview.
+- App-bound local deployments (P1.20, no request or response shape change): a
+  bound `local_runtime` deployment of a publication with a pinned App plan
+  runs as a pinned independent copy on the owner's kernel, not in the source
+  session. Starting it (`BindWorkflowPublicationDeployment`, recovery, a
+  runtime restart) first verifies the package digest, then requires the
+  owner's approved `PrepareDeploymentApps` consent for exactly that deployment,
+  release and package digest (otherwise the bind fails), and then, idempotently:
+  materializes a hidden session with runtime key
+  `deployment:<deployment_id>:<release_id>` that keeps the publication's kind
+  (an `event_based` trigger stays event-based); installs each pinned release as
+  the deployment's own copy through the consent policy above (one install
+  request per deployment, release and App; a copy of another release of the
+  same data schema version is updated in place, a different schema version
+  fails closed; an install that needs the owner's answer, fails or does not
+  finish in two minutes fails the bind with the reason); moves the copy
+  agents' App grants from the source installations to the copies;
+  configures the plan's automations on the copies targeting the copy's
+  publication, endpoint and queue; grants the copies the plan's generator
+  connections (same owner and kernel: no new sign-in, no generator change);
+  and recreates the plan's inbox routes on the same connections with the
+  filters of the owner's routes. Handover: while a copy's route is active the
+  owner's own route on the same event interest is paused (it accepts no
+  occurrence, and its subscription claim is sent `active: false`); it resumes
+  when no copy route claims that interest. Copies, routes, automations and
+  grants the release no longer names are removed; the hidden sessions of the
+  deployment's other releases are deleted, so binding a previous release
+  (rollback) re-applies that release's plan. `chariox serve source` then runs
+  against the copy session; the source publication keeps the binding and
+  records `deployment.app_copy_session_id`, and the copy's publication carries
+  the same binding so its endpoint registration uses the deployment's stable
+  tunnel. Recovery skips copy publications and re-applies the copy from the
+  source. `ControlWorkflowPublicationRuntime` `Stop` of such a deployment
+  uninstalls its copies with their data (and so their routes, automations and
+  connection grants), resumes the owner's routes and deletes the copy
+  sessions. App data is never copied from the owner's installations.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
