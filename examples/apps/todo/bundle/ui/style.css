@@ -21,3 +21,8 @@ li .title { flex: 1; min-width: 0; overflow-wrap: break-word; }
 li.done .title { text-decoration: line-through; color: var(--muted); }
 li .due { color: var(--muted); font-size: 13px; white-space: nowrap; }
 li .due.overdue { color: #d33; }
+/* Narrow views: the due date moves under the title instead of squeezing it. */
+@media (max-width: 480px) {
+  li { flex-wrap: wrap; }
+  li .due { order: 1; flex-basis: 100%; padding-left: 32px; }
+}
