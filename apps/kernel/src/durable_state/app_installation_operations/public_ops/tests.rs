@@ -821,3 +821,20 @@ mod deployment_consent {
         assert!(prompts(arm_copy(&f, "copy", "app_deploy_1")));
     }
 }
+
+#[test]
+fn a_deployment_copy_prompt_names_its_deployment() {
+    let f = Fixture::new();
+    let copy = f.stage("copy-install");
+    Connection::open(f.store.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO app_installation_deployments(installation_id,owner_id,deployment_id)
+             VALUES(?1,'alice','deployment-7')",
+            [&copy.token.installation_id],
+        )
+        .unwrap();
+    assert_eq!(f.arm("copy-install", "nonce-copy").deployment_id(), Some("deployment-7"));
+    f.stage("own-install");
+    assert_eq!(f.arm("own-install", "nonce-own").deployment_id(), None);
+}
