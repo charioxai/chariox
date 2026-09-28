@@ -24,6 +24,12 @@ impl KernelRuntimeState {
                 Err(code) => failed(code),
             });
         }
+        if let LocalDaemonRequest::PreviewDeploymentApps(request) = request {
+            return Some(self.preview_deployment_apps(command, request).await);
+        }
+        if let LocalDaemonRequest::PrepareDeploymentApps(request) = request {
+            return Some(self.prepare_deployment_apps(command, request).await);
+        }
         if let LocalDaemonRequest::GetAppSet(_) = request {
             // Boxed: the App set is read through this same dispatch.
             return Some(Box::pin(self.app_set(command)).await);

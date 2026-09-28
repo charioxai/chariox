@@ -2066,6 +2066,35 @@ Workflow trigger and deployment direction:
   (never prepared by its owner) fails the export. `requirements.json` follows
   the publication snapshot's agents instead of the source agents' current
   grants, and App grants are no longer refused there.
+- protocol 367: `PrepareDeploymentApps {session_id, request_id,
+  publication_ref, deployment_id, release_id, package_digest}` asks the
+  publication's owner once, in one kernel-operation interaction of the
+  publication's session, to deploy the workflow together with the Apps of its
+  pinned App plan: it lists each App release (app, version, publisher, key
+  fingerprint, signed capabilities) and each generator connection the copy
+  will use. Each pinned release is re-read from the local release store and
+  re-verified against the owner's current publisher trust first; a changed
+  signer or capabilities digest fails with `Conflict`. It answers
+  `DeploymentAppsConsent {consent: {request_id, interaction_id, deployment_id,
+  release_id, package_digest, status, expires_at_ms}}` with `status`
+  `awaiting_approval`, `approved`, `declined` or `expired` (the owner has five
+  minutes); the same `request_id` replays the record and reports the answer,
+  other facts under it are a `Conflict`, and a new `request_id` asks again.
+  The answer is recorded durably by the kernel; no request can supply an
+  approval. A deployment copy's install (from the local release store, tagged
+  with its deployment) is approved by the `kernel_deployment_consent:<interaction>`
+  policy only for a release in an approved consent — same app, publisher, key
+  fingerprint, package and capabilities digests — whose capabilities digest
+  the owner approved interactively before (`kernel_operation_human`); anything
+  else asks the owner as for any install. Copy installations are absent from
+  `ListAppInstallations` and carry `AppSetInstallation.deployment_id` in the
+  App set. `PreviewDeploymentApps {session_id, publication_ref}` is read-only
+  and needs no export: it answers `DeploymentAppsPreview {publication_id,
+  pinned, plan}` with the pinned plan (`pinned: true`) or else the plan the
+  owner's current App set gives, each App with its signed `capabilities`
+  (the pinned releases' are re-read from the release store and re-verified);
+  `plan` is `null` when the workflow uses no App. Only the publication's owner
+  may preview.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

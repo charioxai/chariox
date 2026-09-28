@@ -7,6 +7,7 @@ use rusqlite::{params, TransactionBehavior};
 pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Reply> {
     match command {
         Command::Public(command) => super::public_ops::apply(connection, command),
+        Command::Consent(command) => super::deployment_consent::apply(connection, command),
         Command::Replay {
             owner,
             request_id,

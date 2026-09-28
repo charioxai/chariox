@@ -548,6 +548,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListAppInboxRoutes(_) => "app.inbox.route.list",
         LocalDaemonRequest::GrantAppConnection(_) => "app.connection.grant",
         LocalDaemonRequest::GetAppSet(_) => "app.set",
+        LocalDaemonRequest::PreviewDeploymentApps(_) => "app.deployment.preview",
+        LocalDaemonRequest::PrepareDeploymentApps(_) => "app.deployment.prepare",
         LocalDaemonRequest::RevokeAppConnection(_) => "app.connection.revoke",
         LocalDaemonRequest::ListAppConnections(_) => "app.connection.list",
         LocalDaemonRequest::TestAppInboxRoute(_) => "app.inbox.route.test",

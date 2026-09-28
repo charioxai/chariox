@@ -1,3 +1,4 @@
+import type { WorkflowPublicationApp, WorkflowPublicationApps } from "./kernel-types-workflow.js"
 export type AppReleaseSummary = {
   version: string
   publisher_id: string
@@ -106,4 +107,28 @@ export interface AppConnectionSummary {
   connection_id: string
   granted_at_ms: number
   actions: string[]
+}
+
+/** Protocol 367: the owner's consent to deploy a workflow with the Apps of its
+ * publication's pinned App plan. Replaying the same `request_id` reports the answer. */
+export type DeploymentAppsConsentStatus = "awaiting_approval" | "approved" | "declined" | "expired"
+
+export type DeploymentAppsConsent = {
+  request_id: string
+  interaction_id: string
+  deployment_id: string
+  release_id: string
+  package_digest: string
+  status: DeploymentAppsConsentStatus
+  expires_at_ms: number
+}
+
+/** Protocol 367: `DeploymentAppsPreview` — the publication's App plan with each
+ * App's signed capabilities; `plan` is null when the workflow uses no App. */
+export type DeploymentAppsPreview = {
+  publication_id: string
+  pinned: boolean
+  plan: (Omit<WorkflowPublicationApps, "apps"> & {
+    apps: (WorkflowPublicationApp & { capabilities: Record<string, unknown> })[]
+  }) | null
 }

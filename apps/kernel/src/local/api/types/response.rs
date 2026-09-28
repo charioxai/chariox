@@ -19,6 +19,12 @@ pub enum LocalDaemonResponse {
     AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
     /// Protocol 361: the caller's active installations and their configuration.
     AppSet { schema: String, installations: Vec<AppSetInstallation>, },
+    /// Protocol 367: a publication's App plan (`chariox.publication-apps.v1`,
+    /// each App with its signed `capabilities`), `null` when it uses no App;
+    /// `pinned` once a deployment preparation pinned it.
+    DeploymentAppsPreview { publication_id: String, pinned: bool, plan: Option<serde_json::Value>, },
+    /// Protocol 367: the owner's consent to a deployment's Apps.
+    DeploymentAppsConsent { consent: DeploymentAppsConsent, },
     AppFileGranted { operation_id: String, files: u32, },
     AppFileExport { operation_id: String, name: String, contents_base64: String, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },

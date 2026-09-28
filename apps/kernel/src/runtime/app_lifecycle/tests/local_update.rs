@@ -51,6 +51,7 @@ fn stage_update(
                     installation_id: installation.into(),
                     expected_generation: 1,
                 }),
+                deployment: None,
             },
             &candidate.release_metadata().package_digest.clone(),
             budget(),

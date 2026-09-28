@@ -65,6 +65,14 @@ impl KernelRuntimeState {
                 None => break,
             }
         }
+        let store = self.owned.durable_state_store.clone();
+        let deployments_owner = owner.to_owned();
+        let deployments = tokio::task::spawn_blocking(move || {
+            store.app_installation_deployments(&deployments_owner)
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
         let mut set = Vec::with_capacity(active.len());
         for (installation_id, app_id, release) in active {
             let read = |request: LocalDaemonRequest| {
@@ -105,6 +113,7 @@ impl KernelRuntimeState {
                 return Err(AppRequestErrorCode::Conflict);
             }
             set.push(AppSetInstallation {
+                deployment_id: deployments.get(&installation_id).cloned(),
                 installation_id,
                 app_id,
                 release,

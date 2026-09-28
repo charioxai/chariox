@@ -469,6 +469,60 @@ pub struct AppSetInstallation {
     pub automations: Vec<AppAutomationSummary>,
     pub inbox_routes: Vec<AppInboxRouteSummary>,
     pub connections: Vec<AppConnectionSummary>,
+    /// Protocol 367: the deployment whose copy this installation is. Such an
+    /// installation is absent from `ListAppInstallations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
+}
+
+/// Protocol 367: the Apps a workflow publication would deploy with, read-only
+/// and before any export: its pinned App plan, or else the plan its owner's
+/// current App set gives. Each planned App also carries its signed
+/// `capabilities` for display.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewDeploymentAppsRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+}
+
+/// Protocol 367: asks the owner once to deploy a workflow together with the
+/// Apps of its publication's pinned App plan (`WorkflowPublicationDefinition.apps`).
+/// The same `request_id` replays and reports the answer; a new one asks again.
+/// No request can supply an approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrepareDeploymentAppsRequest {
+    /// The publication's session, which shows the prompt.
+    pub session_id: String,
+    pub request_id: String,
+    pub publication_ref: String,
+    pub deployment_id: String,
+    pub release_id: String,
+    pub package_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentAppsConsentStatus {
+    AwaitingApproval,
+    Approved,
+    Declined,
+    Expired,
+}
+
+/// The owner's consent to install a deployment's Apps and share their
+/// connections with its copy. An approved consent lets the kernel install
+/// exactly these releases, for this deployment, without asking again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentAppsConsent {
+    pub request_id: String,
+    pub interaction_id: String,
+    pub deployment_id: String,
+    pub release_id: String,
+    pub package_digest: String,
+    pub status: DeploymentAppsConsentStatus,
+    pub expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

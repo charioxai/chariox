@@ -6,9 +6,10 @@ import { beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRe
 import { beginAppPublisherEnrollmentRequest, getAppPublisherEnrollmentRequest, cancelAppPublisherEnrollmentRequest } from "./ipc-app-requests.js"
 import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRouteRequest, testAppInboxRouteRequest } from "./ipc-app-requests.js"
 import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-requests.js"
+import { prepareDeploymentAppsRequest, previewDeploymentAppsRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 366)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 367)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -129,3 +130,21 @@ test("app set shows each active installation's release and configuration (protoc
   assert.equal((await executeAppCommand(["set", "extra"], { send: async () => ({}) })).ok, false)
 })
 
+
+test("deployment App consent names the release and carries no approval", () => {
+  const request = prepareDeploymentAppsRequest({
+    sessionId: "session", requestId: "deploy-apps-1", publicationRef: "publication-1",
+    deploymentId: "deployment-1", releaseId: "release-1", packageDigest: `sha256:${"a".repeat(64)}`,
+  })
+  assert.deepEqual(request, { PrepareDeploymentApps: {
+    session_id: "session", request_id: "deploy-apps-1", publication_ref: "publication-1",
+    deployment_id: "deployment-1", release_id: "release-1", package_digest: `sha256:${"a".repeat(64)}`,
+  } })
+  assert.deepEqual(Object.keys(request.PrepareDeploymentApps).sort(), ["deployment_id", "package_digest", "publication_ref", "release_id", "request_id", "session_id"])
+})
+
+test("deployment App preview names only the publication", () => {
+  assert.deepEqual(previewDeploymentAppsRequest("session", "publication-1"), {
+    PreviewDeploymentApps: { session_id: "session", publication_ref: "publication-1" },
+  })
+})

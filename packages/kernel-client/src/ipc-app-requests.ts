@@ -131,6 +131,23 @@ export function getAppSetRequest() {
   return { GetAppSet: {} }
 }
 
+/** Protocol 367: the Apps a workflow publication would deploy with, before any
+ * export (its pinned plan, or the plan the owner's App set gives). */
+export function previewDeploymentAppsRequest(sessionId: string, publicationRef: string) {
+  return { PreviewDeploymentApps: { session_id: sessionId, publication_ref: publicationRef } }
+}
+
+/** Protocol 367: ask the owner once to deploy a workflow with the Apps of its
+ * publication's pinned App plan; the same `requestId` polls the answer. */
+export function prepareDeploymentAppsRequest(options: {
+  sessionId: string; requestId: string; publicationRef: string; deploymentId: string; releaseId: string; packageDigest: string
+}) {
+  return { PrepareDeploymentApps: {
+    session_id: options.sessionId, request_id: options.requestId, publication_ref: options.publicationRef,
+    deployment_id: options.deploymentId, release_id: options.releaseId, package_digest: options.packageDigest,
+  } }
+}
+
 /** Protocol 359: let an App act through one of the owner's generator connections. */
 export function grantAppConnectionRequest(installationId: string, generatorId: string, connectionId: string) {
   return { GrantAppConnection: { installation_id: installationId, generator_id: generatorId, connection_id: connectionId } }

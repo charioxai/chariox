@@ -108,6 +108,11 @@ impl AppControlService {
         &self.installs
     }
 
+    /// Protocol 367: verifies deployment releases from the local release store.
+    pub(crate) fn preparation(&self) -> &super::app_package_preparation::AppPackagePreparation {
+        &self.preparation
+    }
+
     pub(crate) fn schedule_maintenance(&self) {
         self.uploads.schedule_maintenance(&self.admission);
     }
@@ -287,10 +292,15 @@ fn read(
             let page = store
                 .list_app_installations(owner, request.after.as_deref(), limit)
                 .map_err(registry_error)?;
+            // Protocol 367: deployment copies belong to their deployment.
+            let copies = store
+                .app_installation_deployments(owner)
+                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
             Ok(LocalDaemonResponse::AppInstallationsListed {
                 installations: page
                     .installations
                     .into_iter()
+                    .filter(|installation| !copies.contains_key(&installation.installation_id))
                     .map(projection::installation)
                     .collect(),
                 next_cursor: page.next_cursor,

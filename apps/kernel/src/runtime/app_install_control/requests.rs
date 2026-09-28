@@ -1,6 +1,8 @@
 //! Shared authenticated terminal adapter. Slow work is owned after a durable ACK.
 use super::*;
-use crate::durable_state::app_installation_operations::{InstallInput, UpdateTarget};
+use crate::durable_state::app_installation_operations::{
+    DeploymentInstall, InstallInput, UpdateTarget,
+};
 use crate::{local::*, runtime::command::KernelCommand};
 
 fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
@@ -113,6 +115,7 @@ impl AppInstallControl {
                         session_id: session.clone(),
                         upload_handle: upload.clone(),
                         update,
+                        deployment: None,
                     },
                     digest.clone(),
                 ))
@@ -214,5 +217,48 @@ impl AppInstallControl {
             Ok(Err(error)) => failed(code(error)),
             Err(_) => failed(AppRequestErrorCode::StorageUnavailable),
         })
+    }
+}
+
+impl AppInstallControl {
+    /// Protocol 367: begins a deployment copy's install of a release in the
+    /// local release store, tagged with its deployment. The owner's consent
+    /// `consent` (an interaction of `PrepareDeploymentApps`) approves it only
+    /// for a consented release whose capabilities the owner approved before;
+    /// otherwise the owner is asked as for any install.
+    #[cfg_attr(not(test), allow(dead_code))] // Bound by the deployment bind next.
+    pub(crate) async fn begin_deployment_install(
+        &self,
+        owner: &str,
+        request_id: &str,
+        session_id: &str,
+        deployment: DeploymentInstall,
+        package_digest: &str,
+    ) -> Result<InstallOperation, InstallOperationError> {
+        let store = self.0.shared.store.clone();
+        let input = InstallInput {
+            session_id: session_id.into(),
+            upload_handle: String::new(),
+            update: None,
+            deployment: Some(deployment),
+        };
+        let (reserve_owner, reserve_request, digest) = (
+            owner.to_owned(),
+            request_id.to_owned(),
+            package_digest.to_owned(),
+        );
+        let operation = tokio::task::spawn_blocking(move || {
+            store.reserve_app_install(
+                &reserve_owner,
+                &reserve_request,
+                input,
+                &digest,
+                AppOperationBudget::from_supervisor(|| false),
+            )
+        })
+        .await
+        .map_err(|_| InstallOperationError::CommitUnknown)??;
+        self.notify((owner.to_owned(), request_id.to_owned()));
+        Ok(operation)
     }
 }

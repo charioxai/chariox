@@ -256,7 +256,7 @@ pub use api::{
     AppInstallationRequest, AppInstallationSummary, AppReleaseSummary, AppWorkerAction,
     AppWorkerPhase, AppWorkerRequest, AppWorkerSummary, ConfigureAppAutomationRequest,
     ControlAppWorkerRequest, DisableAppAutomationRequest, OpenAppViewRequest, UninstallAppRequest, GetAppLogsRequest, AppLogEntrySummary,
-    AppConnectionSummary, AppInboxConnection, AppInboxRouteRequest, GrantAppConnectionRequest, GetAppSetRequest, AppSetInstallation, APP_SET_SCHEMA, RevokeAppConnectionRequest, AppInboxRouteSummary, CreateAppInboxRouteRequest, TestAppInboxRouteRequest,
+    AppConnectionSummary, AppInboxConnection, AppInboxRouteRequest, GrantAppConnectionRequest, GetAppSetRequest, AppSetInstallation, APP_SET_SCHEMA, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest, DeploymentAppsConsent, DeploymentAppsConsentStatus, RevokeAppConnectionRequest, AppInboxRouteSummary, CreateAppInboxRouteRequest, TestAppInboxRouteRequest,
     AppFileContents, GrantAppFileRequest, SaveAppFileExportRequest,
     AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
 };

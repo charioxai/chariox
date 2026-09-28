@@ -72,6 +72,7 @@ fn input() -> InstallInput {
         session_id: "session".into(),
         upload_handle: format!("upload_{}", "a".repeat(64)),
         update: None,
+        deployment: None,
     }
 }
 
@@ -523,4 +524,220 @@ fn a_reinstall_needs_kept_data() {
             .unwrap_err(),
         InstallOperationError::Conflict
     );
+}
+
+/// Protocol 367: a deployment consent approves a copy's install only for an
+/// exactly consented release whose capabilities the owner approved before.
+mod deployment_consent {
+    use super::*;
+    use crate::durable_state::app_installation_operations::{
+        ConsentStatus, ConsentedApp, DeploymentConsent, DeploymentInstall,
+    };
+
+    /// The owner approves the fixture App's capabilities interactively.
+    fn approve_interactively(f: &Fixture) {
+        f.stage("human");
+        let challenge = Arc::new(f.arm("human", "human-prompt"));
+        f.store
+            .decide_app_install(challenge, true, budget())
+            .unwrap();
+    }
+
+    fn consent(f: &Fixture, request: &str, interaction: &str) -> DeploymentConsent {
+        let candidate = f.candidate();
+        let release = candidate.release_metadata();
+        f.store
+            .begin_deployment_consent(
+                "alice",
+                DeploymentConsent {
+                    request_id: request.into(),
+                    interaction_id: interaction.into(),
+                    session_id: "session".into(),
+                    publication_id: "publication".into(),
+                    deployment_id: "deployment".into(),
+                    release_id: "release".into(),
+                    package_digest: format!("sha256:{}", "d".repeat(64)),
+                    apps: vec![ConsentedApp {
+                        app_id: release.app_id.clone(),
+                        publisher_id: release.publisher_id.clone(),
+                        publisher_key_fingerprint: candidate.review_metadata()["keyFingerprint"]
+                            .as_str()
+                            .unwrap()
+                            .into(),
+                        package_digest: release.package_digest.clone(),
+                        capabilities_digest: release.capabilities_digest.clone(),
+                    }],
+                    status: ConsentStatus::Pending,
+                    expires_at_ms: crate::session::unix_epoch_ms() + 60_000,
+                },
+                budget(),
+            )
+            .unwrap()
+    }
+
+    /// Stages a deployment copy's install under `interaction` and arms it.
+    fn arm_copy(f: &Fixture, request: &str, interaction: &str) -> InstallReviewDisposition {
+        arm_copy_of(f, request, interaction, "deployment")
+    }
+
+    fn arm_copy_of(
+        f: &Fixture,
+        request: &str,
+        interaction: &str,
+        deployment: &str,
+    ) -> InstallReviewDisposition {
+        let candidate = f.candidate();
+        f.store
+            .reserve_app_install(
+                "alice",
+                request,
+                InstallInput {
+                    session_id: "session".into(),
+                    upload_handle: String::new(),
+                    update: None,
+                    deployment: Some(DeploymentInstall {
+                        consent: interaction.into(),
+                        deployment_id: deployment.into(),
+                    }),
+                },
+                &candidate.release_metadata().package_digest.clone(),
+                budget(),
+            )
+            .unwrap();
+        f.store
+            .complete_app_install_preparation("alice", request, candidate, budget())
+            .unwrap();
+        f.store
+            .arm_app_install_review("alice", request, "copy-prompt", budget())
+            .unwrap()
+    }
+
+    fn prompts(disposition: InstallReviewDisposition) -> bool {
+        matches!(disposition, InstallReviewDisposition::Prompt(_))
+    }
+
+    #[test]
+    fn an_approved_consent_installs_the_copy_without_asking_and_tags_it() {
+        let f = Fixture::new();
+        approve_interactively(&f);
+        let pending = consent(&f, "consent", "app_deploy_1");
+        assert_eq!(pending.status, ConsentStatus::Pending);
+        // A replay returns the same record; other facts under its id conflict.
+        assert_eq!(consent(&f, "consent", "app_deploy_other"), pending);
+        f.store
+            .decide_deployment_consent("alice", "app_deploy_1", true, budget())
+            .unwrap();
+        assert!(matches!(
+            arm_copy(&f, "copy", "app_deploy_1"),
+            InstallReviewDisposition::Approved
+        ));
+        let operation = f.store.first_app_install_status("alice", "copy").unwrap();
+        assert!(operation.approved);
+        let journal = f
+            .store
+            .app_installation_journal("alice", &operation.token.installation_id)
+            .unwrap();
+        assert!(matches!(
+            &journal.last().unwrap().decision,
+            CapabilityDecision::Approved { approval }
+                if approval.authority_ref == "kernel_deployment_consent:app_deploy_1"
+        ));
+        assert_eq!(
+            f.store
+                .app_installation_deployments("alice")
+                .unwrap()
+                .get(&operation.token.installation_id)
+                .map(String::as_str),
+            Some("deployment")
+        );
+        // The consent approves no other deployment's copy.
+        assert!(prompts(arm_copy_of(
+            &f,
+            "copy-elsewhere",
+            "app_deploy_1",
+            "elsewhere"
+        )));
+        // Another owner cannot use Alice's consent.
+        assert!(f
+            .store
+            .app_installation_deployments("bob")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_declined_consent_asks_the_owner() {
+        let f = Fixture::new();
+        approve_interactively(&f);
+        consent(&f, "consent", "app_deploy_1");
+        f.store
+            .decide_deployment_consent("alice", "app_deploy_1", false, budget())
+            .unwrap();
+        assert_eq!(
+            f.store
+                .deployment_consent("alice", "consent")
+                .unwrap()
+                .unwrap()
+                .status,
+            ConsentStatus::Declined
+        );
+        // The answer is final.
+        assert!(f
+            .store
+            .decide_deployment_consent("alice", "app_deploy_1", true, budget())
+            .is_err());
+        assert!(prompts(arm_copy(&f, "copy", "app_deploy_1")));
+    }
+
+    #[test]
+    fn an_expired_consent_takes_no_answer_and_asks_the_owner() {
+        let f = Fixture::new();
+        approve_interactively(&f);
+        consent(&f, "consent", "app_deploy_1");
+        f.store
+            .fixture_expire_deployment_consent("alice", "consent");
+        assert_eq!(
+            f.store
+                .deployment_consent("alice", "consent")
+                .unwrap()
+                .unwrap()
+                .status,
+            ConsentStatus::Expired
+        );
+        assert!(f
+            .store
+            .decide_deployment_consent("alice", "app_deploy_1", true, budget())
+            .is_err());
+        assert!(prompts(arm_copy(&f, "copy", "app_deploy_1")));
+    }
+
+    #[test]
+    fn a_release_outside_the_consent_asks_the_owner() {
+        let f = Fixture::new();
+        approve_interactively(&f);
+        let mut other = consent(&f, "consent", "app_deploy_1");
+        other.request_id = "other".into();
+        other.interaction_id = "app_deploy_2".into();
+        other.apps[0].package_digest = format!("sha256:{}", "e".repeat(64));
+        f.store
+            .begin_deployment_consent("alice", other, budget())
+            .unwrap();
+        f.store
+            .decide_deployment_consent("alice", "app_deploy_2", true, budget())
+            .unwrap();
+        assert!(prompts(arm_copy(&f, "copy", "app_deploy_2")));
+        // Nor does a consent the owner has not answered approve anything.
+        assert!(prompts(arm_copy(&f, "copy-2", "app_deploy_1")));
+    }
+
+    #[test]
+    fn capabilities_never_approved_interactively_ask_the_owner() {
+        let f = Fixture::new();
+        // The fixture installation was approved by a test policy, not a human.
+        consent(&f, "consent", "app_deploy_1");
+        f.store
+            .decide_deployment_consent("alice", "app_deploy_1", true, budget())
+            .unwrap();
+        assert!(prompts(arm_copy(&f, "copy", "app_deploy_1")));
+    }
 }

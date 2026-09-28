@@ -165,4 +165,14 @@ pub use workspace::*;
 /// release, signer, capabilities digest and configuration. App-bound workflows
 /// export `apps.json` and `capabilities.apps` in the deployment contract;
 /// requirements follow the publication snapshot's agents.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 366;
+/// Version 367 adds `PreviewDeploymentApps` (`DeploymentAppsPreview`: a
+/// publication's App plan with capabilities, before any export) and
+/// `PrepareDeploymentApps` (`DeploymentAppsConsent`): one
+/// kernel prompt asks the owner to deploy a workflow together with the Apps of
+/// its pinned App plan and to share their connections with the copy; the
+/// answer is recorded durably. A deployment copy's install of exactly a
+/// consented release, whose capabilities the owner approved interactively
+/// before, is approved by the `kernel_deployment_consent:<interaction>`
+/// policy. Copy installations are tagged with their deployment: absent from
+/// `ListAppInstallations`, marked by `AppSetInstallation.deployment_id`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 367;

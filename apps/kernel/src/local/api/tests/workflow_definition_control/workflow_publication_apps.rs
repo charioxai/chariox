@@ -246,3 +246,222 @@ fn an_app_automation_feeding_an_event_trigger_is_pinned_and_packaged() {
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Protocol 367: one prompt asks the owner to deploy with the pinned Apps.
+#[test]
+fn preparing_deployment_apps_asks_once_and_records_the_answer() {
+    use crate::local::{DeploymentAppsConsent, DeploymentAppsConsentStatus};
+    let root = temp_root("consent");
+    let harness = harness_with_app(&root);
+    let graph = create_publication_test_graph(&harness, "app-consent");
+    harness
+        .dispatch(LocalDaemonRequest::GrantAgentExtension(
+            GrantAgentExtensionRequest {
+                workspace_id: None,
+                agent_ref: graph.agent_id.clone(),
+                kind: crate::local::ExtensionKind::App,
+                name: "installed".into(),
+                environment: None,
+                credential: None,
+                max_safety: None,
+            },
+        ))
+        .unwrap();
+    let publication = publish(&harness, &graph, "todo-consent", "ingress");
+    let prepare = |request_id: &str, publication_ref: &str, release_id: &str| {
+        harness.dispatch(LocalDaemonRequest::PrepareDeploymentApps(
+            crate::local::PrepareDeploymentAppsRequest {
+                session_id: graph.session_id.clone(),
+                request_id: request_id.into(),
+                publication_ref: publication_ref.into(),
+                deployment_id: "deployment-1".into(),
+                release_id: release_id.into(),
+                package_digest: format!("sha256:{}", "a".repeat(64)),
+            },
+        ))
+    };
+    let consent = |request_id: &str| -> DeploymentAppsConsent {
+        match prepare(request_id, publication.id(), "release-1").unwrap() {
+            LocalDaemonResponse::DeploymentAppsConsent { consent } => consent,
+            response => panic!("unexpected response: {response:?}"),
+        }
+    };
+    let failed = |response: LocalDaemonResponse| match response {
+        LocalDaemonResponse::AppRequestFailed { code } => code,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    // Without a pinned plan there is nothing to consent to.
+    assert_eq!(
+        failed(prepare("early", publication.id(), "release-1").unwrap()),
+        crate::local::AppRequestErrorCode::InvalidRequest
+    );
+    export(&harness, &graph, publication.id()).expect("prepare the package");
+    let answer = |interaction_id: &str, choice: &str| {
+        harness
+            .dispatch(LocalDaemonRequest::RespondToInteraction(
+                crate::local::RespondToInteractionRequest {
+                    session_id: graph.session_id.clone(),
+                    interaction_id: interaction_id.into(),
+                    choice_id: choice.into(),
+                    custom_reply: None,
+                },
+            ))
+            .expect("the owner answers");
+    };
+    let settled = |request_id: &str| {
+        for _ in 0..200 {
+            let current = consent(request_id);
+            if current.status != DeploymentAppsConsentStatus::AwaitingApproval {
+                return current.status;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the answer was not recorded");
+    };
+
+    let declined = consent("consent-1");
+    assert_eq!(
+        declined.status,
+        DeploymentAppsConsentStatus::AwaitingApproval
+    );
+    assert!(declined.interaction_id.starts_with("app_deploy_"));
+    assert_eq!(consent("consent-1"), declined, "a replay asks nothing new");
+    assert_eq!(
+        failed(prepare("consent-1", publication.id(), "release-2").unwrap()),
+        crate::local::AppRequestErrorCode::Conflict
+    );
+    answer(&declined.interaction_id, "decline");
+    assert_eq!(settled("consent-1"), DeploymentAppsConsentStatus::Declined);
+
+    let approved = consent("consent-2");
+    assert_ne!(approved.interaction_id, declined.interaction_id);
+    answer(&approved.interaction_id, "approve");
+    assert_eq!(settled("consent-2"), DeploymentAppsConsentStatus::Approved);
+
+    let expired = consent("consent-3");
+    harness.with_app(|app| {
+        app.durable_state_store()
+            .fixture_expire_deployment_consent(DEFAULT_LOCAL_USER_ID, "consent-3")
+    });
+    assert_eq!(
+        consent("consent-3").status,
+        DeploymentAppsConsentStatus::Expired
+    );
+    answer(&expired.interaction_id, "approve");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(
+        consent("consent-3").status,
+        DeploymentAppsConsentStatus::Expired
+    );
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Protocol 367: a deployment copy's installation belongs to its deployment.
+#[test]
+fn a_deployment_copy_is_hidden_from_the_app_list_and_marked_in_the_app_set() {
+    let root = temp_root("copy");
+    let harness = harness_with_app(&root);
+    harness.with_app(|app| {
+        app.durable_state_store().fixture_tag_app_installation(
+            DEFAULT_LOCAL_USER_ID,
+            "installed",
+            "deployment-1",
+        )
+    });
+    match harness
+        .dispatch(LocalDaemonRequest::ListAppInstallations(
+            crate::local::ListAppInstallationsRequest {
+                after: None,
+                limit: None,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::AppInstallationsListed { installations, .. } => {
+            assert!(installations.is_empty())
+        }
+        response => panic!("unexpected response: {response:?}"),
+    }
+    match harness
+        .dispatch(LocalDaemonRequest::GetAppSet(
+            crate::local::GetAppSetRequest {},
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::AppSet { installations, .. } => {
+            assert_eq!(installations.len(), 1);
+            assert_eq!(
+                installations[0].deployment_id.as_deref(),
+                Some("deployment-1")
+            );
+        }
+        response => panic!("unexpected response: {response:?}"),
+    }
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Protocol 367: the web previews the Apps before the first export.
+#[test]
+fn a_publication_previews_its_apps_before_and_after_preparation() {
+    let root = temp_root("preview");
+    let harness = harness_with_app(&root);
+    let graph = create_publication_test_graph(&harness, "app-preview");
+    let publication = publish(&harness, &graph, "todo-preview", "event_based");
+    let preview = || match harness
+        .dispatch(LocalDaemonRequest::PreviewDeploymentApps(
+            crate::local::PreviewDeploymentAppsRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::DeploymentAppsPreview {
+            publication_id,
+            pinned,
+            plan,
+        } => {
+            assert_eq!(publication_id, publication.id());
+            (pinned, plan)
+        }
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(preview(), (false, None), "no App yet");
+    harness
+        .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
+            ConfigureAppAutomationRequest {
+                installation_id: "installed".into(),
+                automation_id: "reminders".into(),
+                expected_revision: 0,
+                event_name: "changed".into(),
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+                queue_ref: None,
+                scheduled: false,
+            },
+        ))
+        .unwrap();
+    let (pinned, plan) = preview();
+    assert!(!pinned);
+    let plan = plan.expect("the App-event trigger uses the App");
+    let app = &plan["apps"][0];
+    assert_eq!(app["app_id"], "com.example.state");
+    assert_eq!(app["automations"][0]["event_name"], "changed");
+    assert!(app["capabilities"].is_object());
+    // Previewing pins nothing; the export does.
+    let (_, files) = export(&harness, &graph, publication.id()).expect("export");
+    let (pinned, pinned_plan) = preview();
+    assert!(pinned);
+    let pinned_plan = pinned_plan.unwrap();
+    assert_eq!(pinned_plan, plan);
+    let mut packaged = pinned_plan;
+    packaged["apps"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("capabilities");
+    assert_eq!(package_json_file(&files, "apps.json"), packaged);
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}

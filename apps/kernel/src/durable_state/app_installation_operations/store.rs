@@ -31,6 +31,7 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         session_id TEXT, upload_handle TEXT, review_json TEXT, interaction_id TEXT,
         base_generation INTEGER NOT NULL DEFAULT 0 CHECK(base_generation>=0),
         generation INTEGER NOT NULL DEFAULT 1 CHECK(generation>=0),
+        deployment_consent TEXT, deployment_id TEXT,
         PRIMARY KEY(owner_id,request_id));
         CREATE INDEX IF NOT EXISTS app_installation_operations_installation
         ON app_installation_operations(installation_id);";
@@ -57,6 +58,19 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         }
         _ => connection.execute_batch(schema)?,
     }
+    // Protocol 367: deployment copy installs.
+    let deployments: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_installation_operations')
+         WHERE name='deployment_consent')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !deployments {
+        connection.execute_batch(
+            "ALTER TABLE app_installation_operations ADD COLUMN deployment_consent TEXT;
+             ALTER TABLE app_installation_operations ADD COLUMN deployment_id TEXT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -80,10 +94,12 @@ pub(super) fn load(
         Option<String>,
         i64,
         i64,
+        Option<String>,
+        Option<String>,
     );
     let row: Option<Row> = sql(connection
         .query_row(
-            "SELECT installation_id,package_digest,phase,attempt,failure,cleanup_pending,session_id,upload_handle,review_json,interaction_id,base_generation,generation
+            "SELECT installation_id,package_digest,phase,attempt,failure,cleanup_pending,session_id,upload_handle,review_json,interaction_id,base_generation,generation,deployment_consent,deployment_id
          FROM app_installation_operations WHERE owner_id=?1 AND request_id=?2",
             params![owner, request],
             |r| {
@@ -94,6 +110,7 @@ pub(super) fn load(
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+                    r.get(12)?, r.get(13)?,
                 ))
             },
         )
@@ -112,6 +129,8 @@ pub(super) fn load(
             interaction_id,
             base_generation,
             generation,
+            deployment_consent,
+            deployment_id,
         )| {
             let base_generation =
                 u64::try_from(base_generation).map_err(|_| InstallOperationError::Storage)?;
@@ -125,6 +144,12 @@ pub(super) fn load(
                         installation_id: installation.clone(),
                         expected_generation: base_generation,
                     }),
+                    deployment: deployment_consent.zip(deployment_id).map(
+                        |(consent, deployment_id)| DeploymentInstall {
+                            consent,
+                            deployment_id,
+                        },
+                    ),
                 }),
                 (None, None) => None,
                 _ => return Err(InstallOperationError::Storage),

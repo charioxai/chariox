@@ -266,8 +266,18 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             identity(&owner)?;
             identity(&request_id)?;
             identity(&input.session_id)?;
-            if input.upload_handle.len() != 71
-                || !input.upload_handle.starts_with("upload_")
+            let source_valid = match &input.deployment {
+                // A deployment copy installs a stored release, never an update.
+                Some(deployment) => {
+                    identity(&deployment.consent)?;
+                    identity(&deployment.deployment_id)?;
+                    input.upload_handle.is_empty() && input.update.is_none()
+                }
+                None => {
+                    input.upload_handle.len() == 71 && input.upload_handle.starts_with("upload_")
+                }
+            };
+            if !source_valid
                 || digest.len() != 71
                 || !digest.strip_prefix("sha256:").is_some_and(|v| {
                     v.bytes()
@@ -298,8 +308,9 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 }
             };
             let time = now()?;
-            sql(tx.execute("INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,session_id,upload_handle,created_ms,updated_ms,base_generation,generation)
-                VALUES(?1,?2,?3,?4,'preparing',?5,?6,?7,?7,?8,?9)", params![owner,request_id,id,digest,input.session_id,input.upload_handle,time,base as i64,generation]))?;
+            let deployment = input.deployment.as_ref();
+            sql(tx.execute("INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,session_id,upload_handle,created_ms,updated_ms,base_generation,generation,deployment_consent,deployment_id)
+                VALUES(?1,?2,?3,?4,'preparing',?5,?6,?7,?7,?8,?9,?10,?11)", params![owner,request_id,id,digest,input.session_id,input.upload_handle,time,base as i64,generation,deployment.map(|d| &d.consent),deployment.map(|d| &d.deployment_id)]))?;
             let value = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             commit(tx, &budget, value)
         }
@@ -350,6 +361,18 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 )) => InstallOperationError::SchemaDowngrade,
                 _ => InstallOperationError::Stale,
             })?;
+            if let Some(deployment) = current
+                .input
+                .as_ref()
+                .and_then(|input| input.deployment.as_ref())
+            {
+                super::deployment_consent::tag_installation(
+                    &tx,
+                    &owner,
+                    installation,
+                    &deployment.deployment_id,
+                )?;
+            }
             sql(tx.execute("UPDATE app_installation_operations SET phase='approval',review_json=?1,updated_ms=?2,generation=?3 WHERE owner_id=?4 AND request_id=?5",params![review,time,staged.token.generation as i64,owner,request_id]))?;
             let result = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             commit(tx, &budget, result)
@@ -392,6 +415,46 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             }
             if update.decision != CapabilityDecision::Pending {
                 return Err(InstallOperationError::Conflict);
+            }
+            // Protocol 367: a deployment copy's install of exactly a release
+            // the owner consented to for this deployment, with capabilities
+            // the owner approved interactively before, needs no new decision.
+            // Anything else asks the owner as usual.
+            if let Some(deployment) = current
+                .input
+                .as_ref()
+                .and_then(|input| input.deployment.as_ref())
+            {
+                if super::deployment_consent::approves(
+                    &tx,
+                    &owner,
+                    &deployment.consent,
+                    &deployment.deployment_id,
+                    &update.release,
+                    binding.public_key_fingerprint(),
+                )? {
+                    binding
+                        .decide_in(
+                            &tx,
+                            &owner,
+                            &trust,
+                            CapabilityDecision::Approved {
+                                approval: CapabilityApproval {
+                                    decision_id: request_id.clone(),
+                                    authority_ref: format!(
+                                        "kernel_deployment_consent:{}",
+                                        deployment.consent
+                                    ),
+                                },
+                            },
+                            now()? as u64,
+                        )
+                        .map_err(|_| InstallOperationError::Stale)?;
+                    limit(&budget)?;
+                    tx.commit()
+                        .map_err(|_| InstallOperationError::CommitUnknown)?;
+                    return Ok(Reply::Review(InstallReviewDisposition::Approved));
+                }
             }
             // Consent covers capabilities: a local update of the same App,
             // publisher and exactly the approved capabilities needs no new

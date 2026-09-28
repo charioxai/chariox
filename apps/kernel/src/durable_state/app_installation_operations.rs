@@ -3,11 +3,15 @@
 //! health.
 mod api;
 mod commit;
+mod deployment_consent;
 mod public_ops;
 mod store;
 #[cfg(test)]
 mod tests;
 mod transitions;
+pub(crate) use deployment_consent::{
+    ConsentStatus, ConsentedApp, DeploymentConsent, CONSENT_TTL_MS,
+};
 pub(crate) use public_ops::{InstallApprovalChallenge, InstallReviewDisposition};
 
 use super::{
@@ -79,6 +83,15 @@ pub(crate) struct InstallInput {
     pub(crate) upload_handle: String,
     /// A local replacement of an existing installation; `None` installs anew.
     pub(crate) update: Option<UpdateTarget>,
+    /// Protocol 367: a deployment copy's install from the local release store
+    /// (`upload_handle` is empty).
+    pub(crate) deployment: Option<DeploymentInstall>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeploymentInstall {
+    /// The interaction of the owner's deployment consent.
+    pub(crate) consent: String,
+    pub(crate) deployment_id: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpdateTarget {
@@ -129,6 +142,7 @@ impl std::fmt::Debug for AppInstallationOperationRequest {
 }
 enum Command {
     Public(public_ops::PublicCommand),
+    Consent(deployment_consent::ConsentCommand),
     Replay {
         owner: String,
         request_id: String,
@@ -175,6 +189,7 @@ enum Reply {
     Operation(InstallOperation),
     Approved(ApprovedFirstInstall),
     Committed(FirstInstallCommitted),
+    Consent(DeploymentConsent),
     Done,
 }
 #[cfg(test)]
@@ -183,10 +198,12 @@ pub(crate) struct CommitTestFault {
     pub(crate) fail_reconciliation: bool,
 }
 pub(super) fn initialize(connection: &Connection) -> std::result::Result<(), DaemonError> {
-    store::initialize(connection).map_err(|_| DaemonError::LocalTransport {
-        operation: "durable_state.first_app_install",
-        message: "App installation operation schema could not be initialized".into(),
-    })
+    store::initialize(connection)
+        .and_then(|()| deployment_consent::initialize(connection))
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "durable_state.first_app_install",
+            message: "App installation operation schema could not be initialized".into(),
+        })
 }
 /// Unknown COMMIT fences the same writer using its existing fatal disposition;
 /// no ordinary queued write may continue after irreconcilable uncertainty.

@@ -183,6 +183,42 @@ impl DurableKernelStateStore {
         ))
     }
 
+    /// Protocol 367: the signed capabilities of a release in the local release
+    /// store, re-verified against the owner's current trust in its signer.
+    pub(crate) fn stored_app_release_capabilities(
+        &self,
+        owner: &str,
+        publisher_id: &str,
+        key_id: &str,
+        package_digest: &str,
+    ) -> Result<serde_json::Value, ActiveReleaseError> {
+        let trust = {
+            let mut connection = self
+                .lock_connection("durable_state.stored_app_release")
+                .map_err(|_| ActiveReleaseError::Storage)?;
+            PublisherTrustRegistry::new(&mut connection)
+                .trusted_publisher(owner, publisher_id, key_id)
+                .map_err(|_| ActiveReleaseError::Untrusted)?
+        };
+        let bytes = ReleaseStore::open_or_create(self.path())
+            .and_then(|store| store.open_stored_archive(package_digest))
+            .and_then(|mut archive| archive.read_bytes())
+            .map_err(|_| ActiveReleaseError::Unavailable)?;
+        let verified = verify(
+            &bytes,
+            &VerificationPolicy::new(
+                crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                vec![trust.publisher().clone()],
+            ),
+        )
+        .map_err(|_| ActiveReleaseError::Invalid)?;
+        if verified.package_digest() != package_digest {
+            return Err(ActiveReleaseError::Invalid);
+        }
+        serde_json::to_value(&verified.manifest().capabilities)
+            .map_err(|_| ActiveReleaseError::Invalid)
+    }
+
     /// The active release's signed `capabilities.connections` (protocol 359).
     pub(crate) fn active_app_connection_access(
         &self,

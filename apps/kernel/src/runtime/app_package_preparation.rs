@@ -130,7 +130,7 @@ impl AppPackagePreparation {
         owner: &str,
         handle: &str,
         now_ms: u64,
-        mut checkpoint: impl FnMut(PreparationCheckpoint) -> Result<()>,
+        checkpoint: impl FnMut(PreparationCheckpoint) -> Result<()>,
     ) -> Result<PreparedAppPackage> {
         // Finalize authenticates the owner/handle, rejects partial or expired
         // uploads, rehashes the exact file and retains its existing upload lease.
@@ -157,7 +157,37 @@ impl AppPackagePreparation {
         if bytes.len() != capacity {
             return Err(PreparationError::UploadDigestMismatch);
         }
-        let claimed = inspect_untrusted(&bytes, &Limits::default())
+        self.verify_and_stage(owner, &bytes, &upload.status().sha256, checkpoint)
+    }
+
+    /// Protocol 367: a release already in the local release store (a
+    /// deployment copy's install), re-verified against the owner's current
+    /// enrolled publisher trust.
+    pub(crate) async fn prepare_release(
+        &self,
+        trusted_owner: String,
+        package_digest: String,
+        admission: OwnedSemaphorePermit,
+    ) -> Result<PreparedAppPackage> {
+        let service = self.clone();
+        admitted_blocking(Arc::clone(&self.preparation), admission, move || {
+            let bytes = ReleaseStore::open_or_create(service.store.path())
+                .and_then(|store| store.open_stored_archive(&package_digest))
+                .and_then(|mut archive| archive.read_bytes())
+                .map_err(|_| PreparationError::UploadNotFound)?;
+            service.verify_and_stage(&trusted_owner, &bytes, &package_digest, |_| Ok(()))
+        })
+        .await
+    }
+
+    fn verify_and_stage(
+        &self,
+        owner: &str,
+        bytes: &[u8],
+        expected_digest: &str,
+        mut checkpoint: impl FnMut(PreparationCheckpoint) -> Result<()>,
+    ) -> Result<PreparedAppPackage> {
+        let claimed = inspect_untrusted(bytes, &Limits::default())
             .map_err(|e| PreparationError::PackageRejected(e.code))?;
         let trust = self
             .store
@@ -172,8 +202,8 @@ impl AppPackagePreparation {
             vec![trust.publisher().clone()],
         );
         let verified =
-            verify(&bytes, &policy).map_err(|e| PreparationError::PackageRejected(e.code))?;
-        if verified.package_digest() != upload.status().sha256 {
+            verify(bytes, &policy).map_err(|e| PreparationError::PackageRejected(e.code))?;
+        if verified.package_digest() != expected_digest {
             return Err(PreparationError::UploadDigestMismatch);
         }
         let candidate = VerifiedInstallCandidate::from_verified(&verified, &trust).map_err(
@@ -189,7 +219,7 @@ impl AppPackagePreparation {
             .map_err(|_| PreparationError::StorageUnavailable)?;
         releases.collect_abandoned().map_err(release_error)?;
         let reservation = releases
-            .required_reservation(&verified, &bytes)
+            .required_reservation(&verified, bytes)
             .map_err(release_error)?;
         if reservation > MAX_STAGE_BYTES {
             return Err(PreparationError::LimitExceeded);
@@ -197,7 +227,7 @@ impl AppPackagePreparation {
         let release = releases
             .stage(
                 &verified,
-                &bytes,
+                bytes,
                 StageBudget {
                     max_stage_bytes: MAX_STAGE_BYTES,
                     reserved_bytes: reservation,

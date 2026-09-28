@@ -109,11 +109,20 @@ pub(super) async fn run(
                     .as_ref()
                     .ok_or(Error::Failed("app_install_input_missing"))?;
                 let upload_handle = input.upload_handle.clone();
-                let prepared = shared
-                    .preparation
-                    .prepare(key.0.clone(), upload_handle.clone(), permit.take().unwrap())
-                    .await
-                    .map_err(preparation)?;
+                let deployment = input.deployment.is_some();
+                let preparing = permit.take().unwrap();
+                let prepared = if deployment {
+                    shared
+                        .preparation
+                        .prepare_release(key.0.clone(), operation.package_digest.clone(), preparing)
+                        .await
+                } else {
+                    shared
+                        .preparation
+                        .prepare(key.0.clone(), upload_handle.clone(), preparing)
+                        .await
+                }
+                .map_err(preparation)?;
                 let admitted = shared
                     .admission
                     .clone()
@@ -134,11 +143,13 @@ pub(super) async fn run(
                 .await?;
                 // The staged release is durable and past preparation: a restart
                 // never prepares from this upload again.
-                let (preparation, owner) = (shared.preparation.clone(), key.0.clone());
-                let _ = tokio::task::spawn_blocking(move || {
-                    preparation.release_upload(&owner, &upload_handle)
-                })
-                .await;
+                if !deployment {
+                    let (preparation, owner) = (shared.preparation.clone(), key.0.clone());
+                    let _ = tokio::task::spawn_blocking(move || {
+                        preparation.release_upload(&owner, &upload_handle)
+                    })
+                    .await;
+                }
                 permit = Some(
                     shared
                         .admission
