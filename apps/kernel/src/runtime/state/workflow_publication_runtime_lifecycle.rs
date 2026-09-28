@@ -855,37 +855,20 @@ async fn start_publication_runtime_claimed(
     if let Some(path) = caller_claims_config.as_ref() {
         let _ = fs::remove_file(path);
     }
-    // A stop that landed while this runtime was starting wins: the stop could
-    // not reach an unregistered process, and writing the running state now
-    // would drop the persisted stop (recovery would then serve it again).
-    let stopped_meanwhile = runtime_state
-        .owned
-        .session_store
-        .read()
-        .resolve_workflow_publication_ref(&request.session_id, publication.id())
-        .map(|current| stop_intended(&current))
-        .unwrap_or(false);
-    if stopped_meanwhile {
-        let _ = child.kill().await;
-        return Err(publication_runtime_error(
-            "start workflow publication runtime",
-            "the publication was stopped while its runtime was starting",
-        ));
-    }
-    runtime_state
-        .owned
-        .workflow_publication_runtimes
-        .insert(
-            process_key,
-            WorkflowPublicationRuntimeProcess {
-                child,
-                process_id,
-                host: host.clone(),
-                port,
-                local_url: local_url.clone(),
-            },
-        )
-        .await;
+    register_launched_runtime(
+        runtime_state,
+        &request.session_id,
+        publication.id(),
+        process_key,
+        WorkflowPublicationRuntimeProcess {
+            child,
+            process_id,
+            host: host.clone(),
+            port,
+            local_url: local_url.clone(),
+        },
+    )
+    .await?;
     let runtime_status = launched_publication_runtime_status(is_schedule_only);
     let mut deployment = publication_runtime_deployment_metadata(
         runtime_status,
@@ -1582,6 +1565,39 @@ async fn remove_deployment_app_copy(
 /// a start that waits for App approvals must not leave the source looking
 /// stopped (the reconcile would remove the copies it installed), and a stop
 /// that lands after this still wins when the launch registers.
+/// Registers a launched gateway, unless a stop landed while it was starting:
+/// that stop wins. It could not reach an unregistered process, and writing
+/// the running state now would drop the persisted stop (recovery would then
+/// serve it again).
+async fn register_launched_runtime(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    publication_id: &str,
+    process_key: String,
+    mut process: WorkflowPublicationRuntimeProcess,
+) -> Result<(), DaemonError> {
+    let stopped_meanwhile = runtime_state
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_publication_ref(session_id, publication_id)
+        .map(|current| stop_intended(&current))
+        .unwrap_or(false);
+    if stopped_meanwhile {
+        let _ = process.child.kill().await;
+        return Err(publication_runtime_error(
+            "start workflow publication runtime",
+            "the publication was stopped while its runtime was starting",
+        ));
+    }
+    runtime_state
+        .owned
+        .workflow_publication_runtimes
+        .insert(process_key, process)
+        .await;
+    Ok(())
+}
+
 fn persist_start_intent(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
@@ -1856,6 +1872,53 @@ impl WorkflowPublicationRuntimeProcessStore {
 
     async fn keys(&self) -> Vec<String> {
         self.inner.lock().await.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+impl KernelRuntimeState {
+    /// Registers a gateway that has just launched (a long-running child) as
+    /// the publication's runtime; returns the outcome and the child's pid.
+    pub(crate) async fn fixture_register_launched_runtime(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+    ) -> (Result<(), DaemonError>, u32) {
+        let child = Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("launched gateway");
+        let process_id = child.id().expect("pid");
+        let outcome = register_launched_runtime(
+            self,
+            session_id,
+            publication_id,
+            publication_runtime_process_key(session_id, publication_id),
+            WorkflowPublicationRuntimeProcess {
+                child,
+                process_id: Some(process_id),
+                host: DEFAULT_PUBLICATION_RUNTIME_HOST.to_string(),
+                port: 0,
+                local_url: None,
+            },
+        )
+        .await;
+        (outcome, process_id)
+    }
+
+    pub(crate) async fn fixture_publication_runtime_running(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+    ) -> bool {
+        self.owned
+            .workflow_publication_runtimes
+            .running(&publication_runtime_process_key(session_id, publication_id))
+            .await
+            .ok()
+            .flatten()
+            .is_some()
     }
 }
 
