@@ -226,8 +226,8 @@ pub(super) fn update_package(
         )
         .unwrap();
 }
-pub(super) fn inbox_package_version(version: &str) -> (Vec<u8>, TrustedPublisher) {
-    package_build(false, false, version, 0, true)
+pub(super) fn inbox_package_version(version: &str, schema: u32) -> (Vec<u8>, TrustedPublisher) {
+    package_build(false, false, version, schema, true)
 }
 pub(super) fn package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(false)

@@ -189,7 +189,7 @@ fn an_app_granted_to_a_workflow_agent_is_packaged_per_release() {
 
     // An owner App update is packaged by the next release; the first release
     // keeps its own plan, which its bind and a rollback re-export.
-    let newer = crate::durable_state::app_state::fixture_inbox_package_version("1.1.0");
+    let newer = crate::durable_state::app_state::fixture_inbox_package_version("1.1.0", 0);
     stage_release(&harness, newer.clone());
     harness.with_app(|app| {
         crate::durable_state::app_state::fixture_update_installation(

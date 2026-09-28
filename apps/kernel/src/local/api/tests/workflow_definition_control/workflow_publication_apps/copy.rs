@@ -184,11 +184,20 @@ fn pumped_ensure(
     harness: &LocalRouterTestHarness,
     deployed: &Deployed,
 ) -> Result<Option<String>, crate::DaemonError> {
+    pumped_ensure_release(harness, deployed, RELEASE)
+}
+
+fn pumped_ensure_release(
+    harness: &LocalRouterTestHarness,
+    deployed: &Deployed,
+    release: &str,
+) -> Result<Option<String>, crate::DaemonError> {
     let runtime = harness.runtime_state();
-    let (session_id, publication_id, digest) = (
+    let (session_id, publication_id, digest, release) = (
         deployed.graph.session_id.clone(),
         deployed.publication.id().to_owned(),
         deployed.digest.clone(),
+        release.to_owned(),
     );
     let task = harness.spawn_test_task(async move {
         runtime
@@ -196,7 +205,7 @@ fn pumped_ensure(
                 &session_id,
                 &publication_id,
                 DEPLOYMENT,
-                RELEASE,
+                &release,
                 &digest,
             )
             .await
@@ -563,6 +572,55 @@ fn a_release_with_an_older_data_schema_than_the_copy_fails_closed() {
     let set = app_set(&harness);
     assert!(installation(&set, "copy").inbox_routes.is_empty());
     assert!(installation(&set, "installed").inbox_routes[0].active);
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Protocol 368: a release whose App has a newer data schema updates the copy
+/// in place (the update migrates its data); only an older schema fails closed.
+#[test]
+fn a_release_with_a_newer_data_schema_updates_the_copy() {
+    let root = temp_root("copy-migrate");
+    let harness = harness_with_app(&root);
+    let first = deployed(&harness, "copy-migrate", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    // The owner updates the App to a release with a newer data schema, and
+    // the next release of the deployment packages it.
+    let newer = crate::durable_state::app_state::fixture_inbox_package_version("1.1.0", 1);
+    stage_release(&harness, newer.clone());
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_update_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "installed",
+            newer,
+        )
+    });
+    let (digest, files) =
+        export(&harness, &first.graph, first.publication.id()).expect("the next release");
+    assert_eq!(package_json_file(&files, "apps.json")["apps"][0]["schema_version"], 1);
+    let next = Deployed {
+        graph: first.graph,
+        publication: first.publication,
+        digest,
+    };
+    approve(&harness, &next, "release-2");
+    // The copy's update is begun rather than refused for its schema; this
+    // harness runs no App worker, so the update itself cannot complete here.
+    let error = pumped_ensure_release(&harness, &next, "release-2").expect_err("no App worker");
+    assert!(!error.to_string().contains("schema version"), "{error}");
+    assert!(
+        error.to_string().contains("could not be installed for the deployment"),
+        "{error}"
+    );
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }

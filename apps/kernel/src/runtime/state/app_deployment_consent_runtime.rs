@@ -108,11 +108,17 @@ impl KernelRuntimeState {
         };
         // Protocol 368: the plan the next release packages, from the owner's
         // current App set.
-        let Some((mut plan, capabilities)) = self
+        let current = match self
             .read_publication_app_plan(&publication, &snapshot, &owner)
             .await
-            .map_err(|_| AppRequestErrorCode::Conflict)?
-        else {
+        {
+            Ok(current) => current,
+            // A past release's plan stays readable when the current App set
+            // cannot give one (an App the workflow uses was uninstalled).
+            Err(_) if release_plan.is_some() => None,
+            Err(_) => return Err(AppRequestErrorCode::Conflict),
+        };
+        let Some((mut plan, capabilities)) = current else {
             return Ok((id, prepared, None, release_plan));
         };
         for app in plan["apps"].as_array_mut().into_iter().flatten() {

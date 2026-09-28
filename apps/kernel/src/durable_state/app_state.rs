@@ -316,12 +316,14 @@ pub(crate) fn fixture_update_installation(
     tests::update_package(store, owner, installation_id, package);
 }
 
-/// The fixture inbox App at another version (same data schema).
+/// The fixture inbox App at another version; `schema` > 0 declares data
+/// migrations.
 #[cfg(test)]
 pub(crate) fn fixture_inbox_package_version(
     version: &str,
+    schema: u32,
 ) -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
-    tests::inbox_package_version(version)
+    tests::inbox_package_version(version, schema)
 }
 
 #[cfg(test)]

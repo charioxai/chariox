@@ -184,7 +184,8 @@ pub struct WorkflowPublicationDefinition {
     updated_at_ms: u64,
 }
 
-/// Rollback reaches this many past releases' App plans.
+/// Rollback reaches this many past releases' App plans (the bound release's
+/// is always kept).
 const MAX_RELEASE_APP_PLANS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -534,11 +535,23 @@ impl WorkflowPublicationDefinition {
             package_digest: package_digest.to_owned(),
             plan: plan.clone(),
         });
-        let excess = self
-            .release_app_plans
-            .len()
-            .saturating_sub(MAX_RELEASE_APP_PLANS);
-        self.release_app_plans.drain(..excess);
+        // The oldest plans go first, never the bound release's: its restart
+        // and recovery re-export with it.
+        let bound = self
+            .deployment
+            .as_ref()
+            .and_then(|deployment| deployment["binding"]["package_digest"].as_str())
+            .map(str::to_owned);
+        while self.release_app_plans.len() > MAX_RELEASE_APP_PLANS {
+            let Some(oldest) = self
+                .release_app_plans
+                .iter()
+                .position(|release| Some(&release.package_digest) != bound.as_ref())
+            else {
+                break;
+            };
+            self.release_app_plans.remove(oldest);
+        }
         self.apps = Some(plan);
     }
 
@@ -754,9 +767,18 @@ mod release_app_plan_tests {
         assert_eq!(publication.apps(), Some(&newer));
         assert_eq!(publication.release_app_plan("sha256:new"), Some(&newer));
         assert_eq!(publication.release_app_plan("sha256:old"), Some(&pinned));
+        // Pruning keeps the bound release's plan however many exports follow.
+        publication.deployment = Some(serde_json::json!({"binding": {"package_digest": "sha256:new"}}));
+        for export in 0..(MAX_RELEASE_APP_PLANS + 4) {
+            publication.record_release_app_plan(&format!("sha256:later-{export}"), serde_json::json!({"n": export}));
+        }
+        assert_eq!(publication.release_app_plans.len(), MAX_RELEASE_APP_PLANS);
+        assert_eq!(publication.release_app_plan("sha256:new"), Some(&newer));
+        assert_eq!(publication.release_app_plan("sha256:later-0"), Some(&pinned), "evicted: the pre-368 plan answers, and the bind's digest check decides");
+        assert!(publication.release_app_plans.iter().any(|release| release.package_digest == format!("sha256:later-{}", MAX_RELEASE_APP_PLANS + 3)));
         // A publication first prepared at 368 has no such fallback.
         let mut fresh = self::publication();
-        fresh.record_release_app_plan("sha256:new", newer);
+        fresh.record_release_app_plan("sha256:new", newer.clone());
         assert_eq!(fresh.release_app_plan("sha256:other"), None);
     }
 }
