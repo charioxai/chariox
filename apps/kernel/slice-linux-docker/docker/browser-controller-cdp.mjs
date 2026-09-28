@@ -130,10 +130,12 @@ export class BrowserCdpClient {
       await Promise.all(
         writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
       );
-      // A kernel that does not send the Room's browser bar leaves windows as they are.
+      // A home kernel before protocol 370 sends no flag; a 370 worker behind it
+      // defaults it to hidden (fullscreen), the new default.
       if (typeof browserBarVisible === "boolean") {
         const appTargets = new Set([...(this.appTabs?.apps?.values() ?? [])].map((app) => app.targetId));
-        await applyBrowserBar(connection, pages, appTargets, browserBarVisible);
+        this.browserBarApplied ??= new Map();
+        await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
       }
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
       return {

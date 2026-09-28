@@ -2,15 +2,22 @@
 // so the page covers the desktop and viewers see what agents see. Showing the
 // bar maximizes them instead, with Chromium's tab strip and address bar.
 // Windows holding an App view stay as the App view keeps them (fullscreen).
-export async function applyBrowserBar(connection, pages, appTargetIds, visible) {
+//
+// A window is set only when it is new or the bar changed since it was last set
+// (`applied`, window id -> the bar state last applied): a page that enters its
+// own HTML fullscreen (a video) is not forced back on the next reconcile.
+export async function applyBrowserBar(connection, pages, appTargetIds, visible, applied = new Map()) {
   const wanted = visible ? "maximized" : "fullscreen";
-  const windowOf = async (targetId) => {
+  // Tabs and windows can close at any point during a reconcile: skip them.
+  const quietly = async (fn) => {
     try {
-      return (await connection.send("Browser.getWindowForTarget", { targetId })).windowId;
+      return await fn();
     } catch {
-      return null; // The Tab closed meanwhile.
+      return null;
     }
   };
+  const windowOf = async (targetId) =>
+    (await quietly(() => connection.send("Browser.getWindowForTarget", { targetId })))?.windowId ?? null;
   const appWindows = new Set();
   for (const targetId of appTargetIds) {
     const windowId = await windowOf(targetId);
@@ -22,14 +29,23 @@ export async function applyBrowserBar(connection, pages, appTargetIds, visible) 
     const windowId = await windowOf(page.targetId);
     if (windowId === null || appWindows.has(windowId) || windows.has(windowId)) continue;
     windows.add(windowId);
-    const { bounds } = await connection.send("Browser.getWindowBounds", { windowId });
-    const state = bounds?.windowState;
-    if (state === wanted || state === "minimized") continue;
-    // Chromium only leaves fullscreen or maximized through the normal state.
-    if (state !== "normal") {
-      await connection.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
+    if (applied.get(windowId) === visible) continue;
+    const bounds = (await quietly(() => connection.send("Browser.getWindowBounds", { windowId })))?.bounds;
+    if (!bounds) continue;
+    const state = bounds.windowState;
+    if (state !== wanted && state !== "minimized") {
+      // Chromium only leaves fullscreen or maximized through the normal state.
+      if (state !== "normal") {
+        await quietly(() => connection.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } }));
+      }
+      const set = await quietly(() => connection.send("Browser.setWindowBounds", { windowId, bounds: { windowState: wanted } }));
+      if (set === null) continue;
     }
-    await connection.send("Browser.setWindowBounds", { windowId, bounds: { windowState: wanted } });
+    applied.set(windowId, visible);
+  }
+  // Forget windows that closed.
+  for (const windowId of applied.keys()) {
+    if (!windows.has(windowId)) applied.delete(windowId);
   }
   return windows.size;
 }

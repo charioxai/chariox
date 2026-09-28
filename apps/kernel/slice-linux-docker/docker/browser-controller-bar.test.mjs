@@ -47,3 +47,29 @@ test("a window shared with an App view keeps the App view's state", async () => 
   assert.equal(await applyBrowserBar(fake.connection, [{ targetId: "a" }], new Set(["app"]), true), 0);
   assert.deepEqual(fake.windows, { 1: "fullscreen" });
 });
+
+test("a window that closes while the bar is applied is skipped, not an error", async () => {
+  const fake = fakeBrowser({ 1: "normal" }, { a: 1, b: 2 });
+  const send = fake.connection.send;
+  fake.connection.send = async (method, params) => {
+    if (method === "Browser.getWindowBounds" && params.windowId === 2) throw new Error("Browser window not found");
+    return send(method, params);
+  };
+  assert.equal(await applyBrowserBar(fake.connection, [{ targetId: "a" }, { targetId: "b" }], new Set(), false), 2);
+  assert.equal(fake.windows[1], "fullscreen");
+});
+
+test("a page's own fullscreen is kept on later reconciles; a bar change applies again", async () => {
+  const fake = fakeBrowser({ 1: "normal" }, { a: 1 });
+  const applied = new Map();
+  await applyBrowserBar(fake.connection, [{ targetId: "a" }], new Set(), true, applied);
+  assert.equal(fake.windows[1], "maximized");
+  fake.windows[1] = "fullscreen"; // A video entered HTML fullscreen.
+  await applyBrowserBar(fake.connection, [{ targetId: "a" }], new Set(), true, applied);
+  assert.equal(fake.windows[1], "fullscreen", "the same bar state leaves the window alone");
+  await applyBrowserBar(fake.connection, [{ targetId: "a" }], new Set(), false, applied);
+  await applyBrowserBar(fake.connection, [{ targetId: "a" }], new Set(), true, applied);
+  assert.equal(fake.windows[1], "maximized", "a changed bar state applies again");
+  await applyBrowserBar(fake.connection, [], new Set(), true, applied);
+  assert.equal(applied.size, 0, "closed windows are forgotten");
+});

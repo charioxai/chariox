@@ -6,11 +6,11 @@ use crate::local::{
     FocusAgentRequest, ListProjectsRequest, LocalDaemonResponse,
     ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
-    RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-    SetRoomBrowserBarRequest, SubmitRoomEnvironmentActionRequest,
-    SubmitRoomEnvironmentBrowserActionRequest,
-    UpdateProjectWorkspacesRequest, UpdateRoomEnvironmentPointerRequest,
-    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
+    RetryRoomEnvironmentRequest, SetRoomBrowserBarRequest, StartRoomEnvironmentRequest,
+    StopRoomEnvironmentRequest, SubmitRoomEnvironmentActionRequest,
+    SubmitRoomEnvironmentBrowserActionRequest, UpdateProjectWorkspacesRequest,
+    UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
+    UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -174,10 +174,11 @@ impl SessionRuntimeStore {
             crate::session::EnvironmentActorKind::Human,
             crate::session::human_environment_actor_label(&caller_user_id),
         );
-        let result = match self
-            .state
-            .set_room_browser_bar_visible_as_actor(&request.session_id, actor, request.visible)
-        {
+        let result = match self.state.set_room_browser_bar_visible_as_actor(
+            &request.session_id,
+            actor,
+            request.visible,
+        ) {
             Ok(_)
                 if self
                     .state
