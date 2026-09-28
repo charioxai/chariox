@@ -2182,7 +2182,12 @@ Workflow trigger and deployment direction:
   inputs_digest}`, newest last, the last 64 and the bound release's kept):
   the package digest of its files without the kernel's templates (`.env.example`,
   `run.sh`, `README.md`, `public/index.html`, `public/app.js`,
-  `public/styles.css`, `deployment-contract.json`). The deployment bind and
+  `public/styles.css`), with `deployment-contract.json` counted without the
+  fields a kernel upgrade changes (`package_id`, `artifact.content_digest`,
+  `compatibility.minimum_kernel_version` and the template entries of
+  `presentation.assets`). A kernel change to how the rest of the contract is
+  derived (routes, credential slots, capabilities) still fails the bind of an
+  existing release, which must then be rebound. The deployment bind and
   recovery verify a release with a recorded inputs digest by re-exporting it and
   comparing inputs digests, so a kernel upgrade that changes those templates
   (for example the contract's `minimum_kernel_version`) keeps its deployments
