@@ -80,6 +80,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     dbus \
     fonts-dejavu \
     fonts-liberation \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
     gh \
     git \
     jq \
