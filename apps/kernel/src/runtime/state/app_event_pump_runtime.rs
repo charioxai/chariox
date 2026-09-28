@@ -233,10 +233,10 @@ impl KernelRuntimeOwnedState {
                 // intent before scheduling, and its prompt path owns recovery.
                 match self.workflow_start_next_queued_prompt_for_response(&session) {
                     Ok((_, dispatches)) => output.dispatches.extend(dispatches),
-                    Err(_) => crate::logging::warn_with_fields(
+                    Err(error) => crate::logging::warn_with_fields(
                         "daemon.app_events",
                         "durable App event remains queued for normal workflow recovery",
-                        serde_json::json!({"session_id":session}),
+                        serde_json::json!({"session_id":session,"error":error.to_string()}),
                     ),
                 }
             }
