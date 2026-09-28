@@ -1770,6 +1770,28 @@ Workflow trigger and deployment direction:
   consume it. The optional disk-cap fields do not change minimums for clients
   that do not use them; a client that reads or writes those fields must gate
   that capability at protocol 350.
+- protocol 351 adds `CreateDisposableWorker`, `GetDisposableWorker`,
+  `ReleaseDisposableWorker`, `KeepDisposableWorkerRunning`,
+  `PrepareDisposableWorkerContextTransfer`, and `KeepManagedEnvironmentRunning`.
+  Disposable selections bind `allocationId`, `homeKernelId`, and
+  `homeRelayRealmId`. The authenticated home kernel derives Cloud account and
+  session authority; clients must not supply credentials or account authority.
+  Before mutating an existing allocation, the home reads it and verifies its
+  allocation, home, and realm binding. Context-transfer tickets also bind the
+  returned worker machine and kernel. Create preserves `clientRequestId` for
+  Cloud idempotency; transport failure must not trigger an automatic mutation
+  retry or a fallback to a different home or Cloud authority.
+  Clients consuming these controls require local-daemon protocol 351. Other
+  client minimums remain unchanged. Deploy the matching Cloud allocation,
+  context-transfer, and keep-running routes before enabling these controls on
+  a signed 351 home, then connect the updated client. The focused source checks
+  are `ipc-disposable-worker-requests.test.ts`,
+  `local/api/tests/protocol_shapes/disposable_worker.rs`, and
+  `runtime/disposable_worker_control/tests.rs`. Live acceptance must create
+  through the selected home, observe the returned allocation and worker
+  identities, reject foreign-home selection, exercise keep-running and context
+  transfer, and release with authoritative provider-resource deletion evidence.
+  Source tests alone do not prove that live drill passed.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
