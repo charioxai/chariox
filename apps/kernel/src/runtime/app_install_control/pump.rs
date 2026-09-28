@@ -42,6 +42,7 @@ impl AppInstallControl {
         let _guard = PumpGuard(&self.0.pumping);
         let mut prompts = Vec::new();
         let mut close = Vec::new();
+        let mut evict = Vec::new();
         {
             let mut state = self
                 .0
@@ -125,6 +126,16 @@ impl AppInstallControl {
                     Ok(_) => {}
                     Err(jobs::Error::Busy | jobs::Error::Storage) => {
                         entry.next = Instant::now() + RETRY
+                    }
+                    // An installed App's first start at the live-worker limit
+                    // makes room as a user or on-demand start does, instead of
+                    // retrying until some worker happens to stop.
+                    Err(jobs::Error::LiveLimit) => {
+                        entry.next = Instant::now() + RETRY;
+                        evict.push((
+                            key.clone(),
+                            !std::mem::replace(&mut entry.waited_for_slot, true),
+                        ));
                     }
                     Err(jobs::Error::Unknown) => {
                         entry.step = if entry.cancelled.load(Ordering::Acquire) {
@@ -220,6 +231,17 @@ impl AppInstallControl {
         }
         for (session, id) in close {
             let _ = runtime.timeout_runtime_interaction(&session, &id).await;
+        }
+        for ((owner, request_id), first) in evict {
+            if first {
+                crate::logging::info_with_fields(
+                    "app.install",
+                    "App install waits for a live worker slot; stopping an idle worker",
+                    serde_json::json!({ "owner_id": owner, "request_id": request_id }),
+                );
+            }
+            // The installing App has no live worker yet, so no target is spared.
+            runtime.evict_idle_app(&owner, "").await;
         }
         for prompt in prompts {
             if self.0.stopped.load(Ordering::Acquire) {

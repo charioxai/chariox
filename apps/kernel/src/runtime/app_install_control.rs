@@ -85,6 +85,8 @@ struct Entry {
     step: Step,
     busy: bool,
     next: Instant,
+    /// The first start met the live-worker limit; logged once.
+    waited_for_slot: bool,
 }
 enum Step {
     Work,
@@ -111,6 +113,7 @@ impl Entry {
             step: Step::Work,
             busy: false,
             next: Instant::now(),
+            waited_for_slot: false,
         }
     }
 }
