@@ -113,7 +113,7 @@ esac
   }
 })
 
-test("repository release policy permits only reviewed protocol 343, 348, and 349 transitions to and from 350", async (context) => {
+test("repository release policy permits only reviewed protocol 343, 348, 349, and 350 transitions to and from 351", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -124,17 +124,17 @@ test("repository release policy permits only reviewed protocol 343, 348, and 349
   const policy = JSON.parse(policyBytes)
   assert.deepEqual(policy, {
     schemaVersion: 1,
-    protocol: 350,
-    upgradeFrom: [343, 348, 349, 350],
-    rollbackTo: [343, 348, 349, 350],
+    protocol: 351,
+    upgradeFrom: [343, 348, 349, 350, 351],
+    rollbackTo: [343, 348, 349, 350, 351],
   })
   await put(join(current, policyPath), policyBytes)
   await put(join(target, policyPath), policyBytes)
 
-  for (const olderProtocol of [343, 348, 349]) {
+  for (const olderProtocol of [343, 348, 349, 350]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
-      [current, olderProtocol, target, 350],
-      [target, 350, current, olderProtocol],
+      [current, olderProtocol, target, 351],
+      [target, 351, current, olderProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
         currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
@@ -144,8 +144,8 @@ test("repository release policy permits only reviewed protocol 343, 348, and 349
 
   for (const unsupportedProtocol of [325, 333, 342, 344, 345, 346, 347]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
-      [current, unsupportedProtocol, target, 350],
-      [target, 350, current, unsupportedProtocol],
+      [current, unsupportedProtocol, target, 351],
+      [target, 351, current, unsupportedProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
         currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
@@ -1660,11 +1660,11 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
   assert.match(result.stderr, /not a confirmed registered-kernel receipt/)
 })
 
-test("managed kernel upgrade accepts a signed protocol 343 to 350 transition and rollback", async (context) => {
+test("managed kernel upgrade accepts a signed protocol 343 to 351 transition and rollback", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const harness = await makeHarness(context, {
     currentProtocol: 343,
-    targetProtocol: 350,
+    targetProtocol: 351,
     targetTransitionPolicy: repositoryPolicy,
   })
   const result = harness.run()
