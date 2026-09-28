@@ -6,7 +6,7 @@ use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -831,8 +831,14 @@ async fn start_publication_runtime_claimed(
         }
     })?;
     let process_id = child.id();
-    if let Err(message) =
-        wait_for_publication_runtime_start(&mut child, &host, port, no_ingress).await
+    if let Err(message) = wait_for_publication_runtime_start(
+        &mut child,
+        &host,
+        port,
+        no_ingress,
+        caller_claims_config.as_deref(),
+    )
+    .await
     {
         if let Some(path) = caller_claims_config.as_ref() {
             let _ = fs::remove_file(path);
@@ -1207,6 +1213,7 @@ async fn wait_for_publication_runtime_start(
     host: &str,
     port: u16,
     no_ingress: bool,
+    caller_claims_config: Option<&Path>,
 ) -> Result<(), String> {
     let deadline = Instant::now() + PUBLICATION_RUNTIME_START_TIMEOUT;
     loop {
@@ -1220,14 +1227,27 @@ async fn wait_for_publication_runtime_start(
                 stderr_suffix(&stderr),
             ));
         }
-        if no_ingress || TcpStream::connect((host, port)).is_ok() {
+        // A gateway with no ingress listens for nothing: it has started once it
+        // consumed its caller-claims config (a Cloud deployment's), which the
+        // kernel must not remove before.
+        let ready = if no_ingress {
+            caller_claims_config.is_none_or(|path| !path.exists())
+        } else {
+            TcpStream::connect((host, port)).is_ok()
+        };
+        if ready {
             return Ok(());
         }
         if Instant::now() >= deadline {
             let _ = child.kill().await;
             let stderr = publication_runtime_stderr(child).await;
+            let waited_for = if no_ingress {
+                "read its deployment config".to_string()
+            } else {
+                format!("listen on {host}:{port}")
+            };
             return Err(format!(
-                "publication gateway did not listen on {host}:{port} within {}s{}",
+                "publication gateway did not {waited_for} within {}s{}",
                 PUBLICATION_RUNTIME_START_TIMEOUT.as_secs(),
                 stderr_suffix(&stderr),
             ));
@@ -2113,6 +2133,49 @@ mod tests {
                 "status": "stopped",
             }),
         );
+    }
+
+    #[tokio::test]
+    async fn an_ingressless_gateway_starts_once_it_consumed_its_caller_claims_config() {
+        let config = std::env::temp_dir().join(format!(
+            "chariox-caller-claims-{}-{}.json",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        fs::write(&config, "{}").expect("config");
+        // The gateway consumes the file after it starts; the kernel waits for that.
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 0.3; rm {}; sleep 5", config.display()))
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("gateway");
+        super::wait_for_publication_runtime_start(&mut child, "127.0.0.1", 0, true, Some(&config))
+            .await
+            .expect("started once the config is consumed");
+        assert!(!config.exists());
+        let _ = child.kill().await;
+
+        // A gateway that exits before consuming it failed to start.
+        fs::write(&config, "{}").expect("config");
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("echo no deployment config >&2; exit 1")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("gateway");
+        let error = super::wait_for_publication_runtime_start(
+            &mut child,
+            "127.0.0.1",
+            0,
+            true,
+            Some(&config),
+        )
+        .await
+        .expect_err("exited before starting");
+        assert!(error.contains("exited before becoming ready"), "{error}");
+        assert!(error.contains("no deployment config"), "{error}");
+        let _ = fs::remove_file(&config);
     }
 
     #[tokio::test]
