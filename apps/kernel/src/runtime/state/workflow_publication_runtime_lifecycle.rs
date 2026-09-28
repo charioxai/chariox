@@ -41,6 +41,8 @@ const PUBLICATION_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(60);
 const PUBLICATION_RUNTIME_START_POLL: Duration = Duration::from_millis(50);
 /// P1.20: the runtime keys of App-bound deployment copies.
 pub(super) const DEPLOYMENT_COPY_KEY_PREFIX: &str = "deployment:";
+const PACKAGE_DIGEST_MISMATCH: &str =
+    "publication package digest no longer matches the bound deployment";
 
 #[derive(Clone, Default)]
 pub(crate) struct WorkflowPublicationRuntimeProcessStore {
@@ -61,6 +63,9 @@ struct WorkflowPublicationRuntimeProcess {
 struct WorkflowPublicationRuntimeRecovery {
     failures: u32,
     next_attempt_at_ms: u64,
+    /// A package digest mismatch cannot heal by retrying: recovery waits until
+    /// the deployment is rebound to a different package digest.
+    parked_for_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -368,7 +373,7 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
         if !runtime_state
             .owned
             .workflow_publication_runtimes
-            .recovery_due(&process_key, now_ms)
+            .recovery_due(&process_key, now_ms, &binding.package_digest)
             .await
             || runtime_state
                 .owned
@@ -458,6 +463,23 @@ async fn recover_bound_publication_runtime(
                     "session_id": publication.session_id(),
                     "publication_id": publication.id(),
                     "deployment_id": binding.deployment_id,
+                }),
+            );
+        }
+        Err(error) if is_package_digest_mismatch(&error) => {
+            runtime_state
+                .owned
+                .workflow_publication_runtimes
+                .park_recovery(&process_key, &binding.package_digest)
+                .await;
+            crate::logging::warn_with_fields(
+                "daemon.publication_runtime",
+                "bound publication runtime waits for its deployment to be rebound",
+                serde_json::json!({
+                    "session_id": publication.session_id(),
+                    "publication_id": publication.id(),
+                    "deployment_id": binding.deployment_id,
+                    "error": error.to_string(),
                 }),
             );
         }
@@ -1638,8 +1660,15 @@ fn validate_bound_publication_package_digest(expected: &str, actual: &str) -> Re
         return Ok(());
     }
     Err(format!(
-        "publication package digest no longer matches the bound deployment: expected {expected}, got {actual}; rebind the deployment before restarting"
+        "{PACKAGE_DIGEST_MISMATCH}: expected {expected}, got {actual}; rebind the deployment before restarting"
     ))
+}
+
+fn is_package_digest_mismatch(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport { message, .. } if message.starts_with(PACKAGE_DIGEST_MISMATCH)
+    )
 }
 
 fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
@@ -1755,12 +1784,21 @@ impl WorkflowPublicationRuntimeProcessStore {
         self.launching.lock().await.remove(key);
     }
 
-    async fn recovery_due(&self, key: &str, now_ms: u64) -> bool {
+    async fn recovery_due(&self, key: &str, now_ms: u64, package_digest: &str) -> bool {
         self.recoveries
             .lock()
             .await
             .get(key)
-            .map_or(true, |recovery| recovery.next_attempt_at_ms <= now_ms)
+            .map_or(true, |recovery| match &recovery.parked_for_digest {
+                Some(parked) => parked != package_digest,
+                None => recovery.next_attempt_at_ms <= now_ms,
+            })
+    }
+
+    async fn park_recovery(&self, key: &str, package_digest: &str) {
+        let mut guard = self.recoveries.lock().await;
+        let recovery = guard.entry(key.to_string()).or_default();
+        recovery.parked_for_digest = Some(package_digest.to_string());
     }
 
     async fn record_recovery_success(&self, key: &str) {
@@ -1776,6 +1814,7 @@ impl WorkflowPublicationRuntimeProcessStore {
             .saturating_mul(1_u64 << exponent)
             .min(PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS);
         recovery.next_attempt_at_ms = now_ms.saturating_add(delay);
+        recovery.parked_for_digest = None;
     }
 
     async fn running(&self, key: &str) -> Result<Option<RunningPublicationRuntime>, DaemonError> {
@@ -1819,14 +1858,14 @@ impl WorkflowPublicationRuntimeProcessStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        launched_publication_runtime_message, launched_publication_runtime_status,
-        publication_local_url, publication_runtime_launch_context,
-        publication_runtime_metadata_preserving_binding, publication_runtime_port,
-        publication_runtime_recovery_binding, stopped_publication_runtime_metadata,
-        validate_bound_publication_package_digest, validate_publication_runtime_bind_address,
-        validated_deployment_binding, write_publication_caller_claims_config,
-        PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore,
-        DEFAULT_PUBLICATION_RUNTIME_PORT,
+        is_package_digest_mismatch, launched_publication_runtime_message,
+        launched_publication_runtime_status, publication_local_url, publication_runtime_error,
+        publication_runtime_launch_context, publication_runtime_metadata_preserving_binding,
+        publication_runtime_port, publication_runtime_recovery_binding,
+        stopped_publication_runtime_metadata, validate_bound_publication_package_digest,
+        validate_publication_runtime_bind_address, validated_deployment_binding,
+        write_publication_caller_claims_config, PublicationRuntimeLaunchContext,
+        WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;
@@ -2093,14 +2132,44 @@ mod tests {
     #[tokio::test]
     async fn deployment_runtime_recovery_uses_bounded_exponential_backoff() {
         let store = WorkflowPublicationRuntimeProcessStore::default();
-        assert!(store.recovery_due("publication-1", 100).await);
+        assert!(store.recovery_due("publication-1", 100, "sha256:a").await);
         store.record_recovery_failure("publication-1", 100).await;
-        assert!(!store.recovery_due("publication-1", 1_099).await);
-        assert!(store.recovery_due("publication-1", 1_100).await);
+        assert!(!store.recovery_due("publication-1", 1_099, "sha256:a").await);
+        assert!(store.recovery_due("publication-1", 1_100, "sha256:a").await);
         store.record_recovery_failure("publication-1", 1_100).await;
-        assert!(!store.recovery_due("publication-1", 3_099).await);
-        assert!(store.recovery_due("publication-1", 3_100).await);
+        assert!(!store.recovery_due("publication-1", 3_099, "sha256:a").await);
+        assert!(store.recovery_due("publication-1", 3_100, "sha256:a").await);
         store.record_recovery_success("publication-1").await;
-        assert!(store.recovery_due("publication-1", 3_100).await);
+        assert!(store.recovery_due("publication-1", 3_100, "sha256:a").await);
+    }
+
+    #[tokio::test]
+    async fn digest_mismatch_recovery_waits_for_a_rebind() {
+        let store = WorkflowPublicationRuntimeProcessStore::default();
+        store.park_recovery("publication-1", "sha256:a").await;
+        assert!(
+            !store
+                .recovery_due("publication-1", u64::MAX, "sha256:a")
+                .await
+        );
+        assert!(store.recovery_due("publication-1", 0, "sha256:b").await);
+        store.record_recovery_failure("publication-1", 0).await;
+        assert!(!store.recovery_due("publication-1", 0, "sha256:a").await);
+        assert!(
+            store
+                .recovery_due("publication-1", 60_000, "sha256:a")
+                .await
+        );
+
+        let mismatch = validate_bound_publication_package_digest("sha256:a", "sha256:b")
+            .map_err(|message| {
+                publication_runtime_error("start workflow publication runtime", message)
+            })
+            .unwrap_err();
+        assert!(is_package_digest_mismatch(&mismatch));
+        assert!(!is_package_digest_mismatch(&publication_runtime_error(
+            "start workflow publication runtime",
+            "publication gateway exited",
+        )));
     }
 }
