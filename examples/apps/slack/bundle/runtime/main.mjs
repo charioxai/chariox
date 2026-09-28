@@ -136,8 +136,12 @@ export default function register(chariox) {
       items.unshift(item);
       return item;
     }, item => (forward && !item.merged ? { occurrences: [occurrence(item)] } : {}));
+    // A bot's message (this App's own replies included) is kept but starts no
+    // run: a reply posted by an automation must not trigger it again.
+    const event = payload.metadata?.event ?? {};
+    const fromBot = Boolean(event.bot_id) || event.subtype === 'bot_message';
     try {
-      await accept(true);
+      await accept(!fromBot);
     } catch (error) {
       if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
       await accept(false);

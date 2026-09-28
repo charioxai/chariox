@@ -171,3 +171,17 @@ test('a mention in a channel, also sent as a channel message, is one notificatio
   assert.equal(kernel.occurrences.length, 2);
   assert.ok(notifications.every(item => !('message' in item)));
 });
+
+test('a bot\'s message, such as this App\'s own reply, is kept but starts no run', async () => {
+  const kernel = fakeKernel();
+  const reply = mention('deploy drill: reminder fired', 'C1', 'U9');
+  reply.source = { ...reply.source, event_type: 'message.channels' };
+  reply.metadata = { ...reply.metadata, event: { ...reply.metadata.event, type: 'message', bot_id: 'B9' } };
+  await kernel.deliver('channel_message', 'EvBot', reply);
+  const legacy = mention('posted by an integration');
+  legacy.metadata = { ...legacy.metadata, event: { ...legacy.metadata.event, type: 'message', subtype: 'bot_message' } };
+  await kernel.deliver('channel_message', 'EvLegacy', legacy);
+  const { notifications } = await kernel.tools.get('list_notifications')({});
+  assert.deepEqual(notifications.map(item => item.id), ['EvLegacy', 'EvBot']);
+  assert.equal(kernel.occurrences.length, 0);
+});
