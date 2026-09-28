@@ -58,7 +58,7 @@ test("fragmented probe and response execute one command on the admitted socket",
 })
 for (const reply of [{ error: "unknown request", response: null }, { ...admission, session: undefined },
   { ...admission, session: { version: 2 } }]) {
-  test(`incompatible peer rejects without command: ${JSON.stringify(reply.session)}`, async () => {
+  test(`incompatible peer rejects without command: ${JSON.stringify(reply)}`, async () => {
     let count = 0
     await fixture(async socketPath => {
       await assert.rejects(sendGuardedLocalSocketRequest(socketPath, command, 1000))
