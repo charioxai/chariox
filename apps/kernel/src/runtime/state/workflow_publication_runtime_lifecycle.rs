@@ -118,6 +118,8 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 Some(None),
                 Some(stopped_publication_runtime_metadata(&publication, true)),
             )?;
+            // The stop is durable first: a restart never serves it again.
+            persist_publication_deployment(runtime_state, &request.session_id)?;
             // A stopped App-bound deployment keeps no copy; the owner's
             // routes it had taken over resume.
             if let Some(binding) = copied {
@@ -128,7 +130,6 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 )
                 .await?;
             }
-            persist_publication_deployment(runtime_state, &request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
                 publication,
                 action: WorkflowPublicationRuntimeAction::Stop,
@@ -1452,7 +1453,16 @@ async fn remove_orphaned_deployment_copies(runtime_state: &KernelRuntimeState) {
             .get_session(session_id)
             .is_err()
         {
-            let _ = stop_publication_runtime(runtime_state, &process_key).await;
+            if let Err(error) = stop_publication_runtime(runtime_state, &process_key).await {
+                crate::logging::warn_with_fields(
+                    "daemon.publication_runtime",
+                    "failed to stop the runtime of a deleted session",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
     runtime_state.remove_orphaned_deployment_copies(&live).await;
@@ -1469,11 +1479,17 @@ async fn stop_retired_publication_runtime(
         .workflow_publication_runtimes
         .running(process_key)
         .await?
-        .is_none()
+        .is_some()
+    {
+        stop_publication_runtime(runtime_state, process_key).await?;
+    } else if publication.status() == Some("stopped")
+        && publication
+            .deployment()
+            .and_then(|deployment| deployment.get("app_copy_session_id"))
+            .is_none()
     {
         return Ok(());
     }
-    stop_publication_runtime(runtime_state, process_key).await?;
     mark_publication_runtime_status(
         runtime_state,
         publication.session_id(),

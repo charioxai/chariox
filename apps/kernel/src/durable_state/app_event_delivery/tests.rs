@@ -1,10 +1,10 @@
 use super::*;
+#[path = "dispatch_tests.rs"]
+mod dispatch_tests;
 #[path = "fixtures.rs"]
 mod fixtures;
 #[path = "maintenance_tests.rs"]
 mod maintenance_tests;
-#[path = "dispatch_tests.rs"]
-mod dispatch_tests;
 use crate::durable_state::{
     app_automations::{AppAutomationMutation, WorkflowAutomationTarget},
     app_state::{AppStateOperation, AppStateOutcome},
@@ -434,4 +434,29 @@ fn an_app_with_undelivered_events_is_not_idle_until_they_are_queued() {
     let prepared = prepare(&store, &mut sessions, &fixture, &receipt);
     store.commit_app_event_queue(prepared, budget()).unwrap();
     assert!(!store.has_deliverable_app_events("local", &installation));
+}
+
+#[test]
+fn an_event_is_queued_while_its_target_publication_serves_a_deployment() {
+    let fixture = Fixture::new();
+    let (store, mut sessions, session, receipt) = setup(&fixture);
+    // A deployed publication's runtime state changes in memory only.
+    let publication = sessions
+        .get_session(&session)
+        .unwrap()
+        .workflow_publications()[0]
+        .id()
+        .to_owned();
+    sessions
+        .register_workflow_publication_endpoint(
+            &session,
+            &publication,
+            "running",
+            "http://127.0.0.1:1/",
+            serde_json::json!({"kind": "tunnel", "status": "running", "expires_at_ms": 1}),
+        )
+        .unwrap();
+    let prepared = prepare(&store, &mut sessions, &fixture, &receipt);
+    let queued = store.commit_app_event_queue(prepared, budget()).unwrap();
+    assert_eq!(queued.state, ReceiptState::Queued);
 }

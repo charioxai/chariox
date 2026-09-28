@@ -1734,9 +1734,24 @@ pub(super) fn hot_state_matches(
     }
     for entity in &expected.hot_entities {
         let current:Option<String>=tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind=?3 AND entity_id=?4",params![owner,expected.session_id,entity.entity_kind,entity.entity_id],|row|row.get(0)).optional()?;
-        if current.as_deref() != Some(entity.payload_json.as_str()) {
+        let matches = match (entity.entity_kind.as_str(), current.as_deref()) {
+            // A publication's runtime state changes in memory between writes.
+            ("publication", Some(current)) => {
+                comparable_publication(current).is_some()
+                    && comparable_publication(current)
+                        == comparable_publication(&entity.payload_json)
+            }
+            (_, current) => current == Some(entity.payload_json.as_str()),
+        };
+        if !matches {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+fn comparable_publication(payload: &str) -> Option<crate::session::WorkflowPublicationDefinition> {
+    serde_json::from_str::<crate::session::WorkflowPublicationDefinition>(payload)
+        .ok()
+        .map(|publication| publication.without_runtime_state())
 }
