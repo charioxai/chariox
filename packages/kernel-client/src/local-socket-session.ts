@@ -43,7 +43,7 @@ export function sendGuardedLocalSocketRequest<T>(path: string, request: unknown,
         const envelope = JSON.parse(buffer.subarray(4).toString("utf8"))
         buffer = Buffer.alloc(0)
         if (envelope.error) throw new Error(phase === "probe"
-          ? "kernel does not support guarded Unix control sessions; protocol 367 or newer is required"
+          ? `kernel does not support guarded Unix control sessions; protocol 367 or newer is required; kernel error: ${envelope.error}`
           : envelope.error)
         if (envelope.response == null) throw new Error("empty response")
         if (phase === "probe") {

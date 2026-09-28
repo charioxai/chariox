@@ -112,6 +112,16 @@ test("guarded mutation errors retain their operation-specific diagnostic", async
     socket.write(frame(++frames === 1 ? admission : { response: null, error: "allocation does not exist" }))
   }))
 })
+test("protocol 367 probe errors retain the kernel diagnostic without sending a command", async () => {
+  let frames = 0
+  await fixture(async socketPath => {
+    await assert.rejects(sendGuardedLocalSocketRequest(socketPath, command, 1000), /kernel error: response exceeded frame limit/)
+    assert.equal(frames, 1)
+  }, socket => requests(socket, () => {
+    frames++
+    socket.end(frame({ response: null, error: "response exceeded frame limit" }))
+  }))
+})
 test("whole exchange timeout closes a silent admitted socket", async () => {
   await fixture(async socketPath => {
     await assert.rejects(sendGuardedLocalSocketRequest(socketPath, command, 20), /timed out/)
