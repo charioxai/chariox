@@ -207,6 +207,16 @@ fn an_app_granted_to_a_workflow_agent_is_packaged_per_release() {
     assert_eq!(get().apps(), Some(&next_apps));
     assert_eq!(get().release_app_plan(&digest), Some(&apps));
     assert_eq!(get().release_app_plan(&next), Some(&next_apps));
+    // A deployment bound to either release still verifies after the owner's
+    // App update: its bind and recovery re-export with the release's plan.
+    let rebound = |expected: &str| {
+        harness
+            .runtime_state()
+            .fixture_bound_release_package_digest(&graph.session_id, publication.id(), expected)
+            .expect("re-export the bound release")
+    };
+    assert_eq!(rebound(&digest), digest);
+    assert_eq!(rebound(&next), next);
 
     // A workflow whose App was uninstalled cannot export a new release; its
     // exported releases keep their plans.
@@ -220,6 +230,7 @@ fn an_app_granted_to_a_workflow_agent_is_packaged_per_release() {
     let error = export(&harness, &graph, publication.id()).expect_err("App not installed");
     assert!(error.to_string().contains("not installed"), "{error}");
     assert_eq!(get().release_app_plan(&digest), Some(&apps));
+    assert_eq!(rebound(&digest), digest);
     // Uninstalling revoked the grant: a new trigger has no App.
     let later = publish(&harness, &graph, "todo-grant-2", "ingress");
     let (_, later_files) = export(&harness, &graph, later.id()).expect("export");

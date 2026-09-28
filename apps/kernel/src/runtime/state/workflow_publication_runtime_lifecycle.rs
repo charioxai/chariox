@@ -736,40 +736,23 @@ async fn start_publication_runtime_claimed(
         return Err(error);
     }
     if let Some(expected) = launch_context.expected_package_digest.as_deref() {
-        // Protocol 368: the bound release re-exports with its own App plan.
-        let release_apps = publication.release_app_plan(expected).cloned();
-        if publication.apps().is_some() && release_apps.is_none() {
-            let message = format!(
-                "release package {expected} has no App plan recorded on this kernel; export the release again"
-            );
-            let _ = mark_publication_runtime_error(
-                runtime_state,
-                &request.session_id,
-                publication.id(),
-                &message,
-            );
-            return Err(publication_runtime_error(
-                "start workflow publication runtime",
-                message,
-            ));
-        }
-        let package = runtime_state.owned.workflow_export_publication_package(
-            crate::local::ExportWorkflowPublicationPackageRequest {
-                session_id: request.session_id.clone(),
-                publication_ref: publication.id().to_string(),
-                kernel_url: package_kernel_url,
-                agent_app: None,
-                agent_app_assets_dir: None,
-            },
-            release_apps.as_ref(),
-        )?;
-        let LocalDaemonResponse::WorkflowPublicationPackageExported { package_digest, .. } =
-            package
-        else {
-            return Err(DaemonError::LocalTransport {
-                operation: "start workflow publication runtime",
-                message: "publication package export returned an unexpected response".to_string(),
-            });
+        let package_digest = match bound_release_package_digest(
+            runtime_state,
+            &request.session_id,
+            &publication,
+            expected,
+            package_kernel_url,
+        ) {
+            Ok(digest) => digest,
+            Err(error) => {
+                let _ = mark_publication_runtime_error(
+                    runtime_state,
+                    &request.session_id,
+                    publication.id(),
+                    &error.to_string(),
+                );
+                return Err(error);
+            }
         };
         if let Err(message) = validate_bound_publication_package_digest(expected, &package_digest) {
             let _ = mark_publication_runtime_error(
@@ -1639,6 +1622,62 @@ fn publication_runtime_kernel_url(
                 .snapshot()
                 .kernel_websocket_url()
         })
+}
+
+/// Protocol 368: a bound release's package, re-exported with that release's
+/// own App plan and never the owner's current App set, for its digest check.
+pub(super) fn bound_release_package_digest(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    publication: &WorkflowPublicationDefinition,
+    expected: &str,
+    kernel_url: Option<String>,
+) -> Result<String, DaemonError> {
+    let release_apps = publication.release_app_plan(expected).cloned();
+    if publication.apps().is_some() && release_apps.is_none() {
+        return Err(publication_runtime_error(
+            "start workflow publication runtime",
+            format!(
+                "release package {expected} has no App plan recorded on this kernel; export the release again"
+            ),
+        ));
+    }
+    match runtime_state.owned.workflow_export_publication_package(
+        crate::local::ExportWorkflowPublicationPackageRequest {
+            session_id: session_id.to_string(),
+            publication_ref: publication.id().to_string(),
+            kernel_url,
+            agent_app: None,
+            agent_app_assets_dir: None,
+        },
+        release_apps.as_ref(),
+    )? {
+        LocalDaemonResponse::WorkflowPublicationPackageExported { package_digest, .. } => {
+            Ok(package_digest)
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "start workflow publication runtime",
+            message: "publication package export returned an unexpected response".to_string(),
+        }),
+    }
+}
+
+#[cfg(test)]
+impl KernelRuntimeState {
+    /// The digest a bind or recovery of `expected` re-exports.
+    pub(crate) fn fixture_bound_release_package_digest(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+        expected: &str,
+    ) -> Result<String, DaemonError> {
+        let publication = self
+            .owned
+            .session_store
+            .read()
+            .resolve_workflow_publication_ref(session_id, publication_id)?;
+        bound_release_package_digest(self, session_id, &publication, expected, None)
+    }
 }
 
 fn publication_runtime_package_kernel_url(

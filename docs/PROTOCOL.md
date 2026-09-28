@@ -2167,6 +2167,12 @@ Workflow trigger and deployment direction:
   owner's current App set; `pinned` now means a release was prepared) and,
   with the new optional `package_digest`, that release's recorded plan as
   `release_plan`, each App with its stored release's capabilities.
+  The deployment contract's `compatibility.minimum_local_daemon_protocol_version`
+  is now the package format's protocol (367), not the exporting kernel's: the
+  bind and recovery re-export a bound release and compare digests, so a kernel
+  protocol bump must not change existing packages. It is raised only when a
+  package needs a newer kernel to run. A release exported before 368 keeps the
+  publication's single pre-368 plan after later releases record their own.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

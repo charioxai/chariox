@@ -175,6 +175,10 @@ pub struct WorkflowPublicationDefinition {
     /// newest last. Bind, recovery and rollback use the release's own plan.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     release_app_plans: Vec<ReleaseAppPlan>,
+    /// The single plan a publication prepared before protocol 368 pinned for
+    /// all its releases, kept for them once releases record their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pre_release_app_plan: Option<Value>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -251,6 +255,7 @@ impl WorkflowPublicationDefinition {
             runtime_materialization: None,
             apps: None,
             release_app_plans: Vec::new(),
+            pre_release_app_plan: None,
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -520,6 +525,9 @@ impl WorkflowPublicationDefinition {
 
     /// Records the App plan a successful export packaged as its release's.
     pub(crate) fn record_release_app_plan(&mut self, package_digest: &str, plan: Value) {
+        if self.release_app_plans.is_empty() {
+            self.pre_release_app_plan = self.apps.take();
+        }
         self.release_app_plans
             .retain(|release| release.package_digest != package_digest);
         self.release_app_plans.push(ReleaseAppPlan {
@@ -534,8 +542,9 @@ impl WorkflowPublicationDefinition {
         self.apps = Some(plan);
     }
 
-    /// The App plan of the release with this package digest. A publication
-    /// prepared before protocol 368 kept a single plan for all its releases.
+    /// The App plan of the release with this package digest. A release
+    /// exported before protocol 368 uses the publication's single plan of
+    /// then; the bind's digest check rejects any other.
     pub fn release_app_plan(&self, package_digest: &str) -> Option<&Value> {
         if self.release_app_plans.is_empty() {
             return self.apps.as_ref();
@@ -544,6 +553,7 @@ impl WorkflowPublicationDefinition {
             .iter()
             .find(|release| release.package_digest == package_digest)
             .map(|release| &release.plan)
+            .or(self.pre_release_app_plan.as_ref())
     }
 
     pub fn creation_request_digest(&self) -> Option<&str> {
@@ -715,5 +725,38 @@ impl WorkflowPublicationDefinition {
             let overflow = self.runtime_logs.len() - MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS;
             self.runtime_logs.drain(0..overflow);
         }
+    }
+}
+
+#[cfg(test)]
+mod release_app_plan_tests {
+    use super::*;
+
+    fn publication() -> WorkflowPublicationDefinition {
+        serde_json::from_value(serde_json::json!({
+            "id": "publication-1", "session_id": "session-1", "workflow_id": "workflow-1",
+            "endpoint_id": "endpoint-1", "kind": "event_based", "enabled": true,
+            "methods": [], "schedules": [], "watchdogs": [], "recent_runs": [], "runtime_logs": [],
+            "created_by_user_id": "user-1", "created_at_ms": 1, "updated_at_ms": 1,
+        }))
+        .expect("publication")
+    }
+
+    #[test]
+    fn a_release_exported_before_368_keeps_the_single_plan_after_new_releases_record_theirs() {
+        let mut publication = publication();
+        let pinned = serde_json::json!({"apps": [{"version": "1.0.0"}]});
+        // A publication prepared before protocol 368: one plan, no releases.
+        publication.use_apps(pinned.clone());
+        assert_eq!(publication.release_app_plan("sha256:old"), Some(&pinned));
+        let newer = serde_json::json!({"apps": [{"version": "1.1.0"}]});
+        publication.record_release_app_plan("sha256:new", newer.clone());
+        assert_eq!(publication.apps(), Some(&newer));
+        assert_eq!(publication.release_app_plan("sha256:new"), Some(&newer));
+        assert_eq!(publication.release_app_plan("sha256:old"), Some(&pinned));
+        // A publication first prepared at 368 has no such fallback.
+        let mut fresh = self::publication();
+        fresh.record_release_app_plan("sha256:new", newer);
+        assert_eq!(fresh.release_app_plan("sha256:other"), None);
     }
 }

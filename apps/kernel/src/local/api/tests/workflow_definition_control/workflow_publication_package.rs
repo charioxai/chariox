@@ -932,7 +932,8 @@ fn local_request_api_exports_agent_app_publication_package() {
     );
     assert_eq!(
         deployment_contract["compatibility"]["minimum_local_daemon_protocol_version"],
-        serde_json::json!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)
+        serde_json::json!(367),
+        "the package format's protocol, stable across kernel protocol bumps"
     );
     assert_eq!(
         deployment_contract["provider_requirements"][0]["provider"],
