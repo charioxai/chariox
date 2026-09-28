@@ -95,28 +95,30 @@ pub(super) fn register(
     mut check: impl FnMut() -> Result<()>,
 ) -> Result<RegisteredStart> {
     check()?;
+    let installation = &binding.token().installation_id;
     let active = ActiveRelease::load(context.store.path(), binding.clone(), trust.clone())
-        .map_err(|_| LifecycleError::Preparation)?;
+        .map_err(preparation_failed(installation, "active_release"))?;
     budget.check().map_err(|_| LifecycleError::Stopped)?;
-    let verified = active.verify().map_err(|_| LifecycleError::Preparation)?;
+    let verified = active
+        .verify()
+        .map_err(preparation_failed(installation, "verify_release"))?;
     let events = active
         .event_catalog(&verified)
         .map_err(|error| match error {
             ActiveReleaseError::Untrusted => LifecycleError::Authority,
-            _ => LifecycleError::Preparation,
+            error => preparation_failed(installation, "event_catalog")(error),
         })?;
     let release = ReleaseStore::open_or_create(context.store.path())
         .and_then(|releases| releases.lease_verified(&verified, active.bytes()))
-        .map_err(|_| LifecycleError::Preparation)?;
+        .map_err(preparation_failed(installation, "release_lease"))?;
     check()?;
     // A staged worker whose update opened a migration runs its steps first,
     // always from the snapshot: a run a kernel stop interrupted may have
     // written at the new schema without recording its step.
-    let installation = &binding.token().installation_id;
     let mut migrate_from = context
         .store
         .app_migration_from(installation, binding.token().generation)
-        .map_err(|_| LifecycleError::Preparation)?;
+        .map_err(preparation_failed(installation, "migration_state"))?;
     if migrate_from.is_some() {
         let crate::durable_state::app_state::AppStateOutcome::Rewound(from) = context
             .store
@@ -126,7 +128,7 @@ pub(super) fn register(
                 crate::durable_state::app_state::AppStateOperation::MigrationRewind,
                 budget.fork(|| false),
             )
-            .map_err(|_| LifecycleError::Preparation)?
+            .map_err(preparation_failed(installation, "migration_rewind"))?
         else {
             return Err(LifecycleError::Preparation);
         };
@@ -150,7 +152,7 @@ pub(super) fn register(
         },
         context.event_config.clone(),
     )
-    .map_err(|_| LifecycleError::Preparation)?;
+    .map_err(preparation_failed(installation, "backend_broker"))?;
     let started = if migrate_from.is_some() {
         AppWorkerOwner::start_migrating_blocking(
             process,
@@ -264,5 +266,25 @@ fn spawn(
     {
         let _ = (context, binding, verified, release, migrate_from);
         Err(LifecycleError::Preparation)
+    }
+}
+
+/// A worker whose preparation fails keeps the stable `app_lifecycle_preparation`
+/// code; the kernel log names the step and its cause.
+fn preparation_failed<'a, E: std::fmt::Debug>(
+    installation: &'a str,
+    step: &'static str,
+) -> impl FnOnce(E) -> LifecycleError + 'a {
+    move |error| {
+        crate::logging::warn_with_fields(
+            "app.worker",
+            "App worker preparation failed",
+            serde_json::json!({
+                "installation_id": installation,
+                "step": step,
+                "code": format!("{error:?}"),
+            }),
+        );
+        LifecycleError::Preparation
     }
 }
