@@ -411,6 +411,50 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
         deployment.pointer("/binding/deployment_id"),
         Some(&serde_json::json!(DEPLOYMENT)),
     );
+    // A deploy (bind) is an explicit start too: it clears a stop first, so the
+    // launch does not yield to a stop that the deploy itself overrides.
+    let _ = harness.dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+        crate::local::ControlWorkflowPublicationRuntimeRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            action: crate::local::WorkflowPublicationRuntimeAction::Stop,
+            host: None,
+            port: None,
+            kernel_url: None,
+        },
+    ));
+    let _ = harness.dispatch(LocalDaemonRequest::BindWorkflowPublicationDeployment(
+        crate::local::BindWorkflowPublicationDeploymentRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            setup_id: "setup-2".into(),
+            operation_key: "deployment-setup:setup-2:runtime".into(),
+            deployment_id: DEPLOYMENT.into(),
+            environment_id: "environment-1".into(),
+            release_id: RELEASE.into(),
+            package_digest: deployed.digest.clone(),
+            desired_revision: 2,
+            caller_claims_public_key_pem: PEM.into(),
+        },
+    ));
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let rebound = states
+        .iter()
+        .find(|(id, _)| *id == deployed.graph.session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == deployed.publication.id())
+        })
+        .and_then(|publication| publication.deployment())
+        .expect("the durable deployment metadata");
+    assert!(rebound.get("desired_state").is_none(), "{rebound}");
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }

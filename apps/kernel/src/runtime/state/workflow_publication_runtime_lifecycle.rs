@@ -157,26 +157,8 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
             if request.action == WorkflowPublicationRuntimeAction::Restart {
                 stop_publication_runtime(runtime_state, &process_key).await?;
             }
-            // The start intent is durable first, as a stop's is: a start that
-            // waits for App approvals must not leave the source looking
-            // stopped, or the reconcile removes the copies it installed.
-            let publication = if stop_intended(&publication) {
-                let publication = mark_publication_runtime_status(
-                    runtime_state,
-                    &request.session_id,
-                    &publication_id,
-                    "stopped",
-                    None,
-                    Some(publication_runtime_metadata_preserving_binding(
-                        &publication,
-                        serde_json::json!({ "kind": "local_runtime", "status": "stopped" }),
-                    )),
-                )?;
-                persist_publication_deployment(runtime_state, &request.session_id)?;
-                publication
-            } else {
-                publication
-            };
+            let publication =
+                persist_start_intent(runtime_state, &request.session_id, publication)?;
             start_publication_runtime(
                 runtime_state,
                 request,
@@ -245,6 +227,8 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
         }
     }
 
+    // A deploy is an explicit start: it clears an earlier stop.
+    let publication = persist_start_intent(runtime_state, &request.session_id, publication)?;
     if runtime_state
         .owned
         .workflow_publication_runtimes
@@ -1592,6 +1576,33 @@ async fn remove_deployment_app_copy(
     _deployment_id: &str,
 ) -> Result<(), DaemonError> {
     Ok(())
+}
+
+/// A user start or a deploy makes its intent durable first, as a stop does:
+/// a start that waits for App approvals must not leave the source looking
+/// stopped (the reconcile would remove the copies it installed), and a stop
+/// that lands after this still wins when the launch registers.
+fn persist_start_intent(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    publication: WorkflowPublicationDefinition,
+) -> Result<WorkflowPublicationDefinition, DaemonError> {
+    if !stop_intended(&publication) {
+        return Ok(publication);
+    }
+    let publication = mark_publication_runtime_status(
+        runtime_state,
+        session_id,
+        publication.id(),
+        "stopped",
+        None,
+        Some(publication_runtime_metadata_preserving_binding(
+            &publication,
+            serde_json::json!({ "kind": "local_runtime", "status": "stopped" }),
+        )),
+    )?;
+    persist_publication_deployment(runtime_state, session_id)?;
+    Ok(publication)
 }
 
 /// Whether the owner stopped the publication's deployment and has not
