@@ -14,7 +14,9 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
 ## Prerequisites
 
 1. A fresh OpenShip machine with no prior drill Room, slice, browser profile,
-   or active kernel target.
+   or active kernel target. The existing Hetzner allocation may qualify through
+   the provider-supported destructive rebuild approved in the canonical plan's
+   2026-09-21 reuse decision. A kernel reinstall alone does not qualify.
 2. The exact managed image `sha256:` digest, exact base64 Ed25519 signature,
    pinned signer public-key fingerprint, and a successful release verifier
    result. Never copy a signing private key to the target or config.
@@ -52,6 +54,23 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
    closed on a mismatched loader proof or target identity.
 10. Conservative ceilings for RSS, CPU, free memory/disk, heartbeat age, and
    post-cleanup RSS/disk deltas, with enough reserve to complete cleanup.
+
+### Approved rebuild and in-place upgrade are separate gates
+
+For `MP-07` and `MP-10`, follow the canonical plan's locked reuse decision.
+The reviewed kernel running locally authorizes the rebuild through the normal
+Cloud/provider path. Settle useful turns and retain source, evidence, and the
+verified signed release before destroying the host, including any builder on
+that host. Record the provider rebuild request and completion, clean image,
+new boot and runtime identities, enrollment, relay registration, exact release,
+and absence of old processes, service state, runtime roots, and Cloud rows.
+
+Do not require a 339/312 state-preserving compatibility bridge before this
+approved rebuild. The old worker state is disposable under that decision;
+reenrollment and retirement of the old identities are required. In-place
+upgrade, rollback, crash-safe migration, and later persistence/recreation
+remain separate acceptance gates. The rebuild permission does not authorize
+deleting other retained machines or disabling their automatic shutdown.
 
 ### Storage and signing-key retention
 
