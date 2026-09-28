@@ -133,7 +133,7 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
     - a connected-ingress deploy past the credentials step once a destination Claude account exists (V-UX-08, user step);
     - broken automation for a stopped deployment target (V-UX-09).
 14. **Unit-level closers (S):** an IPC frame fuzz/proptest (V-RUN-04), client rendering tests for manifest error codes (V-PKG-03), and a rerun of the package corpus and native probes on the candidate.
-15. **Evidence gate (L).** Merge the stack, run hosted CI on the candidate, fix main's 122 baseline failures (Apps triage done in #518), and republish dated evidence with revisions, digests and budgets under the plan's evidence path.
+15. **Evidence gate (L).** Merge the stack, run hosted CI on the candidate, fix main's 122 baseline failures and follow up the 2 non-baseline ones (renamed environment-only test, load flake) (Apps triage done in #518), and republish dated evidence with revisions, digests and budgets under the plan's evidence path.
 
 **Needs user:**
 - Real Google session persistence (V1-INT-01, Chromium kernel row, Browser persistence gate).
