@@ -363,19 +363,12 @@ impl KernelRuntimeState {
         action: AppWorkerAction,
     ) -> Result<bool, AppRequestErrorCode> {
         use crate::runtime::app_lifecycle::LifecycleError;
-        let result = match self
-            .control_app_worker_once(owner, installation, action)
-            .await
-        {
-            Err(LifecycleError::LiveLimit)
-                if matches!(action, AppWorkerAction::Start | AppWorkerAction::Restart) =>
-            {
-                self.evict_idle_app(owner, installation).await;
-                self.control_app_worker_once(owner, installation, AppWorkerAction::Start)
-                    .await
-            }
-            result => result,
-        };
+        let result = start_evicting_on_live_limit(
+            action,
+            |action| self.control_app_worker_once(owner, installation, action),
+            || self.evict_idle_app(owner, installation),
+        )
+        .await;
         result.map_err(|error| match error {
             LifecycleError::Busy | LifecycleError::LiveLimit => AppRequestErrorCode::Busy,
             LifecycleError::Storage | LifecycleError::Supervisor => {
@@ -520,6 +513,32 @@ fn automation_error(
     }
 }
 
+/// A start or restart that finds every live worker slot taken evicts one idle
+/// worker and tries once more as a plain start: a restart's stop already ran.
+async fn start_evicting_on_live_limit<Control, ControlFuture, Evict, EvictFuture>(
+    action: AppWorkerAction,
+    mut control: Control,
+    evict: Evict,
+) -> Result<bool, crate::runtime::app_lifecycle::LifecycleError>
+where
+    Control: FnMut(AppWorkerAction) -> ControlFuture,
+    ControlFuture:
+        std::future::Future<Output = Result<bool, crate::runtime::app_lifecycle::LifecycleError>>,
+    Evict: FnOnce() -> EvictFuture,
+    EvictFuture: std::future::Future<Output = ()>,
+{
+    use crate::runtime::app_lifecycle::LifecycleError;
+    match control(action).await {
+        Err(LifecycleError::LiveLimit)
+            if matches!(action, AppWorkerAction::Start | AppWorkerAction::Restart) =>
+        {
+            evict().await;
+            control(AppWorkerAction::Start).await
+        }
+        result => result,
+    }
+}
+
 fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
     LocalDaemonResponse::AppRequestFailed { code }
 }
@@ -527,6 +546,7 @@ fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::app_lifecycle::LifecycleError;
 
     #[test]
     fn only_an_idle_stop_reports_dormant() {
@@ -546,5 +566,76 @@ mod tests {
             worker_phase(WorkerPhase::Failed, true),
             AppWorkerPhase::Failed
         );
+    }
+
+    /// Drives the live-limit retry with scripted start results; returns the
+    /// outcome, the actions tried and whether an eviction ran.
+    fn drive(
+        action: AppWorkerAction,
+        results: Vec<Result<bool, LifecycleError>>,
+    ) -> (Result<bool, LifecycleError>, Vec<AppWorkerAction>, bool) {
+        let results = std::cell::RefCell::new(results.into_iter());
+        let tried = std::cell::RefCell::new(Vec::new());
+        let evicted = std::cell::Cell::new(false);
+        let result = futures_util::FutureExt::now_or_never(start_evicting_on_live_limit(
+            action,
+            |action| {
+                tried.borrow_mut().push(action);
+                std::future::ready(results.borrow_mut().next().unwrap())
+            },
+            || {
+                evicted.set(true);
+                std::future::ready(())
+            },
+        ))
+        .unwrap();
+        (result, tried.into_inner(), evicted.get())
+    }
+
+    #[test]
+    fn a_start_at_the_live_limit_evicts_an_idle_worker_and_starts() {
+        let (result, tried, evicted) = drive(
+            AppWorkerAction::Start,
+            vec![Err(LifecycleError::LiveLimit), Ok(true)],
+        );
+        assert!(matches!(result, Ok(true)));
+        assert!(evicted);
+        assert_eq!(tried, [AppWorkerAction::Start, AppWorkerAction::Start]);
+    }
+
+    #[test]
+    fn a_start_with_nothing_evictable_stays_at_the_live_limit() {
+        let (result, tried, evicted) = drive(
+            AppWorkerAction::Start,
+            vec![
+                Err(LifecycleError::LiveLimit),
+                Err(LifecycleError::LiveLimit),
+            ],
+        );
+        assert!(matches!(result, Err(LifecycleError::LiveLimit)));
+        assert!(evicted);
+        assert_eq!(tried.len(), 2, "one retry only");
+    }
+
+    #[test]
+    fn a_restart_at_the_live_limit_retries_as_a_plain_start() {
+        let (result, tried, _) = drive(
+            AppWorkerAction::Restart,
+            vec![Err(LifecycleError::LiveLimit), Ok(true)],
+        );
+        assert!(matches!(result, Ok(true)));
+        assert_eq!(tried, [AppWorkerAction::Restart, AppWorkerAction::Start]);
+    }
+
+    #[test]
+    fn only_the_live_limit_triggers_an_eviction() {
+        for (action, error) in [
+            (AppWorkerAction::Start, LifecycleError::Busy),
+            (AppWorkerAction::Stop, LifecycleError::LiveLimit),
+        ] {
+            let (_, tried, evicted) = drive(action, vec![Err(error)]);
+            assert!(!evicted);
+            assert_eq!(tried.len(), 1);
+        }
     }
 }
