@@ -25,8 +25,11 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
 4. A kernel compatible with the released adapter and client, exact relay
    protocol and released relay version, and a fresh heartbeat for the expected
    immutable kernel/machine. The complete Path-1 flow additionally requires
-   protocol 351 home controls; an older browser-only capability minimum does
-   not admit the complete flow.
+   protocol 366 home controls and the connected kernel's explicit
+   `disposable_worker_control_v1` and `managed_environment_keep_running_v1`
+   capability markers. Protocol numbers alone cannot identify support across
+   divergent development branches. An older browser-only capability minimum
+   does not admit the complete flow.
 5. Released Web, local TUI, and remote TUI clients, authenticated through their
    normal product paths. Do not pass their cookies or tokens to this harness.
 6. Codex, OpenCode, and Claude advertised through official provider harnesses.
