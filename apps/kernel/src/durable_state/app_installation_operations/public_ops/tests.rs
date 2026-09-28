@@ -712,6 +712,27 @@ mod deployment_consent {
     }
 
     #[test]
+    fn an_approval_approves_installs_only_within_its_window() {
+        let f = Fixture::new();
+        approve_interactively(&f);
+        consent(&f, "consent", "app_deploy_1");
+        f.store
+            .decide_deployment_consent("alice", "app_deploy_1", true, budget())
+            .unwrap();
+        f.store
+            .fixture_expire_deployment_consent("alice", "consent");
+        assert_eq!(
+            f.store
+                .deployment_consent("alice", "consent")
+                .unwrap()
+                .unwrap()
+                .status,
+            ConsentStatus::Expired
+        );
+        assert!(prompts(arm_copy(&f, "copy", "app_deploy_1")));
+    }
+
+    #[test]
     fn a_release_outside_the_consent_asks_the_owner() {
         let f = Fixture::new();
         approve_interactively(&f);

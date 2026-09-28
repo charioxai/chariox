@@ -289,18 +289,14 @@ fn read(
             {
                 return Err(AppRequestErrorCode::InvalidRequest);
             }
-            let page = store
-                .list_app_installations(owner, request.after.as_deref(), limit)
-                .map_err(registry_error)?;
             // Protocol 367: deployment copies belong to their deployment.
-            let copies = store
-                .app_installation_deployments(owner)
-                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
+            let page = store
+                .list_app_installations_without_copies(owner, request.after.as_deref(), limit)
+                .map_err(registry_error)?;
             Ok(LocalDaemonResponse::AppInstallationsListed {
                 installations: page
                     .installations
                     .into_iter()
-                    .filter(|installation| !copies.contains_key(&installation.installation_id))
                     .map(projection::installation)
                     .collect(),
                 next_cursor: page.next_cursor,

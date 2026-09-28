@@ -243,26 +243,46 @@ impl KernelRuntimeState {
                 (owned.workflow_get_publication(request), None)
             }
             LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => {
-                // Protocol 366: a client export prepares the deployment and
-                // pins the publication's App plan.
+                // Protocol 366: a client export prepares the deployment; the
+                // owner's first one pins the App plan it packaged, only once
+                // the export succeeds.
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                let pinned = match self
-                    .pin_workflow_publication_apps(
+                let apps = match self
+                    .workflow_publication_apps_to_pin(
                         &request.session_id,
                         &request.publication_ref,
                         &caller_user_id,
                     )
                     .await
                 {
-                    Ok(pinned) => pinned,
+                    Ok(apps) => apps,
                     Err(error) => return (Err(error), None),
                 };
                 #[cfg(not(any(
                     target_os = "macos",
                     all(target_os = "linux", target_env = "gnu")
                 )))]
-                let pinned = None;
-                (owned.workflow_export_publication_package(request), pinned)
+                let apps = None;
+                let session_id = request.session_id.clone();
+                let result = owned.workflow_export_publication_package(request, apps.as_ref());
+                let pinned = match (&result, apps) {
+                    (
+                        Ok(LocalDaemonResponse::WorkflowPublicationPackageExported {
+                            publication,
+                            ..
+                        }),
+                        Some(plan),
+                    ) => match owned.pin_workflow_publication_apps(
+                        &session_id,
+                        publication.id(),
+                        plan,
+                    ) {
+                        Ok(session) => Some(session),
+                        Err(error) => return (Err(error), None),
+                    },
+                    _ => None,
+                };
+                (result, pinned)
             }
             LocalDaemonRequest::DisableWorkflowPublication(request) => {
                 let result = owned.workflow_disable_publication(request, &caller_user_id);

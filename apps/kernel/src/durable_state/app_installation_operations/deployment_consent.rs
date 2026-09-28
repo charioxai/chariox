@@ -11,8 +11,14 @@ use chariox_app_runtime::installation::ReleaseMetadata;
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
-/// The time the owner has to answer the consent prompt.
+/// The time the owner has to answer the consent prompt, and the time after
+/// the owner's approval during which it approves the deployment's installs.
 pub(crate) const CONSENT_TTL_MS: u64 = 5 * 60 * 1000;
+
+/// An approval answered at `approved_ms` still approves installs.
+fn approval_live(approved_ms: i64) -> Result<bool> {
+    Ok(approved_ms.saturating_add(CONSENT_TTL_MS as i64) > now()?)
+}
 
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
@@ -196,11 +202,12 @@ pub(super) fn load(
         String,
         String,
         i64,
+        i64,
     );
     let row: Option<Row> = sql(connection
         .query_row(
             "SELECT interaction_id,session_id,publication_id,deployment_id,release_id,
-             package_digest,apps_json,status,expires_ms
+             package_digest,apps_json,status,expires_ms,updated_ms
              FROM app_deployment_consents WHERE owner_id=?1 AND request_id=?2",
             params![owner, request_id],
             |r| {
@@ -214,6 +221,7 @@ pub(super) fn load(
                     r.get(6)?,
                     r.get(7)?,
                     r.get(8)?,
+                    r.get(9)?,
                 ))
             },
         )
@@ -228,6 +236,7 @@ pub(super) fn load(
         apps,
         status,
         expires,
+        updated,
     )) = row
     else {
         return Ok(None);
@@ -245,6 +254,7 @@ pub(super) fn load(
         status: match status.as_str() {
             "pending" if expires_at_ms <= now()? as u64 => ConsentStatus::Expired,
             "pending" => ConsentStatus::Pending,
+            "approved" if !approval_live(updated)? => ConsentStatus::Expired,
             "approved" => ConsentStatus::Approved,
             "declined" => ConsentStatus::Declined,
             _ => return Err(InstallOperationError::Storage),
@@ -254,7 +264,8 @@ pub(super) fn load(
 }
 
 /// The install policy: the owner approved `interaction_id` for this deployment
-/// and exactly this release, and approved its capabilities interactively before.
+/// and exactly this release within `CONSENT_TTL_MS`, and approved its
+/// capabilities interactively before.
 pub(super) fn approves(
     tx: &Transaction<'_>,
     owner: &str,
@@ -263,20 +274,21 @@ pub(super) fn approves(
     release: &ReleaseMetadata,
     publisher_key_fingerprint: &str,
 ) -> Result<bool> {
-    let consent: Option<(String, String)> = sql(tx
+    let consent: Option<(String, String, i64)> = sql(tx
         .query_row(
-            "SELECT status,apps_json FROM app_deployment_consents
+            "SELECT status,apps_json,updated_ms FROM app_deployment_consents
              WHERE owner_id=?1 AND interaction_id=?2 AND deployment_id=?3",
             params![owner, interaction_id, deployment_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional())?;
-    let Some((status, apps)) = consent else {
+    let Some((status, apps, answered_ms)) = consent else {
         return Ok(false);
     };
     let apps: Vec<ConsentedApp> =
         serde_json::from_str(&apps).map_err(|_| InstallOperationError::Storage)?;
     let consented = status == "approved"
+        && approval_live(answered_ms)?
         && apps.iter().any(|app| {
             app.app_id == release.app_id
                 && app.publisher_id == release.publisher_id
@@ -437,11 +449,12 @@ impl DurableKernelStateStore {
             .unwrap();
     }
 
+    /// Ends both the answer window and an approval's install window.
     #[cfg(test)]
     pub(crate) fn fixture_expire_deployment_consent(&self, owner: &str, request_id: &str) {
         rusqlite::Connection::open(self.path()).unwrap()
             .execute(
-                "UPDATE app_deployment_consents SET expires_ms=0 WHERE owner_id=?1 AND request_id=?2",
+                "UPDATE app_deployment_consents SET expires_ms=0,updated_ms=0 WHERE owner_id=?1 AND request_id=?2",
                 params![owner, request_id],
             )
             .unwrap();

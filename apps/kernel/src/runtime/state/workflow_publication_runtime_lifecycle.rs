@@ -728,6 +728,7 @@ async fn start_publication_runtime_claimed(
                 agent_app: None,
                 agent_app_assets_dir: None,
             },
+            None,
         )?;
         let LocalDaemonResponse::WorkflowPublicationPackageExported { package_digest, .. } =
             package
