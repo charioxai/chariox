@@ -545,8 +545,11 @@ async fn execute_local(
         Command::Release => processes
             .release(&session_id)
             .map(|snapshot| Response::Process { snapshot }),
-        Command::Reconcile { viewport } => processes
-            .reconcile_browser(&session_id, &viewport)
+        Command::Reconcile {
+            viewport,
+            browser_bar_visible,
+        } => processes
+            .reconcile_browser(&session_id, &viewport, browser_bar_visible)
             .map(|reconciliation| Response::Reconciled { reconciliation }),
         Command::Snapshot {
             target_id,

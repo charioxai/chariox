@@ -206,7 +206,7 @@ pub use api::{
     UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
     UpdateMcpServerRequest, UpdateMetaagentTaskRequest, UpdateProjectWorkspacesRequest,
     UpdatePromptSettingRequest, UpdateProviderRunSelectionRequest, UpdateQueuedPromptRequest,
-    UpdateQueuedWorkflowPromptRequest, UpdateRoomEnvironmentPointerRequest,
+    UpdateQueuedWorkflowPromptRequest, UpdateRoomEnvironmentPointerRequest, SetRoomBrowserBarRequest,
     UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest, UpdateSkillRequest,
     UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowCodeArtifactRequest,
     UpdateWorkflowCodeSourceFromWorkflowRequest, UpdateWorkflowNodeInstructionsRequest,

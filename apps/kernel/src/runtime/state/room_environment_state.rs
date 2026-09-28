@@ -105,6 +105,17 @@ impl KernelRuntimeState {
             .update_room_environment_component_health(session_id, component, state, diagnostic_code)
     }
 
+    pub(crate) fn set_room_browser_bar_visible_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        visible: bool,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .set_room_browser_bar_visible_as_actor(session_id, actor, visible)
+    }
+
     pub(crate) fn update_room_environment_viewport_as_actor(
         &self,
         session_id: &str,

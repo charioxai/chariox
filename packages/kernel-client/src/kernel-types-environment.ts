@@ -146,6 +146,8 @@ export type RoomEnvironmentSnapshot = {
   actions: RoomEnvironmentAction[]
   input_ownership: RoomEnvironmentInputOwnership[]
   pending_input_takeovers: RoomEnvironmentPendingInputTakeover[]
+  /** Protocol 370: ordinary Tabs show the browser bar; absent means hidden. */
+  browser_bar_visible?: boolean
   event_cursor: number
 }
 

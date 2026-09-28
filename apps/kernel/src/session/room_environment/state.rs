@@ -38,6 +38,9 @@ pub struct RoomEnvironment {
     element_references: ElementReferenceRegistry,
     action_ledger: EnvironmentActionLedger,
     browser_controller_recovering: bool,
+    /// Ordinary Tabs' windows show Chromium's tab strip and address bar
+    /// (maximized) instead of covering the desktop (fullscreen).
+    browser_bar_visible: bool,
     event_log: EnvironmentEventLog,
 }
 
@@ -86,6 +89,7 @@ impl RoomEnvironment {
             element_references: ElementReferenceRegistry::new(),
             action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
             browser_controller_recovering: false,
+            browser_bar_visible: false,
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -106,6 +110,7 @@ impl RoomEnvironment {
             actions: self.action_ledger.actions(),
             input_ownership: self.action_ledger.ownership(),
             pending_input_takeovers: self.action_ledger.pending_takeovers(),
+            browser_bar_visible: self.browser_bar_visible,
             event_cursor: self.event_log.cursor(),
         }
     }
@@ -502,6 +507,39 @@ impl RoomEnvironment {
         }
         self.validate_viewport_update(actor_id, expected_revision)?;
         self.apply_viewport(actor_id, replacement);
+        Ok(())
+    }
+
+    /// Shows or hides the Room browser bar. Like a viewport change, it waits
+    /// while another actor drives the desktop.
+    pub fn set_browser_bar_visible_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        visible: bool,
+    ) -> Result<(), EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
+            });
+        }
+        if let Some(owner_actor_id) = self.action_ledger.owner(&InputTarget::Desktop) {
+            if owner_actor_id != actor.actor_id {
+                return Err(EnvironmentError::InputOwnedByAnotherActor {
+                    target: InputTarget::Desktop,
+                    actor_id: owner_actor_id.to_string(),
+                });
+            }
+        }
+        self.register_actor(actor)?;
+        // Existing clients refresh the snapshot on TabsChanged; a new event
+        // kind would break their replay parsers.
+        if self.browser_bar_visible != visible {
+            self.browser_bar_visible = visible;
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
         Ok(())
     }
 

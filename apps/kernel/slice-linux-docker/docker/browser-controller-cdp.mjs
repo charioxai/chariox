@@ -33,6 +33,7 @@ import {
   navigateBrowserHistory,
 } from "./browser-controller-history.mjs";
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
+import { applyBrowserBar } from "./browser-controller-bar.mjs";
 import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
@@ -94,7 +95,7 @@ export class BrowserCdpClient {
     this.cookieWriterFenceInUse = false;
   }
 
-  async reconcile(rawViewport) {
+  async reconcile(rawViewport, { browserBarVisible } = {}) {
     const viewport = canonicalViewport(rawViewport);
     const connection = await this.ensureConnection();
     try {
@@ -129,6 +130,11 @@ export class BrowserCdpClient {
       await Promise.all(
         writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
       );
+      // A kernel that does not send the Room's browser bar leaves windows as they are.
+      if (typeof browserBarVisible === "boolean") {
+        const appTargets = new Set([...(this.appTabs?.apps?.values() ?? [])].map((app) => app.targetId));
+        await applyBrowserBar(connection, pages, appTargets, browserBarVisible);
+      }
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
       return {
         browser_generation: this.browserGeneration,

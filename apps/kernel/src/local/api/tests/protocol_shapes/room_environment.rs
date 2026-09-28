@@ -14,7 +14,7 @@ use crate::session::{
 
 #[test]
 fn room_environment_screenshot_transfer_shape_is_versioned_and_bounded() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let capture = LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(
         CaptureRoomEnvironmentScreenshotRequest {
@@ -86,7 +86,7 @@ fn room_environment_screenshot_transfer_shape_is_versioned_and_bounded() {
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -202,6 +202,7 @@ fn room_environment_state_shape_is_versioned() {
                 actor_id: "agent-1".to_string(),
             }],
             pending_input_takeovers: Vec::new(),
+            browser_bar_visible: false,
             event_cursor: 0,
         },
     };
@@ -397,7 +398,7 @@ fn room_environment_state_shape_is_versioned() {
 
 #[test]
 fn room_environment_event_replay_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
         session_id: "session-1".to_string(),
@@ -507,7 +508,7 @@ fn room_environment_event_replay_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_history_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
         ListRoomEnvironmentActionHistoryRequest {
@@ -591,7 +592,7 @@ fn room_environment_action_history_shape_is_versioned() {
 
 #[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -641,6 +642,7 @@ fn room_environment_start_shape_is_versioned() {
             actions: Vec::new(),
             input_ownership: Vec::new(),
             pending_input_takeovers: Vec::new(),
+            browser_bar_visible: false,
             event_cursor: 1,
         },
     };
@@ -679,7 +681,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -702,7 +704,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -725,7 +727,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -764,8 +766,30 @@ fn room_environment_viewport_update_shape_is_versioned() {
 }
 
 #[test]
+fn room_browser_bar_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
+
+    let request = LocalDaemonRequest::SetRoomBrowserBar(crate::local::SetRoomBrowserBarRequest {
+        session_id: "session-1".to_string(),
+        visible: true,
+    });
+    let value = serde_json::json!({
+        "SetRoomBrowserBar": { "session_id": "session-1", "visible": true }
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("browser bar request should encode"),
+        value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(value)
+            .expect("browser bar request should decode"),
+        request
+    );
+}
+
+#[test]
 fn room_environment_pointer_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentPointer(UpdateRoomEnvironmentPointerRequest {
@@ -803,7 +827,7 @@ fn room_environment_pointer_update_shape_is_versioned() {
 
 #[test]
 fn room_environment_takeover_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
         RequestRoomEnvironmentInputTakeoverRequest {
@@ -846,6 +870,7 @@ fn room_environment_takeover_shape_is_versioned() {
             actions: Vec::new(),
             input_ownership: Vec::new(),
             pending_input_takeovers: Vec::new(),
+            browser_bar_visible: false,
             event_cursor: 2,
         },
     };
@@ -887,7 +912,7 @@ fn room_environment_takeover_shape_is_versioned() {
 
 #[test]
 fn room_environment_input_release_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request =
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
@@ -928,6 +953,7 @@ fn room_environment_input_release_shape_is_versioned() {
             actions: Vec::new(),
             input_ownership: Vec::new(),
             pending_input_takeovers: Vec::new(),
+            browser_bar_visible: false,
             event_cursor: 3,
         },
     };
@@ -946,7 +972,7 @@ fn room_environment_input_release_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_cancellation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request =
         LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
@@ -986,6 +1012,7 @@ fn room_environment_action_cancellation_shape_is_versioned() {
             actions: Vec::new(),
             input_ownership: Vec::new(),
             pending_input_takeovers: Vec::new(),
+            browser_bar_visible: false,
             event_cursor: 4,
         },
     };
@@ -1004,7 +1031,7 @@ fn room_environment_action_cancellation_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_submission_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request =
         LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
@@ -1083,6 +1110,7 @@ fn room_environment_action_submission_shape_is_versioned() {
             }],
             input_ownership: Vec::new(),
             pending_input_takeovers: Vec::new(),
+            browser_bar_visible: false,
             event_cursor: 5,
         },
     };
@@ -1112,7 +1140,7 @@ fn room_environment_action_submission_shape_is_versioned() {
 
 #[test]
 fn room_environment_browser_history_submission_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     for (action, wire_action) in [
         (RoomEnvironmentBrowserHistoryAction::Back, "back"),
@@ -1152,7 +1180,7 @@ fn room_environment_browser_history_submission_shape_is_versioned() {
 
 #[test]
 fn room_environment_browser_tab_submission_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     for (action, wire_action) in [
         (RoomEnvironmentBrowserTabAction::Activate, "activate"),
@@ -1191,7 +1219,7 @@ fn room_environment_browser_tab_submission_shape_is_versioned() {
 
 #[test]
 fn room_environment_clipboard_shapes_are_redacted_and_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let content = "sensitive clipboard 世界";
     let request =
@@ -1253,7 +1281,7 @@ fn room_environment_clipboard_shapes_are_redacted_and_versioned() {
 
 #[test]
 fn clipboard_protocol_addition_keeps_v302_room_state_requests_compatible() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let prior_wire = serde_json::json!({
         "GetRoomEnvironmentState": {
@@ -1273,7 +1301,7 @@ fn clipboard_protocol_addition_keeps_v302_room_state_requests_compatible() {
 
 #[test]
 fn room_environment_complete_human_input_shapes_are_versioned_and_keyboard_history_is_redacted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     for (action, wire) in [
         (
@@ -1397,7 +1425,7 @@ fn room_environment_tab_accessibility_shape_is_versioned() {
         GetRoomEnvironmentTabAccessibilityRequest, RoomEnvironmentAccessibilityNode,
         RoomEnvironmentTabAccessibility,
     };
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(
         GetRoomEnvironmentTabAccessibilityRequest {

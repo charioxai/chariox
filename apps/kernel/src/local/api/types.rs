@@ -182,4 +182,6 @@ pub use workspace::*;
 /// exactly the App releases the owner approved before for the deployment is
 /// consented without asking again. `PreviewDeploymentApps.package_digest`
 /// also returns that release's plan (`DeploymentAppsPreview.release_plan`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 369;
+/// Version 370 adds the Room browser bar: `SetRoomBrowserBar` and the
+/// snapshot's `browser_bar_visible` (a change emits `TabsChanged`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 370;
