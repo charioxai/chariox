@@ -865,7 +865,8 @@ async fn start_publication_runtime_claimed(
             },
         )
         .await;
-    let runtime_status = launched_publication_runtime_status(is_schedule_only);
+    let has_ingress = publication_has_ingress(&publication);
+    let runtime_status = launched_publication_runtime_status(has_ingress);
     let mut deployment = publication_runtime_deployment_metadata(
         runtime_status,
         &host,
@@ -909,7 +910,7 @@ async fn start_publication_runtime_claimed(
         open_url: local_url.clone(),
         viewer_url: local_url,
         process_id,
-        message: Some(launched_publication_runtime_message(is_schedule_only).to_string()),
+        message: Some(launched_publication_runtime_message(has_ingress).to_string()),
     })
 }
 
@@ -1688,6 +1689,16 @@ fn is_schedule_only_publication(publication: &WorkflowPublicationDefinition) -> 
     publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
 }
 
+/// Schedule-only and App-event triggers take no requests: their runtime is
+/// running once launched, with no endpoint registration to wait for.
+fn publication_has_ingress(publication: &WorkflowPublicationDefinition) -> bool {
+    !matches!(
+        publication.kind(),
+        crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
+            | crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED
+    )
+}
+
 fn publication_runtime_port(requested_port: Option<u16>, is_schedule_only: bool) -> u16 {
     if is_schedule_only {
         0
@@ -1718,17 +1729,17 @@ fn validate_publication_runtime_bind_address(
         })
 }
 
-fn launched_publication_runtime_status(is_schedule_only: bool) -> &'static str {
-    if is_schedule_only {
-        "running"
-    } else {
+fn launched_publication_runtime_status(has_ingress: bool) -> &'static str {
+    if has_ingress {
         "starting"
+    } else {
+        "running"
     }
 }
 
-fn launched_publication_runtime_message(is_schedule_only: bool) -> &'static str {
-    if is_schedule_only {
-        "schedule-only publication runtime running; no ingress endpoint is exposed"
+fn launched_publication_runtime_message(has_ingress: bool) -> &'static str {
+    if !has_ingress {
+        "publication runtime running; its trigger takes no requests, so no ingress endpoint is exposed"
     } else {
         "publication runtime starting; endpoint registration will publish a relay display URL when available"
     }
@@ -1835,14 +1846,33 @@ mod tests {
 
     #[test]
     fn launched_ingress_runtime_waits_for_endpoint_registration() {
-        assert_eq!(launched_publication_runtime_status(false), "starting");
-        assert!(launched_publication_runtime_message(false).contains("endpoint registration"));
+        assert_eq!(launched_publication_runtime_status(true), "starting");
+        assert!(launched_publication_runtime_message(true).contains("endpoint registration"));
     }
 
     #[test]
-    fn launched_schedule_only_runtime_is_running_without_ingress_registration() {
-        assert_eq!(launched_publication_runtime_status(true), "running");
-        assert!(launched_publication_runtime_message(true).contains("no ingress endpoint"));
+    fn launched_runtime_without_ingress_is_running_without_registration() {
+        assert_eq!(launched_publication_runtime_status(false), "running");
+        assert!(launched_publication_runtime_message(false).contains("no ingress endpoint"));
+    }
+
+    #[test]
+    fn schedule_only_and_app_event_triggers_have_no_ingress() {
+        let publication = |kind: &str| -> crate::session::WorkflowPublicationDefinition {
+            serde_json::from_value(serde_json::json!({
+                "id": "publication-1", "session_id": "session-1", "workflow_id": "workflow-1",
+                "endpoint_id": "endpoint-1", "kind": kind, "enabled": true,
+                "methods": [], "schedules": [], "watchdogs": [], "recent_runs": [],
+                "runtime_logs": [], "created_by_user_id": "user-1", "created_at_ms": 1,
+                "updated_at_ms": 1,
+            }))
+            .expect("publication")
+        };
+        assert!(super::publication_has_ingress(&publication("ingress")));
+        assert!(!super::publication_has_ingress(&publication(
+            "schedule_only"
+        )));
+        assert!(!super::publication_has_ingress(&publication("event_based")));
     }
 
     #[test]
