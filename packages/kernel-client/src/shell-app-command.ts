@@ -194,9 +194,10 @@ export function inboxRequest(args: string[]): Record<string, unknown> | null {
   if (!installation) return null
   if (verb === "list" && rest.length === 0) return listAppInboxRoutesRequest(installation)
   if (verb === "remove" && rest.length === 1 && rest[0]) return removeAppInboxRouteRequest(installation, rest[0])
-  if (verb === "test" && rest.length === 3 && rest[0] && rest[1]) {
+  // The JSON payload is the rest of the line: a terminal splits it at spaces.
+  if (verb === "test" && rest.length >= 3 && rest[0] && rest[1]) {
     try {
-      return testAppInboxRouteRequest(installation, rest[0], rest[1], JSON.parse(rest[2] ?? ""))
+      return testAppInboxRouteRequest(installation, rest[0], rest[1], JSON.parse(rest.slice(2).join(" ")))
     } catch {
       return null
     }

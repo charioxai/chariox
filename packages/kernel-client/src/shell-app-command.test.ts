@@ -151,13 +151,13 @@ test("app inbox configures routes and test occurrences through the shared reques
   } }
   const added = await executeAppCommand(["inbox", "add", "todo", "mail", "todo_requested", "dev.chariox.dummy/dummy.test", "--version", "2"], client)
   assert.match(added.message!, /mail · dev.chariox.dummy\/dummy.test v2 → todo_requested · 1 pending, 3 delivered, 0 failed, 0 expired/)
-  const tested = await executeAppCommand(["inbox", "test", "todo", "mail", "occ-1", '{"title":"x"}'], client)
+  const tested = await executeAppCommand(["inbox", "test", "todo", "mail", "occ-1", '{"title":"x', 'y"}'], client)
   assert.equal(tested.message, "Occurrence occ-1 on mail was already accepted.")
   await executeAppCommand(["inbox", "remove", "todo", "mail"], client)
   await executeAppCommand(["inbox", "list", "todo"], client)
   assert.deepEqual(sent, [
     { CreateAppInboxRoute: { installation_id: "todo", route_id: "mail", event_name: "todo_requested", source_event_type: "dev.chariox.dummy/dummy.test", source_event_version: 2 } },
-    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x" } } },
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x y" } } },
     { RemoveAppInboxRoute: { installation_id: "todo", route_id: "mail" } },
     { ListAppInboxRoutes: { installation_id: "todo" } },
   ])
