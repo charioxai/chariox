@@ -2176,6 +2176,19 @@ Workflow trigger and deployment direction:
   368 release whose plan was pruned (more than 16 releases ago) has none, so
   its bind fails with "no App plan recorded" and `PrepareDeploymentApps` and
   `PreviewDeploymentApps` refuse it.
+- protocol 369: every successful owner `ExportWorkflowPublicationPackage`
+  also records the release's inputs digest in
+  `WorkflowPublicationDefinition.release_inputs` (`{package_digest,
+  inputs_digest}`, newest last, the last 64 and the bound release's kept):
+  the package digest of its files without the kernel's templates (`.env.example`,
+  `run.sh`, `README.md`, `public/index.html`, `public/app.js`,
+  `public/styles.css`, `deployment-contract.json`). The deployment bind and
+  recovery verify a release with a recorded inputs digest by re-exporting it and
+  comparing inputs digests, so a kernel upgrade that changes those templates
+  (for example the contract's `minimum_kernel_version`) keeps its deployments
+  bound; any change to the workflow's own files still fails the bind. A release
+  without a record (exported before 369, or pruned) is verified by its whole
+  package digest, as before.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

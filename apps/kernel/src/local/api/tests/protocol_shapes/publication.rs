@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -226,34 +226,42 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             agent_id_map: BTreeMap::from([("agent-1".to_string(), "runtime-agent-1".to_string())]),
         },
     );
+    // Protocol 369: a release's inputs digest, recorded by its package digest.
+    publication.record_release_inputs(
+        &format!("sha256:{}", "b".repeat(64)),
+        &format!("sha256:{}", "c".repeat(64)),
+    );
     // Protocol 368: a release's App plan, recorded by its package digest,
     // on a publication prepared before 368 (its single plan is kept).
     publication.use_apps(serde_json::json!({"schema": "chariox.publication-apps.v1", "apps": []}));
-    publication.record_release_app_plan(&format!("sha256:{}", "b".repeat(64)), serde_json::json!({
-        "schema": "chariox.publication-apps.v1",
-        "apps": [{
-            "installation_id": "todo",
-            "app_id": "dev.chariox.todo",
-            "version": "1.0.0",
-            "publisher_id": "dev.chariox",
-            "publisher_key_id": "key-1",
-            "publisher_key_fingerprint": "sha256:key",
-            "package_digest": format!("sha256:{}", "a".repeat(64)),
-            "schema_version": 1,
-            "capabilities_digest": "sha256:capabilities",
-            "grants": [{"agent_id": "agent-1", "node_ids": ["node-1"]}],
-            "automations": [{
-                "automation_id": "reminders",
-                "event_name": "todo_due",
-                "event_version": 1,
-                "endpoint_id": "endpoint-1",
-                "queue_id": "workflow-1:default",
-                "scheduled": true,
+    publication.record_release_app_plan(
+        &format!("sha256:{}", "b".repeat(64)),
+        serde_json::json!({
+            "schema": "chariox.publication-apps.v1",
+            "apps": [{
+                "installation_id": "todo",
+                "app_id": "dev.chariox.todo",
+                "version": "1.0.0",
+                "publisher_id": "dev.chariox",
+                "publisher_key_id": "key-1",
+                "publisher_key_fingerprint": "sha256:key",
+                "package_digest": format!("sha256:{}", "a".repeat(64)),
+                "schema_version": 1,
+                "capabilities_digest": "sha256:capabilities",
+                "grants": [{"agent_id": "agent-1", "node_ids": ["node-1"]}],
+                "automations": [{
+                    "automation_id": "reminders",
+                    "event_name": "todo_due",
+                    "event_version": 1,
+                    "endpoint_id": "endpoint-1",
+                    "queue_id": "workflow-1:default",
+                    "scheduled": true,
+                }],
+                "inbox_routes": [],
+                "connections": [],
             }],
-            "inbox_routes": [],
-            "connections": [],
-        }],
-    }));
+        }),
+    );
     let session = crate::session::RuntimeSession::new(
         "session-1",
         None,
@@ -671,13 +679,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "f16645df0c4f807735e9909b55869d8a231dcd3dc2794c9f5838a245f25e99e4"
+        "10883b32b6aa03f58cb233bd4a55b736874818847b1a7c9d9dd98604d2ca9f62"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

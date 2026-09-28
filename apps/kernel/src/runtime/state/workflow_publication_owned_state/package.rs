@@ -575,6 +575,32 @@ pub(super) fn workflow_publication_package_digest(
     Ok(format!("sha256:{:x}", hash.finalize()))
 }
 
+/// Package files the kernel templates: they change with kernel upgrades,
+/// not with the workflow, so a release's inputs digest leaves them out.
+const KERNEL_TEMPLATED_PACKAGE_FILES: &[&str] = &[
+    ".env.example",
+    "run.sh",
+    "README.md",
+    "public/index.html",
+    "public/app.js",
+    "public/styles.css",
+    "deployment-contract.json",
+];
+
+/// Protocol 369: the digest of a release's workflow-owned package files
+/// (its publication, snapshot, requirements, bindings, config, Apps and agent
+/// app assets), which a bind or recovery re-export must reproduce.
+pub(in crate::runtime::state) fn workflow_publication_release_inputs_digest(
+    files: &[crate::local::WorkflowPublicationPackageFile],
+) -> Result<String, DaemonError> {
+    let inputs = files
+        .iter()
+        .filter(|file| !KERNEL_TEMPLATED_PACKAGE_FILES.contains(&file.path.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    workflow_publication_package_digest(&inputs)
+}
+
 pub(super) fn workflow_publication_package_archive_base64(
     files: &[crate::local::WorkflowPublicationPackageFile],
 ) -> Result<String, DaemonError> {
@@ -746,6 +772,27 @@ mod digest_tests {
         assert_eq!(
             workflow_publication_package_digest(&files).expect("package digest"),
             "sha256:41adbfede761eb36ea3202865c16f8e3c1f5b232994d16bde44852ebb3687f4a"
+        );
+    }
+
+    #[test]
+    fn release_inputs_digest_ignores_the_kernel_templates_only() {
+        let files = |readme: &[u8], contract: &[u8], snapshot: &[u8]| {
+            vec![
+                package_file("README.md", readme, false),
+                package_file("deployment-contract.json", contract, false),
+                package_file("run.sh", b"#!/bin/sh\n", true),
+                package_file("workflow.snapshot.json", snapshot, false),
+            ]
+        };
+        let digest = |files: Vec<_>| {
+            workflow_publication_release_inputs_digest(&files).expect("inputs digest")
+        };
+        let release = digest(files(b"readme", b"{\"v\":1}", b"{}"));
+        assert_eq!(release, digest(files(b"new readme", b"{\"v\":2}", b"{}")));
+        assert_ne!(
+            release,
+            digest(files(b"readme", b"{\"v\":1}", b"{\"n\":1}"))
         );
     }
 

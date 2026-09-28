@@ -9,6 +9,7 @@ mod materialization;
 mod package;
 mod reconfiguration;
 
+pub(super) use package::workflow_publication_release_inputs_digest;
 use package::{
     workflow_publication_package_archive_base64, workflow_publication_package_digest,
     workflow_publication_package_files, workflow_publication_package_version,
@@ -188,21 +189,25 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// Protocol 368: records the App plan a successful export packaged as
-    /// the plan of the release with that package digest.
-    pub(super) fn record_workflow_publication_app_plan(
+    /// Protocols 368 and 369: records what a successful export packaged as
+    /// the release with its package digest: the inputs digest of its files
+    /// and, for an App-bound publication, the App plan.
+    pub(super) fn record_workflow_publication_release(
         &self,
         session_id: &str,
         publication_id: &str,
         package_digest: &str,
-        plan: serde_json::Value,
+        package_files: &[crate::local::WorkflowPublicationPackageFile],
+        plan: Option<serde_json::Value>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let inputs_digest = workflow_publication_release_inputs_digest(package_files)?;
         self.session_store
             .write()
-            .record_workflow_publication_app_plan(
+            .record_workflow_publication_release(
                 session_id,
                 publication_id,
                 package_digest,
+                &inputs_digest,
                 plan,
             )?;
         self.session_snapshot_without_projection_update(session_id)

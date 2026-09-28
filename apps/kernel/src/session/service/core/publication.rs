@@ -353,13 +353,15 @@ impl SessionService {
             .cloned())
     }
 
-    /// Protocol 366: pins the publication's App plan unless one is pinned.
-    pub(crate) fn record_workflow_publication_app_plan(
+    /// Protocols 368 and 369: records an exported release's inputs digest
+    /// and, for an App-bound publication, its App plan.
+    pub(crate) fn record_workflow_publication_release(
         &mut self,
         session_id: &str,
         publication_id: &str,
         package_digest: &str,
-        plan: Value,
+        inputs_digest: &str,
+        plan: Option<Value>,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
         let session =
             self.store
@@ -370,10 +372,13 @@ impl SessionService {
         let publication = session
             .workflow_publication_mut(publication_id)
             .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "record workflow publication Apps",
+                operation: "record workflow publication release",
                 message: format!("workflow publication `{publication_id}` was not found"),
             })?;
-        publication.record_release_app_plan(package_digest, plan);
+        publication.record_release_inputs(package_digest, inputs_digest);
+        if let Some(plan) = plan {
+            publication.record_release_app_plan(package_digest, plan);
+        }
         Ok(publication.clone())
     }
 
