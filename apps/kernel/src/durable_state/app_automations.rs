@@ -303,5 +303,39 @@ fn apply(
     Ok(result)
 }
 
+impl DurableKernelStateStore {
+    /// Protocol 366: the owner's installations whose active automations feed a
+    /// publication.
+    pub(crate) fn app_installations_feeding_publication(
+        &self,
+        owner: &str,
+        session_id: &str,
+        publication_id: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        let connection = self.lock_connection("durable_state.app_automation_targets")?;
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT installation_id FROM app_automations WHERE owner_id=?1
+                 AND session_id=?2 AND publication_id=?3 AND status='active'
+                 ORDER BY installation_id",
+            )
+            .map_err(storage)?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![owner, session_id, publication_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(storage)?;
+        rows.collect::<Result<_, _>>().map_err(storage)
+    }
+}
+
+fn storage(error: rusqlite::Error) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "read App automation targets",
+        message: error.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -1555,8 +1555,9 @@ Workflow trigger and deployment direction:
   configured queue namespace
 - exporting or deploying a workflow is the boundary that captures an immutable
   package. A publication package contains `publication.json`,
-  `workflow.snapshot.json`, `requirements.json`, optional generated app assets,
-  and packaged scripts
+  `workflow.snapshot.json`, `requirements.json`, `apps.json` for a workflow
+  that uses Apps (protocol 366), optional generated app assets, and packaged
+  scripts
 - a packaged/self-hosted or Chariox-hosted deployment materializes its own
   kernel-owned session in the destination kernel. That deployed session is
   independent from the source session because it is a separate execution
@@ -2046,6 +2047,25 @@ Workflow trigger and deployment direction:
   older kernel load with their bindings ignored; peers that still send the
   removed turn-context fields are read with them ignored (relay peer
   protocol 58).
+- protocol 366: a workflow publication carries its App plan. The first
+  `ExportWorkflowPublicationPackage` by the publication's owner (the deployment
+  preparation) pins `WorkflowPublicationDefinition.apps`
+  (`chariox.publication-apps.v1`): each App granted to an agent of the
+  publication snapshot or feeding the publication through an active App
+  automation, with its source installation, app id, release version, publisher
+  id, key id and key fingerprint, package digest, data schema version and
+  approved capabilities digest, its grants by agent (`agent_id`, `node_ids`),
+  the automations targeting this publication, its active inbox routes (route,
+  event, source event type/version, generator connection) and its connection
+  grants. It names generator connections but carries no App data and no
+  secret. A pinned plan never changes, so later exports — including the
+  deployment bind's digest check — do not follow App updates. The package of
+  an App-bound workflow adds `apps.json` (the plan) and the deployment contract
+  `capabilities.apps` (its `apps`); an App granted to an agent but not
+  installed fails the preparation, and an App-bound publication without a plan
+  (never prepared by its owner) fails the export. `requirements.json` follows
+  the publication snapshot's agents instead of the source agents' current
+  grants, and App grants are no longer refused there.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

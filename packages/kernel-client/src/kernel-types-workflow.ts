@@ -719,6 +719,7 @@ export type WorkflowPublicationDefinition = {
   creation_operation_key?: string | null
   creation_request_digest?: string | null
   runtime_materialization?: { key: string; agent_id_map: Record<string, string> }
+  apps?: WorkflowPublicationApps
   status?: string | null
   open_url?: string | null
   viewer_url?: string | null
@@ -737,6 +738,42 @@ export type WorkflowPublicationDefinition = {
   created_by_user_id: string
   created_at_ms: number
   updated_at_ms: number
+}
+
+/** Protocol 366: the Apps a publication's workflow uses, pinned at its first
+ * deployment preparation (`apps.json` and `capabilities.apps` in its package). */
+export type WorkflowPublicationApps = {
+  schema: "chariox.publication-apps.v1"
+  apps: WorkflowPublicationApp[]
+}
+
+export type WorkflowPublicationApp = {
+  installation_id: string
+  app_id: string
+  version: string
+  publisher_id: string
+  publisher_key_id: string
+  publisher_key_fingerprint: string
+  package_digest: string
+  schema_version: number
+  capabilities_digest: string
+  grants: { agent_id: string; node_ids: string[] }[]
+  automations: {
+    automation_id: string
+    event_name: string
+    event_version: number
+    endpoint_id: string
+    queue_id: string
+    scheduled: boolean
+  }[]
+  inbox_routes: {
+    route_id: string
+    event_name: string
+    source_event_type: string
+    source_event_version: number
+    connection: { generator_id: string; connection_id: string; connection_scope: string } | null
+  }[]
+  connections: { generator_id: string; connection_id: string; actions: string[] }[]
 }
 
 export type WorkflowPublicationRuntimeLogEntry = {

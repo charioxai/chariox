@@ -353,6 +353,29 @@ impl SessionService {
             .cloned())
     }
 
+    /// Protocol 366: pins the publication's App plan unless one is pinned.
+    pub(crate) fn pin_workflow_publication_apps(
+        &mut self,
+        session_id: &str,
+        publication_id: &str,
+        plan: Value,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "pin workflow publication Apps",
+                message: format!("workflow publication `{publication_id}` was not found"),
+            })?;
+        publication.pin_apps(plan);
+        Ok(publication.clone())
+    }
+
     pub fn disable_workflow_publication(
         &mut self,
         session_id: &str,

@@ -16,6 +16,8 @@ mod workflow_code_source_roundtrip;
 mod workflow_code_validation_limits;
 mod workflow_event_publication;
 mod workflow_graph_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod workflow_publication_apps;
 mod workflow_publication_package;
 
 fn find_node_for_workflow_code_local_api_test() -> Option<PathBuf> {

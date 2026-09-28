@@ -12,26 +12,28 @@ struct ExtensionUse {
     has_grant_credential: bool,
 }
 
+/// `agents` are the publication snapshot's; their workspaces are portable
+/// placeholders, so `workspaces` names each source agent's workspace, where
+/// its project-scoped extension definitions live.
 pub(crate) fn capture_workflow_publication_requirements(
     workflow: &crate::session::WorkflowDefinition,
     agents: &[crate::agent::AgentInstance],
+    workspaces: &BTreeMap<String, String>,
 ) -> Result<serde_json::Value, DaemonError> {
-    let uses = collect_extension_uses(workflow, agents);
+    let uses = collect_extension_uses(workflow, agents, workspaces);
     let mut extensions = Vec::with_capacity(uses.len());
     let mut credentials = BTreeMap::<String, serde_json::Value>::new();
     let mut network_destinations = BTreeMap::<String, serde_json::Value>::new();
 
     for ((kind, name), extension_uses) in uses {
         let requirement = match kind {
+            // Apps are packaged in the publication's App plan (`apps.json`).
+            crate::extension::ExtensionKind::App => continue,
             crate::extension::ExtensionKind::Mcp => mcp_requirement(&name, &extension_uses)?,
             crate::extension::ExtensionKind::Skill => skill_requirement(&name, &extension_uses)?,
             crate::extension::ExtensionKind::Script => script_requirement(&name, &extension_uses)?,
             crate::extension::ExtensionKind::Connector => {
                 connector_requirement(&name, &extension_uses)?
-            }
-            crate::extension::ExtensionKind::App => {
-                return Err(extension_error(&name,
-                    "App-bound workflow publication requires installation dependency packaging, which is not available yet".into()));
             }
         };
         let Some(requirement) = requirement else {
@@ -75,9 +77,23 @@ pub(crate) fn capture_workflow_publication_requirements(
     }))
 }
 
+/// The App installations granted to the workflow's agents, with their uses
+/// (`agent_id`, `node_ids`).
+pub(crate) fn app_grant_uses(
+    workflow: &crate::session::WorkflowDefinition,
+    agents: &[crate::agent::AgentInstance],
+) -> BTreeMap<String, Vec<serde_json::Value>> {
+    collect_extension_uses(workflow, agents, &BTreeMap::new())
+        .into_iter()
+        .filter(|((kind, _), _)| *kind == crate::extension::ExtensionKind::App)
+        .map(|((_, installation), uses)| (installation, usage_json(&uses)))
+        .collect()
+}
+
 fn collect_extension_uses(
     workflow: &crate::session::WorkflowDefinition,
     agents: &[crate::agent::AgentInstance],
+    workspaces: &BTreeMap<String, String>,
 ) -> BTreeMap<(crate::extension::ExtensionKind, String), Vec<ExtensionUse>> {
     let mut uses = BTreeMap::new();
     for agent in agents {
@@ -96,7 +112,7 @@ fn collect_extension_uses(
                 .push(ExtensionUse {
                     agent_id: agent.id().to_string(),
                     node_ids: node_ids.clone(),
-                    workspace_id: agent.workspace_id().map(str::to_string),
+                    workspace_id: workspaces.get(agent.id()).cloned(),
                     has_grant_credential: grant
                         .credential
                         .as_deref()

@@ -158,4 +158,11 @@ pub use workspace::*;
 /// (`EventConnectionDependency`), `attached_trigger_count` and the event
 /// delivery status count App routes and grants; `EventConnectionRemoved` loses
 /// `deactivated_bindings`. Relay peer protocol 58 drops the same flags.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 365;
+/// Version 366 pins a workflow publication's App plan
+/// (`WorkflowPublicationDefinition.apps`, `chariox.publication-apps.v1`) at the
+/// first deployment preparation (a client `ExportWorkflowPublicationPackage`):
+/// the Apps granted to its agents or feeding it through App automations, with
+/// release, signer, capabilities digest and configuration. App-bound workflows
+/// export `apps.json` and `capabilities.apps` in the deployment contract;
+/// requirements follow the publication snapshot's agents.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 366;

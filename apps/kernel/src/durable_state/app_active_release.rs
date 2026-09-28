@@ -150,6 +150,39 @@ impl DurableKernelStateStore {
         Ok((verified.package_digest().to_owned(), capabilities))
     }
 
+    /// The signer and approved capabilities digest of the active release
+    /// (protocol 366 App plans), with its package digest.
+    pub(crate) fn active_app_release_identity(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(String, crate::workflow_publication_apps::ReleaseIdentity), ActiveReleaseError>
+    {
+        let mut connection = self
+            .lock_connection("durable_state.active_app_release_identity")
+            .map_err(|_| ActiveReleaseError::Storage)?;
+        let registry = InstallationRegistry::new(&mut connection);
+        let binding = registry
+            .active_trust(owner, installation)
+            .map_err(|_| ActiveReleaseError::NotActive)?;
+        let active = registry
+            .get(installation)
+            .ok()
+            .and_then(|installation| installation.active)
+            .ok_or(ActiveReleaseError::NotActive)?;
+        if active.release.package_digest != binding.package_digest() {
+            return Err(ActiveReleaseError::Invalid);
+        }
+        Ok((
+            active.release.package_digest,
+            crate::workflow_publication_apps::ReleaseIdentity {
+                capabilities_digest: active.release.capabilities_digest,
+                publisher_key_id: binding.key_id().to_owned(),
+                publisher_key_fingerprint: binding.public_key_fingerprint().to_owned(),
+            },
+        ))
+    }
+
     /// The active release's signed `capabilities.connections` (protocol 359).
     pub(crate) fn active_app_connection_access(
         &self,

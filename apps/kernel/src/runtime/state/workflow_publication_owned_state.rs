@@ -123,18 +123,35 @@ impl KernelRuntimeOwnedState {
                     publication.id()
                 ),
             })?;
-        let current_agents = self
+        // Requirements follow the immutable snapshot's grants, not the source
+        // agents' current ones; definitions resolve in the source workspaces.
+        let workspaces = self
             .agent_store
-            .read()
-            .list_agents()
+            .get_session_agents(&request.session_id)
             .into_iter()
-            .filter(|agent| agent.session_id() == request.session_id)
-            .collect::<Vec<_>>();
+            .filter_map(|agent| Some((agent.id().to_string(), agent.workspace_id()?.to_string())))
+            .collect();
         let extension_requirements =
             crate::workflow_publication_requirements::capture_workflow_publication_requirements(
                 &snapshot.workflow,
-                &current_agents,
+                &snapshot.agents,
+                &workspaces,
             )?;
+        if publication.apps().is_none()
+            && !crate::workflow_publication_requirements::app_grant_uses(
+                &snapshot.workflow,
+                &snapshot.agents,
+            )
+            .is_empty()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!(
+                    "workflow trigger `{}` uses Apps but has no App plan; its owner prepares the deployment on this kernel",
+                    publication.id()
+                ),
+            });
+        }
         let package_files = workflow_publication_package_files(
             &publication,
             &snapshot,

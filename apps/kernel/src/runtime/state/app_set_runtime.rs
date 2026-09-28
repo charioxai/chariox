@@ -18,7 +18,11 @@ const MAX_INSTALLATIONS: usize = 1000;
 
 impl KernelRuntimeState {
     pub(super) async fn app_set(&self, command: &KernelCommand) -> LocalDaemonResponse {
-        match self.read_app_set(command).await {
+        let set = match crate::runtime::app_control::owner(command) {
+            Ok(owner) => self.read_app_set(&owner).await,
+            Err(code) => Err(code),
+        };
+        match set {
             Ok(installations) => LocalDaemonResponse::AppSet {
                 schema: crate::local::APP_SET_SCHEMA.to_owned(),
                 installations,
@@ -27,49 +31,44 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn read_app_set(
+    /// The authenticated owner's App set.
+    pub(super) async fn read_app_set(
         &self,
-        command: &KernelCommand,
+        owner: &str,
     ) -> Result<Vec<AppSetInstallation>, AppRequestErrorCode> {
-        let owner = crate::runtime::app_control::owner(command)?;
         let mut active = Vec::new();
         let mut after = None;
         loop {
-            let LocalDaemonResponse::AppInstallationsListed {
-                installations,
-                next_cursor,
-            } = answer(
-                self.app_control()
-                    .execute(
-                        command,
-                        &LocalDaemonRequest::ListAppInstallations(
-                            crate::local::ListAppInstallationsRequest {
-                                after: after.take(),
-                                limit: Some(100),
-                            },
-                        ),
-                    )
-                    .await,
-            )?
-            else {
-                return Err(AppRequestErrorCode::StorageUnavailable);
-            };
-            active.extend(installations.into_iter().filter_map(|installation| {
+            let (store, list_owner, cursor) = (
+                self.owned.durable_state_store.clone(),
+                owner.to_owned(),
+                after.take(),
+            );
+            let permit = self.app_control().try_admit()?;
+            let page = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                store.list_app_installations(&list_owner, cursor.as_deref(), 100)
+            })
+            .await
+            .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+            .map_err(crate::runtime::app_control::registry_error)?;
+            active.extend(page.installations.into_iter().filter_map(|installation| {
+                let installation = crate::runtime::app_control::installation_summary(installation);
                 let release = installation.active_release?;
                 Some((installation.installation_id, installation.app_id, release))
             }));
             if active.len() > MAX_INSTALLATIONS {
                 return Err(AppRequestErrorCode::LimitExceeded);
             }
-            match next_cursor {
+            match page.next_cursor {
                 Some(cursor) => after = Some(cursor),
                 None => break,
             }
         }
         let mut set = Vec::with_capacity(active.len());
         for (installation_id, app_id, release) in active {
-            let read = |request: LocalDaemonRequest| async move {
-                answer(self.execute_app_control_request(command, &request).await)
+            let read = |request: LocalDaemonRequest| {
+                self.app_control_response(owner.to_owned(), installation_id.clone(), request)
             };
             let installation = || AppWorkerRequest {
                 installation_id: installation_id.clone(),
@@ -116,16 +115,6 @@ impl KernelRuntimeState {
             });
         }
         Ok(set)
-    }
-}
-
-fn answer(
-    response: Option<LocalDaemonResponse>,
-) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
-    match response {
-        Some(LocalDaemonResponse::AppRequestFailed { code }) => Err(code),
-        Some(response) => Ok(response),
-        None => Err(AppRequestErrorCode::InvalidRequest),
     }
 }
 

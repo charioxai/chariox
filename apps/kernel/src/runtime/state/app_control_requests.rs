@@ -69,7 +69,7 @@ impl KernelRuntimeState {
         )
     }
 
-    async fn app_control_response(
+    pub(super) async fn app_control_response(
         &self,
         owner: String,
         installation: String,

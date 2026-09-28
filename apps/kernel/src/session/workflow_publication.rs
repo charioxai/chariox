@@ -167,6 +167,10 @@ pub struct WorkflowPublicationDefinition {
     creation_request_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_materialization: Option<WorkflowPublicationRuntimeMaterialization>,
+    /// Protocol 366: the App plan (`chariox.publication-apps.v1`) pinned at the
+    /// first deployment preparation. Immutable once pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    apps: Option<Value>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -232,6 +236,7 @@ impl WorkflowPublicationDefinition {
             creation_operation_key: None,
             creation_request_digest: None,
             runtime_materialization: None,
+            apps: None,
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -488,6 +493,17 @@ impl WorkflowPublicationDefinition {
         materialization: WorkflowPublicationRuntimeMaterialization,
     ) {
         self.runtime_materialization = Some(materialization);
+    }
+
+    pub fn apps(&self) -> Option<&Value> {
+        self.apps.as_ref()
+    }
+
+    /// Pins the App plan once; a pinned plan is never replaced.
+    pub(crate) fn pin_apps(&mut self, plan: Value) {
+        if self.apps.is_none() {
+            self.apps = Some(plan);
+        }
     }
 
     pub fn creation_request_digest(&self) -> Option<&str> {

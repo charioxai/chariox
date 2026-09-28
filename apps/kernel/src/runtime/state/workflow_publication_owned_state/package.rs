@@ -31,6 +31,7 @@ pub(super) fn workflow_publication_package_files(
     let bindings = workflow_publication_bindings_json(snapshot);
     let config =
         workflow_publication_gateway_config_json(publication, &publication_value, kernel_url);
+    let apps = publication.apps();
     let mut files = vec![
         package_file(
             "publication.json",
@@ -81,12 +82,16 @@ pub(super) fn workflow_publication_package_files(
             files.extend(workflow_publication_agent_app_asset_files(assets_dir)?);
         }
     }
+    if let Some(apps) = apps {
+        files.push(package_file("apps.json", pretty_json(apps)?, false));
+    }
     let deployment_contract = deployment_contract::workflow_publication_deployment_contract_json(
         publication,
         &publication_value,
         snapshot,
         agent_app,
         &requirements,
+        apps,
         &files,
     )?;
     files.push(package_file(

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 365);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 366);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -226,6 +226,32 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             agent_id_map: BTreeMap::from([("agent-1".to_string(), "runtime-agent-1".to_string())]),
         },
     );
+    // Protocol 366: the pinned App plan.
+    publication.pin_apps(serde_json::json!({
+        "schema": "chariox.publication-apps.v1",
+        "apps": [{
+            "installation_id": "todo",
+            "app_id": "dev.chariox.todo",
+            "version": "1.0.0",
+            "publisher_id": "dev.chariox",
+            "publisher_key_id": "key-1",
+            "publisher_key_fingerprint": "sha256:key",
+            "package_digest": format!("sha256:{}", "a".repeat(64)),
+            "schema_version": 1,
+            "capabilities_digest": "sha256:capabilities",
+            "grants": [{"agent_id": "agent-1", "node_ids": ["node-1"]}],
+            "automations": [{
+                "automation_id": "reminders",
+                "event_name": "todo_due",
+                "event_version": 1,
+                "endpoint_id": "endpoint-1",
+                "queue_id": "workflow-1:default",
+                "scheduled": true,
+            }],
+            "inbox_routes": [],
+            "connections": [],
+        }],
+    }));
     let session = crate::session::RuntimeSession::new(
         "session-1",
         None,
@@ -643,13 +669,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "017fbcd592319e79f1167104b7d39dec8562e3e86ed006b252ef783081c63c96"
+        "2501932d942dbfb9b065f4cb28053bbe86af82b9c7c75398987a7d02a1274bb9"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 365);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 366);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {
