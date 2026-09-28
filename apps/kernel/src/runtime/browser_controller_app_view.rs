@@ -75,6 +75,10 @@ pub(crate) struct BrowserAppViewOpened {
 pub(crate) struct BrowserAppViewCall {
     pub(crate) installation_id: String,
     pub(crate) target_id: String,
+    /// The Tab's top-level document (CDP loader) that made the call. Absent
+    /// from an older controller: the call then ends only with its Tab.
+    #[serde(default)]
+    pub(crate) document_id: Option<String>,
     pub(crate) call_id: String,
     pub(crate) method: String,
     #[serde(default)]
@@ -88,6 +92,10 @@ pub(crate) struct BrowserAppViewCalls {
     /// Absent (an older controller) means "unknown": nothing is pruned.
     #[serde(default)]
     pub(crate) open_targets: Option<Vec<String>>,
+    /// Each open App target's current document; a call made by another
+    /// document is cancelled. Absent from an older controller.
+    #[serde(default)]
+    pub(crate) documents: Option<std::collections::HashMap<String, String>>,
     /// Reserved conversation panels in page CSS pixels. Absent from an older
     /// controller, which neither reports panels nor marks App Tabs.
     #[serde(default)]

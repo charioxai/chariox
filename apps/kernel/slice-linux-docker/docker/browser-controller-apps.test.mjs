@@ -19,6 +19,7 @@ function fakeConnection(targets = []) {
       if (method === "Browser.getWindowForTarget") return { windowId: 1 };
       if (method === "Browser.getWindowBounds") return { bounds: { windowState: this.windowState } };
       if (method === "Browser.setWindowBounds") this.windowState = params.bounds.windowState;
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { loaderId: this.loaderId } } };
       return method === "Target.createTarget" ? { targetId: `t${++this.created}` } : {};
     },
     async emit(message) { listener?.(message); await new Promise((r) => setImmediate(r)); },
@@ -37,11 +38,15 @@ function fakeBrowser() {
 
 const asset = (path, body, type = "text/html") => ({ path, content_type: type, body_base64: Buffer.from(body).toString("base64") });
 
+const navigated = (connection, loaderId, sessionId = "s1", parentId) =>
+  connection.emit({ method: "Page.frameNavigated", sessionId, params: { frame: { id: "f", parentId, loaderId } } });
+
 async function opened() {
   const { browser, connection } = fakeBrowser();
   const tabs = new AppTabs(browser);
   const result = await tabs.open({ origin_label: "todo-1", installation_id: "inst-1",
     assets: [asset("index.html", "<p>hi</p>"), asset("app.js", "1", "text/javascript")] });
+  await navigated(connection, "doc-1");
   return { tabs, connection, result };
 }
 
@@ -147,8 +152,8 @@ test("queues bridge calls bound to the installation and resolves responses", asy
   await bind(JSON.stringify({ id: "1", method: "list_todos", params: { open_only: true } }));
   await bind("not json");
   await bind(JSON.stringify({ id: "2", method: "x" }), "other");
-  assert.deepEqual((await tabs.takeCalls()).calls, [{ installation_id: "inst-1", target_id: "t1", call_id: "1",
-    method: "list_todos", params: { open_only: true } }]);
+  assert.deepEqual((await tabs.takeCalls()).calls, [{ installation_id: "inst-1", target_id: "t1",
+    document_id: "doc-1", call_id: "1", method: "list_todos", params: { open_only: true } }]);
   assert.deepEqual((await tabs.takeCalls()).calls, []);
   connection.sent.length = 0;
   await tabs.respond({ target_id: "t1", call_id: "1", result: { todos: [] } });
@@ -251,4 +256,49 @@ test("reload serves the new generation's assets to the same Tab and reloads it",
   const app = [...tabs.apps.values()][0];
   assert.equal(Buffer.from(app.assets.get("index.html").body, "base64").toString(), "<p>v2</p>");
   assert.equal(app.assets.has("app.js"), false);
+});
+
+test("a call from a document that is gone is not run, and its answer is not delivered", async () => {
+  const { tabs, connection } = await opened();
+  const bind = (id) => connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id, method: "slow" }) } });
+  await bind("a:1");
+  let poll = await tabs.takeCalls();
+  assert.deepEqual(poll.calls.map((call) => [call.call_id, call.document_id]), [["a:1", "doc-1"]]);
+  assert.deepEqual(poll.documents, { t1: "doc-1" });
+  // A frame inside the page navigating is not a new document.
+  await navigated(connection, "frame-doc", "s1", "f0");
+  // A call queued just before the Tab reloads is dropped with its document.
+  await bind("a:2");
+  await navigated(connection, "doc-2");
+  poll = await tabs.takeCalls();
+  assert.deepEqual(poll.calls, []);
+  assert.deepEqual(poll.documents, { t1: "doc-2" });
+  connection.sent.length = 0;
+  assert.deepEqual(await tabs.respond({ target_id: "t1", call_id: "a:1", result: 1 }), { delivered: false });
+  assert.deepEqual(connection.sent, []);
+  await bind("b:1");
+  const [call] = (await tabs.takeCalls()).calls;
+  assert.equal(call.document_id, "doc-2");
+  assert.deepEqual(await tabs.respond({ target_id: "t1", call_id: "b:1", result: 1 }), { delivered: true });
+  assert.equal(connection.sent.at(-1).method, "Runtime.evaluate");
+  // Each call is answered once.
+  assert.deepEqual(await tabs.respond({ target_id: "t1", call_id: "b:1", result: 1 }), { delivered: false });
+  // A closed Tab reports no document; its queued calls are dropped too.
+  await bind("b:2");
+  await connection.emit({ method: "Target.detachedFromTarget", params: { sessionId: "s1" } });
+  poll = await tabs.takeCalls();
+  assert.deepEqual([poll.calls, poll.open_targets, poll.documents], [[], [], {}]);
+});
+
+test("a call made before any navigation was seen asks the Tab for its document", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  await tabs.open({ origin_label: "todo-1", installation_id: "inst-1", assets: [asset("index.html", "x")] });
+  connection.loaderId = "doc-9";
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "1", method: "m" }) } });
+  const poll = await tabs.takeCalls();
+  assert.equal(poll.calls[0].document_id, "doc-9");
+  assert.deepEqual(poll.documents, { t1: "doc-9" });
 });
