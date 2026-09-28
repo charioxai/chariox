@@ -67,14 +67,14 @@ impl KernelRuntimeState {
             let result = owned
                 .durable_state_store
                 .enqueue_app_tool(slot, &tool.tool_name, input, caller, budget)
-                .map_err(app_error);
+                .map_err(tool_call_error);
             drop(agents);
             result.map(|response| (response, expected, tool, remote))
         })
         .await
         .map_err(|_| unavailable())??;
         let (response, expected, tool, remote) = response;
-        let reply = response.receive().await.map_err(app_error)?;
+        let reply = response.receive().await.map_err(worker_call_error)?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let owned = self.owned.clone();
         let payload = tokio::task::spawn_blocking(move || {
@@ -85,7 +85,7 @@ impl KernelRuntimeState {
             let result = owned
                 .durable_state_store
                 .accept_app_tool_reply(reply)
-                .map_err(app_error);
+                .map_err(tool_call_error);
             drop(agents);
             result
         })

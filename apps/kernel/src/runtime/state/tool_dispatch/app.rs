@@ -178,3 +178,12 @@ fn app_error(error: impl std::fmt::Display) -> DaemonError {
         message: error.to_string(),
     }
 }
+/// A failed App tool call as `CODE: message`, the code a view would see.
+fn tool_call_error(error: crate::durable_state::app_tools::AppToolsError) -> DaemonError {
+    let (code, message) = crate::runtime::app_call_errors::tool_call_error(&error);
+    app_error(format!("{code}: {message}"))
+}
+fn worker_call_error(error: crate::runtime::app_worker::AppWorkerError) -> DaemonError {
+    let (code, message) = crate::runtime::app_call_errors::worker_call_error(&error);
+    app_error(format!("{code}: {message}"))
+}
