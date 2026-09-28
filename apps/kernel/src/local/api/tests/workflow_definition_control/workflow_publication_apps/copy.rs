@@ -256,9 +256,8 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
     // The copy's agent uses the copy, not the owner's installation.
     let agents = harness.runtime_state().fixture_session_agents(&session_id);
     assert_eq!(agents.len(), 1);
-    assert!(agents[0]
-        .workspace_id()
-        .is_none_or(|workspace| workspace == source.workspace_id()));
+    assert_eq!(agents[0].workspace_id(), Some(source.workspace_id()));
+    assert_eq!(agents[0].worktree_id(), Some(source.worktree_id()));
     assert!(agents[0].has_extension_grant(crate::extension::ExtensionKind::App, "copy"));
     assert!(!agents[0].has_extension_grant(crate::extension::ExtensionKind::App, "installed"));
 

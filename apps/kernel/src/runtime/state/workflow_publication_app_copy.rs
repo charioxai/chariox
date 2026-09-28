@@ -295,8 +295,15 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|installation| installation.deployment_id.as_deref() == Some(deployment_id))
         {
-            self.uninstall_deployment_copy(owner, &copy.installation_id)
-                .await?;
+            if let Err(error) = self
+                .uninstall_deployment_copy(owner, &copy.installation_id)
+                .await
+            {
+                // The owner's routes are back: a copy left for a later retry
+                // must not receive the same occurrences.
+                self.withdraw_copy_routes(owner, deployment_id).await?;
+                return Err(error);
+            }
         }
         self.remove_deployment_copy_sessions(owner, deployment_id, None)
             .await

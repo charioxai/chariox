@@ -452,6 +452,11 @@ fn preparing_deployment_apps_asks_once_and_records_the_answer() {
         failed(prepare("consent-1", publication.id(), "release-2").unwrap()),
         crate::local::AppRequestErrorCode::Conflict
     );
+    // One decision per deployment at a time: another release waits.
+    assert_eq!(
+        failed(prepare("consent-other", publication.id(), "release-2").unwrap()),
+        crate::local::AppRequestErrorCode::Busy
+    );
     answer(&declined.interaction_id, "decline");
     assert_eq!(settled("consent-1"), DeploymentAppsConsentStatus::Declined);
 

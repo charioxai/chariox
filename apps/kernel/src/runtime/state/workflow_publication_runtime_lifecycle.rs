@@ -1524,11 +1524,12 @@ async fn stop_retired_publication_runtime(
         .is_some()
     {
         stop_publication_runtime(runtime_state, process_key).await?;
-    } else if publication.status() == Some("stopped")
-        && publication
-            .deployment()
-            .and_then(|deployment| deployment.get("app_copy_session_id"))
-            .is_none()
+    } else if publication.deployment().is_none()
+        || (publication.status() == Some("stopped")
+            && publication
+                .deployment()
+                .and_then(|deployment| deployment.get("app_copy_session_id"))
+                .is_none())
     {
         return Ok(());
     }

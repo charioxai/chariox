@@ -260,10 +260,12 @@ impl KernelRuntimeState {
                 RuntimeInteractionChoice::new("decline", "Cancel", "decline", None),
             ],
         );
+        // One decision per deployment at a time: another release's consent
+        // still awaiting the owner is answered first.
         let answer = self
             .create_kernel_operation_interaction(&consent.session_id, &owner, interaction)
             .await
-            .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
+            .map_err(|_| AppRequestErrorCode::Busy)?;
         let store = self.owned.durable_state_store.clone();
         let (begin_owner, pending) = (owner.clone(), consent.clone());
         let recorded = tokio::task::spawn_blocking(move || {
