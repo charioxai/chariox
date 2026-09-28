@@ -74,12 +74,10 @@ impl KernelRuntimeState {
                 | Command::Navigate { .. }
                 | Command::ComputerInput { .. }
                 | Command::CancelDownload { .. }
-                | Command::ImportCookies { .. }
-                | Command::AppView {
-                    request:
-                        crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
-                            | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
-                }
+                | Command::ImportCookies { .. } | Command::AppView {
+                request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
+                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
+            }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
@@ -211,7 +209,9 @@ impl KernelRuntimeState {
                 }
             }
         };
-        let first = send(target.clone(), command.clone()).await;
+        let first = send(target.clone(), command.clone())
+            .await
+            .map_err(|error| room_slice_unreachable(&slice.name, error));
         let response = match first {
             Ok(response) => response,
             Err(first_error) if recovery.is_some() => {
@@ -796,6 +796,28 @@ async fn execute_local(
         }
         result => result.map_err(|message| controller_route_error(&message)),
     }
+}
+
+const ROOM_SLICE_UNREACHABLE: &str = "room_slice_unreachable";
+
+/// A Room's slice runs its own relay; when it cannot be reached the slice is
+/// stopped or gone, which the owner must fix by starting it.
+fn room_slice_unreachable(slice: &str, error: DaemonError) -> DaemonError {
+    match &error {
+        DaemonError::LocalTransport { operation, message }
+            if operation.starts_with("connect relay")
+                || operation == &"connect temporary relay peer socket" =>
+        {
+            controller_route_error(&format!(
+                "{ROOM_SLICE_UNREACHABLE}: the Room's slice `{slice}` is not reachable ({message}); start the slice and retry"
+            ))
+        }
+        _ => error,
+    }
+}
+
+pub(super) fn is_room_slice_unreachable(error: &DaemonError) -> bool {
+    matches!(error, DaemonError::LocalTransport { message, .. } if message.starts_with(ROOM_SLICE_UNREACHABLE))
 }
 
 pub(super) fn controller_route_error(message: &str) -> DaemonError {
