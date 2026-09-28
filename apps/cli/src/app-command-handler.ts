@@ -1,7 +1,7 @@
 import { open, readFile, rm, stat } from "node:fs/promises"
 import { basename } from "node:path"
 import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-client/ipc-requests"
-import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
+import { appCommandArgs, executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
@@ -132,7 +132,7 @@ export async function handleAppSlashCommand(
     }
     return
   }
-  const result = await executeAppCommand(command.args, { send: deps.sendAppRequest }, { sessionId: deps.currentAppSessionId?.() })
+  const result = await executeAppCommand(appCommandArgs(command.raw, command.args), { send: deps.sendAppRequest }, { sessionId: deps.currentAppSessionId?.() })
   if (!result.ok) {
     deps.flashFooter(result.message ?? "App command failed", "error")
     return

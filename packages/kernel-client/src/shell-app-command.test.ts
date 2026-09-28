@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { executeAppCommand } from "./shell-app-command.js"
+import { appCommandArgs, executeAppCommand } from "./shell-app-command.js"
 
 test("App list preserves large generations and pages without unbounded collection", async () => {
   const requests: Record<string, unknown>[] = []
@@ -167,4 +167,12 @@ test("app inbox configures routes and test occurrences through the shared reques
   }
   const refused = await executeAppCommand(["inbox", "list", "todo"], { send: async () => ({ AppRequestFailed: { code: "invalid_request" } }) })
   assert.match(refused.message!, /declares as incoming/)
+})
+
+test("an inbox test payload is taken from the raw line in every shell", () => {
+  const raw = '/app inbox test todo mail occ-1 {"title":"a  b", "note":"x"}'
+  assert.deepEqual(appCommandArgs(raw, ["inbox", "test", "todo", "mail", "occ-1", "{title:a", "b,"]), [
+    "inbox", "test", "todo", "mail", "occ-1", '{"title":"a  b", "note":"x"}',
+  ])
+  assert.deepEqual(appCommandArgs("/app list", ["list"]), ["list"])
 })

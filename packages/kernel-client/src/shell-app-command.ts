@@ -24,6 +24,13 @@ const usage = [
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
 ].join("\n")
 
+/** `/app` arguments with an `inbox test` payload taken from the raw line, so
+ * every shell passes the JSON exactly as typed, quotes and spaces included. */
+export function appCommandArgs(raw: string, args: readonly string[]): string[] {
+  const test = /^\/?app\s+inbox\s+test\s+(\S+)\s+(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(raw.trim())
+  return test ? ["inbox", "test", test[1]!, test[2]!, test[3]!, test[4]!.trim()] : [...args]
+}
+
 export async function executeAppCommand(
   args: string[],
   client: Client,
