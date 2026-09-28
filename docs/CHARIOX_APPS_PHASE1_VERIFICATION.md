@@ -50,8 +50,8 @@ The matrix rows are the ledger's 91 plus V-UX-11 (added 2026-09-27). The revised
 | Status | Matrix rows | Gates | Total |
 |---|---|---|---|
 | Verified | 2 (V1-INT-29, V-PKG-02) | 0 | 2 |
-| Implemented | 11 (V1-INT-10, V1-INT-11, V1-INT-19, V-PKG-03, V-PKG-04, V-PKG-07, V-PKG-08, V-RUN-03, V-RUN-04, V-UX-07, V-UX-10) | 0 | 11 |
-| Partial | 69 | 11 | 80 |
+| Implemented | 12 (V1-INT-10, V1-INT-11, V1-INT-19, V-PKG-03, V-PKG-04, V-PKG-07, V-PKG-08, V-RUN-03, V-RUN-04, V-UX-04, V-UX-07, V-UX-10) | 0 | 12 |
+| Partial | 68 | 11 | 79 |
 | Unverified | 0 | 1 (Evidence) | 1 |
 | Needs user | 3 (Kernel "Managed Chromium…", V1-INT-01, V1-INT-15) | 1 (Browser persistence) | 4 |
 | Phase 2 | 7 (2 terminal rows, V1-INT-12/27/28/30/31) | 0 | 7 |
@@ -63,7 +63,7 @@ By matrix:
 - Package: 3 Partial, 4 Implemented, 1 Verified.
 - Worker: 8 Partial, 2 Implemented.
 - SDK: 8 Partial.
-- UX: 9 Partial (including V-UX-03 and V-UX-11), 2 Implemented.
+- UX: 8 Partial (including V-UX-03 and V-UX-11), 3 Implemented.
 - Reference: 3 Partial.
 
 The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
@@ -125,13 +125,13 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
    - V-UX-02 screenshot matrix: 5 widths × 200 % zoom × light/dark × 3 Apps.
    - V-UX-03 automated audit: axe-core in the slice Chromium.
    - An App-origin attack page in real Chromium, covering WebRTC, workers, nested frames, downloads, loopback and metadata IP (V1-INT-14, V-UX-01), plus a DevTools capture.
-10. **Interactive TUI drills plus a command-parity snapshot (S–M).** Drive `/app install|update|dev|logs|file grant|file save|automation add|open` in the TUI (`tui-drive.py`) and snapshot the command catalog against the CLI (V-UX-04). Fills the local-TUI cells of most terminal rows.
+10. **Interactive TUI drills (S–M).** Drive `/app install|update|dev|logs|file grant|file save|automation add|open` in the TUI (`tui-drive.py`). Fills the local-TUI cells of most terminal rows. (The command-parity snapshot is #529.)
 11. **Uninstall/reinstall of all three reference Apps plus a four-client concurrency test (M).** The uninstall/reinstall part needs the delete-data option implemented first. Closes V-PKG-07 and V-PKG-08.
 12. **Rooms and kernels, offline use, many active Apps (M–L).** Covers V1-INT-19, the feasible part of kernel row 6, and V1-INT-22. Also recover the Room environment automatically after a slice restart: it can go failed with `browser_cdp_timeout` on Page.enable until a manual retry or stop/start.
 13. **Freeform closers (S–M):**
     - a connected-ingress deploy past the credentials step once a destination Claude account exists (V-UX-08, user step);
     - broken automation for a stopped deployment target (V-UX-09).
-14. **Unit-level closers (S):** an IPC frame fuzz/proptest (V-RUN-04), client rendering tests for manifest error codes (V-PKG-03), and a rerun of the package corpus and native probes on the candidate.
+14. **Candidate reruns (S):** the package corpus, the native probes and the `wire_decode` fuzz target on the release candidate. (The wire fuzzing, V-RUN-04, and the manifest error-code rendering tests, V-PKG-03, are done.)
 15. **Evidence gate (L).** Merge the stack, run hosted CI on the candidate, fix main's 122 baseline failures and follow up the 2 non-baseline ones (renamed environment-only test, load flake) (Apps triage done in #518), and republish dated evidence with revisions, digests and budgets under the plan's evidence path.
 
 **Needs user:**
@@ -265,7 +265,7 @@ The ledger uses the old numbering; the revised-plan ID is in brackets.
 | V-UX-01 App Tab and viewer isolation | Partial | Controller security tests (#436); renderer sandbox live (#483); viewer admission hardening (cloud #229, still in progress). | No DevTools capture from the Environment of an App Tab (CSP, origin, sandbox); no live cross-origin, stale-session or token-redaction checks. Next: CDP capture of App Tab security state plus a stale viewer token attempt. | M |
 | V-UX-02 Responsive App view | Partial | Screenshot matrix of all three Apps at desktop, tablet and phone widths (`ev:screens/responsive-*.png`); the Documents phone layout fixed (#491). Dark mode, 200 % zoom, reduced motion and long content for all three views (`v-ux-02-extra/`); the Todo phone long-title fix is in #515. | — (the Todo phone long-title fix lands with #515). | S |
 | V-UX-03 Accessibility | Partial [user step: VoiceOver on Slack and Documents views] | axe-core (wcag2a/aa, wcag21aa, best-practice) over each App's real view: 0 violations after #491 (`v-ux-03/`); accessibility outline with names and states (`ev:p1-07-accessibility/tab-4-outline.json`, #470). | Owner VoiceOver pass over the Todo view: controls announced correctly, add/complete by keyboard work; percentages on the native date field are browser behavior (kept) (`v-ux-03/`). Slack and Documents views not yet screen-read. | S |
-| V-UX-04 Local TUI commands | Partial | Shared `app` command for CLI and `/app`, with catalog tests (#435, #439, #442, #445, #446); TUI pty drills (`ev:p1-19-tui`, `ev:tui-guided-trigger/01-notification.txt`). Standalone `chariox app install|update … --session S` now match the TUI's (#501): a live standalone install followed the operation to completion (`v-ux-04/cli-install.out`). `/app` driven interactively in the local TUI: list, status, automation, inbox, connection, logs and usage (`v-ux-04/tui-app/`); the `inbox test` JSON-with-spaces fix (#514) takes JSON from the raw line in both the TUI and the shared (web) shell. | No command-parity snapshot. Next: snapshot `/app` help and catalog across CLI and TUI. | S |
+| V-UX-04 Local TUI commands | Implemented | Shared `app` command for CLI and `/app`, with catalog tests (#435, #439, #442, #445, #446); TUI pty drills (`ev:p1-19-tui`, `ev:tui-guided-trigger/01-notification.txt`). Standalone `chariox app install|update … --session S` now match the TUI's (#501): a live standalone install followed the operation to completion (`v-ux-04/cli-install.out`). `/app` driven interactively in the local TUI: list, status, automation, inbox, connection, logs and usage (`v-ux-04/tui-app/`); the `inbox test` JSON-with-spaces fix (#514) takes JSON from the raw line in both the TUI and the shared (web) shell. Command-parity snapshot (#529): one catalog drives the `chariox app` usage and the `/app` help; a test sends every shared verb from both surfaces and checks they make identical kernel requests; a snapshot lists every verb's CLI and TUI usage; a verb of the other surface names its command there (`v-ux-04/parity-help.txt`, `parity-test.txt`). | — | S |
 | V-UX-05 Remote TUI | Partial | Live remote TUI through the relay (`remote-tui/`): App list, status, worker, logs, inbox, connections, automations and set; opening a view from the remote TUI reuses the Room's one App Tab (`room-tabs-after-remote-open.txt`). | Approvals answered from a remote TUI not driven. | S |
 | V-UX-06 Agent App selector | Partial | Live (`v-ux-06/`): the web Extensions panel lists every installed App with its release; granting one to the focus agent is reflected in the kernel's session state and moves it under Granted with a revoke control (the panel first failed on provider-account credentials: fixed in chariox-cloud#235). Grant/revoke round trip (cloud #221); inspector keeps App bindings (tests). The agent's runtime tool catalog after the grant lists the five Todo tools (`v-ux-06/tool-catalog.md`); the workflow node shows the App extension. | The node labels the App by installation id rather than its name. | S |
 | V-UX-07 Freeform trigger | Implemented | Web actions menu: notification and schedule setups (`ev:p1-09-guided-trigger.json`, cloud #222/#232); TUI `/workflow from-agent … trigger notification` with origin `surface: tui` (#486, `ev:tui-guided-trigger/`). HTTP class live (`v-ux-07/`): actions menu → HTTP trigger made a one-node workflow with origin `{reason: trigger, surface: web, source_agent_id: agent-1}` and a GET/POST ingress; renamed from the Workflows list (fixed in cloud #236: the rename input was never rendered there); enabled on a local port, invoked over HTTP (202, run recorded under the new name); deleted. Deleting left the gateway serving 500s; fixed in #503 (the disabled publication's gateway is stopped and marked stopped, rerun in `v-ux-07/rerun-fixed-kernel/`). With the vault unlocked, a run invoked over the HTTP trigger completes (`v-ux-07/completed-run/`). | — | S |
