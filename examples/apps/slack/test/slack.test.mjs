@@ -172,16 +172,25 @@ test('a mention in a channel, also sent as a channel message, is one notificatio
   assert.ok(notifications.every(item => !('message' in item)));
 });
 
-test('a bot\'s message, such as this App\'s own reply, is kept but starts no run', async () => {
+test('this App\'s own replies and reactions are kept but start no run; other bots still do', async () => {
   const kernel = fakeKernel();
-  const reply = mention('deploy drill: reminder fired', 'C1', 'U9');
-  reply.source = { ...reply.source, event_type: 'message.channels' };
-  reply.metadata = { ...reply.metadata, event: { ...reply.metadata.event, type: 'message', bot_id: 'B9' } };
-  await kernel.deliver('channel_message', 'EvBot', reply);
+  const own = { api_app_id: 'A1', authorizations: [{ user_id: 'UBOT', is_bot: true }] };
+  const withEvent = (base, event) => ({ ...base, metadata: { ...base.metadata, ...own, event: { ...base.metadata.event, ...event } } });
+  const message = { ...mention('x'), source: { ...mention('').source, event_type: 'message.channels' } };
+  await kernel.deliver('channel_message', 'EvReply', withEvent(message, { type: 'message', text: 'reminder fired', user: 'UBOT', bot_id: 'B1', app_id: 'A1' }));
+  await kernel.deliver('reaction_added', 'EvReact', withEvent(mention(''), { type: 'reaction_added', reaction: 'eyes', user: 'UBOT', item: { channel: 'C1', ts: '7.1' } }));
+  const other = { ...mention('y'), source: message.source };
+  await kernel.deliver('channel_message', 'EvCi', withEvent(other, { type: 'message', text: 'build failed', user: 'UCI', bot_id: 'B2', app_id: 'A2' }));
+  const { notifications } = await kernel.tools.get('list_notifications')({});
+  assert.deepEqual(notifications.map(item => item.id), ['EvCi', 'EvReact', 'EvReply']);
+  assert.deepEqual(kernel.occurrences.map(value => value.payload.text), ['build failed']);
+});
+
+test('without the App\'s identity in the event, any bot message is kept but starts no run', async () => {
+  const kernel = fakeKernel();
   const legacy = mention('posted by an integration');
   legacy.metadata = { ...legacy.metadata, event: { ...legacy.metadata.event, type: 'message', subtype: 'bot_message' } };
   await kernel.deliver('channel_message', 'EvLegacy', legacy);
-  const { notifications } = await kernel.tools.get('list_notifications')({});
-  assert.deepEqual(notifications.map(item => item.id), ['EvLegacy', 'EvBot']);
+  assert.equal((await kernel.tools.get('list_notifications')({})).notifications.length, 1);
   assert.equal(kernel.occurrences.length, 0);
 });

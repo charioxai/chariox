@@ -100,6 +100,18 @@ export default function register(chariox) {
     };
   }
 
+  // Whether Slack says this App itself acted: its bot user (from the event's
+  // authorizations) or its app id. Without that identity, any bot counts.
+  function ownEvent(metadata) {
+    const event = metadata?.event ?? {};
+    const bots = (Array.isArray(metadata?.authorizations) ? metadata.authorizations : [])
+      .filter(value => value?.is_bot && value.user_id).map(value => value.user_id);
+    const app = metadata?.api_app_id;
+    if (!bots.length && !app) return Boolean(event.bot_id) || event.subtype === 'bot_message';
+    return bots.includes(event.user)
+      || (Boolean(app) && (event.app_id === app || event.bot_profile?.app_id === app));
+  }
+
   function occurrence(item) {
     const occurredAtMs = Number.isFinite(Date.parse(item.occurred_at)) ? Date.parse(item.occurred_at) : Date.now();
     const where = item.channel ? ` in <#${item.channel}>` : '';
@@ -136,12 +148,10 @@ export default function register(chariox) {
       items.unshift(item);
       return item;
     }, item => (forward && !item.merged ? { occurrences: [occurrence(item)] } : {}));
-    // A bot's message (this App's own replies included) is kept but starts no
-    // run: a reply posted by an automation must not trigger it again.
-    const event = payload.metadata?.event ?? {};
-    const fromBot = Boolean(event.bot_id) || event.subtype === 'bot_message';
+    // This App's own messages and reactions are kept but start no run: a
+    // reply or reaction posted by an automation must not trigger it again.
     try {
-      await accept(!fromBot);
+      await accept(!ownEvent(payload.metadata));
     } catch (error) {
       if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
       await accept(false);
