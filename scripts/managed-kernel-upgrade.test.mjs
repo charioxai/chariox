@@ -365,6 +365,7 @@ async function makeHarness(context, {
   receiptKind = "managed_environment",
   workerCapableCurrent = false,
   path1Release = false,
+  rotateBuilder = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -374,12 +375,15 @@ async function makeHarness(context, {
   const builderKeys = path1Release ? generateKeyPairSync("ed25519") : null
   const trustedBuilderKey = join(root, "trusted-builder-public-key")
   if (builderKeys) await put(trustedBuilderKey, rawPublicKey(builderKeys.publicKey).toString("base64"), 0o600)
+  const targetBuilderKeys = rotateBuilder ? generateKeyPairSync("ed25519") : builderKeys
+  const nextTrustedBuilderKey = join(root, "next-trusted-builder-public-key")
+  if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64"), 0o600)
   const current = await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
     path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys,
   )
   const target = await makeRelease(
-    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, builderKeys,
+    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys,
   )
   const installRoot = join(root, "host")
   if (path1Release) {
@@ -598,6 +602,11 @@ fi
 case "\${2:-}" in
   chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
 if [ "$1" = "start" ]; then
+  if [ -f "$HARNESS_STATE/check-builder-pin-on-start" ]; then
+    cmp -s "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/chariox/trusted-builder-public-key" \
+      "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/lib/chariox/builder-public-key" || exit 1
+    printf 'matched\n' >> "$HARNESS_STATE/builder-pin-starts"
+  fi
   if [ -f "$HARNESS_STATE/skip-presence-once" ]; then
     rm -f -- "$HARNESS_STATE/skip-presence-once"
   else
@@ -663,6 +672,15 @@ printf '%s\n' "$*" >> "$HARNESS_STATE/mountpoint.log"
 `, 0o755)
   await put(join(bin, "node"), `#!/bin/sh
 set -eu
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
+  && [ "\${2:-}" = "atomic-file" ] \\
+  && [ "\${4##*/}" = "trusted-builder-public-key" ] \\
+  && [ -f "$HARNESS_STATE/crash-after-builder-pin" ]; then
+  "${process.execPath}" "$@"
+  rm -f "$HARNESS_STATE/crash-after-builder-pin"
+  kill -KILL "$PPID"
+  exit 1
+fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "validate-receipt-match" ] \
   && [ -f "$HARNESS_STATE/fail-final-receipt-validation" ]; then
@@ -774,7 +792,7 @@ exec /usr/bin/stat "$@"
     spawnSync(upgrade, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
     root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
-    current, target, trustedKey, trustedBuilderKey, state, run,
+    current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, run,
   }
 }
 
@@ -1141,6 +1159,88 @@ test("legacy managed release rejects an unsigned extra worker service before sto
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /undeclared worker service/)
   assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
+for (const failHealth of [false, true]) test(`Path-1 builder rotation ${failHealth ? "restores the previous pin on rollback" : "activates the next independent pin"}`, async (context) => {
+  const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true })
+  const runtimePin = join(harness.installRoot, "etc/chariox/trusted-builder-public-key")
+  const previousPin = await readFile(harness.trustedBuilderKey, "utf8")
+  const nextPin = await readFile(harness.nextTrustedBuilderKey, "utf8")
+  await put(runtimePin, previousPin, 0o644)
+  await put(join(harness.state, "check-builder-pin-on-start"), "check\n")
+  if (failHealth) await put(join(harness.state, "fail-health-once"), "fail\n")
+  const result = harness.run({
+    CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
+    CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
+    CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY: harness.nextTrustedBuilderKey,
+  })
+  assert.equal(result.status, failHealth ? 1 : 0, result.stderr)
+  if (failHealth) assert.match(result.stderr, /health check failed; restored previous/)
+  assert.equal(await readFile(runtimePin, "utf8"), failHealth ? previousPin : nextPin)
+  assert.equal((await stat(runtimePin)).mode & 0o777, 0o644)
+  assert.equal((await readFile(join(harness.state, "builder-pin-starts"), "utf8")).trim().split("\n").length, failHealth ? 2 : 1)
+  const selected = failHealth ? harness.current : harness.target
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${selected.digest.slice(7)}`)
+})
+
+test("Path-1 builder rotation supports simultaneous release-signing key rotation", async (context) => {
+  const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true })
+  const keys = generateKeyPairSync("ed25519")
+  const nextReleasePin = join(harness.root, "next-release-pin")
+  const manifest = await readFile(join(harness.target.rootfs, "usr/lib/chariox/release-manifest.json"))
+  await put(join(harness.target.rootfs, "usr/lib/chariox/release-manifest.sig"), sign(null, manifest, keys.privateKey).toString("base64"))
+  await put(join(harness.target.rootfs, "usr/lib/chariox/release-public-key"), rawPublicKey(keys.publicKey).toString("base64"))
+  await put(nextReleasePin, rawPublicKey(keys.publicKey).toString("base64"), 0o600)
+  const runtimePin = join(harness.installRoot, "etc/chariox/trusted-builder-public-key")
+  await put(runtimePin, await readFile(harness.trustedBuilderKey), 0o644)
+  await put(join(harness.state, "check-builder-pin-on-start"), "check\n")
+  const result = harness.run({
+    CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
+    CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
+    CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY: harness.nextTrustedBuilderKey,
+  }, [harness.target.rootfs, harness.current.digest, harness.target.digest, harness.trustedKey, nextReleasePin])
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(await readFile(runtimePin, "utf8"), await readFile(harness.nextTrustedBuilderKey, "utf8"))
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${harness.target.digest.slice(7)}`)
+})
+
+test("Path-1 builder rotation recovers a crash after pin replacement before release activation", async (context) => {
+  const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true })
+  const runtimePin = join(harness.installRoot, "etc/chariox/trusted-builder-public-key")
+  await put(runtimePin, await readFile(harness.trustedBuilderKey), 0o644)
+  await put(join(harness.state, "check-builder-pin-on-start"), "check\n")
+  await put(join(harness.state, "crash-after-builder-pin"), "crash\n")
+  const env = {
+    CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
+    CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
+    CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY: harness.nextTrustedBuilderKey,
+  }
+  const crashed = harness.run(env)
+  assert.equal(crashed.signal, "SIGKILL", crashed.stderr)
+  assert.equal(await readFile(runtimePin, "utf8"), await readFile(harness.nextTrustedBuilderKey, "utf8"))
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${harness.current.digest.slice(7)}`)
+  const recovered = harness.run(env)
+  assert.equal(recovered.status, 0, recovered.stderr)
+  assert.equal(await readFile(runtimePin, "utf8"), await readFile(harness.nextTrustedBuilderKey, "utf8"))
+  assert.equal((await readFile(join(harness.state, "builder-pin-starts"), "utf8")).trim().split("\n").length, 2)
+  assert.equal(await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade")).then(() => true, () => false), false)
+})
+
+for (const wrongPin of ["current", "next"]) test(`Path-1 builder rotation rejects a wrong ${wrongPin} pin before stopping services`, async (context) => {
+  const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true })
+  const runtimePin = join(harness.installRoot, "etc/chariox/trusted-builder-public-key")
+  const previousPin = await readFile(harness.trustedBuilderKey, "utf8")
+  await put(runtimePin, previousPin, 0o644)
+  const result = harness.run({
+    CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
+    CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: wrongPin === "current" ? harness.nextTrustedBuilderKey : harness.trustedBuilderKey,
+    CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY: wrongPin === "next" ? harness.trustedBuilderKey : harness.nextTrustedBuilderKey,
+  })
+  assert.notEqual(result.status, 0)
+  const calls = await readFile(join(harness.state, "systemctl.log"), "utf8").catch(() => "")
+  assert.doesNotMatch(calls, /^stop /m)
+  assert.equal(await readFile(runtimePin, "utf8"), previousPin)
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${harness.current.digest.slice(7)}`)
 })
 
 test("managed kernel upgrade rotates the release trust key explicitly", async (context) => {

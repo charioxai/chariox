@@ -123,7 +123,7 @@ test("install names releases from the validated manifest digest", () => {
   assert.ok(installSource.includes('verify_selected_release "$image_root" "$expected_release_digest" "$trusted_public_key"'))
   assert.ok(installSource.includes('verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"'))
   assert.ok(installSource.includes('"$@" path1 "$trusted_builder_public_key"'))
-  assert.ok(upgradeSource.includes('"$@" path1 "$trusted_builder_public_key"'))
+  assert.ok(upgradeSource.includes('"$1" "$2" "$3" path1 "$selected_builder_public_key"'))
 })
 
 test("install and upgrade enforce immutable permissions after release signature verification", () => {
@@ -143,6 +143,28 @@ test("install and upgrade enforce immutable permissions after release signature 
     )
     assert.ok(signature < immutableTree, "permissions are checked after verifying the signed release")
   }
+})
+
+test("Path-1 upgrade selects independent builder pins for current and next releases", () => {
+  const start = indexOf(upgradeSource, "verify_selected_release() {", "selected release verifier")
+  const end = indexOf(upgradeSource, "\n}", "selected release verifier end", start)
+  const command = [
+    "set -eu",
+    "managed_provider_topology=path1",
+    "script_root=/stub",
+    "trusted_builder_public_key=/pins/current-builder",
+    // Exercise the actual shell argument construction, not a copy of its policy.
+    "node() { case \"$1\" in */verify-image-release.mjs) printf '%s\\n' \"$*\" ;; */managed-kernel-upgrade-state.mjs) return 0 ;; *) return 2 ;; esac; }",
+    upgradeSource.slice(start, end + 2),
+    "verify_selected_release /current sha256:current /pins/current-release /pins/current-builder",
+    "verify_selected_release /next sha256:next /pins/next-release /pins/next-builder",
+  ].join("\n")
+  const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", timeout: 5_000 })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(result.stdout.trim().split("\n"), [
+    "/stub/verify-image-release.mjs /current sha256:current /pins/current-release path1 /pins/current-builder",
+    "/stub/verify-image-release.mjs /next sha256:next /pins/next-release path1 /pins/next-builder",
+  ])
 })
 
 test("selected release verifier cannot mask a signature failure with a successful tree check", () => {

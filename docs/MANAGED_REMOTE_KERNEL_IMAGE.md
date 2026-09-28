@@ -82,8 +82,21 @@ the builder attestation at every Path-1 release activation. It also installs
 that public pin at `/etc/chariox/trusted-builder-public-key`,
 outside the signed release tree, and the Path-1 bootstrap service passes this
 path to the runtime for its own revalidation. A different existing pin is an
-error, not a rotation. The image preparation checks the installed pin before
-snapshotting; upgrades require the same external pin.
+error during image preparation, not an implicit rotation. For an explicitly
+authorized Path-1 upgrade across builder epochs, keep the current external pin
+in `CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY` and supply the next external pin through
+`CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY`. Omitting the latter preserves the
+current pin. Both inputs must be independently trusted, root-owned regular
+files outside the image. Release-signing key rotation still uses the optional
+fifth argument to `upgrade-image.sh`.
+
+The upgrade journals both public builder pins, switches the runtime pin while
+services are stopped, and restores the previous pin before rollback startup.
+Recovery checks the journal, installed pin and selected release before removing
+transaction evidence. Legacy Path-1 transactions without a builder-pin journal
+are refused as ambiguous; do not delete their journal or substitute a pin to
+force recovery. Retain their public history and resolve the interrupted old
+transaction with its matching reviewed tooling before attempting rotation.
 The packager
 verifies the detached builder signature, exact commit and tree IDs, target,
 and all three staged binary digests
