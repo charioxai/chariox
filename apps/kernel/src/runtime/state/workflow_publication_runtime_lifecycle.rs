@@ -1274,14 +1274,40 @@ async fn stop_publication_runtime(
 
 /// A deployment's binding (or its removal) survives a kernel restart, so
 /// recovery serves the deployment again.
+/// An App-bound deployment's copy session carries the same binding and is
+/// persisted with it.
 fn persist_publication_deployment(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
 ) -> Result<(), DaemonError> {
-    runtime_state
+    let session = runtime_state
         .owned
-        .persist_workflow_runtime_session(session_id, "workflow_publication_deployment")
-        .map(|_| ())
+        .persist_workflow_runtime_session(session_id, "workflow_publication_deployment")?;
+    let copies = session
+        .workflow_publications()
+        .iter()
+        .filter_map(|publication| {
+            publication
+                .deployment()?
+                .get("app_copy_session_id")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    for copy in copies {
+        if runtime_state
+            .owned
+            .session_store
+            .read()
+            .get_session(&copy)
+            .is_ok()
+        {
+            runtime_state
+                .owned
+                .persist_workflow_runtime_session(&copy, "workflow_publication_deployment")?;
+        }
+    }
+    Ok(())
 }
 
 fn mark_publication_runtime_status(
