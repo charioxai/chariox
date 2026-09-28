@@ -24,6 +24,22 @@ pub(crate) fn tool_call_error(error: &AppToolsError) -> (String, String) {
     }
 }
 
+/// Every live call slot is taken.
+pub(crate) fn busy_error(error: &impl std::fmt::Display) -> (String, String) {
+    ("APP_BUSY".into(), error.to_string())
+}
+
+/// The input breaks the tool's declared input schema; the App never ran.
+pub(crate) fn input_error(error: &impl std::fmt::Display) -> (String, String) {
+    ("INVALID_INPUT".into(), error.to_string())
+}
+
+/// The call could not be sent to the App. No App answer exists yet, so even
+/// a deadline here is the kernel's (an unusable deadline), not a slow App.
+pub(crate) fn enqueue_error(error: &AppToolsError) -> (String, String) {
+    ("APP_ERROR".into(), error.to_string())
+}
+
 pub(crate) fn worker_call_error(error: &AppWorkerError) -> (String, String) {
     match error {
         AppWorkerError::Deadline => owned(DEADLINE),
