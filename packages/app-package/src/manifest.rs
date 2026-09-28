@@ -29,8 +29,6 @@ pub struct Manifest {
     pub events: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actions: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub information_sets: Option<String>,
     #[serde(default)]
     pub capabilities: Capabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -193,7 +191,6 @@ impl Manifest {
             &self.tools,
             &self.events,
             &self.actions,
-            &self.information_sets,
         ]
         .into_iter()
         .flatten()
@@ -282,7 +279,6 @@ impl Manifest {
                 &self.tools,
                 &self.events,
                 &self.actions,
-                &self.information_sets,
             ]
             .into_iter()
             .flatten()
