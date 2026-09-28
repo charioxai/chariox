@@ -210,3 +210,55 @@ fn reads_follow_neither_symlinks_nor_hard_links_and_stay_bounded() {
         assert!(f.data().read_file(path, 64).is_err(), "{path:?}");
     }
 }
+
+#[test]
+fn raw_app_writes_racing_an_sdk_replacement_never_tear_it() {
+    // V1-INT-04: the App writes the same file with node:fs while the SDK
+    // replaces it. Raw writes keep ordinary semantics, but no reader sees both
+    // writers' bytes in one file, the replacement always publishes, and the
+    // file ends as one writer's complete contents with no staging left behind.
+    const LEN: usize = 256 * 1024;
+    const ROUNDS: usize = 200;
+    let f = Fixture::new();
+    let path = f.path.join("doc");
+    fs::write(&path, vec![b'a'; LEN]).unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let writer = std::thread::spawn({
+        let (path, done) = (path.clone(), done.clone());
+        move || {
+            while !done.load(Ordering::SeqCst) {
+                fs::write(&path, vec![b'a'; LEN]).unwrap();
+            }
+        }
+    });
+    let reader = std::thread::spawn({
+        let (path, done) = (path.clone(), done.clone());
+        move || {
+            let mut reads = 0;
+            while !done.load(Ordering::SeqCst) {
+                let bytes = fs::read(&path).unwrap();
+                assert!(bytes.len() <= LEN);
+                assert!(
+                    bytes.iter().all(|b| *b == b'a') || bytes.iter().all(|b| *b == b'b'),
+                    "a read saw both writers' bytes"
+                );
+                reads += 1;
+            }
+            reads
+        }
+    });
+    for _ in 0..ROUNDS {
+        f.data()
+            .prepare_replace("doc", &vec![b'b'; LEN])
+            .unwrap()
+            .publish()
+            .unwrap();
+    }
+    done.store(true, Ordering::SeqCst);
+    writer.join().unwrap();
+    assert!(reader.join().unwrap() > 0);
+    let last = fs::read(&path).unwrap();
+    assert_eq!(last.len(), LEN);
+    assert!(last.iter().all(|b| *b == b'a') || last.iter().all(|b| *b == b'b'));
+    assert_eq!(fs::read_dir(&f.path).unwrap().count(), 1);
+}
