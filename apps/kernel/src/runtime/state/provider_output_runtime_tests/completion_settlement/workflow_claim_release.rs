@@ -45,7 +45,8 @@ async fn exercise_archived_claim_release(reconcile_orphan: bool) {
     );
     provider_run.mark_running();
     spawn_inert_pty_for_run(&mut app, provider_run.id());
-    app.providers_mut().insert_run_for_test(provider_run.clone());
+    app.providers_mut()
+        .insert_run_for_test(provider_run.clone());
     app.sessions
         .set_active_provider_run(session.id(), Some(provider_run.id().to_string()))
         .expect("active provider run should be set");
@@ -260,22 +261,41 @@ async fn exercise_archived_claim_release(reconcile_orphan: bool) {
 
     if reconcile_orphan {
         runtime.owned.workflow_retry_blocked_claims();
-        assert!(runtime.owned.prompt_workspace_claims.contains(&claim_id),
-            "archived completion must not release an active provider prompt's claim");
-        let current = runtime.owned.session_store.get_session(session.id()).unwrap();
-        runtime.owned.prompt_state_owner.complete_active_prompt_only(&current, &holder)
+        assert!(
+            runtime.owned.prompt_workspace_claims.contains(&claim_id),
+            "archived completion must not release an active provider prompt's claim"
+        );
+        let current = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .complete_active_prompt_only(&current, &holder)
             .expect("test must finish the actual authoritative prompt owner");
         runtime.owned.workflow_retry_blocked_claims();
-        assert!(runtime.owned.prompt_workspace_claims.contains(&claim_id),
-            "a remaining provider turn must retain its claim even without a prompt mirror");
-        runtime.owned.active_turns.clear_agent(session.id(), &holder);
+        assert!(
+            runtime.owned.prompt_workspace_claims.contains(&claim_id),
+            "a remaining provider turn must retain its claim even without a prompt mirror"
+        );
+        runtime
+            .owned
+            .active_turns
+            .clear_agent(session.id(), &holder);
         runtime.owned.workflow_retry_blocked_claims();
+        assert_eq!(
+            runtime.owned.reconcile_completed_workflow_write_claims(),
+            0,
+            "reconciliation must be idempotent and must preserve the successor's new claim"
+        );
     } else {
-    let settlement = runtime
-        .settle_owned_provider_prompt(session.id(), provider_run.id(), true, false, false)
-        .await
-        .expect("provider completion should settle the archived validated workflow");
-    assert!(settlement.had_active_prompt);
+        let settlement = runtime
+            .settle_owned_provider_prompt(session.id(), provider_run.id(), true, false, false)
+            .await
+            .expect("provider completion should settle the archived validated workflow");
+        assert!(settlement.had_active_prompt);
     }
     assert!(
         !runtime.owned.prompt_workspace_claims.contains(&claim_id),

@@ -13,6 +13,7 @@ struct BlockedWorkflowClaimRetry {
 
 impl KernelRuntimeOwnedState {
     pub(super) fn workflow_retry_blocked_claims(&self) -> WorkflowPromptDispatches {
+        self.reconcile_completed_workflow_write_claims();
         let mut dispatches = WorkflowPromptDispatches::default();
         for retry in self.collect_blocked_workflow_claim_retries() {
             if let Some(prepared) = self.retry_blocked_workflow_claim(retry) {
