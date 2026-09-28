@@ -21,6 +21,7 @@ managed_home=$install_root/home/chariox
 managed_state=$managed_home/.chariox
 legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$script_root/managed-kernel-builder-pin-transaction.sh"
 managed_provider_topology=${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}
 case "$managed_provider_topology" in
   path1|shared_host) ;;
@@ -158,12 +159,13 @@ assert_path1_units_have_no_dropins() {
 }
 
 verify_selected_release() {
+  selected_builder_public_key=${4:-${trusted_builder_public_key:-}}
   if [ "$managed_provider_topology" = path1 ]; then
-    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key" || return 1
+    node "$script_root/verify-image-release.mjs" "$1" "$2" "$3" path1 "$selected_builder_public_key" || return 1
   elif [ "$service_name" = chariox-disposable-worker-bootstrap.service ]; then
-    node "$script_root/verify-image-release.mjs" "$@" || return 1
+    node "$script_root/verify-image-release.mjs" "$1" "$2" "$3" || return 1
   else
-    node "$script_root/verify-image-release.mjs" "$@" "$managed_provider_topology" || return 1
+    node "$script_root/verify-image-release.mjs" "$1" "$2" "$3" "$managed_provider_topology" || return 1
   fi
   node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0
 }
@@ -514,6 +516,7 @@ rollback_transaction() {
     return 0
   fi
   rolling_back=1
+  validate_builder_pin_journal "$transaction_root" || return 1
   previous_target=$(read_single_line "$transaction_root/previous-current") || return 1
   previous_digest=$(read_single_line "$transaction_root/previous-digest") || return 1
   previous_slice_build_context=$(read_single_line "$transaction_root/previous-slice-build-context") || return 1
@@ -550,6 +553,7 @@ rollback_transaction() {
     echo "managed kernel rollback could not stop the kernel or Path-1 storage services" >&2
     return 1
   fi
+  activate_builder_pin "$transaction_root" previous || return 1
   resume_home_migration || return 1
   atomic_receipt "$transaction_root/previous-receipt.json" || return 1
   previous_override_present=$(read_single_line "$transaction_root/previous-release-override-present") || return 1
@@ -562,6 +566,7 @@ rollback_transaction() {
   sync_path1_data_volume_unit_links || return 1
   atomic_symlink "$previous_slice_build_context" "$slice_build_context_link" || return 1
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
+  validate_active_builder_pin "$transaction_root" previous "$previous_target" || return 1
   systemctl daemon-reload || return 1
   assert_path1_units_have_no_dropins || return 1
   start_path1_runtime_services || return 1
@@ -613,6 +618,10 @@ recover_terminal_transaction() {
   [ "$(readlink "$current_link")" = "$terminal_current" ] || return 1
   [ "$(readlink "$slice_build_context_link")" = "$terminal_slice_build_context" ] || return 1
   verify_slice_build_context_facade "$terminal_slice_build_context" || return 1
+  case "$terminal_phase" in
+    committed) validate_active_builder_pin "$terminal_transaction" target "$terminal_current" || return 1 ;;
+    rolled_back) validate_active_builder_pin "$terminal_transaction" previous "$terminal_current" || return 1 ;;
+  esac
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
     "$receipt_path" "$terminal_receipt" "$terminal_digest" \
     "$release_override_path" "$terminal_override" || return 1
@@ -638,6 +647,7 @@ recover_transaction() {
     target_slice_build_context=$(read_single_line "$transaction_root/target-slice-build-context") || return 1
     [ "$target_slice_build_context" = "$signed_slice_build_context_target" ] || return 1
     verify_signed_slice_build_context_facade || return 1
+    validate_active_builder_pin "$transaction_root" target "$target_current" || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
       "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest" \
       "$release_override_path" "$transaction_root/target-release-override.json"
@@ -652,6 +662,7 @@ recover_transaction() {
     [ "$(readlink "$current_link")" = "$previous_current" ] || return 1
     previous_slice_build_context=$(read_single_line "$transaction_root/previous-slice-build-context") || return 1
     verify_slice_build_context_facade "$previous_slice_build_context" || return 1
+    validate_active_builder_pin "$transaction_root" previous "$previous_current" || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
       "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" \
       "$release_override_path" "$transaction_root/previous-release-override.json" || return 1
@@ -690,6 +701,8 @@ if [ "$expected_current_digest" = "$expected_new_digest" ]; then
 fi
 if [ "$managed_provider_topology" = path1 ]; then
   trusted_builder_public_key=${CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:-}
+  next_trusted_builder_public_key=${CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY:-$trusted_builder_public_key}
+  trusted_builder_runtime_key=$install_root/etc/chariox/trusted-builder-public-key
   if [ -z "$trusted_builder_public_key" ]; then
     echo "Path-1 upgrade requires CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY outside the image" >&2
     exit 1
@@ -700,16 +713,18 @@ if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
   exit 1
 fi
 if [ "$managed_provider_topology" = path1 ]; then
-  require_root_owned_private_regular_file "$trusted_builder_public_key" "trusted builder public key"
-  require_root_owned_ancestor_chain "$trusted_builder_public_key" "trusted builder public key"
   image_canonical=$(realpath "$image_root")
-  builder_key_canonical=$(realpath "$trusted_builder_public_key")
-  case "$builder_key_canonical" in
-    "$image_canonical"|"$image_canonical"/*)
-      echo "trusted builder public key must be supplied outside the image" >&2
-      exit 1
-      ;;
-  esac
+  for builder_input in "$trusted_builder_public_key" "$next_trusted_builder_public_key"; do
+    require_root_owned_private_regular_file "$builder_input" "trusted builder public key"
+    require_root_owned_ancestor_chain "$builder_input" "trusted builder public key"
+    builder_key_canonical=$(realpath "$builder_input")
+    case "$builder_key_canonical" in
+      "$image_canonical"|"$image_canonical"/*)
+        echo "trusted builder public key must be supplied outside the image" >&2
+        exit 1
+        ;;
+    esac
+  done
 fi
 require_root_owned_private_regular_file "$trusted_public_key" "trusted release public key"
 require_root_owned_ancestor_chain "$trusted_public_key" "trusted release public key"
@@ -721,7 +736,9 @@ cp "$trusted_public_key" "$staging_root/trusted-public-key"
 cp "$next_trusted_public_key" "$staging_root/next-trusted-public-key"
 if [ "$managed_provider_topology" = path1 ]; then
   cp "$trusted_builder_public_key" "$staging_root/trusted-builder-public-key"
+  cp "$next_trusted_builder_public_key" "$staging_root/next-trusted-builder-public-key"
   trusted_builder_public_key=$staging_root/trusted-builder-public-key
+  next_trusted_builder_public_key=$staging_root/next-trusted-builder-public-key
 fi
 image_root=$staging_root/image
 trusted_public_key=$staging_root/trusted-public-key
@@ -768,7 +785,7 @@ node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
 require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
 verify_selected_release \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
-verify_selected_release "$image_root" "$expected_new_digest" "$next_trusted_public_key"
+verify_selected_release "$image_root" "$expected_new_digest" "$next_trusted_public_key" "${next_trusted_builder_public_key:-}"
 if [ "$managed_provider_topology" = path1 ]; then
   trusted_builder_runtime_key=$install_root/etc/chariox/trusted-builder-public-key
   require_root_owned_directory "$install_root/etc"
@@ -799,7 +816,7 @@ published_release=$releases_root/$release_name
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
   require_directory "$published_release"
   require_root_owned_directory "$published_release"
-  verify_selected_release "$published_release" "$expected_new_digest" "$next_trusted_public_key"
+  verify_selected_release "$published_release" "$expected_new_digest" "$next_trusted_public_key" "${next_trusted_builder_public_key:-}"
 else
   pending_release=$(mktemp -d "$releases_root/.new-$release_name.XXXXXX")
   chmod 0755 "$pending_release"
@@ -831,7 +848,7 @@ else
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$worker_unit" "$pending_release/etc/systemd/system/$worker_unit"
   fi
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
-  verify_selected_release "$pending_release" "$expected_new_digest" "$next_trusted_public_key"
+  verify_selected_release "$pending_release" "$expected_new_digest" "$next_trusted_public_key" "${next_trusted_builder_public_key:-}"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"
@@ -847,6 +864,7 @@ if [ -e "$pending_transaction" ] || [ -L "$pending_transaction" ]; then
   rm -rf -- "$pending_transaction"
 fi
 install -d -o root -g root -m 0700 "$pending_transaction"
+journal_builder_pins "$pending_transaction"
 cp -P "$receipt_path" "$pending_transaction/previous-receipt.json"
 chmod 0600 "$pending_transaction/previous-receipt.json"
 if [ -e "$release_override_path" ] || [ -L "$release_override_path" ]; then
@@ -887,6 +905,11 @@ if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   exit 1
 fi
 write_phase stopped
+if ! activate_builder_pin "$transaction_root" target; then
+  rollback_transaction || true
+  echo "managed builder pin activation failed" >&2
+  exit 1
+fi
 if ! resume_home_migration; then
   if rollback_transaction; then
     echo "managed kernel home migration failed; restored previous managed kernel release" >&2
@@ -946,6 +969,7 @@ fi
 if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
   "$receipt_path" "$transaction_root/target-receipt.json" "$expected_new_digest" \
   "$release_override_path" "$transaction_root/target-release-override.json" \
+  || ! validate_active_builder_pin "$transaction_root" target "releases/$release_name" \
   || ! write_phase committed; then
   if rollback_transaction; then
     echo "managed kernel final receipt validation failed; restored previous managed kernel release" >&2
