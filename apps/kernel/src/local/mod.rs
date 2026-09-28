@@ -146,6 +146,7 @@ pub use api::{
     RegisterConnectorRequest, RegisterCredentialRequest, RegisterEnvironmentRequest,
     RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest, RelayStatus,
     RelayStatusRequest, ReleaseRoomEnvironmentInputRequest, RemoteMachineRecord,
+    RUNTIME_CONTROL_CAPABILITIES,
     RemoteMachineTrustStatus, RemoveConnectorAdapterRequest, RemoveConnectorRequest,
     RemoveCredentialRequest, RemoveEnvironmentRequest, RemoveEventConnectionRequest,
     RemoveQueuedWorkflowPromptRequest, RemoveScriptRequest, RemoveSliceProviderAuthRequest,
