@@ -5,6 +5,21 @@ mod registration;
 #[cfg(test)]
 mod regression_tests;
 
+/// Refusals that clear once the pending decision is answered.
+pub(crate) const INTERACTION_ALREADY_PENDING: &str =
+    "Interaction subject or identity is already pending";
+pub(crate) const KERNEL_DECISION_LIMIT: &str = "Kernel decision limit reached";
+
+/// Whether registering an interaction was refused only until a pending one is
+/// answered.
+pub(crate) fn interaction_waits(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport { operation: "runtime interaction", message }
+            if message == INTERACTION_ALREADY_PENDING || message == KERNEL_DECISION_LIMIT
+    )
+}
+
 fn interaction_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime interaction",

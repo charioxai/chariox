@@ -301,7 +301,16 @@ impl KernelRuntimeState {
             {
                 // The owner's routes are back: a copy left for a later retry
                 // must not receive the same occurrences.
-                self.withdraw_copy_routes(owner, deployment_id).await?;
+                if let Err(withdrawal) = self.withdraw_copy_routes(owner, deployment_id).await {
+                    crate::logging::warn_with_fields(
+                        "daemon.publication_runtime",
+                        "failed to withdraw the routes of a copy that could not be removed",
+                        serde_json::json!({
+                            "deployment_id": deployment_id,
+                            "error": withdrawal.to_string(),
+                        }),
+                    );
+                }
                 return Err(error);
             }
         }

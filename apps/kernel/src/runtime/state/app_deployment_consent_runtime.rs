@@ -265,7 +265,17 @@ impl KernelRuntimeState {
         let answer = self
             .create_kernel_operation_interaction(&consent.session_id, &owner, interaction)
             .await
-            .map_err(|_| AppRequestErrorCode::Busy)?;
+            .map_err(|error| {
+                if super::runtime_interaction_owned_state::interaction_waits(&error) {
+                    return AppRequestErrorCode::Busy;
+                }
+                crate::logging::warn_with_fields(
+                    "daemon.app_deployment_consent",
+                    "the deployment consent prompt could not be raised",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+                AppRequestErrorCode::StorageUnavailable
+            })?;
         let store = self.owned.durable_state_store.clone();
         let (begin_owner, pending) = (owner.clone(), consent.clone());
         let recorded = tokio::task::spawn_blocking(move || {

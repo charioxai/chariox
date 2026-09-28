@@ -62,7 +62,7 @@ impl KernelRuntimeOwnedState {
                         .count()
                         >= 8
                 {
-                    return Err(interaction_error("Kernel decision limit reached"));
+                    return Err(interaction_error(super::KERNEL_DECISION_LIMIT));
                 }
             }
             _ => {
@@ -80,9 +80,7 @@ impl KernelRuntimeOwnedState {
                 .write()
                 .contains_key(interaction.id())
         {
-            return Err(interaction_error(
-                "Interaction subject or identity is already pending",
-            ));
+            return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
         session.add_active_interaction(interaction.clone());
         let pending = super::super::PendingInteraction {
