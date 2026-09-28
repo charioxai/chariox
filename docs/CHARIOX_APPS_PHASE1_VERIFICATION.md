@@ -18,7 +18,7 @@ Evidence paths are under the evidence folder `chariox-apps-phase1/` (outside the
 - **V-PKG-04 (interrupted installation).** kill -9 at preparing, approval and starting of a fresh install: each recovers after restart (re-prepared; prompt re-armed with the old id refused; committed). Two defects found and fixed: uploads held owner slots until expiry (#489), and installing a release that another installation runs hung in preparing (#490). Open: an approved install waiting for a worker slot (LIVE_LIMIT 4) still reports "awaiting approval" (`v-pkg-04/`).
 - **V-PKG-08 retain-data and reinstall.** Uninstall kept App data but nothing could reach it again: a reinstall always created a new, empty installation, and an update of the uninstalled one was refused. Now uninstall keeps the release the data belongs to, disables the App's automations and removes its inbox routes and connection grants; an update of the uninstalled installation is a reinstall into its data (same publisher, no schema downgrade, always a new "Reinstall App" approval, nothing restored). Delete-data (protocol 363) is live on macOS in the integrated build (this protocol change, the macOS worker's storage deletion #496 and the kernel wiring that calls it); on Linux, App storage is root-owned and the storage helper deletes it through a new operation, which passed the storage fixture on a throwaway Linux VM.
 - **V1-INT-06 (event crash windows).** kill -9 between a Todo reminder's outbox commit and its workflow handoff: after restart exactly one workflow run for the occurrence. kill -9 with an inbox occurrence accepted but undelivered: delivered once after restart, one Todo, a replay is a duplicate (`v1-int-06/`).
-- **V-UX-03 (automated part).** axe-core on the three reference views: contrast, landmark and a hidden-editor defect fixed; 0 violations after (#491, `v-ux-03/`). The owner's VoiceOver pass over the Todo view found no problem (`v-ux-03/`); the Slack and Documents views were not screen-read yet.
+- **V-UX-03 (automated part).** axe-core on the three reference views: contrast, landmark and a hidden-editor defect fixed; 0 violations after (#491, `v-ux-03/`). The owner's VoiceOver passes over the Todo view (`v-ux-03/`) and the Slack and Documents views (`voiceover-owner/`) found no problem.
 - **V1-INT-18 (one installation in two Rooms).** Todo open in two Rooms (separate slices and Chromium): a view setting in one Room does not reach the other, and a Todo added from Room 2 appears in Room 1 (`v1-int-18/`). Two kernels on one machine: independent installations, grants and data, each refusing the other's installation id. The first kernel-2 install failed on App storage capacity because uninstalled test installations kept their storage images: the delete-data choice (V-PKG-08) matters for disk as well as privacy.
 - **P1.15 / V1-INT-10/11 (critical-action validation).** Live with a fixture App: trusted approval with exact parameters, answered in the web terminal and in the TUI; single use (POST 200, replay refused); changed parameters and undecided operations refused; denial recorded (`p1-15-critical/`). The TUI panel answers only by mouse today: under Bun the TUI loads Solid's server build, so `useKeyboard` never registers (F8 and the panel keys) and the indicator doesn't refresh live. Tracked separately.
 - **Ledger corrections.** P1.11 is Partial until the reply-surface decision is made and the agent-reply, fan-out and disconnect drills have run.
@@ -50,8 +50,8 @@ The matrix rows are the ledger's 91 plus V-UX-11 (added 2026-09-27). The revised
 | Status | Matrix rows | Gates | Total |
 |---|---|---|---|
 | Verified | 2 (V1-INT-29, V-PKG-02) | 0 | 2 |
-| Implemented | 12 (V1-INT-10, V1-INT-11, V1-INT-19, V-PKG-03, V-PKG-04, V-PKG-07, V-PKG-08, V-RUN-03, V-RUN-04, V-UX-04, V-UX-07, V-UX-10) | 0 | 12 |
-| Partial | 68 | 11 | 79 |
+| Implemented | 13 (V1-INT-10, V1-INT-11, V1-INT-19, V-PKG-03, V-PKG-04, V-PKG-07, V-PKG-08, V-RUN-03, V-RUN-04, V-UX-03, V-UX-04, V-UX-07, V-UX-10) | 0 | 13 |
+| Partial | 67 | 11 | 78 |
 | Unverified | 0 | 1 (Evidence) | 1 |
 | Needs user | 3 (Kernel "Managed Chromium…", V1-INT-01, V1-INT-15) | 1 (Browser persistence) | 4 |
 | Phase 2 | 7 (2 terminal rows, V1-INT-12/27/28/30/31) | 0 | 7 |
@@ -63,7 +63,7 @@ By matrix:
 - Package: 3 Partial, 4 Implemented, 1 Verified.
 - Worker: 8 Partial, 2 Implemented.
 - SDK: 8 Partial.
-- UX: 8 Partial (including V-UX-03 and V-UX-11), 3 Implemented.
+- UX: 7 Partial (including V-UX-11), 4 Implemented.
 - Reference: 3 Partial.
 
 The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
@@ -136,7 +136,7 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
 
 **Needs user:**
 - Real Google session persistence (V1-INT-01, Chromium kernel row, Browser persistence gate).
-- VoiceOver passes beyond the Todo view (terminal accessibility row, V1-INT-15, V1-INT-26, Client gate; V-UX-03 done for Todo).
+- VoiceOver passes over the terminal and web surfaces (terminal accessibility row, V1-INT-15, V1-INT-26, Client gate; the three App views are done, V-UX-03).
 - macOS Developer ID signing and notarization (Installer kernel row, V1-INT-21, Architecture/Isolation gates).
 - Machine sleep/reboot and a hard power loss (kernel row 6, V-RUN-06, V1-INT-18, Lifecycle gate).
 - Sudo runtime re-enrollment after any SDK/bootstrap change.
@@ -264,7 +264,7 @@ The ledger uses the old numbering; the revised-plan ID is in brackets.
 |---|---|---|---|---|
 | V-UX-01 App Tab and viewer isolation | Partial | Controller security tests (#436); renderer sandbox live (#483); viewer admission hardening (cloud #229, still in progress). | No DevTools capture from the Environment of an App Tab (CSP, origin, sandbox); no live cross-origin, stale-session or token-redaction checks. Next: CDP capture of App Tab security state plus a stale viewer token attempt. | M |
 | V-UX-02 Responsive App view | Partial | Screenshot matrix of all three Apps at desktop, tablet and phone widths (`ev:screens/responsive-*.png`); the Documents phone layout fixed (#491). Dark mode, 200 % zoom, reduced motion and long content for all three views (`v-ux-02-extra/`); the Todo phone long-title fix is in #515. | — (the Todo phone long-title fix lands with #515). | S |
-| V-UX-03 Accessibility | Partial [user step: VoiceOver on Slack and Documents views] | axe-core (wcag2a/aa, wcag21aa, best-practice) over each App's real view: 0 violations after #491 (`v-ux-03/`); accessibility outline with names and states (`ev:p1-07-accessibility/tab-4-outline.json`, #470). | Owner VoiceOver pass over the Todo view: controls announced correctly, add/complete by keyboard work; percentages on the native date field are browser behavior (kept) (`v-ux-03/`). Slack and Documents views not yet screen-read. | S |
+| V-UX-03 Accessibility | Implemented | axe-core (wcag2a/aa, wcag21aa, best-practice) over each App's real view: 0 violations after #491 (`v-ux-03/`); accessibility outline with names and states (`ev:p1-07-accessibility/tab-4-outline.json`, #470).  Owner VoiceOver pass over the Todo view: controls announced correctly, add/complete by keyboard work; percentages on the native date field are browser behavior (kept) (`v-ux-03/`). Owner VoiceOver pass (Safari) over the Slack and Documents views: names, reading order and reachable controls OK, nothing mislabeled (`voiceover-owner/`). | — | S |
 | V-UX-04 Local TUI commands | Implemented | Shared `app` command for CLI and `/app`, with catalog tests (#435, #439, #442, #445, #446); TUI pty drills (`ev:p1-19-tui`, `ev:tui-guided-trigger/01-notification.txt`). Standalone `chariox app install|update … --session S` now match the TUI's (#501): a live standalone install followed the operation to completion (`v-ux-04/cli-install.out`). `/app` driven interactively in the local TUI: list, status, automation, inbox, connection, logs and usage (`v-ux-04/tui-app/`); the `inbox test` JSON-with-spaces fix (#514) takes JSON from the raw line in both the TUI and the shared (web) shell. Command-parity snapshot (#529): one catalog drives the `chariox app` usage and the `/app` help; a test sends every shared verb from both surfaces and checks they make identical kernel requests; a snapshot lists every verb's CLI and TUI usage; a verb of the other surface names its command there (`v-ux-04/parity-help.txt`, `parity-test.txt`). | — | S |
 | V-UX-05 Remote TUI | Partial | Live remote TUI through the relay (`remote-tui/`): App list, status, worker, logs, inbox, connections, automations and set; opening a view from the remote TUI reuses the Room's one App Tab (`room-tabs-after-remote-open.txt`). | Approvals answered from a remote TUI not driven. | S |
 | V-UX-06 Agent App selector | Partial | Live (`v-ux-06/`): the web Extensions panel lists every installed App with its release; granting one to the focus agent is reflected in the kernel's session state and moves it under Granted with a revoke control (the panel first failed on provider-account credentials: fixed in chariox-cloud#235). Grant/revoke round trip (cloud #221); inspector keeps App bindings (tests). The agent's runtime tool catalog after the grant lists the five Todo tools (`v-ux-06/tool-catalog.md`); the workflow node shows the App extension. | The node labels the App by installation id rather than its name. | S |
