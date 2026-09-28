@@ -290,18 +290,22 @@ impl KernelRuntimeOwnedState {
             caller_user_id,
             crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS,
             Some("default".to_string()),
+            None,
         )
     }
 
     /// Materializes a publication of `kind` with `queue_ref`. A hosted runtime
     /// serves ingress; a deployment copy (P1.20) keeps its source's kind, so an
-    /// App-event trigger stays event-based.
+    /// App-event trigger stays event-based. `location` (workspace, worktree)
+    /// places the session and its agents instead of the snapshot's portable
+    /// workspace.
     pub(super) fn workflow_materialize_publication_as(
         &self,
         request: crate::local::MaterializeWorkflowPublicationRequest,
         caller_user_id: &str,
         kind: &str,
         queue_ref: Option<String>,
+        location: Option<(String, String)>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let runtime_key = materialization::normalized_runtime_key(request.runtime_key.as_deref())?;
         // A retry must not race the first creation into a second session. This
@@ -455,17 +459,24 @@ impl KernelRuntimeOwnedState {
             });
         }
 
-        let session = self.session_store.create_session(
-            crate::session::CreateSessionRequest::new(
+        let (workspace_id, worktree_id) = location.clone().unwrap_or_else(|| {
+            (
                 source_session.workspace_id.clone(),
                 source_session.worktree_id.clone(),
             )
-            .with_owner_user_id(caller_user_id)
-            .with_hidden(true),
+        });
+        let session = self.session_store.create_session(
+            crate::session::CreateSessionRequest::new(workspace_id, worktree_id)
+                .with_owner_user_id(caller_user_id)
+                .with_hidden(true),
         )?;
         let session_id = session.id().to_string();
         let mut agent_id_map = BTreeMap::new();
-        for (captured_agent_id, agent) in captured_agents {
+        for (captured_agent_id, mut agent) in captured_agents {
+            if let Some((workspace_id, worktree_id)) = location.as_ref() {
+                agent.set_workspace_id(Some(workspace_id.clone()));
+                agent.set_worktree_id(Some(worktree_id.clone()));
+            }
             let materialized = self.agent_store.materialize_publication_agent(
                 agent,
                 &session_id,

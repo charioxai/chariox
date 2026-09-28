@@ -234,6 +234,14 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
         .unwrap();
     assert_eq!(copy_session.workspace_id(), source.workspace_id());
     assert_eq!(copy_session.worktree_id(), source.worktree_id());
+    // Its snapshot stays portable, so a session restore keeps the publication.
+    let snapshot = copy_session
+        .workflow_publication_snapshot(copy_session.workflow_publications()[0].id())
+        .expect("the copy's snapshot");
+    assert_eq!(
+        copy_session.workflow_publications()[0].validate_source_snapshot(snapshot),
+        Ok(())
+    );
     let copy_publication = &copy_session.workflow_publications()[0];
     assert_eq!(copy_publication.id(), deployed.publication.id());
     assert_eq!(

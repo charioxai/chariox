@@ -334,7 +334,7 @@ impl KernelRuntimeState {
         publication: &WorkflowPublicationDefinition,
         key: &str,
     ) -> Result<(String, BTreeMap<String, String>), DaemonError> {
-        let (mut snapshot, source) = {
+        let (snapshot, source) = {
             let sessions = self.owned.session_store.read();
             (
                 sessions
@@ -348,21 +348,6 @@ impl KernelRuntimeState {
                 sessions.get_session(publication.session_id())?,
             )
         };
-        // The snapshot names a portable workspace; on its owner's kernel the
-        // copy works in the source session's own workspace, as the source's
-        // local deployment did.
-        if let Some(captured) = snapshot.source_session.as_mut() {
-            for agent in &mut snapshot.agents {
-                if agent.workspace_id() == Some(captured.workspace_id.as_str()) {
-                    agent.set_workspace_id(Some(source.workspace_id().to_owned()));
-                }
-                if agent.worktree_id() == Some(captured.worktree_id.as_str()) {
-                    agent.set_worktree_id(Some(source.worktree_id().to_owned()));
-                }
-            }
-            captured.workspace_id = source.workspace_id().to_owned();
-            captured.worktree_id = source.worktree_id().to_owned();
-        }
         match self.owned.workflow_materialize_publication_as(
             MaterializeWorkflowPublicationRequest {
                 publication_id: publication.id().to_owned(),
@@ -372,6 +357,13 @@ impl KernelRuntimeState {
             publication.created_by_user_id(),
             publication.kind(),
             publication.queue_ref().map(str::to_owned),
+            // The snapshot stays portable; on its owner's kernel the copy
+            // works in the source session's own workspace, as the source's
+            // local deployment did.
+            Some((
+                source.workspace_id().to_owned(),
+                source.worktree_id().to_owned(),
+            )),
         )? {
             crate::local::LocalDaemonResponse::WorkflowPublicationMaterialized {
                 session,
