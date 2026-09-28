@@ -871,6 +871,23 @@ async fn start_publication_runtime_claimed(
     if let Some(path) = caller_claims_config.as_ref() {
         let _ = fs::remove_file(path);
     }
+    // A stop that landed while this runtime was starting wins: the stop could
+    // not reach an unregistered process, and writing the running state now
+    // would drop the persisted stop (recovery would then serve it again).
+    let stopped_meanwhile = runtime_state
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_publication_ref(&request.session_id, publication.id())
+        .map(|current| stop_intended(&current))
+        .unwrap_or(false);
+    if stopped_meanwhile {
+        let _ = child.kill().await;
+        return Err(publication_runtime_error(
+            "start workflow publication runtime",
+            "the publication was stopped while its runtime was starting",
+        ));
+    }
     runtime_state
         .owned
         .workflow_publication_runtimes
