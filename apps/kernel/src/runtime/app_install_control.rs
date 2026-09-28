@@ -60,6 +60,8 @@ struct State {
     entries: BTreeMap<Key, Entry>,
     tasks: JoinSet<(Key, jobs::Result)>,
     requests: JoinSet<()>,
+    /// At most one idle-worker eviction, off the kernel tick.
+    eviction: JoinSet<()>,
     task_keys: BTreeMap<Id, Key>,
     job_cursor: Option<Key>,
     scan_next: Instant,
@@ -72,6 +74,7 @@ impl Default for State {
             entries: BTreeMap::new(),
             tasks: JoinSet::new(),
             requests: JoinSet::new(),
+            eviction: JoinSet::new(),
             task_keys: BTreeMap::new(),
             job_cursor: None,
             scan_next: Instant::now(),
@@ -205,6 +208,7 @@ impl AppInstallControl {
         state.entries.clear();
         runtime.block_on(async {
             while state.requests.join_next().await.is_some() {}
+            while state.eviction.join_next().await.is_some() {}
             while state.tasks.join_next().await.is_some() {}
         });
     }
@@ -223,5 +227,6 @@ impl Drop for Inner {
         // already started blocking verifier; it retains its own permit/leases.
         state.tasks.abort_all();
         state.requests.abort_all();
+        state.eviction.abort_all();
     }
 }
