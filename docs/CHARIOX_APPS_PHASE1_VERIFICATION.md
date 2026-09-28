@@ -127,7 +127,7 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
    - An App-origin attack page in real Chromium, covering WebRTC, workers, nested frames, downloads, loopback and metadata IP (V1-INT-14, V-UX-01), plus a DevTools capture.
 10. **Interactive TUI drills plus a command-parity snapshot (S–M).** Drive `/app install|update|dev|logs|file grant|file save|automation add|open` in the TUI (`tui-drive.py`) and snapshot the command catalog against the CLI (V-UX-04). Fills the local-TUI cells of most terminal rows.
 11. **Uninstall/reinstall of all three reference Apps plus a four-client concurrency test (M).** The uninstall/reinstall part needs the delete-data option implemented first. Closes V-PKG-07 and V-PKG-08.
-12. **Rooms and kernels, offline use, many active Apps (M–L).** Covers V1-INT-19, the feasible part of kernel row 6, and V1-INT-22.
+12. **Rooms and kernels, offline use, many active Apps (M–L).** Covers V1-INT-19, the feasible part of kernel row 6, and V1-INT-22. Also recover the Room environment automatically after a slice restart: it can go failed with `browser_cdp_timeout` on Page.enable until a manual retry or stop/start.
 13. **Freeform closers (S–M):**
     - a connected-ingress deploy past the credentials step once a destination Claude account exists (V-UX-08, user step);
     - broken automation for a stopped deployment target (V-UX-09).
