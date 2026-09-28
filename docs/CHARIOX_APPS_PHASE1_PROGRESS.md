@@ -172,7 +172,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 |---|---|---|---|
 | V-UX-01 | App Tab and viewer isolation | Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment. | Partial (see verification) |
 | V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Partial: three widths (`screens/responsive-*`) |
-| V-UX-03 | Accessibility | Automated audit plus manual VoiceOver pass for every App view. | Partial: axe 0 violations; VoiceOver done for Todo, Slack and Documents views [user] |
+| V-UX-03 | Accessibility | Automated audit plus manual VoiceOver pass for every App view. | Partial: axe 0 violations; VoiceOver done for the Todo view [user: Slack and Documents views] |
 | V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Partial (see verification) |
 | V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial: live remote TUI (`remote-tui/`) |
 | V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Partial (see verification) |
