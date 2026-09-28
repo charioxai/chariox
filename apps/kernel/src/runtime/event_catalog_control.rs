@@ -1301,6 +1301,9 @@ fn send_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
+        // A redirect after the POST acted must not become a retryable unsent
+        // failure on its second hop: a 3xx is answered as a response.
+        .redirects(0)
         .build()
         .post(&format!("{}{path}", target.url))
         .set("authorization", &format!("Bearer {}", target.token));

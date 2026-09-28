@@ -18,7 +18,8 @@ impl Broker for Connections {
 
 /// A generator that accepts every action and records the requests it got.
 /// With `reply` None it acts and then drops the connection unanswered; with a
-/// status it acts and answers that status, as a gateway losing the reply does.
+/// status it acts and answers that status, as a gateway losing the reply does;
+/// a 3xx redirects to an unreachable host.
 fn fake_generator(reply: Option<u16>) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -59,6 +60,13 @@ fn fake_generator(reply: Option<u16>) -> (String, Arc<std::sync::Mutex<Vec<Value
             match reply {
                 None => continue,
                 Some(200) => {}
+                Some(status @ 300..=399) => {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} See Other\r\nlocation: http://unreachable.invalid/after\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    continue;
+                }
                 Some(status) => {
                     let _ = write!(
                         stream,
@@ -206,6 +214,11 @@ fn a_lost_generator_reply_is_uncertain_and_never_replayed() {
 #[test]
 fn a_gateway_error_after_sending_is_uncertain_and_never_replayed() {
     lost_reply_is_uncertain(Some(502));
+}
+
+#[test]
+fn a_redirect_after_sending_is_uncertain_and_never_replayed() {
+    lost_reply_is_uncertain(Some(303));
 }
 
 fn lost_reply_is_uncertain(reply: Option<u16>) {
