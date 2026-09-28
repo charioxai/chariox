@@ -346,6 +346,7 @@ fn an_update_that_changes_capabilities_asks_the_owner_again() {
         .get_app_installation("alice", "installed")
         .unwrap()
         .active;
+    assert!(before.as_ref().is_some_and(|active| active.generation == 1));
     let next = release("1.1.0", 0, true, &f.store);
     let digest = next.release_metadata().package_digest.clone();
     f.store
