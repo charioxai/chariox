@@ -341,6 +341,11 @@ fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
 #[test]
 fn an_update_that_changes_capabilities_asks_the_owner_again() {
     let f = Fixture::new();
+    let before = f
+        .store
+        .get_app_installation("alice", "installed")
+        .unwrap()
+        .active;
     let next = release("1.1.0", 0, true, &f.store);
     let digest = next.release_metadata().package_digest.clone();
     f.store
@@ -351,6 +356,11 @@ fn an_update_that_changes_capabilities_asks_the_owner_again() {
         .unwrap();
     let challenge = Arc::new(f.arm("network", "yes"));
     assert!(challenge.is_update());
+    // No early capability use (V1-INT-13): while the owner decides, the
+    // running generation keeps its own release and approval.
+    let waiting = f.store.get_app_installation("alice", "installed").unwrap();
+    assert_eq!(waiting.active, before);
+    assert_eq!(waiting.pending_generation, Some(2));
     assert_eq!(
         f.store
             .decide_app_install(challenge, false, budget())
@@ -362,6 +372,7 @@ fn an_update_that_changes_capabilities_asks_the_owner_again() {
     let installed = f.store.get_app_installation("alice", "installed").unwrap();
     assert_eq!(installed.generation, 1);
     assert_eq!(installed.pending_generation, None);
+    assert_eq!(installed.active, before);
 }
 
 #[test]
