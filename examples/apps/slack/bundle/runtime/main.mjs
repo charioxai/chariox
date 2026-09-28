@@ -126,10 +126,10 @@ export default function register(chariox) {
       // The other kind of a message already kept is not kept or forwarded
       // again: one message, one notification, one workflow run. A mention
       // arriving after its channel message marks it as a mention.
-      const same = item.message
-        ? items.findIndex(kept => kept.message === item.message && kept.kind !== kind) : -1;
+      // A redelivered mention after a merge matches the merged item too.
+      const same = item.message ? items.findIndex(kept => kept.message === item.message) : -1;
       if (same >= 0) {
-        if (kind !== 'mentioned') return undefined;
+        if (kind !== 'mentioned' || items[same].kind === kind) return undefined;
         items[same] = { ...items[same], kind };
         return { merged: true };
       }

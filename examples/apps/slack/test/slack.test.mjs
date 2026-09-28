@@ -51,12 +51,14 @@ function fakeKernel({ automation = true } = {}) {
 }
 
 // As the Slack event generator forwards an app_mention through AEDS.
-function mention(text, channel = 'C1', user = 'U1') {
+// Every Slack message has its own timestamp; the same one names the same message.
+let nextTs = 0;
+function mention(text, channel = 'C1', user = 'U1', ts = `${(nextTs += 1)}.2`) {
   return {
     source: { generator_id: 'dev.chariox.slack', connection_id: 'connection-1', event_type: 'app.mentioned', event_type_version: 1 },
     occurred_at: '2026-09-26T19:00:00.000Z',
     text: `Handle Slack app.mentioned: ${text}`,
-    metadata: { team_id: 'T1', event: { type: 'app_mention', text, channel, user, ts: '1.2' } },
+    metadata: { team_id: 'T1', event: { type: 'app_mention', text, channel, user, ts } },
     artifacts: [],
     reply_context: { provider: 'slack', team_id: 'T1', channel_id: channel, message_ts: '1.2', thread_ts: '1.2', user_id: user },
   };
@@ -155,12 +157,14 @@ test('long multibyte messages stay under the state value cap, newest first, and 
 
 test('a mention in a channel, also sent as a channel message, is one notification and one run', async () => {
   const kernel = fakeKernel();
-  const asMessage = { ...mention('<@B1> ship it'), source: { ...mention('').source, event_type: 'message.channels' } };
-  await kernel.deliver('mentioned', 'EvA', mention('<@B1> ship it'));
+  const asMessage = { ...mention('<@B1> ship it', 'C1', 'U1', '9.1'), source: { ...mention('').source, event_type: 'message.channels' } };
+  await kernel.deliver('mentioned', 'EvA', mention('<@B1> ship it', 'C1', 'U1', '9.1'));
   await kernel.deliver('channel_message', 'EvB', asMessage);
   // The other order: the channel message first, then the mention.
   const later = (text) => ({ ...mention(text), metadata: { ...mention(text).metadata, event: { ...mention(text).metadata.event, ts: '2.3' } } });
   await kernel.deliver('channel_message', 'EvC', { ...later('<@B1> again'), source: asMessage.source });
+  await kernel.deliver('mentioned', 'EvD', later('<@B1> again'));
+  // A redelivered mention after the merge is neither kept nor forwarded again.
   await kernel.deliver('mentioned', 'EvD', later('<@B1> again'));
   const { notifications } = await kernel.tools.get('list_notifications')({});
   assert.deepEqual(notifications.map(item => [item.id, item.kind]), [['EvC', 'mentioned'], ['EvA', 'mentioned']]);
