@@ -43,17 +43,30 @@ I kept the ledger's row list and numbering, as the task asked, and give the revi
 
 ## Summary
 
-### Counts (91 ledger rows + 13 gates)
+### Counts (92 matrix rows + 13 gates, recounted 2026-09-28)
+
+The matrix rows are the ledger's 91 plus V-UX-11 (added 2026-09-27). The revised-plan additions V-PKG-09 and V-RUN-11 are not counted.
 
 | Status | Matrix rows | Gates | Total |
 |---|---|---|---|
 | Verified | 2 (V1-INT-29, V-PKG-02) | 0 | 2 |
-| Partial | 76 | 11 | 87 |
-| Unverified | 4 (Kernel "Offline/sleep/multi-Room…", V1-INT-19, V-UX-02, V-UX-05) | 1 (Evidence) | 5 |
+| Implemented | 11 (V1-INT-10, V1-INT-11, V1-INT-19, V-PKG-03, V-PKG-04, V-PKG-07, V-PKG-08, V-RUN-03, V-RUN-04, V-UX-07, V-UX-10) | 0 | 11 |
+| Partial | 69 | 11 | 80 |
+| Unverified | 1 (Kernel "Offline/sleep/multi-Room…") | 1 (Evidence) | 2 |
 | Needs user | 2 (Kernel "Managed Chromium…", V1-INT-01) | 1 (Browser persistence) | 3 |
 | Phase 2 | 7 (2 terminal rows, V1-INT-12/27/28/30/31) | 0 | 7 |
 
-By matrix: terminal 12 Partial + 2 Phase 2. Kernel: 4 Partial, 1 Needs user, 1 Unverified. Integration: 24 Partial, 1 Verified, 1 Unverified, 1 Needs user, 5 Phase 2. Package: 7 Partial, 1 Verified. Worker: 10 Partial. SDK: 8 Partial. UX: 8 Partial, 2 Implemented, 1 Not started (V-UX-11). Reference: 3 Partial. The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
+By matrix:
+- Terminal: 12 Partial, 2 Phase 2.
+- Kernel: 4 Partial, 1 Needs user, 1 Unverified.
+- Integration: 22 Partial, 3 Implemented, 1 Verified, 1 Needs user, 5 Phase 2.
+- Package: 3 Partial, 4 Implemented, 1 Verified.
+- Worker: 8 Partial, 2 Implemented.
+- SDK: 8 Partial.
+- UX: 9 Partial (including V-UX-03 and V-UX-11), 2 Implemented.
+- Reference: 3 Partial.
+
+The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
 
 **Coverage pattern:**
 - Live evidence is almost entirely **macOS kernel + web terminal**, with some local-TUI pseudo-terminal captures.
@@ -209,7 +222,7 @@ The ledger uses the old numbering; the revised-plan ID is in brackets.
 |---|---|---|---|---|
 | V-PKG-01 Valid built-in and local developer packages | Partial | Contract tests (package, upload and staging suites); local installs of three Apps. | No **managed-kernel drill**: Apps are not provisioned on Path-1 managed kernels (implementation gap). The package digest was not shown matching across CLI, TUI and web. Next: capture `/app status` digest on all three; provision Apps on a managed kernel. | M–L |
 | V-PKG-02 Archive attacks | Verified (component) | Hostile archive corpus: traversal, collisions, links, special files, depth/entries/limits, compression/truncation (`packages/app-package/tests/packages.rs`). Passed on hosted Linux and macOS 14 (runs 34164893075, 34172680883). | Rerun on the release candidate (the package crate has changed since). | S |
-| V-PKG-03 Manifest and protocol mismatch | Partial | Stable error-code spelling and distinct compatibility-code tests; closed-manifest and schema corpus tests; CLI message for update schema errors (#445, #455). | Client rendering tests of each code in web and TUI not found. Next: snapshot tests of the rendered messages in both clients. | S |
+| V-PKG-03 Manifest and protocol mismatch | Implemented | Stable error-code spelling and distinct compatibility-code tests; closed-manifest and schema corpus tests; CLI message for update schema errors (#445, #455). The kernel now reports each rejected package's stable code as `app_install_package_<code>` (previously all were `app_install_package_rejected`), and the TUI/CLI and web render one message per code, with rendering tests for all 19 codes in both clients (#509; the web half is chariox-cloud#246 and lands with it). Release-store and upload failures that are not package contents (invalid request, aborted upload, upload digest mismatch, release limit, unsafe release, staging mismatch) have their own codes. | — | S |
 | V-PKG-04 Interrupted installation | Implemented (macOS) | Live kill -9 at each stored checkpoint of a fresh install (`v-pkg-04/`): preparing resumes from the upload, approval re-arms the prompt (the old interaction is refused), starting commits once. Found and fixed: uploads held slots (#489), release reuse blocked a running worker (#490). Unit: upload durability, preparing-ack replay, cancel, uncertain-commit fence. | Linux run. | S |
 | V-PKG-05 Update success | Partial | Live updates (Todo, Documents, Slack via drill.mjs + web approval); wakes and inbox wait through updates (#458, #460); view reconnect after kernel restart (#464 live). #464's in-place reload after an **update** was only partly live: the old slice kernel refused `reload`. | No TUI or remote TUI updates; no live view reload after an update on the cross-built slice. Next: update with a view open, in each terminal. | M |
 | V-PKG-06 Update failure | Partial [user step: real power loss] | Unit #461/#477 (quiesce, mid-migration, commit→activation); live kill -9 at quiesce, staged start and failing release (`ev:p1-10-live-kernel-kill.json`); data restored on failed update: macOS live (#469), Linux VM (#471). | No live kill at a migration step; external-effect receipts after commit untested live. Next: kill during `migrations/001.js`, and after a committed update with a new write. | M |
@@ -260,7 +273,7 @@ The ledger uses the old numbering; the revised-plan ID is in brackets.
 | V-UX-08 Freeform deploy | Partial [user step: invocation audience] | Uninterrupted web walkthrough to live (`v-ux-08/`): actions menu → Deploy made `agent-1-deploy-5`; wizard with Connected ingress and current-account access; release #1; credentials via a runner-seeded Claude profile claimed by a local credential-only runner (dev-stub readiness: the default Claude profile on this Mac is not logged in); Resume → **live, Operational 4/4** (release, credentials, local runtime, endpoint). The ingress path serves the gateway through the relay tunnel; anonymous calls are refused (401). With an App granted to the agent the deploy is refused while packaging (tracked by V-UX-11 / plan P1.20). | Invocation needs either a signed-in audience (browser sign-in uses WorkOS, absent locally) or the owner making the local deployment public; rollback needs a second release. | S |
 | V-UX-09 Broken automation | Partial | `broken` on schema-changing updates (#466 unit). Deleted target live (`v-ux-09/`, #504): after the target workflow was deleted in the web UI, the next Todo reminder failed, `reminders` became `broken · revision 11`, and the App log names it and the recovery ("add the automation again with a new target"). CLI, local TUI and web terminal `/app automation list` all show the same state. Re-adding against a live target restored it (active, revision 12). Deleting only the endpoint or only the queue (the publication stays enabled) breaks it the same way (`v-ux-09/endpoint-only/`, `v-ux-09/queue-only/`). | A stopped deployment as the target not driven live; the App's own view does not show automation state. | S |
 | V-UX-10 One App Tab, many terminals | Implemented | Live (`v-ux-10/`): `/app open` of Todo from the web terminal, the local TUI and a remote TUI through the relay all reported the same App origin and the Room kept one Todo Tab (`tab-1`) with the same Tab set; reloading the web page and exiting both TUIs left the Tabs unchanged. One Tab per installation, reopen gives the same `target_id` (#473). | — | — |
-| V-UX-11 Deploy with Apps (plan P1.20, added 2026-09-27) | Not started | Deploy on Chariox is shown disabled for App-event triggers with the reason (chariox-cloud#243); the kernel refuses App-bound packages. | Everything: App dependency packaging, verifier/worker admission, install and routing in the deployed copy, live drill. | L |
+| V-UX-11 Deploy with Apps (plan P1.20, added 2026-09-27) | Partial | Live drill in progress (`v-ux-11/`). The deploy plan lists Slack and Todo with their grants, automations, routes and the shared Slack connection; the web wizard's Apps step says "Uses your existing … connection — no new sign-in". One "Deploy with Apps" terminal approval installs both Apps in the deployed copy, with automations recreated and agent grants remapped. A real Slack mention reached the copy's route and not the owner's. | The web setup is blocked at destination credentials (owner). The copy's automation events failed silently (TargetChanged); fix in progress. Hosted copies not yet. | L |
 
 ## Reference-App acceptance
 

@@ -56,7 +56,7 @@ All kernel paths in the table are relative to `apps/kernel/src/` unless an expli
 
 The current row-by-row status with evidence is in [CHARIOX_APPS_PHASE1_VERIFICATION.md](CHARIOX_APPS_PHASE1_VERIFICATION.md) (audit of 2026-09-27 and later updates). The tables below are the baseline inventory.
 
-Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (marked "see verification"); rows still **Unverified** have no audited evidence. Evidence directories named there live outside the repository, under the evidence path. Preserve exact scenarios and pass criteria from the plan when implementing drills. The matrix includes all 91 non-header rows: 14 terminal, 6 kernel, 32 integration, 36 core and 3 reference-App rows.
+Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (marked "see verification"); rows still **Unverified** have no audited evidence. Evidence directories named there live outside the repository, under the evidence path. Preserve exact scenarios and pass criteria from the plan when implementing drills. The matrix includes all 92 non-header rows: 14 terminal, 6 kernel, 32 integration, 37 core (V-UX-11 added 2026-09-27) and 3 reference-App rows.
 
 ### Released-terminal matrix
 
@@ -131,7 +131,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 |---|---|---|---|
 | V-PKG-01 | Valid built-in and local developer packages | Contract tests plus local and managed-kernel drill. | Partial (see verification) |
 | V-PKG-02 | Archive attacks | Adversarial package corpus on macOS and Linux. | Verified (component) (see verification) |
-| V-PKG-03 | Manifest and protocol mismatch | Parser snapshots and client rendering tests. | Partial (see verification) |
+| V-PKG-03 | Manifest and protocol mismatch | Parser snapshots and client rendering tests. | Implemented (#509, chariox-cloud#246; see verification) |
 | V-PKG-04 | Interrupted installation | Checkpoint fault-injection suite. | Implemented on macOS (`v-pkg-04/`) |
 | V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Partial (see verification) |
 | V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Partial [user step: real power loss] (see verification) |
@@ -145,7 +145,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-RUN-01 | Infinite loop and CPU saturation | Kernel health, local TUI, remote TUI, web terminal. | Partial: live on macOS (#498) |
 | V-RUN-02 | Memory growth | macOS and Linux App worker tests in Phase 1; Windows repeats them in Phase 2. | Partial: live on macOS |
 | V-RUN-03 | Crash loop | CLI, slash command and web status. | Implemented on macOS (#499) |
-| V-RUN-04 | Malformed or oversized IPC | IPC contract and fuzz tests. | Partial (see verification) |
+| V-RUN-04 | Malformed or oversized IPC | IPC contract and fuzz tests. | Implemented: coverage-guided cargo-fuzz run (#511; see verification) |
 | V-RUN-05 | Ignored cancellation or acknowledgement | Tool call, external event, local event and lifecycle callback. | Partial: live event path |
 | V-RUN-06 | Kernel restart and machine reboot | Local and managed machine drills. | Partial [user step: machine reboot] (see verification) |
 | V-RUN-07 | Sandbox escape attempts | One malicious package on macOS and Linux Phase 1 release builds. Windows reuses the corpus in Phase 2. | Partial (see verification) |
@@ -179,8 +179,8 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-UX-07 | Freeform trigger | Web right-click and TUI slash-command drill. | Implemented (see verification) |
 | V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (see verification) |
 | V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Partial (see verification) |
-| V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Partial (see verification) |
-| V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Not started (plan P1.20) |
+| V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Implemented (see verification) |
+| V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Partial: live drill in progress (`v-ux-11/`; plan P1.20) |
 
 ### Reference-App acceptance
 
