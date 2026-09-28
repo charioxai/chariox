@@ -459,10 +459,12 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())?
         .map_err(|error| view_error("APP_ERROR", &error.to_string()))?;
-        let reply = response
-            .receive()
-            .await
-            .map_err(|error| view_error("APP_ERROR", &error.to_string()))?;
+        let reply = response.receive().await.map_err(|error| match error {
+            crate::runtime::app_worker::AppWorkerError::Deadline => {
+                view_error("DEADLINE_EXCEEDED", "The App did not answer in time")
+            }
+            error => view_error("APP_ERROR", &error.to_string()),
+        })?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
@@ -482,6 +484,15 @@ fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAp
         crate::durable_state::app_tools::AppToolsError::Catalog(
             chariox_app_runtime::app_catalog::CatalogError::Worker(remote),
         ) => view_error(&remote.code, &remote.message),
+        crate::durable_state::app_tools::AppToolsError::Catalog(
+            chariox_app_runtime::app_catalog::CatalogError::Output,
+        ) => view_error(
+            "INVALID_OUTPUT",
+            "The App's answer does not match the tool's declared output",
+        ),
+        crate::durable_state::app_tools::AppToolsError::Catalog(
+            chariox_app_runtime::app_catalog::CatalogError::Deadline,
+        ) => view_error("DEADLINE_EXCEEDED", "The App did not answer in time"),
         error => view_error("APP_ERROR", &error.to_string()),
     }
 }
@@ -541,6 +552,24 @@ fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_sees_typed_codes_for_bad_output_and_a_missed_deadline() {
+        use crate::durable_state::app_tools::AppToolsError;
+        use chariox_app_runtime::app_catalog::CatalogError;
+        assert_eq!(
+            app_error(AppToolsError::Catalog(CatalogError::Output)).code,
+            "INVALID_OUTPUT"
+        );
+        assert_eq!(
+            app_error(AppToolsError::Catalog(CatalogError::Deadline)).code,
+            "DEADLINE_EXCEEDED"
+        );
+        assert_eq!(
+            app_error(AppToolsError::Catalog(CatalogError::Schema)).code,
+            "APP_ERROR"
+        );
+    }
 
     #[test]
     fn view_calls_run_as_the_views_owner_in_its_room() {
