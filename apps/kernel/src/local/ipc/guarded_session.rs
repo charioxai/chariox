@@ -63,13 +63,28 @@ pub(super) async fn handle(
 ) -> Result<(), DaemonError> {
     let result = run(router, sequence, stream, bytes).await;
     if let Err(error) = result {
+        crate::logging::warn_with_fields(
+            "daemon.ipc.server",
+            "guarded local request failed",
+            serde_json::json!({"error": error.to_string()}),
+        );
         let bytes = encode_envelope(IpcResponseEnvelope {
             response: None,
-            error: Some(error.to_string()),
+            error: Some(response_error_message(&error)),
         })?;
         return write_async_frame(stream, &bytes).await;
     }
     Ok(())
+}
+
+fn response_error_message(error: &DaemonError) -> String {
+    if matches!(error, DaemonError::LocalTransport { operation, message }
+        if *operation == "decode local frame" && message.contains("payload exceeded"))
+    {
+        "local payload exceeded ipc frame limit; request a smaller payload".to_string()
+    } else {
+        error.to_string()
+    }
 }
 
 fn invalid(message: &str) -> DaemonError {

@@ -97,13 +97,10 @@ Chariox must export the exact profile-scoped Keychain item automatically when ma
   signing inputs, and test acceptance of the new key plus rejection of the old
   key. Never edit an already signed artifact or claim rotation is deployed before
   the consuming systems have been verified. Preserve public rotation history.
-- On this host, active managed-release keys live under
-  `/Users/miguel/.chariox/keys/managed-release/2026-09-28-v1/`; their protected
-  same-machine backup is under
-  `/Users/miguel/.chariox-key-backups/managed-release/2026-09-28-v1/`.
-  Both trees are excluded from every artifact/worktree cleanup.
-  Open item: an encrypted off-device backup destination needs owner approval.
-  Until its restore is tested, machine-loss recovery remains unproven.
+- Keep host-specific key inventories, backup locations, and recovery gaps in
+  protected operator-local notes, not public repositories. Exclude all recorded
+  key and backup locations from artifact/worktree cleanup. Machine-loss recovery
+  remains unproven until an approved off-device backup has passed a restore test.
 
 ## Coding style
 

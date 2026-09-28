@@ -25,7 +25,7 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
 4. A kernel compatible with the released adapter and client, exact relay
    protocol and released relay version, and a fresh heartbeat for the expected
    immutable kernel/machine. The complete Path-1 flow additionally requires
-   protocol 366 home controls and the connected kernel's explicit
+   protocol 367 home controls and the connected kernel's explicit
    `disposable_worker_control_v1` and `managed_environment_keep_running_v1`
    capability markers. Protocol numbers alone cannot identify support across
    divergent development branches. An older browser-only capability minimum

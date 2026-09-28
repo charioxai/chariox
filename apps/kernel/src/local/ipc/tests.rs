@@ -30,6 +30,33 @@ use super::{
 static LOCAL_IPC_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn guarded_unix_oversized_admission_returns_bounded_error_then_eof() {
+    run_local_ipc_async_test("guarded-oversize", 2, || async {
+        use tokio::io::AsyncReadExt;
+        let mut config = DaemonConfig::for_tests();
+        config.daemon_alias = Some("x".repeat(super::MAX_IPC_FRAME_BYTES));
+        let socket_path = config.local_socket_path.clone();
+        let app = Arc::new(TokioMutex::new(DaemonApp::bootstrap(config).unwrap()));
+        let (tx, rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(super::run_local_ipc_server_with_shared_app(app, async {
+            let _ = rx.await;
+        }));
+        wait_for_socket(&socket_path).await;
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        super::write_open_async_frame(&mut stream, br#"{"GuardedControlSession":{"version":1}}"#)
+            .await.unwrap();
+        let bytes = super::read_async_frame(&mut stream).await.unwrap();
+        assert!(bytes.len() < 1024);
+        let result: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(result["response"].is_null());
+        assert_eq!(result["error"], "local payload exceeded ipc frame limit; request a smaller payload");
+        assert_eq!(stream.read(&mut [0_u8; 1]).await.unwrap(), 0);
+        tx.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    });
+}
+
+#[test]
 fn guarded_unix_session_dispatches_one_command_and_preserves_legacy_eof() {
     run_local_ipc_async_test("guarded-unix-session", 2, || async {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

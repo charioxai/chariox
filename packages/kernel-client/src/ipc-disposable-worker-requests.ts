@@ -1,7 +1,7 @@
 import type { ManagedEnvironmentAutoStopPolicy, ManagedEnvironmentContextPlanInput } from "./ipc-managed-environment-requests.js"
 
-export const disposableWorkerControlMinimumProtocolVersion = 366
-export const managedEnvironmentKeepRunningMinimumProtocolVersion = 366
+export const disposableWorkerControlMinimumProtocolVersion = 367
+export const managedEnvironmentKeepRunningMinimumProtocolVersion = 367
 
 const disposableControlRequests = new Set([
   "CreateDisposableWorker", "GetDisposableWorker", "ReleaseDisposableWorker",

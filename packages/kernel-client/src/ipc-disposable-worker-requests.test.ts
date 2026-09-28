@@ -3,10 +3,10 @@ import test from "node:test"
 import * as requests from "./ipc-disposable-worker-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("disposable controls bind the expected home and require protocol 366", () => {
+test("disposable controls bind the expected home and require protocol 367", () => {
   assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 367)
-  assert.equal(requests.disposableWorkerControlMinimumProtocolVersion, 366)
-  assert.equal(requests.managedEnvironmentKeepRunningMinimumProtocolVersion, 366)
+  assert.equal(requests.disposableWorkerControlMinimumProtocolVersion, 367)
+  assert.equal(requests.managedEnvironmentKeepRunningMinimumProtocolVersion, 367)
   const input = { allocationId: "allocation-1", homeKernelId: "home-1", homeRelayRealmId: "realm-1" }
   for (const [method, name] of [
     [requests.getDisposableWorkerRequest, "GetDisposableWorker"],

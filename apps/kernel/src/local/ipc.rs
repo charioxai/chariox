@@ -193,11 +193,12 @@ async fn handle_connection(
         }
     };
 
-    if serde_json::from_slice::<serde_json::Value>(&request_bytes)
+    let request = serde_json::from_slice::<LocalDaemonRequest>(&request_bytes);
+    if request.is_err() && serde_json::from_slice::<serde_json::Value>(&request_bytes)
         .ok().is_some_and(|value| value.get("GuardedControlSession").is_some()) {
         return guarded_session::handle(&router, &command_sequence, &mut stream, &request_bytes).await;
     }
-    let envelope = match serde_json::from_slice::<LocalDaemonRequest>(&request_bytes) {
+    let envelope = match request {
         Ok(request) => {
             let response = dispatch_local_ipc_request(&router, &command_sequence, request).await;
             match response {

@@ -61,7 +61,7 @@ for (const reply of [{ error: "unknown request", response: null }, { ...admissio
   test(`incompatible peer rejects without command: ${JSON.stringify(reply)}`, async () => {
     let count = 0
     await fixture(async socketPath => {
-      await assert.rejects(sendGuardedLocalSocketRequest(socketPath, command, 1000))
+      await assert.rejects(sendGuardedLocalSocketRequest(socketPath, command, 1000), /kernel does not support guarded Unix control sessions/)
       assert.equal(count, 1)
     }, socket => requests(socket, () => { count++; socket.end(frame(reply)) }))
   })
@@ -101,6 +101,15 @@ test("missing capabilities reject before the command frame", async () => {
     socket.write(frame({ ...admission, response: { RelayStatus: { status: {
       daemon_id: "home", machine_id: "machine", capabilities: [],
     } } } }))
+  }))
+})
+test("guarded mutation errors retain their operation-specific diagnostic", async () => {
+  let frames = 0
+  await fixture(async socketPath => {
+    await assert.rejects(sendGuardedLocalSocketRequest(socketPath, command, 1000), /allocation does not exist/)
+    assert.equal(frames, 2)
+  }, socket => requests(socket, () => {
+    socket.write(frame(++frames === 1 ? admission : { response: null, error: "allocation does not exist" }))
   }))
 })
 test("whole exchange timeout closes a silent admitted socket", async () => {

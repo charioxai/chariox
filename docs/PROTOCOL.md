@@ -1,21 +1,5 @@
 # Chariox v1 Protocol
 
-### Protocol 367: guarded Unix control sessions
-
-Legacy Unix IPC remains one length-prefixed request, one response, then EOF.
-For disposable-worker controls and managed-environment keep-running, a client
-opens one socket and sends `{"GuardedControlSession":{"version":1}}` instead.
-The kernel dispatches the ordinary `RelayStatus` query and replies with
-`{"session":{"version":1},"response":{"RelayStatus":{"status":{...}}},"error":null}`
-without closing. After validating the existing capability markers and kernel
-identity, the client sends exactly one ordinary guarded control request on that
-same connection. The kernel uses the existing local caller/router and closes
-after its response. Frames retain the 1 MiB limit and 30-second I/O deadlines;
-the TypeScript client also bounds the whole exchange by its request timeout.
-Unsupported negotiation, EOF, timeout, or capability mismatch fails closed:
-there is no fallback connection or automatic mutation replay. Numeric protocol
-versions alone never replace the capability checks.
-
 ## Status
 
 Draft protocol aligned with `docs/spec-v1.md`.
@@ -1800,7 +1784,7 @@ Workflow trigger and deployment direction:
   Protocol numbers 344–365 were independently allocated on the Apps branch;
   a numeric minimum alone does not prove these controls exist. Protocol 366
   adds `RelayStatus.capabilities`, defaulting to an empty list when absent.
-  Clients consuming these controls require protocol 366 and must query the
+  Clients consuming these controls require protocol 367 and must query the
   selected home through its authenticated kernel connection before mutation.
   Require `disposable_worker_control_v1` for disposable controls and
   `managed_environment_keep_running_v1` for managed keep-running. Verify the
@@ -1822,6 +1806,19 @@ Workflow trigger and deployment direction:
   identities, reject foreign-home selection, exercise keep-running and context
   transfer, and release with authoritative provider-resource deletion evidence.
   Source tests alone do not prove that live drill passed.
+- protocol 367 adds guarded Unix control sessions. Legacy Unix IPC remains one
+  length-prefixed request, one response, then EOF. For disposable-worker controls
+  and managed-environment keep-running, the client sends
+  `{"GuardedControlSession":{"version":1}}` on one socket. The kernel dispatches
+  ordinary `RelayStatus` and replies with
+  `{"session":{"version":1},"response":{"RelayStatus":{"status":{...}}},"error":null}`
+  without closing. After validating capabilities and kernel identity, the client
+  sends exactly one guarded control request on that same connection. The kernel
+  uses the ordinary local caller/router and closes after its response. Frames
+  retain the 1 MiB limit and 30-second I/O deadlines; the TypeScript client also
+  bounds the whole exchange by its request timeout. Unsupported negotiation, EOF,
+  timeout, or capability mismatch fails closed, with no fallback connection or
+  automatic mutation replay. Numeric versions never replace capability checks.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
