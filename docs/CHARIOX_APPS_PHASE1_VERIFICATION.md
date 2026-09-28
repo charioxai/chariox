@@ -294,7 +294,7 @@ The ledger uses the old numbering; the revised-plan ID is in brackets.
 | Browser persistence | Needs user | #483 plus hosted fixtures cover sandbox and deterministic state. | Real Google-session regression **[user]**. | — |
 | Human validation | Partial (step-up = Phase 2) | #443/#444 unit tests; one operation model for view, agent and background calls. | Live critical effect with trusted confirmation (finding 1). Next: priority item 2. | M |
 | App work (revised: V1-INT-22..27) | Partial | See V1-INT-23..26, 29 and 32. | Remote, Linux, automation step, mode matrix. | M–L |
-| Client | Partial [user step: screen reader] | CLI/TUI shared commands; web and TUI viewers on the same Tab; accessibility outline. | Remote viewer; responsive screenshots; web install/update/logs gap; CLI/TUI command-parity snapshot. | L |
+| Client | Partial [user step: screen reader] | CLI/TUI shared commands; web and TUI viewers on the same Tab; accessibility outline. | Remote viewer; responsive screenshots; web install/update/logs gap. | L |
 | Lifecycle | Partial [user step: reboot] | Install/update/migration/rollback/restart fault tests plus live kill drills (P1.10). | Install-checkpoint kills; uninstall/reinstall drill; delete-data. | M |
 | Storage | Partial | Documents private I/O, grants, versions, snapshots (macOS); quota fixtures on both OSes. | Denial outside storage shown live; quota hit by an App; Linux Documents run. | M |
 | Freeform | Partial | Trigger live on web and TUI; deploy wizard opened. | Deploy not completed "in a single guided action"; HTTP trigger. | S–M |
