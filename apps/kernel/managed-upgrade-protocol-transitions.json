@@ -1,1 +1,1 @@
-{"schemaVersion":1,"protocol":351,"upgradeFrom":[343,348,349,350,351],"rollbackTo":[343,348,349,350,351]}
+{"schemaVersion":1,"protocol":366,"upgradeFrom":[343,366],"rollbackTo":[343,366]}

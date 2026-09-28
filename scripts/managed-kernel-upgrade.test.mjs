@@ -113,7 +113,7 @@ esac
   }
 })
 
-test("repository release policy permits only reviewed protocol 343, 348, 349, and 350 transitions to and from 351", async (context) => {
+test("repository release policy permits only the 343 fixture predecessor and protocol 366 itself", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -124,17 +124,17 @@ test("repository release policy permits only reviewed protocol 343, 348, 349, an
   const policy = JSON.parse(policyBytes)
   assert.deepEqual(policy, {
     schemaVersion: 1,
-    protocol: 351,
-    upgradeFrom: [343, 348, 349, 350, 351],
-    rollbackTo: [343, 348, 349, 350, 351],
+    protocol: 366,
+    upgradeFrom: [343, 366],
+    rollbackTo: [343, 366],
   })
   await put(join(current, policyPath), policyBytes)
   await put(join(target, policyPath), policyBytes)
 
-  for (const olderProtocol of [343, 348, 349, 350]) {
+  for (const olderProtocol of [343, 366]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
-      [current, olderProtocol, target, 351],
-      [target, 351, current, olderProtocol],
+      [current, olderProtocol, target, 366],
+      [target, 366, current, olderProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
         currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
@@ -142,10 +142,10 @@ test("repository release policy permits only reviewed protocol 343, 348, 349, an
     }
   }
 
-  for (const unsupportedProtocol of [325, 333, 342, 344, 345, 346, 347]) {
+  for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 22 }, (_, index) => 344 + index)]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
-      [current, unsupportedProtocol, target, 351],
-      [target, 351, current, unsupportedProtocol],
+      [current, unsupportedProtocol, target, 366],
+      [target, 366, current, unsupportedProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
         currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
@@ -1660,11 +1660,12 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
   assert.match(result.stderr, /not a confirmed registered-kernel receipt/)
 })
 
-test("managed kernel upgrade accepts a signed protocol 343 to 351 transition and rollback", async (context) => {
+// This signed installer fixture is not proof of real-binary state migration.
+test("managed kernel upgrade accepts a signed protocol 343 to 366 fixture transition and rollback", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const harness = await makeHarness(context, {
     currentProtocol: 343,
-    targetProtocol: 351,
+    targetProtocol: 366,
     targetTransitionPolicy: repositoryPolicy,
   })
   const result = harness.run()
@@ -1680,6 +1681,23 @@ test("managed kernel upgrade accepts a signed protocol 343 to 351 transition and
     harness.trustedKey,
   ])
   assert.equal(rollback.status, 0, rollback.stderr)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`,
+  )
+})
+
+test("managed kernel upgrade rejects signed ambiguous protocol 351 before stopping services", async (context) => {
+  const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
+  const harness = await makeHarness(context, {
+    currentProtocol: 351,
+    targetProtocol: 366,
+    targetTransitionPolicy: repositoryPolicy,
+  })
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /not reciprocally authorized/)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
   assert.equal(
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`,

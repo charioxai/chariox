@@ -11,27 +11,24 @@ const POLICY_PATH = join(REPOSITORY_ROOT, "apps/kernel/managed-upgrade-protocol-
 const POLICY_RELATIVE_PATH = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
 const UPGRADE_STATE_SCRIPT = join(REPOSITORY_ROOT, "deploy/managed-kernel/managed-kernel-upgrade-state.mjs")
 
-test("protocol 351 preserves reviewed predecessors and adds home-bound Cloud controls", async () => {
+test("protocol 366 retains the 343 fixture contract and rejects ambiguous branch protocols", async () => {
   const policy = JSON.parse(await readFile(POLICY_PATH, "utf8"))
   assert.deepEqual(Object.keys(policy).sort(), ["protocol", "rollbackTo", "schemaVersion", "upgradeFrom"])
   assert.equal(policy.schemaVersion, 1)
-  assert.equal(policy.protocol, 351)
+  assert.equal(policy.protocol, 366)
   for (const list of [policy.upgradeFrom, policy.rollbackTo]) {
     assert.ok(Array.isArray(list) && list.length > 0 && list.length <= 16)
     assert.ok(list.every((version, index) => Number.isSafeInteger(version)
       && version > 0 && (index === 0 || list[index - 1] < version)))
-    assert.ok(list.includes(343), "current published protocol must remain reciprocal")
-    assert.ok(list.includes(348), "additive pairing transition must remain reciprocal")
-    assert.ok(list.includes(349), "previous protocol must remain reciprocal")
-    assert.ok(list.includes(350), "previous protocol remains reciprocal")
-    assert.ok(list.includes(351), "new protocol must include itself")
+    assert.ok(list.includes(343), "tested predecessor fixture must remain reciprocal")
+    assert.ok(list.includes(366), "new protocol must include itself")
   }
-  assert.deepEqual(policy.upgradeFrom, [343, 348, 349, 350, 351])
-  assert.deepEqual(policy.rollbackTo, [343, 348, 349, 350, 351])
+  assert.deepEqual(policy.upgradeFrom, [343, 366])
+  assert.deepEqual(policy.rollbackTo, [343, 366])
 
-  const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-351-policy-"))
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-366-policy-"))
   try {
-    const newRoot = join(scratch, "protocol-351")
+    const newRoot = join(scratch, "protocol-366")
     const fixturePolicy = join(newRoot, POLICY_RELATIVE_PATH)
     await mkdir(dirname(fixturePolicy), { recursive: true })
     await writeFile(fixturePolicy, JSON.stringify(policy), { mode: 0o600, flag: "wx" })
@@ -44,15 +41,16 @@ test("protocol 351 preserves reviewed predecessors and adds home-bound Cloud con
       String(to),
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 
-    for (const version of [343, 348, 349, 350, 351]) {
+    // Policy fixtures do not prove real-binary persisted-state migration.
+    for (const version of [343, 366]) {
       const oldRoot = join(scratch, `protocol-${version}`)
-      assert.equal(transition(oldRoot, version, newRoot, 351), "")
-      assert.equal(transition(newRoot, 351, oldRoot, version), "")
+      assert.equal(transition(oldRoot, version, newRoot, 366), "")
+      assert.equal(transition(newRoot, 366, oldRoot, version), "")
     }
-    for (const version of [325, 333, 342, 344, 345, 346, 347]) {
+    for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 22 }, (_, index) => 344 + index)]) {
       const oldRoot = join(scratch, `protocol-${version}`)
-      assert.throws(() => transition(oldRoot, version, newRoot, 351), /not reciprocally authorized/)
-      assert.throws(() => transition(newRoot, 351, oldRoot, version), /not reciprocally authorized/)
+      assert.throws(() => transition(oldRoot, version, newRoot, 366), /not reciprocally authorized/)
+      assert.throws(() => transition(newRoot, 366, oldRoot, version), /not reciprocally authorized/)
     }
   } finally {
     await rm(scratch, { recursive: true, force: true })
