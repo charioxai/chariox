@@ -113,4 +113,5 @@ pub use workspace::*;
 /// Version 351 adds home-bound disposable Cloud worker controls and managed keep-running.
 /// Versions 344–365 also exist on a divergent Apps branch and do not imply these controls.
 /// Version 366 adds explicit kernel control capabilities to RelayStatus.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 366;
+/// Version 367 adds bounded, explicitly negotiated Unix guarded-control sessions.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 367;

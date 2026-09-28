@@ -12,7 +12,8 @@ import {
 import WebSocket from "ws"
 
 import { getKernelResourceTelemetryRequest } from "./ipc-kernel-control-requests.js"
-import { requireKernelControlCapability } from "./ipc-disposable-worker-requests.js"
+import { isGuardedKernelControl, requireKernelControlCapability } from "./ipc-disposable-worker-requests.js"
+import { sendGuardedLocalSocketRequest } from "./local-socket-session.js"
 import type { KernelEvent } from "./kernel-events.js"
 import type {
   IpcEnvelope,
@@ -331,6 +332,9 @@ export class LocalIpcClient {
   }
 
   async send<TResponse>(request: unknown): Promise<TResponse> {
+    if (!isWebSocketEndpoint(this.socketPath) && isGuardedKernelControl(request)) {
+      return sendGuardedLocalSocketRequest<TResponse>(this.socketPath, request, IPC_TIMEOUT_MS)
+    }
     let admittedSocket: WebSocket | undefined
     await requireKernelControlCapability(async query => {
       if (!isWebSocketEndpoint(this.socketPath)) return this.sendUnchecked(query)

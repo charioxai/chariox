@@ -1,5 +1,21 @@
 # Chariox v1 Protocol
 
+### Protocol 367: guarded Unix control sessions
+
+Legacy Unix IPC remains one length-prefixed request, one response, then EOF.
+For disposable-worker controls and managed-environment keep-running, a client
+opens one socket and sends `{"GuardedControlSession":{"version":1}}` instead.
+The kernel dispatches the ordinary `RelayStatus` query and replies with
+`{"session":{"version":1},"response":{"RelayStatus":{"status":{...}}},"error":null}`
+without closing. After validating the existing capability markers and kernel
+identity, the client sends exactly one ordinary guarded control request on that
+same connection. The kernel uses the existing local caller/router and closes
+after its response. Frames retain the 1 MiB limit and 30-second I/O deadlines;
+the TypeScript client also bounds the whole exchange by its request timeout.
+Unsupported negotiation, EOF, timeout, or capability mismatch fails closed:
+there is no fallback connection or automatic mutation replay. Numeric protocol
+versions alone never replace the capability checks.
+
 ## Status
 
 Draft protocol aligned with `docs/spec-v1.md`.

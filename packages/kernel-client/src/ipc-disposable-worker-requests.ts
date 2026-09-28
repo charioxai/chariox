@@ -8,6 +8,11 @@ const disposableControlRequests = new Set([
   "KeepDisposableWorkerRunning", "PrepareDisposableWorkerContextTransfer",
 ])
 
+export function isGuardedKernelControl(request: unknown): boolean {
+  return Object.keys(record(request) ?? {}).some(name =>
+    disposableControlRequests.has(name) || name === "KeepManagedEnvironmentRunning")
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined

@@ -141,9 +141,9 @@ test("paired disk-cap user-config fields are covered by local-daemon protocol 36
     read("../../../packages/kernel-client/src/kernel-types.ts"),
     read("../src/local/api/tests/protocol_shapes/slice_disk_quota.rs"),
   ])
-  assert.match(rust, /LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 366/)
-  assert.match(client, /LOCAL_DAEMON_PROTOCOL_VERSION = 366/)
-  assert.match(snapshot, /assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, 366\)/)
+  assert.match(rust, /LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 367/)
+  assert.match(client, /LOCAL_DAEMON_PROTOCOL_VERSION = 367/)
+  assert.match(snapshot, /assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, 367\)/)
   assert.match(snapshot, /disk_layer_mb/)
   assert.match(snapshot, /disk_home_mb/)
 })
