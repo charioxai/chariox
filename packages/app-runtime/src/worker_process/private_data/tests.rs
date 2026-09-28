@@ -310,15 +310,8 @@ fn a_parent_swapped_for_an_outside_symlink_mid_write_never_escapes() {
         0,
         "nothing landed outside"
     );
-    let real = if f.path.join("nested/value").exists() {
-        "nested"
-    } else {
-        "nested.real"
-    };
-    assert_eq!(
-        fs::read(f.path.join(real).join("value")).unwrap(),
-        b"inside"
-    );
+    // The swapper always puts the real directory back before it stops.
+    assert_eq!(fs::read(f.path.join("nested/value")).unwrap(), b"inside");
 }
 
 #[test]
@@ -339,6 +332,11 @@ fn unicode_and_case_aliases_of_an_outside_symlink_are_refused() {
             .data()
             .prepare_replace(name, b"overwrite")
             .and_then(|staged| staged.publish());
+        // APFS is normalization-insensitive even on case-sensitive volumes.
+        #[cfg(target_os = "macos")]
+        if name == "caf\u{e9}" {
+            assert!(aliased, "NFC café must resolve to the NFD symlink on APFS");
+        }
         if aliased {
             assert!(
                 written.is_err(),
@@ -370,7 +368,7 @@ fn a_deleted_or_replaced_parent_keeps_the_write_inside_the_root() {
     let staged = f.data().prepare_replace("moved/value", b"held").unwrap();
     fs::rename(f.path.join("moved"), f.path.join("moved.old")).unwrap();
     symlink(&outside.path, f.path.join("moved")).unwrap();
-    let _ = staged.publish();
+    assert_eq!(staged.publish(), Ok(()));
     assert_eq!(
         fs::read_dir(&outside.path).unwrap().count(),
         0,
