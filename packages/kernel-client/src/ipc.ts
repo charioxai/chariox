@@ -12,6 +12,7 @@ import {
 import WebSocket from "ws"
 
 import { getKernelResourceTelemetryRequest } from "./ipc-kernel-control-requests.js"
+import { requireKernelControlCapability } from "./ipc-disposable-worker-requests.js"
 import type { KernelEvent } from "./kernel-events.js"
 import type {
   IpcEnvelope,
@@ -329,7 +330,12 @@ export class LocalIpcClient {
     return this.relayAuthToken != null
   }
 
-  send<TResponse>(request: unknown): Promise<TResponse> {
+  async send<TResponse>(request: unknown): Promise<TResponse> {
+    await requireKernelControlCapability(query => this.sendUnchecked(query), request)
+    return this.sendUnchecked<TResponse>(request)
+  }
+
+  private sendUnchecked<TResponse>(request: unknown): Promise<TResponse> {
     if (isWebSocketEndpoint(this.socketPath)) {
       return this.sendWebSocket(request)
     }
