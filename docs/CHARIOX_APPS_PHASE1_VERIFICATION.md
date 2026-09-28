@@ -89,7 +89,7 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
 5. **Implementation gaps turned up while auditing:**
    - Uninstall has no delete-data choice; #439 retains data only.
    - There is no .cxapp file association on macOS or Linux; nothing in the tree implements one.
-   - Standalone `chariox app install` and `chariox app update` are rejected, so CLI↔slash parity is incomplete.
+   - Standalone `chariox app install` and `chariox app update` were rejected; fixed in #501 (`--session`, matching the TUI's; see V-UX-04).
    - The branch browser controller and main's `browser_controller_*` modules still coexist (merge note).
 6. **The full kernel suite is not green, but the Apps-owned failures are fixed.** On 2026-09-28 the full kernel lib suite on the top of the stack (#510 + #430 + #518) had 4395 pass and 124 fail (`ev:full-suite/`). 122 of those also fail on main, whose CI has been red since June. Most are #425's strict working-directory preflight rejecting the tests' fake relative workspace names. The other two are a renamed environment-only test and a flake under load. The three Apps-owned failures (two stale promotion tests and a publisher-recovery test) are fixed in #518, along with one real bug they exposed. The Evidence gate still needs main's baseline fixed and a hosted CI run.
 7. **The evidence path differs from the plan's.** Evidence lives in `.codex/evidence/chariox-apps-phase1/`; the plan's rule names `/Users/miguel/.codex/evidence/chariox-apps/<release>/`.
