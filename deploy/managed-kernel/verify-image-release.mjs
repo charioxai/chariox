@@ -565,12 +565,16 @@ async function verifyImageRelease(
             "Requires=chariox-data-volume-admission.service",
             "After=chariox-data-volume-admission.service",
             "After=var-lib-chariox\\x2ddocker-data.mount",
-            "BindsTo=var-lib-chariox\\x2ddocker-data.mount",
             "AssertPathIsMountPoint=/var/lib/chariox-docker/data",
           ]) {
             if (unitDirectives.filter((line) => line === directive).length !== 1) {
               fail(`Path-1 ${label} must declare ${directive}`)
             }
+          }
+          // Admission creates the mount unit at runtime; a hard dependency on it would
+          // drop this unit from every boot transaction.
+          if (unitDirectives.some((line) => /^(BindsTo|Requires|Requisite)=.*docker-data\.mount/.test(line))) {
+            fail(`Path-1 ${label} must not hard-depend on the transient data mount unit`)
           }
           if (artifactName === "chariox-rootless-docker.path1-data-volume.conf") {
             const environmentDirective = "Environment=CHARIOX_PATH1_DATA_VOLUME_REQUIRED=1"

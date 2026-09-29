@@ -50,7 +50,6 @@ test("Path-1 admission is nonpersistent and mount-bound consumers fail closed", 
       "Requires=chariox-data-volume-admission.service",
       "After=chariox-data-volume-admission.service",
       "After=var-lib-chariox\\x2ddocker-data.mount",
-      "BindsTo=var-lib-chariox\\x2ddocker-data.mount",
       "AssertPathIsMountPoint=" + dataRoot,
     ]) {
       assert.ok(directives.includes(required), label + " drop-in must declare " + required)

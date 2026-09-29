@@ -787,7 +787,6 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
       "Requires=chariox-data-volume-admission.service",
       "After=chariox-data-volume-admission.service",
       "After=var-lib-chariox\\x2ddocker-data.mount",
-      "BindsTo=var-lib-chariox\\x2ddocker-data.mount",
       "AssertPathIsMountPoint=/var/lib/chariox-docker/data",
     ]) {
       assert.equal(
