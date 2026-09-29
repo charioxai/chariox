@@ -99,6 +99,12 @@ test('release signature covers exact installed graph and modes without self-enro
     assert.equal((await lstat(path)).mode & 0o7777, entry.executable ? 0o555 : 0o444);
     assert.equal(sha256(await readFile(path)), entry.sha256);
   }
+  // The loader is every worker's ELF interpreter, so it must be executable; the libraries are not.
+  const mode = async path => (await lstat(join(f.options.output, path))).mode & 0o7777;
+  const loader = inventory.files.find(entry => entry.path.startsWith('platform/ld-linux'));
+  assert.ok(loader, 'the Linux fixture signs a platform loader');
+  assert.equal(await mode(loader.path), 0o555);
+  assert.equal(await mode('platform/libc.so.6'), 0o444);
   assert.equal((await lstat(join(f.options.output, '.runtime-lease'))).size, 0);
   await assert.rejects(readFile(join(f.options.output, 'runtime-enrollment.json')), { code: 'ENOENT' });
   await assert.rejects(readFile(join(f.options.output, 'release.pem')), { code: 'ENOENT' });
