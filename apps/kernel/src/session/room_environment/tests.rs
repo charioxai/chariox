@@ -390,7 +390,11 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
     };
     let bottom = Some(super::AppPanelPlacement::Bottom);
     let pages = |environment: &RoomEnvironment| environment.app_page_sizes()["target-app"];
-    environment.set_app_tabs(layout(bottom, Some(250), false), Some("agent-2".into()), true);
+    environment.set_app_tabs(
+        layout(bottom, Some(250), false),
+        Some("agent-2".into()),
+        true,
+    );
     let panel = apps_of(&environment)[1]
         .1
         .as_ref()
@@ -426,7 +430,11 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
             panel: None,
         })
     );
-    environment.set_app_tabs(std::collections::BTreeMap::new(), Some("agent-2".into()), true);
+    environment.set_app_tabs(
+        std::collections::BTreeMap::new(),
+        Some("agent-2".into()),
+        true,
+    );
     assert!(environment
         .snapshot()
         .tabs
