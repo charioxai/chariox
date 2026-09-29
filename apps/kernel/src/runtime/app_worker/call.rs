@@ -245,7 +245,7 @@ fn wake_request(
         background_context(
             installation,
             "schedule".into(),
-            format!("wake-{}-{}", wake.id, wake.due_at_ms),
+            bounded("wake-", &format!("{}-{}", wake.id, wake.due_at_ms)),
         ),
     )
 }
@@ -258,7 +258,7 @@ fn event_request(item: &chariox_app_runtime::app_inbox::InboxItem) -> (Value, Va
         }),
         background_context(
             &item.installation_id,
-            format!("inbox:{}", item.route_id),
+            bounded("inbox:", &item.route_id),
             format!("inbox-{}", item.sequence),
         ),
     )
@@ -270,24 +270,21 @@ fn event_request(item: &chariox_app_runtime::app_inbox::InboxItem) -> (Value, Va
 fn background_context(installation: &str, source: String, operation: String) -> Value {
     json!({
         "installation_id": installation,
-        "operation_id": bounded(operation),
-        "actor": chariox_app_runtime::app_catalog::Actor::Background(bounded(source)),
+        "operation_id": operation,
+        "actor": chariox_app_runtime::app_catalog::Actor::Background(source),
     })
 }
 
-/// Context ids follow the tool-call bounds (at most 128 bytes, no whitespace or
-/// control characters). A longer derived id is replaced by a stable digest.
-fn bounded(id: String) -> String {
+/// Context ids follow the tool-call bounds. A derived id that would break them
+/// keeps its kind prefix and replaces only the variable part with a digest, so
+/// `inbox:` and `wake-` ids stay recognizable.
+fn bounded(prefix: &str, variable: &str) -> String {
     use sha2::{Digest, Sha256};
-    if !id.is_empty()
-        && id.len() <= 128
-        && !id
-            .chars()
-            .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\u{feff}')
-    {
+    let id = format!("{prefix}{variable}");
+    if chariox_app_runtime::app_catalog::is_context_id(&id) {
         return id;
     }
-    format!("sha256-{:x}", Sha256::digest(id.as_bytes()))
+    format!("{prefix}sha256-{:x}", Sha256::digest(variable.as_bytes()))
 }
 
 #[cfg(test)]
@@ -355,12 +352,12 @@ mod tests {
 
     #[test]
     fn derived_context_ids_stay_within_the_tool_call_bounds() {
-        assert_eq!(bounded("inbox:requests".into()), "inbox:requests");
-        let long = bounded(format!("wake-{}-1", "x".repeat(200)));
-        assert!(long.starts_with("sha256-") && long.len() <= 128);
-        assert!(bounded("wake-a b".into()).starts_with("sha256-"));
-        let context = background_context("app_1", "x".repeat(300), "y".repeat(300));
-        assert!(context["actor"]["id"].as_str().unwrap().len() <= 128);
-        assert!(context["operation_id"].as_str().unwrap().len() <= 128);
+        assert_eq!(bounded("inbox:", "requests"), "inbox:requests");
+        // A route with a space or a long id keeps its kind prefix.
+        let spaced = bounded("inbox:", "support requests");
+        assert!(spaced.starts_with("inbox:sha256-") && spaced.len() <= 128);
+        let long = bounded("wake-", &format!("{}-1", "x".repeat(200)));
+        assert!(long.starts_with("wake-sha256-") && long.len() <= 128);
+        assert!(chariox_app_runtime::app_catalog::is_context_id(&spaced));
     }
 }
