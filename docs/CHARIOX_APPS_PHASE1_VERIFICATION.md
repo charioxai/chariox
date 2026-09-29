@@ -118,6 +118,7 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
    - Start the kernel as an ordinary user and install Todo and Documents; run the native probe, ENOSPC/quota, snapshot rollback and one malicious package.
    - Fills the Linux column of the kernel matrix, V1-INT-02, V1-INT-21 (Linux part), V-RUN-02/07/09, V-SDK-01/02 and V-PKG-02 rerun.
 7. **Kill -9 fault injection at install checkpoints and event crash windows (M).** Reuse the `p1-10-live-kernel-kill` harness at upload, verify, approval, health and activate for installs; at receipt, App mutation, outbox commit, enqueue and ack for events. Part of V-PKG-06 remains.
+   - Done: every stored install checkpoint (`v-pkg-04/`: preparing, approval, starting; V-PKG-04, Linux run open).
    - Done: every event crash window (`v1-int-06/`: receipt, App mutation, emit/outbox commit, enqueue). V1-INT-06 still needs its bounded-queue and terminal-outcome cases.
 8. **Hostile-App corpus on macOS with numeric budgets (L).**
    - Test Apps: infinite loop, Buffer/thread growth, crash loop, log flood, escape attempts, and a second App trying to interfere.
