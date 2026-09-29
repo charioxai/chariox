@@ -6,7 +6,7 @@ use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -34,6 +34,8 @@ const DEFAULT_PUBLICATION_RUNTIME_HOST: &str = "127.0.0.1";
 const DEFAULT_PUBLICATION_RUNTIME_PORT: u16 = 3000;
 const PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS: u64 = 1_000;
 const PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS: u64 = 60_000;
+/// A recovered runtime that stays up this long clears its backoff.
+const PUBLICATION_RUNTIME_RECOVERY_STABLE_MS: u64 = 60_000;
 // A source checkout may need to build the TypeScript gateway before it can
 // listen. Keep the readiness deadline long enough for that one-time build;
 // subsequent launches remain effectively immediate.
@@ -66,6 +68,8 @@ struct WorkflowPublicationRuntimeRecovery {
     /// A package digest mismatch cannot heal by retrying: recovery waits until
     /// the deployment is rebound to a different package digest.
     parked_for_digest: Option<String>,
+    /// When recovery last launched the runtime.
+    launched_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,7 +247,7 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
     {
         stop_publication_runtime(runtime_state, &process_key).await?;
     }
-    let port = if is_schedule_only_publication(&publication) {
+    let port = if !publication_has_ingress(&publication) {
         None
     } else {
         Some(reserve_ephemeral_publication_runtime_port()?)
@@ -356,7 +360,7 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
                 runtime_state
                     .owned
                     .workflow_publication_runtimes
-                    .record_recovery_success(&process_key)
+                    .record_recovery_running(&process_key, now_ms)
                     .await;
                 continue;
             }
@@ -410,7 +414,7 @@ async fn recover_bound_publication_runtime(
     process_key: String,
     now_ms: u64,
 ) {
-    let port = if is_schedule_only_publication(&publication) {
+    let port = if !publication_has_ingress(&publication) {
         None
     } else {
         match reserve_ephemeral_publication_runtime_port() {
@@ -454,12 +458,16 @@ async fn recover_bound_publication_runtime(
         },
     )
     .await;
+    // An App-bound start can take seconds: the backoff counts from its end.
+    let finished_ms = crate::session::unix_epoch_ms();
     match result {
         Ok(_) => {
+            // A gateway can report started and still exit during startup: the
+            // launch keeps its backoff until the runtime has stayed up.
             runtime_state
                 .owned
                 .workflow_publication_runtimes
-                .record_recovery_success(&process_key)
+                .record_recovery_launch(&process_key, finished_ms)
                 .await;
             crate::logging::info_with_fields(
                 "daemon.publication_runtime",
@@ -492,7 +500,7 @@ async fn recover_bound_publication_runtime(
             runtime_state
                 .owned
                 .workflow_publication_runtimes
-                .record_recovery_failure(&process_key, now_ms)
+                .record_recovery_failure(&process_key, finished_ms)
                 .await;
             crate::logging::warn_with_fields(
                 "daemon.publication_runtime",
@@ -774,8 +782,8 @@ async fn start_publication_runtime_claimed(
         })
         .unwrap_or(DEFAULT_PUBLICATION_RUNTIME_HOST)
         .to_string();
-    let is_schedule_only = is_schedule_only_publication(&publication);
-    let port = publication_runtime_port(request.port, is_schedule_only);
+    let no_ingress = !publication_has_ingress(&publication);
+    let port = publication_runtime_port(request.port, no_ingress);
     if let Some(existing) = runtime_state
         .owned
         .workflow_publication_runtimes
@@ -820,7 +828,7 @@ async fn start_publication_runtime_claimed(
         &kernel_url,
         launch_context.expected_package_digest.as_deref(),
     );
-    if let Err(error) = validate_publication_runtime_bind_address(&host, port, is_schedule_only) {
+    if let Err(error) = validate_publication_runtime_bind_address(&host, port, no_ingress) {
         let message = error.to_string();
         let _ = mark_publication_runtime_error(
             runtime_state,
@@ -880,7 +888,7 @@ async fn start_publication_runtime_claimed(
         }
         _ => None,
     };
-    let local_url = if is_schedule_only {
+    let local_url = if no_ingress {
         None
     } else {
         Some(publication_local_url(&host, port))
@@ -926,8 +934,14 @@ async fn start_publication_runtime_claimed(
         }
     })?;
     let process_id = child.id();
-    if let Err(message) =
-        wait_for_publication_runtime_start(&mut child, &host, port, is_schedule_only).await
+    if let Err(message) = wait_for_publication_runtime_start(
+        &mut child,
+        &host,
+        port,
+        no_ingress,
+        caller_claims_config.as_deref(),
+    )
+    .await
     {
         if let Some(path) = caller_claims_config.as_ref() {
             let _ = fs::remove_file(path);
@@ -960,7 +974,7 @@ async fn start_publication_runtime_claimed(
         },
     )
     .await?;
-    let runtime_status = launched_publication_runtime_status(is_schedule_only);
+    let runtime_status = launched_publication_runtime_status(no_ingress);
     let mut deployment = publication_runtime_deployment_metadata(
         runtime_status,
         &host,
@@ -1004,7 +1018,7 @@ async fn start_publication_runtime_claimed(
         open_url: local_url.clone(),
         viewer_url: local_url,
         process_id,
-        message: Some(launched_publication_runtime_message(is_schedule_only).to_string()),
+        message: Some(launched_publication_runtime_message(no_ingress).to_string()),
     })
 }
 
@@ -1295,7 +1309,8 @@ async fn wait_for_publication_runtime_start(
     child: &mut Child,
     host: &str,
     port: u16,
-    is_schedule_only: bool,
+    no_ingress: bool,
+    caller_claims_config: Option<&Path>,
 ) -> Result<(), String> {
     let deadline = Instant::now() + PUBLICATION_RUNTIME_START_TIMEOUT;
     loop {
@@ -1309,14 +1324,27 @@ async fn wait_for_publication_runtime_start(
                 stderr_suffix(&stderr),
             ));
         }
-        if is_schedule_only || TcpStream::connect((host, port)).is_ok() {
+        // A gateway with no ingress listens for nothing: it has started once it
+        // consumed its caller-claims config (a Cloud deployment's), which the
+        // kernel must not remove before.
+        let ready = if no_ingress {
+            caller_claims_config.is_none_or(|path| !path.exists())
+        } else {
+            TcpStream::connect((host, port)).is_ok()
+        };
+        if ready {
             return Ok(());
         }
         if Instant::now() >= deadline {
             let _ = child.kill().await;
             let stderr = publication_runtime_stderr(child).await;
+            let waited_for = if no_ingress {
+                "read its deployment config".to_string()
+            } else {
+                format!("listen on {host}:{port}")
+            };
             return Err(format!(
-                "publication gateway did not listen on {host}:{port} within {}s{}",
+                "publication gateway did not {waited_for} within {}s{}",
                 PUBLICATION_RUNTIME_START_TIMEOUT.as_secs(),
                 stderr_suffix(&stderr),
             ));
@@ -1927,12 +1955,18 @@ fn publication_local_url(host: &str, port: u16) -> String {
     format!("http://{}:{}/", host, port)
 }
 
-fn is_schedule_only_publication(publication: &WorkflowPublicationDefinition) -> bool {
-    publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
+/// Schedule-only and App-event triggers take no requests: their gateway gets
+/// no port or local URL, and its runtime is running once launched.
+fn publication_has_ingress(publication: &WorkflowPublicationDefinition) -> bool {
+    !matches!(
+        publication.kind(),
+        crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
+            | crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED
+    )
 }
 
-fn publication_runtime_port(requested_port: Option<u16>, is_schedule_only: bool) -> u16 {
-    if is_schedule_only {
+fn publication_runtime_port(requested_port: Option<u16>, no_ingress: bool) -> u16 {
+    if no_ingress {
         0
     } else {
         requested_port.unwrap_or(DEFAULT_PUBLICATION_RUNTIME_PORT)
@@ -1942,9 +1976,9 @@ fn publication_runtime_port(requested_port: Option<u16>, is_schedule_only: bool)
 fn validate_publication_runtime_bind_address(
     host: &str,
     port: u16,
-    is_schedule_only: bool,
+    no_ingress: bool,
 ) -> Result<(), DaemonError> {
-    if is_schedule_only {
+    if no_ingress {
         return Ok(());
     }
     if port == 0 {
@@ -1961,17 +1995,17 @@ fn validate_publication_runtime_bind_address(
         })
 }
 
-fn launched_publication_runtime_status(is_schedule_only: bool) -> &'static str {
-    if is_schedule_only {
+fn launched_publication_runtime_status(no_ingress: bool) -> &'static str {
+    if no_ingress {
         "running"
     } else {
         "starting"
     }
 }
 
-fn launched_publication_runtime_message(is_schedule_only: bool) -> &'static str {
-    if is_schedule_only {
-        "schedule-only publication runtime running; no ingress endpoint is exposed"
+fn launched_publication_runtime_message(no_ingress: bool) -> &'static str {
+    if no_ingress {
+        "publication runtime running; its trigger takes no requests, so no ingress endpoint is exposed"
     } else {
         "publication runtime starting; endpoint registration will publish a relay display URL when available"
     }
@@ -1983,6 +2017,17 @@ struct RunningPublicationRuntime {
     host: String,
     port: u16,
     local_url: Option<String>,
+}
+
+impl WorkflowPublicationRuntimeRecovery {
+    fn back_off(&mut self, now_ms: u64) {
+        self.failures = self.failures.saturating_add(1);
+        let exponent = self.failures.saturating_sub(1).min(6);
+        let delay = PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS
+            .saturating_mul(1_u64 << exponent)
+            .min(PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS);
+        self.next_attempt_at_ms = now_ms.saturating_add(delay);
+    }
 }
 
 impl WorkflowPublicationRuntimeProcessStore {
@@ -2015,19 +2060,34 @@ impl WorkflowPublicationRuntimeProcessStore {
         recovery.parked_for_digest = Some(package_digest.to_string());
     }
 
-    async fn record_recovery_success(&self, key: &str) {
-        self.recoveries.lock().await.remove(key);
+    /// A running runtime clears its backoff, unless recovery launched it
+    /// less than `PUBLICATION_RUNTIME_RECOVERY_STABLE_MS` ago.
+    async fn record_recovery_running(&self, key: &str, now_ms: u64) {
+        let mut guard = self.recoveries.lock().await;
+        let settling = guard
+            .get(key)
+            .and_then(|recovery| recovery.launched_at_ms)
+            .is_some_and(|launched| {
+                now_ms < launched.saturating_add(PUBLICATION_RUNTIME_RECOVERY_STABLE_MS)
+            });
+        if !settling {
+            guard.remove(key);
+        }
+    }
+
+    /// A recovery launch counts as an attempt: if the runtime exits soon
+    /// after, the next launch waits out a growing delay.
+    async fn record_recovery_launch(&self, key: &str, now_ms: u64) {
+        let mut guard = self.recoveries.lock().await;
+        let recovery = guard.entry(key.to_string()).or_default();
+        recovery.back_off(now_ms);
+        recovery.launched_at_ms = Some(now_ms);
     }
 
     async fn record_recovery_failure(&self, key: &str, now_ms: u64) {
         let mut guard = self.recoveries.lock().await;
         let recovery = guard.entry(key.to_string()).or_default();
-        recovery.failures = recovery.failures.saturating_add(1);
-        let exponent = recovery.failures.saturating_sub(1).min(6);
-        let delay = PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS
-            .saturating_mul(1_u64 << exponent)
-            .min(PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS);
-        recovery.next_attempt_at_ms = now_ms.saturating_add(delay);
+        recovery.back_off(now_ms);
         recovery.parked_for_digest = None;
     }
 
@@ -2133,9 +2193,28 @@ mod tests {
     }
 
     #[test]
-    fn launched_schedule_only_runtime_is_running_without_ingress_registration() {
+    fn launched_runtime_without_ingress_is_running_without_registration() {
         assert_eq!(launched_publication_runtime_status(true), "running");
         assert!(launched_publication_runtime_message(true).contains("no ingress endpoint"));
+    }
+
+    #[test]
+    fn schedule_only_and_app_event_triggers_have_no_ingress() {
+        let publication = |kind: &str| -> crate::session::WorkflowPublicationDefinition {
+            serde_json::from_value(serde_json::json!({
+                "id": "publication-1", "session_id": "session-1", "workflow_id": "workflow-1",
+                "endpoint_id": "endpoint-1", "kind": kind, "enabled": true,
+                "methods": [], "schedules": [], "watchdogs": [], "recent_runs": [],
+                "runtime_logs": [], "created_by_user_id": "user-1", "created_at_ms": 1,
+                "updated_at_ms": 1,
+            }))
+            .expect("publication")
+        };
+        assert!(super::publication_has_ingress(&publication("ingress")));
+        assert!(!super::publication_has_ingress(&publication(
+            "schedule_only"
+        )));
+        assert!(!super::publication_has_ingress(&publication("event_based")));
     }
 
     #[test]
@@ -2426,6 +2505,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_ingressless_gateway_starts_once_it_consumed_its_caller_claims_config() {
+        let config = std::env::temp_dir().join(format!(
+            "chariox-caller-claims-{}-{}.json",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        // Removed however the test ends.
+        struct Cleanup<'a>(&'a std::path::Path);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(self.0);
+            }
+        }
+        let _cleanup = Cleanup(&config);
+        fs::write(&config, "{}").expect("config");
+        // The gateway consumes the file after it starts; the kernel waits for that.
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 0.3; rm {}; sleep 5", config.display()))
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("gateway");
+        super::wait_for_publication_runtime_start(&mut child, "127.0.0.1", 0, true, Some(&config))
+            .await
+            .expect("started once the config is consumed");
+        assert!(!config.exists());
+        let _ = child.kill().await;
+
+        // A gateway that exits before consuming it failed to start.
+        fs::write(&config, "{}").expect("config");
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("echo no deployment config >&2; exit 1")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("gateway");
+        let error = super::wait_for_publication_runtime_start(
+            &mut child,
+            "127.0.0.1",
+            0,
+            true,
+            Some(&config),
+        )
+        .await
+        .expect_err("exited before starting");
+        assert!(error.contains("exited before becoming ready"), "{error}");
+        assert!(error.contains("no deployment config"), "{error}");
+    }
+
+    #[tokio::test]
     async fn deployment_runtime_recovery_uses_bounded_exponential_backoff() {
         let store = WorkflowPublicationRuntimeProcessStore::default();
         assert!(store.recovery_due("publication-1", 100, "sha256:a").await);
@@ -2435,7 +2564,7 @@ mod tests {
         store.record_recovery_failure("publication-1", 1_100).await;
         assert!(!store.recovery_due("publication-1", 3_099, "sha256:a").await);
         assert!(store.recovery_due("publication-1", 3_100, "sha256:a").await);
-        store.record_recovery_success("publication-1").await;
+        store.record_recovery_running("publication-1", 3_100).await;
         assert!(store.recovery_due("publication-1", 3_100, "sha256:a").await);
     }
 
@@ -2467,5 +2596,27 @@ mod tests {
             "start workflow publication runtime",
             "publication gateway exited",
         )));
+    }
+
+    #[tokio::test]
+    async fn a_recovered_runtime_that_exits_soon_waits_before_relaunching() {
+        let store = WorkflowPublicationRuntimeProcessStore::default();
+        let stable = super::PUBLICATION_RUNTIME_RECOVERY_STABLE_MS;
+        store.record_recovery_launch("publication-1", 100).await;
+        // Seen running on a tick, then gone: no immediate relaunch.
+        store.record_recovery_running("publication-1", 600).await;
+        assert!(!store.recovery_due("publication-1", 1_099, "sha256:a").await);
+        assert!(store.recovery_due("publication-1", 1_100, "sha256:a").await);
+        // Each launch that does not stay up waits longer.
+        store.record_recovery_launch("publication-1", 1_100).await;
+        assert!(!store.recovery_due("publication-1", 3_099, "sha256:a").await);
+        // Up for the stable period: the backoff is cleared.
+        store
+            .record_recovery_running("publication-1", 1_100 + stable)
+            .await;
+        store
+            .record_recovery_launch("publication-1", 1_100 + stable)
+            .await;
+        assert!(store.recovery_due("publication-1", 2_100 + stable, "sha256:a").await);
     }
 }
