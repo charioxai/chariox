@@ -19,8 +19,8 @@ slot, and the existing eight shared App operation slots. Only a full live set
 refuses a start (`LiveLimit`); an accepted start's owner thread queues for a
 shared slot for its claim, then for the preparation slot, so concurrent starts
 (recovery after a reboot) prepare one after another instead of failing `Busy`.
-A stop ends a queued start; its owner records the stop once it holds a shared
-slot, like every other write. Start and stop actions serialize per
+A stop ends a queued start. Its owner records the stop if a shared slot is free
+and never waits for one; otherwise maintenance or shutdown records it. Start and stop actions serialize per
 owner/installation. A replacement cannot acquire the old owner's
 slot until its process is reaped and its single SDK peer's broker work drains.
 Every thread retains its resource and artifact leases through that cleanup, even

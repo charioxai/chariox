@@ -782,7 +782,7 @@ fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
 }
 
 #[test]
-fn a_stop_while_queued_for_the_claim_waits_for_a_slot_to_record_it() {
+fn a_stop_while_queued_for_the_claim_is_recorded_under_a_slot_without_waiting_for_one() {
     let scratch = Scratch::new();
     let runtime = runtime();
     let store = scratch.store();
@@ -800,8 +800,8 @@ fn a_stop_while_queued_for_the_claim_waits_for_a_slot_to_record_it() {
         service.start_active_blocking("alice", "installed", runtime.handle().clone()),
         Ok(StartDisposition::Starting { .. })
     ));
-    // The stop cannot join a writer operation, but it ends the queued start;
-    // the owner records the stop once it gets a slot, not before.
+    // The stop cannot join a writer operation, but it ends the queued start.
+    // With no free slot the owner does not write, and does not wait for one.
     assert!(matches!(
         service.stop_blocking("alice", "installed"),
         Err(LifecycleError::Busy)
@@ -812,7 +812,10 @@ fn a_stop_while_queued_for_the_claim_waits_for_a_slot_to_record_it() {
         .unwrap()
         .is_none_or(|v| v.phase != WorkerPhase::Stopped));
     drop(permits);
+    // Maintenance persists the pending stop under its own slot, once the
+    // owner has finished.
     wait(|| {
+        service.fixture_persist_pending_manual_stops(|_| {});
         store
             .app_worker_status("alice", "installed")
             .unwrap()

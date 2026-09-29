@@ -56,19 +56,6 @@ fn queue(control: &Control, slots: &Arc<Semaphore>) -> Result<OwnedSemaphorePerm
         }
     }
 }
-/// A slot for a stopped owner's deferred stop write. Stop does not end this
-/// wait: every other holder's write is bounded, so a slot frees up.
-fn write_slot(slots: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
-    loop {
-        match slots.clone().try_acquire_owned() {
-            Ok(permit) => return Some(permit),
-            Err(tokio::sync::TryAcquireError::Closed) => return None,
-            Err(tokio::sync::TryAcquireError::NoPermits) => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-        }
-    }
-}
 pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     let _completion = Completion(context.control.clone());
     let _live = live;
@@ -132,12 +119,14 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
             }
             // The claim failed or was cancelled; no ActiveStartAdmission or
             // native process exists yet. A start stopped while queued for its
-            // claim holds no App slot, so it takes one for this write.
+            // claim holds no App slot: it writes only if one is free now, and
+            // never waits for one. Otherwise its entry keeps the pending stop,
+            // which maintenance or shutdown persists under its own slot.
             let _slot = match operation {
                 Ok(permit) => permit,
-                Err(_) => match write_slot(&context.admission) {
-                    Some(permit) => permit,
-                    None => return,
+                Err(_) => match context.admission.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => return,
                 },
             };
             let _ = manual_stop::persist(
