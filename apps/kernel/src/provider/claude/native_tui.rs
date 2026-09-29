@@ -21,9 +21,9 @@ pub(crate) const CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS: u64 = 300;
 /// How long the hook waits for the kernel's decision (`deadline` in the
 /// handler): past the interaction timeout plus a forwarded interaction's relay
 /// buffer, so the deny a timed-out interaction resolves to finds it waiting.
-pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 = 320;
+pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 = 330;
 /// Claude's timeout for the permission hook, past the hook's own wait.
-const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 340;
+const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;
 const _: () =
     assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
@@ -360,7 +360,7 @@ if (eventName === "UserPromptSubmit") {
     : null
   if (responseFile) {
     // CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
-    const deadline = Date.now() + 320000
+    const deadline = Date.now() + 330000
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
         try {
@@ -1277,7 +1277,7 @@ mod tests {
         );
         assert_eq!(
             yolo_settings["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
-            340
+            360
         );
     }
 }
