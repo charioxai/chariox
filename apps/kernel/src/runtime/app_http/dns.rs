@@ -5,10 +5,16 @@ mod tasks;
 use super::{policy::ApprovedTarget, HttpError, Result};
 use hickory_resolver::{
     config::{LookupIpStrategy, ResolveHosts, ResolverConfig, ResolverOpts},
+    proto::rr::Name,
     Resolver,
 };
 use std::{net::SocketAddr, time::Duration};
 use tokio::{sync::watch, time::Instant};
+
+#[cfg(test)]
+pub(super) mod test_server;
+#[cfg(test)]
+mod tests;
 
 pub(super) struct DnsConfig {
     config: ResolverConfig,
@@ -20,8 +26,26 @@ impl DnsConfig {
     /// No public resolver fallback, App-provided resolver, search suffix, NSS,
     /// multicast DNS, or macOS per-domain scoped resolver is synthesized.
     pub(super) fn system() -> Result<Self> {
-        let (config, mut options) =
+        let (config, options) =
             hickory_resolver::system_conf::read_system_conf().map_err(|_| HttpError::Network)?;
+        Self::bounded(config, options)
+    }
+
+    /// A resolver fixed to one in-process test server, with the same bounds.
+    #[cfg(test)]
+    pub(super) fn fixture(server: SocketAddr) -> Self {
+        use hickory_resolver::config::{ConnectionConfig, NameServerConfig};
+        let mut udp = ConnectionConfig::udp();
+        udp.port = server.port();
+        let config = ResolverConfig::from_name_servers(vec![NameServerConfig::new(
+            server.ip(),
+            true,
+            vec![udp],
+        )]);
+        Self::bounded(config, ResolverOpts::default()).expect("one test name server")
+    }
+
+    fn bounded(config: ResolverConfig, mut options: ResolverOpts) -> Result<Self> {
         if config.name_servers().is_empty() || config.name_servers().len() > 8 {
             return Err(HttpError::Network);
         }
@@ -58,7 +82,10 @@ impl DnsConfig {
             url::Host::Ipv6(address) => {
                 return target.validate_addresses([SocketAddr::new(address.into(), target.port())])
             }
-            url::Host::Domain(name) => format!("{}.", name.trim_end_matches('.')),
+            // A host that is not a DNS name (a label starting with a hyphen, say)
+            // is an invalid request, not a network failure; no query is sent.
+            url::Host::Domain(name) => Name::from_utf8(format!("{}.", name.trim_end_matches('.')))
+                .map_err(|_| HttpError::Invalid)?,
         };
         let tasks = tasks::TaskOwner::new(lease);
         let mut builder = Resolver::builder_with_config(self.config.clone(), tasks.provider());

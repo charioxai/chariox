@@ -153,6 +153,28 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
             assert_eq!(answer["accepted"], true);
             assert_eq!(answer["result"], json!({"ts": "1.3"}));
         }
+        // The owner revokes the connection while the App still holds its id:
+        // the handle fails closed and no further action reaches the generator.
+        let store = fixture.store.clone();
+        let owner_installation = installation.clone();
+        tokio::task::spawn_blocking(move || {
+            store.app_connection_grant(ConnectionGrantCommand::Revoke {
+                owner: "alice".into(),
+                installation: owner_installation,
+                connection_id: "connection-1".into(),
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        peer.send("relist", "connections.list", json!({})).await;
+        assert_eq!(peer.response().await.1.unwrap(), json!({"connections": []}));
+        peer.send("revoked", "connections.action", reply.clone())
+            .await;
+        assert_eq!(
+            peer.response().await.1.unwrap_err().code,
+            "CONNECTION_NOT_GRANTED"
+        );
         peer.close().await;
     });
     let received = received.lock().unwrap();

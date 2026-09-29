@@ -207,6 +207,44 @@ impl Fixture {
         transaction.rollback().unwrap();
         result
     }
+    /// One SDK stream operation through the production writer fence: the job
+    /// is admitted on a fresh IMMEDIATE transaction, as the durable writer
+    /// does, and its reply is published as the peer writing the frame would.
+    pub(super) async fn operate(
+        &self,
+        group: &HttpStreams,
+        command: crate::runtime::app_http::decode::Command,
+        cancellation: BrokerCancellation,
+    ) -> Result<serde_json::Value> {
+        let (job, reply) = group.job(
+            &self.policy,
+            command,
+            budget(),
+            Instant::now() + WAIT,
+            cancellation,
+            Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+            &|_, _| Err(HttpError::ProtectedEffect),
+        )?;
+        {
+            let mut connection =
+                rusqlite::Connection::open(self.scratch.0.join("kernel.sqlite")).unwrap();
+            connection.busy_timeout(WAIT).unwrap();
+            let transaction = connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            job.submit(&transaction);
+            transaction.rollback().unwrap();
+        }
+        let (value, publication) = timeout(WAIT, reply)
+            .await
+            .unwrap()
+            .unwrap()?
+            .into_publication();
+        if let Some(mut publication) = publication {
+            publication.published();
+        }
+        Ok(value)
+    }
     pub(super) fn shutdown(&mut self) {
         if let Some(owner) = self.owner.take() {
             owner.shutdown_blocking();
