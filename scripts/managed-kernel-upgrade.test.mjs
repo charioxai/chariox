@@ -1760,6 +1760,29 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
   assert.match(result.stderr, /not a confirmed registered-kernel receipt/)
 })
 
+test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes", async (context) => {
+  const harness = await makeHarness(context)
+  const receipt = { ...harness.receipt, schemaVersion: 3, generation: 2, managedRepositoryRoot: "/home/chariox" }
+  await put(harness.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o640)
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(
+    JSON.parse(await readFile(harness.receiptPath, "utf8")),
+    { ...receipt, runtimeReleaseDigest: harness.target.digest },
+  )
+
+  for (const [label, change] of [
+    ["schema 3 without a repository root", { managedRepositoryRoot: undefined }],
+    ["schema 1 with a repository root", { schemaVersion: 1 }],
+    ["generation 0", { generation: 0 }],
+    ["release-bound freshness evidence", { freshnessEvidence: {} }],
+  ]) {
+    const rejected = await makeHarness(context)
+    await put(rejected.receiptPath, `${JSON.stringify({ ...receipt, ...change })}\n`, 0o640)
+    assert.equal(rejected.run().status, 1, label)
+  }
+})
+
 // This signed installer fixture is not proof of real-binary state migration.
 test("managed kernel upgrade accepts a signed protocol 343 to 367 fixture transition and rollback", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))

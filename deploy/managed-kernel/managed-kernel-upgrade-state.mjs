@@ -17,7 +17,9 @@ const REQUIRED_RECEIPT_KEYS = [
   "schemaVersion",
   "status",
 ]
-const OPTIONAL_RECEIPT_KEYS = ["contextPlan"]
+// Mirrors the kernel's BootstrapReceipt. Release-bound freshness evidence and
+// provider rebuild fields stay unsupported: an upgrade would invalidate them.
+const OPTIONAL_RECEIPT_KEYS = ["contextPlan", "generation", "managedRepositoryRoot"]
 const RELEASE_OVERRIDE_KEYS = ["bindingDigest", "kind", "runtimeReleaseDigest", "schemaVersion"]
 const TRANSITION_POLICY_KEYS = ["protocol", "rollbackTo", "schemaVersion", "upgradeFrom"]
 const TRANSITION_POLICY_PATH = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
@@ -121,7 +123,12 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
     fail("managed bootstrap receipt contains unsupported fields")
   }
   if (
-    receipt.schemaVersion !== 1 ||
+    ![1, 2, 3].includes(receipt.schemaVersion) ||
+    (receipt.schemaVersion === 1) !== (receipt.managedRepositoryRoot === undefined) ||
+    (receipt.managedRepositoryRoot !== undefined &&
+      (typeof receipt.managedRepositoryRoot !== "string" || !receipt.managedRepositoryRoot.startsWith("/"))) ||
+    (receipt.generation !== undefined &&
+      (!Number.isInteger(receipt.generation) || receipt.generation < 1 || receipt.generation > 2 ** 31 - 1)) ||
     receipt.status !== "confirmed" ||
     typeof receipt.confirmedAt !== "string" ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(receipt.confirmedAt) ||
