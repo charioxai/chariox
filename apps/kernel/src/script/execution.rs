@@ -362,7 +362,11 @@ pub(super) fn execute_python_script(
     arguments: Value,
     timeout_sec: u64,
 ) -> Result<ScriptExecutionResult, DaemonError> {
-    let mut child = Command::new(python)
+    let mut command = Command::new(python);
+    for name in crate::provider::managed_provider_control_env_remove() {
+        command.env_remove(name);
+    }
+    let mut child = command
         .arg("-c")
         .arg(PYTHON_CALLER)
         .arg(script)
@@ -437,6 +441,9 @@ pub(super) fn execute_node_script(
         .get("x-chariox-parameter-order")
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
+    for name in crate::provider::managed_provider_control_env_remove() {
+        command.env_remove(name);
+    }
     command
         .arg("-e")
         .arg(NODE_CALLER)
