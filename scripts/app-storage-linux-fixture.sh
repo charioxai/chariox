@@ -92,6 +92,8 @@ run_test() {
 }
 run_test chariox-storage-actual hosted_private_capacity_persistence_tmp_reset_and_noexec
 run_test chariox-storage-actual hosted_failed_update_restores_the_committed_data_snapshot
+# The snapshot copies the whole data image; the helper must stay far below MemoryMax.
+printf 'Helper memory peak after the snapshot test: %s\n' "$(systemctl show -p MemoryPeak --value chariox-app-storage.service)"
 run_test chariox-storage-actual hosted_deleting_an_installation_removes_its_storage
 # The committed start dropped the snapshot; no copy outlives the update.
 if find /var/lib/chariox-app-storage -name data-snapshot.ext4 | grep . ; then exit 1; fi
