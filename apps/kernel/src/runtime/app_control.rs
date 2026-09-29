@@ -14,19 +14,6 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 mod projection;
 #[cfg(test)]
 mod tests;
-
-const REPLY_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-
-async fn admit_within(
-    admission: &Arc<Semaphore>,
-    wait: std::time::Duration,
-) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
-    tokio::time::timeout(wait, Arc::clone(admission).acquire_owned())
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .ok_or(AppRequestErrorCode::Busy)
-}
 mod uploads;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod workers;
@@ -38,6 +25,25 @@ mod catalog;
 mod first_install;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) use first_install::FirstInstallControlError;
+
+/// See `AppControlService::admit_reply`.
+const REPLY_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wait briefly, but never past the call's own deadline.
+fn reply_wait(remaining: std::time::Duration) -> std::time::Duration {
+    remaining.min(REPLY_ADMISSION_WAIT)
+}
+
+async fn admit_within(
+    admission: &Arc<Semaphore>,
+    wait: std::time::Duration,
+) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
+    tokio::time::timeout(wait, Arc::clone(admission).acquire_owned())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(AppRequestErrorCode::Busy)
+}
 
 #[derive(Clone)]
 pub(crate) struct AppControlService {
@@ -210,11 +216,14 @@ impl AppControlService {
 
     /// Admission for recording a call the App already answered: it waits
     /// briefly instead of failing at once, so momentary contention does not
-    /// throw away a completed call's result.
+    /// throw away a completed call's result. It never waits past the call's
+    /// own deadline (`remaining`), after which the answer would be refused
+    /// as late although the App did answer.
     pub(crate) async fn admit_reply(
         &self,
+        remaining: std::time::Duration,
     ) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
-        admit_within(&self.admission, REPLY_ADMISSION_WAIT).await
+        admit_within(&self.admission, reply_wait(remaining)).await
     }
 
     pub(crate) async fn execute(

@@ -230,23 +230,46 @@ fn a_shown_prompt_remembers_its_session_until_it_ends() {
 }
 
 #[tokio::test]
-async fn a_reply_waits_briefly_for_full_admission_instead_of_failing_at_once() {
-    let admission = Arc::new(Semaphore::new(1));
-    let held = Arc::clone(&admission).try_acquire_owned().unwrap();
-    let wait = std::time::Duration::from_millis(500);
-    // Freed within the wait: the answered call is recorded, not dropped.
-    let release = tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        drop(held);
-    });
-    assert!(admit_within(&admission, wait).await.is_ok());
-    release.await.unwrap();
-    // Still full after the wait: a busy answer, never a hang.
-    let _held = Arc::clone(&admission).try_acquire_owned().unwrap();
-    let started = std::time::Instant::now();
+async fn a_reply_waits_briefly_for_full_admission_but_never_past_its_deadline() {
+    use std::time::{Duration, Instant};
+    assert_eq!(reply_wait(Duration::from_secs(30)), REPLY_ADMISSION_WAIT);
+    assert_eq!(
+        reply_wait(Duration::from_millis(200)),
+        Duration::from_millis(200)
+    );
+    assert_eq!(reply_wait(Duration::ZERO), Duration::ZERO);
+    let root = std::env::temp_dir().join(format!(
+        "chariox-app-admission-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let store = DurableKernelStateStore::open_owned(root.join("kernel.db")).unwrap();
+    let service = AppControlService::new(store);
+    let mut held: Vec<_> = (0..8).map(|_| service.try_admit().unwrap()).collect();
+    // Full before a call: refused at once, as busy (the call sites map it to
+    // APP_BUSY, never "The App is not running").
     assert!(matches!(
-        admit_within(&admission, std::time::Duration::from_millis(50)).await,
+        service.try_admit(),
         Err(AppRequestErrorCode::Busy)
     ));
-    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    // Full after the App answered: the reply waits, and records once a
+    // permit frees within the wait.
+    let freed = held.pop().unwrap();
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(freed);
+    });
+    held.push(service.admit_reply(Duration::from_secs(30)).await.unwrap());
+    release.await.unwrap();
+    // Still full: busy by the call's deadline, never a hang.
+    let started = Instant::now();
+    assert!(service
+        .admit_reply(Duration::from_millis(100))
+        .await
+        .is_err());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    drop(held);
+    drop(service);
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::app_call_errors;
 use chariox_app_runtime::app_catalog::{Actor, CallerContext};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -43,9 +44,9 @@ impl KernelRuntimeState {
         }
         let slot = lease
             .reserve_call(Duration::from_secs(30))
-            .map_err(app_error)?;
+            .map_err(|error| coded(app_call_errors::busy_error(&error)))?;
         slot.validate_input(&tool.tool_name, &input)
-            .map_err(app_error)?;
+            .map_err(|error| coded(app_call_errors::input_error(&error)))?;
         let permit = self
             .app_control()
             .try_admit()
@@ -70,7 +71,7 @@ impl KernelRuntimeState {
             let result = owned
                 .durable_state_store
                 .enqueue_app_tool(slot, &tool.tool_name, input, caller, budget)
-                .map_err(tool_call_error);
+                .map_err(|error| coded(app_call_errors::enqueue_error(&error)));
             drop(agents);
             result.map(|response| (response, expected, tool, remote))
         })
@@ -80,9 +81,9 @@ impl KernelRuntimeState {
         let reply = response.receive().await.map_err(worker_call_error)?;
         let permit = self
             .app_control()
-            .admit_reply()
+            .admit_reply(reply.remaining(crate::session::unix_epoch_ms()))
             .await
-            .map_err(|_| coded(crate::runtime::app_call_errors::reply_unrecorded()))?;
+            .map_err(|_| coded(app_call_errors::reply_unrecorded()))?;
         let owned = self.owned.clone();
         let payload = tokio::task::spawn_blocking(move || {
             let _permit = permit;

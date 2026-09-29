@@ -184,20 +184,44 @@ fn app_error(error: impl std::fmt::Display) -> DaemonError {
         message: error.to_string(),
     }
 }
-/// A kernel App call error as `CODE: message`, the code a view would see.
-fn coded((code, message): (String, String)) -> DaemonError {
-    app_error(format!("{code}: {message}"))
-}
 /// Full admission is momentary contention, not an unavailable App.
 fn admission_busy() -> DaemonError {
     coded(crate::runtime::app_call_errors::admission_busy())
 }
 /// A failed App tool call as `CODE: message`, the code a view would see.
-fn tool_call_error(error: crate::durable_state::app_tools::AppToolsError) -> DaemonError {
-    let (code, message) = crate::runtime::app_call_errors::tool_call_error(&error);
+fn coded((code, message): (String, String)) -> DaemonError {
     app_error(format!("{code}: {message}"))
 }
+fn tool_call_error(error: crate::durable_state::app_tools::AppToolsError) -> DaemonError {
+    coded(crate::runtime::app_call_errors::tool_call_error(&error))
+}
 fn worker_call_error(error: crate::runtime::app_worker::AppWorkerError) -> DaemonError {
-    let (code, message) = crate::runtime::app_call_errors::worker_call_error(&error);
-    app_error(format!("{code}: {message}"))
+    coded(crate::runtime::app_call_errors::worker_call_error(&error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::durable_state::app_tools::AppToolsError;
+    use chariox_app_runtime::app_catalog::CatalogError;
+
+    #[test]
+    fn an_agent_sees_the_view_code_before_the_message() {
+        let message = |error: DaemonError| match error {
+            DaemonError::LocalTransport { message, .. } => message,
+            other => panic!("unexpected error {other:?}"),
+        };
+        assert_eq!(
+            message(tool_call_error(AppToolsError::Catalog(
+                CatalogError::Output
+            ))),
+            "INVALID_OUTPUT: The App's answer does not match the tool's declared output",
+        );
+        assert_eq!(
+            message(worker_call_error(
+                crate::runtime::app_worker::AppWorkerError::Deadline
+            )),
+            "DEADLINE_EXCEEDED: The App did not answer in time",
+        );
+    }
 }
