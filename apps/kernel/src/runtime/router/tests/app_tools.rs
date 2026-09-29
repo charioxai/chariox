@@ -51,6 +51,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
             .unwrap();
         let mut agents = Vec::new();
         let mut tokens = Vec::new();
+        let mut runs = Vec::new();
         for meta in [false, true] {
             let mut agent = crate::app::KernelSessionService::new(&mut app)
                 .spawn_agent(
@@ -77,6 +78,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
             );
             agents.push(agent.id().to_owned());
             tokens.push(run.runtime_mcp_auth_token().unwrap().to_owned());
+            runs.push(run.id().to_owned());
         }
         // The ordinary agent calls from inside a turn; the meta agent has none.
         let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -98,6 +100,16 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         else {
             panic!("the agent's turn should start");
         };
+        // The calling run received the turn.
+        app.mark_active_prompt_delivery(
+            session.id(),
+            &agents[0],
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(runs[0].clone()),
+            None,
+        )
+        .unwrap();
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
         (
             router,

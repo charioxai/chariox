@@ -251,24 +251,26 @@ impl KernelRuntimeState {
         call_turn_id(
             self.owned
                 .prompt_state_owner
-                .active_prompt_for_agent(&session, agent.id()),
+                .active_prompt_for_agent_snapshot(&session, agent.id()),
             caller_run_id,
         )
     }
 }
 
-/// A prompt delivered to another run is not the calling turn (the previous turn
-/// settled, or the next one is not delivered yet): no turn beats a wrong one.
-/// An id the App context cannot carry is left out rather than failing the call.
+/// Only a prompt the calling run has received is the calling turn. One still
+/// being delivered (the provider is between turns) or delivered to another run
+/// is not: no turn beats a wrong one. An id the App context cannot carry is left
+/// out rather than failing the call.
 fn call_turn_id(
     active: Option<crate::session::PromptQueueItem>,
     caller_run_id: &str,
 ) -> Option<String> {
     active
         .filter(|prompt| {
-            prompt
-                .durable_delivery_provider_run_id()
-                .is_none_or(|run| run == caller_run_id)
+            !prompt.delivery_pending()
+                && prompt
+                    .durable_delivery_provider_run_id()
+                    .is_none_or(|run| run == caller_run_id)
         })
         .map(|prompt| prompt.id().to_string())
         .filter(|id| CallerContext::valid_id(id))
@@ -327,7 +329,12 @@ mod tests {
 
     #[test]
     fn a_call_names_only_the_turn_its_own_run_is_serving() {
-        let prompt = |id: &str, run: Option<&str>| {
+        use crate::session::DurablePromptDeliveryPhase::{Accepted, Delivered, Dispatching};
+        let prompt = |id: &str,
+                      delivery: Option<(
+            crate::session::DurablePromptDeliveryPhase,
+            Option<&str>,
+        )>| {
             let mut prompt = crate::session::PromptQueueItem::new(
                 id,
                 "attachment-1",
@@ -335,28 +342,43 @@ mod tests {
                 "use the App",
                 crate::session::PromptStatus::Running,
             );
-            if let Some(run) = run {
-                prompt.set_durable_delivery(
-                    crate::session::DurablePromptDeliveryPhase::Delivered,
-                    Some(run.to_string()),
-                    None,
-                );
+            if let Some((phase, run)) = delivery {
+                prompt.set_durable_delivery(phase, run.map(str::to_string), None);
             }
             prompt
         };
         // Delivered to the calling run (a local run, or a leased agent's
-        // worker run), or not yet recorded: that turn.
+        // worker run), or running with no delivery record: that turn.
         assert_eq!(
-            call_turn_id(Some(prompt("prompt-1", Some("run-a"))), "run-a").as_deref(),
+            call_turn_id(
+                Some(prompt("prompt-1", Some((Delivered, Some("run-a"))))),
+                "run-a"
+            )
+            .as_deref(),
             Some("prompt-1")
         );
         assert_eq!(
             call_turn_id(Some(prompt("prompt-1", None)), "run-a").as_deref(),
             Some("prompt-1")
         );
-        // Another run's turn, no turn, or an id the context cannot carry: none.
+        // Not delivered yet (even to the same run), another run's turn, no
+        // turn, or an id the context cannot carry: none.
         assert_eq!(
-            call_turn_id(Some(prompt("prompt-2", Some("run-b"))), "run-a"),
+            call_turn_id(Some(prompt("prompt-2", Some((Accepted, None)))), "run-a"),
+            None
+        );
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt-2", Some((Dispatching, Some("run-a"))))),
+                "run-a"
+            ),
+            None
+        );
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt-2", Some((Delivered, Some("run-b"))))),
+                "run-a"
+            ),
             None
         );
         assert_eq!(call_turn_id(None, "run-a"), None);
