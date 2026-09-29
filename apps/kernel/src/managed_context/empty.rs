@@ -503,6 +503,7 @@ mod tests {
     #[test]
     fn path1_empty_receipt_needs_no_capability_isolation_root_but_a_pristine_vault() {
         let root = test_root("path1");
+        fs::create_dir_all(&root).expect("create test root");
         let vault_path = root.join("vault.json");
         let config = test_config(&root, "machine-empty", "kernel-empty", "http://127.0.0.1:9");
         let registration = test_registration("machine-empty", "kernel-empty", "context-empty");
