@@ -187,8 +187,8 @@ impl BootstrapConfig {
     pub(super) fn from_env() -> Result<Self, DaemonError> {
         trusted_builder_public_key_path()?;
         let (process_home, chariox_home) = managed_home_paths()?;
-        let configured_envelope_path = env::var_os("CHARIOX_MANAGED_BOOTSTRAP_PATH")
-            .filter(|value| !value.is_empty());
+        let configured_envelope_path =
+            env::var_os("CHARIOX_MANAGED_BOOTSTRAP_PATH").filter(|value| !value.is_empty());
         let envelope_path = match super::managed_provider_topology()? {
             super::ManagedProviderTopology::Path1 => {
                 if configured_envelope_path.as_ref().is_some_and(|value| {
@@ -379,10 +379,7 @@ impl ManagedBootstrapEnvelope {
         update_binding_component(&mut digest, self.runtime_release_digest.as_bytes());
         update_optional_binding_component(&mut digest, self.managed_repository_root.as_deref());
         update_optional_binding_component(&mut digest, self.provider_rebuild_action_id.as_deref());
-        update_optional_binding_component(
-            &mut digest,
-            self.expected_data_volume_serial.as_deref(),
-        );
+        update_optional_binding_component(&mut digest, self.expected_data_volume_serial.as_deref());
         match self.expected_data_volume_size_gb {
             Some(size_gb) => {
                 digest.update([1]);
@@ -490,9 +487,7 @@ impl ManagedBootstrapGrantBinding {
         }
     }
 
-    pub(super) fn read_for_receipt(
-        receipt_path: &Path,
-    ) -> Result<Option<Self>, DaemonError> {
+    pub(super) fn read_for_receipt(receipt_path: &Path) -> Result<Option<Self>, DaemonError> {
         let path = managed_bootstrap_grant_binding_path(receipt_path)?;
         if !path.exists() {
             return Ok(None);
@@ -505,8 +500,8 @@ impl ManagedBootstrapGrantBinding {
     pub(super) fn persist_for_receipt(&self, receipt_path: &Path) -> Result<(), DaemonError> {
         self.validate()?;
         let path = managed_bootstrap_grant_binding_path(receipt_path)?;
-        let bytes = serde_json::to_vec_pretty(self)
-            .map_err(|error| state_error(&error.to_string()))?;
+        let bytes =
+            serde_json::to_vec_pretty(self).map_err(|error| state_error(&error.to_string()))?;
         if bytes.len() as u64 > MAX_STATE_BYTES {
             return Err(state_error("managed bootstrap grant binding is too large"));
         }
@@ -572,10 +567,7 @@ fn receipt_binding_digest(receipt: &BootstrapReceipt) -> String {
     update_binding_component(&mut digest, &receipt.generation.to_be_bytes());
     update_binding_component(&mut digest, receipt.relay_public_key.as_bytes());
     update_binding_component(&mut digest, receipt.runtime_release_digest.as_bytes());
-    update_optional_binding_component(
-        &mut digest,
-        receipt.managed_repository_root.as_deref(),
-    );
+    update_optional_binding_component(&mut digest, receipt.managed_repository_root.as_deref());
     format!("sha256:{:x}", digest.finalize())
 }
 
@@ -680,7 +672,9 @@ pub(super) fn validate_protected_bootstrap_file(
         .map_err(|error| state_error(&format!("inspect /etc for protected bootstrap: {error}")))?;
     let chariox_directory = Path::new("/etc/chariox");
     let chariox_metadata = fs::symlink_metadata(chariox_directory).map_err(|error| {
-        state_error(&format!("inspect /etc/chariox for protected bootstrap: {error}"))
+        state_error(&format!(
+            "inspect /etc/chariox for protected bootstrap: {error}"
+        ))
     })?;
     let directory_metadata = fs::symlink_metadata(directory)
         .map_err(|error| state_error(&format!("inspect protected bootstrap directory: {error}")))?;

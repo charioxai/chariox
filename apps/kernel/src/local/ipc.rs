@@ -194,9 +194,13 @@ async fn handle_connection(
     };
 
     let request = serde_json::from_slice::<LocalDaemonRequest>(&request_bytes);
-    if request.is_err() && serde_json::from_slice::<serde_json::Value>(&request_bytes)
-        .ok().is_some_and(|value| value.get("GuardedControlSession").is_some()) {
-        return guarded_session::handle(&router, &command_sequence, &mut stream, &request_bytes).await;
+    if request.is_err()
+        && serde_json::from_slice::<serde_json::Value>(&request_bytes)
+            .ok()
+            .is_some_and(|value| value.get("GuardedControlSession").is_some())
+    {
+        return guarded_session::handle(&router, &command_sequence, &mut stream, &request_bytes)
+            .await;
     }
     let envelope = match request {
         Ok(request) => {
@@ -441,7 +445,10 @@ async fn write_async_frame(
         })
 }
 
-async fn write_open_async_frame(stream: &mut tokio::net::UnixStream, payload: &[u8]) -> Result<(), DaemonError> {
+async fn write_open_async_frame(
+    stream: &mut tokio::net::UnixStream,
+    payload: &[u8],
+) -> Result<(), DaemonError> {
     let frame = encode_frame(payload)?;
     timeout(IPC_IO_TIMEOUT, stream.write_all(&frame))
         .await

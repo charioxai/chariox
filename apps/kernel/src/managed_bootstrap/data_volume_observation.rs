@@ -58,8 +58,9 @@ fn read_observation(path: &Path) -> Result<AdmissionObservation, DaemonError> {
     let parent = path
         .parent()
         .ok_or_else(|| observation_error("data-volume observation path is invalid"))?;
-    let parent_metadata = fs::symlink_metadata(parent)
-        .map_err(|_| observation_error("root-owned data-volume observation directory is missing"))?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| {
+        observation_error("root-owned data-volume observation directory is missing")
+    })?;
     if parent_metadata.file_type().is_symlink()
         || !parent_metadata.is_dir()
         || parent_metadata.uid() != 0
@@ -151,9 +152,7 @@ fn validate_current_mount(
             .split(',')
             .chain(filesystem_fields[2].split(','))
             .any(|option| matches!(option, "pquota" | "prjquota"));
-        mount_fields[2] == observation.major_minor
-            && filesystem_fields[0] == "xfs"
-            && quota_enabled
+        mount_fields[2] == observation.major_minor && filesystem_fields[0] == "xfs" && quota_enabled
     });
     if matches.next().is_none() || matches.next().is_some() {
         return Err(observation_error(
@@ -173,13 +172,19 @@ fn read_bounded(path: &Path, maximum: u64, label: &str) -> Result<String, Daemon
     String::from_utf8(bytes).map_err(|_| observation_error(&format!("{label} is not UTF-8")))
 }
 
-fn read_bounded_file(file: &mut impl Read, maximum: u64, label: &str) -> Result<Vec<u8>, DaemonError> {
+fn read_bounded_file(
+    file: &mut impl Read,
+    maximum: u64,
+    label: &str,
+) -> Result<Vec<u8>, DaemonError> {
     let mut bytes = Vec::new();
     file.take(maximum + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| observation_error(&format!("{label} could not be read")))?;
     if bytes.len() as u64 > maximum {
-        return Err(observation_error(&format!("{label} exceeds its size limit")));
+        return Err(observation_error(&format!(
+            "{label} exceeds its size limit"
+        )));
     }
     Ok(bytes)
 }
@@ -188,7 +193,9 @@ fn valid_volume_serial(value: &str) -> bool {
     (1..=16).contains(&value.len())
         && value.bytes().all(|byte| byte.is_ascii_digit())
         && value.as_bytes()[0] != b'0'
-        && value.parse::<u64>().is_ok_and(|number| number > 0 && number <= 9_007_199_254_740_991)
+        && value
+            .parse::<u64>()
+            .is_ok_and(|number| number > 0 && number <= 9_007_199_254_740_991)
 }
 
 fn valid_filesystem_uuid(value: &str) -> bool {
@@ -239,27 +246,18 @@ mod tests {
     #[test]
     fn admitted_identity_must_match_protected_volume_and_current_boot() {
         let value = observation();
-        assert!(validate_observation(
-            &value,
-            "01234567-89ab-cdef-0123-456789abcdef",
-            "12345",
-            10,
-        )
-        .is_ok());
-        assert!(validate_observation(
-            &value,
-            "fedcba98-7654-3210-fedc-ba9876543210",
-            "12345",
-            10,
-        )
-        .is_err());
-        assert!(validate_observation(
-            &value,
-            "01234567-89ab-cdef-0123-456789abcdef",
-            "54321",
-            10,
-        )
-        .is_err());
+        assert!(
+            validate_observation(&value, "01234567-89ab-cdef-0123-456789abcdef", "12345", 10,)
+                .is_ok()
+        );
+        assert!(
+            validate_observation(&value, "fedcba98-7654-3210-fedc-ba9876543210", "12345", 10,)
+                .is_err()
+        );
+        assert!(
+            validate_observation(&value, "01234567-89ab-cdef-0123-456789abcdef", "54321", 10,)
+                .is_err()
+        );
     }
 
     #[test]

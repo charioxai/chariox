@@ -21,17 +21,11 @@ fn quiescence_snapshot_history_is_bounded_by_exact_kind_and_kernel_after_restart
     let store = DurableKernelStateStore::open(path.clone()).expect("open durable store");
     for revision in 0..100 {
         store
-            .append_quiescence_snapshot(
-                "kernel-1",
-                serde_json::json!({"revision": revision}),
-            )
+            .append_quiescence_snapshot("kernel-1", serde_json::json!({"revision": revision}))
             .expect("append and compact quiescence snapshot");
     }
     store
-        .append_quiescence_snapshot(
-            "kernel-2",
-            serde_json::json!({"revision": 1}),
-        )
+        .append_quiescence_snapshot("kernel-2", serde_json::json!({"revision": 1}))
         .expect("append another kernel snapshot");
     store
         .append_event(
@@ -91,10 +85,7 @@ fn failed_quiescence_snapshot_prune_rolls_back_append_and_keeps_prior_snapshot()
     let path = database_path("rollback");
     let store = DurableKernelStateStore::open(path.clone()).expect("open durable store");
     store
-        .append_quiescence_snapshot(
-            "kernel-rollback",
-            serde_json::json!({"revision": 1}),
-        )
+        .append_quiescence_snapshot("kernel-rollback", serde_json::json!({"revision": 1}))
         .expect("append original snapshot");
 
     let failure_connection = Connection::open(&path).expect("open failure-injection connection");
@@ -110,10 +101,7 @@ fn failed_quiescence_snapshot_prune_rolls_back_append_and_keeps_prior_snapshot()
         )
         .expect("install deterministic prune failure");
     assert!(store
-        .append_quiescence_snapshot(
-            "kernel-rollback",
-            serde_json::json!({"revision": 2}),
-        )
+        .append_quiescence_snapshot("kernel-rollback", serde_json::json!({"revision": 2}),)
         .is_err());
     failure_connection
         .execute_batch("DROP TRIGGER fail_quiescence_snapshot_prune;")

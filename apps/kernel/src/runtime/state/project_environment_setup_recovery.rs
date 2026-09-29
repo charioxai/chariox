@@ -59,13 +59,7 @@ impl ValidationCommandLease {
         scratch_path: &Path,
     ) -> Result<Self, String> {
         let boot_id = current_boot_id()?;
-        Self::scratch_intent_for_boot(
-            operation_id,
-            attempt,
-            command_index,
-            scratch_path,
-            &boot_id,
-        )
+        Self::scratch_intent_for_boot(operation_id, attempt, command_index, scratch_path, &boot_id)
     }
 
     fn scratch_intent_for_boot(
@@ -101,7 +95,9 @@ impl ValidationCommandLease {
             || process.session_id != process.pid
             || process.start_time_ticks == 0
         {
-            return Err("validation process identity does not match its scratch intent".to_string());
+            return Err(
+                "validation process identity does not match its scratch intent".to_string(),
+            );
         }
         self.process = Some(process);
         Ok(())
@@ -141,13 +137,12 @@ impl ValidationProcessIdentity {
         self.process_group_id
     }
 
-    pub(super) fn from_child(
-        pid: u32,
-        expected_boot_id: &str,
-    ) -> Result<Self, String> {
+    pub(super) fn from_child(pid: u32, expected_boot_id: &str) -> Result<Self, String> {
         let boot_id = current_boot_id()?;
         if boot_id != expected_boot_id {
-            return Err("worker boot identity changed while validation child was starting".to_string());
+            return Err(
+                "worker boot identity changed while validation child was starting".to_string(),
+            );
         }
         let actual = read_proc_identity(pid)?;
         if actual.pid != pid || actual.process_group_id != pid || actual.session_id != pid {
@@ -161,7 +156,6 @@ impl ValidationProcessIdentity {
             start_time_ticks: actual.start_time_ticks,
         })
     }
-
 }
 
 pub(super) fn recover_validation_command(lease: &ValidationCommandLease) -> Result<(), String> {
@@ -195,7 +189,10 @@ fn recover_validation_command_for_boot(
             // Intent is committed before spawn and the wrapper cannot run the
             // user command until its identity is committed. With no process
             // identity there is no safe numeric group to signal or probe.
-            return Err("validation child identity was not durably recorded; cleanup is incomplete".to_string());
+            return Err(
+                "validation child identity was not durably recorded; cleanup is incomplete"
+                    .to_string(),
+            );
         }
     }
     remove_owned_validation_scratch(lease)
@@ -214,7 +211,9 @@ pub(in crate::runtime::state::project_environment_setup) fn cleanup_after_settle
             attempt,
             "owned validation scratch could not be removed after process settlement",
         );
-        return Err(format!("owned validation scratch could not be removed: {error}"));
+        return Err(format!(
+            "owned validation scratch could not be removed: {error}"
+        ));
     }
     if let Err(error) = store.clear_validation_command_lease(operation_id, attempt, command_index) {
         store.mark_validation_cleanup_incomplete(
@@ -227,23 +226,28 @@ pub(in crate::runtime::state::project_environment_setup) fn cleanup_after_settle
     Ok(())
 }
 
-
-fn remove_owned_validation_scratch(
-    lease: &ValidationCommandLease,
-) -> Result<(), String> {
+fn remove_owned_validation_scratch(lease: &ValidationCommandLease) -> Result<(), String> {
     validate_lease(lease)?;
     let expected_name = format!("{SCRATCH_PREFIX}{}", &lease.owner_token[7..]);
-    if lease.scratch_path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
+    if lease
+        .scratch_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(expected_name.as_str())
+    {
         return Err("validation scratch path does not match its operation identity".to_string());
     }
     let parent = lease
         .scratch_path
         .parent()
         .ok_or_else(|| "validation scratch path has no parent".to_string())?;
-    let canonical_parent = fs::canonicalize(parent)
-        .map_err(|error| format!("validation scratch parent could not be canonicalized: {error}"))?;
+    let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+        format!("validation scratch parent could not be canonicalized: {error}")
+    })?;
     if canonical_parent != parent || !allowed_scratch_roots().iter().any(|root| root == parent) {
-        return Err("validation scratch is outside the canonical worker temporary roots".to_string());
+        return Err(
+            "validation scratch is outside the canonical worker temporary roots".to_string(),
+        );
     }
     let parent_metadata = fs::symlink_metadata(parent)
         .map_err(|error| format!("validation scratch parent could not be inspected: {error}"))?;
@@ -254,14 +258,19 @@ fn remove_owned_validation_scratch(
     let directory = match fs::symlink_metadata(&lease.scratch_path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("validation scratch could not be inspected: {error}")),
+        Err(error) => {
+            return Err(format!(
+                "validation scratch could not be inspected: {error}"
+            ))
+        }
     };
     if directory.file_type().is_symlink() || !directory.is_dir() {
         return Err("validation scratch is not an owned real directory".to_string());
     }
     let marker_path = lease.scratch_path.join(OWNER_MARKER);
-    let marker_metadata = fs::symlink_metadata(&marker_path)
-        .map_err(|error| format!("validation scratch owner marker could not be inspected: {error}"))?;
+    let marker_metadata = fs::symlink_metadata(&marker_path).map_err(|error| {
+        format!("validation scratch owner marker could not be inspected: {error}")
+    })?;
     if marker_metadata.file_type().is_symlink() || !marker_metadata.is_file() {
         return Err("validation scratch owner marker is not a regular file".to_string());
     }
@@ -288,13 +297,13 @@ fn remove_owned_validation_scratch(
     match fs::symlink_metadata(&lease.scratch_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Ok(_) => Err("owned validation scratch remains after cleanup".to_string()),
-        Err(error) => Err(format!("validation scratch cleanup could not be verified: {error}")),
+        Err(error) => Err(format!(
+            "validation scratch cleanup could not be verified: {error}"
+        )),
     }
 }
 
-fn validate_live_child_identity(
-    identity: &ValidationProcessIdentity,
-) -> Result<(), String> {
+fn validate_live_child_identity(identity: &ValidationProcessIdentity) -> Result<(), String> {
     if current_boot_id()? != identity.boot_id {
         return Err("validation child belongs to a different worker boot".to_string());
     }
@@ -327,20 +336,27 @@ fn process_group_is_absent(_process_group_id: u32) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "linux")]
-pub(in crate::runtime::state::project_environment_setup) fn open_pidfd(pid: u32) -> Result<File, String> {
+pub(in crate::runtime::state::project_environment_setup) fn open_pidfd(
+    pid: u32,
+) -> Result<File, String> {
     use std::os::fd::FromRawFd;
     if pid <= 1 || pid > i32::MAX as u32 {
         return Err("validation child PID is invalid".to_string());
     }
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) as i32 };
     if fd < 0 {
-        return Err(format!("validation child pidfd could not be opened: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "validation child pidfd could not be opened: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(in crate::runtime::state::project_environment_setup) fn open_pidfd(_pid: u32) -> Result<File, String> {
+pub(in crate::runtime::state::project_environment_setup) fn open_pidfd(
+    _pid: u32,
+) -> Result<File, String> {
     Err("durable validation process recovery is unsupported on this platform".to_string())
 }
 
@@ -452,9 +468,11 @@ pub(in crate::runtime::state::project_environment_setup) fn wait_child_or_cancel
             message: format!("validation child could not be reaped: {error}"),
             process_group_settled: false,
         })?;
-        wait_for_process_group_absence(identity.process_group_id).map_err(|message| ProcessRunError {
-            message,
-            process_group_settled: false,
+        wait_for_process_group_absence(identity.process_group_id).map_err(|message| {
+            ProcessRunError {
+                message,
+                process_group_settled: false,
+            }
         })?;
         return Ok(status);
     }
@@ -541,7 +559,9 @@ fn settle_process_group(identity: &ValidationProcessIdentity) -> Result<(), Stri
     let stop_deadline = Instant::now() + STOP_TIMEOUT;
     loop {
         match read_proc_identity(identity.pid) {
-            Ok(current) if matches_identity(&current, identity) && matches!(current.state, 'T' | 't') => {
+            Ok(current)
+                if matches_identity(&current, identity) && matches!(current.state, 'T' | 't') =>
+            {
                 break;
             }
             Ok(current)
@@ -553,7 +573,9 @@ fn settle_process_group(identity: &ValidationProcessIdentity) -> Result<(), Stri
             Ok(_) | Err(_) => return wait_for_process_group_absence(identity.process_group_id),
         }
         if Instant::now() >= stop_deadline {
-            return Err("owned validation child could not be stopped for safe group cleanup".to_string());
+            return Err(
+                "owned validation child could not be stopped for safe group cleanup".to_string(),
+            );
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -569,7 +591,9 @@ fn settle_process_group(identity: &ValidationProcessIdentity) -> Result<(), Stri
 fn kill_stopped_process_group(identity: &ValidationProcessIdentity) -> Result<(), String> {
     let stopped = read_proc_identity(identity.pid)?;
     if !matches_identity(&stopped, identity) || !matches!(stopped.state, 'T' | 't') {
-        return Err("validation child identity changed before process-group termination".to_string());
+        return Err(
+            "validation child identity changed before process-group termination".to_string(),
+        );
     }
     let result = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };
     if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
@@ -599,7 +623,10 @@ fn send_pidfd_signal(pidfd: &File, signal: libc::c_int) -> Result<(), String> {
     if result == 0 {
         Ok(())
     } else {
-        Err(format!("validation child could not be signalled by pidfd: {}", std::io::Error::last_os_error()))
+        Err(format!(
+            "validation child could not be signalled by pidfd: {}",
+            std::io::Error::last_os_error()
+        ))
     }
 }
 
@@ -608,14 +635,19 @@ fn send_pidfd_signal(_pidfd: &File, _signal: libc::c_int) -> Result<(), String> 
     Err("durable validation process recovery is unsupported on this platform".to_string())
 }
 
-pub(in crate::runtime::state::project_environment_setup) fn wait_for_process_group_absence(process_group_id: u32) -> Result<(), String> {
+pub(in crate::runtime::state::project_environment_setup) fn wait_for_process_group_absence(
+    process_group_id: u32,
+) -> Result<(), String> {
     let deadline = Instant::now() + GROUP_SETTLE_TIMEOUT;
     loop {
         if process_group_is_absent(process_group_id)? {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err("validation process group did not become absent before cleanup deadline".to_string());
+            return Err(
+                "validation process group did not become absent before cleanup deadline"
+                    .to_string(),
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -678,7 +710,10 @@ fn allowed_scratch_roots() -> Vec<PathBuf> {
     roots
         .into_iter()
         .filter_map(|root| fs::canonicalize(root).ok())
-        .filter(|root| fs::symlink_metadata(root).is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink()))
+        .filter(|root| {
+            fs::symlink_metadata(root)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        })
         .collect()
 }
 
@@ -750,13 +785,8 @@ mod tests {
     fn scratch_recovery_requires_exact_marker_and_preserves_symlink_or_tampering() {
         let root = test_root("marker");
         let scratch = make_scratch(&root, "marker-op", 1, 0);
-        let lease = ValidationCommandLease::scratch_intent(
-            "marker-op",
-            1,
-            0,
-            scratch.path(),
-        )
-        .expect("the test lease should be created");
+        let lease = ValidationCommandLease::scratch_intent("marker-op", 1, 0, scratch.path())
+            .expect("the test lease should be created");
 
         fs::write(scratch.path().join(OWNER_MARKER), b"foreign owner")
             .expect("the marker should be tampered");
@@ -768,8 +798,11 @@ mod tests {
         std::os::unix::fs::symlink(root.join("foreign"), scratch.path().join(OWNER_MARKER))
             .expect("the foreign marker symlink should be installed");
         #[cfg(not(unix))]
-        fs::write(scratch.path().join(OWNER_MARKER), lease.owner_token.as_bytes())
-            .expect("the expected marker should be restored");
+        fs::write(
+            scratch.path().join(OWNER_MARKER),
+            lease.owner_token.as_bytes(),
+        )
+        .expect("the expected marker should be restored");
         assert!(remove_owned_validation_scratch(&lease).is_err());
         assert!(scratch.path().exists());
         #[cfg(unix)]
@@ -801,24 +834,23 @@ mod tests {
             &current_boot_id().expect("the Linux boot id should be available"),
         )
         .expect("the fixture process should have an exact Linux identity");
-        let mut lease = ValidationCommandLease::scratch_intent(
-            "live-group-op",
-            1,
-            0,
-            scratch.path(),
-        )
-        .expect("the test lease should be created");
+        let mut lease =
+            ValidationCommandLease::scratch_intent("live-group-op", 1, 0, scratch.path())
+                .expect("the test lease should be created");
         lease
             .bind_process(identity.clone())
             .expect("the fixture process should bind to the lease");
 
         let reaper = std::thread::spawn(move || {
             let mut child = child;
-            child.wait().expect("the killed fixture process should be reaped")
+            child
+                .wait()
+                .expect("the killed fixture process should be reaped")
         });
         recover_validation_command(&lease).expect("the owned group should be killed and settled");
         assert!(!scratch.path().exists());
-        assert!(process_group_is_absent(identity.process_group_id).expect("the group should be readable"));
+        assert!(process_group_is_absent(identity.process_group_id)
+            .expect("the group should be readable"));
         let _ = reaper.join().expect("the fixture reaper should complete");
         let _ = fs::remove_dir_all(&root);
     }
@@ -846,20 +878,16 @@ mod tests {
         )
         .expect("the fixture identity should be readable");
         identity.start_time_ticks = identity.start_time_ticks.saturating_add(1);
-        let mut lease = ValidationCommandLease::scratch_intent(
-            "mismatch-op",
-            1,
-            0,
-            scratch.path(),
-        )
-        .expect("the test lease should be created");
+        let mut lease = ValidationCommandLease::scratch_intent("mismatch-op", 1, 0, scratch.path())
+            .expect("the test lease should be created");
         lease
             .bind_process(identity.clone())
             .expect("the mismatched identity remains structurally valid");
 
         assert!(recover_validation_command(&lease).is_err());
         assert!(scratch.path().exists());
-        assert!(!process_group_is_absent(identity.process_group_id).expect("the group should be readable"));
+        assert!(!process_group_is_absent(identity.process_group_id)
+            .expect("the group should be readable"));
         let _ = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };
         let _ = child.wait();
         let _ = fs::remove_dir_all(scratch.path());
@@ -883,19 +911,17 @@ mod tests {
                 Ok(())
             });
         }
-        let mut child = command.spawn().expect("the foreign fixture process should start");
+        let mut child = command
+            .spawn()
+            .expect("the foreign fixture process should start");
         let identity = ValidationProcessIdentity::from_child(
             child.id(),
             &current_boot_id().expect("the Linux boot id should be available"),
         )
         .expect("the fixture process identity should be readable");
-        let mut lease = ValidationCommandLease::scratch_intent(
-            "foreign-pid-op",
-            1,
-            0,
-            scratch.path(),
-        )
-        .expect("the test lease should be created");
+        let mut lease =
+            ValidationCommandLease::scratch_intent("foreign-pid-op", 1, 0, scratch.path())
+                .expect("the test lease should be created");
         lease
             .bind_process(identity.clone())
             .expect("the fixture identity should bind before corruption");
@@ -907,7 +933,8 @@ mod tests {
 
         assert!(recover_validation_command(&lease).is_err());
         assert!(scratch.path().exists());
-        assert!(!process_group_is_absent(identity.process_group_id).expect("the fixture group should be readable"));
+        assert!(!process_group_is_absent(identity.process_group_id)
+            .expect("the fixture group should be readable"));
         let _ = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };
         let _ = child.wait();
         let _ = fs::remove_dir_all(scratch.path());
@@ -941,12 +968,18 @@ mod tests {
         }
         let mut leader = command.spawn().expect("the fixture leader should start");
         let leader_pid = leader.id();
-        let _gate = leader.stdin.take().expect("the fixture leader should wait on stdin");
+        let _gate = leader
+            .stdin
+            .take()
+            .expect("the fixture leader should wait on stdin");
         let deadline = Instant::now() + Duration::from_secs(1);
         while !descendant_pid_path.exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(descendant_pid_path.exists(), "the fixture descendant should start");
+        assert!(
+            descendant_pid_path.exists(),
+            "the fixture descendant should start"
+        );
         let identity = ValidationProcessIdentity::from_child(
             leader_pid,
             &current_boot_id().expect("the Linux boot ID should be available"),
@@ -957,23 +990,23 @@ mod tests {
             .trim()
             .parse::<u32>()
             .expect("the fixture descendant PID should be numeric");
-        let descendant = read_proc_identity(descendant_pid)
-            .expect("the fixture descendant should remain live");
+        let descendant =
+            read_proc_identity(descendant_pid).expect("the fixture descendant should remain live");
         assert_eq!(descendant.process_group_id, leader_pid);
         assert_eq!(descendant.session_id, leader_pid);
 
-        let mut lease = ValidationCommandLease::scratch_intent(
-            "missing-leader-op",
-            1,
-            0,
-            scratch.path(),
-        )
-        .expect("the test lease should be created");
+        let mut lease =
+            ValidationCommandLease::scratch_intent("missing-leader-op", 1, 0, scratch.path())
+                .expect("the test lease should be created");
         lease
             .bind_process(identity.clone())
             .expect("the leader identity should bind to the lease");
-        leader.kill().expect("the exact group leader should be terminated");
-        leader.wait().expect("the exact group leader should be reaped");
+        leader
+            .kill()
+            .expect("the exact group leader should be terminated");
+        leader
+            .wait()
+            .expect("the exact group leader should be reaped");
 
         let error = recover_validation_command(&lease)
             .expect_err("a leaderless surviving group must remain explicitly incomplete");
@@ -994,13 +1027,9 @@ mod tests {
     fn malformed_boot_identity_cannot_authorize_scratch_cleanup() {
         let root = test_root("malformed-boot");
         let scratch = make_scratch(&root, "malformed-boot-op", 1, 0);
-        let mut lease = ValidationCommandLease::scratch_intent(
-            "malformed-boot-op",
-            1,
-            0,
-            scratch.path(),
-        )
-        .expect("the test lease should be created");
+        let mut lease =
+            ValidationCommandLease::scratch_intent("malformed-boot-op", 1, 0, scratch.path())
+                .expect("the test lease should be created");
         lease.boot_id = "not-a-kernel-boot-id".to_string();
 
         assert!(recover_validation_command(&lease).is_err());
@@ -1026,7 +1055,9 @@ mod tests {
                 Ok(())
             });
         }
-        let mut child = command.spawn().expect("the foreign fixture process should start");
+        let mut child = command
+            .spawn()
+            .expect("the foreign fixture process should start");
         let proc_identity = read_proc_identity(child.id())
             .expect("the fixture process identity should be readable without boot-file access");
         let prior_boot = "00000000-0000-0000-0000-000000000001";
@@ -1056,8 +1087,13 @@ mod tests {
         let scratch_remains = scratch.path().exists();
         let _ = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };
         let _ = child.wait();
-        recovery.expect("a verified prior boot permits owner-checked cleanup despite uncertain pipes");
-        assert_eq!(group_absent, Ok(false), "the modeled old PID must not be signalled");
+        recovery
+            .expect("a verified prior boot permits owner-checked cleanup despite uncertain pipes");
+        assert_eq!(
+            group_absent,
+            Ok(false),
+            "the modeled old PID must not be signalled"
+        );
         assert!(!scratch_remains);
         let _ = fs::remove_dir_all(&root);
     }
@@ -1103,7 +1139,10 @@ mod tests {
         .expect("the modeled scratch intent should be valid");
 
         assert!(recover_validation_command_for_boot(&lease, prior_boot).is_err());
-        assert!(scratch.path().exists(), "same-boot missing process identity is not absence proof");
+        assert!(
+            scratch.path().exists(),
+            "same-boot missing process identity is not absence proof"
+        );
         recover_validation_command_for_boot(&lease, current_boot)
             .expect("a verified reboot proves the gated child cannot remain");
         assert!(!scratch.path().exists());
@@ -1130,7 +1169,10 @@ mod tests {
         fs::write(scratch.path().join(OWNER_MARKER), b"foreign owner")
             .expect("the owner marker should be tampered");
         assert!(recover_validation_command_for_boot(&lease, current_boot).is_err());
-        assert!(scratch.path().exists(), "cross-boot cleanup must preserve a foreign marker");
+        assert!(
+            scratch.path().exists(),
+            "cross-boot cleanup must preserve a foreign marker"
+        );
         fs::write(
             scratch.path().join(OWNER_MARKER),
             lease.owner_token.as_bytes(),
@@ -1152,8 +1194,14 @@ mod tests {
         .expect("the outside fixture should carry the matching owner marker");
         lease.scratch_path = foreign_path.clone();
         assert!(recover_validation_command_for_boot(&lease, current_boot).is_err());
-        assert!(foreign_path.exists(), "a matching marker cannot authorize an outside root");
-        assert!(scratch.path().exists(), "failed outside-path validation leaves original scratch intact");
+        assert!(
+            foreign_path.exists(),
+            "a matching marker cannot authorize an outside root"
+        );
+        assert!(
+            scratch.path().exists(),
+            "failed outside-path validation leaves original scratch intact"
+        );
 
         let _ = fs::remove_dir_all(foreign_parent);
         let _ = fs::remove_dir_all(scratch.path());
@@ -1180,7 +1228,10 @@ mod tests {
             let mut environment = BTreeMap::new();
             environment.insert(
                 "LEASE_TEST_SENTINEL".to_string(),
-                runner_root.join("command-ran").to_string_lossy().into_owned(),
+                runner_root
+                    .join("command-ran")
+                    .to_string_lossy()
+                    .into_owned(),
             );
             super::super::project_environment_setup_validation::run_worker_validation_command_with_hook(
                 "printf passed > \"$LEASE_TEST_SENTINEL\"",
@@ -1205,7 +1256,10 @@ mod tests {
         persisted_rx
             .recv_timeout(Duration::from_secs(3))
             .expect("the process identity should be durable before command start");
-        assert!(!sentinel.exists(), "user code must remain behind the process lease gate");
+        assert!(
+            !sentinel.exists(),
+            "user code must remain behind the process lease gate"
+        );
         let events = durable
             .load_events_by_kind("project.environment_setup.updated")
             .expect("the setup journal should be readable");
@@ -1217,9 +1271,13 @@ mod tests {
         assert!(lease["process"].is_object());
         assert!(lease["scratch_path"].is_string());
 
-        release_tx.send(()).expect("the start gate should be released");
+        release_tx
+            .send(())
+            .expect("the start gate should be released");
         assert_eq!(
-            runner.join().expect("the production runner should finish")
+            runner
+                .join()
+                .expect("the production runner should finish")
                 .expect("the project command should complete"),
             (0, 0, 0)
         );
@@ -1340,12 +1398,18 @@ mod tests {
             Duration::from_millis(40),
         );
         let error = result.expect_err("a detached writer must not hold validation indefinitely");
-        assert!(error.contains("output pipes remained open"), "unexpected error: {error}");
+        assert!(
+            error.contains("output pipes remained open"),
+            "unexpected error: {error}"
+        );
         assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(scratch_path.exists(), "scratch remains while detached output may be active");
-        let writer_identity = fixture
-            .live_identity()
-            .expect("the parent must wait until the detached writer has escaped and retained stdout");
+        assert!(
+            scratch_path.exists(),
+            "scratch remains while detached output may be active"
+        );
+        let writer_identity = fixture.live_identity().expect(
+            "the parent must wait until the detached writer has escaped and retained stdout",
+        );
         assert_eq!(writer_identity.process_group_id, writer_identity.pid);
         assert_eq!(writer_identity.session_id, writer_identity.pid);
 
@@ -1362,13 +1426,14 @@ mod tests {
             event.payload["entry"]["status"]["failure_code"],
             "validation_cleanup_incomplete"
         );
-        assert_eq!(
-            event.payload["entry"]["status"]["retryable"],
-            false
-        );
+        assert_eq!(event.payload["entry"]["status"]["retryable"], false);
 
-        let _restored = super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
-        assert!(scratch_path.exists(), "restart must preserve scratch with uncertain output ownership");
+        let _restored =
+            super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
+        assert!(
+            scratch_path.exists(),
+            "restart must preserve scratch with uncertain output ownership"
+        );
         let restored_event = durable
             .load_events_by_kind("project.environment_setup.updated")
             .expect("the restored cleanup state should be readable")
@@ -1386,7 +1451,10 @@ mod tests {
         fixture
             .cleanup()
             .expect("the exact detached writer should be reaped before owned scratch cleanup");
-        assert!(!scratch_path.exists(), "the test-owned scratch should be removed after writer cleanup");
+        assert!(
+            !scratch_path.exists(),
+            "the test-owned scratch should be removed after writer cleanup"
+        );
     }
 
     struct DetachedOutputWriterFixture<'a> {
@@ -1487,10 +1555,14 @@ exit 0
             {
                 return Err("detached writer process identity changed before cleanup".to_string());
             }
-            let stdout_target = fs::read_link(PathBuf::from(format!("/proc/{pid}/fd/1")))
-                .map_err(|error| format!("detached writer stdout could not be inspected: {error}"))?;
+            let stdout_target =
+                fs::read_link(PathBuf::from(format!("/proc/{pid}/fd/1"))).map_err(|error| {
+                    format!("detached writer stdout could not be inspected: {error}")
+                })?;
             if !stdout_target.to_string_lossy().starts_with("pipe:[") {
-                return Err("detached writer no longer holds the validation stdout pipe".to_string());
+                return Err(
+                    "detached writer no longer holds the validation stdout pipe".to_string()
+                );
             }
             Ok(ValidationProcessIdentity {
                 boot_id: current_boot_id()?,
@@ -1518,8 +1590,9 @@ exit 0
             if self.scratch.path().exists() {
                 self.scratch.cleanup()?;
             }
-            fs::remove_dir_all(self.root)
-                .map_err(|error| format!("test-owned detached writer root could not be removed: {error}"))
+            fs::remove_dir_all(self.root).map_err(|error| {
+                format!("test-owned detached writer root could not be removed: {error}")
+            })
         }
     }
 
@@ -1538,17 +1611,16 @@ exit 0
         let (store, durable) = durable_setup_store(&root, "restore-live-group-op");
         let scratch = make_scratch(&root, "restore-live-group-op", 1, 0);
         let home_cache = root.join("home/.cache/project-tool/cache-entry");
-        fs::create_dir_all(home_cache.parent().expect("cache entry should have a parent"))
-            .expect("durable HOME cache should be created");
+        fs::create_dir_all(
+            home_cache
+                .parent()
+                .expect("cache entry should have a parent"),
+        )
+        .expect("durable HOME cache should be created");
         fs::write(&home_cache, b"preserve durable cache")
             .expect("durable HOME cache should be populated");
         store
-            .persist_validation_scratch_intent(
-                "restore-live-group-op",
-                1,
-                0,
-                scratch.path(),
-            )
+            .persist_validation_scratch_intent("restore-live-group-op", 1, 0, scratch.path())
             .expect("scratch intent should be durably recorded");
         let mut command = Command::new("/bin/sleep");
         command.arg("30").stdin(Stdio::null());
@@ -1560,21 +1632,19 @@ exit 0
                 Ok(())
             });
         }
-        let child = command.spawn().expect("the fixture validation process should start");
+        let child = command
+            .spawn()
+            .expect("the fixture validation process should start");
         store
-            .persist_validation_process_identity(
-                "restore-live-group-op",
-                1,
-                0,
-                child.id(),
-            )
+            .persist_validation_process_identity("restore-live-group-op", 1, 0, child.id())
             .expect("the exact fixture process identity should be recorded");
         let reaper = std::thread::spawn(move || {
             let mut child = child;
             child.wait().expect("the restored child should be reaped")
         });
 
-        let restored = super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
+        let restored =
+            super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
         let entries = restored
             .entries
             .lock()
@@ -1582,14 +1652,23 @@ exit 0
         let entry = entries
             .get("restore-live-group-op")
             .expect("the setup operation should restore");
-        assert_eq!(entry.status.phase, super::super::ProjectEnvironmentSetupPhase::Failed);
-        assert_eq!(entry.status.failure_code.as_deref(), Some("kernel_restarted"));
+        assert_eq!(
+            entry.status.phase,
+            super::super::ProjectEnvironmentSetupPhase::Failed
+        );
+        assert_eq!(
+            entry.status.failure_code.as_deref(),
+            Some("kernel_restarted")
+        );
         assert!(entry.status.retryable);
         assert!(entry.validation_command_lease.is_none());
         drop(entries);
         let _ = reaper.join().expect("the process reaper should finish");
         assert!(!scratch.path().exists());
-        assert_eq!(fs::read(&home_cache).expect("durable cache should remain"), b"preserve durable cache");
+        assert_eq!(
+            fs::read(&home_cache).expect("durable cache should remain"),
+            b"preserve durable cache"
+        );
 
         let event = durable
             .load_events_by_kind("project.environment_setup.updated")
@@ -1598,8 +1677,14 @@ exit 0
             .expect("the restart failure should have an event");
         let persisted = serde_json::from_value::<super::super::PersistedSetupEntry>(event.payload)
             .expect("the durable setup event should decode");
-        assert_eq!(persisted.entry.status.phase, super::super::ProjectEnvironmentSetupPhase::Failed);
-        assert_eq!(persisted.entry.status.failure_code.as_deref(), Some("kernel_restarted"));
+        assert_eq!(
+            persisted.entry.status.phase,
+            super::super::ProjectEnvironmentSetupPhase::Failed
+        );
+        assert_eq!(
+            persisted.entry.status.failure_code.as_deref(),
+            Some("kernel_restarted")
+        );
         assert!(persisted.entry.validation_command_lease.is_none());
         let _ = fs::remove_dir_all(&root);
     }
@@ -1614,13 +1699,19 @@ exit 0
             .persist_validation_scratch_intent("intent-only-op", 1, 0, scratch.path())
             .expect("pre-spawn scratch intent should be persisted");
 
-        let restored = super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
+        let restored =
+            super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
         let entries = restored
             .entries
             .lock()
             .expect("restored state should be readable");
-        let entry = entries.get("intent-only-op").expect("the operation should restore");
-        assert_eq!(entry.status.phase, super::super::ProjectEnvironmentSetupPhase::Failed);
+        let entry = entries
+            .get("intent-only-op")
+            .expect("the operation should restore");
+        assert_eq!(
+            entry.status.phase,
+            super::super::ProjectEnvironmentSetupPhase::Failed
+        );
         assert_eq!(
             entry.status.failure_code.as_deref(),
             Some("validation_cleanup_incomplete")
@@ -1628,7 +1719,10 @@ exit 0
         assert!(!entry.status.retryable);
         assert!(entry.validation_command_lease.is_some());
         drop(entries);
-        assert!(scratch.path().exists(), "missing identity is not proof of absence");
+        assert!(
+            scratch.path().exists(),
+            "missing identity is not proof of absence"
+        );
 
         let event = durable
             .load_events_by_kind("project.environment_setup.updated")
@@ -1655,7 +1749,8 @@ exit 0
             entry.validation_command_lease = None;
         }));
 
-        let restored = super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
+        let restored =
+            super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
         let entries = restored
             .entries
             .lock()
@@ -1663,7 +1758,10 @@ exit 0
         let entry = entries
             .get("legacy-validation-op")
             .expect("the legacy setup operation should restore");
-        assert_eq!(entry.status.phase, super::super::ProjectEnvironmentSetupPhase::Failed);
+        assert_eq!(
+            entry.status.phase,
+            super::super::ProjectEnvironmentSetupPhase::Failed
+        );
         assert_eq!(
             entry.status.failure_code.as_deref(),
             Some("validation_cleanup_incomplete")
@@ -1687,10 +1785,12 @@ exit 0
 
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn non_linux_restart_records_unsupported_recovery_without_blocking_command_execution_contract() {
+    fn non_linux_restart_records_unsupported_recovery_without_blocking_command_execution_contract()
+    {
         let root = test_root("nonlinux-restart-recovery");
         let (_store, durable) = durable_setup_store(&root, "nonlinux-restart-recovery-op");
-        let _restored = super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
+        let _restored =
+            super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
         let event = durable
             .load_events_by_kind("project.environment_setup.updated")
             .expect("the unsupported recovery status should be readable")
@@ -1747,7 +1847,8 @@ exit 0
     ) {
         let durable = super::super::DurableKernelStateStore::open(root.join("state.sqlite"))
             .expect("the durable state store should open");
-        let store = super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
+        let store =
+            super::super::ProjectEnvironmentSetupStore::restore_from_durable_state(&durable);
         begin_validation(&store, operation_id);
         (store, durable)
     }

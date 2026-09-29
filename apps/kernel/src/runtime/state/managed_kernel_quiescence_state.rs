@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::durable_state::{DurableKernelStateStore, QUIESCENCE_STATE_SNAPSHOT_KIND};
 use crate::error::DaemonError;
 
-use super::managed_activity_persistence::{ManagedActivityObservation, ManagedActivityTransitionState};
+use super::managed_activity_persistence::{
+    ManagedActivityObservation, ManagedActivityTransitionState,
+};
 
 const QUIESCENCE_EVENT_KIND: &str = QUIESCENCE_STATE_SNAPSHOT_KIND;
 const QUIESCENCE_STATE_SCHEMA_VERSION: u8 = 1;
@@ -134,7 +136,9 @@ impl ManagedKernelQuiescenceGate {
             .last()
             .map(|event| {
                 let state: PersistedQuiescenceState = serde_json::from_value(event.payload)
-                    .map_err(|error| quiescence_error(format!("stored quiescence state is invalid: {error}")))?;
+                    .map_err(|error| {
+                        quiescence_error(format!("stored quiescence state is invalid: {error}"))
+                    })?;
                 let (state, migrated) = normalize_persisted_state(state, &kernel_id)?;
                 if migrated {
                     persist_quiescence_state(&store, &kernel_id, &state)?;
@@ -215,7 +219,9 @@ impl ManagedKernelQuiescenceGate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(error) = &inner.restore_error {
-            return Err(quiescence_error(format!("admission is closed because quiescence state could not be restored: {error}")));
+            return Err(quiescence_error(format!(
+                "admission is closed because quiescence state could not be restored: {error}"
+            )));
         }
         if inner
             .state
@@ -277,9 +283,12 @@ impl ManagedKernelQuiescenceGate {
             if !challenge_is_after_replay_floor(&inner.state, &challenge) {
                 return Ok(false);
             }
-            if inner.state.tombstones.iter().any(|tombstone| {
-                tombstone.challenge.challenge_id == challenge.challenge_id
-            }) {
+            if inner
+                .state
+                .tombstones
+                .iter()
+                .any(|tombstone| tombstone.challenge.challenge_id == challenge.challenge_id)
+            {
                 return Ok(false);
             }
             if let Some(existing) = inner.state.reservation.as_ref() {
@@ -289,11 +298,9 @@ impl ManagedKernelQuiescenceGate {
                     return Ok(false);
                 }
                 if existing.challenge == challenge {
-                    if existing
-                        .decisions
-                        .iter()
-                        .any(|decision| decision.outcome == ManagedKernelQuiescenceOutcome::KeepRunning)
-                    {
+                    if existing.decisions.iter().any(|decision| {
+                        decision.outcome == ManagedKernelQuiescenceOutcome::KeepRunning
+                    }) {
                         return Ok(false);
                     }
                     if existing.admission_fenced {
@@ -356,7 +363,9 @@ impl ManagedKernelQuiescenceGate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(error) = &inner.restore_error {
-            return Err(quiescence_error(format!("cannot apply Cloud release without restored state: {error}")));
+            return Err(quiescence_error(format!(
+                "cannot apply Cloud release without restored state: {error}"
+            )));
         }
         if let Some(tombstone) = inner
             .state
@@ -371,10 +380,14 @@ impl ManagedKernelQuiescenceGate {
             {
                 return Ok(());
             }
-            return Err(quiescence_error("Cloud release conflicts with a durable challenge tombstone"));
+            return Err(quiescence_error(
+                "Cloud release conflicts with a durable challenge tombstone",
+            ));
         }
         if !challenge_is_after_replay_floor(&inner.state, challenge) {
-            return Err(quiescence_error("Cloud release replays a canceled or stale quiescence challenge"));
+            return Err(quiescence_error(
+                "Cloud release replays a canceled or stale quiescence challenge",
+            ));
         }
         let existing_matches = inner
             .state
@@ -394,7 +407,9 @@ impl ManagedKernelQuiescenceGate {
                 drop(inner);
                 return self.record_pre_dispatch_keep_running(challenge, result_sequence, current);
             }
-            return Err(quiescence_error("Cloud release has no matching durable reservation"));
+            return Err(quiescence_error(
+                "Cloud release has no matching durable reservation",
+            ));
         }
         let existing = inner
             .state
@@ -402,7 +417,9 @@ impl ManagedKernelQuiescenceGate {
             .as_ref()
             .expect("matching reservation was checked");
         if &existing.challenge != challenge {
-            return Err(quiescence_error("Cloud release does not match the durable reservation"));
+            return Err(quiescence_error(
+                "Cloud release does not match the durable reservation",
+            ));
         }
         if existing.decisions.iter().any(|decision| {
             decision.outcome == outcome && decision.result_sequence == result_sequence
@@ -416,7 +433,9 @@ impl ManagedKernelQuiescenceGate {
                     || outcome != ManagedKernelQuiescenceOutcome::KeepRunning
             })
         {
-            return Err(quiescence_error("Cloud release sequence or outcome is not authoritative"));
+            return Err(quiescence_error(
+                "Cloud release sequence or outcome is not authoritative",
+            ));
         }
         let mut state = inner.state.clone();
         let tombstone = {
@@ -429,8 +448,7 @@ impl ManagedKernelQuiescenceGate {
                 result_sequence,
             });
             reservation.admission_fenced = outcome != ManagedKernelQuiescenceOutcome::KeepRunning;
-            (outcome == ManagedKernelQuiescenceOutcome::KeepRunning)
-                .then(|| reservation.clone())
+            (outcome == ManagedKernelQuiescenceOutcome::KeepRunning).then(|| reservation.clone())
         };
         if let Some(tombstone) = tombstone {
             remember_canceled_challenge(&mut state, tombstone)?;
@@ -449,7 +467,9 @@ impl ManagedKernelQuiescenceGate {
         current: impl FnOnce() -> Result<(u64, ManagedActivityObservation), DaemonError>,
     ) -> Result<(), DaemonError> {
         if result_sequence != 1 {
-            return Err(quiescence_error("pre-dispatch keep-running must be the first challenge decision"));
+            return Err(quiescence_error(
+                "pre-dispatch keep-running must be the first challenge decision",
+            ));
         }
         let _mutation = self
             .mutation_lock
@@ -457,7 +477,9 @@ impl ManagedKernelQuiescenceGate {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (transition_sequence, observation) = current()?;
         if observation.running_agent_count != 0 {
-            return Err(quiescence_error("pre-dispatch keep-running release is not bound to current idle activity"));
+            return Err(quiescence_error(
+                "pre-dispatch keep-running release is not bound to current idle activity",
+            ));
         }
         let mut inner = self
             .inner
@@ -470,10 +492,14 @@ impl ManagedKernelQuiescenceGate {
                 .as_ref()
                 .is_some_and(|reservation| reservation.admission_fenced)
         {
-            return Err(quiescence_error("pre-dispatch keep-running cannot alter an active admission fence"));
+            return Err(quiescence_error(
+                "pre-dispatch keep-running cannot alter an active admission fence",
+            ));
         }
         if !challenge_is_after_replay_floor(&inner.state, challenge) {
-            return Err(quiescence_error("pre-dispatch keep-running replays a canceled or stale challenge"));
+            return Err(quiescence_error(
+                "pre-dispatch keep-running replays a canceled or stale challenge",
+            ));
         }
         let current_confirmation = inner.confirmed_activity;
         if !current_confirmation.is_some_and(|confirmed| {
@@ -482,12 +508,19 @@ impl ManagedKernelQuiescenceGate {
                 && confirmed.running_agent_count == 0
                 && confirmed.changed_at_ms == observation.changed_at_ms
         }) {
-            return Err(quiescence_error("pre-dispatch keep-running release is stale or unconfirmed"));
+            return Err(quiescence_error(
+                "pre-dispatch keep-running release is stale or unconfirmed",
+            ));
         }
-        if inner.state.reservation.as_ref().is_some_and(|reservation| {
-            reservation.challenge.challenge_id == challenge.challenge_id
-        }) {
-            return Err(quiescence_error("pre-dispatch keep-running conflicts with another challenge tuple"));
+        if inner
+            .state
+            .reservation
+            .as_ref()
+            .is_some_and(|reservation| reservation.challenge.challenge_id == challenge.challenge_id)
+        {
+            return Err(quiescence_error(
+                "pre-dispatch keep-running conflicts with another challenge tuple",
+            ));
         }
         let mut state = inner.state.clone();
         let tombstone = PersistedReservation {
@@ -520,9 +553,7 @@ impl super::KernelRuntimeState {
         self.owned
             .managed_kernel_quiescence_client
             .clone()
-            .map(|client| {
-                tokio::spawn(client.run(self.clone(), shutdown))
-            })
+            .map(|client| tokio::spawn(client.run(self.clone(), shutdown)))
     }
 
     pub(crate) fn confirm_managed_activity_report(
@@ -532,11 +563,7 @@ impl super::KernelRuntimeState {
         observation: ManagedActivityObservation,
     ) {
         if let Some(gate) = &self.owned.managed_kernel_quiescence {
-            gate.confirm_activity_report(
-                cloud_sequence,
-                local_transition_sequence,
-                observation,
-            );
+            gate.confirm_activity_report(cloud_sequence, local_transition_sequence, observation);
         }
     }
 
@@ -584,19 +611,28 @@ fn validate_persisted_state(
         || state.tombstones.len() > MAX_QUIESCENCE_TOMBSTONES
         || !valid_persisted_records(state, kernel_id)
     {
-        return Err(quiescence_error("stored quiescence identity or fence state is invalid"));
+        return Err(quiescence_error(
+            "stored quiescence identity or fence state is invalid",
+        ));
     }
 
     let Some(floor) = state.replay_floor.as_ref() else {
         if state.tombstones.is_empty()
-            && !state.reservation.as_ref().is_some_and(reservation_was_canceled)
+            && !state
+                .reservation
+                .as_ref()
+                .is_some_and(reservation_was_canceled)
         {
             return Ok(());
         }
-        return Err(quiescence_error("stored quiescence tombstones are missing their replay floor"));
+        return Err(quiescence_error(
+            "stored quiescence tombstones are missing their replay floor",
+        ));
     };
     if !valid_replay_floor(floor) || state.tombstones.is_empty() {
-        return Err(quiescence_error("stored quiescence replay floor is invalid"));
+        return Err(quiescence_error(
+            "stored quiescence replay floor is invalid",
+        ));
     }
 
     let mut previous_order = None;
@@ -609,32 +645,46 @@ fn validate_persisted_state(
             || previous_order.is_some_and(|previous| previous >= order)
             || !seen_orders.insert(order)
         {
-            return Err(quiescence_error("stored quiescence tombstones do not match their replay floor"));
+            return Err(quiescence_error(
+                "stored quiescence tombstones do not match their replay floor",
+            ));
         }
         previous_order = Some(order);
     }
     if previous_order != Some(replay_floor_order(floor)) {
-        return Err(quiescence_error("stored quiescence replay floor is not the latest retained cancellation"));
+        return Err(quiescence_error(
+            "stored quiescence replay floor is not the latest retained cancellation",
+        ));
     }
 
     if let Some(reservation) = state.reservation.as_ref() {
         let challenge = &reservation.challenge;
         let order = replay_order(challenge);
         if !replay_floor_matches_scope(floor, challenge) {
-            return Err(quiescence_error("stored quiescence reservation changed replay scope"));
+            return Err(quiescence_error(
+                "stored quiescence reservation changed replay scope",
+            ));
         }
         if reservation_was_canceled(reservation) {
             if order > replay_floor_order(floor) {
-                return Err(quiescence_error("stored canceled reservation is newer than its replay floor"));
+                return Err(quiescence_error(
+                    "stored canceled reservation is newer than its replay floor",
+                ));
             }
         } else if order <= replay_floor_order(floor) {
-            return Err(quiescence_error("stored active reservation is stale against its replay floor"));
+            return Err(quiescence_error(
+                "stored active reservation is stale against its replay floor",
+            ));
         }
-        if let Some(tombstone) = state.tombstones.iter().find(|tombstone| {
-            replay_order(&tombstone.challenge) == order
-        }) {
+        if let Some(tombstone) = state
+            .tombstones
+            .iter()
+            .find(|tombstone| replay_order(&tombstone.challenge) == order)
+        {
             if tombstone != reservation {
-                return Err(quiescence_error("stored quiescence order overlaps another challenge tuple"));
+                return Err(quiescence_error(
+                    "stored quiescence order overlaps another challenge tuple",
+                ));
             }
         }
     }
@@ -653,14 +703,18 @@ fn normalize_persisted_state(
             {
                 return Err(quiescence_error("legacy quiescence state is invalid"));
             }
-            if let Some(reservation) = state.reservation.as_ref().filter(|reservation| {
-                reservation_was_canceled(reservation)
-            }) {
+            if let Some(reservation) = state
+                .reservation
+                .as_ref()
+                .filter(|reservation| reservation_was_canceled(reservation))
+            {
                 if let Some(existing) = state.tombstones.iter().find(|tombstone| {
                     tombstone.challenge.challenge_id == reservation.challenge.challenge_id
                 }) {
                     if existing != reservation {
-                        return Err(quiescence_error("stored quiescence cancellation mirror is inconsistent"));
+                        return Err(quiescence_error(
+                            "stored quiescence cancellation mirror is inconsistent",
+                        ));
                     }
                 } else {
                     state.tombstones.push(reservation.clone());
@@ -676,7 +730,9 @@ fn normalize_persisted_state(
             validate_persisted_state(&state, kernel_id)?;
             Ok((state, false))
         }
-        _ => Err(quiescence_error("stored quiescence state has an unsupported schema version")),
+        _ => Err(quiescence_error(
+            "stored quiescence state has an unsupported schema version",
+        )),
     }
 }
 
@@ -688,16 +744,17 @@ fn valid_persisted_records(state: &PersistedQuiescenceState, kernel_id: &str) ->
             && reservation_was_canceled(tombstone)
             && challenge_ids.insert(tombstone.challenge.challenge_id.as_str())
     });
-    tombstones_valid && state.reservation.as_ref().is_none_or(|reservation| {
-        valid_reservation(reservation, kernel_id)
-            && state
-            .tombstones
-            .iter()
-            .find(|tombstone| {
-                tombstone.challenge.challenge_id == reservation.challenge.challenge_id
-            })
-            .is_none_or(|tombstone| tombstone == reservation)
-    })
+    tombstones_valid
+        && state.reservation.as_ref().is_none_or(|reservation| {
+            valid_reservation(reservation, kernel_id)
+                && state
+                    .tombstones
+                    .iter()
+                    .find(|tombstone| {
+                        tombstone.challenge.challenge_id == reservation.challenge.challenge_id
+                    })
+                    .is_none_or(|tombstone| tombstone == reservation)
+        })
 }
 
 fn derive_replay_floor(
@@ -710,11 +767,15 @@ fn derive_replay_floor(
         let candidate = replay_floor_for(&tombstone.challenge);
         let order = replay_order(&tombstone.challenge);
         if tombstone.challenge.kernel_id != kernel_id || !seen_orders.insert(order) {
-            return Err(quiescence_error("legacy quiescence tombstones have an ambiguous replay order"));
+            return Err(quiescence_error(
+                "legacy quiescence tombstones have an ambiguous replay order",
+            ));
         }
         if let Some(current) = floor.as_ref() {
             if !replay_floors_share_scope(current, &candidate) {
-                return Err(quiescence_error("legacy quiescence tombstones span multiple replay scopes"));
+                return Err(quiescence_error(
+                    "legacy quiescence tombstones span multiple replay scopes",
+                ));
             }
             if order > replay_floor_order(current) {
                 floor = Some(candidate);
@@ -735,7 +796,9 @@ fn remember_canceled_challenge(
         if !replay_floors_share_scope(floor, &candidate)
             || replay_order(&tombstone.challenge) <= replay_floor_order(floor)
         {
-            return Err(quiescence_error("canceled quiescence challenge does not advance its replay floor"));
+            return Err(quiescence_error(
+                "canceled quiescence challenge does not advance its replay floor",
+            ));
         }
     }
     state.schema_version = QUIESCENCE_STATE_SCHEMA_VERSION;
@@ -763,7 +826,9 @@ fn challenge_is_after_replay_floor(
     })
 }
 
-fn replay_floor_for(challenge: &ManagedKernelQuiescenceChallenge) -> PersistedQuiescenceReplayFloor {
+fn replay_floor_for(
+    challenge: &ManagedKernelQuiescenceChallenge,
+) -> PersistedQuiescenceReplayFloor {
     PersistedQuiescenceReplayFloor {
         account_id: challenge.account_id.clone(),
         environment_id: challenge.environment_id.clone(),
@@ -776,16 +841,14 @@ fn replay_floor_matches_scope(
     floor: &PersistedQuiescenceReplayFloor,
     challenge: &ManagedKernelQuiescenceChallenge,
 ) -> bool {
-    floor.account_id == challenge.account_id
-        && floor.environment_id == challenge.environment_id
+    floor.account_id == challenge.account_id && floor.environment_id == challenge.environment_id
 }
 
 fn replay_floors_share_scope(
     left: &PersistedQuiescenceReplayFloor,
     right: &PersistedQuiescenceReplayFloor,
 ) -> bool {
-    left.account_id == right.account_id
-        && left.environment_id == right.environment_id
+    left.account_id == right.account_id && left.environment_id == right.environment_id
 }
 
 fn replay_order(challenge: &ManagedKernelQuiescenceChallenge) -> (u64, u32) {
@@ -804,9 +867,10 @@ fn valid_replay_floor(floor: &PersistedQuiescenceReplayFloor) -> bool {
 }
 
 fn reservation_was_canceled(reservation: &PersistedReservation) -> bool {
-    reservation.decisions.last().is_some_and(|decision| {
-        decision.outcome == ManagedKernelQuiescenceOutcome::KeepRunning
-    })
+    reservation
+        .decisions
+        .last()
+        .is_some_and(|decision| decision.outcome == ManagedKernelQuiescenceOutcome::KeepRunning)
 }
 
 fn valid_reservation(reservation: &PersistedReservation, kernel_id: &str) -> bool {
@@ -859,8 +923,11 @@ fn persist_quiescence_state(
     validate_persisted_state(state, kernel_id)?;
     store.append_quiescence_snapshot(
         kernel_id,
-        serde_json::to_value(state)
-            .map_err(|error| quiescence_error(format!("could not encode durable quiescence state: {error}")))?,
+        serde_json::to_value(state).map_err(|error| {
+            quiescence_error(format!(
+                "could not encode durable quiescence state: {error}"
+            ))
+        })?,
     )?;
     Ok(())
 }
@@ -879,7 +946,9 @@ mod tests {
 
     static NEXT_STATE: AtomicU64 = AtomicU64::new(1);
 
-    fn fixture(label: &str) -> (
+    fn fixture(
+        label: &str,
+    ) -> (
         std::path::PathBuf,
         DurableKernelStateStore,
         ManagedActivityTransitionState,
@@ -892,7 +961,8 @@ mod tests {
             NEXT_STATE.fetch_add(1, Ordering::Relaxed),
         ));
         let store = DurableKernelStateStore::open(path.clone()).expect("open durable store");
-        let transitions = ManagedActivityTransitionState::new(store.clone(), Some("kernel-1".into()));
+        let transitions =
+            ManagedActivityTransitionState::new(store.clone(), Some("kernel-1".into()));
         transitions
             .record_current_transition(|| (0, 0, 1_000))
             .expect("persist initial idle observation");
@@ -959,7 +1029,10 @@ mod tests {
                 current_idle(&transitions)
             })
             .expect("stale accepted sequence must return busy"));
-        assert!(gate.admission_guard().is_ok(), "busy must not install a fence");
+        assert!(
+            gate.admission_guard().is_ok(),
+            "busy must not install a fence"
+        );
         cleanup(&path, store);
     }
 
@@ -997,7 +1070,10 @@ mod tests {
                 Ok(())
             })
             .is_err());
-        assert!(!admission_ran, "provider or queue action must not cross a fence");
+        assert!(
+            !admission_ran,
+            "provider or queue action must not cross a fence"
+        );
 
         let current = || current_idle(&transitions);
         gate.apply_release(
@@ -1007,7 +1083,10 @@ mod tests {
             current,
         )
         .expect("terminal stop receipt should persist");
-        assert!(gate.admission_guard().is_err(), "stopped keeps admission closed");
+        assert!(
+            gate.admission_guard().is_err(),
+            "stopped keeps admission closed"
+        );
         drop(gate);
         let gate = ManagedKernelQuiescenceGate::restore(
             store.clone(),
@@ -1016,7 +1095,10 @@ mod tests {
             transitions.clone(),
         )
         .expect("restore stopped receipt and retained fence");
-        assert!(gate.admission_guard().is_err(), "restart cannot clear a stopped fence");
+        assert!(
+            gate.admission_guard().is_err(),
+            "restart cannot clear a stopped fence"
+        );
         gate.apply_release(
             &challenge,
             ManagedKernelQuiescenceOutcome::Stopped,
@@ -1024,14 +1106,16 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("exact stopped ACK replay is idempotent");
-        assert!(gate
-            .apply_release(
+        assert!(
+            gate.apply_release(
                 &challenge,
                 ManagedKernelQuiescenceOutcome::KeepRunning,
                 1,
                 || current_idle(&transitions),
             )
-            .is_err(), "a conflicting sequence cannot replace the stopped decision");
+            .is_err(),
+            "a conflicting sequence cannot replace the stopped decision"
+        );
         gate.apply_release(
             &challenge,
             ManagedKernelQuiescenceOutcome::KeepRunning,
@@ -1047,14 +1131,16 @@ mod tests {
         )
         .expect("exact keep-running ACK replay is idempotent");
         assert!(gate.admission_guard().is_ok());
-        assert!(gate
-            .apply_release(
+        assert!(
+            gate.apply_release(
                 &challenge,
                 ManagedKernelQuiescenceOutcome::KeepRunning,
                 3,
                 || current_idle(&transitions),
             )
-            .is_err(), "a keep-running receipt cannot be advanced later");
+            .is_err(),
+            "a keep-running receipt cannot be advanced later"
+        );
         cleanup(&path, store);
     }
 
@@ -1073,7 +1159,10 @@ mod tests {
         assert!(gate
             .reserve_if_current(challenge.clone(), || current_idle(&transitions))
             .expect("current accepted idle can be fenced"));
-        assert!(gate.admission_guard().is_err(), "reservation closes admission");
+        assert!(
+            gate.admission_guard().is_err(),
+            "reservation closes admission"
+        );
 
         gate.apply_release(
             &challenge,
@@ -1082,7 +1171,10 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("Cloud may cancel a reserved but unclaimed stop with sequence one");
-        assert!(gate.admission_guard().is_ok(), "exact cancellation releases its fence");
+        assert!(
+            gate.admission_guard().is_ok(),
+            "exact cancellation releases its fence"
+        );
         gate.apply_release(
             &challenge,
             ManagedKernelQuiescenceOutcome::KeepRunning,
@@ -1102,7 +1194,10 @@ mod tests {
             transitions.clone(),
         )
         .expect("restore durable cancellation receipt");
-        assert!(restored.admission_guard().is_ok(), "restart keeps matching fence released");
+        assert!(
+            restored.admission_guard().is_ok(),
+            "restart keeps matching fence released"
+        );
         restored
             .apply_release(
                 &challenge,
@@ -1111,26 +1206,32 @@ mod tests {
                 || current_idle(&transitions),
             )
             .expect("exact release replay remains ACKable after restart");
-        assert!(restored
-            .apply_release(
-                &challenge,
-                ManagedKernelQuiescenceOutcome::Stopped,
-                1,
-                || current_idle(&transitions),
-            )
-            .is_err(), "conflicting outcome cannot replace durable cancellation");
+        assert!(
+            restored
+                .apply_release(
+                    &challenge,
+                    ManagedKernelQuiescenceOutcome::Stopped,
+                    1,
+                    || current_idle(&transitions),
+                )
+                .is_err(),
+            "conflicting outcome cannot replace durable cancellation"
+        );
         let conflicting = ManagedKernelQuiescenceChallenge {
             nonce: "nonce-conflict".into(),
             ..challenge.clone()
         };
-        assert!(restored
-            .apply_release(
-                &conflicting,
-                ManagedKernelQuiescenceOutcome::KeepRunning,
-                1,
-                || current_idle(&transitions),
-            )
-            .is_err(), "challenge identity cannot be rebound after cancellation");
+        assert!(
+            restored
+                .apply_release(
+                    &conflicting,
+                    ManagedKernelQuiescenceOutcome::KeepRunning,
+                    1,
+                    || current_idle(&transitions),
+                )
+                .is_err(),
+            "challenge identity cannot be rebound after cancellation"
+        );
         cleanup(&path, store);
     }
 
@@ -1166,7 +1267,11 @@ mod tests {
         let entries = store
             .load_subject_events_by_kind("kernel-1", QUIESCENCE_EVENT_KIND, 10)
             .expect("read durable quiescence events");
-        assert_eq!(entries.len(), 1, "lost ACK retry must not append a second reservation");
+        assert_eq!(
+            entries.len(),
+            1,
+            "lost ACK retry must not append a second reservation"
+        );
         cleanup(&path, store);
     }
 
@@ -1196,7 +1301,10 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("exact tombstone replay is idempotent");
-        assert!(gate.admission_guard().is_ok(), "tombstone must not alter open admission");
+        assert!(
+            gate.admission_guard().is_ok(),
+            "tombstone must not alter open admission"
+        );
         drop(gate);
         let gate = ManagedKernelQuiescenceGate::restore(
             store.clone(),
@@ -1212,15 +1320,20 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("exact canceled tombstone ACK remains idempotent after restart");
-        assert!(gate
-            .apply_release(
+        assert!(
+            gate.apply_release(
                 &challenge("unconfirmed-challenge", "nonce-unconfirmed"),
                 ManagedKernelQuiescenceOutcome::KeepRunning,
                 1,
                 || current_idle(&transitions),
             )
-            .is_err(), "restart must not create a new tombstone before reporter confirmation");
-        assert!(gate.admission_guard().is_ok(), "unconfirmed tombstone cannot affect admission");
+            .is_err(),
+            "restart must not create a new tombstone before reporter confirmation"
+        );
+        assert!(
+            gate.admission_guard().is_ok(),
+            "unconfirmed tombstone cannot affect admission"
+        );
         gate.confirm_activity_report(
             canceled.idle_sequence,
             1,
@@ -1230,14 +1343,16 @@ mod tests {
             },
         );
         let conflicting_tuple = challenge("challenge-canceled", "nonce-conflict");
-        assert!(gate
-            .apply_release(
+        assert!(
+            gate.apply_release(
                 &conflicting_tuple,
                 ManagedKernelQuiescenceOutcome::KeepRunning,
                 1,
                 || current_idle(&transitions),
             )
-            .is_err(), "challenge ID cannot be rebound to another nonce tuple");
+            .is_err(),
+            "challenge ID cannot be rebound to another nonce tuple"
+        );
         assert!(!gate
             .reserve_if_current(canceled.clone(), || current_idle(&transitions))
             .expect("delayed reserve for canceled tuple is permanently busy"));
@@ -1248,22 +1363,30 @@ mod tests {
             ..canceled.clone()
         };
         assert_eq!(
-            (same_order_replay.desired_revision, same_order_replay.idle_sequence),
+            (
+                same_order_replay.desired_revision,
+                same_order_replay.idle_sequence
+            ),
             (canceled.desired_revision, canceled.idle_sequence),
             "replacing IDs and nonce must leave the Cloud replay identity unchanged"
         );
-        assert!(gate
-            .apply_release(
+        assert!(
+            gate.apply_release(
                 &same_order_replay,
                 ManagedKernelQuiescenceOutcome::KeepRunning,
                 1,
                 || current_idle(&transitions),
             )
-            .is_err(), "new IDs cannot replay a canceled Cloud idle identity");
+            .is_err(),
+            "new IDs cannot replay a canceled Cloud idle identity"
+        );
         assert!(!gate
             .reserve_if_current(same_order_replay, || current_idle(&transitions))
             .expect("same Cloud idle identity remains permanently busy"));
-        assert!(gate.admission_guard().is_ok(), "same-order replay cannot fence admission");
+        assert!(
+            gate.admission_guard().is_ok(),
+            "same-order replay cannot fence admission"
+        );
 
         let mut new_challenge = challenge("challenge-new", "nonce-new");
         new_challenge.idle_sequence = canceled.idle_sequence + 1;
@@ -1287,7 +1410,10 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("new challenge may record terminal stop");
-        assert!(gate.admission_guard().is_err(), "stopped challenge retains its admission fence");
+        assert!(
+            gate.admission_guard().is_err(),
+            "stopped challenge retains its admission fence"
+        );
         gate.apply_release(
             &new_challenge,
             ManagedKernelQuiescenceOutcome::KeepRunning,
@@ -1295,7 +1421,10 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("new challenge may be safely released");
-        assert!(gate.admission_guard().is_ok(), "authoritative keep-running releases the fence");
+        assert!(
+            gate.admission_guard().is_ok(),
+            "authoritative keep-running releases the fence"
+        );
         assert!(!gate
             .reserve_if_current(canceled.clone(), || current_idle(&transitions))
             .expect("old canceled tuple remains stale after later challenge"));
@@ -1306,14 +1435,16 @@ mod tests {
             || current_idle(&transitions),
         )
         .expect("old exact release replay remains idempotent after newer challenge");
-        assert!(gate
-            .apply_release(
+        assert!(
+            gate.apply_release(
                 &canceled,
                 ManagedKernelQuiescenceOutcome::KeepRunning,
                 2,
                 || current_idle(&transitions),
             )
-            .is_err(), "an old tombstone cannot advance its result sequence");
+            .is_err(),
+            "an old tombstone cannot advance its result sequence"
+        );
         cleanup(&path, store);
     }
 
@@ -1393,9 +1524,15 @@ mod tests {
                 .err()
                 .expect("detached provider resume must be fenced"),
         ] {
-            assert!(error.to_string().contains("fenced"), "unexpected error: {error}");
+            assert!(
+                error.to_string().contains("fenced"),
+                "unexpected error: {error}"
+            );
         }
-        assert!(providers.list_runs().is_empty(), "fenced calls must not reach the provider service");
+        assert!(
+            providers.list_runs().is_empty(),
+            "fenced calls must not reach the provider service"
+        );
         cleanup(&path, durable_store);
     }
 }

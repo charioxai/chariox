@@ -21,8 +21,7 @@ const MANAGED_BOOTSTRAP_WANTS_PATH: &str =
 const MAX_ID_BYTES: u64 = 128;
 const MAX_PROC_COMM_BYTES: u64 = 256;
 const MAX_PROC_STAT_BYTES: u64 = 4096;
-const DATA_VOLUME_OBSERVATION_PATH: &str =
-    "/run/chariox-data-volume-observation/observation.json";
+const DATA_VOLUME_OBSERVATION_PATH: &str = "/run/chariox-data-volume-observation/observation.json";
 const PROC_SELF_MOUNTINFO_PATH: &str = "/proc/self/mountinfo";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -645,8 +644,7 @@ mod tests {
     use super::{
         is_linux_boot_id, is_os_machine_id, is_release_digest, parse_parent_pid,
         validate_freshness_evidence, validate_old_generation_runtime_identity_report,
-        validate_process_observations,
-        ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
+        validate_process_observations, ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
         ManagedKernelRuntimeIdentityReport, ProcessObservation,
     };
     use crate::managed_bootstrap::release::VerifiedReleaseEvidence;
@@ -722,7 +720,8 @@ mod tests {
             data_volume_serial: None,
             data_volume_size_gb: None,
         };
-        let value: Value = serde_json::to_value(evidence.clone()).expect("freshness evidence serializes");
+        let value: Value =
+            serde_json::to_value(evidence.clone()).expect("freshness evidence serializes");
         assert_eq!(value["linuxBootId"], "01234567-89ab-cdef-0123-456789abcdef");
         assert!(value.get("schemaVersion").is_none());
         assert!(value.get("dataVolumeSerial").is_none());

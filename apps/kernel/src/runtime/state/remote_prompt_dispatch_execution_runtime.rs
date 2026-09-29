@@ -73,10 +73,7 @@ impl KernelRuntimeState {
             return None;
         }
         #[cfg(test)]
-        record_remote_prompt_dispatch_test_stage(
-            &dispatch.prompt_id,
-            "durable_dispatching_marked",
-        );
+        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "durable_dispatching_marked");
         #[cfg(test)]
         record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "agent_lookup_started");
         let agent = match self.owned.agent_store.get_agent(&dispatch.agent_id) {
@@ -108,7 +105,10 @@ impl KernelRuntimeState {
         record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "skill_context_ready");
         let attachments = dispatch.attachments.clone();
         #[cfg(test)]
-        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "attachment_serialization_started");
+        record_remote_prompt_dispatch_test_stage(
+            &dispatch.prompt_id,
+            "attachment_serialization_started",
+        );
         let serialized_attachments = match tokio::task::spawn_blocking(move || {
             crate::app::serialize_remote_prompt_attachments(&attachments)
         })

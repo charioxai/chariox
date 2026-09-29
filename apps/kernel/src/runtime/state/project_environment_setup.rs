@@ -91,19 +91,19 @@ mod project_environment_setup_ack;
 mod project_environment_setup_dispatch;
 #[path = "project_environment_setup_policy.rs"]
 mod project_environment_setup_policy;
-#[path = "project_environment_setup_storage.rs"]
-mod project_environment_setup_storage;
 #[path = "project_environment_setup_scratch.rs"]
 mod project_environment_setup_scratch;
+#[path = "project_environment_setup_storage.rs"]
+mod project_environment_setup_storage;
 #[path = "project_environment_setup_validation.rs"]
 mod project_environment_setup_validation;
 use project_environment_setup_dispatch::*;
 use project_environment_setup_policy::*;
+use project_environment_setup_scratch::{WorkerValidationScratch, VALIDATION_SCRATCH_DIR_ENV};
 pub(super) use project_environment_setup_storage::ProjectEnvironmentSetupStore;
 use project_environment_setup_storage::{
     RemoteSetupRecoveryDecision, RemoteSetupRecoveryReservationGuard, SetupEntry, SetupExecution,
 };
-use project_environment_setup_scratch::{WorkerValidationScratch, VALIDATION_SCRATCH_DIR_ENV};
 use project_environment_setup_validation::*;
 
 pub(super) fn current_worker_platform() -> String {
@@ -2227,18 +2227,14 @@ impl KernelRuntimeState {
             ));
         }
         let kernel_home = resolved_worker_kernel_home(&config)?;
-        let workspace_root = canonical_worker_workspace(
-            &execution.workspace_id,
-            Some(kernel_home.as_os_str()),
-        )?;
+        let workspace_root =
+            canonical_worker_workspace(&execution.workspace_id, Some(kernel_home.as_os_str()))?;
         let provider_working_directory = provider_run
             .working_directory()
             .cloned()
             .ok_or_else(|| setup_error("prepared provider context has no working directory"))?;
-        let provider_working_directory = canonical_worker_workspace(
-            &provider_working_directory,
-            Some(kernel_home.as_os_str()),
-        )?;
+        let provider_working_directory =
+            canonical_worker_workspace(&provider_working_directory, Some(kernel_home.as_os_str()))?;
         if provider_working_directory != workspace_root {
             return Err(setup_error(
                 "prepared provider context uses a different worker worktree",
@@ -2346,10 +2342,9 @@ impl KernelRuntimeState {
         let operation_id = execution.operation_id.clone();
         let workspace_root = context.workspace_root;
         let environment = context.environment;
-        let durable_home = environment
-            .get("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| setup_error("prepared worker validation environment has no durable HOME"))?;
+        let durable_home = environment.get("HOME").map(PathBuf::from).ok_or_else(|| {
+            setup_error("prepared worker validation environment has no durable HOME")
+        })?;
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
             .begin_execution(&operation_id, attempt)

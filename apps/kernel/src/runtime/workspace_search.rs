@@ -166,9 +166,7 @@ fn workspace_search_roots() -> Result<Vec<PathBuf>, DaemonError> {
             false,
             &[],
         )?;
-        crate::git_worktree_placement::preflight_managed_repository_root(
-            &resolved.canonical_path,
-        )?;
+        crate::git_worktree_placement::preflight_managed_repository_root(&resolved.canonical_path)?;
         if seen.insert(resolved.canonical_path.clone()) {
             roots.insert(0, resolved.canonical_path);
         }
@@ -531,9 +529,8 @@ mod tests {
 
         let previous_home = std::env::var_os("HOME");
         let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
-        let previous_managed_root = std::env::var_os(
-            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
-        );
+        let previous_managed_root =
+            std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
         let previous_isolation = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         let previous_topology = std::env::var_os("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
         let protected_names = [
@@ -656,9 +653,8 @@ mod tests {
 
         let previous_home = std::env::var_os("HOME");
         let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
-        let previous_managed_root = std::env::var_os(
-            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
-        );
+        let previous_managed_root =
+            std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
         let protected_names = [
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
             "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
@@ -723,7 +719,10 @@ mod tests {
         assert!(named.contains(&project_text), "{named:?}");
         assert_eq!(
             ordinary_roots.expect("ordinary workspace roots should resolve"),
-            vec![std::env::current_dir().expect("current directory should resolve"), home],
+            vec![
+                std::env::current_dir().expect("current directory should resolve"),
+                home
+            ],
             "an unset managed root must preserve the ordinary cwd/HOME roots"
         );
     }
@@ -732,9 +731,7 @@ mod tests {
     #[test]
     fn invalid_configured_managed_root_fails_workspace_discovery() {
         let _env = crate::env_lock::lock();
-        let previous = std::env::var_os(
-            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
-        );
+        let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
         std::env::set_var(
             crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
             "relative/managed-root",
@@ -772,9 +769,8 @@ mod tests {
 
         let previous_home = std::env::var_os("HOME");
         let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
-        let previous_managed_root = std::env::var_os(
-            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
-        );
+        let previous_managed_root =
+            std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
         std::env::set_var("HOME", &home);
         std::env::remove_var("CHARIOX_HOME");
         std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);

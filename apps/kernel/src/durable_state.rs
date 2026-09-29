@@ -348,12 +348,14 @@ impl DurableKernelStateStore {
                 operation: "durable_state.encode_event",
                 message: error.to_string(),
             })?;
-        let sequence = self.writer.execute(DurableWriteOperation::QuiescenceSnapshotEvent {
-            event_id: event_id.clone(),
-            subject_id: kernel_id.to_string(),
-            timestamp_ms,
-            payload_json,
-        })?;
+        let sequence = self
+            .writer
+            .execute(DurableWriteOperation::QuiescenceSnapshotEvent {
+                event_id: event_id.clone(),
+                subject_id: kernel_id.to_string(),
+                timestamp_ms,
+                payload_json,
+            })?;
         Ok(DurableStateEvent {
             sequence,
             event_id,
@@ -1403,11 +1405,7 @@ fn commit_durable_write_batch(
                     transaction.execute(
                         "DELETE FROM durable_state_events
                          WHERE kind = ?1 AND subject_id = ?2 AND sequence < ?3",
-                        params![
-                            QUIESCENCE_STATE_SNAPSHOT_KIND,
-                            subject_id,
-                            sequence as i64
-                        ],
+                        params![QUIESCENCE_STATE_SNAPSHOT_KIND, subject_id, sequence as i64],
                     )?;
                     Ok(sequence)
                 }),

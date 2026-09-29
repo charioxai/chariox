@@ -50,9 +50,7 @@ where
     Ok(ValidationOutputReader { task, stop })
 }
 
-fn join_validation_output_reader(
-    reader: ValidationOutputReader,
-) -> Result<usize, String> {
+fn join_validation_output_reader(reader: ValidationOutputReader) -> Result<usize, String> {
     reader
         .task
         .join()
@@ -66,11 +64,21 @@ fn settle_validation_output_readers(
 ) -> Result<Option<(Option<usize>, Option<usize>)>, String> {
     let deadline = Instant::now() + timeout;
     loop {
-        if stdout.as_ref().map_or(true, |reader| reader.task.is_finished())
-            && stderr.as_ref().map_or(true, |reader| reader.task.is_finished())
+        if stdout
+            .as_ref()
+            .map_or(true, |reader| reader.task.is_finished())
+            && stderr
+                .as_ref()
+                .map_or(true, |reader| reader.task.is_finished())
         {
-            let stdout_bytes = stdout.take().map(join_validation_output_reader).transpose()?;
-            let stderr_bytes = stderr.take().map(join_validation_output_reader).transpose()?;
+            let stdout_bytes = stdout
+                .take()
+                .map(join_validation_output_reader)
+                .transpose()?;
+            let stderr_bytes = stderr
+                .take()
+                .map(join_validation_output_reader)
+                .transpose()?;
             return Ok(Some((stdout_bytes, stderr_bytes)));
         }
         let now = Instant::now();
@@ -83,21 +91,32 @@ fn settle_validation_output_readers(
             }
             let stop_deadline = Instant::now() + Duration::from_millis(100);
             while Instant::now() < stop_deadline
-                && !(stdout.as_ref().map_or(true, |reader| reader.task.is_finished())
-                    && stderr.as_ref().map_or(true, |reader| reader.task.is_finished()))
+                && !(stdout
+                    .as_ref()
+                    .map_or(true, |reader| reader.task.is_finished())
+                    && stderr
+                        .as_ref()
+                        .map_or(true, |reader| reader.task.is_finished()))
             {
-                std::thread::sleep(VALIDATION_OUTPUT_POLL_INTERVAL.min(
-                    stop_deadline.saturating_duration_since(Instant::now()),
-                ));
+                std::thread::sleep(
+                    VALIDATION_OUTPUT_POLL_INTERVAL
+                        .min(stop_deadline.saturating_duration_since(Instant::now())),
+                );
             }
             // A timed-out pipe is never reported as settled, even if the stop
             // request closes our readers during the bounded cancellation grace.
-            if stdout.as_ref().is_some_and(|reader| reader.task.is_finished()) {
+            if stdout
+                .as_ref()
+                .is_some_and(|reader| reader.task.is_finished())
+            {
                 if let Some(reader) = stdout.take() {
                     let _ = join_validation_output_reader(reader);
                 }
             }
-            if stderr.as_ref().is_some_and(|reader| reader.task.is_finished()) {
+            if stderr
+                .as_ref()
+                .is_some_and(|reader| reader.task.is_finished())
+            {
                 if let Some(reader) = stderr.take() {
                     let _ = join_validation_output_reader(reader);
                 }
@@ -252,11 +271,7 @@ pub(super) fn resolved_worker_kernel_home(config: &DaemonConfig) -> Result<PathB
     canonical_preparation_directory(config_home, "worker kernel home")
 }
 
-fn worker_preparation_home_key(
-    workspace_root: &Path,
-    project_id: &str,
-    worker_id: &str,
-) -> String {
+fn worker_preparation_home_key(workspace_root: &Path, project_id: &str, worker_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(workspace_root.as_os_str().to_string_lossy().as_bytes());
     digest.update([0]);
@@ -270,9 +285,8 @@ fn canonical_preparation_directory(path: &Path, label: &str) -> Result<PathBuf, 
     let canonical = path
         .canonicalize()
         .map_err(|error| setup_error(&format!("{label} could not be resolved: {error}")))?;
-    let metadata = std::fs::symlink_metadata(&canonical).map_err(|error| {
-        setup_error(&format!("{label} could not be inspected: {error}"))
-    })?;
+    let metadata = std::fs::symlink_metadata(&canonical)
+        .map_err(|error| setup_error(&format!("{label} could not be inspected: {error}")))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(setup_error(&format!("{label} must be a real directory")));
     }
@@ -355,12 +369,16 @@ fn ensure_preparation_directory(
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => {
-                    return Err(setup_error(&format!("{label} could not be created: {error}")))
+                    return Err(setup_error(&format!(
+                        "{label} could not be created: {error}"
+                    )))
                 }
             }
         }
         Err(error) => {
-            return Err(setup_error(&format!("{label} could not be inspected: {error}")))
+            return Err(setup_error(&format!(
+                "{label} could not be inspected: {error}"
+            )))
         }
     }
 
@@ -375,16 +393,15 @@ fn ensure_preparation_directory(
     if private {
         std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .map_err(|error| {
-                setup_error(&format!("{label} permissions could not be secured: {error}"))
+                setup_error(&format!(
+                    "{label} permissions could not be secured: {error}"
+                ))
             })?;
     }
     Ok(())
 }
 
-fn verify_preparation_directory_owner(
-    path: &Path,
-    label: &str,
-) -> Result<(), DaemonError> {
+fn verify_preparation_directory_owner(path: &Path, label: &str) -> Result<(), DaemonError> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| setup_error(&format!("{label} could not be inspected: {error}")))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -394,7 +411,9 @@ fn verify_preparation_directory_owner(
     {
         use std::os::unix::fs::MetadataExt;
         if metadata.uid() != unsafe { libc::geteuid() } {
-            return Err(setup_error(&format!("{label} must be owned by the worker kernel user")));
+            return Err(setup_error(&format!(
+                "{label} must be owned by the worker kernel user"
+            )));
         }
     }
     Ok(())
@@ -827,7 +846,8 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
 
         let command_deadline =
             Instant::now() + Duration::from_millis(VALIDATION_COMMAND_TIMEOUT_MS);
-        let deadline = overall_deadline.map_or(command_deadline, |value| value.min(command_deadline));
+        let deadline =
+            overall_deadline.map_or(command_deadline, |value| value.min(command_deadline));
         if let Err(error) = store.persist_validation_scratch_intent(
             operation_id,
             attempt,
@@ -840,7 +860,9 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
                     attempt,
                     "validation scratch could not be removed after durable intent failure",
                 );
-                return Err(format!("{error}; validation cleanup incomplete: {cleanup_error}"));
+                return Err(format!(
+                    "{error}; validation cleanup incomplete: {cleanup_error}"
+                ));
             }
             return Err(error);
         }
@@ -870,10 +892,7 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
             .stderr(Stdio::piped())
             .env_clear()
             .envs(environment)
-            .env(
-                VALIDATION_SCRATCH_DIR_ENV,
-                scratch.path().as_os_str(),
-            );
+            .env(VALIDATION_SCRATCH_DIR_ENV, scratch.path().as_os_str());
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -968,29 +987,24 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
                 ));
             }
         };
-        let identity = match persist_process_identity(
-            store,
-            operation_id,
-            attempt,
-            command_index,
-            pid,
-        ) {
-            Ok(identity) => identity,
-            Err(error) => {
-                return Err(abort_gated_child_with_readers(
-                    &mut child,
-                    Some(gate_stdin),
-                    Some(stdout_reader),
-                    Some(stderr_reader),
-                    scratch,
-                    store,
-                    operation_id,
-                    attempt,
-                    command_index,
-                    &error,
-                ));
-            }
-        };
+        let identity =
+            match persist_process_identity(store, operation_id, attempt, command_index, pid) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    return Err(abort_gated_child_with_readers(
+                        &mut child,
+                        Some(gate_stdin),
+                        Some(stdout_reader),
+                        Some(stderr_reader),
+                        scratch,
+                        store,
+                        operation_id,
+                        attempt,
+                        command_index,
+                        &error,
+                    ));
+                }
+            };
         if let Err(error) = after_process_lease_persisted() {
             return Err(terminate_gated_child(
                 &mut child,
@@ -1006,12 +1020,13 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
                 &error,
             ));
         }
-        if let Err(error) = store.release_validation_start_gate(
-            operation_id,
-            attempt,
-            command_index,
-            || gate_stdin.write_all(b"\n").map_err(|error| error.to_string()),
-        ) {
+        if let Err(error) =
+            store.release_validation_start_gate(operation_id, attempt, command_index, || {
+                gate_stdin
+                    .write_all(b"\n")
+                    .map_err(|error| error.to_string())
+            })
+        {
             return Err(terminate_gated_child(
                 &mut child,
                 &identity,
@@ -1046,16 +1061,12 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
                             command_index,
                         ));
                     }
-                    Ok(Some(_)) => Err("worker validation output reader was unavailable".to_string()),
+                    Ok(Some(_)) => {
+                        Err("worker validation output reader was unavailable".to_string())
+                    }
                     Err(error) => Err(error),
                 };
-                cleanup_after_settled_group(
-                    scratch,
-                    store,
-                    operation_id,
-                    attempt,
-                    command_index,
-                )?;
+                cleanup_after_settled_group(scratch, store, operation_id, attempt, command_index)?;
                 output
             }
             Err(error) if error.process_group_settled => {
@@ -1074,13 +1085,7 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
                     }
                     Ok(Some(_)) | Err(_) => {}
                 }
-                cleanup_after_settled_group(
-                    scratch,
-                    store,
-                    operation_id,
-                    attempt,
-                    command_index,
-                )?;
+                cleanup_after_settled_group(scratch, store, operation_id, attempt, command_index)?;
                 Err(error.message)
             }
             Err(error) => {
@@ -1177,9 +1182,18 @@ fn abort_gated_child_with_readers(
                     attempt,
                     "gated validation output pipes did not close after child reaping",
                 );
-                return format!("{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; gated command was not released");
+                return format!(
+                    "{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; gated command was not released"
+                );
             }
-            finish_unstarted_lease(scratch, store, operation_id, attempt, command_index, reason.to_string())
+            finish_unstarted_lease(
+                scratch,
+                store,
+                operation_id,
+                attempt,
+                command_index,
+                reason.to_string(),
+            )
         }
         Ok(None) => {
             store.mark_validation_cleanup_incomplete(
@@ -1246,9 +1260,18 @@ fn terminate_gated_child(
                     attempt,
                     "gated validation output pipes did not close after process-group settlement",
                 );
-                return format!("{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; gated command was not released");
+                return format!(
+                    "{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; gated command was not released"
+                );
             }
-            finish_unstarted_lease(scratch, store, operation_id, attempt, command_index, reason.to_string())
+            finish_unstarted_lease(
+                scratch,
+                store,
+                operation_id,
+                attempt,
+                command_index,
+                reason.to_string(),
+            )
         }
         Ok(None) => {
             store.mark_validation_cleanup_incomplete(
@@ -1268,7 +1291,6 @@ fn terminate_gated_child(
         }
     }
 }
-
 
 pub(super) fn run_worker_validation_command(
     command_text: &str,
@@ -1387,8 +1409,11 @@ pub(super) fn run_worker_validation_command(
         Some(stdout_reader),
         Some(stderr_reader),
         VALIDATION_OUTPUT_SETTLE_TIMEOUT,
-    )? else {
-        return Err(format!("{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; scratch must be retained"));
+    )?
+    else {
+        return Err(format!(
+            "{VALIDATION_OUTPUT_UNSETTLED_PREFIX}; scratch must be retained"
+        ));
     };
     Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
 }
@@ -1578,7 +1603,9 @@ mod tests {
             .canonicalize()
             .unwrap()
             .join("state/project-environment-preparation");
-        assert!(preparation_home.path().starts_with(&expected_preparation_root));
+        assert!(preparation_home
+            .path()
+            .starts_with(&expected_preparation_root));
         let apply_environment =
             worker_validation_environment_with_home(&run, Some(preparation_home.path()));
         let installed = run_worker_setup_steps(
@@ -1657,11 +1684,8 @@ mod tests {
         let kernel_home = root.join("kernel-home");
         std::fs::create_dir_all(&workspace).expect("accessible worktree should exist");
         std::fs::create_dir_all(&kernel_home).expect("trusted kernel home should exist");
-        std::fs::set_permissions(
-            &workspace_parent,
-            std::fs::Permissions::from_mode(0o555),
-        )
-        .expect("fixture worktree parent should become non-writable");
+        std::fs::set_permissions(&workspace_parent, std::fs::Permissions::from_mode(0o555))
+            .expect("fixture worktree parent should become non-writable");
 
         let result = WorkerPreparationHome::for_project_worker(
             &workspace,
@@ -1669,18 +1693,18 @@ mod tests {
             "project-readonly-parent",
             "worker-1",
         );
-        std::fs::set_permissions(
-            &workspace_parent,
-            std::fs::Permissions::from_mode(0o700),
-        )
-        .expect("fixture worktree parent should be writable for cleanup");
+        std::fs::set_permissions(&workspace_parent, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture worktree parent should be writable for cleanup");
 
-        let preparation_home = result.expect("kernel state should not depend on worktree-parent write access");
+        let preparation_home =
+            result.expect("kernel state should not depend on worktree-parent write access");
         let expected_preparation_root = kernel_home
             .canonicalize()
             .unwrap()
             .join("state/project-environment-preparation");
-        assert!(preparation_home.path().starts_with(&expected_preparation_root));
+        assert!(preparation_home
+            .path()
+            .starts_with(&expected_preparation_root));
         assert!(
             !workspace_parent
                 .join(".chariox-project-environment")
@@ -1714,11 +1738,11 @@ mod tests {
             .canonicalize()
             .unwrap()
             .join("state/project-environment-preparation");
-        assert!(preparation_home.path().starts_with(&expected_preparation_root));
+        assert!(preparation_home
+            .path()
+            .starts_with(&expected_preparation_root));
         assert!(
-            !root
-                .join(".chariox-project-environment")
-                .exists(),
+            !root.join(".chariox-project-environment").exists(),
             "no workspace-adjacent preparation root should be created",
         );
         let _ = std::fs::remove_dir_all(root);
@@ -1743,7 +1767,9 @@ mod tests {
         )
         .expect("an arbitrary /home-like workspace may contain the kernel home as a descendant");
 
-        assert!(preparation_home.path().starts_with(kernel_home.join("state")));
+        assert!(preparation_home
+            .path()
+            .starts_with(kernel_home.join("state")));
         assert!(
             !workspace.join(".git").exists(),
             "the fixture models an arbitrary directory, not a tracked repository",
@@ -1857,9 +1883,7 @@ mod tests {
             "project-legacy",
             "worker-1",
         );
-        let legacy_home = root
-            .join(".chariox-project-environment")
-            .join(home_key);
+        let legacy_home = root.join(".chariox-project-environment").join(home_key);
         std::fs::create_dir_all(legacy_home.join(".local/bin"))
             .expect("legacy preparation tools should exist");
         let legacy_tool = legacy_home.join(".local/bin/installed-tool");
@@ -1918,8 +1942,13 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert_eq!(std::fs::read(foreign_state.join("keep")).unwrap(), b"preserve");
-        assert!(!foreign_state.join("project-environment-preparation").exists());
+        assert_eq!(
+            std::fs::read(foreign_state.join("keep")).unwrap(),
+            b"preserve"
+        );
+        assert!(!foreign_state
+            .join("project-environment-preparation")
+            .exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2651,7 +2680,10 @@ mod non_linux_recovery_fallback_tests {
             || started.exists(),
         );
         assert!(result.unwrap_err().contains("cancelled"));
-        assert!(started.exists(), "the real validation command must start before cancel");
+        assert!(
+            started.exists(),
+            "the real validation command must start before cancel"
+        );
         assert!(!fixture.scratch.path().exists());
     }
 }
@@ -2719,7 +2751,9 @@ fn count_validation_output_blocking(output: &mut impl Read) -> Result<usize, Str
     let mut buffer = [0_u8; 8192];
     let mut bytes = 0_usize;
     loop {
-        let read = output.read(&mut buffer).map_err(|error| error.to_string())?;
+        let read = output
+            .read(&mut buffer)
+            .map_err(|error| error.to_string())?;
         if read == 0 {
             return Ok(bytes);
         }

@@ -150,8 +150,7 @@ pub(crate) fn take_relay_discovery_test_trace(
     checkpoint: RelayDiscoveryTestTraceCheckpoint,
     accepted_peer: Option<SocketAddr>,
 ) -> String {
-    let events = RELAY_DISCOVERY_TEST_TRACE_EVENTS
-        .get_or_init(|| Mutex::new(VecDeque::new()));
+    let events = RELAY_DISCOVERY_TEST_TRACE_EVENTS.get_or_init(|| Mutex::new(VecDeque::new()));
     let mut events = events
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -257,8 +256,7 @@ fn record_relay_discovery_test_trace(
     stage: &'static str,
     local_addr: Option<SocketAddr>,
 ) {
-    let events = RELAY_DISCOVERY_TEST_TRACE_EVENTS
-        .get_or_init(|| Mutex::new(VecDeque::new()));
+    let events = RELAY_DISCOVERY_TEST_TRACE_EVENTS.get_or_init(|| Mutex::new(VecDeque::new()));
     let mut events = events
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -354,9 +352,8 @@ async fn get_live_kernel_inner(
     #[cfg(test)] peer_call_id: Option<u64>,
 ) -> Result<RelayKernelPresence, DaemonError> {
     #[cfg(test)]
-    let peer_call_id = peer_call_id.unwrap_or_else(|| {
-        NEXT_RELAY_DISCOVERY_TEST_CALL_ID.fetch_add(1, Ordering::Relaxed)
-    });
+    let peer_call_id = peer_call_id
+        .unwrap_or_else(|| NEXT_RELAY_DISCOVERY_TEST_CALL_ID.fetch_add(1, Ordering::Relaxed));
     let mut last_error = None;
     for attempt in 0..RELAY_METADATA_ATTEMPTS {
         #[cfg(test)]
@@ -368,12 +365,12 @@ async fn get_live_kernel_inner(
                     .map(relay_endpoint_hash)
                     .unwrap_or_default(),
                 peer_call_id,
-                attempt_id: NEXT_RELAY_DISCOVERY_TEST_ATTEMPT_ID
-                    .fetch_add(1, Ordering::Relaxed),
+                attempt_id: NEXT_RELAY_DISCOVERY_TEST_ATTEMPT_ID.fetch_add(1, Ordering::Relaxed),
                 attempt_number: attempt + 1,
             };
             let mut trace = TemporaryPeerTestTrace::attempt(identity);
-            let result = find_live_kernel_once_with_test_trace(config, kernel_ref, &mut trace).await;
+            let result =
+                find_live_kernel_once_with_test_trace(config, kernel_ref, &mut trace).await;
             trace.finish(if result.is_ok() {
                 "discovery_attempt_returned_ok"
             } else {

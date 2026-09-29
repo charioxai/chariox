@@ -109,11 +109,7 @@ fn persist_snapshot_payload(
     ));
     let store = DurableKernelStateStore::open(path.clone()).expect("open durable store");
     store
-        .append_event(
-            QUIESCENCE_EVENT_KIND,
-            Some("kernel-1".into()),
-            payload,
-        )
+        .append_event(QUIESCENCE_EVENT_KIND, Some("kernel-1".into()), payload)
         .expect("persist quiescence snapshot");
     let transitions = ManagedActivityTransitionState::new(store.clone(), Some("kernel-1".into()));
     (path, store, transitions, Arc::new(Mutex::new(())))
@@ -154,7 +150,10 @@ fn assert_restore_fails_closed(
         transitions.clone(),
         error.to_string(),
     );
-    assert!(gate.admission_guard().is_err(), "failed restore must close admission");
+    assert!(
+        gate.admission_guard().is_err(),
+        "failed restore must close admission"
+    );
 }
 
 fn empty_bounded_state() -> PersistedQuiescenceState {
@@ -236,7 +235,10 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
         .clone();
     assert_eq!(upgraded.schema_version, QUIESCENCE_STATE_SCHEMA_VERSION);
     assert_eq!(upgraded.tombstones.len(), MAX_QUIESCENCE_TOMBSTONES);
-    assert_eq!(upgraded.replay_floor.as_ref().unwrap().idle_sequence, TOMBSTONE_COUNT as u32);
+    assert_eq!(
+        upgraded.replay_floor.as_ref().unwrap().idle_sequence,
+        TOMBSTONE_COUNT as u32
+    );
     drop(first_gate);
 
     let gate = restore(&store, &transitions, &mutation_lock)
@@ -253,36 +255,52 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
         nonce: "nonce-rebound".into(),
         ..replayed_challenge.clone()
     };
-    assert!(gate
-        .apply_release(
+    assert!(
+        gate.apply_release(
             &rebound_challenge,
             ManagedKernelQuiescenceOutcome::KeepRunning,
             1,
-            || Err(quiescence_error("conflicting replay must not need activity")),
+            || Err(quiescence_error(
+                "conflicting replay must not need activity"
+            )),
         )
-        .is_err(), "a tombstone cannot be rebound to a different challenge tuple");
+        .is_err(),
+        "a tombstone cannot be rebound to a different challenge tuple"
+    );
 
     gate.confirm_activity_report(
         replayed_old_challenge.idle_sequence,
         1,
-        ManagedActivityObservation { running_agent_count: 0, changed_at_ms: 1_000 },
+        ManagedActivityObservation {
+            running_agent_count: 0,
+            changed_at_ms: 1_000,
+        },
     );
     let mut idle_readback_ran = false;
     assert!(!gate
         .reserve_if_current(replayed_old_challenge.clone(), || {
             idle_readback_ran = true;
-            Err(quiescence_error("pruned challenge replay must be rejected before liveness readback"))
+            Err(quiescence_error(
+                "pruned challenge replay must be rejected before liveness readback",
+            ))
         })
         .expect("a pruned canceled challenge is stale"));
-    assert!(!idle_readback_ran, "the replay floor rejects a canceled tuple before admission checks");
-    assert!(gate
-        .apply_release(
+    assert!(
+        !idle_readback_ran,
+        "the replay floor rejects a canceled tuple before admission checks"
+    );
+    assert!(
+        gate.apply_release(
             &replayed_old_challenge,
             ManagedKernelQuiescenceOutcome::KeepRunning,
             1,
-            || Err(quiescence_error("pruned challenge release replay must be rejected")),
+            || Err(quiescence_error(
+                "pruned challenge release replay must be rejected"
+            )),
         )
-        .is_err(), "a pruned canceled release remains rejected after restart");
+        .is_err(),
+        "a pruned canceled release remains rejected after restart"
+    );
 
     let rebound_pruned_challenge = ManagedKernelQuiescenceChallenge {
         challenge_id: "new-challenge-id-for-canceled-order".into(),
@@ -292,17 +310,25 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
     };
     assert!(!gate
         .reserve_if_current(rebound_pruned_challenge.clone(), || {
-            Err(quiescence_error("a pruned order replay must be rejected before liveness readback"))
+            Err(quiescence_error(
+                "a pruned order replay must be rejected before liveness readback",
+            ))
         })
-        .expect("the replay floor rejects a rebound challenge at a canceled revision and sequence"));
-    assert!(gate
-        .apply_release(
+        .expect(
+            "the replay floor rejects a rebound challenge at a canceled revision and sequence"
+        ));
+    assert!(
+        gate.apply_release(
             &rebound_pruned_challenge,
             ManagedKernelQuiescenceOutcome::KeepRunning,
             1,
-            || Err(quiescence_error("a rebound canceled-order release must be rejected")),
+            || Err(quiescence_error(
+                "a rebound canceled-order release must be rejected"
+            )),
         )
-        .is_err(), "changing the challenge ID, operation ID, and nonce cannot revive a pruned order");
+        .is_err(),
+        "changing the challenge ID, operation ID, and nonce cannot revive a pruned order"
+    );
 
     let fresh_challenge = challenge_at(
         "challenge-replay-key-fresh".into(),
@@ -313,7 +339,10 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
     gate.confirm_activity_report(
         fresh_challenge.idle_sequence,
         1,
-        ManagedActivityObservation { running_agent_count: 0, changed_at_ms: 1_000 },
+        ManagedActivityObservation {
+            running_agent_count: 0,
+            changed_at_ms: 1_000,
+        },
     );
     assert!(gate
         .reserve_if_current(fresh_challenge.clone(), || current_idle(&transitions))
@@ -333,7 +362,10 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
         .clone();
     assert_eq!(retained.tombstones.len(), MAX_QUIESCENCE_TOMBSTONES);
     let retained_floor = retained.replay_floor.as_ref().unwrap();
-    assert_eq!(retained_floor.desired_revision, fresh_challenge.desired_revision);
+    assert_eq!(
+        retained_floor.desired_revision,
+        fresh_challenge.desired_revision
+    );
     assert_eq!(retained_floor.idle_sequence, fresh_challenge.idle_sequence);
     let mut unrelated_operation_ran = false;
     gate.with_open_admission(|| {
@@ -395,7 +427,8 @@ fn legacy_restore_fails_closed_when_tombstones_cross_replay_scopes() {
         ],
         replay_floor: None,
     };
-    let (path, store, transitions, mutation_lock) = persist_legacy_snapshot("legacy-mixed-scope", &state);
+    let (path, store, transitions, mutation_lock) =
+        persist_legacy_snapshot("legacy-mixed-scope", &state);
 
     assert_restore_fails_closed(&store, &transitions, &mutation_lock);
 
@@ -414,7 +447,8 @@ fn legacy_restore_migrates_exact_canceled_reservation_tombstone_mirror() {
         tombstones: vec![released.clone()],
         replay_floor: None,
     };
-    let (path, store, transitions, mutation_lock) = persist_legacy_snapshot("exact-cancel-mirror", &state);
+    let (path, store, transitions, mutation_lock) =
+        persist_legacy_snapshot("exact-cancel-mirror", &state);
     let gate = restore(&store, &transitions, &mutation_lock)
         .expect("migrate the exact legacy cancellation receipt written by apply_release");
     let migrated = gate
@@ -424,28 +458,42 @@ fn legacy_restore_migrates_exact_canceled_reservation_tombstone_mirror() {
         .state
         .clone();
     assert_eq!(migrated.schema_version, QUIESCENCE_STATE_SCHEMA_VERSION);
-    assert_eq!(migrated.replay_floor, Some(replay_floor_for(&released.challenge)));
+    assert_eq!(
+        migrated.replay_floor,
+        Some(replay_floor_for(&released.challenge))
+    );
 
-    assert!(gate.admission_guard().is_ok(), "a keep-running mirror must stay unfenced");
+    assert!(
+        gate.admission_guard().is_ok(),
+        "a keep-running mirror must stay unfenced"
+    );
     gate.apply_release(
         &released.challenge,
         ManagedKernelQuiescenceOutcome::KeepRunning,
         1,
-        || Err(quiescence_error("exact cancellation replay must not need activity")),
+        || {
+            Err(quiescence_error(
+                "exact cancellation replay must not need activity",
+            ))
+        },
     )
     .expect("the persisted cancellation receipt remains idempotent after restart");
     let conflicting_nonce = ManagedKernelQuiescenceChallenge {
         nonce: "nonce-rebound".into(),
         ..released.challenge.clone()
     };
-    assert!(gate
-        .apply_release(
+    assert!(
+        gate.apply_release(
             &conflicting_nonce,
             ManagedKernelQuiescenceOutcome::KeepRunning,
             1,
-            || Err(quiescence_error("conflicting replay must not need activity")),
+            || Err(quiescence_error(
+                "conflicting replay must not need activity"
+            )),
         )
-        .is_err(), "an exact overlap exception must not allow nonce rebinding");
+        .is_err(),
+        "an exact overlap exception must not allow nonce rebinding"
+    );
 
     drop(gate);
     cleanup(&path, store, transitions);
@@ -453,12 +501,16 @@ fn legacy_restore_migrates_exact_canceled_reservation_tombstone_mirror() {
 
 #[test]
 fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart() {
-    let (path, store, transitions, mutation_lock) = persist_snapshot("bounded-live", &empty_bounded_state());
+    let (path, store, transitions, mutation_lock) =
+        persist_snapshot("bounded-live", &empty_bounded_state());
     transitions
         .record_current_transition(|| (0, 0, 1_000))
         .expect("persist current idle observation");
     let gate = restore(&store, &transitions, &mutation_lock).expect("restore empty bounded state");
-    let observation = ManagedActivityObservation { running_agent_count: 0, changed_at_ms: 1_000 };
+    let observation = ManagedActivityObservation {
+        running_agent_count: 0,
+        changed_at_ms: 1_000,
+    };
     let cancellation_count = MAX_QUIESCENCE_TOMBSTONES + 12;
     let mut oldest = None;
 
@@ -483,13 +535,15 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
             || current_idle(&transitions),
         )
         .expect("current challenge cancellation is durably recorded");
-        assert!(gate
-            .inner
-            .lock()
-            .expect("lock quiescence state")
-            .state
-            .tombstones
-            .len() <= MAX_QUIESCENCE_TOMBSTONES);
+        assert!(
+            gate.inner
+                .lock()
+                .expect("lock quiescence state")
+                .state
+                .tombstones
+                .len()
+                <= MAX_QUIESCENCE_TOMBSTONES
+        );
     }
     let retained = gate
         .inner
@@ -498,7 +552,10 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
         .state
         .clone();
     assert_eq!(retained.tombstones.len(), MAX_QUIESCENCE_TOMBSTONES);
-    assert_eq!(retained.replay_floor.as_ref().unwrap().idle_sequence, cancellation_count as u32);
+    assert_eq!(
+        retained.replay_floor.as_ref().unwrap().idle_sequence,
+        cancellation_count as u32
+    );
     let compacted_snapshots = store
         .load_subject_events_by_kind("kernel-1", QUIESCENCE_EVENT_KIND, 200)
         .expect("load compacted quiescence snapshots");
@@ -516,14 +573,17 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
     assert!(!restored
         .reserve_if_current(oldest.clone(), || current_idle(&transitions))
         .expect("pruned challenge is rejected by the persisted replay floor"));
-    assert!(restored
-        .apply_release(
-            &oldest,
-            ManagedKernelQuiescenceOutcome::KeepRunning,
-            1,
-            || current_idle(&transitions),
-        )
-        .is_err(), "a pruned cancellation cannot be replayed after restart");
+    assert!(
+        restored
+            .apply_release(
+                &oldest,
+                ManagedKernelQuiescenceOutcome::KeepRunning,
+                1,
+                || current_idle(&transitions),
+            )
+            .is_err(),
+        "a pruned cancellation cannot be replayed after restart"
+    );
 
     let fresh = challenge_at(
         "challenge-live-fresh".into(),
@@ -562,7 +622,11 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
             &fresh,
             ManagedKernelQuiescenceOutcome::KeepRunning,
             1,
-            || Err(quiescence_error("exact release retry must not need activity")),
+            || {
+                Err(quiescence_error(
+                    "exact release retry must not need activity",
+                ))
+            },
         )
         .expect("exact retained release receipt remains idempotent after compaction and restart");
 
@@ -593,7 +657,8 @@ fn malformed_quiescence_snapshot_does_not_prune_the_last_valid_snapshot() {
     assert_eq!(snapshots[0].payload["kernelId"], "kernel-1");
     drop(store);
     drop(transitions);
-    let restarted_store = DurableKernelStateStore::open(path.clone()).expect("restart durable store");
+    let restarted_store =
+        DurableKernelStateStore::open(path.clone()).expect("restart durable store");
     let restarted_transitions =
         ManagedActivityTransitionState::new(restarted_store.clone(), Some("kernel-1".into()));
     restore(&restarted_store, &restarted_transitions, &mutation_lock)

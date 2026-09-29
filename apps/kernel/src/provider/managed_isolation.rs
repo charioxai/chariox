@@ -2575,7 +2575,11 @@ mod tests {
             PathBuf::from("/home/u/.chariox/provider-home"),
         ];
         let mut args = Vec::new();
-        append_managed_protected_namespace_directories(&mut args, &directories, &mut BTreeSet::new());
+        append_managed_protected_namespace_directories(
+            &mut args,
+            &directories,
+            &mut BTreeSet::new(),
+        );
         let masks = args
             .windows(2)
             .filter(|window| window[0] == "--tmpfs")
@@ -2593,7 +2597,10 @@ mod tests {
         );
         assert_eq!(
             files,
-            [PathBuf::from("/run/control.sock"), PathBuf::from("/etc/managed.json")]
+            [
+                PathBuf::from("/run/control.sock"),
+                PathBuf::from("/etc/managed.json")
+            ]
         );
     }
 

@@ -384,8 +384,7 @@ fn reconcile_legacy_confirmed_grant_binding(
 ) -> Result<(), DaemonError> {
     if receipt.status != BootstrapReceiptStatus::Confirmed
         || envelope.schema_version != 3
-        || config.envelope_path
-            != std::path::Path::new(state::PROTECTED_MANAGED_BOOTSTRAP_PATH)
+        || config.envelope_path != std::path::Path::new(state::PROTECTED_MANAGED_BOOTSTRAP_PATH)
     {
         return Ok(());
     }
@@ -542,12 +541,7 @@ fn begin_registration(
     // that receipt instead of treating a completed binding as permission to
     // exchange the envelope again.
     bind_grant_to_receipt(config, envelope, &receipt)?;
-    let receipt = ensure_rebuild_freshness_evidence(
-        config,
-        Some(envelope),
-        receipt,
-        release,
-    )?;
+    let receipt = ensure_rebuild_freshness_evidence(config, Some(envelope), receipt, release)?;
     Ok(Some(PendingConfirmation {
         envelope: envelope.clone(),
         receipt,
@@ -592,12 +586,8 @@ fn resume_registration(
                 bootstrap_error("managed bootstrap envelope is required to resume confirmation")
             })?;
             validate_receipt_envelope_grant_binding(config, envelope, &receipt)?;
-            let receipt = ensure_rebuild_freshness_evidence(
-                config,
-                Some(envelope),
-                receipt,
-                release,
-            )?;
+            let receipt =
+                ensure_rebuild_freshness_evidence(config, Some(envelope), receipt, release)?;
             Ok(Some(PendingConfirmation {
                 envelope: envelope.clone(),
                 receipt,
@@ -875,7 +865,8 @@ fn validate_rebuild_volume_evidence(
             ));
         }
         if let Some(envelope) = envelope {
-            let Some((expected_serial, expected_size_gb)) = expected_data_volume_identity(envelope)?
+            let Some((expected_serial, expected_size_gb)) =
+                expected_data_volume_identity(envelope)?
             else {
                 return Err(bootstrap_error(
                     "Path-1 freshness evidence has no protected data-volume expectation",
@@ -1092,8 +1083,7 @@ fn bind_grant_to_receipt(
         Some(existing)
             if existing.grant_binding_digest == expected.grant_binding_digest
                 && existing.exchange_identity_digest == expected.exchange_identity_digest
-                && (existing.generation.is_none()
-                    && existing.receipt_binding_digest.is_none()
+                && (existing.generation.is_none() && existing.receipt_binding_digest.is_none()
                     || existing.generation == expected.generation
                         && existing.receipt_binding_digest == expected.receipt_binding_digest) =>
         {

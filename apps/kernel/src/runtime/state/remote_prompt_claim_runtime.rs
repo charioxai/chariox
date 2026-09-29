@@ -166,9 +166,7 @@ impl RemotePromptAgentClaim {
         }
     }
 
-    pub(super) fn take_pending_dispatch(
-        &self,
-    ) -> Option<crate::app::KernelRemotePromptDispatch> {
+    pub(super) fn take_pending_dispatch(&self) -> Option<crate::app::KernelRemotePromptDispatch> {
         let mut claims = self
             .claims
             .lock()
@@ -219,8 +217,6 @@ impl Drop for RemotePromptAgentClaim {
             .remove(&self.key);
     }
 }
-
-
 
 impl KernelRuntimeState {
     pub(super) fn try_claim_remote_prompt_cancellation_send(
@@ -1180,18 +1176,13 @@ mod tests {
     fn deferred_dispatches_deduplicate_and_handoff_fifo() {
         let claims = recovery_claim_store();
         let active = dispatch("active");
-        let mut owner = RemotePromptAgentClaim::try_acquire_or_defer_dispatch(
-            Arc::clone(&claims),
-            &active,
-        )
-        .expect("first dispatch should own the recovery claim");
+        let mut owner =
+            RemotePromptAgentClaim::try_acquire_or_defer_dispatch(Arc::clone(&claims), &active)
+                .expect("first dispatch should own the recovery claim");
 
         assert!(
-            RemotePromptAgentClaim::try_acquire_or_defer_dispatch(
-                Arc::clone(&claims),
-                &active,
-            )
-            .is_none(),
+            RemotePromptAgentClaim::try_acquire_or_defer_dispatch(Arc::clone(&claims), &active,)
+                .is_none(),
             "duplicate active intent must not acquire the held claim"
         );
         let first_successor = dispatch("successor-1");
@@ -1215,14 +1206,21 @@ mod tests {
         )
         .is_none());
 
-        assert!(owner.release_or_restart(), "deferred work must wake its owner");
+        assert!(
+            owner.release_or_restart(),
+            "deferred work must wake its owner"
+        );
         assert_eq!(
-            owner.take_pending_dispatch().map(|dispatch| dispatch.prompt_id),
+            owner
+                .take_pending_dispatch()
+                .map(|dispatch| dispatch.prompt_id),
             Some("successor-1".to_string()),
             "successors must be handed off in FIFO order"
         );
         assert_eq!(
-            owner.take_pending_dispatch().map(|dispatch| dispatch.prompt_id),
+            owner
+                .take_pending_dispatch()
+                .map(|dispatch| dispatch.prompt_id),
             Some("successor-2".to_string())
         );
         assert!(owner.take_pending_dispatch().is_none());
@@ -1239,20 +1237,18 @@ mod tests {
     #[test]
     fn empty_recovery_claim_restarts_for_generation_then_releases() {
         let claims = recovery_claim_store();
-        let mut owner = RemotePromptAgentClaim::try_acquire(
-            Arc::clone(&claims),
-            "session-1",
-            "agent-1",
-        )
-        .expect("first caller should acquire the recovery claim");
+        let mut owner =
+            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1")
+                .expect("first caller should acquire the recovery claim");
 
-        assert!(RemotePromptAgentClaim::try_acquire(
-            Arc::clone(&claims),
-            "session-1",
-            "agent-1",
-        )
-        .is_none());
-        assert!(owner.release_or_restart(), "new generation must wake the owner");
+        assert!(
+            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1",)
+                .is_none()
+        );
+        assert!(
+            owner.release_or_restart(),
+            "new generation must wake the owner"
+        );
         assert!(
             !owner.release_or_restart(),
             "an empty claim must release after its generation is observed"

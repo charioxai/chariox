@@ -24,10 +24,9 @@ struct QueueFixture {
 }
 
 async fn queue_fixture(remote: bool, local_provider_run: bool) -> QueueFixture {
-    let mut app = crate::test_support::bootstrap_authenticated_app(
-        crate::config::DaemonConfig::for_tests(),
-    )
-    .expect("authenticated daemon fixture should bootstrap");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .expect("authenticated daemon fixture should bootstrap");
     let worktree = crate::test_support::TestWorktree::new("quiescence-queue-advance");
     let (session, agent) = KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -120,7 +119,10 @@ async fn queue_fixture(remote: bool, local_provider_run: bool) -> QueueFixture {
 }
 
 fn submit_prompt(fixture: &QueueFixture, text: &str) -> PromptQueueItem {
-    let prompt_id = format!("queue-advance-{}", text.to_ascii_lowercase().replace(' ', "-"));
+    let prompt_id = format!(
+        "queue-advance-{}",
+        text.to_ascii_lowercase().replace(' ', "-")
+    );
     let prepared = KernelPreparedPromptSubmission {
         session_id: fixture.session_id.clone(),
         prompt: PromptQueueItem::new(
@@ -148,9 +150,8 @@ fn submit_prompt(fixture: &QueueFixture, text: &str) -> PromptQueueItem {
     .expect("runtime should handle the fixture prompt");
 
     match submission.outcome {
-        PromptSubmissionOutcome::Started { prompt } | PromptSubmissionOutcome::Queued { prompt } => {
-            prompt
-        }
+        PromptSubmissionOutcome::Started { prompt }
+        | PromptSubmissionOutcome::Queued { prompt } => prompt,
     }
 }
 
@@ -173,7 +174,9 @@ fn run_bounded<T: Send + 'static>(
     let result = result_rx
         .recv_timeout(Duration::from_secs(2))
         .unwrap_or_else(|error| panic!("{label} did not return within two seconds: {error}"));
-    worker.join().expect("bounded queue operation thread should join");
+    worker
+        .join()
+        .expect("bounded queue operation thread should join");
     result
 }
 
@@ -207,14 +210,15 @@ async fn remote_queue_advance_returns_successor_and_records_once() {
     submit_prompt(&fixture, "active remote prompt");
     submit_prompt(&fixture, "remote successor prompt");
     cancel_active(&fixture);
-    let records_before = fixture.runtime.managed_activity_record_call_count_for_test();
+    let records_before = fixture
+        .runtime
+        .managed_activity_record_call_count_for_test();
 
     let runtime = fixture.runtime.clone();
     let session_id = fixture.session_id.clone();
     let agent_id = fixture.agent_id.clone();
-    let (prompt_id, prompt_text, dispatch_prompt_id, dispatch_prompt_text) = run_bounded(
-        "remote queue advancement",
-        move || {
+    let (prompt_id, prompt_text, dispatch_prompt_id, dispatch_prompt_text) =
+        run_bounded("remote queue advancement", move || {
             runtime
                 .owned
                 .advance_next_queued_remote_prompt_dispatch(&session_id, &agent_id)
@@ -239,9 +243,8 @@ async fn remote_queue_advance_returns_successor_and_records_once() {
                         dispatch.prompt,
                     ))
                 })
-        },
-    )
-    .expect("remote queue advancement should return its successor");
+        })
+        .expect("remote queue advancement should return its successor");
 
     assert_eq!(prompt_text, "remote successor prompt");
     assert_eq!(dispatch_prompt_id, prompt_id);
@@ -260,7 +263,10 @@ async fn remote_queue_advance_returns_successor_and_records_once() {
         .expect("promoted remote successor should be active");
     assert_eq!(active.id(), prompt_id);
     assert_eq!(
-        fixture.runtime.managed_activity_record_call_count_for_test() - records_before,
+        fixture
+            .runtime
+            .managed_activity_record_call_count_for_test()
+            - records_before,
         1,
         "remote queue promotion should record one activity mutation"
     );
@@ -275,7 +281,9 @@ async fn local_queue_activation_and_dispatch_transfer_the_activity_guard_once() 
     submit_prompt(&fixture, "second local successor");
     cancel_active(&fixture);
 
-    let records_before_activation = fixture.runtime.managed_activity_record_call_count_for_test();
+    let records_before_activation = fixture
+        .runtime
+        .managed_activity_record_call_count_for_test();
     let runtime = fixture.runtime.clone();
     let session_id = fixture.session_id.clone();
     let agent_id = fixture.agent_id.clone();
@@ -298,7 +306,10 @@ async fn local_queue_activation_and_dispatch_transfer_the_activity_guard_once() 
     .expect("local queue activation should return the first successor");
     assert_eq!(activated_text, "first local successor");
     assert_eq!(
-        fixture.runtime.managed_activity_record_call_count_for_test() - records_before_activation,
+        fixture
+            .runtime
+            .managed_activity_record_call_count_for_test()
+            - records_before_activation,
         1,
         "local queue activation should record one activity mutation"
     );
@@ -306,7 +317,9 @@ async fn local_queue_activation_and_dispatch_transfer_the_activity_guard_once() 
     assert_busy_activity_is_durable(&fixture.runtime);
 
     cancel_active(&fixture);
-    let records_before_dispatch = fixture.runtime.managed_activity_record_call_count_for_test();
+    let records_before_dispatch = fixture
+        .runtime
+        .managed_activity_record_call_count_for_test();
     let runtime = fixture.runtime.clone();
     let session_id = fixture.session_id.clone();
     let agent_id = fixture.agent_id.clone();
@@ -329,7 +342,10 @@ async fn local_queue_activation_and_dispatch_transfer_the_activity_guard_once() 
     assert_eq!(dispatched_text, "second local successor");
     assert_ne!(activated_id, dispatched_id);
     assert_eq!(
-        fixture.runtime.managed_activity_record_call_count_for_test() - records_before_dispatch,
+        fixture
+            .runtime
+            .managed_activity_record_call_count_for_test()
+            - records_before_dispatch,
         1,
         "local queue dispatch advance should record one activity mutation"
     );

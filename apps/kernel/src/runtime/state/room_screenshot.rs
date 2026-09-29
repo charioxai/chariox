@@ -383,13 +383,8 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
-        self.send_room_slice_peer_request(
-            &config,
-            target,
-            request,
-            Duration::from_secs(15),
-        )
-        .await
+        self.send_room_slice_peer_request(&config, target, request, Duration::from_secs(15))
+            .await
     }
 }
 

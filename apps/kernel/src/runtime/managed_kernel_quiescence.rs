@@ -164,10 +164,9 @@ impl ManagedKernelQuiescenceClient {
         let Some(registration) = registration else {
             return Ok(None);
         };
-        let profile = config
-            .cloud_relay
-            .as_ref()
-            .ok_or_else(|| quiescence_error("confirmed managed kernel has no Cloud relay profile"))?;
+        let profile = config.cloud_relay.as_ref().ok_or_else(|| {
+            quiescence_error("confirmed managed kernel has no Cloud relay profile")
+        })?;
         let binding = QuiescenceBinding::from_runtime(config, registration, profile)?;
         Ok(Some(Self { binding }))
     }
@@ -206,9 +205,7 @@ impl ManagedKernelQuiescenceClient {
                     delay
                 }
             };
-            if wait_for_poll_or_shutdown(&mut shutdown, delay).await
-                == PollWaitOutcome::Shutdown
-            {
+            if wait_for_poll_or_shutdown(&mut shutdown, delay).await == PollWaitOutcome::Shutdown {
                 return Ok(());
             }
         }
@@ -216,9 +213,12 @@ impl ManagedKernelQuiescenceClient {
 
     async fn poll_once(&self, runtime: &KernelRuntimeState) -> Result<(), DaemonError> {
         let payload = self.signed_poll_request()?;
-        let response: PollResponse = post_cloud_json(self.binding.api_url.clone(), POLL_ENDPOINT, payload).await?;
+        let response: PollResponse =
+            post_cloud_json(self.binding.api_url.clone(), POLL_ENDPOINT, payload).await?;
         if response.protocol_version != 1 {
-            return Err(quiescence_error("Cloud returned an unsupported quiescence protocol version"));
+            return Err(quiescence_error(
+                "Cloud returned an unsupported quiescence protocol version",
+            ));
         }
         match response.command {
             None => Ok(()),
@@ -229,7 +229,8 @@ impl ManagedKernelQuiescenceClient {
                     Ok(false) | Err(_) => "busy",
                 };
                 let payload = self.signed_reservation_ack(&challenge, decision)?;
-                let _: Value = post_cloud_json(self.binding.api_url.clone(), ACK_ENDPOINT, payload).await?;
+                let _: Value =
+                    post_cloud_json(self.binding.api_url.clone(), ACK_ENDPOINT, payload).await?;
                 Ok(())
             }
             Some(QuiescenceCommand::ReleaseAdmissionFence {
@@ -241,12 +242,9 @@ impl ManagedKernelQuiescenceClient {
                 validate_result_sequence(result_sequence)?;
                 runtime.apply_managed_kernel_stop_release(&challenge, outcome, result_sequence)?;
                 let payload = self.signed_release_ack(&challenge, outcome, result_sequence)?;
-                let _: Value = post_cloud_json(
-                    self.binding.api_url.clone(),
-                    RELEASE_ACK_ENDPOINT,
-                    payload,
-                )
-                .await?;
+                let _: Value =
+                    post_cloud_json(self.binding.api_url.clone(), RELEASE_ACK_ENDPOINT, payload)
+                        .await?;
                 Ok(())
             }
         }
@@ -266,7 +264,9 @@ impl ManagedKernelQuiescenceClient {
             || challenge.idle_sequence == 0
             || !is_utc_millisecond_timestamp(&challenge.idle_deadline_at)
         {
-            return Err(quiescence_error("Cloud quiescence command identity is invalid"));
+            return Err(quiescence_error(
+                "Cloud quiescence command identity is invalid",
+            ));
         }
         let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(challenge.nonce.as_bytes())
@@ -274,7 +274,9 @@ impl ManagedKernelQuiescenceClient {
         if nonce.len() != 32
             || base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&nonce) != challenge.nonce
         {
-            return Err(quiescence_error("Cloud quiescence nonce has an invalid length"));
+            return Err(quiescence_error(
+                "Cloud quiescence nonce has an invalid length",
+            ));
         }
         Ok(())
     }
@@ -365,7 +367,9 @@ impl QuiescenceBinding {
             || registration.machine_id != config.host_machine_id
             || registration.kernel_id != config.daemon_id
         {
-            return Err(quiescence_error("managed quiescence identity does not match confirmed kernel registration"));
+            return Err(quiescence_error(
+                "managed quiescence identity does not match confirmed kernel registration",
+            ));
         }
         Ok(Self {
             api_url: profile.api_url.trim_end_matches('/').to_string(),
@@ -409,8 +413,11 @@ fn hmac_signature(
     credential: &str,
     values: &BTreeMap<&'static str, Value>,
 ) -> Result<String, DaemonError> {
-    let canonical = serde_json::to_vec(values)
-        .map_err(|error| quiescence_error(format!("could not canonicalize quiescence request: {error}")))?;
+    let canonical = serde_json::to_vec(values).map_err(|error| {
+        quiescence_error(format!(
+            "could not canonicalize quiescence request: {error}"
+        ))
+    })?;
     let mut mac = Hmac::<Sha256>::new_from_slice(credential.as_bytes())
         .map_err(|_| quiescence_error("could not initialize quiescence request signature"))?;
     mac.update(&canonical);
@@ -424,7 +431,9 @@ fn hmac_signature(
 
 fn validate_result_sequence(sequence: u64) -> Result<(), DaemonError> {
     if sequence == 0 {
-        Err(quiescence_error("Cloud release result sequence must be positive"))
+        Err(quiescence_error(
+            "Cloud release result sequence must be positive",
+        ))
     } else {
         Ok(())
     }
@@ -539,8 +548,8 @@ mod tests {
                 ManagedKernelQuiescenceOutcome::KeepRunning,
             ),
         ] {
-            let response: PollResponse = serde_json::from_str(payload)
-                .expect("release command response should deserialize");
+            let response: PollResponse =
+                serde_json::from_str(payload).expect("release command response should deserialize");
             assert_eq!(response.protocol_version, 1);
             match response.command.expect("release command") {
                 QuiescenceCommand::ReleaseAdmissionFence {
@@ -567,11 +576,7 @@ mod tests {
         binding.machine_credential = format!("mcred_{}", "a".repeat(43));
         let client = ManagedKernelQuiescenceClient { binding };
         let release = client
-            .signed_release_ack(
-                &challenge(),
-                ManagedKernelQuiescenceOutcome::KeepRunning,
-                1,
-            )
+            .signed_release_ack(&challenge(), ManagedKernelQuiescenceOutcome::KeepRunning, 1)
             .expect("release ack should sign");
         assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 367);
         assert_eq!(

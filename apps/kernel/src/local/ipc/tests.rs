@@ -44,12 +44,16 @@ fn guarded_unix_oversized_admission_returns_bounded_error_then_eof() {
         wait_for_socket(&socket_path).await;
         let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         super::write_open_async_frame(&mut stream, br#"{"GuardedControlSession":{"version":1}}"#)
-            .await.unwrap();
+            .await
+            .unwrap();
         let bytes = super::read_async_frame(&mut stream).await.unwrap();
         assert!(bytes.len() < 1024);
         let result: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(result["response"].is_null());
-        assert_eq!(result["error"], "local payload exceeded ipc frame limit; request a smaller payload");
+        assert_eq!(
+            result["error"],
+            "local payload exceeded ipc frame limit; request a smaller payload"
+        );
         assert_eq!(stream.read(&mut [0_u8; 1]).await.unwrap(), 0);
         tx.send(()).unwrap();
         server.await.unwrap().unwrap();
@@ -64,38 +68,72 @@ fn guarded_unix_session_dispatches_one_command_and_preserves_legacy_eof() {
         let socket_path = config.local_socket_path.clone();
         let app = Arc::new(TokioMutex::new(DaemonApp::bootstrap(config).unwrap()));
         let (tx, rx) = oneshot::channel::<()>();
-        let server = tokio::spawn(super::run_local_ipc_server_with_shared_app(app, async { let _ = rx.await; }));
+        let server = tokio::spawn(super::run_local_ipc_server_with_shared_app(app, async {
+            let _ = rx.await;
+        }));
         wait_for_socket(&socket_path).await;
         let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         let frame = super::encode_frame(br#"{"GuardedControlSession":{"version":1}}"#).unwrap();
-        for byte in frame { stream.write_all(&[byte]).await.unwrap(); }
-        let admission: Value = serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap()).unwrap();
+        for byte in frame {
+            stream.write_all(&[byte]).await.unwrap();
+        }
+        let admission: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap()).unwrap();
         assert_eq!(admission["session"]["version"], 1);
         assert!(admission["response"]["RelayStatus"]["status"]["capabilities"].is_array());
         // This reaches ordinary dispatch and returns its not-found error, not a transport rejection.
-        let command = br#"{"KeepManagedEnvironmentRunning":{"environmentId":"missing-session-test"}}"#;
-        super::write_open_async_frame(&mut stream, command).await.unwrap();
-        let result: Value = serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap()).unwrap();
+        let command =
+            br#"{"KeepManagedEnvironmentRunning":{"environmentId":"missing-session-test"}}"#;
+        super::write_open_async_frame(&mut stream, command)
+            .await
+            .unwrap();
+        let result: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap()).unwrap();
         assert!(result["error"].as_str().is_some());
-        assert!(!result["error"].as_str().unwrap().contains("session accepts"));
+        assert!(!result["error"]
+            .as_str()
+            .unwrap()
+            .contains("session accepts"));
         assert_eq!(stream.read(&mut [0_u8; 1]).await.unwrap(), 0);
         let mut legacy = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
-        super::write_open_async_frame(&mut legacy, br#"{"RelayStatus":null}"#).await.unwrap();
-        let _: Value = serde_json::from_slice(&super::read_async_frame(&mut legacy).await.unwrap()).unwrap();
+        super::write_open_async_frame(&mut legacy, br#"{"RelayStatus":null}"#)
+            .await
+            .unwrap();
+        let _: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut legacy).await.unwrap()).unwrap();
         assert_eq!(legacy.read(&mut [0_u8; 1]).await.unwrap(), 0);
         let mut incompatible = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
-        super::write_open_async_frame(&mut incompatible, br#"{"GuardedControlSession":{"version":2}}"#).await.unwrap();
-        let rejected: Value = serde_json::from_slice(&super::read_async_frame(&mut incompatible).await.unwrap()).unwrap();
-        assert!(rejected["error"].as_str().unwrap().contains("unsupported session version"));
+        super::write_open_async_frame(
+            &mut incompatible,
+            br#"{"GuardedControlSession":{"version":2}}"#,
+        )
+        .await
+        .unwrap();
+        let rejected: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut incompatible).await.unwrap())
+                .unwrap();
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported session version"));
         assert_eq!(incompatible.read(&mut [0_u8; 1]).await.unwrap(), 0);
         let mut invalid = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
-        super::write_open_async_frame(&mut invalid, br#"{"GuardedControlSession":{"version":1}}"#).await.unwrap();
+        super::write_open_async_frame(&mut invalid, br#"{"GuardedControlSession":{"version":1}}"#)
+            .await
+            .unwrap();
         super::read_async_frame(&mut invalid).await.unwrap();
-        super::write_open_async_frame(&mut invalid, br#"{"RelayStatus":null}"#).await.unwrap();
-        let rejected: Value = serde_json::from_slice(&super::read_async_frame(&mut invalid).await.unwrap()).unwrap();
-        assert!(rejected["error"].as_str().unwrap().contains("session accepts exactly one guarded"));
+        super::write_open_async_frame(&mut invalid, br#"{"RelayStatus":null}"#)
+            .await
+            .unwrap();
+        let rejected: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut invalid).await.unwrap()).unwrap();
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("session accepts exactly one guarded"));
         assert_eq!(invalid.read(&mut [0_u8; 1]).await.unwrap(), 0);
-        tx.send(()).unwrap(); server.await.unwrap().unwrap();
+        tx.send(()).unwrap();
+        server.await.unwrap().unwrap();
     });
 }
 const LOCAL_IPC_TEST_RUNTIME_THREAD_STACK_SIZE: usize = 64 * 1024 * 1024;

@@ -2,11 +2,11 @@ use super::*;
 
 #[path = "project_environment_setup_recovery.rs"]
 pub(super) mod process_lease;
-use self::process_lease::{recover_validation_command, ValidationCommandLease};
 pub(super) use self::process_lease::{
     cleanup_after_settled_group, kill_live_process_group, open_pidfd, wait_child_or_cancel,
     wait_for_process_group_absence, ValidationProcessIdentity,
 };
+use self::process_lease::{recover_validation_command, ValidationCommandLease};
 
 // Version 1 means this platform persists a process identity before releasing
 // the validation command gate. Version 2 explicitly records that ordinary
@@ -272,18 +272,22 @@ impl ProjectEnvironmentSetupStore {
                 && entry.validation_recovery_version == VALIDATION_RECOVERY_UNSUPPORTED_VERSION;
             let recovery = match persisted_lease.as_ref() {
                 Some(lease)
-                    if lease.matches_operation(
-                        &entry.execution.operation_id,
-                        entry.status.attempt,
-                    ) =>
+                    if lease
+                        .matches_operation(&entry.execution.operation_id, entry.status.attempt) =>
                 {
                     recover_validation_command(lease)
                 }
-                Some(_) => Err("validation process lease does not match its setup operation".to_string()),
+                Some(_) => {
+                    Err("validation process lease does not match its setup operation".to_string())
+                }
                 None if interrupted_phase == ProjectEnvironmentSetupPhase::Validating
-                    && entry.validation_recovery_version != VALIDATION_RECOVERY_SUPPORTED_VERSION =>
+                    && entry.validation_recovery_version
+                        != VALIDATION_RECOVERY_SUPPORTED_VERSION =>
                 {
-                    Err("validation has no recognized durable process lease; cleanup is incomplete".to_string())
+                    Err(
+                        "validation has no recognized durable process lease; cleanup is incomplete"
+                            .to_string(),
+                    )
                 }
                 None => Ok(()),
             };
@@ -311,13 +315,11 @@ impl ProjectEnvironmentSetupStore {
                         Some("validation command cleanup is incomplete".to_string());
                     candidate.status.failure_code =
                         Some("validation_cleanup_incomplete".to_string());
-                    candidate.status.failure_message = Some(
-                        if unsupported_platform_recovery {
-                            "restart recovery for this validation command was unsupported on its originating platform; process and scratch cleanup remain unverified".to_string()
-                        } else {
-                            "kernel restart left a validation process or scratch owner that could not be safely verified".to_string()
-                        },
-                    );
+                    candidate.status.failure_message = Some(if unsupported_platform_recovery {
+                        "restart recovery for this validation command was unsupported on its originating platform; process and scratch cleanup remain unverified".to_string()
+                    } else {
+                        "kernel restart left a validation process or scratch owner that could not be safely verified".to_string()
+                    });
                     candidate.status.retryable = false;
                     // Keep the exact lease for a later conservative retry of
                     // startup reconciliation. Never clear uncertain ownership.
@@ -335,8 +337,7 @@ impl ProjectEnvironmentSetupStore {
             if let Err(error) = append {
                 candidate.status.message =
                     Some("validation command cleanup state could not be persisted".to_string());
-                candidate.status.failure_code =
-                    Some("validation_cleanup_incomplete".to_string());
+                candidate.status.failure_code = Some("validation_cleanup_incomplete".to_string());
                 candidate.status.failure_message = Some(
                     "kernel restarted after cleanup but could not persist the settled failure state"
                         .to_string(),
@@ -1647,12 +1648,15 @@ impl ProjectEnvironmentSetupStore {
         if entry.status.attempt != attempt
             || entry.cancel_requested
             || entry.status.phase != ProjectEnvironmentSetupPhase::Validating
-            || !entry.validation_command_lease.as_ref().is_some_and(|lease| {
-                lease.operation_id() == operation_id
-                    && lease.attempt() == attempt
-                    && lease.command_index() == command_index
-                    && lease.process().is_some()
-            })
+            || !entry
+                .validation_command_lease
+                .as_ref()
+                .is_some_and(|lease| {
+                    lease.operation_id() == operation_id
+                        && lease.attempt() == attempt
+                        && lease.command_index() == command_index
+                        && lease.process().is_some()
+                })
         {
             return Err("validation setup attempt no longer authorizes command start".to_string());
         }
@@ -1673,11 +1677,14 @@ impl ProjectEnvironmentSetupStore {
             .get(operation_id)
             .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
         if entry.status.attempt != attempt
-            || !entry.validation_command_lease.as_ref().is_some_and(|lease| {
-                lease.operation_id() == operation_id
-                    && lease.attempt() == attempt
-                    && lease.command_index() == command_index
-            })
+            || !entry
+                .validation_command_lease
+                .as_ref()
+                .is_some_and(|lease| {
+                    lease.operation_id() == operation_id
+                        && lease.attempt() == attempt
+                        && lease.command_index() == command_index
+                })
         {
             return Err("validation command lease changed before cleanup settled".to_string());
         }
@@ -1746,7 +1753,9 @@ impl ProjectEnvironmentSetupStore {
                     && lease.attempt() == attempt
                     && lease.command_index() == command_index
             })
-            .ok_or_else(|| "validation process lease changed before output settlement".to_string())?;
+            .ok_or_else(|| {
+                "validation process lease changed before output settlement".to_string()
+            })?;
         lease.mark_output_pipe_unsettled();
         candidate.status.phase = ProjectEnvironmentSetupPhase::Failed;
         candidate.status.progress_percent = 0;

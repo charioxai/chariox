@@ -538,7 +538,9 @@ impl From<ReimageResult> for ManagedEnvironmentReimageResult {
 }
 
 impl ContextTransferTicket {
-    pub(in crate::runtime) fn into_ticket(self) -> Result<ManagedContextTransferTicket, DaemonError> {
+    pub(in crate::runtime) fn into_ticket(
+        self,
+    ) -> Result<ManagedContextTransferTicket, DaemonError> {
         let context_plan = ManagedEnvironmentContextPlan::from(self.context_plan);
         let context_plan = serde_json::from_value(
             serde_json::to_value(context_plan).map_err(ticket_decode_error)?,

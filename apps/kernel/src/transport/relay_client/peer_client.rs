@@ -457,8 +457,7 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
 ) -> Result<RelayPeerResponse, DaemonError> {
     #[cfg(test)]
     {
-        let mut trace =
-            relay_discovery::TemporaryPeerTestTrace::new(config.relay_url.as_deref());
+        let mut trace = relay_discovery::TemporaryPeerTestTrace::new(config.relay_url.as_deref());
         let result = send_peer_request_via_temporary_connection_with_timeout_inner(
             config,
             target,

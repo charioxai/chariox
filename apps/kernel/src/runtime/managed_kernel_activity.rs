@@ -145,10 +145,9 @@ impl ManagedKernelActivityReporter {
                 return Ok(());
             }
 
-            if let Some(report) = cursor.next_report_with_transition(
-                observation,
-                local_transition_sequence,
-            )? {
+            if let Some(report) =
+                cursor.next_report_with_transition(observation, local_transition_sequence)?
+            {
                 match self.report(report).await {
                     Ok(response) => {
                         let accepted = cursor.accept_response(response)?;
@@ -460,7 +459,8 @@ impl ActivityCursor {
         observation: crate::runtime::state::ManagedActivityObservation,
         local_transition_sequence: u64,
     ) -> Result<Option<AcceptedActivity>, DaemonError> {
-        let report = self.next_report_for_transition(observation, Some(local_transition_sequence))?;
+        let report =
+            self.next_report_for_transition(observation, Some(local_transition_sequence))?;
         if report.is_some() && self.pending_local_transition_sequence.is_none() {
             self.pending_local_transition_sequence = Some(local_transition_sequence);
         }

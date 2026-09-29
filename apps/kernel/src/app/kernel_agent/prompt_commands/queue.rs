@@ -91,7 +91,8 @@ impl<'a> KernelAgentService<'a> {
                     &target_agent_id,
                     expected_next,
                 ))
-            })? else {
+            })?
+            else {
                 return Ok(None);
             };
             let (_session, next_candidate) = match activation {

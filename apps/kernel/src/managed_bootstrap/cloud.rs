@@ -190,11 +190,7 @@ impl BootstrapCloudClient for HttpBootstrapCloudClient {
         api_url: &str,
         request: &ReconcileManagedBootstrapGrantRequestV1,
     ) -> Result<ReconcileManagedBootstrapGrantResponseV1, DaemonError> {
-        self.post_managed(
-            api_url,
-            "/v1/managed-kernels/bootstrap/reconcile",
-            request,
-        )
+        self.post_managed(api_url, "/v1/managed-kernels/bootstrap/reconcile", request)
     }
 
     fn report_runtime_identity(

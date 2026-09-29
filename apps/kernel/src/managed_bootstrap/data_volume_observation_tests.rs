@@ -32,7 +32,13 @@ fn read_admitted_data_volume_checks_boot_identity_serial_size_and_bounded_json()
         },
     );
 
-    assert!(read(&fixture, "fedcba98-7654-3210-fedc-ba9876543210", SERIAL, SIZE_GB).is_err());
+    assert!(read(
+        &fixture,
+        "fedcba98-7654-3210-fedc-ba9876543210",
+        SERIAL,
+        SIZE_GB
+    )
+    .is_err());
     assert!(read(&fixture, BOOT_ID, "54321", SIZE_GB).is_err());
     assert!(read(&fixture, BOOT_ID, SERIAL, SIZE_GB + 1).is_err());
 
@@ -225,5 +231,10 @@ fn set_mode(path: &Path, mode: u32) {
 fn set_owner(path: &Path, uid: u32, gid: u32) {
     let path = CString::new(path.as_os_str().as_bytes()).expect("fixture path has no NUL byte");
     let result = unsafe { libc::chown(path.as_ptr(), uid, gid) };
-    assert_eq!(result, 0, "set fixture owner: {}", io::Error::last_os_error());
+    assert_eq!(
+        result,
+        0,
+        "set fixture owner: {}",
+        io::Error::last_os_error()
+    );
 }

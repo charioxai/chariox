@@ -18,7 +18,8 @@ use super::{
 #[derive(Clone)]
 pub struct ProviderProcessServiceStore {
     inner: Arc<Mutex<ProviderProcessService>>,
-    managed_admission_gate: Arc<Mutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
+    managed_admission_gate:
+        Arc<Mutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
 }
 
 #[cfg(test)]

@@ -1995,9 +1995,7 @@ exit 0
     let remove_volume = position("volume rm saved-slice-home");
     let create_volume = calls
         .iter()
-        .position(|call| {
-            call.starts_with("volume create ") && call.ends_with(" saved-slice-home")
-        })
+        .position(|call| call.starts_with("volume create ") && call.ends_with(" saved-slice-home"))
         .unwrap_or_else(|| panic!("missing labeled home volume creation: {calls:?}"));
     let create_container = position("create --name saved-slice ");
     for label in [

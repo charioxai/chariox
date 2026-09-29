@@ -69,7 +69,9 @@ fn run_workspace_claim_conflict_scenario(ready_tx: mpsc::SyncSender<()>) {
         )
         .expect("provider run should launch");
     app.update_provider_run_projection(provider_run.clone());
-    let crate::session::PromptSubmissionOutcome::Started { prompt: completed_prompt } = app
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: completed_prompt,
+    } = app
         .submit_prompt(
             session.id(),
             attachment.id(),
@@ -107,19 +109,17 @@ fn run_workspace_claim_conflict_scenario(ready_tx: mpsc::SyncSender<()>) {
         crate::session::PromptStatus::Queued,
     )
     .with_workflow_context(queued_workflow.id(), &queued_node_run_id);
-    let crate::session::PromptSubmissionOutcome::Queued { prompt: queued_prompt } = app
+    let crate::session::PromptSubmissionOutcome::Queued {
+        prompt: queued_prompt,
+    } = app
         .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
         .expect("workflow prompt should remain queued behind the active prompt")
     else {
         panic!("workflow prompt should queue behind the active prompt");
     };
 
-    let (blocker_workflow, blocker_node_run_id) = create_single_node_workflow(
-        &mut app,
-        session.id(),
-        agent.id(),
-        "blocking-workflow",
-    );
+    let (blocker_workflow, blocker_node_run_id) =
+        create_single_node_workflow(&mut app, session.id(), agent.id(), "blocking-workflow");
     app.sessions_mut()
         .prepare_workflow_turn(
             session.id(),
@@ -132,11 +132,7 @@ fn run_workspace_claim_conflict_scenario(ready_tx: mpsc::SyncSender<()>) {
         )
         .expect("blocking workflow turn should be prepared");
     app.sessions_mut()
-        .start_workflow_node_run(
-            session.id(),
-            blocker_workflow.id(),
-            &blocker_node_run_id,
-        )
+        .start_workflow_node_run(session.id(), blocker_workflow.id(), &blocker_node_run_id)
         .expect("blocking workflow node should start");
     let blocker_claim_id = format!(
         "workflow-node:{}:{}:{}",
@@ -154,10 +150,8 @@ fn run_workspace_claim_conflict_scenario(ready_tx: mpsc::SyncSender<()>) {
     .expect("other workflow node should hold the shared-worktree claim");
 
     let app = Arc::new(Mutex::new(app));
-    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
-        Arc::clone(&app),
-        1,
-    );
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let runtime = router.runtime_state();
     runtime.owned.note_prompt_started(provider_run.id());
     assert_eq!(runtime.managed_running_agent_count(), 1);
@@ -229,8 +223,14 @@ fn run_workspace_claim_conflict_scenario(ready_tx: mpsc::SyncSender<()>) {
         queued_workflow.id(),
         &queued_node_run_id,
     );
-    assert!(runtime.owned.prompt_workspace_claims.contains(&blocker_claim_id));
-    assert!(!runtime.owned.prompt_workspace_claims.contains(&next_claim_id));
+    assert!(runtime
+        .owned
+        .prompt_workspace_claims
+        .contains(&blocker_claim_id));
+    assert!(!runtime
+        .owned
+        .prompt_workspace_claims
+        .contains(&next_claim_id));
     assert_eq!(runtime.owned.workspace_coordinator.active_claims().len(), 1);
     assert!(runtime.owned.active_turns.get(provider_run.id()).is_none());
     assert_eq!(

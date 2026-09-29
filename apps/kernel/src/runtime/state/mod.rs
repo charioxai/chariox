@@ -52,8 +52,8 @@ mod leased_agent_operations;
 mod managed_activity_runtime_state;
 mod managed_kernel_quiescence_state;
 pub(crate) use managed_kernel_quiescence_state::{
-    ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge,
-    ManagedKernelQuiescenceGate, ManagedKernelQuiescenceOutcome,
+    ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
+    ManagedKernelQuiescenceOutcome,
 };
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
@@ -354,9 +354,9 @@ mod workflow_access_owned_state;
 mod workflow_admin;
 mod workflow_artifact_request_runtime_state;
 mod workflow_blocked_claim_retry;
+mod workflow_claim_release;
 mod workflow_code_request_runtime_state;
 mod workflow_code_request_support;
-mod workflow_claim_release;
 mod workflow_completion_owned_state;
 mod workflow_completion_snapshot_owned_state;
 mod workflow_console_tool;

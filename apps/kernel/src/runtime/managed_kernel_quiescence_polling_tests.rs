@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use super::{
-    MAX_FAILURE_POLL_INTERVAL, POLL_INTERVAL, PollWaitOutcome, QuiescencePollSchedule,
-    QuiescencePollWarningState, wait_for_poll_or_shutdown,
+    wait_for_poll_or_shutdown, PollWaitOutcome, QuiescencePollSchedule, QuiescencePollWarningState,
+    MAX_FAILURE_POLL_INTERVAL, POLL_INTERVAL,
 };
 
 #[test]

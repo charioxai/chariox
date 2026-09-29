@@ -247,8 +247,11 @@ impl CharioxUserConfig {
                 self.slices.linux.cpus = Some(non_empty_config_string("slices.linux.cpus", value)?)
             }
             "slices.linux.disk_layer_mb" => {
-                self.slices.linux.disk_layer_mb =
-                    Some(parse_config_u32("slices.linux.disk_layer_mb", &value, true)?)
+                self.slices.linux.disk_layer_mb = Some(parse_config_u32(
+                    "slices.linux.disk_layer_mb",
+                    &value,
+                    true,
+                )?)
             }
             "slices.linux.disk_home_mb" => {
                 self.slices.linux.disk_home_mb =

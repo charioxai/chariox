@@ -74,8 +74,8 @@ fn fallback_path(home: &Path) -> OsString {
         }
 
         let local_bin = home.join(".local").join("bin");
-        let entries = std::iter::once(local_bin)
-            .chain(std::env::split_paths(OsStr::new(BOOTSTRAP_PATH)));
+        let entries =
+            std::iter::once(local_bin).chain(std::env::split_paths(OsStr::new(BOOTSTRAP_PATH)));
         match std::env::join_paths(entries) {
             Ok(path) if path.as_os_str().len() <= MAX_PROVIDER_PATH_BYTES => path,
             _ => OsString::from(BOOTSTRAP_PATH),
@@ -356,8 +356,7 @@ mod tests {
         permissions.set_mode(0o700);
         fs::set_permissions(&tool, permissions).expect("provider probe should be executable");
 
-        let supervisor_env =
-            profile_only_controls.map(|(name, _)| (name, std::env::var_os(name)));
+        let supervisor_env = profile_only_controls.map(|(name, _)| (name, std::env::var_os(name)));
         let path = resolve_login_path(&home.0);
         assert_eq!(path, OsString::from(&expected_path));
         for (name, expected) in &supervisor_env {
@@ -393,12 +392,11 @@ mod tests {
             .expect("second provider probe should be executable");
 
         let expected_path_b = format!("{}:{BOOTSTRAP_PATH}", profile_bin_b.display());
-        let profile = fs::read_to_string(home.0.join(".profile"))
-            .expect("login profile should be readable");
+        let profile =
+            fs::read_to_string(home.0.join(".profile")).expect("login profile should be readable");
         let updated_profile = profile.replace(&expected_path, &expected_path_b);
         assert_ne!(
-            profile,
-            updated_profile,
+            profile, updated_profile,
             "second launch profile should change its PATH"
         );
         fs::write(home.0.join(".profile"), updated_profile)
@@ -478,7 +476,10 @@ mod tests {
         let home = Path::new("/srv/worker home");
         assert_eq!(
             fallback_path(home),
-            OsString::from(format!("{}:{BOOTSTRAP_PATH}", home.join(".local/bin").display()))
+            OsString::from(format!(
+                "{}:{BOOTSTRAP_PATH}",
+                home.join(".local/bin").display()
+            ))
         );
         assert_eq!(
             fallback_path(Path::new("relative/home")),
@@ -494,9 +495,7 @@ mod tests {
         );
         assert_eq!(
             fallback_path(Path::new("/srv/worker\nhome")),
-            OsString::from(format!(
-                "/srv/worker\nhome/.local/bin:{BOOTSTRAP_PATH}"
-            ))
+            OsString::from(format!("/srv/worker\nhome/.local/bin:{BOOTSTRAP_PATH}"))
         );
 
         let mut home_bytes = b"/srv/worker-".to_vec();

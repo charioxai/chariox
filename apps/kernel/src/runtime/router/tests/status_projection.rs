@@ -584,7 +584,10 @@ async fn relay_status_uses_config_projection_without_app_lock() {
             assert_eq!(status.relay_url.as_deref(), Some("ws://127.0.0.1:9"));
             assert!(status.relay_token_configured);
             assert_eq!(status.machine_id, "machine-projected");
-            assert_eq!(status.capabilities, crate::local::RUNTIME_CONTROL_CAPABILITIES);
+            assert_eq!(
+                status.capabilities,
+                crate::local::RUNTIME_CONTROL_CAPABILITIES
+            );
             let registration = app.lock().await.relay_registration();
             for capability in &status.capabilities {
                 assert!(registration.capabilities.contains(capability));

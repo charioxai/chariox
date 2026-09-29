@@ -1305,8 +1305,12 @@ mod tests {
         let agent_message =
             fs::read_to_string(root.join("runtime").join("agent-message-context.md"))
                 .expect("agent message context should read");
-        assert!(agent_message.contains("do not reply to an acknowledgement or status-only completion"));
-        assert!(agent_message.contains("new bounded actionable request or a materially useful result"));
+        assert!(
+            agent_message.contains("do not reply to an acknowledgement or status-only completion")
+        );
+        assert!(
+            agent_message.contains("new bounded actionable request or a materially useful result")
+        );
         assert!(agent_message.contains("Useful answers, clarifying questions, and corrections"));
         let workflow_turn = fs::read_to_string(root.join("workflow").join("turn.md"))
             .expect("workflow turn prompt should read");

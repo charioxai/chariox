@@ -47,12 +47,10 @@ impl SliceDiskQuotaLimits {
                 field: "slices.linux.disk_home_mb",
                 message: "disk_home_mb must be a positive integer",
             }),
-            (Some(layer_mb), Some(home_mb)) => {
-                Ok(Some(Self {
-                    writable_layer_bytes: u64::from(layer_mb) * BYTES_PER_MEBIBYTE,
-                    persistent_home_bytes: u64::from(home_mb) * BYTES_PER_MEBIBYTE,
-                }))
-            }
+            (Some(layer_mb), Some(home_mb)) => Ok(Some(Self {
+                writable_layer_bytes: u64::from(layer_mb) * BYTES_PER_MEBIBYTE,
+                persistent_home_bytes: u64::from(home_mb) * BYTES_PER_MEBIBYTE,
+            })),
             (Some(_), None) => Err(DaemonError::InvalidConfig {
                 field: "slices.linux.disk_home_mb",
                 message: "disk_layer_mb and disk_home_mb must be configured together",
@@ -318,13 +316,17 @@ mod tests {
         evidence.writable_layer.used_bytes = Some(limits.writable_layer_bytes + 1);
         let error = require_verified_quotas(Some(&limits), Some(&evidence))
             .expect_err("oversized writable-layer data must not be truncated or admitted");
-        assert!(error.to_string().contains("existing writable-layer data exceeds"));
+        assert!(error
+            .to_string()
+            .contains("existing writable-layer data exceeds"));
 
         let mut evidence = verified_evidence();
         evidence.persistent_home.used_bytes = Some(limits.persistent_home_bytes + 1);
         let error = require_verified_quotas(Some(&limits), Some(&evidence))
             .expect_err("oversized home data must not be truncated or admitted");
-        assert!(error.to_string().contains("existing persistent-home data exceeds"));
+        assert!(error
+            .to_string()
+            .contains("existing persistent-home data exceeds"));
 
         let mut evidence = verified_evidence();
         evidence.persistent_home.used_bytes = None;

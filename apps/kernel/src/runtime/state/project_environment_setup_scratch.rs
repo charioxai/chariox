@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-pub(super) const VALIDATION_SCRATCH_DIR_ENV: &str =
-    "CHARIOX_PROJECT_ENVIRONMENT_SETUP_SCRATCH_DIR";
+pub(super) const VALIDATION_SCRATCH_DIR_ENV: &str = "CHARIOX_PROJECT_ENVIRONMENT_SETUP_SCRATCH_DIR";
 
 const SCRATCH_PREFIX: &str = "chariox-project-environment-setup-";
 const OWNER_MARKER: &str = ".chariox-project-setup-owner";
@@ -89,12 +88,13 @@ impl WorkerValidationScratch {
 
     fn initialize_owned_directory(path: PathBuf, owner_token: String) -> Result<Self, String> {
         #[cfg(unix)]
-        if let Err(error) = fs::set_permissions(
-            &path,
-            std::os::unix::fs::PermissionsExt::from_mode(0o700),
-        ) {
+        if let Err(error) =
+            fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        {
             let _ = fs::remove_dir(&path);
-            return Err(format!("validation scratch permissions could not be set: {error}"));
+            return Err(format!(
+                "validation scratch permissions could not be set: {error}"
+            ));
         }
 
         let marker_path = path.join(OWNER_MARKER);
@@ -104,15 +104,19 @@ impl WorkerValidationScratch {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+                options
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
             }
-            let mut marker = options
-                .open(&marker_path)
-                .map_err(|error| format!("validation scratch owner marker could not be created: {error}"))?;
+            let mut marker = options.open(&marker_path).map_err(|error| {
+                format!("validation scratch owner marker could not be created: {error}")
+            })?;
             marker
                 .write_all(owner_token.as_bytes())
                 .and_then(|()| marker.sync_all())
-                .map_err(|error| format!("validation scratch owner marker could not be written: {error}"))
+                .map_err(|error| {
+                    format!("validation scratch owner marker could not be written: {error}")
+                })
         })();
         if let Err(error) = marker_result {
             // Do not remove a marker whose ownership was not established by
@@ -133,15 +137,20 @@ impl WorkerValidationScratch {
         let directory = match fs::symlink_metadata(&self.path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(format!("validation scratch could not be inspected: {error}")),
+            Err(error) => {
+                return Err(format!(
+                    "validation scratch could not be inspected: {error}"
+                ))
+            }
         };
         if directory.file_type().is_symlink() || !directory.is_dir() {
             return Err("validation scratch is not an owned real directory".to_string());
         }
 
         let marker_path = self.path.join(OWNER_MARKER);
-        let marker_metadata = fs::symlink_metadata(&marker_path)
-            .map_err(|error| format!("validation scratch owner marker could not be inspected: {error}"))?;
+        let marker_metadata = fs::symlink_metadata(&marker_path).map_err(|error| {
+            format!("validation scratch owner marker could not be inspected: {error}")
+        })?;
         if marker_metadata.file_type().is_symlink() || !marker_metadata.is_file() {
             return Err("validation scratch owner marker is not a regular file".to_string());
         }
@@ -152,15 +161,17 @@ impl WorkerValidationScratch {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
         }
-        let marker = options
-            .open(&marker_path)
-            .map_err(|error| format!("validation scratch owner marker could not be read: {error}"))?;
+        let marker = options.open(&marker_path).map_err(|error| {
+            format!("validation scratch owner marker could not be read: {error}")
+        })?;
         let max_marker_bytes = self.owner_token.len() + 1;
         let mut actual_owner = Vec::with_capacity(max_marker_bytes);
         marker
             .take(max_marker_bytes as u64)
             .read_to_end(&mut actual_owner)
-            .map_err(|error| format!("validation scratch owner marker could not be read: {error}"))?;
+            .map_err(|error| {
+                format!("validation scratch owner marker could not be read: {error}")
+            })?;
         if actual_owner.as_slice() != self.owner_token.as_bytes() {
             return Err("validation scratch owner marker changed".to_string());
         }
@@ -170,7 +181,9 @@ impl WorkerValidationScratch {
         match fs::symlink_metadata(&self.path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Ok(_) => Err("owned validation scratch remains after cleanup".to_string()),
-            Err(error) => Err(format!("validation scratch cleanup could not be verified: {error}")),
+            Err(error) => Err(format!(
+                "validation scratch cleanup could not be verified: {error}"
+            )),
         }
     }
 }
@@ -209,8 +222,8 @@ fn worker_temporary_roots() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::project_environment_setup_validation::run_worker_validation_command_with_scratch;
+    use super::*;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -236,10 +249,20 @@ mod tests {
             fs::create_dir_all(&workspace).expect("test worktree should be created");
             fs::create_dir_all(&durable_home).expect("test durable HOME should be created");
             fs::create_dir_all(&temporary_root).expect("test temp root should be created");
-            Self { root, workspace, durable_home, temporary_root }
+            Self {
+                root,
+                workspace,
+                durable_home,
+                temporary_root,
+            }
         }
 
-        fn scratch(&self, operation_id: &str, attempt: u32, command_index: usize) -> WorkerValidationScratch {
+        fn scratch(
+            &self,
+            operation_id: &str,
+            attempt: u32,
+            command_index: usize,
+        ) -> WorkerValidationScratch {
             WorkerValidationScratch::create_from_roots(
                 std::slice::from_ref(&self.temporary_root),
                 &self.workspace,
@@ -338,7 +361,10 @@ mod tests {
         fs::write(scratch.path.join(OWNER_MARKER), "foreign-owner")
             .expect("foreign marker should replace fixture marker");
         assert!(scratch.cleanup().unwrap_err().contains("marker changed"));
-        assert!(scratch.path.exists(), "foreign-owned scratch must be preserved");
+        assert!(
+            scratch.path.exists(),
+            "foreign-owned scratch must be preserved"
+        );
     }
 
     #[test]
@@ -383,7 +409,10 @@ mod tests {
 
         assert!(scratch.cleanup().unwrap_err().contains("real directory"));
         assert_eq!(fs::read(sentinel.join("keep")).unwrap(), b"preserve");
-        assert!(fs::symlink_metadata(&scratch.path).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&scratch.path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[cfg(unix)]
@@ -392,13 +421,13 @@ mod tests {
         let fixture = ScratchFixture::new();
         fs::create_dir_all(fixture.durable_home.join(".cargo/registry/cache"))
             .expect("Cargo cache fixture should be created");
-        fs::write(fixture.durable_home.join(".cargo/registry/cache/keep"), b"preserve")
-            .expect("Cargo cache fixture should be written");
+        fs::write(
+            fixture.durable_home.join(".cargo/registry/cache/keep"),
+            b"preserve",
+        )
+        .expect("Cargo cache fixture should be written");
 
-        for (operation_id, expected_exit) in [
-            ("setup-success", 0),
-            ("setup-failure", 29),
-        ] {
+        for (operation_id, expected_exit) in [("setup-success", 0), ("setup-failure", 29)] {
             let scratch = fixture.scratch(operation_id, 1, 0);
             let mut environment = fixture.environment();
             environment.insert(
@@ -420,8 +449,14 @@ mod tests {
                 || false,
                 None,
             );
-            assert_eq!(result.expect("ordinary command exit should be recorded").0, expected_exit);
-            assert!(!scratch.path.exists(), "validation scratch must be gone after command completion");
+            assert_eq!(
+                result.expect("ordinary command exit should be recorded").0,
+                expected_exit
+            );
+            assert!(
+                !scratch.path.exists(),
+                "validation scratch must be gone after command completion"
+            );
             fixture.assert_durable_cache();
         }
     }
@@ -432,8 +467,11 @@ mod tests {
         let fixture = ScratchFixture::new();
         fs::create_dir_all(fixture.durable_home.join(".cargo/registry/cache"))
             .expect("Cargo cache fixture should be created");
-        fs::write(fixture.durable_home.join(".cargo/registry/cache/keep"), b"preserve")
-            .expect("Cargo cache fixture should be written");
+        fs::write(
+            fixture.durable_home.join(".cargo/registry/cache/keep"),
+            b"preserve",
+        )
+        .expect("Cargo cache fixture should be written");
 
         let timed_out = fixture.scratch("setup-timeout", 1, 0);
         let timeout_started = fixture.root.join("timeout-command-started");
@@ -451,8 +489,14 @@ mod tests {
             Some(Instant::now() + Duration::from_millis(300)),
         );
         assert!(timeout.unwrap_err().contains("timed out"));
-        assert!(timeout_started.exists(), "timed command must start before its deadline");
-        assert!(!timed_out.path.exists(), "timeout cleanup must follow process-group kill and reap");
+        assert!(
+            timeout_started.exists(),
+            "timed command must start before its deadline"
+        );
+        assert!(
+            !timed_out.path.exists(),
+            "timeout cleanup must follow process-group kill and reap"
+        );
         fixture.assert_durable_cache();
 
         let cancelled = fixture.scratch("setup-cancelled", 1, 0);
@@ -471,8 +515,14 @@ mod tests {
             None,
         );
         assert!(cancellation.unwrap_err().contains("cancelled"));
-        assert!(cancelled_started.exists(), "cancelled command must start before cancellation");
-        assert!(!cancelled.path.exists(), "cancellation cleanup must follow process-group kill and reap");
+        assert!(
+            cancelled_started.exists(),
+            "cancelled command must start before cancellation"
+        );
+        assert!(
+            !cancelled.path.exists(),
+            "cancellation cleanup must follow process-group kill and reap"
+        );
         fixture.assert_durable_cache();
     }
 
@@ -498,6 +548,9 @@ mod tests {
             None,
         );
         assert!(result.unwrap_err().contains("cleanup failed"));
-        assert!(scratch.path.exists(), "cleanup must not delete scratch with a changed owner marker");
+        assert!(
+            scratch.path.exists(),
+            "cleanup must not delete scratch with a changed owner marker"
+        );
     }
 }
