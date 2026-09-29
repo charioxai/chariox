@@ -112,6 +112,10 @@ reconstructs schedules from its state.
 
 The optional context includes kernel-assigned installation, Room, operation,
 actor, agent, task and turn references. It is distinct from App tool parameters.
+An agent's call carries `agent_id` and, when the agent made it during a turn,
+`turn_id`: the id of that turn's Chariox prompt, as session history records it.
+It is captured when the call is submitted, so a later turn or focus change does
+not re-attribute it.
 The receiver supplies a local `AbortSignal` and effective `deadlineMs` to the
 handler. Context cannot establish a human approval; the trusted kernel checks an
 operation's exact approval receipt before its protected effect.

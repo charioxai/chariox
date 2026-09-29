@@ -9,6 +9,7 @@ export interface InvocationContext {
   readonly operation_id?: string;
   readonly agent_id?: string;
   readonly task_id?: string;
+  /** The agent turn an agent's call was made in: its Chariox prompt id, as in session history. */
   readonly turn_id?: string;
   readonly actor?: Readonly<{ kind: 'human' | 'agent' | 'background'; id: string }>;
 }

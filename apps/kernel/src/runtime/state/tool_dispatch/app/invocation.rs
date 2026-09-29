@@ -54,6 +54,9 @@ impl KernelRuntimeState {
             // The blocking closure retains admission even if the awaiting MCP
             // connection closes. No guard is held while awaiting App execution.
             let _permit = permit;
+            // Read before taking the agent guard, so no session or prompt lock
+            // is taken while it is held.
+            let turn_id = agent_turn_id(&owned, &expected);
             let agents = owned.agent_store.read();
             let current = agents.get_agent(expected.id())?;
             require_binding(&current, &expected, &tool, remote.as_ref())?;
@@ -62,7 +65,7 @@ impl KernelRuntimeState {
                 room_id: current.session_id().into(),
                 operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
                 task_id: None,
-                turn_id: None,
+                turn_id,
             };
             let result = owned
                 .durable_state_store
@@ -227,6 +230,21 @@ impl KernelRuntimeState {
                 status.phase == crate::durable_state::app_worker_lifecycle::WorkerPhase::Failed
             })
     }
+}
+
+/// The agent's turn (its active Chariox prompt) when it makes the call. It is
+/// captured once at submission: a later turn or focus change never
+/// re-attributes an accepted call.
+fn agent_turn_id(
+    owned: &crate::runtime::state::KernelRuntimeOwnedState,
+    agent: &crate::agent::AgentInstance,
+) -> Option<String> {
+    let session = owned.session_store.get_session(agent.session_id()).ok()?;
+    owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, agent.id())
+        .map(|prompt| prompt.id().to_string())
+        .filter(|id| CallerContext::valid_id(id))
 }
 
 fn require_binding(

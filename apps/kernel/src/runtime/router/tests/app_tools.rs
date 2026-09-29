@@ -37,7 +37,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         std::env::temp_dir().join(format!("chariox-app-mcp-{:016x}", rand::random::<u64>())),
     );
     std::fs::create_dir(&scratch.0).unwrap();
-    let (router, store, catalog, agents, tokens) = {
+    let (router, store, catalog, agents, tokens, turn_id) = {
         let _entered = runtime.enter();
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let store = app.durable_state_store();
@@ -78,8 +78,35 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
             agents.push(agent.id().to_owned());
             tokens.push(run.runtime_mcp_auth_token().unwrap().to_owned());
         }
+        // The ordinary agent calls from inside a turn; the meta agent has none.
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-a",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(&agents[0]),
+                "use the App",
+                Vec::new(),
+            )
+            .unwrap()
+        else {
+            panic!("the agent's turn should start");
+        };
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-        (router, store, catalog, agents, tokens)
+        (
+            router,
+            store,
+            catalog,
+            agents,
+            tokens,
+            prompt.id().to_owned(),
+        )
     };
     let name = catalog.app_catalog().tools().next().unwrap().name.clone();
     let fixture = Fixture::compile().unwrap();
@@ -174,6 +201,18 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         assert_eq!(result.payload, serde_json::json!({"ok":true}));
     }
     assert_eq!(observed.tool_invocations(), 2);
+    // Each call names its agent, and the turn it was made in, if any.
+    let contexts = observed
+        .tool_requests()
+        .unwrap()
+        .into_iter()
+        .map(|request| request["context"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(contexts.len(), 2);
+    assert_eq!(contexts[0]["agent_id"], agents[0].as_str());
+    assert_eq!(contexts[0]["turn_id"], turn_id.as_str());
+    assert_eq!(contexts[1]["agent_id"], agents[1].as_str());
+    assert!(contexts[1].get("turn_id").is_none());
     runtime
         .block_on(router.runtime_state.revoke_agent_extension(
             &agents[0],
