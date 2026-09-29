@@ -65,8 +65,14 @@ export default function register(chariox) {
       try {
         const worker = new Worker(new URL('./thread.mjs', import.meta.url), { workerData: { mb: mb_each } });
         worker.on('error', () => {});
-        await new Promise((resolve, reject) => { worker.once('online', resolve); worker.once('error', reject); });
+        // Counted once its Buffer is held; dropped when it exits.
+        await new Promise((resolve, reject) => {
+          worker.once('message', resolve);
+          worker.once('error', reject);
+          worker.once('exit', (code) => reject(Object.assign(new Error(`thread exited ${code}`), { code: 'THREAD_EXITED' })));
+        });
         threads.push(worker);
+        worker.once('exit', () => { threads.splice(threads.indexOf(worker), 1); });
       } catch (e) { error = { name: e?.name ?? 'Error', code: e?.code ?? null, message: String(e?.message ?? e).slice(0, 200) }; break; }
     }
     return { threads: threads.length, error, rssMb: rssMb(), ms: Date.now() - started };

@@ -8,7 +8,8 @@
 //   listing         every entry under private data, with sizes
 // The mutations run on every event-loop turn until the write settles, so they
 // overlap the kernel's staging and publication; `overlapped` counts the rounds
-// in which at least one mutation landed while the write was pending.
+// in which at least one mutation landed while the write was pending, and
+// `fewestMutations` shows how thin the thinnest overlap was.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
@@ -27,7 +28,9 @@ async function racing(write, mutate) {
       try { mutate(); mutations += 1; } catch (error) { errors.push(error?.code ?? 'failed'); }
       setImmediate(turn);
     };
-    turn();
+    // Start on the next turn: a mutation in this tick runs before the request
+    // frame leaves the process, so it would not overlap the kernel's work.
+    setImmediate(turn);
   });
   return { outcome: await outcome, mutations, errors };
 }
@@ -50,6 +53,7 @@ export default function register(chariox) {
     const errors = [];
     let overlapped = 0;
     let mutations = 0;
+    let fewestMutations = Infinity;
     for (let round = 0; round < rounds; round += 1) {
       const result = await racing(chariox.files.atomicReplace('race/a/f', payload(round)), () => {
         if (existsSync(at('race/a'))) renameSync(at('race/a'), at('race/b'));
@@ -58,12 +62,13 @@ export default function register(chariox) {
       outcomes.push(result.outcome);
       errors.push(...result.errors);
       mutations += result.mutations;
+      fewestMutations = Math.min(fewestMutations, result.mutations);
       if (result.mutations > 0) overlapped += 1;
       if (!existsSync(at('race/a'))) renameSync(at('race/b'), at('race/a'));
     }
     const files = walk(at('race'));
     const torn = files.filter((file) => file.path.endsWith('/f') && !whole(readFileSync(at(file.path))));
-    return { rounds, overlapped, mutations, outcomes: tally(outcomes), mutationErrors: tally(errors), files, torn: torn.length };
+    return { rounds, overlapped, mutations, fewestMutations, outcomes: tally(outcomes), mutationErrors: tally(errors), files, torn: torn.length };
   });
 
   chariox.tools.register('unicode_names', async () => {
@@ -87,6 +92,7 @@ export default function register(chariox) {
     const errors = [];
     let overlapped = 0;
     let mutations = 0;
+    let fewestMutations = Infinity;
     for (let round = 0; round < rounds; round += 1) {
       mkdirSync(at('gone/x'), { recursive: true });
       const result = await racing(chariox.files.atomicReplace('gone/x/f', payload(round)), () => {
@@ -96,11 +102,12 @@ export default function register(chariox) {
       outcomes.push(result.outcome);
       errors.push(...result.errors);
       mutations += result.mutations;
+      fewestMutations = Math.min(fewestMutations, result.mutations);
       if (result.mutations > 0) overlapped += 1;
     }
     const left = existsSync(at('gone')) ? walk(at('gone')) : [];
     const torn = left.filter((file) => file.path.endsWith('/f') && !whole(readFileSync(at(file.path))));
-    return { rounds, overlapped, mutations, outcomes: tally(outcomes), mutationErrors: tally(errors), left, torn: torn.length };
+    return { rounds, overlapped, mutations, fewestMutations, outcomes: tally(outcomes), mutationErrors: tally(errors), left, torn: torn.length };
   });
 
   chariox.tools.register('listing', async () => ({ entries: walk(root) }));
