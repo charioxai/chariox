@@ -210,4 +210,26 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         .any(|tool| tool.name == name));
     assert!(observed.was_reaped());
     assert!(observed.lease_was_dropped());
+
+    // The stopped App's tools are withdrawn. A bound agent calling one by its
+    // stable name hears that the App is updating only while an approved
+    // update of it is under way; an unbound agent never does.
+    let call = |token: &String| {
+        format!(
+            "{:?}",
+            runtime.block_on(router.dispatch_authenticated_runtime_tool_call(
+                token,
+                &name,
+                serde_json::json!({"text":"withdrawn"}),
+            ))
+        )
+    };
+    assert!(!call(&tokens[1]).contains("APP_UPDATING"));
+    assert!(!store.app_update_underway("alice", "installed").unwrap());
+    crate::durable_state::app_state::fixture_stage_approved_tool_update(&store, "installed");
+    assert!(store.app_update_underway("alice", "installed").unwrap());
+    let updating = call(&tokens[1]);
+    assert!(updating.contains("APP_UPDATING"), "{updating}");
+    assert!(!call(&tokens[0]).contains("APP_UPDATING"));
+    assert_eq!(observed.tool_invocations(), 2);
 }

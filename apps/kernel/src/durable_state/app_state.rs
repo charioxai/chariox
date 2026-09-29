@@ -343,3 +343,13 @@ pub(crate) fn fixture_tool_catalog(store: &DurableKernelStateStore) -> Arc<Event
 pub(crate) fn fixture_tool_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::tool_package()
 }
+
+/// Stages the tool fixture's release again as an update of `installation`
+/// (at generation 1) and approves it, without starting it.
+#[cfg(test)]
+pub(crate) fn fixture_stage_approved_tool_update(
+    store: &DurableKernelStateStore,
+    installation: &str,
+) {
+    tests::stage_approved_update(store, "alice", installation, tests::tool_package())
+}

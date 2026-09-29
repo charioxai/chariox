@@ -1837,7 +1837,11 @@ Workflow trigger and deployment direction:
   old generation active, and it restarts on use. App data is kept. The new
   generation must run to pass its health check, so an App the user had
   stopped is running after a committed update. Views opened
-  on the old generation answer `APP_VIEW_STALE` until reopened.
+  on the old generation answer `APP_VIEW_STALE` until reopened. A tool call
+  that meets the update fails with `APP_UPDATING`: one in flight when the old
+  worker is drained (the App may have acted), or one that finds no worker
+  while the approved update is under way. A call whose worker was stopped at
+  its memory limit fails with `APP_MEMORY_LIMIT`.
 - protocol 350: opening an App view foregrounds the App in its session and
   binds it to the session's focus agent with the same `ExtensionGrant::App` an
   explicit grant or an agent's self-grant creates (a direct user action, so no

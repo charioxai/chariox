@@ -161,6 +161,50 @@ pub(super) fn install_package(
 pub(super) fn package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(false)
 }
+pub(super) fn stage_approved_update(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+    (bytes, publisher): (Vec<u8>, TrustedPublisher),
+) {
+    let trust = store
+        .trusted_app_publisher(owner, "com.example", "state-key")
+        .unwrap();
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let AppRegistryOutcome::Update(record) = store
+        .mutate_verified_app_installation(
+            owner,
+            AppVerifiedInstallationMutation::Stage {
+                installation_id: installation_id.into(),
+                expected_generation: 1,
+                candidate: VerifiedInstallCandidate::from_verified(&package, &trust).unwrap(),
+                now_ms: 10,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("expected stage")
+    };
+    store
+        .mutate_app_installation(
+            owner,
+            AppRegistryMutation::Decide {
+                token: record.token,
+                decision: CapabilityDecision::Approved {
+                    approval: CapabilityApproval {
+                        decision_id: "update-grant".into(),
+                        authority_ref: "kernel-fixture".into(),
+                    },
+                },
+                now_ms: 11,
+            },
+        )
+        .unwrap();
+}
 pub(super) fn tool_package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(true)
 }
