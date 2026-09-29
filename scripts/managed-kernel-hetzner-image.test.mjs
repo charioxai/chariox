@@ -866,3 +866,10 @@ test("Hetzner snapshot labels preserve the complete release digest within provid
   assert.match(runbook, /Concatenating `runtime-release-a` and\n`runtime-release-b` must reproduce/)
   assert.doesNotMatch(runbook, /chariox\.dev\/runtime-release=<64 lowercase hex characters>/)
 })
+
+test("Path-1 installs give the chariox user a real login shell; shared hosts keep nologin", async () => {
+  const install = await readFile(new URL("../deploy/managed-kernel/install-image.sh", import.meta.url), "utf8")
+  assert.match(install, /useradd --system --gid chariox --home-dir \/home\/chariox --shell \/usr\/sbin\/nologin chariox/)
+  const gate = install.indexOf('if [ "$managed_provider_topology" = path1 ]; then\n  # Path 1: the VM is the boundary')
+  assert.ok(gate > 0 && install.indexOf("usermod --shell /bin/bash chariox", gate) > gate)
+})
