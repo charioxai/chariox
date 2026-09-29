@@ -30,8 +30,7 @@ permit and release lease until completion even if its waiter is cancelled.
 Verification and immutable release publication use the enrolled publisher key.
 The same writer transaction stages the verified candidate and records its review
 metadata. This metadata contains the exact package/capability digests, signer
-fingerprint/revision and signed declarations. It does not grant access to declared
-information sets; those are explicitly labelled `not_granted`.
+fingerprint/revision and signed declarations.
 
 The controller registers an owner-scoped kernel-operation RuntimeInteraction in
 the original session. Approve/decline uses the existing authenticated terminal
