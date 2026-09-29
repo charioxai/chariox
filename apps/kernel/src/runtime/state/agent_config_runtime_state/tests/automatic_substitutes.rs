@@ -350,12 +350,22 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
 
     let output_records = runtime.owned.terminal_stream.output_records();
+    // Each variant projects its own failure text: the StopFailure hook reports the
+    // classified Claude diagnostic, the direct path the injected balance error.
+    let is_expected_provider_error = |bytes: &[u8]| {
+        if claude_hook {
+            let text = String::from_utf8_lossy(bytes);
+            text.starts_with("Claude StopFailure [rate_limit]:") && text.contains("session limit")
+        } else {
+            bytes == b"insufficient balance"
+        }
+    };
     let provider_errors = output_records
         .iter()
         .filter(|record| {
             record.provider_run_id == run.id()
                 && record.kind == crate::terminal::TerminalOutputKind::ProviderError
-                && record.bytes == b"insufficient balance"
+                && is_expected_provider_error(&record.bytes)
         })
         .count();
     assert_eq!(
