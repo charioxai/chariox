@@ -294,8 +294,7 @@ impl KernelRuntimeState {
         // A failure here leaves the App uninstalled with its data; uninstalling
         // again with delete_data finishes the deletion.
         if delete_data {
-            #[cfg(target_os = "linux")]
-            self.delete_linux_app_storage(&view_owner, &view_installation)
+            self.delete_app_storage(&view_owner, &view_installation)
                 .await?;
             let store = self.owned.durable_state_store.clone();
             let permit = self.app_control().try_admit()?;
@@ -350,6 +349,25 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+    }
+
+    /// Deletes the stopped App's storage. A test kernel given fixture storage
+    /// deletes from it instead (`AppControlService::fixture_app_storage`).
+    async fn delete_app_storage(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(), AppRequestErrorCode> {
+        #[cfg(test)]
+        if let Some(storage) = self.app_control().fixture_storage() {
+            storage.delete(owner, installation);
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        self.delete_linux_app_storage(owner, installation).await?;
+        #[cfg(not(target_os = "linux"))]
+        let _ = (owner, installation);
+        Ok(())
     }
 
     /// Returns whether a new start was accepted (an owner thread was spawned).

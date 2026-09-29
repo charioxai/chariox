@@ -8,10 +8,13 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 
 /// A harness whose local owner has the fixture App `installed`
 /// (`com.example.state`, outgoing event `changed`) with its stored release.
+/// Its kernel deletes App storage from fixture storage: on Linux, App storage
+/// belongs to the root storage helper, which tests do not run.
 fn harness_with_app(root: &std::path::Path) -> LocalRouterTestHarness {
     let mut config = crate::DaemonConfig::for_tests();
     config.user_config.state.path = Some(root.join("state.db").display().to_string());
     let harness = LocalRouterTestHarness::with_config(config);
+    harness.runtime_state().app_control().fixture_app_storage();
     let store = harness.with_app(|app| app.durable_state_store());
     stage_release(
         &harness,
