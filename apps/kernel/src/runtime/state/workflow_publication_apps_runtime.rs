@@ -1,8 +1,7 @@
-//! Protocol 366: a client's export of a workflow publication is its deployment
-//! preparation. The first one pins the publication's App plan, read from the
-//! owner's App set, so later exports — the deployment bind re-verifies its
-//! package digest — do not follow App updates. The plan is pinned only once
-//! the export that packaged it succeeds.
+//! Protocol 368: a client's export of a workflow publication is a deployment
+//! release's preparation. Each owner export packages the plan read from the
+//! owner's current App set, so a new release follows App updates while an
+//! existing release keeps the plan it was exported with.
 use std::collections::BTreeMap;
 
 use super::KernelRuntimeState;
@@ -10,9 +9,9 @@ use crate::error::DaemonError;
 use crate::workflow_publication_apps::publication_app_plan;
 
 impl KernelRuntimeState {
-    /// The App plan the owner's first export packages and pins; `None` when a
-    /// plan is pinned, the caller is not the owner or the workflow uses no App.
-    pub(super) async fn workflow_publication_apps_to_pin(
+    /// The App plan the owner's export packages; `None` when the caller is not
+    /// the owner or the workflow uses no App.
+    pub(super) async fn workflow_publication_apps_for_export(
         &self,
         session_id: &str,
         publication_ref: &str,
@@ -26,17 +25,27 @@ impl KernelRuntimeState {
                 sessions.resolve_workflow_publication_snapshot(session_id, publication.id())?;
             (publication, snapshot)
         };
-        // The export reports a missing snapshot; only the owner pins.
+        // The export reports a missing snapshot; only the owner prepares.
         let Some(snapshot) = snapshot else {
             return Ok(None);
         };
-        if publication.apps().is_some() || publication.created_by_user_id() != caller_user_id {
+        if publication.created_by_user_id() != caller_user_id {
             return Ok(None);
         }
-        Ok(self
+        let plan = self
             .read_publication_app_plan(&publication, &snapshot, caller_user_id)
             .await?
-            .map(|(plan, _)| plan))
+            .map(|(plan, _)| plan);
+        // A publication that had Apps and uses none now packages an explicit
+        // empty plan, recorded as its release's: never the previous release's.
+        Ok(plan.or_else(|| {
+            publication.apps().is_some().then(|| {
+                serde_json::json!({
+                    "schema": crate::workflow_publication_apps::PUBLICATION_APPS_SCHEMA,
+                    "apps": [],
+                })
+            })
+        }))
     }
 }
 
@@ -71,6 +80,15 @@ impl KernelRuntimeState {
             .read_app_set(owner)
             .await
             .map_err(|code| apps_error(&format!("the App set could not be read ({code:?})")))?;
+        // A release packages the Apps the workflow uses as installed now.
+        if let Some(missing) = grants
+            .keys()
+            .find(|granted| !set.iter().any(|app| &app.installation_id == *granted))
+        {
+            return Err(apps_error(&format!(
+                "App installation `{missing}` that the workflow uses is not installed; reinstall it or remove the grant"
+            )));
+        }
         let mut entries = Vec::new();
         let mut capabilities = BTreeMap::new();
         for installation in set.into_iter().filter(|installation| {

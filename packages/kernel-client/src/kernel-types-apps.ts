@@ -123,12 +123,18 @@ export type DeploymentAppsConsent = {
   expires_at_ms: number
 }
 
-/** Protocol 367: `DeploymentAppsPreview` — the publication's App plan with each
- * App's signed capabilities; `plan` is null when the workflow uses no App. */
+/** An App plan with each App's signed capabilities. */
+export type DeploymentAppsPlan = Omit<WorkflowPublicationApps, "apps"> & {
+  apps: (WorkflowPublicationApp & { capabilities: Record<string, unknown> })[]
+}
+
+/** Protocol 367: `DeploymentAppsPreview` — the App plan a new release would
+ * package (the owner's current App set); `plan` is null when the workflow uses
+ * no App and `pinned` says a release was prepared. Protocol 368 adds
+ * `release_plan`, the plan of the release asked for by package digest. */
 export type DeploymentAppsPreview = {
   publication_id: string
   pinned: boolean
-  plan: (Omit<WorkflowPublicationApps, "apps"> & {
-    apps: (WorkflowPublicationApp & { capabilities: Record<string, unknown> })[]
-  }) | null
+  plan: DeploymentAppsPlan | null
+  release_plan?: DeploymentAppsPlan | null
 }

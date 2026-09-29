@@ -104,19 +104,19 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// Exports the publication's package; `apps_to_pin` is the App plan the
-    /// owner's first export packages, pinned by the caller once it succeeds.
+    /// Exports the publication's package; `apps` is the App plan it packages
+    /// (the owner's current one, or a bound release's), else the latest.
     pub(super) fn workflow_export_publication_package(
         &self,
         request: crate::local::ExportWorkflowPublicationPackageRequest,
-        apps_to_pin: Option<&serde_json::Value>,
+        apps: Option<&serde_json::Value>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut publication = self
             .session_store
             .read()
             .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
-        if let Some(plan) = apps_to_pin {
-            publication.pin_apps(plan.clone());
+        if let Some(plan) = apps {
+            publication.use_apps(plan.clone());
         }
         let snapshot = self
             .session_store
@@ -188,27 +188,23 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// Protocol 366: pins the App plan a successful export packaged. A plan
-    /// another export pinned meanwhile is kept, and this export fails.
-    pub(super) fn pin_workflow_publication_apps(
+    /// Protocol 368: records the App plan a successful export packaged as
+    /// the plan of the release with that package digest.
+    pub(super) fn record_workflow_publication_app_plan(
         &self,
         session_id: &str,
         publication_id: &str,
+        package_digest: &str,
         plan: serde_json::Value,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let pinned = self.session_store.write().pin_workflow_publication_apps(
-            session_id,
-            publication_id,
-            plan.clone(),
-        )?;
-        if pinned.apps() != Some(&plan) {
-            return Err(DaemonError::LocalTransport {
-                operation: "export workflow publication package",
-                message: format!(
-                    "workflow trigger `{publication_id}` pinned another App plan meanwhile; export again"
-                ),
-            });
-        }
+        self.session_store
+            .write()
+            .record_workflow_publication_app_plan(
+                session_id,
+                publication_id,
+                package_digest,
+                plan,
+            )?;
         self.session_snapshot_without_projection_update(session_id)
     }
 

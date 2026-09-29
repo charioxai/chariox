@@ -22,7 +22,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 367: a publication's App plan (`chariox.publication-apps.v1`,
     /// each App with its signed `capabilities`), `null` when it uses no App;
     /// `pinned` once a deployment preparation pinned it.
-    DeploymentAppsPreview { publication_id: String, pinned: bool, plan: Option<serde_json::Value>, },
+    DeploymentAppsPreview { publication_id: String, pinned: bool, plan: Option<serde_json::Value>, #[serde(default, skip_serializing_if = "Option::is_none")] release_plan: Option<serde_json::Value>, },
     /// Protocol 367: the owner's consent to a deployment's Apps.
     DeploymentAppsConsent { consent: DeploymentAppsConsent, },
     AppFileGranted { operation_id: String, files: u32, },
