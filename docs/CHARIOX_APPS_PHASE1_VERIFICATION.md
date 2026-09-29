@@ -49,9 +49,9 @@ The matrix rows are the ledger's 91 plus V-UX-11 (added 2026-09-27). The revised
 
 | Status | Matrix rows | Gates | Total |
 |---|---|---|---|
-| Verified | 3 (V1-INT-06, V1-INT-29, V-PKG-02) | 0 | 3 |
+| Verified | 2 (V1-INT-29, V-PKG-02) | 0 | 2 |
 | Implemented | 14 (V1-INT-10, V1-INT-11, V1-INT-19, V-PKG-03, V-PKG-04, V-PKG-07, V-PKG-08, V-RUN-03, V-RUN-04, V-UX-03, V-UX-04, V-UX-07, V-UX-10, V-UX-11) | 0 | 14 |
-| Partial | 65 | 11 | 76 |
+| Partial | 66 | 11 | 77 |
 | Unverified | 0 | 1 (Evidence) | 1 |
 | Needs user | 3 (Kernel "Managed Chromium…", V1-INT-01, V1-INT-15) | 1 (Browser persistence) | 4 |
 | Phase 2 | 7 (2 terminal rows, V1-INT-12/27/28/30/31) | 0 | 7 |
@@ -59,7 +59,7 @@ The matrix rows are the ledger's 91 plus V-UX-11 (added 2026-09-27). The revised
 By matrix:
 - Terminal: 12 Partial, 2 Phase 2.
 - Kernel: 5 Partial, 1 Needs user.
-- Integration: 20 Partial, 3 Implemented, 2 Verified, 2 Needs user, 5 Phase 2.
+- Integration: 21 Partial, 3 Implemented, 1 Verified, 2 Needs user, 5 Phase 2.
 - Package: 3 Partial, 4 Implemented, 1 Verified.
 - Worker: 8 Partial, 2 Implemented.
 - SDK: 8 Partial.
@@ -117,7 +117,8 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
    - Cross-build the kernel with `tools/xbuild-linux.sh`, then run the privileged installer step and enrollment.
    - Start the kernel as an ordinary user and install Todo and Documents; run the native probe, ENOSPC/quota, snapshot rollback and one malicious package.
    - Fills the Linux column of the kernel matrix, V1-INT-02, V1-INT-21 (Linux part), V-RUN-02/07/09, V-SDK-01/02 and V-PKG-02 rerun.
-7. **Kill -9 fault injection at install checkpoints and event crash windows (M).** Reuse the `p1-10-live-kernel-kill` harness at upload, verify, approval, health and activate for installs; at receipt, App mutation, outbox commit, enqueue and ack for events. Closes V-PKG-04, V1-INT-06 and part of V-PKG-06.
+7. **Kill -9 fault injection at install checkpoints and event crash windows (M).** Reuse the `p1-10-live-kernel-kill` harness at upload, verify, approval, health and activate for installs; at receipt, App mutation, outbox commit, enqueue and ack for events. Part of V-PKG-06 remains.
+   - Done: every event crash window (`v1-int-06/`: receipt, App mutation, emit/outbox commit, enqueue). V1-INT-06 still needs its bounded-queue and terminal-outcome cases.
 8. **Hostile-App corpus on macOS with numeric budgets (L).**
    - Test Apps: infinite loop, Buffer/thread growth, crash loop, log flood, escape attempts, and a second App trying to interfere.
    - Record kernel and other-App latency on this Mac as named hardware.
@@ -188,7 +189,7 @@ The ledger uses the old numbering; the revised-plan ID is in brackets.
 | V1-INT-03 Total and aggregate resources [03] | Partial | macOS accounting fixture: growth detected at 107 ms, reaped 624 µs later (`ev:worker-resource-tests.log`). Linux cgroup 1 GiB / 1 CPU fixtures. Four aggregate live slots in the lifecycle owner. | No real App growing Buffer/WASM/thread pools; no many-App or slow-consumer run; no numeric budgets on named hardware. Next: priority item 8. | L |
 | V1-INT-04 Raw files and state transactions [04] | Partial | Private single-file publication tests (5); state savepoint/CAS tests (6); mid-migration rewind (#477); quiescent snapshot fence (#474). Raw-write race: `raw_app_writes_racing_an_sdk_replacement_never_tear_it` races node:fs-style writes against 200 SDK replacements of a 256 KiB file. Every replacement publishes. The inode it replaces never receives its bytes, so the SDK never writes in place. The file ends as one writer's complete contents with no staging left. A replacement that writes in place fails it (mutation check). | No live fence of old writers and descriptors around a snapshot. Next: kill during snapshot with a live Documents App. | M |
 | V1-INT-05 Storage exhaustion [05] | Partial | ext4/APFS quota fixtures; snapshot host reserve (2 GiB, #474); `app_storage_capacity` seen live when host disk was low (#464 comment). | No cross-installation exhaustion; nothing during import, log writes, browser cache, staging or rollback. Next: two Apps, one filling its quota and host reserve, the other still working. | M–L |
-| V1-INT-06 Event crash windows [06] | Verified (macOS kernel) | Live kill -9 in every window (`v1-int-06/`): an outbox occurrence committed before handoff became exactly one workflow run after restart; an inbox occurrence accepted while the App was stopped was delivered once after a start and its replay answered as a duplicate; killed after the App's state commit but before the inbox ack, redelivery left exactly one Todo with its wake armed (`mutation-window/`); killed while a due wake was starting a dormant worker, before any commit, the wake was delivered once: one outbox row, one queued run, one reminder (`emit-window/`). Writer-fence and uncertain-commit unit tests; lost-ack replay acknowledged once (`ev:p1-11-moved-binding-replay.json`, historical since protocol 365). | Rerun on the Linux kernel for the Evidence gate. | S–M |
+| V1-INT-06 Event crash windows [06] | Partial | Live kill -9 in every window (`v1-int-06/`): an outbox occurrence committed before handoff became exactly one workflow run after restart; an inbox occurrence accepted while the App was stopped was delivered once after a start and its replay answered as a duplicate; killed after the App's state commit but before the inbox ack, redelivery left exactly one Todo with its wake armed (`mutation-window/`); killed while a due wake was starting a dormant worker, before any commit, the wake was delivered once: one outbox row, one queued run, one reminder (`emit-window/`). Writer-fence and uncertain-commit unit tests; lost-ack replay acknowledged once (`ev:p1-11-moved-binding-replay.json`, historical since protocol 365). | Once-only enqueue holds in every window; not yet shown live: bounded queues (a full outbox or queue refusing new occurrences visibly) and a user-visible terminal outcome after a crash (a failed or expired receipt surfaced to the owner). Then a Linux rerun for the Evidence gate. | S–M |
 | V1-INT-07 Rollback dedupe and generations [07] | Partial | Receipts kept out of snapshots (#474); replay floors (SDK 0.4); `APP_VIEW_STALE`/reload (#445, #464); kill-9 update drill (`ev:p1-10-live-kernel-kill.json`). The restore-then-replay dedupe is covered in the durable path by `immutable_receipts_survive_payload_expiry_state_restore_and_generation_change` (app-runtime outbox): a re-emitted occurrence after a state restore and generation change resolves to its retained receipt. | A live drill would need a purpose-built release that emits before failing its update; judged not worth it over the unit coverage (owner deferred to this call). Stale MCP call after a generation switch not shown live. | S |
 | V1-INT-08 Ambiguous service effects [08] | Partial | Unit: uncertain file-publication outcome, HTTP lost-reply retirement, connection-action idempotency key (#480); a lost generator reply, or a 5xx after sending (for example a gateway's 502), returns `APP_CONNECTION_OUTCOME_UNCERTAIN`: it is never replayed, and it is retryable only under the App's own key (`a_lost_generator_reply_is_uncertain_and_never_replayed`, `a_gateway_error_after_sending_is_uncertain_and_never_replayed`). Previously it reported a retryable failure, so a keyless retry could act twice. | No live lost-response drill. Next: generator action with the response dropped (proxy kill), assert an "unknown outcome" state and no automatic replay. | M |
 | V1-INT-09 Equivalent human and agent operation [09] | Partial | Live human view calls and agent MCP calls on the same tool (`ev:p1-19-acceptance/drill.txt`, view drills); #436 attribution test. | No background-request equivalence; no "change bindings, agent still operates view"; no attributed action log captured. Next: one operation three ways, with an attribution dump. | M |

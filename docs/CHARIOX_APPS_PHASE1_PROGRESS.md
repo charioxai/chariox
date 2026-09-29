@@ -97,7 +97,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V1-INT-03 | Total and aggregate resources | Measured CPU, total memory, disk, queue and latency budgets on named hardware | Partial (see verification) |
 | V1-INT-04 | Raw files and state transactions | Fault-injection checkpoints and old/new generation data validation | Partial (see verification) |
 | V1-INT-05 | Storage exhaustion | No cross-installation exhaustion or loss of accepted state | Partial (see verification) |
-| V1-INT-06 | Event crash windows | One durable enqueue per scoped occurrence; visible terminal outcomes and bounded queues | Verified (macOS kernel) (see verification) |
+| V1-INT-06 | Event crash windows | One durable enqueue per scoped occurrence; visible terminal outcomes and bounded queues | Partial (see verification) |
 | V1-INT-07 | Rollback dedupe and generations | Dedupe receipts survive rollback; incompatible generations cannot operate | Partial (see verification) |
 | V1-INT-08 | Ambiguous service effects | Unknown outcome is visible; no unsafe automatic replay | Partial (see verification) |
 | V1-INT-09 | Equivalent human and agent operation | Attributed action evidence; no tool/view privilege split | Partial (see verification) |
