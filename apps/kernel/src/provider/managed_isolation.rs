@@ -3080,6 +3080,12 @@ mod tests {
     fn run_managed_runtime_home_ancestor_launch_probe(workspace_kind: &str) {
         use std::os::unix::fs::PermissionsExt;
 
+        if !Path::new(BWRAP_PATH).is_file() {
+            eprintln!(
+                "skipped managed runtime home ancestor probe ({workspace_kind}): {BWRAP_PATH} is unavailable"
+            );
+            return;
+        }
         let _env = crate::env_lock::lock();
         let nonce = format!(
             "{}-{}-{}",
@@ -4312,6 +4318,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_account_paths_are_restored_only_inside_namespace() {
+        if !Path::new(BWRAP_PATH).is_file() {
+            eprintln!(
+                "skipped managed account path namespace regression: {BWRAP_PATH} is unavailable"
+            );
+            return;
+        }
         let _env = crate::env_lock::lock();
         let nonce = format!("{}-{}", std::process::id(), crate::session::unix_epoch_ms());
         let scratch =

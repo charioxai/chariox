@@ -2364,6 +2364,15 @@ mod tests {
         let Some(python) = find_on_path("python3").or_else(|| find_on_path("python")) else {
             return;
         };
+        // Debian and Ubuntu ship venv/ensurepip separately (python3-venv).
+        let venv_available = Command::new(&python)
+            .args(["-c", "import ensurepip, venv"])
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !venv_available {
+            eprintln!("skipped standard Python venv check: {python:?} has no venv/ensurepip");
+            return;
+        }
         let root = test_root("real-python-venv");
         let venv = root.join("user/envs/.portable/python/venv");
         fs::create_dir_all(venv.parent().expect("venv should have parent"))
