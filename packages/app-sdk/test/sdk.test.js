@@ -147,6 +147,18 @@ test('versioned occurrences preserve replay time and schedule revision and rejec
   sdk.close();
 });
 
+test('automations are a parameterless read of the kernel projection', async () => {
+  const { transport, sdk } = setup();
+  const pending = sdk.events.automations();
+  const sent = transport.sent[0];
+  assert.equal(sent.method, 'events.automations');
+  assert.deepEqual(sent.params, {});
+  const listed = { automations: [{ automationId: 'reminders', event: 'todo_due', eventVersion: 1, state: 'paused', lastReceipt: null }] };
+  transport.receive(response(sent.id, listed));
+  assert.deepEqual(await pending, listed);
+  sdk.close();
+});
+
 test('SDK emission matches the shared Rust event payload snapshot', async () => {
   const fixture = JSON.parse(readFileSync(new URL('./event-contract.json', import.meta.url), 'utf8'));
   const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));

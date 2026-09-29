@@ -118,6 +118,7 @@ impl Admission {
                             | "state.transaction"
                             | "events.emit"
                             | "events.status"
+                            | "events.automations"
                             | "events.retry"
                             | "schedule.set"
                             | "schedule.cancel"

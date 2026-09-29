@@ -147,6 +147,11 @@ bytes, including occurrences for different automations. State and all receipts
 commit together. `events.retry` reconciles a current, due, kernel-classified
 retryable receipt; it never resets attempts, advances backoff or restarts terminal
 work. Actual workflow handoff remains a separate kernel operation.
+`events.automations()` returns the owner's automations of the App's events,
+each `{automationId, event, eventVersion, state, lastReceipt}` with `state`
+`active`, `paused`, `broken` or `disabled` and the latest retained receipt or
+null. It is read-only and never names the target workflow, so an App can tell
+its user to fix a paused or broken automation in Chariox.
 The current outbox component accepts new occurrences up to 30 days old with at
 most five minutes of future clock skew. Already retained exact duplicates return
 their existing receipt; changed content conflicts. Terminal cleanup requires the

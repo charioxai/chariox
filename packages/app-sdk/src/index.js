@@ -144,6 +144,7 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       status: (receiptId, options) => call('events.status', { receiptId: name(receiptId, 'receipt identity') }, options),
       occurrenceId,
       retry: (receiptId, options) => call('events.retry', { receiptId: name(receiptId, 'receipt identity') }, options),
+      automations: (options) => call('events.automations', {}, options),
     }),
     lifecycle: Object.freeze({ on: lifecycle.register }),
     state: Object.freeze({

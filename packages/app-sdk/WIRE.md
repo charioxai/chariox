@@ -175,6 +175,13 @@ them as the manifest's chain from schema 0, and the last number is the data
 schema version that state transactions use. A manifest that declares
 `migrations` itself is packed as written.
 
+`events.automations {}` returns `{automations:[{automationId, event,
+eventVersion, state, lastReceipt}]}` from the same kernel automation records the
+TUI and web show. `state` is `active`, `paused`, `broken` or `disabled`;
+`lastReceipt` is `{receiptId, state}` for the latest retained receipt or null.
+It never names the target workflow, session or deployment. Kernels before this
+call answer it as an unknown method.
+
 Other typed methods use the names and parameter shapes documented in
 `src/index.d.ts` and `src/index.js`: `state.*`, `files.*`, `events.*`, `http.request`,
 `log.write`, `host.*`, `validation.*`, and `outputs.*`. Unsupported operations

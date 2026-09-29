@@ -344,3 +344,44 @@ async fn receipt_queries_stay_owner_scoped_and_recheck_same_generation_publisher
     peer.close();
     timeout(WAIT, task.join()).await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn automations_report_own_state_and_latest_receipt_without_targets() {
+    assert!(decode::operation("events.automations", json!({})).is_ok());
+    assert_eq!(
+        rejection("events.automations", json!({"owner":"forged"})).code,
+        "INVALID_ARGUMENT"
+    );
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    let catalog = fixture_event_catalog(&store);
+    automations(&store, &catalog);
+    Connection::open(store.path())
+        .unwrap()
+        .execute(
+            "UPDATE app_automations SET status='paused' WHERE automation_id='auto-b'",
+            [],
+        )
+        .unwrap();
+    let (peer, mut worker, task) = start(&store, catalog, "alice", Arc::new(Semaphore::new(8)));
+    send(&mut worker, "before", "events.automations", json!({})).await;
+    assert_eq!(
+        receive(&mut worker).await.unwrap(),
+        json!({"automations":[
+            {"automationId":"auto-a","event":"changed","eventVersion":1,"state":"active","lastReceipt":null},
+            {"automationId":"auto-b","event":"changed","eventVersion":1,"state":"paused","lastReceipt":null},
+        ]})
+    );
+    for id in ["first", "second"] {
+        send(&mut worker, id, "events.emit", occurrence("auto-a", id)).await;
+    }
+    receive(&mut worker).await.unwrap();
+    let latest = receive(&mut worker).await.unwrap();
+    send(&mut worker, "after", "events.automations", json!({})).await;
+    let listed = receive(&mut worker).await.unwrap();
+    assert_eq!(listed["automations"][0]["lastReceipt"], latest);
+    assert_eq!(listed["automations"][0].as_object().unwrap().len(), 5);
+    assert!(listed["automations"][1]["lastReceipt"].is_null());
+    peer.close();
+    timeout(WAIT, task.join()).await.unwrap().unwrap();
+}
