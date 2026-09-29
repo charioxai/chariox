@@ -4,6 +4,36 @@ use super::remote_prompt_claim_runtime::RemotePromptAgentClaim;
 use super::*;
 
 impl KernelRuntimeState {
+    /// Send a Room request to its slice worker the way browser actions do: over the
+    /// connected relay when there is one. A temporary connection first needs relay
+    /// metadata access, which a kernel-scoped Cloud relay token does not carry.
+    pub(super) async fn send_room_slice_peer_request(
+        &self,
+        config: &crate::config::DaemonConfig,
+        target: chariox_relay::protocol::ClientTarget,
+        request: RelayPeerRequest,
+        timeout: std::time::Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        match self.connected_relay_state_for_config(config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                    config,
+                    &relay_state,
+                    target,
+                    request,
+                    timeout,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    config, target, request, timeout,
+                )
+                .await
+            }
+        }
+    }
+
     pub(super) async fn connected_relay_state_for_config(
         &self,
         relay_config: &crate::config::DaemonConfig,

@@ -383,7 +383,7 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
-        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+        self.send_room_slice_peer_request(
             &config,
             target,
             request,
