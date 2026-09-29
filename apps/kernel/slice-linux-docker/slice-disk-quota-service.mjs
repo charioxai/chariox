@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync } from "node:fs"
+import { chmodSync, mkdirSync, realpathSync } from "node:fs"
 import { createServer } from "node:net"
-import { dirname, resolve } from "node:path"
+import { dirname } from "node:path"
 import { TextDecoder } from "node:util"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath } from "node:url"
 import {
   SLICE_DISK_QUOTA_FRAME_MAX_BYTES,
   SLICE_DISK_QUOTA_PROTOCOL_VERSION,
@@ -108,4 +108,5 @@ function createServerService() {
   })
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) createServerService()
+// Started through the /usr/lib/chariox/current symlink; compare real paths.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) createServerService()

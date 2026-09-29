@@ -2,7 +2,8 @@
 
 import { spawnSync } from "node:child_process"
 import { basename } from "node:path"
-import { pathToFileURL } from "node:url"
+import { realpathSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { parseProjectQuotaState } from "./slice-disk-quota-xfs-readback.mjs"
 import * as volumeDevice from "./slice-data-volume-device.mjs"
 import * as protectedIo from "./slice-data-volume-protected-io.mjs"
@@ -238,7 +239,8 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// systemd starts this through the /usr/lib/chariox/current symlink; Node reports the real path.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const result = admitDataVolume()
     process.stdout.write(`${JSON.stringify(result)}\n`)

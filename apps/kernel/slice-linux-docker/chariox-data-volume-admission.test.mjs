@@ -239,3 +239,19 @@ test("missing protected storage input fails closed", () => {
   fake.io.readStorageInput = () => undefined
   assert.throws(() => admitDataVolume(fake), /requires a protected storage bootstrap input/)
 })
+
+test("admission runs when systemd starts it through the release symlink", async () => {
+  const { mkdtempSync, symlinkSync, rmSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const { join, dirname } = await import("node:path")
+  const { spawnSync } = await import("node:child_process")
+  const { fileURLToPath } = await import("node:url")
+  const root = mkdtempSync(join(tmpdir(), "admission-symlink-"))
+  try {
+    symlinkSync(dirname(fileURLToPath(import.meta.url)), join(root, "current"))
+    const result = spawnSync(process.execPath, [join(root, "current", "chariox-data-volume-admission.mjs")], { encoding: "utf8" })
+    // Without a protected bootstrap input the entrypoint must fail loudly, never exit 0 silently.
+    assert.equal(result.status, 1, result.stderr)
+    assert.ok(result.stderr.trim().length > 0)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
