@@ -1141,9 +1141,16 @@ pub(crate) fn apply_managed_provider_isolation(
             &protected_directories,
             &mut created_directories,
         );
+        // A file inside a masked directory is already hidden; masking it again
+        // would recreate its path inside the otherwise empty mask.
+        let unmasked_protected_files = protected_namespace_files
+            .iter()
+            .filter(|file| !protected_directories.iter().any(|directory| file.starts_with(directory)))
+            .cloned()
+            .collect::<Vec<_>>();
         append_managed_protected_namespace_files(
             &mut args,
-            &protected_namespace_files,
+            &unmasked_protected_files,
             &mut created_directories,
         );
         append_managed_protected_namespace_files(
