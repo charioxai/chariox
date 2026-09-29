@@ -1,5 +1,6 @@
 //! Retained installation work, advanced by the existing kernel pump. The task
-//! set owns every slow operation; no task retains KernelRuntimeState/AppControl.
+//! set owns every slow operation; no task retains KernelRuntimeState/AppControl,
+//! except the one idle-worker eviction, which holds it only while it runs.
 mod jobs;
 mod pump;
 mod requests;

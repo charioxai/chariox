@@ -189,9 +189,12 @@ impl AppInstallControl {
                 }
             }
             if let Some(owner) = evict_for {
+                // The one task that holds the runtime state: only while this
+                // eviction runs (a finished task drops its future), and
+                // shutdown joins it. The installing App has no live worker
+                // yet, so no target is spared. A pass that finds one running
+                // leaves it to finish.
                 let runtime = runtime.clone();
-                // The installing App has no live worker yet, so no target is
-                // spared. A pass that finds one running leaves it to finish.
                 schedule_eviction(&mut state.eviction, async move {
                     runtime.evict_idle_app(&owner, "").await
                 });
@@ -246,7 +249,7 @@ impl AppInstallControl {
         for (owner, request_id) in waits {
             crate::logging::info_with_fields(
                 "app.install",
-                "App install waits for a live worker slot; stopping an idle worker",
+                "App install waits for a live worker slot; an idle worker is stopped if there is one",
                 serde_json::json!({ "owner_id": owner, "request_id": request_id }),
             );
         }
