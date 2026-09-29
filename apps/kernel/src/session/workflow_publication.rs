@@ -547,6 +547,29 @@ impl WorkflowPublicationDefinition {
         self.apps = Some(plan);
     }
 
+    /// An export of a release that used no App packages no plan.
+    pub(crate) fn clear_apps(&mut self) {
+        self.apps = None;
+    }
+
+    /// Whether the release with this package digest was exported while the
+    /// publication used no App: releases record their plans (368), this one
+    /// recorded none, is not among the last pruned digests and predates no
+    /// pinned plan. A digest the kernel never recorded also matches; its bind
+    /// re-exports without Apps and the digest check refuses it.
+    pub fn release_without_apps(&self, package_digest: &str) -> bool {
+        !self.release_app_plans.is_empty()
+            && self.pre_release_app_plan.is_none()
+            && !self
+                .release_app_plans
+                .iter()
+                .any(|release| release.package_digest == package_digest)
+            && !self
+                .pruned_release_digests
+                .iter()
+                .any(|pruned| pruned == package_digest)
+    }
+
     /// Records the App plan a successful export packaged as its release's.
     pub(crate) fn record_release_app_plan(&mut self, package_digest: &str, plan: Value) {
         if self.release_app_plans.is_empty() {

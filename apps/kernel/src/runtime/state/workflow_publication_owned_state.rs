@@ -15,6 +15,16 @@ use package::{
     workflow_publication_package_files, workflow_publication_package_version,
 };
 
+/// The App plan an export packages.
+pub(super) enum ExportAppPlan<'a> {
+    /// The publication's latest recorded plan, if any.
+    Latest,
+    /// This plan: the owner's current one, or a bound release's.
+    Plan(&'a serde_json::Value),
+    /// None: a release exported while the publication used no App.
+    NoApps,
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn workflow_create_publication(
         &self,
@@ -105,19 +115,21 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// Exports the publication's package; `apps` is the App plan it packages
-    /// (the owner's current one, or a bound release's), else the latest.
+    /// Exports the publication's package with the App plan `apps` names.
     pub(super) fn workflow_export_publication_package(
         &self,
         request: crate::local::ExportWorkflowPublicationPackageRequest,
-        apps: Option<&serde_json::Value>,
+        apps: ExportAppPlan<'_>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut publication = self
             .session_store
             .read()
             .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
-        if let Some(plan) = apps {
-            publication.use_apps(plan.clone());
+        let no_apps = matches!(apps, ExportAppPlan::NoApps);
+        match apps {
+            ExportAppPlan::Latest => {}
+            ExportAppPlan::Plan(plan) => publication.use_apps(plan.clone()),
+            ExportAppPlan::NoApps => publication.clear_apps(),
         }
         let snapshot = self
             .session_store
@@ -145,8 +157,10 @@ impl KernelRuntimeOwnedState {
                 &workspaces,
             )?;
         // App grants and the owner's App automations feeding the publication
-        // both make it App-bound.
-        if publication.apps().is_none()
+        // both make it App-bound (a release exported before it used any App
+        // re-exports without one, for its bind's digest check).
+        if !no_apps
+            && publication.apps().is_none()
             && (!crate::workflow_publication_requirements::app_grant_uses(
                 &snapshot.workflow,
                 &snapshot.agents,

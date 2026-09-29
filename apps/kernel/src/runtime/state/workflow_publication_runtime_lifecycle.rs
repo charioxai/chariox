@@ -1,5 +1,6 @@
 //! Kernel-owned lifecycle control for local workflow publication runtimes.
 
+use super::workflow_publication_owned_state::ExportAppPlan;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -1834,7 +1835,8 @@ pub(super) fn bound_release_package_digests(
     kernel_url: Option<String>,
 ) -> Result<BoundReleaseDigests, DaemonError> {
     let release_apps = publication.release_app_plan(expected).cloned();
-    if publication.apps().is_some() && release_apps.is_none() {
+    let without_apps = publication.release_without_apps(expected);
+    if publication.apps().is_some() && release_apps.is_none() && !without_apps {
         return Err(publication_runtime_error(
             "start workflow publication runtime",
             format!(
@@ -1850,7 +1852,11 @@ pub(super) fn bound_release_package_digests(
             agent_app: None,
             agent_app_assets_dir: None,
         },
-        release_apps.as_ref(),
+        match (&release_apps, without_apps) {
+            (_, true) => ExportAppPlan::NoApps,
+            (Some(plan), false) => ExportAppPlan::Plan(plan),
+            (None, false) => ExportAppPlan::Latest,
+        },
     )? {
         LocalDaemonResponse::WorkflowPublicationPackageExported {
             package_digest,
