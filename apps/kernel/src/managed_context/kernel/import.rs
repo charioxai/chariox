@@ -1088,6 +1088,10 @@ fn configured_absolute_path(name: &str, label: &str) -> Result<PathBuf, DaemonEr
     Ok(path)
 }
 
+pub(crate) fn configured_managed_vault_path() -> Result<PathBuf, DaemonError> {
+    configured_absolute_path("CHARIOX_MANAGED_VAULT_PATH", "managed Vault path")
+}
+
 pub(crate) fn configured_managed_kernel_context_paths() -> Result<(PathBuf, PathBuf), DaemonError> {
     Ok((
         configured_absolute_path(
