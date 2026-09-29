@@ -1111,6 +1111,33 @@ fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
     }
 }
 
+/// Restores the captured environment variables when dropped. A failed assertion
+/// unwinds through the drop too, so a failing test cannot leave a managed HOME,
+/// CHARIOX_HOME or bootstrap receipt behind for every later test in the process.
+#[cfg(unix)]
+struct ScopedEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+#[cfg(unix)]
+impl ScopedEnv {
+    fn capture(names: &[&'static str]) -> Self {
+        Self(
+            names
+                .iter()
+                .map(|name| (*name, std::env::var_os(name)))
+                .collect(),
+        )
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ScopedEnv {
+    fn drop(&mut self) {
+        for (name, value) in self.0.drain(..) {
+            restore_env(name, value);
+        }
+    }
+}
+
 #[cfg(unix)]
 struct AttestedReleaseFixture {
     root: PathBuf,
@@ -1332,7 +1359,23 @@ impl AttestedReleaseFixture {
 }
 
 #[cfg(unix)]
+const RELEASE_EVIDENCE_ENV: &[&str] = &[
+    "HOME",
+    "CHARIOX_HOME",
+    "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+    "CHARIOX_MANAGED_RELEASE_MANIFEST",
+    "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+    "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+    "CHARIOX_MANAGED_KERNEL_BINARY",
+    MANAGED_PROVIDER_TOPOLOGY_ENV,
+];
+
+/// Point the release-evidence lookup at `fixture`. Release evidence requires an
+/// explicit provider topology; shared_host verifies against the release's own
+/// signing key, so tests that need Path 1 builder trust override it afterwards.
+#[cfg(unix)]
 fn set_release_evidence_env(fixture: &AttestedReleaseFixture) {
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
     std::env::set_var("HOME", &fixture.config.process_home);
     std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
     std::env::set_var(
@@ -1367,19 +1410,7 @@ fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt()
         &"b".repeat(40),
         "x86_64-unknown-linux-gnu",
     );
-    let names = [
-        "HOME",
-        "CHARIOX_HOME",
-        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
-        "CHARIOX_MANAGED_RELEASE_MANIFEST",
-        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
-        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
-        "CHARIOX_MANAGED_KERNEL_BINARY",
-    ];
-    let previous = names
-        .iter()
-        .map(|name| (*name, std::env::var_os(name)))
-        .collect::<Vec<_>>();
+    let saved_env = ScopedEnv::capture(RELEASE_EVIDENCE_ENV);
     set_release_evidence_env(&fixture);
 
     let evidence = super::authoritative_managed_release_evidence_from_env()
@@ -1398,9 +1429,7 @@ fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt()
     assert!(evidence.kernel_artifact_verified);
     assert!(evidence.bootstrap_receipt_verified);
 
-    for (name, value) in previous {
-        restore_env(name, value);
-    }
+    drop(saved_env);
     fixture.cleanup();
 }
 
@@ -1416,21 +1445,8 @@ fn path1_release_evidence_requires_the_external_builder_key() {
         &"b".repeat(40),
         "x86_64-unknown-linux-gnu",
     );
-    let names = [
-        "HOME",
-        "CHARIOX_HOME",
-        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
-        "CHARIOX_MANAGED_RELEASE_MANIFEST",
-        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
-        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
-        "CHARIOX_MANAGED_KERNEL_BINARY",
-        MANAGED_PROVIDER_TOPOLOGY_ENV,
-        super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV,
-    ];
-    let previous = names
-        .iter()
-        .map(|name| (*name, std::env::var_os(name)))
-        .collect::<Vec<_>>();
+    let saved_env = ScopedEnv::capture(RELEASE_EVIDENCE_ENV);
+    let _saved_builder_key = ScopedEnv::capture(&[super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV]);
     set_release_evidence_env(&fixture);
     std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
     std::env::remove_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV);
@@ -1464,9 +1480,7 @@ fn path1_release_evidence_requires_the_external_builder_key() {
         .expect_err("key inside release image must fail");
     assert!(image_key.to_string().contains("outside the managed release image"));
 
-    for (name, value) in previous {
-        restore_env(name, value);
-    }
+    drop(saved_env);
     fixture.cleanup();
 }
 
@@ -1501,26 +1515,12 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         let source = format!("{source_commit}{source_commit}").repeat(20);
         let tree = format!("{source_tree}{source_tree}").repeat(20);
         let fixture = AttestedReleaseFixture::new(label, &source, &tree, target);
-        let names = [
-            "HOME",
-            "CHARIOX_HOME",
-            "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
-            "CHARIOX_MANAGED_RELEASE_MANIFEST",
-            "CHARIOX_MANAGED_RELEASE_SIGNATURE",
-            "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
-            "CHARIOX_MANAGED_KERNEL_BINARY",
-        ];
-        let previous = names
-            .iter()
-            .map(|name| (*name, std::env::var_os(name)))
-            .collect::<Vec<_>>();
+        let saved_env = ScopedEnv::capture(RELEASE_EVIDENCE_ENV);
         set_release_evidence_env(&fixture);
         let error = super::authoritative_managed_release_evidence_from_env()
             .expect_err("attestation identity mismatch must fail closed");
         assert!(error.to_string().contains(expected));
-        for (name, value) in previous {
-            restore_env(name, value);
-        }
+        drop(saved_env);
         fixture.cleanup();
     }
 
@@ -1530,19 +1530,7 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         &"b".repeat(40),
         "x86_64-unknown-linux-gnu",
     );
-    let names = [
-        "HOME",
-        "CHARIOX_HOME",
-        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
-        "CHARIOX_MANAGED_RELEASE_MANIFEST",
-        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
-        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
-        "CHARIOX_MANAGED_KERNEL_BINARY",
-    ];
-    let previous = names
-        .iter()
-        .map(|name| (*name, std::env::var_os(name)))
-        .collect::<Vec<_>>();
+    let saved_env = ScopedEnv::capture(RELEASE_EVIDENCE_ENV);
     set_release_evidence_env(&receipt_fixture);
     fs::write(
         &receipt_fixture.receipt_path,
@@ -1565,9 +1553,7 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         receipt_error.to_string().contains("release path")
             || receipt_error.to_string().contains("digest")
     );
-    for (name, value) in previous {
-        restore_env(name, value);
-    }
+    drop(saved_env);
     receipt_fixture.cleanup();
 
     let fixture = AttestedReleaseFixture::new(
@@ -1576,19 +1562,7 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         &"b".repeat(40),
         "x86_64-unknown-linux-gnu",
     );
-    let names = [
-        "HOME",
-        "CHARIOX_HOME",
-        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
-        "CHARIOX_MANAGED_RELEASE_MANIFEST",
-        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
-        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
-        "CHARIOX_MANAGED_KERNEL_BINARY",
-    ];
-    let previous = names
-        .iter()
-        .map(|name| (*name, std::env::var_os(name)))
-        .collect::<Vec<_>>();
+    let saved_env = ScopedEnv::capture(RELEASE_EVIDENCE_ENV);
     set_release_evidence_env(&fixture);
     fs::write(&fixture.attestation_signature_path, "invalid")
         .expect("tamper attestation signature");
@@ -1599,9 +1573,7 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
     let artifact_error = super::authoritative_managed_release_evidence_from_env()
         .expect_err("pinned attestation mismatch must fail closed");
     assert!(artifact_error.to_string().contains("artifact digest"));
-    for (name, value) in previous {
-        restore_env(name, value);
-    }
+    drop(saved_env);
     fixture.cleanup();
 
     let legacy = Fixture::new("unversioned-evidence");

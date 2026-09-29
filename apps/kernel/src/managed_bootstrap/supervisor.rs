@@ -1050,8 +1050,16 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             );
         }
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            // Without a broker lease, spawn_with_broker_lease marks the child
+            // broker-required (fail closed) instead of inheriting the parent's
+            // value; every other selector must be scrubbed.
+            let expected = if *name == BROKER_REQUIRED_ENV {
+                "1"
+            } else {
+                "<unset>"
+            };
             assert!(
-                observed.contains(&format!("{name}=<unset>\n")),
+                observed.contains(&format!("{name}={expected}\n")),
                 "confirmation child inherited {name}: {observed}"
             );
         }
