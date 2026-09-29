@@ -130,6 +130,7 @@ function fakeAdmission({
     io,
     calls,
     simulateReboot() { mounted = false },
+    simulateDockerStart() { ownership = "1001:1001:710" },
     setFilesystemUse(value) { busyFilesystem = value },
     get binding() { return binding },
     get observation() { return observation },
@@ -208,6 +209,10 @@ test("fresh matching blank volume is formatted once, bound, mounted, and quota-v
   // A dependent restart re-runs admission on the live mount: verify without writing.
   const writes = () => fake.calls.filter(([command]) => command === "/usr/bin/chown" || command === "/usr/bin/chmod").length
   const before = writes()
+  assert.deepEqual(admitDataVolume(fake), result)
+  assert.equal(writes(), before)
+  // Rootless dockerd leaves its data root at 0710; a restart still writes nothing.
+  fake.simulateDockerStart()
   assert.deepEqual(admitDataVolume(fake), result)
   assert.equal(writes(), before)
   assert.equal(fake.calls.filter(([command]) => command === "/usr/bin/systemd-mount").length, 2)
