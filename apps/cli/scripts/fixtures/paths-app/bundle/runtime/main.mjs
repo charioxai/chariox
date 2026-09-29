@@ -38,10 +38,17 @@ async function racing(write, mutate) {
 export default function register(chariox) {
   const root = chariox.paths.data;
   const at = (path) => join(root, path);
-  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    return entry.isDirectory() ? walk(path) : [{ path: relative(root, path), bytes: statSync(path).size }];
-  });
+  // An unreadable directory (ext4's root-owned lost+found) is reported, not fatal.
+  const walk = (dir) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch (error) {
+      return [{ path: relative(root, dir), error: error?.code ?? 'failed' }];
+    }
+    return entries.flatMap((entry) => {
+      const path = join(dir, entry.name);
+      return entry.isDirectory() ? walk(path) : [{ path: relative(root, path), bytes: statSync(path).size }];
+    });
+  };
   // A payload is whole only if every byte is its round's marker.
   const payload = (round) => Buffer.alloc(64 * 1024, 65 + (round % 26));
   const whole = (bytes) => bytes.length === 64 * 1024 && bytes.every((b) => b === bytes[0]);
