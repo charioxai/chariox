@@ -7,6 +7,7 @@ import test from "node:test"
 import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
 import { AppFileSource, chunkBytes, maxArchiveBytes, InstallFileChanged } from "./app-install-file/source.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
+import { runAppCommand } from "./app-command.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 
 type Message = Record<string, any>
@@ -369,4 +370,26 @@ test("cancelling a lost upload Begin reply recovers its original handle before A
   assert.equal(k.upload!.phase, "aborted")
   assert.ok(!k.requests.some(v => v.PutAppPackageUploadChunk || v.BeginAppInstall))
   await installer.dispose()
+})
+
+test("chariox app install that outlasts its wait says only an approval needs the owner", async t => {
+  for (const [phase, next] of [
+    ["queued", /Still queued after waiting; .* It starts once an App worker slot is free/],
+    ["awaiting_approval", /Still awaiting_approval after waiting; .* Finish it in session s1's terminal/],
+    ["starting", /Still starting after waiting; .* It continues on its own/],
+  ] as const) {
+    const f = await sourceFixture(t)
+    const k = kernel()
+    const send = async (request: Message) => {
+      const reply = await k.send(request)
+      if (request.BeginAppInstall) k.status!.phase = phase
+      return reply
+    }
+    await assert.rejects(runAppCommand(["app", "install", f.path, "--session", "s1"], {
+      createClient: () => ({ send, close: async () => {} }),
+      write: () => {},
+      installWaitMs: 20,
+      installPollMs: 1,
+    }), next)
+  }
 })
