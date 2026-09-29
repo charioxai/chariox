@@ -1090,7 +1090,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 ),
             ],
             None,
-            Some(300),
+            Some(crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS),
             Some("deny".to_string()),
         );
         let session_id = session_id.to_string();

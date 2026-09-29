@@ -16,9 +16,16 @@ pub(crate) const CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS: usize = 8;
 pub(crate) const CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES: usize = 6_000;
 pub(crate) const CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES: usize =
     CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES;
-/// Claude's timeout for the permission hook, above the hook's 310 s decision
-/// deadline.
-const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 330;
+/// The timeout of the kernel interaction a Claude permission request raises.
+pub(crate) const CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS: u64 = 300;
+/// How long the hook waits for the kernel's decision (`deadline` in the
+/// handler): past the interaction timeout plus a forwarded interaction's relay
+/// buffer, so the deny a timed-out interaction resolves to finds it waiting.
+pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 = 320;
+/// Claude's timeout for the permission hook, past the hook's own wait.
+const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 340;
+const _: () =
+    assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
 pub(crate) fn ensure_claude_native_hidden_context_fits(
     provider_run_id: &str,
@@ -146,9 +153,7 @@ pub(super) fn prepare_claude_native_tui_files(
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
-            // Claude must not cancel the hook before its own decision
-            // deadline (see the handler), which outlasts the kernel's
-            // 300 s interaction timeout so the timeout's deny reaches Claude.
+            // Claude must not cancel the hook before its own decision wait.
             "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command, "timeout": CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS }] }]
         },
         "statusLine": {
@@ -354,9 +359,8 @@ if (eventName === "UserPromptSubmit") {
     ? join(responseDir, `${hookContextRequestId}.json`)
     : null
   if (responseFile) {
-    // Longer than the kernel's 300 s interaction timeout, whose deny must
-    // still find the hook waiting; shorter than the hook's settings timeout.
-    const deadline = Date.now() + 310000
+    // CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
+    const deadline = Date.now() + 320000
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
         try {
@@ -527,6 +531,10 @@ mod tests {
         assert!(!handler.contains("permissionDecision"));
         assert!(!handler.contains("toolName.startsWith"));
         assert!(handler.contains("process.exit(0)"));
+        assert!(handler.contains(&format!(
+            "const deadline = Date.now() + {}",
+            super::CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS * 1000
+        )));
     }
 
     #[test]
@@ -1269,7 +1277,7 @@ mod tests {
         );
         assert_eq!(
             yolo_settings["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
-            330
+            340
         );
     }
 }
