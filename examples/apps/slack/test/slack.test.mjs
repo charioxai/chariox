@@ -75,7 +75,7 @@ test('a mention is kept once and forwarded once to the notifications automation'
   assert.equal(notifications.length, 1, 'a redelivered event is stored once');
   assert.deepEqual(notifications[0], {
     id: 'Ev1', kind: 'mentioned', text: '<@B1> deploy status?', channel: 'C1', user: 'U1',
-    occurred_at: '2026-09-26T19:00:00.000Z', can_reply: true,
+    occurred_at: '2026-09-26T19:00:00.000Z', in_thread: false, can_reply: true,
   }, 'the reply context and connection stay inside the App');
   assert.equal(kernel.occurrences.length, 1);
   const [occurrence] = kernel.occurrences;
@@ -129,6 +129,23 @@ test('a reply goes back through the notification\'s own connection and context',
   await assert.rejects(kernel.tools.get('reply')({ id: 'missing', text: 'x' }), { code: 'NOT_FOUND' });
   await kernel.deliver('mentioned', 'Ev9', { ...mention('no context'), reply_context: null });
   await assert.rejects(kernel.tools.get('reply')({ id: 'Ev9', text: 'x' }), { code: 'INVALID_ARGUMENT' });
+});
+
+test('a message in a thread is answered in that thread, and its prompt says so', async () => {
+  const kernel = fakeKernel();
+  const threaded = mention('can you read previous messages?');
+  threaded.reply_context = { ...threaded.reply_context, message_ts: '1.5', thread_ts: '1.2' };
+  await kernel.deliver('channel_message', 'Ev2', threaded);
+  assert.match(kernel.occurrences.at(-1).invocation.prompt, /^Slack channel message in a thread in <#C1>/);
+  const listed = (await kernel.tools.get('list_notifications')({})).notifications[0];
+  assert.equal(listed.in_thread, true);
+  // Even when the agent asks for the channel, the answer stays in the thread.
+  await kernel.tools.get('reply')({ id: 'Ev2', text: 'Only what this App received', mode: 'channel' });
+  assert.deepEqual(kernel.actions.at(-1).input, { text: 'Only what this App received', mode: 'thread' });
+  // A top-level message can still be answered in the channel.
+  await kernel.deliver('mentioned', 'Ev3', mention('top level'));
+  await kernel.tools.get('reply')({ id: 'Ev3', text: 'In the channel', mode: 'channel' });
+  assert.deepEqual(kernel.actions.at(-1).input, { text: 'In the channel', mode: 'channel' });
 });
 
 test('long multibyte messages stay under the state value cap, newest first, and never split a character', async () => {

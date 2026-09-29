@@ -82,23 +82,27 @@ export default function register(chariox) {
     const text = kind === 'reaction_added'
       ? `:${event.reaction ?? 'reaction'}: on a message`
       : String(event.text ?? payload.text ?? '');
+    const context = replyContext(payload.reply_context);
     return {
       id: occurrenceId,
       kind,
       text: cut(text, 4000),
+      // Part of a thread (a reply, not its first message): the conversation
+      // continues there.
+      in_thread: Boolean(context?.thread_ts && context.thread_ts !== context.message_ts),
       channel: String(event.channel ?? item.channel ?? payload.reply_context?.channel_id ?? '').slice(0, 64),
       user: String(event.user ?? '').slice(0, 64),
       occurred_at: payload.occurred_at,
       // Opaque to the App: the generator binds it to the connection, so a
       // later reply goes to the same conversation.
-      reply_context: replyContext(payload.reply_context),
+      reply_context: context,
       connection_id: payload.source?.connection_id ?? null,
     };
   }
 
   function occurrence(item) {
     const occurredAtMs = Number.isFinite(Date.parse(item.occurred_at)) ? Date.parse(item.occurred_at) : Date.now();
-    const where = item.channel ? ` in <#${item.channel}>` : '';
+    const where = `${item.in_thread ? ' in a thread' : ''}${item.channel ? ` in <#${item.channel}>` : ''}`;
     const who = item.user ? ` from <@${item.user}>` : '';
     return {
       automationId: AUTOMATION,
@@ -163,6 +167,9 @@ export default function register(chariox) {
   chariox.tools.register('reply', async ({ id, text, mode = 'thread', request_id: requestId }) => {
     if (!text.trim()) throw fail('INVALID_ARGUMENT', 'A reply needs some text');
     const item = await target(id);
+    // A message in a thread is answered in that thread: a channel post would
+    // split the conversation the person is having.
+    if (item.in_thread) mode = 'thread';
     const { accepted, result } = await chariox.connections.action({
       connectionId: item.connection_id,
       action: 'notification.reply',
