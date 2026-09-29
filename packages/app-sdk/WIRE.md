@@ -112,6 +112,12 @@ reconstructs schedules from its state.
 
 The optional context includes kernel-assigned installation, Room, operation,
 actor, agent, task and turn references. It is distinct from App tool parameters.
+Background work carries one too: `events.deliver` and `schedule.wake` have
+`actor: {kind: "background", id: "inbox:<route>" | "schedule"}`, an operation per
+delivery (`inbox-<sequence>`) or per wake firing (`wake-<id>-<dueAtMs>`, the same
+across retries of that firing), and no Room, agent, task or turn. A route or wake
+id that would break the context-id bounds (at most 128 bytes, no whitespace) keeps
+its prefix with a digest in place of the id: `inbox:sha256-<hex>`, `wake-sha256-<hex>`.
 The receiver supplies a local `AbortSignal` and effective `deadlineMs` to the
 handler. Context cannot establish a human approval; the trusted kernel checks an
 operation's exact approval receipt before its protected effect.

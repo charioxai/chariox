@@ -17,6 +17,16 @@ pub enum Actor {
     Background(String),
 }
 
+/// A context id: nonempty, at most 128 bytes, no whitespace or control
+/// characters. Shared by every context the kernel sends.
+pub fn is_context_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\u{feff}')
+}
+
 /// No arbitrary metadata, history, prompt, transcript or credential field.
 /// The kernel retains richer authenticated provider/binding context privately.
 #[derive(Debug, Clone)]
@@ -42,12 +52,7 @@ impl CallerContext {
         .into_iter()
         .flatten()
         {
-            if id.is_empty()
-                || id.len() > 128
-                || id
-                    .chars()
-                    .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\u{feff}')
-            {
+            if !is_context_id(id) {
                 return Err(CatalogError::Invalid);
             }
         }
