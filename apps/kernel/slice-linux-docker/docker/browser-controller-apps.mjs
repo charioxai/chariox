@@ -3,6 +3,9 @@
 // port is opened and the page is a secure context. Every other request from
 // the tab is blocked at the browser boundary, and popups it opens are closed.
 // `window.chariox.call` is a CDP binding; the kernel answers each call.
+// Each call carries the document (top-level loader) that made it: when the Tab
+// reloads, navigates or closes, the kernel cancels that document's calls and
+// an answer for it is never delivered to the next one.
 import { BrowserControllerError } from "./browser-controller-cdp.mjs";
 
 export const APP_ORIGIN_SUFFIX = ".app.chariox.internal";
@@ -10,6 +13,7 @@ const MAX_ASSETS = 256;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_CALLS = 64;
 const MAX_CALL_BYTES = 256 * 1024;
+const MAX_ANSWERABLE_CALLS = 1024;
 // The trusted conversation panel needs room to be usable.
 const MIN_PANEL = { width: 240, height: 160 };
 const PANEL_METHOD = "chariox.panel";
@@ -128,7 +132,7 @@ export class AppTabs {
     // desktop exactly, so page and stream coordinates agree (see panels).
     const { targetId } = await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, panel: null });
+    this.apps.set(sessionId, { ...app, targetId, panel: null, document: null, pending: new Set() });
     try {
       await this.fullscreen(connection, targetId);
       await connection.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
@@ -184,7 +188,10 @@ export class AppTabs {
     }
     const app = this.apps.get(message?.sessionId);
     if (!app) return;
-    if (message.method === "Fetch.requestPaused") {
+    if (message.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
+      app.document = message.params?.frame?.loaderId ?? null;
+      app.pending.clear();
+    } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {
       await this.enqueueCall(app, message.params.payload, message.sessionId);
@@ -225,8 +232,20 @@ export class AppTabs {
       await this.reservePanel(app, sessionId, call);
       return;
     }
-    this.calls.push({ installation_id: app.installation, target_id: app.targetId, call_id: call.id,
+    // Calls the kernel may answer for this document; a new one clears them.
+    app.pending.add(call.id);
+    if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
+    this.calls.push({ installation_id: app.installation, target_id: app.targetId,
+      document_id: app.document ?? await this.document(sessionId, app), call_id: call.id,
       method: call.method, params: call.params ?? {} });
+  }
+
+  // The Tab's current top-level document, when no navigation was seen yet
+  // (Page events are enabled with the target's session).
+  async document(sessionId, app) {
+    const tree = await this.connection.send("Page.getFrameTree", {}, sessionId).catch(() => null);
+    app.document ??= tree?.frameTree?.frame?.loaderId ?? null;
+    return app.document;
   }
 
   // The controller, not the kernel, answers panel requests: only geometry.
@@ -287,7 +306,10 @@ export class AppTabs {
   /** Drain pending view calls; the kernel answers each with `respond`. */
   async takeCalls() {
     await this.reconcile();
-    const calls = this.calls;
+    // A call whose Tab closed or moved to another document is not run.
+    const current = new Map([...this.apps.values()].map((app) => [app.targetId, app.document]));
+    const calls = this.calls.filter((call) => current.has(call.target_id)
+      && (call.document_id == null || current.get(call.target_id) == null || call.document_id === current.get(call.target_id)));
     this.calls = [];
     // Reserved panels in page CSS pixels, reported only while their window is
     // fullscreen so they map exactly onto the desktop stream.
@@ -297,15 +319,19 @@ export class AppTabs {
         panels.push({ target_id: app.targetId, ...app.panel });
       }
     }
-    // Open App targets let the kernel drop views that closed or crashed.
-    return { calls, open_targets: [...this.apps.values()].map((app) => app.targetId), panels };
+    // Open App targets let the kernel drop views that closed or crashed, and
+    // their documents let it cancel calls made by a document that is gone.
+    const documents = Object.fromEntries([...current].filter(([, document]) => document != null));
+    return { calls, open_targets: [...current.keys()], documents, panels };
   }
 
   async respond(params) {
     await this.reconcile();
     const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
     if (!entry || typeof params.call_id !== "string") throw invalid("unknown App tab or call");
-    const [sessionId] = entry;
+    const [sessionId, app] = entry;
+    // The calling document is gone: its answer must not reach the next one.
+    if (!app.pending.delete(params.call_id)) return { delivered: false };
     const ok = params.error == null;
     const value = ok ? params.result ?? null : { code: String(params.error.code ?? "APP_ERROR"), message: String(params.error.message ?? "App call failed") };
     await this.resolve(sessionId, params.call_id, ok, value);

@@ -1818,8 +1818,13 @@ Workflow trigger and deployment direction:
   controller CDP connection (whatever command caused it) drops the previous
   connection's App Tabs and closes App-origin Tabs it does not own. Each poll
   reports the controller's open App targets; the kernel drops bindings for
-  closed Tabs registered before that poll and stops polling when none remain. UI files are limited to
-  2 MiB per view.
+  closed Tabs registered before that poll and stops polling when none remain.
+  Each call also names the Tab's document (its top-level CDP loader) and each
+  poll reports every open Tab's current document: a call whose Tab closed,
+  reloaded or navigated is cancelled (the worker gets `cancel` and the call's
+  slot is freed), and the controller answers a call only in the document that
+  made it. These fields are optional; an older controller's calls end only with
+  their Tab. UI files are limited to 2 MiB per view.
 - protocol 347 adds `UninstallApp {installation_id, expected_generation}`,
   returning `AppInstallation` with no active release. A stale
   `expected_generation` returns `conflict` before any side effect. Otherwise the
