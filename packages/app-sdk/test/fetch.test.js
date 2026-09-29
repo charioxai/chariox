@@ -27,6 +27,19 @@ test('Fetch preserves native response values and stream metadata through clone',
   } finally { f.close(); }
 });
 
+test('Fetch never sends Accept-Encoding, which the kernel broker refuses', async () => {
+  const f = fixture(() => ({ chunks: ['ok'] }));
+  try {
+    assert.equal(await (await f.fetch(URL)).text(), 'ok');
+    assert.equal(await (await f.fetch(URL, { headers: { 'accept-encoding': 'gzip' } })).text(), 'ok');
+    for (const stream of f.streams.values()) {
+      const headers = new Headers(stream.params.headers);
+      assert.equal(headers.has('accept-encoding'), false);
+      assert.equal(headers.get('accept'), '*/*');
+    }
+  } finally { f.close(); }
+});
+
 test('multipart and URLSearchParams use native serialization with bounded broker chunks', async () => {
   const f = fixture(() => ({ waitUpload: true, chunks: ['ok'] }));
   try {

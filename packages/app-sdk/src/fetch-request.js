@@ -67,7 +67,10 @@ export function requestValue(input, init = {}) {
     headers.delete('content-length');
   }
   if (!headers.has('accept')) headers.set('accept', '*/*');
-  if (!headers.has('accept-encoding')) headers.set('accept-encoding', 'gzip, deflate, br');
+  // Content coding is the kernel's, as the user agent's in Fetch (a forbidden
+  // request header): the broker refuses a caller-set Accept-Encoding, so it is
+  // dropped here and the response arrives with the kernel's own coding.
+  headers.delete('accept-encoding');
   return { request, url, method: request.method, headers, retained, expectedBytes,
     // A new multipart Request chooses a new boundary on replay. Only remove an
     // automatically generated content type; preserve an explicit caller value.
