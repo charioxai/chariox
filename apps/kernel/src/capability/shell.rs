@@ -73,6 +73,9 @@ impl ShellCommandService {
         let mut command = Command::new(&request.command);
         command.args(&request.args);
         command.current_dir(&working_directory);
+        for name in crate::provider::managed_provider_control_env_remove() {
+            command.env_remove(name);
+        }
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
@@ -188,6 +191,27 @@ mod tests {
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "hello");
         assert!(result.stderr.is_empty());
+    }
+
+    #[test]
+    fn shell_command_does_not_inherit_managed_control_environment() {
+        std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", "/var/lib/chariox/receipt");
+        let result = ShellCommandService::new()
+            .run(RunShellCommandRequest::new(
+                "session-1",
+                "attachment-1",
+                "/bin/sh",
+                vec![
+                    "-c".to_string(),
+                    "printf %s \"${CHARIOX_DISPOSABLE_WORKER_RECEIPT-unset}\"".to_string(),
+                ],
+                std::env::current_dir().expect("cwd should exist"),
+                None,
+            ))
+            .expect("shell command should run");
+        std::env::remove_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT");
+
+        assert_eq!(result.stdout, "unset");
     }
 
     #[test]
