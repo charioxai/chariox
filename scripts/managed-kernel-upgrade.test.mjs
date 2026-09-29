@@ -1018,6 +1018,15 @@ test("managed kernel upgrade migrates legacy home state and rejects a home colli
   assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).uid, charioxUid)
   assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).gid, charioxGid)
 
+  // The empty skeleton older Cloud cloud-init created holds no state and is removed.
+  const skeletonHarness = await makeHarness(context)
+  const skeletonLegacy = join(skeletonHarness.installRoot, "var/lib/chariox/home")
+  await createRootPrivateDirectory(skeletonLegacy)
+  await createRootPrivateDirectory(join(skeletonLegacy, "managed"))
+  const skeleton = skeletonHarness.run()
+  assert.equal(skeleton.status, 0, skeleton.stderr)
+  assert.equal(await lstat(skeletonLegacy).then(() => true, () => false), false)
+
   const collisionHarness = await makeHarness(context)
   const collisionLegacy = join(collisionHarness.installRoot, "var/lib/chariox/home")
   await createRootPrivateDirectory(collisionLegacy)

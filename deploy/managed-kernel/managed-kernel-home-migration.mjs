@@ -6,8 +6,10 @@ import {
   lstat,
   mkdir,
   open,
+  readdir,
   readFile,
   rename,
+  rmdir,
   unlink,
 } from "node:fs/promises"
 import { basename, dirname, relative, resolve } from "node:path"
@@ -132,14 +134,33 @@ async function addEntry(entries, legacyHome, sources, destination, kind, label) 
   })
 }
 
+// Directories of a tree holding nothing but directories, deepest first; null otherwise.
+async function emptyDirectoryTree(path) {
+  if (!(await lstat(path)).isDirectory()) return null
+  const tree = []
+  for (const entry of await readdir(path)) {
+    const child = await emptyDirectoryTree(`${path}/${entry}`)
+    if (!child) return null
+    tree.push(...child)
+  }
+  return [...tree, path]
+}
+
 async function plan(journalPath, roots, charioxUid, charioxGid) {
   const stateMetadata = await optionalMetadata(roots.stateRoot, { bigint: true })
   if (!stateMetadata) fail("managed kernel state root is missing")
   requireType(stateMetadata, "directory", "managed kernel state root")
-  const legacyMetadata = await optionalMetadata(roots.legacyHome, { bigint: true })
+  let legacyMetadata = await optionalMetadata(roots.legacyHome, { bigint: true })
   const managedMetadata = await optionalMetadata(roots.managedHome, { bigint: true })
   if (legacyMetadata) requireType(legacyMetadata, "directory", "legacy managed kernel home")
   if (managedMetadata) requireType(managedMetadata, "directory", "managed service-account home")
+  // Older Cloud cloud-init created an empty legacy home skeleton next to
+  // /home/chariox. It holds no state: remove it (rmdir fails if it fills).
+  const skeleton = legacyMetadata && managedMetadata ? await emptyDirectoryTree(roots.legacyHome) : null
+  if (skeleton) {
+    for (const directory of skeleton) await rmdir(directory)
+    legacyMetadata = null
+  }
   if (legacyMetadata && managedMetadata) {
     fail("legacy managed kernel home and /home/chariox both exist; refusing to overwrite either")
   }
