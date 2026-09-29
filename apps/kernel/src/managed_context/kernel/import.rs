@@ -760,10 +760,7 @@ fn materialize_environment(
         .join("envs")
         .join(".portable")
         .join(name);
-    let final_package_root = final_user_root
-        .join("envs")
-        .join(".portable")
-        .join(name);
+    let final_package_root = final_user_root.join("envs").join(".portable").join(name);
     ensure_budgeted_directory(&staged_package_root, budget)?;
     let files = match runtime {
         PortableEnvironmentRuntime::Python { files, .. }
@@ -1120,7 +1117,9 @@ fn ordinary_user_root() -> Result<Option<PathBuf>, DaemonError> {
     ) {
         return Ok(None);
     }
-    Ok(Some(configured_absolute_path("HOME", "managed service home")?.join(".chariox")))
+    Ok(Some(
+        configured_absolute_path("HOME", "managed service home")?.join(".chariox"),
+    ))
 }
 
 fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
@@ -1153,7 +1152,12 @@ fn record_ordinary_entries(
     if staged.exists() {
         collect_ordinary_entries(&staged, home, Path::new(""), &mut entries)?;
     }
-    write_json_file(&staging.join(PUBLISHED_ENTRIES_NAME), &entries, false, budget)
+    write_json_file(
+        &staging.join(PUBLISHED_ENTRIES_NAME),
+        &entries,
+        false,
+        budget,
+    )
 }
 
 fn collect_ordinary_entries(
@@ -2756,7 +2760,10 @@ mod tests {
         std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", &target_vault);
         let (capability_root, vault_path) =
             configured_managed_kernel_context_paths().expect("Path 1 context paths");
-        assert_eq!(capability_root, ordinary.join("managed-context/kernel-context"));
+        assert_eq!(
+            capability_root,
+            ordinary.join("managed-context/kernel-context")
+        );
         assert_eq!(vault_path, target_vault);
 
         let source_private = crate::transport::relay_crypto::generate_private_key_base64();
@@ -2807,16 +2814,25 @@ mod tests {
         let mcps = crate::mcp::CharioxMcpRegistry::new(vec![ordinary.join("mcps")])
             .list()
             .expect("imported MCPs should load from the ordinary registry");
-        let portable = mcps.iter().find(|config| config.name == "portable").expect("portable");
+        let portable = mcps
+            .iter()
+            .find(|config| config.name == "portable")
+            .expect("portable");
         let CharioxMcpTransportConfig::Stdio { command, .. } = &portable.transport else {
             panic!("portable MCP should remain stdio");
         };
-        assert_eq!(Path::new(command), ordinary.join("mcps/portable/bin/server"));
+        assert_eq!(
+            Path::new(command),
+            ordinary.join("mcps/portable/bin/server")
+        );
         assert!(ordinary.join("mcps/portable/bin/server").is_file());
         let skills = crate::skill::CharioxSkillRegistry::new(vec![ordinary.join("skills")])
             .list()
             .expect("imported skills should load");
-        assert_eq!(skills.iter().filter(|skill| skill.name == "review").count(), 1);
+        assert_eq!(
+            skills.iter().filter(|skill| skill.name == "review").count(),
+            1
+        );
         assert_eq!(
             crate::script::CharioxScriptRegistry::new(vec![ordinary.join("scripts")])
                 .list()

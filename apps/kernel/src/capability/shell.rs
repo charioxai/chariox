@@ -196,7 +196,10 @@ mod tests {
     #[test]
     fn shell_command_does_not_inherit_managed_control_environment() {
         let _guard = crate::env_lock::lock();
-        std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", "/var/lib/chariox/receipt");
+        std::env::set_var(
+            "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+            "/var/lib/chariox/receipt",
+        );
         let result = ShellCommandService::new()
             .run(RunShellCommandRequest::new(
                 "session-1",
