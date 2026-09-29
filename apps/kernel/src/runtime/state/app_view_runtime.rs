@@ -241,9 +241,10 @@ impl KernelRuntimeState {
                 views.retain_open(&session_id, open, polled_up_to);
                 views.set_open_tabs(&session_id, open.len());
             }
-            if batch.app_panels {
-                self.publish_app_tabs(&session_id, &views).await;
-            }
+            // App Tabs are always marked; an older controller, which does not
+            // lay pages out beside a panel, gets no panel.
+            views.set_app_panels(&session_id, batch.app_panels);
+            self.publish_app_tabs(&session_id, &views).await;
             // A view's first call means its document loaded: project the
             // Room again so the Tab shows the App's title and URL, not the
             // blank page it had when it opened.
@@ -293,10 +294,15 @@ impl KernelRuntimeState {
     /// Each page gets its CSS size beside its panel when that changed: a
     /// placement request, the user's choice or a viewport change.
     async fn publish_app_tabs(&self, session_id: &str, views: &crate::runtime::app_views::AppViews) {
-        let Ok(pages) = self.set_room_environment_app_tabs(session_id, views.layouts(session_id))
+        let app_panels = views.app_panels(session_id);
+        let Ok(pages) =
+            self.set_room_environment_app_tabs(session_id, views.layouts(session_id), app_panels)
         else {
             return;
         };
+        if !app_panels {
+            return;
+        }
         for (target_id, (width, height)) in views.changed_pages(session_id, &pages) {
             let request = BrowserAppViewRequest::Layout {
                 target_id: target_id.clone(),

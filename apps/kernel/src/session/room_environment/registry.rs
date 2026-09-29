@@ -263,6 +263,7 @@ impl RoomEnvironmentRegistry {
         session_id: &str,
         apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
         agent_id: Option<String>,
+        app_panels: bool,
     ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
         let environment = self
             .environments_by_session
@@ -270,7 +271,7 @@ impl RoomEnvironmentRegistry {
             .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
                 session_id: session_id.to_string(),
             })?;
-        environment.set_app_tabs(apps, agent_id);
+        environment.set_app_tabs(apps, agent_id, app_panels);
         Ok(environment.app_page_sizes())
     }
 

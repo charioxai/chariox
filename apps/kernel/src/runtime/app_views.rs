@@ -89,6 +89,9 @@ struct SessionViews {
     user_panels: HashMap<String, UserPanel>,
     /// The page size each Tab's controller last got, in CSS pixels.
     sent_pages: HashMap<String, (u32, u32)>,
+    /// The session's browser controller lays App pages out beside the panel
+    /// (it reports `app_panels`); an older one gets no panel and no layout.
+    app_panels: bool,
 }
 
 #[derive(Clone, Default)]
@@ -372,6 +375,19 @@ impl AppViews {
             }
         }
         changed
+    }
+
+    /// Whether the session's browser controller draws App pages beside a panel.
+    pub(crate) fn set_app_panels(&self, session: &str, app_panels: bool) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.app_panels = app_panels;
+        }
+    }
+
+    pub(crate) fn app_panels(&self, session: &str) -> bool {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(session).is_some_and(|views| views.app_panels)
     }
 
     /// A layout that did not reach the controller is sent again next time.

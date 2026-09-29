@@ -303,7 +303,7 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
         ("app_1".to_string(), right),
     )]);
     // Marked before the Room has projected the App's Tab: it is marked once it appears.
-    environment.set_app_tabs(apps.clone(), Some("agent-1".into()));
+    environment.set_app_tabs(apps.clone(), Some("agent-1".into()), true);
     environment.reconcile_controller_tabs(
         vec![
             observed_tab("target-a", "loader-a1", "https://a.test", "A"),
@@ -349,7 +349,7 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
     let cursor = environment.snapshot().event_cursor;
     environment.set_panel_agent(Some("agent-2".into()));
     environment.set_panel_agent(Some("agent-2".into()));
-    environment.set_app_tabs(apps.clone(), Some("agent-2".into()));
+    environment.set_app_tabs(apps.clone(), Some("agent-2".into()), true);
     assert_eq!(tabs_changed(&environment, cursor), 1);
     assert_eq!(apps_of(&environment)[1].1, Some(marker("agent-2")));
     // The panel follows the canonical viewport.
@@ -390,7 +390,7 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
     };
     let bottom = Some(super::AppPanelPlacement::Bottom);
     let pages = |environment: &RoomEnvironment| environment.app_page_sizes()["target-app"];
-    environment.set_app_tabs(layout(bottom, Some(250), false), Some("agent-2".into()));
+    environment.set_app_tabs(layout(bottom, Some(250), false), Some("agent-2".into()), true);
     let panel = apps_of(&environment)[1]
         .1
         .as_ref()
@@ -403,7 +403,7 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
         (0, 700, 1800, 500)
     );
     assert_eq!(pages(&environment), (900, 350));
-    environment.set_app_tabs(layout(bottom, None, true), Some("agent-2".into()));
+    environment.set_app_tabs(layout(bottom, None, true), Some("agent-2".into()), true);
     let panel = apps_of(&environment)[1]
         .1
         .as_ref()
@@ -414,10 +414,19 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
     assert!(panel.minimized);
     assert_eq!((panel.y, panel.height), (1136, 64));
     assert_eq!(pages(&environment), (900, 568));
-    environment.set_app_tabs(layout(None, None, false), Some("agent-2".into()));
+    environment.set_app_tabs(layout(None, None, false), Some("agent-2".into()), true);
     assert_eq!(apps_of(&environment)[1].1.as_ref().unwrap().panel, None);
     assert_eq!(pages(&environment), (900, 600));
-    environment.set_app_tabs(std::collections::BTreeMap::new(), Some("agent-2".into()));
+    // An older controller: the App Tab is still marked, without a panel.
+    environment.set_app_tabs(apps.clone(), Some("agent-2".into()), false);
+    assert_eq!(
+        apps_of(&environment)[1].1,
+        Some(super::EnvironmentTabApp {
+            installation_id: "app_1".into(),
+            panel: None,
+        })
+    );
+    environment.set_app_tabs(std::collections::BTreeMap::new(), Some("agent-2".into()), true);
     assert!(environment
         .snapshot()
         .tabs

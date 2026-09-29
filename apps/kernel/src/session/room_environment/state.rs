@@ -45,6 +45,9 @@ pub struct RoomEnvironment {
     /// the focus agent their panels show. Kept across Tab churn so a Tab gets
     /// its marker once it appears.
     app_installations: BTreeMap<String, (String, super::model::AppPanelLayout)>,
+    /// The browser controller lays App pages out beside the panel. An older
+    /// one does not: its App Tabs are marked without a panel.
+    app_panels: bool,
     panel_agent_id: Option<String>,
     event_log: EnvironmentEventLog,
 }
@@ -96,6 +99,7 @@ impl RoomEnvironment {
             browser_controller_recovering: false,
             browser_bar_visible: false,
             app_installations: BTreeMap::new(),
+            app_panels: false,
             panel_agent_id: None,
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
@@ -257,9 +261,11 @@ impl RoomEnvironment {
         &mut self,
         apps: BTreeMap<String, (String, super::model::AppPanelLayout)>,
         agent_id: Option<String>,
+        app_panels: bool,
     ) {
         self.app_installations = apps;
         self.panel_agent_id = agent_id;
+        self.app_panels = app_panels;
         if self.mark_app_tabs() {
             self.emit(EnvironmentEventKind::TabsChanged);
         }
@@ -281,9 +287,13 @@ impl RoomEnvironment {
                 let app = super::model::EnvironmentTabApp {
                     installation_id: installation_id.clone(),
                     panel: self
-                        .viewport
-                        .app_layout(*layout, self.panel_agent_id.clone())
-                        .1,
+                        .app_panels
+                        .then(|| {
+                            self.viewport
+                                .app_layout(*layout, self.panel_agent_id.clone())
+                                .1
+                        })
+                        .flatten(),
                 };
                 (target.clone(), app)
             })
