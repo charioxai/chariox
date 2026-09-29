@@ -34,7 +34,10 @@ the fixed empty `data` and `tmp` mountpoints. The journal is bounded, written wi
 the existing descriptor-based atomic replacement/fsync helper, and records
 creation intent before a tool can create an image. File device/inode identities,
 the mountpoint identities, and discovered APFS UUIDs become durable before a
-worker can receive the roots. Paths and their ancestors must remain controlled
+worker can receive the roots. Device numbers are boot-local on macOS (a reboot
+can give the volume another `st_dev`), so a loaded journal's recorded devices are
+rebased to the installation directory's current one; the inode is the durable
+pin, and an entry on another filesystem still fails the identity check. Paths and their ancestors must remain controlled
 by the kernel installer; the App receives access to the mounted roots only.
 
 Every attach uses the fixed trusted `/usr/bin/hdiutil` with `-nomount`; mounting
@@ -73,9 +76,10 @@ reclamation. A crash during first creation can discard only the uncommitted
 image named by that private creation intent. Existing data with a committed UUID
 is never silently recreated when missing.
 
-Eight ordinary tests exercise parsing, identity checks, journal fsync recovery,
+Nine ordinary tests exercise parsing, identity checks, journal fsync recovery,
 interrupted temporary files, fixed command arguments, capacity accounting, and
-preserved recovery after an explicit cleanup attempt.
+preserved recovery after an explicit cleanup attempt, and identities that
+survive a reboot's new device number.
 They never call hdiutil or create a filesystem. The dedicated
 `app-storage-macos.yml` workflow executes ignored tests against this same module
 on a disposable GitHub macOS runner, using 64 MiB images for both roots. Its

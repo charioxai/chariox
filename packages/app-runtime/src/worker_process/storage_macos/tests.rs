@@ -194,16 +194,21 @@ fn journal_reopens_with_same_identity_and_rejects_unsafe_capacity_and_paths() {
 fn a_journal_saved_before_a_reboot_keeps_its_identities_under_a_new_device_number() {
     let scratch = Scratch::new();
     let dir = Dir::open_private(&scratch.0).unwrap();
-    let journal = record(&dir);
+    let mut journal = record(&dir);
+    // Created images record their backing file too; recovery checks it first.
+    let mut files = Vec::new();
+    for image in &mut journal.images {
+        let file = dir.create_private_file(OsStr::new(&image.image)).unwrap();
+        image.identity = Some(FileIdentity::of(&file).unwrap());
+        files.push(file);
+    }
     journal.save(&dir).unwrap();
     // A reboot gives the volume another st_dev; the inodes stay the same.
     let path = scratch.0.join(journal::NAME);
     let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for image in saved["images"].as_array_mut().unwrap() {
         image["mount_identity"]["device"] = json!(1);
-        if image["identity"].is_object() {
-            image["identity"]["device"] = json!(1);
-        }
+        image["identity"]["device"] = json!(1);
     }
     fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
     let reopened = journal::load(&dir).unwrap().unwrap();
@@ -220,9 +225,11 @@ fn a_journal_saved_before_a_reboot_keeps_its_identities_under_a_new_device_numbe
             .mount_identity
             .require(&dir, OsStr::new(&image.role), &mount.0)
             .unwrap();
-        if let Some(identity) = &image.identity {
-            assert_eq!(identity.device, device);
-        }
+        let identity = image.identity.as_ref().expect("the image file identity");
+        assert_eq!(identity.device, device);
+        identity
+            .require(&dir, OsStr::new(&image.image), &files[index])
+            .unwrap();
     }
 }
 
