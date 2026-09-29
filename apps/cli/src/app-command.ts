@@ -123,7 +123,11 @@ async function installFile(
     }
     if (value.phase === "failed" || value.phase === "cancelled") throw new Error(formatInstallOperation(value))
     if (!terminal.has(value.phase)) {
-      throw new Error(`Still ${value.phase} after waiting; the kernel keeps operation ${value.request_id}. Finish it in session ${session}'s terminal, then check \`chariox app list\`.`)
+      // Queued needs nothing from the owner: it starts once a worker slot frees.
+      const next = value.phase === "queued"
+        ? "It starts once an App worker slot is free; check `chariox app list` later."
+        : `Finish it in session ${session}'s terminal, then check \`chariox app list\`.`
+      throw new Error(`Still ${value.phase} after waiting; the kernel keeps operation ${value.request_id}. ${next}`)
     }
   } finally {
     await installer.dispose()

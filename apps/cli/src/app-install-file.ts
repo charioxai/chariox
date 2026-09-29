@@ -19,7 +19,8 @@ type Attempt = {
 export class KernelFailure extends Error { constructor(readonly code: string) { super(messages[code] ?? `App request failed: ${code}`) } }
 class ConnectionFailure extends Error { constructor() { super("Connection interrupted. Run the same /app install or update command to resume this attempt, or /app cancel to cancel it.") } }
 const terminalPhases = new Set(["committed", "cancelled", "failed"])
-const activePhases = new Set(["preparing", "awaiting_approval", "queued", "starting"])
+/** Unfinished install/update operation phases; every other known phase is terminal. */
+export const activePhases = new Set(["preparing", "awaiting_approval", "queued", "starting"])
 const messages: Record<string, string> = {
   unauthorized: "This connection is not authorized to install Apps.", busy: "App requests are busy. Try again shortly.",
   conflict: "The App operation or installation changed; check /app operation, or /app cancel and try again.", not_found: "App operation or upload was not found.",
