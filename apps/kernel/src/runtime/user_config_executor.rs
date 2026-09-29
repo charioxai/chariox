@@ -302,11 +302,15 @@ pub(crate) async fn execute_manage_credential_vault_request(
     runtime_state: &KernelRuntimeState,
     request: ManageCredentialVaultRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let (status, action) = runtime_state
-        .manage_credential_vault_unlock(
+    let agent_id = runtime_state
+        .vault_prompt_agent(
             &request.session_id,
-            request.agent_id.as_deref().unwrap_or("vault"),
+            request.agent_id.as_deref(),
+            "credential_vault_manage",
         )
+        .await?;
+    let (status, action) = runtime_state
+        .manage_credential_vault_unlock(&request.session_id, &agent_id)
         .await?;
     Ok(LocalDaemonResponse::CredentialVaultManaged { status, action })
 }
