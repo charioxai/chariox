@@ -83,15 +83,22 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE app_worker_lifecycle ADD COLUMN failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0);",
         )?;
     }
-    // Opening the store is a kernel start, and no worker outlives the kernel
-    // that ran it: a `running` row is left over from before a crash. It becomes
-    // `stopped` with its desired state kept, so recovery or the next call starts
-    // it again and status stops reporting a worker that does not exist.
-    // `starting` rows are kept: a pending first install resumes its exact claim.
-    connection.execute(
-        "UPDATE app_worker_lifecycle SET phase='stopped' WHERE phase='running'",
-        [],
-    )?;
+    Ok(())
+}
+
+/// Only the owning kernel, at its own start: no worker outlives the kernel
+/// that ran it, so a `running` row is left over from before a crash. It
+/// becomes `stopped` with its desired state kept, so recovery or the next call
+/// starts it again and status stops reporting a worker that does not exist.
+/// `starting` rows are kept: a pending first install resumes its exact claim.
+/// Never run this for another kernel's store (sibling stores are opened
+/// without the owner lock), whose workers may be alive.
+pub(super) fn reset_after_kernel_start(connection: &Connection) -> Result<()> {
+    let now = checked(crate::session::unix_epoch_ms())?;
+    sql(connection.execute(
+        "UPDATE app_worker_lifecycle SET phase='stopped',updated_ms=?1 WHERE phase='running'",
+        params![now],
+    ))?;
     Ok(())
 }
 
@@ -256,6 +263,10 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
                 VALUES(?1,?2,?3,'manual-stop','stopped',0,NULL,?4) ON CONFLICT(installation_id) DO UPDATE SET generation=excluded.generation,desired_running=0,updated_ms=excluded.updated_ms",params![installation,owner,generation,now]))?;
             budget(&limit)?;
             sql(tx.commit())?;
+            Ok(Reply::Done)
+        }
+        Command::ResetAfterKernelStart => {
+            reset_after_kernel_start(connection)?;
             Ok(Reply::Done)
         }
         Command::FinishStop {

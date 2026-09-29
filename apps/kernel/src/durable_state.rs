@@ -302,6 +302,13 @@ impl DurableKernelStateStore {
         let owner = owner::acquire(&path)?;
         let mut store = Self::open(path)?;
         store._owner = Some(Arc::new(owner));
+        // Only this store's owning kernel may settle its own crashed workers.
+        store
+            .reset_app_workers_after_kernel_start()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "durable_state.app_worker_restart",
+                message: "App worker lifecycle could not be reset after a kernel start".into(),
+            })?;
         Ok(store)
     }
 

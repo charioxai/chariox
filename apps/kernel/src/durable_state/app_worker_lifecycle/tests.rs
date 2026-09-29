@@ -313,3 +313,27 @@ fn a_kernel_restart_turns_a_crashed_running_worker_into_a_recoverable_stop() {
         WorkerPhase::Starting
     );
 }
+
+#[test]
+fn opening_another_kernels_store_never_resets_its_live_workers() {
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    fixture_event_catalog(&store);
+    let admission = claim(&store, "attempt-1");
+    store
+        .record_app_worker(&admission, WorkerPhase::Running, true, None, budget())
+        .unwrap();
+    // A sibling kernel reads this store without its owner lock while the
+    // owning kernel and its worker are alive.
+    let sibling = DurableKernelStateStore::open(fixture.0.join("kernel.sqlite")).unwrap();
+    drop(sibling);
+    assert_eq!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .phase,
+        WorkerPhase::Running
+    );
+    assert!(store.verify_app_start(&admission, budget()).is_ok());
+}
