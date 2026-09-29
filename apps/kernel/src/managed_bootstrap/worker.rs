@@ -20,11 +20,10 @@ use crate::error::DaemonError;
 use super::cloud::{HttpBootstrapCloudClient, ManagedCloudRelayProfile};
 use super::release::{verify_release, VerifiedRelease};
 use super::state::{
-    default_disposable_worker_receipt_path, managed_home_paths,
-    managed_repository_root_for_schema, read_bounded_json, remove_envelope, valid_digest,
-    valid_identifier, valid_secret, validate_cloud_url, validate_managed_state_path,
-    validate_protected_bootstrap_file, validate_volume_binding_for_schema,
-    PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH,
+    default_disposable_worker_receipt_path, managed_home_paths, managed_repository_root_for_schema,
+    read_bounded_json, remove_envelope, valid_digest, valid_identifier, valid_secret,
+    validate_cloud_url, validate_managed_state_path, validate_protected_bootstrap_file,
+    validate_volume_binding_for_schema, PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH,
 };
 use super::{
     jittered, managed_provider_topology, normalized_api_url, persisted_profile,
@@ -682,10 +681,7 @@ impl WorkerConfig {
             ));
         }
         let envelope_path = PathBuf::from(PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH);
-        validate_managed_state_path(
-            &envelope_path,
-            "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
-        )?;
+        validate_managed_state_path(&envelope_path, "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH")?;
         let receipt_path = env::var_os(ACTIVITY_RECEIPT_ENV)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)

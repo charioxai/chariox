@@ -360,9 +360,9 @@ fn canonical_preparation_home(path: &Path) -> Result<PathBuf, DaemonError> {
         ));
     }
     let home_key = canonical.file_name().and_then(|name| name.to_str());
-    if home_key.is_none_or(|name| {
-        name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
-    }) {
+    if home_key
+        .is_none_or(|name| name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
         return Err(isolation_error(
             "worker preparation HOME is outside the durable project state boundary",
         ));
@@ -413,9 +413,8 @@ fn canonical_preparation_home(path: &Path) -> Result<PathBuf, DaemonError> {
     let state_metadata = std::fs::symlink_metadata(state_root).map_err(|error| {
         isolation_error(format!("kernel state root could not be inspected: {error}"))
     })?;
-    let kernel_metadata = std::fs::symlink_metadata(kernel_home).map_err(|error| {
-        isolation_error(format!("kernel home could not be inspected: {error}"))
-    })?;
+    let kernel_metadata = std::fs::symlink_metadata(kernel_home)
+        .map_err(|error| isolation_error(format!("kernel home could not be inspected: {error}")))?;
     validate_preparation_home_directory(&state_metadata, "kernel state root", false)?;
     validate_preparation_home_directory(&kernel_metadata, "kernel home", false)?;
     Ok(canonical)
@@ -447,9 +446,7 @@ fn validate_preparation_home_directory(
         }
         let mode = metadata.mode() & 0o777;
         if (private && mode != 0o700) || (!private && mode & 0o022 != 0) {
-            return Err(isolation_error(format!(
-                "{label} has unsafe permissions"
-            )));
+            return Err(isolation_error(format!("{label} has unsafe permissions")));
         }
     }
     #[cfg(not(unix))]
@@ -932,14 +929,11 @@ fn append_managed_protected_namespace_directories(
         }
         // A masked ancestor already hides this path; masking it again would
         // recreate it inside the ancestor's otherwise empty mask.
-        if directories
-            .iter()
-            .any(|ancestor| {
-                ancestor != directory
-                    && ancestor != Path::new("/run")
-                    && directory.starts_with(ancestor)
-            })
-        {
+        if directories.iter().any(|ancestor| {
+            ancestor != directory
+                && ancestor != Path::new("/run")
+                && directory.starts_with(ancestor)
+        }) {
             continue;
         }
         append_directory(args, directory, created);
