@@ -268,6 +268,116 @@ test('global Fetch is installed before App import and uses only the actual inher
   assert.equal(completed.stderr, '');
 });
 
+test('an App directory watch reports private data changes; macOS workers poll', async () => {
+  const running = start(await fixture(`
+    import { watch, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    export default sdk => sdk.tools.register('echo', () => new Promise((resolve, reject) => {
+      const watcher = watch(sdk.paths.data, (eventType, filename) => {
+        watcher.close();
+        resolve({ eventType, filename, polled: watcher.constructor.name !== 'FSWatcher' });
+      });
+      watcher.on('error', reject);
+      writeFileSync(join(sdk.paths.data, 'marker'), 'x');
+    }));
+  `));
+  await running.ready();
+  running.request('watch-call', 'tools.invoke', { name: 'echo', input: null });
+  const reply = await running.receive(message => message.id === 'watch-call');
+  assert.deepEqual(reply.result, { eventType: 'rename', filename: 'marker', polled: process.platform === 'darwin' });
+  running.request('shutdown-watch', 'lifecycle.dispatch', { event: 'shutdown' });
+  assert.equal((await running.completed).code, 0);
+});
+
+// The fallback runs on macOS only; naming the platform exercises it anywhere.
+async function watchFallback(body) {
+  const directory = await mkdtemp(path.join(scratch, 'watch-'));
+  const bootstrap = path.join(repository, 'apps/app-worker/src/bootstrap.cjs');
+  const script = `const fs = require('node:fs'); const path = require('node:path');
+    const install = platform => require(${JSON.stringify(bootstrap)}).installDirectoryWatch(platform);
+    const dir = ${JSON.stringify(directory)}; const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+    (async () => { ${body} })().then(result => process.stdout.write(JSON.stringify(result)));`;
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+  active.add(child);
+  let stdout = ''; let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const deadline = setTimeout(() => child.kill('SIGKILL'), 10000);
+  const code = await new Promise(resolve => child.once('close', resolve));
+  clearTimeout(deadline); active.delete(child);
+  assert.equal(code, 0, stderr);
+  return JSON.parse(stdout);
+}
+
+test('macOS directory watch fallback reports creation, change and removal, then closes', async () => {
+  const result = await watchFallback(`
+    install('darwin');
+    fs.mkdirSync(path.join(dir, 'sub'));
+    const events = [];
+    const watcher = fs.watch(dir, (type, name) => events.push([type, name]));
+    fs.writeFileSync(path.join(dir, 'a.txt'), '1');
+    await pause(600);
+    fs.appendFileSync(path.join(dir, 'a.txt'), '2');
+    fs.writeFileSync(path.join(dir, 'sub', 'nested.txt'), 'not recursive');
+    await pause(600);
+    fs.rmSync(path.join(dir, 'a.txt'));
+    await pause(600);
+    let closed = false;
+    watcher.on('close', () => { closed = true; });
+    watcher.close();
+    fs.writeFileSync(path.join(dir, 'after-close.txt'), 'x');
+    await pause(600);
+    return { events, closed, native: watcher.constructor.name === 'FSWatcher' };`);
+  assert.deepEqual(result, { events: [['rename', 'a.txt'], ['change', 'a.txt'], ['rename', 'a.txt']], closed: true, native: false });
+});
+
+test('macOS fallback: recursive and buffer names, native file watches, synchronous errors and entry limit', async () => {
+  const result = await watchFallback(`
+    install('darwin');
+    fs.mkdirSync(path.join(dir, 'tree', 'deep'), { recursive: true });
+    const events = [];
+    const watcher = fs.watch(dir, { recursive: true, encoding: 'buffer' },
+      (type, name) => events.push([type, Buffer.isBuffer(name), name.toString()]));
+    fs.writeFileSync(path.join(dir, 'tree', 'deep', 'x.txt'), 'x');
+    await pause(600);
+    watcher.close();
+    fs.writeFileSync(path.join(dir, 'file.txt'), '0');
+    const file = fs.watch(path.join(dir, 'file.txt'));
+    const native = file.constructor.name === 'FSWatcher';
+    file.close();
+    const code = operation => { try { operation(); return 'none'; } catch (error) { return error.code; } };
+    const missing = code(() => fs.watch(path.join(dir, 'missing')));
+    fs.mkdirSync(path.join(dir, 'big'));
+    for (let index = 0; index < 4097; ++index) fs.writeFileSync(path.join(dir, 'big', String(index)), '');
+    return { events, native, missing, limit: code(() => fs.watch(path.join(dir, 'big'))) };`);
+  assert.deepEqual(result, { events: [['rename', true, path.join('tree', 'deep', 'x.txt')]], native: true,
+    missing: 'ENOENT', limit: 'ENOSPC' });
+});
+
+test('macOS fallback covers ESM and fs/promises watch, abort and non-persistent watchers', async () => {
+  const result = await watchFallback(`
+    const early = await import('node:fs');
+    install('darwin');
+    const { watch } = await import('node:fs/promises');
+    const controller = new AbortController();
+    setTimeout(() => fs.writeFileSync(path.join(dir, 'p.txt'), 'p'), 50);
+    const seen = [];
+    let aborted;
+    try {
+      for await (const { eventType, filename } of watch(dir, { signal: controller.signal })) {
+        seen.push([eventType, filename]);
+        controller.abort();
+      }
+    } catch (error) { aborted = error.name; }
+    fs.watch(dir, { persistent: false }, () => {});
+    return { seen, aborted, esm: early.watch === fs.watch && watch === fs.promises.watch };`);
+  assert.deepEqual(result, { seen: [['rename', 'p.txt']], aborted: 'AbortError', esm: true });
+});
+
+test('other platforms keep the native directory watch', async () => {
+  assert.equal(await watchFallback(`const before = fs.watch; install('linux'); return fs.watch === before;`), true);
+});
+
 test('fatal asynchronous App exceptions terminate without exposing exception text', async () => {
   const running = start(await fixture(`export default sdk => {
     sdk.tools.register('echo', () => { setImmediate(() => { throw new Error('private credential value'); }); return null; });

@@ -91,3 +91,14 @@ trap and completes a gzip exchange through the broker messages. Bootstrap/SDK
 changes belong to the versioned bundle graph, not the native compiler inputs.
 See [the Fetch contract](../../../packages/app-sdk/FETCH.md) for its precise
 supported subset and remaining integrated validation.
+
+On macOS the bootstrap also replaces `fs.watch` and `fs/promises` `watch` for
+directories before any migration or App module loads (`syncBuiltinESMExports`
+covers ESM imports). Node watches a macOS directory through FSEvents, which the
+Seatbelt policy denies (see the launcher's platform policy), so libuv reported
+an asynchronous `EMFILE` and an App without an `error` listener exited. The
+replacement lists the directory (recursively when asked) every 250 ms and
+reports `rename`/`change` from inode, size and time stamps; more than 4096
+entries fail with `ENOSPC`. Non-directories keep Node's own watch (kqueue on
+macOS), and Linux keeps inotify. This is compatibility, not containment: the
+listing uses the same permission-checked `node:fs` calls as the App.
