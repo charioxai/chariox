@@ -2,12 +2,11 @@
 
 `AppStorageBroker` accepts `state.get`, `state.transaction`, `events.emit`,
 `events.status`, `events.retry` and `events.automations` from the kernel's
-common worker broker. It
-retains the admitted worker's trusted owner, one verified `EventCatalog` (which
-owns the exact underlying `AppCatalog`), the existing durable store and
-AppControl's shared eight-operation admission semaphore. Request fields cannot
-replace those identities. The delegate creates no listener, acknowledges no
-worker readiness and enrolls no publisher.
+common worker broker. It retains the admitted worker's trusted owner, one
+verified `EventCatalog` (which owns the exact underlying `AppCatalog`), the
+existing durable store and AppControl's shared eight-operation admission
+semaphore. Request fields cannot replace those identities. The delegate creates
+no listener, acknowledges no worker readiness and enrolls no publisher.
 
 The decoder follows SDK0.3/protocol291 shapes. Checks and writes are required;
 a check version may be null to assert absence. A write is a value (including

@@ -177,10 +177,14 @@ schema version that state transactions use. A manifest that declares
 
 `events.automations {}` returns `{automations:[{automationId, event,
 eventVersion, state, lastReceipt}]}` from the same kernel automation records the
-TUI and web show. `state` is `active`, `paused`, `broken` or `disabled`;
+TUI and web show. `state` is `active`, `paused`, `broken` or `disabled`
+(`paused` is a stored state no current request sets; handle it like `disabled`);
 `lastReceipt` is `{receiptId, state}` for the latest retained receipt or null.
 It never names the target workflow, session or deployment. Kernels before this
-call answer it as an unknown method.
+call answer it as an unknown method (`METHOD_NOT_FOUND`), and an App runtime
+enrolled before it has no `chariox.events.automations`; `sdkVersion` cannot tell
+them apart, so feature-detect with `typeof chariox.events.automations ===
+'function'`.
 
 Other typed methods use the names and parameter shapes documented in
 `src/index.d.ts` and `src/index.js`: `state.*`, `files.*`, `events.*`, `http.request`,
