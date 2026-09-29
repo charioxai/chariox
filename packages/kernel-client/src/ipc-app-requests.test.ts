@@ -9,7 +9,7 @@ import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-request
 import { prepareDeploymentAppsRequest, previewDeploymentAppsRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 370)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 371)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
