@@ -28,7 +28,7 @@ impl KernelRuntimeState {
             return Err(unavailable());
         }
         // Captured at submission, before any wait for an on-demand start.
-        let turn_id = self.app_call_turn_id(agent, caller_run_id);
+        let turn_id = self.app_call_turn_id(agent, caller_run_id, remote.is_some());
         let cancelled = CancelOnDrop(Arc::new(AtomicBool::new(false)));
         let observe = cancelled.0.clone();
         let budget =
@@ -242,6 +242,7 @@ impl KernelRuntimeState {
         &self,
         agent: &crate::agent::AgentInstance,
         caller_run_id: &str,
+        relayed: bool,
     ) -> Option<String> {
         let session = self
             .owned
@@ -253,16 +254,18 @@ impl KernelRuntimeState {
                 .prompt_state_owner
                 .active_prompt_for_agent_snapshot(&session, agent.id()),
             caller_run_id,
+            relayed,
         )
     }
 }
 
 /// Only a turn the calling run has received is the calling turn: no turn beats
-/// a wrong one. An id the App context cannot carry is left out rather than
-/// failing the call.
+/// a wrong one. `relayed` is a leased agent's call from its worker run. An id
+/// the App context cannot carry is left out rather than failing the call.
 fn call_turn_id(
     active: Option<crate::session::PromptQueueItem>,
     caller_run_id: &str,
+    relayed: bool,
 ) -> Option<String> {
     use crate::session::DurablePromptDeliveryPhase::{Accepted, Delivered, Dispatching};
     active
@@ -274,10 +277,13 @@ fn call_turn_id(
             // Still on its way: the provider is between turns.
             Some(Dispatching) => false,
             // Recorded but never dispatched: a turn the provider started itself
-            // (typed in its native TUI) stays here for the whole turn. A kernel
-            // prompt passes through it only until its dispatch starts.
+            // (typed in its native TUI, always local) stays here for the whole
+            // turn. A local kernel prompt passes through it only until its
+            // dispatch starts; a leased agent's home prompt stays here until
+            // the worker has it, so a relayed call needs Delivered.
             Some(Accepted) | None => {
-                prompt.status() == crate::session::PromptStatus::Running
+                !relayed
+                    && prompt.status() == crate::session::PromptStatus::Running
                     && prompt.durable_delivery_provider_run_id().is_none()
             }
         })
@@ -361,7 +367,8 @@ mod tests {
         assert_eq!(
             call_turn_id(
                 Some(prompt("prompt-1", Some((Delivered, Some("run-a"))))),
-                "run-a"
+                "run-a",
+                true
             )
             .as_deref(),
             Some("prompt-1")
@@ -369,28 +376,48 @@ mod tests {
         // A turn typed in the provider's native TUI is recorded, never
         // dispatched: the prompt owner leaves it Accepted with no run.
         assert_eq!(
-            call_turn_id(Some(prompt("prompt-1", Some((Accepted, None)))), "run-a").as_deref(),
+            call_turn_id(
+                Some(prompt("prompt-1", Some((Accepted, None)))),
+                "run-a",
+                false
+            )
+            .as_deref(),
             Some("prompt-1")
+        );
+        // A leased agent's home prompt is Accepted until the worker has it.
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt-2", Some((Accepted, None)))),
+                "run-a",
+                true
+            ),
+            None
         );
         // Still being dispatched (even to the same run), another run's turn,
         // no turn, or an id the context cannot carry: none.
         assert_eq!(
             call_turn_id(
                 Some(prompt("prompt-2", Some((Dispatching, Some("run-a"))))),
-                "run-a"
+                "run-a",
+                false
             ),
             None
         );
         assert_eq!(
             call_turn_id(
                 Some(prompt("prompt-2", Some((Delivered, Some("run-b"))))),
-                "run-a"
+                "run-a",
+                false
             ),
             None
         );
-        assert_eq!(call_turn_id(None, "run-a"), None);
+        assert_eq!(call_turn_id(None, "run-a", false), None);
         assert_eq!(
-            call_turn_id(Some(prompt("prompt 3", Some((Accepted, None)))), "run-a"),
+            call_turn_id(
+                Some(prompt("prompt 3", Some((Accepted, None)))),
+                "run-a",
+                false
+            ),
             None
         );
     }
