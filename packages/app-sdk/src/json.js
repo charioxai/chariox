@@ -6,13 +6,18 @@ const MAX_JSON_BYTES = 1024 * 1024;
 /** JSON shared with Rust: finite numbers, safe integers and Unicode scalars. */
 export function validateJson(value) {
   const parents = new Set();
+  const path = [];
   let bytes = 0;
+  // The error names where the value is, so an App developer can find it.
+  const invalid = (problem) => jsonError(`${where(path)} ${problem}`);
   const add = (count) => {
     bytes += count;
-    if (bytes > MAX_JSON_BYTES) throw protocolError('App IPC JSON exceeds size limit');
+    if (bytes > MAX_JSON_BYTES) throw jsonError('the message exceeds its 1 MiB size limit');
   };
-  const string = (text) => {
-    if (!text.isWellFormed()) throw protocolError('App IPC strings require valid Unicode scalars');
+  const string = (text, key = false) => {
+    if (!text.isWellFormed()) {
+      throw invalid(key ? 'has a key that is not well-formed Unicode' : 'is a string that is not well-formed Unicode');
+    }
     add(2 + Buffer.byteLength(text));
     for (const character of text) {
       const code = character.codePointAt(0);
@@ -26,41 +31,75 @@ export function validateJson(value) {
       case 'string': string(item); return;
       case 'boolean': add(item ? 4 : 5); return;
       case 'number':
-        if (!Number.isFinite(item) || (Number.isInteger(item) && !Number.isSafeInteger(item))) {
-          throw protocolError('App IPC numbers must be finite with safe integers');
+        if (!Number.isFinite(item)) throw invalid(`is ${item}, not a finite number`);
+        if (Number.isInteger(item) && !Number.isSafeInteger(item)) {
+          throw invalid('is an integer beyond the safe range; send it as a string');
         }
         add(String(item).length);
         return;
       case 'object':
-        if (depth >= MAX_JSON_DEPTH) throw protocolError('App IPC JSON nesting exceeds limit');
-        if (parents.has(item)) throw protocolError('App IPC JSON cannot contain cycles');
+        if (depth >= MAX_JSON_DEPTH) throw invalid(`exceeds the nesting limit of ${MAX_JSON_DEPTH}`);
+        if (parents.has(item)) throw invalid('refers back to an object that contains it (a cycle)');
         if (!Array.isArray(item) && ![Object.prototype, null].includes(Object.getPrototypeOf(item))) {
-          throw protocolError('App IPC requires plain JSON objects');
+          throw invalid('is not a plain object or array');
         }
         parents.add(item);
         add(2);
         if (Array.isArray(item)) {
           for (let index = 0; index < item.length; index += 1) {
             if (index) add(1);
+            path.push(index);
             visit(item[index], depth + 1);
+            path.pop();
           }
         } else {
           const keys = Object.keys(item);
           for (let index = 0; index < keys.length; index += 1) {
             if (index) add(1);
-            string(keys[index]);
+            string(keys[index], true);
             add(1);
+            path.push(keys[index]);
             visit(item[keys[index]], depth + 1);
+            path.pop();
           }
         }
         parents.delete(item);
         return;
-      default:
-        throw protocolError('App IPC requires JSON values');
+      case 'undefined': throw invalid('is undefined');
+      case 'bigint': throw invalid('is a BigInt');
+      case 'function': throw invalid('is a function');
+      case 'symbol': throw invalid('is a symbol');
+      default: throw invalid('is not a JSON value');
     }
   };
   visit(value, 0);
   return value;
+}
+
+/** A protocol error whose `detail` says which value is not JSON, and why. */
+export function jsonError(detail) {
+  const error = protocolError(`Invalid App IPC JSON: ${detail}`);
+  error.detail = detail;
+  return error;
+}
+
+const IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
+
+// A bounded, readable path such as `result.items[2].name`. Keys are App data:
+// each is shortened by code point, so the text stays well-formed Unicode.
+function where(path) {
+  let text = '';
+  for (const key of path) {
+    let part;
+    if (typeof key === 'number') part = `[${key}]`;
+    else {
+      const shown = [...key].slice(0, 64).join('');
+      part = IDENTIFIER.test(shown) ? `.${shown}` : `[${JSON.stringify(shown)}]`;
+    }
+    if (text.length + part.length > 256) return `${text.replace(/^\./u, '')}…`;
+    text += part;
+  }
+  return text.replace(/^\./u, '') || 'the value';
 }
 
 /** Inspect nesting and duplicate object keys before JSON.parse drops duplicates. */

@@ -205,6 +205,42 @@ test('malformed and stale generation frames close IPC without dispatch', async (
   }
 });
 
+test('a result that is not JSON fails only its call; the App log says why and the worker keeps serving', async () => {
+  // Drill App 1.1.0 returned {echoed: undefined}: the worker used to exit 133.
+  const running = start(await fixture(`export default sdk => sdk.tools.register('echo', ({ mode, ...input }) => {
+    if (mode === 'undefined') return { ok: true, echoed: undefined };
+    if (mode === 'bigint') return { count: 1n };
+    if (mode === 'cycle') { const value = { nested: {} }; value.nested.self = value; return value; }
+    if (mode === 'error') throw new sdk.AppError('not a code', 'App-made error with an invalid code');
+    return input;
+  });`));
+  await running.ready();
+  const cases = [
+    ['undefined', 'result.echoed is undefined'],
+    ['bigint', 'result.count is a BigInt'],
+    ['cycle', 'result.nested.self refers back to an object that contains it (a cycle)'],
+  ];
+  for (const [mode, detail] of cases) {
+    running.request(`bad-${mode}`, 'tools.invoke', { name: 'echo', input: { mode } });
+    const log = await running.receive(message => message.method === 'log.write' && message.params.message.endsWith(detail));
+    assert.deepEqual(log.params, { level: 'error', fields: { code: 'INVALID_OUTPUT', method: 'tools.invoke', name: 'echo' },
+      message: `Tool echo returned a result that cannot be sent, so that call failed with INVALID_OUTPUT: ${detail}` });
+    running.send({ kind: 'response', id: log.id, result: null });
+    const reply = await running.receive(message => message.id === `bad-${mode}`);
+    assert.deepEqual(reply.error, { code: 'INVALID_OUTPUT', message: `The App's result cannot be sent: ${detail}`, retryable: false });
+  }
+  running.request('bad-error', 'tools.invoke', { name: 'echo', input: { mode: 'error' } });
+  assert.deepEqual((await running.receive(message => message.id === 'bad-error')).error,
+    { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false });
+  running.request('good', 'tools.invoke', { name: 'echo', input: { text: 'still serving' } });
+  assert.deepEqual((await running.receive(message => message.id === 'good')).result, { text: 'still serving' });
+  running.request('shutdown', 'lifecycle.dispatch', { event: 'shutdown' });
+  const result = await running.completed;
+  assert.equal(result.code, 0, JSON.stringify(result));
+  assert.equal(result.stderr, '');
+  assert.equal(result.malformed, undefined);
+});
+
 test('kernel readiness rejection and failed App shutdown terminate with bounded errors', async () => {
   const rejected = start(await fixture(`export default ${registration}`));
   const ready = await rejected.receive(message => message.method === 'worker.ready');

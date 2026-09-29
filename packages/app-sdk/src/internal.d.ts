@@ -34,6 +34,8 @@ export class AppPeer {
     generation: string;
     handleRequest?: (method: string, params: Json, context: InvocationContext) => Json | void | Promise<Json | void>;
     onControlEvent?: (name: string, data: Json) => void;
+    /** A handler's result was refused: the call already fails as INVALID_OUTPUT. */
+    onInvalidOutput?: (method: string, params: Json, detail: string) => void;
     limits?: { maxPending?: number; maxHandlers?: number; maxDeadlineMs?: number };
   });
   request(method: string, params: Json, options?: CallOptions): Promise<Json>;

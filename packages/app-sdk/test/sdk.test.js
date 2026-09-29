@@ -208,6 +208,113 @@ test('unclassified handler exceptions never send private exception contents acro
   assert.equal(new AppError('DENIED', 'Request denied').retryable, false);
 });
 
+test('a handler result that is not JSON fails only that call, names the value and is logged', async () => {
+  const { transport, sdk } = setup({ tools: ['answer'] });
+  let value;
+  sdk.tools.register('answer', () => value);
+  const ready = sdk.ready();
+  transport.receive(response(transport.sent[0].id, null));
+  await ready;
+  const cycle = { list: [] };
+  cycle.list.push(cycle);
+  let nested = 'deep';
+  for (let index = 0; index < 70; index += 1) nested = [nested];
+  const cases = [
+    [{ ok: true, echoed: undefined }, 'result.echoed is undefined'],
+    [[1, undefined], 'result[1] is undefined'],
+    [{ run() {} }, 'result.run is a function'],
+    [[Symbol('s')], 'result[0] is a symbol'],
+    [{ count: 10n }, 'result.count is a BigInt'],
+    [{ ratio: NaN }, 'result.ratio is NaN, not a finite number'],
+    [{ ratio: -Infinity }, 'result.ratio is -Infinity, not a finite number'],
+    [{ id: 2 ** 53 }, 'result.id is an integer beyond the safe range; send it as a string'],
+    [{ at: new Date(0) }, 'result.at is not a plain object or array'],
+    [{ items: new Map() }, 'result.items is not a plain object or array'],
+    [cycle, 'result.list[0] refers back to an object that contains it (a cycle)'],
+    [{ 'odd key': '\ud800' }, 'result["odd key"] is a string that is not well-formed Unicode'],
+    [nested, `result${'[0]'.repeat(63)} exceeds the nesting limit of 64`],
+    ['x'.repeat(1024 * 1024), 'the message exceeds its 1 MiB size limit'],
+  ];
+  for (const [index, [result, detail]] of cases.entries()) {
+    value = result;
+    const before = transport.sent.length;
+    transport.receive(request(`call-${index}`, 'tools.invoke', { name: 'answer', input: null }));
+    await flush();
+    const [log, reply, extra] = transport.sent.slice(before);
+    assert.equal(extra, undefined);
+    assert.deepEqual(reply, envelope({ kind: 'response', id: `call-${index}`,
+      error: { code: 'INVALID_OUTPUT', message: `The App's result cannot be sent: ${detail}`, retryable: false } }));
+    assert.equal(log.method, 'log.write');
+    assert.deepEqual(log.params, { level: 'error', fields: { code: 'INVALID_OUTPUT', method: 'tools.invoke', name: 'answer' },
+      message: `Tool answer returned a result that cannot be sent, so that call failed with INVALID_OUTPUT: ${detail}` });
+    transport.receive(response(log.id, null));
+    assert.equal(transport.closed, false, detail);
+  }
+  value = { fine: true, list: [null, 1.5, 'Á'] };
+  transport.receive(request('call-ok', 'tools.invoke', { name: 'answer', input: null }));
+  await flush();
+  assert.deepEqual(transport.sent.at(-1).result, value, 'The same worker keeps serving');
+  sdk.close();
+});
+
+test('before readiness an invalid result still fails alone, and writes no log the kernel would refuse', async () => {
+  const { transport, sdk } = setup();
+  sdk.lifecycle.on('health_check', () => ({ healthy: undefined }));
+  const ready = sdk.ready();
+  transport.receive(request('health', 'lifecycle.dispatch', { event: 'health_check', data: null }));
+  await flush();
+  assert.equal(transport.sent.length, 2);
+  assert.deepEqual(transport.sent[1].error, { code: 'INVALID_OUTPUT', retryable: false,
+    message: "The App's result cannot be sent: result.healthy is undefined" });
+  transport.receive(response(transport.sent[0].id, null));
+  await ready;
+  assert.equal(transport.closed, false);
+  sdk.close();
+});
+
+test('an AppError the App made malformed fails its call as HANDLER_FAILED and keeps the channel', async () => {
+  const { transport, sdk } = setup({ tools: ['fail'] });
+  let thrown;
+  sdk.tools.register('fail', () => { throw thrown; });
+  const withCode = (code) => Object.assign(new AppError('DENIED', 'Request denied'), { code });
+  const unreadable = new Proxy({}, { getPrototypeOf() { throw new Error('secret trap'); } });
+  const cases = [withCode('has space'), withCode(''), withCode(7), withCode('x'.repeat(129)),
+    Object.assign(new AppError('DENIED', 'x'), { message: 42 }), unreadable];
+  for (const [index, error] of cases.entries()) {
+    thrown = error;
+    transport.receive(request(`call-${index}`, 'tools.invoke', { name: 'fail', input: null }));
+    await flush();
+    assert.deepEqual(transport.sent.at(-1), envelope({ kind: 'response', id: `call-${index}`,
+      error: { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false } }));
+  }
+  thrown = Object.assign(new AppError('CONFLICT', 'stale \ud800 edit'), { retryable: 'yes' });
+  transport.receive(request('call-kept', 'tools.invoke', { name: 'fail', input: null }));
+  await flush();
+  assert.deepEqual(transport.sent.at(-1).error, { code: 'CONFLICT', message: 'stale � edit', retryable: false });
+  assert.equal(transport.sent.length, cases.length + 1);
+  assert.equal(transport.closed, false);
+  sdk.close();
+});
+
+test('SDK call parameters that are not JSON reject that call before sending anything', async () => {
+  const { transport, sdk } = setup();
+  await assert.rejects(sdk.log.write('info', 'signed in', { user: undefined }), {
+    code: 'INVALID_ARGUMENT', message: 'App request parameters cannot be sent: params.fields.user is undefined',
+  });
+  await assert.rejects(sdk.state.transaction({ writes: [{ key: 'count', value: 1n }] }), {
+    code: 'INVALID_ARGUMENT', message: 'App request parameters cannot be sent: params.writes[0].value is a BigInt',
+  });
+  await assert.rejects(sdk.connections.action({ connectionId: 'c', action: 'post', input: { at: new Date(0) } }), {
+    code: 'INVALID_ARGUMENT', message: /params\.input\.at is not a plain object or array$/,
+  });
+  assert.equal(transport.sent.length, 0);
+  assert.equal(transport.closed, false);
+  const pending = sdk.state.get('count');
+  transport.receive(response(transport.sent[0].id, { value: 1, version: 1 }));
+  assert.deepEqual(await pending, { value: 1, version: 1 });
+  sdk.close();
+});
+
 test('kernel-owned wakes are kernel calls, commit with state and deliver to one handler', async () => {
   const { transport, sdk } = setup();
   const received = [];

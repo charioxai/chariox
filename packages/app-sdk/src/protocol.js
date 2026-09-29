@@ -1,5 +1,5 @@
 import { protocolError } from './errors.js';
-import { parseJson, validateJson } from './json.js';
+import { jsonError, parseJson, validateJson } from './json.js';
 
 export const APP_WIRE_VERSION = 1;
 export const MAX_FRAME_BYTES = 1024 * 1024;
@@ -68,11 +68,11 @@ export function validateMessage(message, sender) {
 export function encodeFrame(message, limit = MAX_FRAME_BYTES) {
   validateMessage(message);
   let json;
-  try { json = JSON.stringify(message); } catch { throw protocolError('App IPC must contain JSON values'); }
+  try { json = JSON.stringify(message); } catch { throw jsonError('the message could not be serialized'); }
   // Undefined fields and toJSON hooks must not silently create an invalid wire envelope.
   validateMessage(parseJson(json));
   const length = Buffer.byteLength(json);
-  if (length === 0 || length > limit) throw protocolError('App IPC frame exceeds size limit');
+  if (length === 0 || length > limit) throw jsonError('the message exceeds its frame size limit');
   const frame = Buffer.allocUnsafe(length + 4);
   frame.writeUInt32BE(length, 0);
   frame.write(json, 4, length, 'utf8');

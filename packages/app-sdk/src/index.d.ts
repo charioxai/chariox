@@ -12,6 +12,11 @@ export interface InvocationContext {
   readonly turn_id?: string;
   readonly actor?: Readonly<{ kind: 'human' | 'agent' | 'background'; id: string }>;
 }
+/**
+ * A result that is not JSON (an `undefined` field, a function, a BigInt, NaN,
+ * a Date, a cycle, over 1 MiB) fails only that call, with INVALID_OUTPUT, and
+ * is logged to the App's own log. The worker keeps serving other calls.
+ */
 export type Handler<Input = Json, Output = Json | void> =
   (input: Input, context: InvocationContext) => Output | Promise<Output>;
 export type LifecycleEvent = 'health_check' | 'startup' | 'suspend' | 'resume' | 'shutdown' | 'prepare_update' | 'configuration_change';

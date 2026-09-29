@@ -96,9 +96,26 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
   const lifecycle = registry(lifecycleNames, 'lifecycle event');
   let lifecycleBusy = false;
   let ready = false;
+  let active = false;
   let wakeHandler = null;
   const peer = new AppPeer({
     transport, generation, limits,
+    // The caller gets INVALID_OUTPUT; the App's own log tells its developer
+    // which handler returned what. Before readiness the kernel admits no log.
+    onInvalidOutput(method, params, detail) {
+      if (!active) return;
+      const handler = method === 'tools.invoke' ? `Tool ${params.name}`
+        : method === 'events.deliver' ? `Event handler ${params.name}`
+          : method === 'schedule.wake' ? 'The wake handler'
+            : method === 'lifecycle.dispatch' ? `The ${params.event} lifecycle handler` : 'An App handler';
+      const fields = { code: 'INVALID_OUTPUT', method };
+      if (method === 'tools.invoke' || method === 'events.deliver') fields.name = params.name;
+      peer.request('log.write', {
+        level: 'error',
+        message: `${handler} returned a result that cannot be sent, so that call failed with INVALID_OUTPUT: ${detail}`,
+        fields,
+      }).catch(() => { /* the call's own error still reaches its caller */ });
+    },
     async handleRequest(method, params, context) {
       record(params, 'App invocation');
       switch (method) {
@@ -233,7 +250,9 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       tools.seal();
       events.seal();
       lifecycle.seal();
-      return call('worker.ready', { tools: tools.names(), events: events.names(), lifecycle: lifecycle.names() }, options);
+      const acknowledged = await call('worker.ready', { tools: tools.names(), events: events.names(), lifecycle: lifecycle.names() }, options);
+      active = true;
+      return acknowledged;
     },
     // Bootstrap-only data migration phase; never part of the App registration API.
     // The kernel admits only these state calls before readiness and scopes them

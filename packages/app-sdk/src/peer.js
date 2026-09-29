@@ -11,12 +11,13 @@ export class AppPeer {
   #counter = 0;
   #prefix = `sdk-${randomUUID()}-`;
 
-  constructor({ transport, generation, handleRequest, onControlEvent, limits = {} }) {
+  constructor({ transport, generation, handleRequest, onControlEvent, onInvalidOutput, limits = {} }) {
     if (!token(generation)) throw new TypeError('Expected an installation generation');
     this.transport = transport;
     this.generation = generation;
     this.handleRequest = handleRequest;
     this.onControlEvent = onControlEvent;
+    this.onInvalidOutput = onInvalidOutput;
     this.limits = { ...DEFAULT_LIMITS, ...limits };
     for (const [key, value] of Object.entries(this.limits)) {
       if (!(key in DEFAULT_LIMITS) || !Number.isSafeInteger(value) || value < 1 || value > DEFAULT_LIMITS[key]) {
@@ -46,20 +47,49 @@ export class AppPeer {
       };
       const cancel = (code, message) => {
         settle(new AppError(code, message));
-        if (!this.#closed) this.#send({ kind: 'cancel', id });
+        this.#control({ kind: 'cancel', id });
       };
       const abort = () => cancel('CANCELLED', 'App request cancelled');
       const timer = setTimeout(() => cancel('DEADLINE_EXCEEDED', 'App request deadline exceeded'), timeoutMs);
       this.#pending.set(id, { settle });
       signal?.addEventListener('abort', abort, { once: true });
-      this.#send({ kind: 'request', id, method, params, deadline_ms: Date.now() + timeoutMs });
+      const refused = this.#send({ kind: 'request', id, method, params, deadline_ms: Date.now() + timeoutMs });
+      if (refused) settle(new AppError('INVALID_ARGUMENT', `App request parameters cannot be sent: ${detail(refused)}`));
     });
   }
 
+  // Returns the error when a message is refused before any byte is written:
+  // App code supplied a value that is not JSON (or too large), and only that
+  // call fails. A transport that fails closes itself, and this peer with it.
   #send(message) {
-    if (this.#closed) return;
-    try { this.transport.send(validateMessage({ version: APP_WIRE_VERSION, generation: this.generation, ...message }, 'worker')); }
-    catch (error) { this.close(error); }
+    if (this.#closed) return null;
+    try {
+      this.transport.send(validateMessage({ version: APP_WIRE_VERSION, generation: this.generation, ...message }, 'worker'));
+      return null;
+    } catch (error) {
+      return this.#closed ? null : error;
+    }
+  }
+
+  // SDK-built messages carry no App value; a refusal is a broken channel.
+  #control(message) {
+    const refused = this.#send(message);
+    if (refused) this.close(refused);
+  }
+
+  // The App's result or error for one call. A malformed one fails that call
+  // alone, as INVALID_OUTPUT or HANDLER_FAILED, and never closes the channel.
+  #respond(request, outcome) {
+    const refused = this.#send({ kind: 'response', id: request.id, ...outcome });
+    if (!refused) return;
+    if (!Object.hasOwn(outcome, 'result')) {
+      this.#control({ kind: 'response', id: request.id, error: wireError(null) });
+      return;
+    }
+    const reason = detail(refused);
+    try { this.onInvalidOutput?.(request.method, request.params, reason); } catch { /* reporting is best effort */ }
+    const error = new AppError('INVALID_OUTPUT', `The App's result cannot be sent: ${reason}`);
+    this.#control({ kind: 'response', id: request.id, error: wireError(error) });
   }
 
   #receive(message) {
@@ -92,12 +122,12 @@ export class AppPeer {
   #dispatch(message) {
     if (this.#active.has(message.id)) throw protocolError('Duplicate active App call identity');
     if (this.#active.size >= this.limits.maxHandlers) {
-      this.#send({ kind: 'response', id: message.id, error: wireError(new AppError('BUSY', 'App handler capacity is full', { retryable: true })) });
+      this.#control({ kind: 'response', id: message.id, error: wireError(new AppError('BUSY', 'App handler capacity is full', { retryable: true })) });
       return;
     }
     const deadline = Math.min(message.deadline_ms, Date.now() + this.limits.maxDeadlineMs);
     if (deadline <= Date.now()) {
-      this.#send({ kind: 'response', id: message.id, error: wireError(new AppError('DEADLINE_EXCEEDED', 'App call deadline exceeded')) });
+      this.#control({ kind: 'response', id: message.id, error: wireError(new AppError('DEADLINE_EXCEEDED', 'App call deadline exceeded')) });
       return;
     }
     const controller = new AbortController();
@@ -106,7 +136,7 @@ export class AppPeer {
       if (replied) return;
       replied = true;
       clearTimeout(timer);
-      this.#send({ kind: 'response', id: message.id, ...value });
+      this.#respond(message, value);
     };
     const cancel = (code, reason) => {
       // Mark terminal before notifying App listeners: they may synchronously fail.
@@ -141,4 +171,12 @@ export class AppPeer {
     this.unsubscribe?.();
     this.transport.close();
   }
+}
+
+// The refused value's location and problem, never the App's own error text.
+function detail(error) {
+  try {
+    if (typeof error?.detail === 'string') return error.detail;
+  } catch { /* an App-made error object */ }
+  return 'it could not be read as JSON';
 }
