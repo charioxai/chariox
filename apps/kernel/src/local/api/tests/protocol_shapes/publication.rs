@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -225,6 +225,11 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             key: "deployment-1:replica-0".to_string(),
             agent_id_map: BTreeMap::from([("agent-1".to_string(), "runtime-agent-1".to_string())]),
         },
+    );
+    // Protocol 369: a release's inputs digest, recorded by its package digest.
+    publication.record_release_inputs(
+        &format!("sha256:{}", "b".repeat(64)),
+        &format!("sha256:{}", "c".repeat(64)),
     );
     // Protocol 368: a release's App plan, recorded by its package digest,
     // on a publication prepared before 368 (its single plan is kept).
@@ -688,7 +693,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

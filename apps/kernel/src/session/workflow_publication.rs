@@ -183,6 +183,11 @@ pub struct WorkflowPublicationDefinition {
     /// plan (the newest last, bounded).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pruned_release_digests: Vec<String>,
+    /// Protocol 369: each exported release's inputs digest by package digest
+    /// (the newest last). A bind or recovery verifies the release against it,
+    /// so the kernel's own templates in the package can change with upgrades.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    release_inputs: Vec<ReleaseInputs>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -193,6 +198,16 @@ pub struct WorkflowPublicationDefinition {
 const MAX_RELEASE_APP_PLANS: usize = 16;
 /// Pruned release digests remembered so they never take the pre-368 plan.
 const MAX_PRUNED_RELEASE_DIGESTS: usize = 256;
+
+/// Releases whose inputs digests are kept (the bound release's always is);
+/// an older release is verified by its whole package digest.
+const MAX_RELEASE_INPUTS: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInputs {
+    pub package_digest: String,
+    pub inputs_digest: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseAppPlan {
@@ -264,6 +279,7 @@ impl WorkflowPublicationDefinition {
             release_app_plans: Vec::new(),
             pre_release_app_plan: None,
             pruned_release_digests: Vec::new(),
+            release_inputs: Vec::new(),
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -544,11 +560,7 @@ impl WorkflowPublicationDefinition {
         });
         // The oldest plans go first, never the bound release's: its restart
         // and recovery re-export with it.
-        let bound = self
-            .deployment
-            .as_ref()
-            .and_then(|deployment| deployment["binding"]["package_digest"].as_str())
-            .map(str::to_owned);
+        let bound = self.bound_package_digest();
         while self.release_app_plans.len() > MAX_RELEASE_APP_PLANS {
             let Some(oldest) = self
                 .release_app_plans
@@ -566,6 +578,43 @@ impl WorkflowPublicationDefinition {
             .saturating_sub(MAX_PRUNED_RELEASE_DIGESTS);
         self.pruned_release_digests.drain(..excess);
         self.apps = Some(plan);
+    }
+
+    fn bound_package_digest(&self) -> Option<String> {
+        self.deployment
+            .as_ref()
+            .and_then(|deployment| deployment["binding"]["package_digest"].as_str())
+            .map(str::to_owned)
+    }
+
+    /// Records the inputs digest of the release a successful export packaged.
+    pub(crate) fn record_release_inputs(&mut self, package_digest: &str, inputs_digest: &str) {
+        self.release_inputs
+            .retain(|release| release.package_digest != package_digest);
+        self.release_inputs.push(ReleaseInputs {
+            package_digest: package_digest.to_owned(),
+            inputs_digest: inputs_digest.to_owned(),
+        });
+        let bound = self.bound_package_digest();
+        while self.release_inputs.len() > MAX_RELEASE_INPUTS {
+            let Some(oldest) = self
+                .release_inputs
+                .iter()
+                .position(|release| Some(&release.package_digest) != bound.as_ref())
+            else {
+                break;
+            };
+            self.release_inputs.remove(oldest);
+        }
+    }
+
+    /// The inputs digest recorded for the release with this package digest;
+    /// none for a release exported before protocol 369 or pruned since.
+    pub fn release_inputs_digest(&self, package_digest: &str) -> Option<&str> {
+        self.release_inputs
+            .iter()
+            .find(|release| release.package_digest == package_digest)
+            .map(|release| release.inputs_digest.as_str())
     }
 
     /// The App plan of the release with this package digest. A release
@@ -821,5 +870,36 @@ mod release_app_plan_tests {
         let mut fresh = self::publication();
         fresh.record_release_app_plan("sha256:new", newer.clone());
         assert_eq!(fresh.release_app_plan("sha256:other"), None);
+    }
+
+    #[test]
+    fn release_inputs_are_kept_for_the_bound_release_and_the_latest_ones() {
+        let mut publication = publication();
+        assert_eq!(publication.release_inputs_digest("sha256:bound"), None);
+        publication.record_release_inputs("sha256:bound", "sha256:inputs-bound");
+        publication.record_release_inputs("sha256:bound", "sha256:inputs-bound-again");
+        assert_eq!(
+            publication.release_inputs_digest("sha256:bound"),
+            Some("sha256:inputs-bound-again")
+        );
+        publication.deployment =
+            Some(serde_json::json!({"binding": {"package_digest": "sha256:bound"}}));
+        for export in 0..(MAX_RELEASE_INPUTS + 4) {
+            publication.record_release_inputs(
+                &format!("sha256:later-{export}"),
+                &format!("sha256:inputs-{export}"),
+            );
+        }
+        assert_eq!(publication.release_inputs.len(), MAX_RELEASE_INPUTS);
+        assert_eq!(
+            publication.release_inputs_digest("sha256:bound"),
+            Some("sha256:inputs-bound-again")
+        );
+        assert_eq!(publication.release_inputs_digest("sha256:later-0"), None);
+        let last = MAX_RELEASE_INPUTS + 3;
+        assert_eq!(
+            publication.release_inputs_digest(&format!("sha256:later-{last}")),
+            Some(format!("sha256:inputs-{last}").as_str())
+        );
     }
 }

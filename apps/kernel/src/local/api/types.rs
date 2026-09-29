@@ -182,4 +182,4 @@ pub use workspace::*;
 /// exactly the App releases the owner approved before for the deployment is
 /// consented without asking again. `PreviewDeploymentApps.package_digest`
 /// also returns that release's plan (`DeploymentAppsPreview.release_plan`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 368;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 369;
