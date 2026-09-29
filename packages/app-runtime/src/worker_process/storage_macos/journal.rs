@@ -1,7 +1,7 @@
 use super::{identity::FileIdentity, Error, Result};
 use crate::private_fs::{Dir, FsError};
 use serde::{Deserialize, Serialize};
-use std::{ffi::OsStr, io::Read};
+use std::{ffi::OsStr, io::Read, os::unix::fs::MetadataExt};
 
 pub(super) const NAME: &str = "storage.json";
 pub(super) const METADATA_ALLOWANCE: u64 = 2 * 1024 * 1024;
@@ -18,6 +18,17 @@ pub(super) struct Image {
     pub mount_identity: FileIdentity,
 }
 impl Image {
+    /// Device numbers are boot-local on macOS: after a reboot the same volume
+    /// can get another `st_dev`. Every recorded entry is a child of the
+    /// installation directory, so its device is that directory's current one;
+    /// the recorded inode still pins the exact entry, and an entry on another
+    /// filesystem (a mount over it) still fails the identity check.
+    fn rebase_device(&mut self, device: u64) {
+        if let Some(identity) = &mut self.identity {
+            identity.device = device;
+        }
+        self.mount_identity.device = device;
+    }
     pub fn reserved(&self) -> u64 {
         self.capacity + METADATA_ALLOWANCE
     }
@@ -36,6 +47,11 @@ pub(super) struct Journal {
     pub images: [Image; 2],
 }
 impl Journal {
+    fn rebase_devices(&mut self, device: u64) {
+        for image in &mut self.images {
+            image.rebase_device(device);
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         if self.schema != "chariox.app-storage.v1"
             || self.generation == 0
@@ -110,8 +126,9 @@ pub(super) fn load(dir: &Dir) -> Result<Option<Journal>> {
     if bytes.len() > 16384 {
         return Err(Error::Metadata);
     }
-    let journal: Journal = serde_json::from_slice(&bytes).map_err(|_| Error::Metadata)?;
+    let mut journal: Journal = serde_json::from_slice(&bytes).map_err(|_| Error::Metadata)?;
     journal.validate()?;
+    journal.rebase_devices(dir.0.metadata()?.dev());
     Ok(Some(journal))
 }
 
