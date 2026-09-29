@@ -10,6 +10,8 @@ import {
   releaseRoomEnvironmentInputRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   retryRoomEnvironmentRequest,
+  roomBrowserBarMinimumProtocolVersion,
+  setRoomBrowserBarRequest,
   roomEnvironmentActionCancellationMinimumProtocolVersion,
   roomEnvironmentActionHistoryMinimumProtocolVersion,
   roomEnvironmentBrowserHistoryMinimumProtocolVersion,
@@ -92,7 +94,7 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "browser", "takeover", "release", "cancel", "save", "bind", "read"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "browser", "takeover", "release", "cancel", "save", "bind", "read", "bar"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
@@ -102,6 +104,7 @@ export async function handleRoomSlashCommand(
   let actionHistory: { limit: number; beforeSequence: number | null } | undefined
   let browserCommand: RoomBrowserCommand | undefined
   let saveMode: "restart_agents" | "shutdown" | undefined
+  let barVisible: boolean | undefined
   if (subcommand === "bind") {
     if (command.args.length !== 2 || !command.args[1]?.trim()) {
       deps.flashFooter("usage: /room bind SLICE", "error")
@@ -146,6 +149,12 @@ export async function handleRoomSlashCommand(
       deps.flashFooter("usage: /room read [TAB_ID]", "error")
       return
     }
+  } else if (subcommand === "bar") {
+    if (command.args.length !== 2 || !["show", "hide"].includes(command.args[1] ?? "")) {
+      deps.flashFooter(roomBarUsage(), "error")
+      return
+    }
+    barVisible = command.args[1] === "show"
   } else if (subcommand === "save") {
     if (command.args.length !== 2 || !command.args[1] || !["restart", "shutdown"].includes(command.args[1])) {
       deps.flashFooter(roomSaveUsage(), "error")
@@ -447,6 +456,24 @@ export async function handleRoomSlashCommand(
     deps.appendNotice(`Room action ${actionId} ${formatCancellationOutcome(outcome)}\n${formatRoomEnvironmentStatus(environment)}`)
     return
   }
+  if (subcommand === "bar") {
+    if (barVisible === undefined) throw new Error("Room browser bar state is missing")
+    const response = await sendWithProtocolMinimum<RoomEnvironmentUpdatedResponse>(
+      deps.send,
+      setRoomBrowserBarRequest(sessionId, barVisible),
+      {
+        capability: "Room browser bar",
+        requestVariant: "SetRoomBrowserBar",
+        minimumProtocolVersion: roomBrowserBarMinimumProtocolVersion,
+      },
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentUpdated" in response)) {
+      throw new Error("Room browser bar response is malformed")
+    }
+    const environment = response.RoomEnvironmentUpdated.environment
+    deps.appendNotice(`Room browser bar ${environment.browser_bar_visible ? "shown: ordinary Tabs keep Chromium's tab strip and address bar" : "hidden: ordinary Tabs cover the Room screen, like App views"}\n${formatRoomEnvironmentStatus(environment)}`)
+    return
+  }
   if (subcommand === "save") {
     if (!saveMode) throw new Error("Room Environment save mode is missing")
     const bindingResponse = await sendWithProtocolMinimum<RoomEnvironmentSliceResponse>(
@@ -592,7 +619,7 @@ export function formatRoomTabOutline(title: string, accessibility: RoomEnvironme
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|read [TAB_ID]|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+  return "usage: /room status|read [TAB_ID]|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|bar show|hide|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
 }
 
 function roomActionsUsage(): string {
@@ -617,6 +644,10 @@ function roomCancelUsage(): string {
 
 function roomSaveUsage(): string {
   return "usage: /room save restart|shutdown"
+}
+
+function roomBarUsage(): string {
+  return "usage: /room bar show|hide"
 }
 
 function formatCancellationOutcome(outcome: RoomEnvironmentActionCancellationOutcome): string {

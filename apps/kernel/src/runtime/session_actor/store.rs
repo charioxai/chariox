@@ -6,10 +6,11 @@ use crate::local::{
     FocusAgentRequest, ListProjectsRequest, LocalDaemonResponse,
     ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
-    RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-    SubmitRoomEnvironmentActionRequest, SubmitRoomEnvironmentBrowserActionRequest,
-    UpdateProjectWorkspacesRequest, UpdateRoomEnvironmentPointerRequest,
-    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
+    RetryRoomEnvironmentRequest, SetRoomBrowserBarRequest, StartRoomEnvironmentRequest,
+    StopRoomEnvironmentRequest, SubmitRoomEnvironmentActionRequest,
+    SubmitRoomEnvironmentBrowserActionRequest, UpdateProjectWorkspacesRequest,
+    UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
+    UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -156,6 +157,47 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         };
         (result, None)
+    }
+
+    /// The flag is kept first, then the Room browser applies it; a failed
+    /// apply is reported and the next reconcile applies the kept flag.
+    pub(super) async fn set_room_browser_bar(
+        &self,
+        request: SetRoomBrowserBarRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = match self.state.set_room_browser_bar_visible_as_actor(
+            &request.session_id,
+            actor,
+            request.visible,
+        ) {
+            Ok(_)
+                if self
+                    .state
+                    .browser_controller_enabled_for_room(&request.session_id) =>
+            {
+                self.state
+                    .reconcile_browser_controller_environment(&request.session_id)
+                    .await
+            }
+            Ok(environment) => Ok(environment),
+            Err(error) => Err(room_environment_control_error(
+                "environment.browser_bar.set",
+                error,
+            )),
+        };
+        (
+            result.map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
+            None,
+        )
     }
 
     pub(super) async fn update_room_environment_viewport(

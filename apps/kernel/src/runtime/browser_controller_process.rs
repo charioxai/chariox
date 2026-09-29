@@ -125,6 +125,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     fn reconcile_browser(
         &mut self,
         _viewport: &CanonicalViewport,
+        _browser_bar_visible: bool,
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         Err("browser controller backend does not support browser reconciliation".to_string())
     }
@@ -658,6 +659,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
     fn reconcile_browser(
         &mut self,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         let response = self.request(
             "browser.reconcile",
@@ -668,7 +670,8 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
                     "device_scale_factor": viewport.device_scale_factor,
                     "desktop_pixel_width": viewport.desktop_pixel_width,
                     "desktop_pixel_height": viewport.desktop_pixel_height,
-                }
+                },
+                "browser_bar_visible": browser_bar_visible,
             }),
         )?;
         let snapshot =
@@ -1239,9 +1242,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         &mut self,
         session_id: &str,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerReconciliation, String> {
         self.require_lease(session_id)?;
-        self.supervisor.reconcile_browser(viewport)
+        self.supervisor
+            .reconcile_browser(viewport, browser_bar_visible)
     }
 
     pub(crate) fn capture_browser_snapshot(
@@ -1531,6 +1536,7 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<Option<BrowserControllerReconciliation>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -1538,7 +1544,9 @@ impl BrowserControllerProcessStore {
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership.reconcile_browser(session_id, viewport).map(Some)
+        ownership
+            .reconcile_browser(session_id, viewport, browser_bar_visible)
+            .map(Some)
     }
 
     pub(crate) fn capture_browser_snapshot(
@@ -1813,9 +1821,12 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
     fn reconcile_browser(
         &mut self,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerReconciliation, String> {
         let process = self.ensure_started()?.clone();
-        let browser = self.backend.reconcile_browser(viewport)?;
+        let browser = self
+            .backend
+            .reconcile_browser(viewport, browser_bar_visible)?;
         self.recovery_pending = false;
         Ok(BrowserControllerReconciliation { process, browser })
     }
@@ -2484,10 +2495,10 @@ mod tests {
         );
         let viewport = CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();
 
-        assert!(store.reconcile_browser("room-1", &viewport).is_err());
+        assert!(store.reconcile_browser("room-1", &viewport, false).is_err());
         store.acquire("room-1").expect("Room acquires controller");
         let reconciliation = store
-            .reconcile_browser("room-1", &viewport)
+            .reconcile_browser("room-1", &viewport, false)
             .expect("browser reconciles")
             .expect("controller is enabled");
 

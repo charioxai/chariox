@@ -179,6 +179,32 @@ test("failed event subscription closes the connection before a clean reconnect",
   assert.equal(result.event_cursor, 1);
 });
 
+test("a reconnected browser applies the bar to windows whose ids an earlier browser used", async () => {
+  // Both browsers put target-a in window 1; the second starts it clipped.
+  const windowed = (state) => {
+    const connection = new FakeConnection();
+    connection.includeWorker = false;
+    connection.windows = { 1: state };
+    const send = connection.send.bind(connection);
+    connection.send = async (method, params = {}, sessionId) => {
+      if (method === "Browser.getWindowForTarget") return { windowId: params.targetId === "target-a" ? 1 : 2 };
+      if (method === "Browser.getWindowBounds") return { bounds: { windowState: connection.windows[params.windowId] ?? "fullscreen" } };
+      if (method === "Browser.setWindowBounds") connection.windows[params.windowId] = params.bounds.windowState;
+      return send(method, params, sessionId);
+    };
+    return connection;
+  };
+  const first = windowed("normal");
+  const second = windowed("normal");
+  const connections = [first, second];
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connections.shift() });
+  await browser.reconcile(viewport, { browserBarVisible: false });
+  assert.equal(first.windows[1], "fullscreen");
+  first.open = false; // Chromium was relaunched.
+  await browser.reconcile(viewport, { browserBarVisible: false });
+  assert.equal(second.windows[1], "fullscreen");
+});
+
 test("a failed cookie-writer fence release is never reused", async () => {
   const connection = new ReleaseFaultConnection();
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });

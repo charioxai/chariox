@@ -181,7 +181,7 @@ pub use api::{
     SendTerminalInputRequest, SessionHistoryOutlineAgent, SessionHistoryOutlineBlob,
     SessionHistoryOutlineCursor, SessionHistoryOutlineTurn, SessionHistoryOutlineTurnLifecycle,
     SessionInviteRecord, SetCredentialSecretRequest, SetProviderAccountCredentialRequest,
-    SetUserConfigValueRequest,
+    SetRoomBrowserBarRequest, SetUserConfigValueRequest,
     SetWorkflowFlushContextRequest, SetWorkflowNodeCanCompleteRunRequest,
     SetWorkflowNodeCanEmitIntermediateOutputRequest,
     SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
