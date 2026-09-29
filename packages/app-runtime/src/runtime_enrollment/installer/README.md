@@ -22,7 +22,8 @@ copied graph again before publication. Copies stop at each signed size; the
 whole graph is at most 512 MiB. Publication also requires 128 MiB free reserve.
 At most eight generations are retained, including any inactive generations.
 
-Payload files are 0444, native executables 0555, and published directories 0555.
+Payload files are 0444; native executables and the Linux platform loader are
+0555, as are published directories.
 A staging root remains writable until exclusive rename, then it is sealed and
 the parent directory is synced. Enrollment is published only afterward by
 synced-file/atomic-rename/directory-sync. A new key or inventory increments the

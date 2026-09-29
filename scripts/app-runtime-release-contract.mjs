@@ -30,8 +30,13 @@ export function releasePaths(bundle) {
     'chariox-app-worker', 'chariox-app-domain-entry', 'chariox-bwrap', ...platformFiles(bundle.target)].sort();
 }
 
+// The bundled loader is every worker executable's ELF interpreter, which Linux
+// opens for execution; at 0444 each worker exec fails with EACCES.
+const EXECUTABLES = ['chariox-app-worker', 'chariox-app-domain-entry', 'chariox-bwrap',
+  'platform/ld-linux-x86-64.so.2', 'platform/ld-linux-aarch64.so.1'];
+
 export function executable(path) {
-  return ['chariox-app-worker', 'chariox-app-domain-entry', 'chariox-bwrap'].includes(path);
+  return EXECUTABLES.includes(path);
 }
 
 export function publicKey(bytes) {
