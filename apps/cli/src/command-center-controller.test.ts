@@ -184,6 +184,17 @@ test("command center controller lets exact leaf commands submit normally", () =>
   assert.equal(harness.promptText, "/exit")
 })
 
+test("command center controller submits an exact /app install instead of completing /app", () => {
+  const harness = createHarness("/app install")
+  harness.controller.sync()
+
+  assert.equal(harness.controller.selectedItem()?.value, "/app install")
+  assert.equal(harness.controller.selectFromSubmit(), false)
+
+  assert.deepEqual(harness.executed, [])
+  assert.equal(harness.promptText, "/app install")
+})
+
 test("command center lets event authorization commands with arguments submit normally", () => {
   const command = "/workflow trigger event authorize dev.chariox.dummy"
   const harness = createHarness(command)
