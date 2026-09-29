@@ -27,6 +27,35 @@ test('Fetch preserves native response values and stream metadata through clone',
   } finally { f.close(); }
 });
 
+test('Fetch never sends Accept-Encoding, which the kernel broker refuses', async () => {
+  const f = fixture(() => ({ chunks: ['ok'] }));
+  try {
+    assert.equal(await (await f.fetch(URL)).text(), 'ok');
+    assert.equal(await (await f.fetch(URL, { headers: { 'accept-encoding': 'gzip' } })).text(), 'ok');
+    for (const stream of f.streams.values()) {
+      const headers = new Headers(stream.params.headers);
+      assert.equal(headers.has('accept-encoding'), false);
+      assert.equal(headers.get('accept'), '*/*');
+    }
+  } finally { f.close(); }
+});
+
+test('kernel-owned headers are dropped; broker-refused ones fail before any request', async () => {
+  const f = fixture(() => ({ chunks: ['ok'] }));
+  try {
+    const headers = { connection: 'close', te: 'trailers', expect: '100-continue', cookie: 'a=b',
+      'proxy-authorization': 'Basic x', 'sec-fetch-mode': 'cors', 'x-kept': 'yes' };
+    assert.equal(await (await f.fetch(URL, { headers })).text(), 'ok');
+    const sent = new Headers([...f.streams.values()][0].params.headers);
+    for (const name of Object.keys(headers).filter(name => name !== 'x-kept')) assert.equal(sent.has(name), false, name);
+    assert.equal(sent.get('x-kept'), 'yes');
+    const before = f.streams.size;
+    await assert.rejects(f.fetch(URL, { headers: { authorization: 'Bearer t' } }), /opaque App connection/);
+    await assert.rejects(f.fetch(URL, { headers: { 'x-http-method-override': 'DELETE' } }), /use the request method/);
+    assert.equal(f.streams.size, before, 'no broker request for a refused header');
+  } finally { f.close(); }
+});
+
 test('multipart and URLSearchParams use native serialization with bounded broker chunks', async () => {
   const f = fixture(() => ({ waitUpload: true, chunks: ['ok'] }));
   try {
