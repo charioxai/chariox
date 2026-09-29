@@ -780,7 +780,7 @@ impl ManagedContextTransferStore {
                     entry.phase,
                     ManagedContextTransferPhase::Importing | ManagedContextTransferPhase::Failed
                 ) {
-                    crate::managed_context::development::cleanup_development_context_publication(
+                    crate::managed_context::development::cleanup_legacy_development_context_publication(
                         &entry.destination_root,
                         &transfer_id,
                     )?;
