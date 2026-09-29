@@ -59,6 +59,7 @@ export interface AppAutomation {
   automationId: string;
   event: string;
   eventVersion: number;
+  /** No current request pauses an automation; treat `paused` like `disabled`. */
   state: 'active' | 'paused' | 'broken' | 'disabled';
   /** The most recent retained receipt, or null before any delivery or after cleanup. */
   lastReceipt: EventReceipt | null;
