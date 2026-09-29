@@ -14,6 +14,19 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 mod projection;
 #[cfg(test)]
 mod tests;
+
+const REPLY_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn admit_within(
+    admission: &Arc<Semaphore>,
+    wait: std::time::Duration,
+) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
+    tokio::time::timeout(wait, Arc::clone(admission).acquire_owned())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(AppRequestErrorCode::Busy)
+}
 mod uploads;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod workers;
@@ -193,6 +206,15 @@ impl AppControlService {
         Arc::clone(&self.admission)
             .try_acquire_owned()
             .map_err(|_| AppRequestErrorCode::Busy)
+    }
+
+    /// Admission for recording a call the App already answered: it waits
+    /// briefly instead of failing at once, so momentary contention does not
+    /// throw away a completed call's result.
+    pub(crate) async fn admit_reply(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
+        admit_within(&self.admission, REPLY_ADMISSION_WAIT).await
     }
 
     pub(crate) async fn execute(

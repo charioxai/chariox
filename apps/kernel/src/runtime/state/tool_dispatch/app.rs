@@ -94,7 +94,10 @@ impl KernelRuntimeState {
         tool_name: &str,
         input: serde_json::Value,
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+        let permit = self
+            .app_control()
+            .try_admit()
+            .map_err(|_| admission_busy())?;
         let state = self.clone();
         let run = provider_run.clone();
         let auth_token = auth_token.to_owned();
@@ -135,7 +138,10 @@ impl KernelRuntimeState {
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
         hinted: &RemoteExtensionTool,
     ) -> Result<RemoteExtensionTool, DaemonError> {
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+        let permit = self
+            .app_control()
+            .try_admit()
+            .map_err(|_| admission_busy())?;
         let state = self.clone();
         let context = context.clone();
         let hinted = hinted.clone();
@@ -177,6 +183,14 @@ fn app_error(error: impl std::fmt::Display) -> DaemonError {
         operation: "app.tools",
         message: error.to_string(),
     }
+}
+/// A kernel App call error as `CODE: message`, the code a view would see.
+fn coded((code, message): (String, String)) -> DaemonError {
+    app_error(format!("{code}: {message}"))
+}
+/// Full admission is momentary contention, not an unavailable App.
+fn admission_busy() -> DaemonError {
+    coded(crate::runtime::app_call_errors::admission_busy())
 }
 /// A failed App tool call as `CODE: message`, the code a view would see.
 fn tool_call_error(error: crate::durable_state::app_tools::AppToolsError) -> DaemonError {

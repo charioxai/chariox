@@ -484,7 +484,10 @@ impl KernelRuntimeState {
             .map_err(|error| view_error("APP_BUSY", &error.to_string()))?;
         slot.validate_input(&tool, &input)
             .map_err(|error| view_error("INVALID_INPUT", &error.to_string()))?;
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+        let permit = self
+            .app_control()
+            .try_admit()
+            .map_err(|_| coded(crate::runtime::app_call_errors::admission_busy()))?;
         let store = self.owned.durable_state_store.clone();
         let caller = view_caller(binding, session_id);
         let tool_name = tool;
@@ -505,7 +508,11 @@ impl KernelRuntimeState {
                 return Err(view_error("CANCELLED", "The calling view went away"));
             }
         };
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+        let permit = self
+            .app_control()
+            .admit_reply()
+            .await
+            .map_err(|_| coded(crate::runtime::app_call_errors::reply_unrecorded()))?;
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -515,6 +522,10 @@ impl KernelRuntimeState {
         .map_err(|_| unavailable())?
         .map_err(app_error)
     }
+}
+
+fn coded((code, message): (String, String)) -> BrowserAppViewError {
+    view_error(&code, &message)
 }
 
 /// The App's own error (e.g. CONFLICT from a stale edit) reaches its view;

@@ -228,3 +228,25 @@ fn a_shown_prompt_remembers_its_session_until_it_ends() {
     assert_eq!(control.validation_prompt_session("op"), None);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[tokio::test]
+async fn a_reply_waits_briefly_for_full_admission_instead_of_failing_at_once() {
+    let admission = Arc::new(Semaphore::new(1));
+    let held = Arc::clone(&admission).try_acquire_owned().unwrap();
+    let wait = std::time::Duration::from_millis(500);
+    // Freed within the wait: the answered call is recorded, not dropped.
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drop(held);
+    });
+    assert!(admit_within(&admission, wait).await.is_ok());
+    release.await.unwrap();
+    // Still full after the wait: a busy answer, never a hang.
+    let _held = Arc::clone(&admission).try_acquire_owned().unwrap();
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        admit_within(&admission, std::time::Duration::from_millis(50)).await,
+        Err(AppRequestErrorCode::Busy)
+    ));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}

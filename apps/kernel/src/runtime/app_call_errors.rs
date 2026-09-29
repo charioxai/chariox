@@ -24,6 +24,24 @@ pub(crate) fn tool_call_error(error: &AppToolsError) -> (String, String) {
     }
 }
 
+/// The kernel's shared App admission is momentarily full. The App never saw
+/// the call, so trying again is safe; this is not a stopped App.
+pub(crate) fn admission_busy() -> (String, String) {
+    owned((
+        "APP_BUSY",
+        "Chariox is busy with other App requests; try again",
+    ))
+}
+
+/// The App answered, but its answer could not be recorded in time. It may
+/// have acted, so the caller checks before trying again.
+pub(crate) fn reply_unrecorded() -> (String, String) {
+    owned((
+        "APP_OUTCOME_UNCERTAIN",
+        "The App ran the call but its answer could not be recorded; check before trying again",
+    ))
+}
+
 pub(crate) fn worker_call_error(error: &AppWorkerError) -> (String, String) {
     match error {
         AppWorkerError::Deadline => owned(DEADLINE),
@@ -63,5 +81,12 @@ mod tests {
             "APP_ERROR"
         );
         assert_eq!(worker_call_error(&AppWorkerError::Busy).0, "APP_ERROR");
+    }
+
+    #[test]
+    fn full_admission_is_busy_before_a_call_and_uncertain_after_its_answer() {
+        assert_eq!(admission_busy().0, "APP_BUSY");
+        assert_eq!(reply_unrecorded().0, "APP_OUTCOME_UNCERTAIN");
+        assert!(!admission_busy().1.contains("not running"));
     }
 }
