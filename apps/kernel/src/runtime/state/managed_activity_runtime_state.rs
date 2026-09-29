@@ -500,11 +500,7 @@ mod tests {
             idle_acquired_rx.recv_timeout(std::time::Duration::from_millis(50)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
-        assert!(runtime
-            .owned
-            .active_turns
-            .get("provider-run-1")
-            .is_some());
+        assert!(runtime.owned.active_turns.get("provider-run-1").is_some());
 
         release_busy_tx
             .send(())
