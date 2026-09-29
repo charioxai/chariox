@@ -517,8 +517,13 @@ fn a_bind_the_kernel_cannot_verify_is_refused_before_the_running_release_stops()
             },
         ))
         .expect_err("unverifiable release");
+    // Refused by the missing plan, or (once a release without Apps re-exports
+    // with none) by the digest check.
     assert!(
-        error.to_string().contains("export the release again"),
+        error.to_string().contains("export the release again")
+            || error
+                .to_string()
+                .contains("no longer matches the bound deployment"),
         "{error}"
     );
     assert!(
