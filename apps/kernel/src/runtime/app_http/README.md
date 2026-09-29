@@ -43,7 +43,7 @@ including mixed public/private answers. Loopback, unspecified, IPv4-mapped,
 6to4, Teredo, local-use NAT64, NAT64 embedding a non-global IPv4 address, and
 the other special-purpose answers are destination denials, like the same IP
 literals. A host that is not a DNS name (a label starting with a hyphen, say)
-is an invalid request and sends no query. Each request resolves once and dials
+is refused at open as an invalid request. Each request resolves once and dials
 only the checked numeric addresses. The dialer receives no host name, so a name
 that later answers a private address (DNS rebinding) cannot redirect an
 admitted connection. The custom runtime handle retains DNS drivers, aborts and

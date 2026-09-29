@@ -186,6 +186,9 @@ impl Rules {
         {
             return Err(HttpError::Invalid);
         }
+        if let Some(url::Host::Domain(host)) = url.host() {
+            super::dns::absolute_name(host)?;
+        }
         let (declared_method, method) = declared_method(method)?;
         let origin = url.origin().ascii_serialization();
         if !self

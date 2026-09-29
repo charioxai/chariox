@@ -16,6 +16,13 @@ pub(super) mod test_server;
 #[cfg(test)]
 mod tests;
 
+/// The absolute DNS name the resolver looks up. A host that is not a DNS
+/// name (a label starting with a hyphen, say) is an invalid request, not a
+/// network failure; the policy refuses it before a stream exists.
+pub(super) fn absolute_name(host: &str) -> Result<Name> {
+    Name::from_utf8(format!("{}.", host.trim_end_matches('.'))).map_err(|_| HttpError::Invalid)
+}
+
 pub(super) struct DnsConfig {
     config: ResolverConfig,
     options: ResolverOpts,
@@ -82,10 +89,7 @@ impl DnsConfig {
             url::Host::Ipv6(address) => {
                 return target.validate_addresses([SocketAddr::new(address.into(), target.port())])
             }
-            // A host that is not a DNS name (a label starting with a hyphen, say)
-            // is an invalid request, not a network failure; no query is sent.
-            url::Host::Domain(name) => Name::from_utf8(format!("{}.", name.trim_end_matches('.')))
-                .map_err(|_| HttpError::Invalid)?,
+            url::Host::Domain(name) => absolute_name(name)?,
         };
         let tasks = tasks::TaskOwner::new(lease);
         let mut builder = Resolver::builder_with_config(self.config.clone(), tasks.provider());

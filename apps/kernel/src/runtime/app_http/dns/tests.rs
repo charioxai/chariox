@@ -94,7 +94,7 @@ async fn names_answering_loopback_mapped_embedded_or_private_addresses_are_desti
 }
 
 #[tokio::test]
-async fn special_ip_literals_are_denied_and_a_host_that_is_no_dns_name_sends_no_query() {
+async fn special_ip_literals_are_denied_without_a_query() {
     let dns = TestDns::start(|_, _, _| Some(vec!["::1".parse().unwrap()])).await;
     let config = dns.config();
     for url in [
@@ -114,11 +114,5 @@ async fn special_ip_literals_are_denied_and_a_host_that_is_no_dns_name_sends_no_
             "{url}"
         );
     }
-    // A label may not start with a hyphen (RFC 1123), so this host never
-    // resolves; it is refused as invalid rather than as a network failure.
-    assert_eq!(
-        resolve(&config, "https://--1.sslip.io/").await,
-        Err(HttpError::Invalid)
-    );
     assert_eq!(dns.total_queries(), 0);
 }

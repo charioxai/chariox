@@ -187,6 +187,14 @@ fn a_publisher_revoked_while_a_response_streams_fails_the_next_read_and_stops_th
             },
         )
         .unwrap();
+    // The open stream holds one of the installation's leases; take the rest.
+    let others = (0..3)
+        .map(|_| fixture.limits.acquire("alice", "installed").unwrap())
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        fixture.limits.acquire("alice", "installed"),
+        Err(HttpError::Busy)
+    ));
     fixture.runtime.block_on(async {
         let cancellation = Cancellation::new().await;
         let head = fixture
@@ -240,7 +248,13 @@ fn a_publisher_revoked_while_a_response_streams_fails_the_next_read_and_stops_th
         timeout(WAIT, group.join()).await.unwrap();
         cancellation.close().await;
     });
-    assert!(fixture.limits.acquire("alice", "installed").is_ok());
+    // Stopping the socket released exactly the stream's lease.
+    let released = fixture.limits.acquire("alice", "installed").unwrap();
+    assert!(matches!(
+        fixture.limits.acquire("alice", "installed"),
+        Err(HttpError::Busy)
+    ));
+    drop((released, others));
 }
 
 #[test]
