@@ -42,6 +42,7 @@ const PUBLICATION_RUNTIME_RECOVERY_STABLE_MS: u64 = 60_000;
 // subsequent launches remain effectively immediate.
 const PUBLICATION_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(60);
 const PUBLICATION_RUNTIME_START_POLL: Duration = Duration::from_millis(50);
+const PUBLICATION_GATEWAY_PARENT_PIPE_ENV: &str = "CHARIOX_PUBLICATION_EXIT_ON_STDIN_CLOSE";
 /// P1.20: the runtime keys of App-bound deployment copies.
 pub(super) const DEPLOYMENT_COPY_KEY_PREFIX: &str = "deployment:";
 const PACKAGE_DIGEST_MISMATCH: &str =
@@ -924,9 +925,9 @@ async fn start_publication_runtime_claimed(
         .arg(port.to_string())
         .arg("--host")
         .arg(&host)
-        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    exit_gateway_with_kernel(&mut command);
     command.arg("--kernel-url").arg(&kernel_url);
     if let Some(deployment_id) = launch_context.cloud_deployment_id.as_deref() {
         command.arg("--cloud-deployment").arg(deployment_id);
@@ -1318,6 +1319,17 @@ fn reserve_ephemeral_publication_runtime_port() -> Result<u16, DaemonError> {
                 format!("failed to inspect the reserved publication runtime port: {error}"),
             )
         })
+}
+
+/// The gateway's stdin is a pipe whose write end the kernel holds in the
+/// gateway's `Child` (kept in the runtime store). When the kernel dies for any
+/// reason, including SIGKILL, the OS closes it and the gateway exits, so no
+/// gateway outlives its kernel. The env tells the gateway its stdin is this
+/// pipe; a gateway run by hand keeps its terminal stdin semantics.
+fn exit_gateway_with_kernel(command: &mut Command) {
+    command
+        .stdin(Stdio::piped())
+        .env(PUBLICATION_GATEWAY_PARENT_PIPE_ENV, "1");
 }
 
 fn publication_runtime_error(operation: &'static str, message: impl Into<String>) -> DaemonError {
@@ -2247,7 +2259,7 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_package_digest_mismatch, launched_publication_runtime_message, launched_publication_runtime_status, publication_local_url, publication_runtime_error, publication_runtime_launch_context, publication_runtime_metadata_preserving_binding, publication_runtime_port, publication_runtime_recovery_binding, stopped_publication_runtime_metadata, validate_bound_publication_package_digest, validate_bound_release, validate_publication_runtime_bind_address, validated_deployment_binding, write_publication_caller_claims_config, BoundReleaseDigests, PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
+        exit_gateway_with_kernel, is_package_digest_mismatch, launched_publication_runtime_message, launched_publication_runtime_status, publication_local_url, publication_runtime_error, publication_runtime_launch_context, publication_runtime_metadata_preserving_binding, publication_runtime_port, publication_runtime_recovery_binding, stopped_publication_runtime_metadata, validate_bound_publication_package_digest, validate_bound_release, validate_publication_runtime_bind_address, validated_deployment_binding, write_publication_caller_claims_config, BoundReleaseDigests, PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;
@@ -2620,6 +2632,31 @@ mod tests {
         .expect_err("exited before starting");
         assert!(error.contains("exited before becoming ready"), "{error}");
         assert!(error.contains("no deployment config"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn gateway_exits_when_its_kernel_releases_the_parent_pipe() {
+        // Stands in for the gateway: honours the parent-pipe contract by
+        // exiting when its stdin closes, and otherwise runs on.
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg("[ \"$CHARIOX_PUBLICATION_EXIT_ON_STDIN_CLOSE\" = 1 ] || exit 3; cat >/dev/null");
+        exit_gateway_with_kernel(&mut command);
+        let mut child = command.spawn().expect("spawn gateway stand-in");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(child.try_wait().expect("inspect gateway").is_none());
+        let pid = child.id().expect("gateway pid") as libc::pid_t;
+        // The kernel dying closes the pipe exactly as dropping its end does.
+        drop(child.stdin.take());
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .unwrap_or_else(|_| {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                panic!("gateway outlived its kernel's pipe");
+            })
+            .expect("wait for gateway");
+        assert!(status.success());
     }
 
     #[tokio::test]

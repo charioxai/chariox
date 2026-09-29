@@ -31,6 +31,7 @@ import {
   installHumanHttpRoutes,
   shouldReturnHumanHtml,
 } from "./publication-human-http.js"
+import { exitWhenParentPipeCloses } from "./publication-parent-pipe.js"
 import {
   assertWorkflowPublicationTransport,
   defaultPublicationConfig,
@@ -247,6 +248,7 @@ export async function invokePublicationInput(
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  exitWhenParentPipeCloses(process.env, process.stdin, () => process.exit(0))
   const config = await loadGatewayPublicationConfig()
   const { app, logger } = buildServer(config)
   const host = process.env.HOST ?? process.env.CHARIOX_PUBLICATION_HOST ?? "0.0.0.0"
