@@ -562,6 +562,8 @@ fn spawn_kernel(
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
         .env_remove("CHARIOX_DAEMON_SOCKET")
+        // Path 1 providers use the ordinary HOME; there is no separate provider home.
+        .env_remove("CHARIOX_MANAGED_PROVIDER_HOME")
         .env_remove("LD_PRELOAD")
         .env_remove("BASH_ENV")
         .env_remove("ENV")
@@ -569,104 +571,13 @@ fn spawn_kernel(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     #[cfg(target_os = "linux")]
-    {
-        let provider_home = prepare_disposable_worker_provider_home(config)?;
-        command
-            .env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home)
-            .env(
-                "CHARIOX_MANAGED_VAULT_PATH",
-                config.chariox_home.join("vault").join("vault.json"),
-            );
-    }
+    command.env(
+        "CHARIOX_MANAGED_VAULT_PATH",
+        config.chariox_home.join("vault").join("vault.json"),
+    );
     super::supervisor::spawn_with_broker_lease(&mut command, topology)
         .map(|(child, _)| child)
         .map_err(|error| worker_error(format!("start worker kernel: {error}")))
-}
-
-#[cfg(target_os = "linux")]
-fn prepare_disposable_worker_provider_home(config: &WorkerConfig) -> Result<PathBuf, DaemonError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let path = match env::var_os("CHARIOX_MANAGED_PROVIDER_HOME") {
-        Some(value) if value.is_empty() => {
-            return Err(worker_error(
-                "CHARIOX_MANAGED_PROVIDER_HOME must not be empty",
-            ));
-        }
-        Some(value) => PathBuf::from(value),
-        None => config
-            .chariox_home
-            .parent()
-            .unwrap_or(&config.chariox_home)
-            .join("provider-home"),
-    };
-    if !path.is_absolute()
-        || path == Path::new("/")
-        || path == config.chariox_home
-        || path.starts_with(&config.chariox_home)
-    {
-        return Err(worker_error(
-            "managed provider HOME must be absolute, non-root, and separate from kernel state",
-        ));
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(worker_error(
-            "managed provider HOME must not contain a parent-directory component",
-        ));
-    }
-    let mut current = path.clone();
-    loop {
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() {
-                    return Err(worker_error(
-                        "managed provider HOME must not traverse symlinked directories",
-                    ));
-                }
-                if !metadata.is_dir() {
-                    return Err(worker_error(
-                        "managed provider HOME has a non-directory ancestor",
-                    ));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(worker_error(format!(
-                    "inspect managed provider HOME ancestor: {error}"
-                )));
-            }
-        }
-        if current == Path::new("/") {
-            break;
-        }
-        let Some(parent) = current.parent() else {
-            break;
-        };
-        current = parent.to_path_buf();
-    }
-    std::fs::create_dir_all(&path)
-        .map_err(|error| worker_error(format!("create managed provider HOME: {error}")))?;
-    let metadata = std::fs::symlink_metadata(&path)
-        .map_err(|error| worker_error(format!("inspect managed provider HOME: {error}")))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(worker_error(
-            "managed provider HOME must be a real directory",
-        ));
-    }
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-        .map_err(|error| worker_error(format!("protect managed provider HOME: {error}")))?;
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| worker_error(format!("canonicalize managed provider HOME: {error}")))?;
-    if canonical == Path::new("/") {
-        return Err(worker_error(
-            "managed provider HOME must not resolve to the root directory",
-        ));
-    }
-    Ok(canonical)
 }
 
 fn confirm_when_relay_ready(
@@ -1225,7 +1136,7 @@ mod tests {
         assert!(observed.contains("provider_bwrap=<unset>"));
         assert!(observed.contains("slice_service=<unset>"));
         assert!(observed.contains("slice_publication=<unset>"));
-        assert!(observed.contains(&format!("provider_home={}\n", provider_home.display())));
+        assert!(observed.contains("provider_home=<unset>\n"));
         assert!(observed.contains(&format!(
             "vault={}\n",
             config.chariox_home.join("vault/vault.json").display()
@@ -1322,12 +1233,7 @@ mod tests {
         drop(broker_peer);
 
         assert!(config.process_home.join("ordinary-worker-write").is_file());
-        let provider_mode = fs::metadata(&provider_home)
-            .expect("managed provider HOME should be prepared")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(provider_mode, 0o700);
+        assert!(!provider_home.exists());
         fixture.cleanup();
     }
 
@@ -1440,7 +1346,6 @@ mod tests {
         path: &Path,
         process_home: &Path,
         chariox_home: &Path,
-        provider_home: &Path,
         path_value: &str,
     ) {
         let observed = fs::read_to_string(path).expect("restart child should record its boundary");
@@ -1451,7 +1356,7 @@ mod tests {
             format!("chariox_home={}\n", chariox_home.display()),
             "repository_root=/srv/worker-workspaces\n".to_string(),
             "topology=path1\n".to_string(),
-            format!("provider_home={}\n", provider_home.display()),
+            "provider_home=<unset>\n".to_string(),
             "CHARIOX_SLICE_ROOT=/var/lib/chariox-slice-share/slices\n".to_string(),
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET=<unset>\n".to_string(),
             "CHARIOX_SLICE_DOCKER_BROKER_FD=<unset>\n".to_string(),
@@ -1621,7 +1526,6 @@ mod tests {
                 &PathBuf::from(format!("{}.{generation}", capture.display())),
                 &process_home,
                 &chariox_home,
-                &provider_home,
                 &path_value,
             );
         }

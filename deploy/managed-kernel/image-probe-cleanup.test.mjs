@@ -184,12 +184,12 @@ test('production claims before start and cleans after verified shutdown', () => 
   assert.ok(claim > 0 && start > claim && stopped > start && clear > stopped)
 })
 
-test('only a frozen Path-1 image keeps the root-owned data-volume mountpoint', () => {
+test('a frozen Path-1 image keeps a root-owned mountpoint; shared host keeps a rootless-owned data root', () => {
   const clear = source.indexOf('clear_owned_probe_root /var/lib/chariox-docker/data')
   const gate = source.indexOf('if [ "$managed_provider_topology" = path1 ]; then', clear)
   const keep = source.indexOf('install -d -o root -g root -m 0700 /var/lib/chariox-docker/data', gate)
   const otherwise = source.indexOf('else', keep)
-  const remove = source.indexOf('rm -rf /var/lib/chariox-docker/data', otherwise)
+  const remove = source.indexOf('install -d -o chariox-docker -g chariox-docker -m 0700 /var/lib/chariox-docker/data', otherwise)
   assert.ok(clear > 0 && gate > clear && keep > gate && otherwise > keep && remove > otherwise)
   assert.ok(source.indexOf('\nfi\n', keep) > remove)
 })

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs"
 import { createConnection } from "node:net"
-import { resolve } from "node:path"
 import { TextDecoder } from "node:util"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath } from "node:url"
 import {
   SLICE_DISK_QUOTA_FRAME_MAX_BYTES,
   SLICE_DISK_QUOTA_PROTOCOL_VERSION,
@@ -109,8 +109,8 @@ export function requestSliceDiskQuota(request, {
   })
 }
 
-const scriptPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : ""
-if (import.meta.url === scriptPath) {
+// The provisioner runs this through the release symlink; compare real paths.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const operation = process.argv[2]
   if (!new Set(["apply_home", "apply_layer", "ensure_before_start"]).has(operation)) {
     process.stderr.write("disk quota client operation is not allowed\n")

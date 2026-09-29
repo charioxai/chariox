@@ -522,8 +522,9 @@ if [ "$managed_provider_topology" = path1 ]; then
   # Path 1 admission mounts the data Volume here and then hands it to chariox-docker.
   install -d -o root -g root -m 0700 /var/lib/chariox-docker/data
 else
-  # The shared host lets rootless Docker create its own data root on first boot.
-  rm -rf /var/lib/chariox-docker/data
+  # The shared host's quota allocator names the data root in ReadWritePaths, so
+  # keep it present and owned by rootless Docker, which uses it unmounted.
+  install -d -o chariox-docker -g chariox-docker -m 0700 /var/lib/chariox-docker/data
 fi
 rm -rf /var/lib/chariox-docker/home/.docker
 if [ "$remove_seeded_rootless_quota_config" -eq 1 ] \

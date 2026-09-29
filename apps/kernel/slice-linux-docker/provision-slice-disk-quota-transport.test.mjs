@@ -525,3 +525,19 @@ test("service enforces an absolute request deadline despite peer trickle", async
   assert.equal(allocator.calls.length, 0)
   assert.ok(Date.now() - startedAt < 500, "the total request deadline should remain bounded")
 })
+
+test("the disk quota client runs when launched through the release symlink", async () => {
+  const { mkdtempSync, symlinkSync, rmSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const { join, dirname } = await import("node:path")
+  const { spawnSync } = await import("node:child_process")
+  const { fileURLToPath } = await import("node:url")
+  const root = mkdtempSync(join(tmpdir(), "quota-client-symlink-"))
+  try {
+    symlinkSync(dirname(fileURLToPath(import.meta.url)), join(root, "current"))
+    const result = spawnSync(process.execPath, [join(root, "current", "slice-disk-quota-client.mjs"), "not-an-operation"], { encoding: "utf8" })
+    // Reaching the entrypoint rejects the operation; a missed guard would exit 0 silently.
+    assert.equal(result.status, 64, result.stderr)
+    assert.match(result.stderr, /disk quota client operation is not allowed/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

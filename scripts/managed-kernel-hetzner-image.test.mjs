@@ -582,7 +582,7 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(worker, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
   assert.match(worker, /Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1/)
   assert.match(worker, /Environment=CHARIOX_DISPOSABLE_WORKER_RECEIPT=\/var\/lib\/chariox\/disposable-worker\/bootstrap-receipt\.json/)
-  assert.match(worker, /Environment=CHARIOX_MANAGED_PROVIDER_HOME=\/var\/lib\/chariox\/provider-home/)
+  assert.doesNotMatch(worker, /CHARIOX_MANAGED_PROVIDER_HOME/)
   assert.match(worker, /Environment=CHARIOX_MANAGED_VAULT_PATH=\/home\/chariox\/\.chariox\/vault\/vault\.json/)
   // The supervisor needs this endpoint to claim the one-shot broker. Its
   // child kernel receives only the scoped lease FD, never the socket path.

@@ -134,7 +134,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
 
 # Nested Docker cannot write an unprivileged uid_map on every host. The
 # setuid helper only sets up Bubblewrap's namespace and drops its caps
-# before the provider starts.
+# before the provider starts. Under rootless Docker, managed-provider-bwrap.sh
+# bypasses the setuid path (see its uid_map check).
 RUN chmod 4755 /usr/bin/bwrap
 
 RUN --mount=type=bind,source=apps/kernel/slice-linux-docker/docker/managed-provider-seccomp.c,target=/tmp/managed-provider-seccomp.c \
