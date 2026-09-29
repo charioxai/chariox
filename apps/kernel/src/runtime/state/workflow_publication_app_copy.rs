@@ -105,6 +105,14 @@ impl KernelRuntimeState {
         if publication.apps().is_none() {
             return Ok(None);
         }
+        let owner = publication.created_by_user_id().to_owned();
+        // A release exported while the publication used no App runs from the
+        // source; a copy of another release goes.
+        if publication.release_without_apps(package_digest) {
+            self.remove_deployment_app_copy(&owner, deployment_id)
+                .await?;
+            return Ok(None);
+        }
         // Protocol 368: the release's own plan, so a rollback restores its Apps.
         let plan = publication
             .release_app_plan(package_digest)
@@ -114,7 +122,6 @@ impl KernelRuntimeState {
                 )
             })?;
         let apps = plan["apps"].as_array().cloned().unwrap_or_default();
-        let owner = publication.created_by_user_id().to_owned();
         // A release that uses no App runs from the source, as one without a
         // plan: the deployment's copy goes (its installations, routes and
         // sessions) and the owner's routes resume.

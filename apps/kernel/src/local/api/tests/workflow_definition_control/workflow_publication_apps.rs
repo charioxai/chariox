@@ -397,6 +397,66 @@ fn a_release_after_its_last_app_is_removed_records_an_empty_plan() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// A release exported before the publication used any App still verifies for
+/// its restart and recovery after a later release records a plan.
+#[test]
+fn a_release_without_apps_still_binds_after_a_later_release_records_a_plan() {
+    let root = temp_root("apps-added");
+    let harness = harness_with_app(&root);
+    let graph = create_publication_test_graph(&harness, "apps-added");
+    let publication = publish(&harness, &graph, "todo-due", "event_based");
+    let (without, files) = export(&harness, &graph, publication.id()).expect("release 1");
+    assert!(files.iter().all(|file| file.path != "apps.json"));
+    harness
+        .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
+            ConfigureAppAutomationRequest {
+                installation_id: "installed".into(),
+                automation_id: "reminders".into(),
+                expected_revision: 0,
+                event_name: "changed".into(),
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+                queue_ref: None,
+                scheduled: false,
+            },
+        ))
+        .expect("automation");
+    let (with_apps, _) = export(&harness, &graph, publication.id()).expect("release 2");
+    assert_ne!(without, with_apps);
+    // Each release re-exports to its own digest: release 1 with no plan.
+    for digest in [&without, &with_apps] {
+        assert_eq!(
+            harness
+                .runtime_state()
+                .fixture_bound_release_package_digest(&graph.session_id, publication.id(), digest)
+                .expect("re-export"),
+            *digest
+        );
+    }
+    // A release this kernel never exported is still refused.
+    let unknown = format!("sha256:{}", "f".repeat(64));
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::GetWorkflowPublication(
+            GetWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::WorkflowPublication { publication } => publication,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert!(publication.release_without_apps(&without));
+    assert!(!publication.release_without_apps(&with_apps));
+    assert!(
+        publication.release_without_apps(&unknown),
+        "the digest check refuses it instead"
+    );
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// A failed export records nothing; the next successful one records the plan
 /// it packaged and persists it.
 #[test]

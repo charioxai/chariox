@@ -1629,7 +1629,8 @@ pub(super) fn bound_release_package_digest(
     kernel_url: Option<String>,
 ) -> Result<String, DaemonError> {
     let release_apps = publication.release_app_plan(expected).cloned();
-    if publication.apps().is_some() && release_apps.is_none() {
+    let without_apps = publication.release_without_apps(expected);
+    if publication.apps().is_some() && release_apps.is_none() && !without_apps {
         return Err(publication_runtime_error(
             "start workflow publication runtime",
             format!(
@@ -1645,7 +1646,11 @@ pub(super) fn bound_release_package_digest(
             agent_app: None,
             agent_app_assets_dir: None,
         },
-        release_apps.as_ref(),
+        match (&release_apps, without_apps) {
+            (_, true) => super::workflow_publication_owned_state::ExportAppPlan::NoApps,
+            (Some(plan), false) => super::workflow_publication_owned_state::ExportAppPlan::Plan(plan),
+            (None, false) => super::workflow_publication_owned_state::ExportAppPlan::Latest,
+        },
     )? {
         LocalDaemonResponse::WorkflowPublicationPackageExported { package_digest, .. } => {
             Ok(package_digest)
