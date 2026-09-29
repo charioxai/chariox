@@ -215,10 +215,16 @@ impl KernelRuntimeState {
                 Err(AppRequestErrorCode::Conflict)
             };
         }
-        // Protocol 368: exactly the plan this release was exported with.
+        // Protocol 368: exactly the plan this release was exported with; a
+        // release exported while the publication used no App has none.
         let plan = publication
             .release_app_plan(&request.package_digest)
             .cloned()
+            .or_else(|| {
+                publication
+                    .release_without_apps(&request.package_digest)
+                    .then(|| serde_json::json!({ "apps": [] }))
+            })
             .ok_or(AppRequestErrorCode::InvalidRequest)?;
         let mut apps = Vec::new();
         let mut lines = vec![format!(
@@ -287,6 +293,14 @@ impl KernelRuntimeState {
             apps.push(consented);
         }
         let consent = DeploymentConsent { apps, ..consent };
+        // A release that uses no App asks nothing and records nothing: its
+        // bind installs no copy, so no consent is looked up for it.
+        if consent.apps.is_empty() {
+            return Ok(DeploymentConsent {
+                status: ConsentStatus::Approved,
+                ..consent
+            });
+        }
         // Protocol 368: a release with exactly the App releases the owner
         // already approved for this deployment is approved without asking
         // again; its install window starts now.

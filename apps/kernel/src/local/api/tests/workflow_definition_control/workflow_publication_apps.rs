@@ -453,6 +453,27 @@ fn a_release_without_apps_still_binds_after_a_later_release_records_a_plan() {
         publication.release_without_apps(&unknown),
         "the digest check refuses it instead"
     );
+    // Its deploy consent covers no App: approved at once, with no prompt.
+    let consent = match harness
+        .dispatch(LocalDaemonRequest::PrepareDeploymentApps(
+            crate::local::PrepareDeploymentAppsRequest {
+                session_id: graph.session_id.clone(),
+                request_id: "no-apps".into(),
+                publication_ref: publication.id().into(),
+                deployment_id: "deployment-1".into(),
+                release_id: "release-1".into(),
+                package_digest: without.clone(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::DeploymentAppsConsent { consent } => consent,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(
+        consent.status,
+        crate::local::DeploymentAppsConsentStatus::Approved
+    );
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }

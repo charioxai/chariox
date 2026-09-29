@@ -2179,7 +2179,7 @@ Workflow trigger and deployment direction:
   now (its last grant or feeding automation removed) packages and records an
   explicit empty plan (`apps: []`) for its next release, never the previous
   release's; a release whose plan names no App binds and runs from the source,
-  with no copy and no Apps consent.
+  with no copy and no Apps consent: `PrepareDeploymentApps` answers it `approved` at once, without a prompt or a stored consent. A release exported before the publication used any App (no plan recorded while later releases record theirs) is treated the same way.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
