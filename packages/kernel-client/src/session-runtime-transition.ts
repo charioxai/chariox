@@ -127,17 +127,23 @@ export type TurnCompletionProviderActivityTransition = {
 
 export const DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE = "Cancellation requested."
 
-export function sessionFocusedAgentId<TAgent extends { id: string }>(
+export function sessionFocusedAgentId<TAgent extends { id: string; visible_in_freeform?: boolean }>(
   session: {
     readonly agents: readonly TAgent[]
     readonly focused_agent_id?: string | null
   },
 ): string | null {
-  // The kernel owns the focus. A session without one (every visible agent
-  // deleted) has no focus agent here either, not the first agent in the list.
   const focusedAgentId = session.focused_agent_id?.trim()
-  return focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)
-    ? focusedAgentId
+  if (focusedAgentId) {
+    return session.agents.some((agent) => agent.id === focusedAgentId) ? focusedAgentId : null
+  }
+  // No focus this client can see. The kernel hides a focus agent the viewer
+  // may not see (another member's agent, for a private collaborator), and
+  // marks the agents it hides; such a viewer addresses its own first agent.
+  // When nothing is hidden, the session has no focus agent (every visible
+  // agent was deleted), and neither does the client.
+  return session.agents.some((agent) => agent.visible_in_freeform === false)
+    ? session.agents.find((agent) => agent.visible_in_freeform !== false)?.id ?? null
     : null
 }
 

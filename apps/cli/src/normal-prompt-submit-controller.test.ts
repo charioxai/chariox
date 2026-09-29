@@ -2,9 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { PromptAttachmentPart, RuntimeAttachment, RuntimeSession } from "./cli-types.js"
+import { NO_FOCUS_AGENT_MESSAGE } from "./cli-runtime-tuning.js"
 import {
   createNormalPromptSubmitController,
-  NO_FOCUS_AGENT_MESSAGE,
   type NormalPromptSubmitControllerDeps,
 } from "./normal-prompt-submit-controller.js"
 import type { PendingPromptAttachment } from "./prompt-attachment-state.js"

@@ -19,6 +19,7 @@ import {
 } from "@chariox/kernel-client/prompt-submission"
 import type { TranscriptPromptMetadata } from "@chariox/kernel-client/transcript-entry-state"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
+import { NO_FOCUS_AGENT_MESSAGE } from "./cli-runtime-tuning.js"
 
 export type NormalPromptSubmitControllerDeps = {
   getPendingAttachments: () => readonly PendingPromptAttachment[]
@@ -64,8 +65,6 @@ export type NormalPromptSubmitControllerDeps = {
   formatError?: (error: unknown) => string
 }
 
-export const NO_FOCUS_AGENT_MESSAGE = "No focus agent: use /agent focus <agent> or /agent spawn, or address one with @<alias>."
-
 export type NormalPromptSubmitController = {
   submit(rawPrompt: string, targetAgentIdOverride?: string | null): Promise<void>
 }
@@ -89,12 +88,6 @@ export function createNormalPromptSubmitController(
           requestedTargetAgentId,
           hasAgent: deps.hasAgent,
         })
-        if (!targetAgentId && !aliasRoute && !deps.getSession().focused_agent_id) {
-          // The prompt area addresses the session's focus agent, and there is
-          // none: keep the prompt and say how to pick or create one.
-          deps.flashFooter(NO_FOCUS_AGENT_MESSAGE, "error")
-          return
-        }
         deps.logInfo?.("submitting prompt", {
           chars: prompt.length,
           attachments: rawAttachments.length,
@@ -106,6 +99,12 @@ export function createNormalPromptSubmitController(
         if (!attachment) {
           deps.flashFooter("No session attached.", "error")
           deps.clearPromptText()
+          return
+        }
+        if (!targetAgentId && !aliasRoute && !requestedTargetAgentId) {
+          // The prompt area addresses the focus agent, and there is none:
+          // keep the prompt and say how to pick or create one.
+          deps.flashFooter(NO_FOCUS_AGENT_MESSAGE, "error")
           return
         }
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {

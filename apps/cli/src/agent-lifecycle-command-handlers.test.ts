@@ -528,7 +528,7 @@ test("agent focus command moves the session focus to the agent named by alias or
   assert.equal(current.focused_agent_id, "agent-2")
   assert.deepEqual(flashes.slice(-2), [
     { message: "agent 'nobody' not found", tone: "error" },
-    { message: "usage: /agent focus <agent-name|agent-alias>", tone: "error" },
+    { message: "usage: /agent focus <agent-ref>", tone: "error" },
   ])
 })
 

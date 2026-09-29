@@ -116,7 +116,7 @@ export async function handleAgentFocusCommand(
 ): Promise<void> {
   const reference = args[1]
   if (!reference) {
-    deps.flashFooter("usage: /agent focus <agent-name|agent-alias>", "error")
+    deps.flashFooter("usage: /agent focus <agent-ref>", "error")
     return
   }
   // The kernel focuses by agent id; the user names an agent as the TUI shows it.

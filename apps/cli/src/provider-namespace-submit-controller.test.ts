@@ -8,6 +8,7 @@ import {
 } from "./provider-namespace-submit-controller.js"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
+import { NO_FOCUS_AGENT_MESSAGE } from "./cli-runtime-tuning.js"
 
 test("provider namespace submit ignores non-provider namespace prompts", async () => {
   const harness = createHarness()
@@ -144,6 +145,17 @@ test("provider namespace submit drops stale focused agent ids", async () => {
   assert.deepEqual(harness.appendedPrompts(), [{ text: "/opencode session list\n", agentId: "agent-submitted" }])
 })
 
+test("provider namespace submit keeps the command when there is no focus agent", async () => {
+  const harness = createHarness({ focusedAgentId: null })
+
+  assert.equal(await harness.controller.submit("/opencode session list"), true)
+
+  assert.deepEqual(harness.submissions(), [])
+  assert.equal(harness.clearPromptCount(), 0)
+  assert.deepEqual(harness.fatalErrors(), [])
+  assert.equal(harness.footerMessages().at(-1)?.message, NO_FOCUS_AGENT_MESSAGE)
+})
+
 test("provider namespace submit restores UI after submission failure", async () => {
   const harness = createHarness({
     submitProviderNamespacePrompt: async () => {
@@ -227,7 +239,7 @@ function createHarness(options: {
     workflowScreenShowing: () => false,
     getPendingAttachmentCount: () => 0,
     waitForPendingAgentFocusTransition: async () => {},
-    getFocusedAgentId: () => options.focusedAgentId ?? "agent-1",
+    getFocusedAgentId: () => options.focusedAgentId === undefined ? "agent-1" : options.focusedAgentId,
     getSession: () => options.session ?? runtimeSession("session-1", { agents: [agent("agent-1")] }),
     hasAgent: options.hasAgent ?? ((agentId) => agentId === "agent-1"),
     clearActiveToolLabels: () => {},
