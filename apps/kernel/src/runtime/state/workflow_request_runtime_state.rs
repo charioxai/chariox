@@ -1,3 +1,4 @@
+use super::workflow_publication_owned_state::ExportAppPlan;
 use super::*;
 
 impl KernelRuntimeState {
@@ -265,10 +266,8 @@ impl KernelRuntimeState {
                 let session_id = request.session_id.clone();
                 let result = owned.workflow_export_publication_package(
                     request,
-                    apps.as_ref().map_or(
-                        super::workflow_publication_owned_state::ExportAppPlan::Latest,
-                        |plan| super::workflow_publication_owned_state::ExportAppPlan::Plan(plan),
-                    ),
+                    apps.as_ref()
+                        .map_or(ExportAppPlan::Latest, ExportAppPlan::Plan),
                 );
                 let recorded = match (&result, apps) {
                     (

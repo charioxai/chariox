@@ -538,7 +538,9 @@ impl WorkflowPublicationDefinition {
 
     /// Whether the release with this package digest was exported while the
     /// publication used no App: releases record their plans (368), this one
-    /// recorded none, was not pruned and predates no pinned plan.
+    /// recorded none, is not among the last pruned digests and predates no
+    /// pinned plan. A digest the kernel never recorded also matches; its bind
+    /// re-exports without Apps and the digest check refuses it.
     pub fn release_without_apps(&self, package_digest: &str) -> bool {
         !self.release_app_plans.is_empty()
             && self.pre_release_app_plan.is_none()

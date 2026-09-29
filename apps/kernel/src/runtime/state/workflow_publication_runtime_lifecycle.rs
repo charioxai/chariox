@@ -1,5 +1,6 @@
 //! Kernel-owned lifecycle control for local workflow publication runtimes.
 
+use super::workflow_publication_owned_state::ExportAppPlan;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -1647,9 +1648,9 @@ pub(super) fn bound_release_package_digest(
             agent_app_assets_dir: None,
         },
         match (&release_apps, without_apps) {
-            (_, true) => super::workflow_publication_owned_state::ExportAppPlan::NoApps,
-            (Some(plan), false) => super::workflow_publication_owned_state::ExportAppPlan::Plan(plan),
-            (None, false) => super::workflow_publication_owned_state::ExportAppPlan::Latest,
+            (_, true) => ExportAppPlan::NoApps,
+            (Some(plan), false) => ExportAppPlan::Plan(plan),
+            (None, false) => ExportAppPlan::Latest,
         },
     )? {
         LocalDaemonResponse::WorkflowPublicationPackageExported { package_digest, .. } => {
