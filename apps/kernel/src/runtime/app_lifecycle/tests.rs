@@ -806,13 +806,19 @@ fn a_stop_while_queued_for_the_claim_is_recorded_under_a_slot_without_waiting_fo
         service.stop_blocking("alice", "installed"),
         Err(LifecycleError::Busy)
     ));
+    // A start right after the stop is Busy too, while the stopped owner may
+    // still be draining (the manual flag is set before the stop returns).
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Busy)
+    ));
     std::thread::sleep(Duration::from_millis(200));
     assert!(store
         .app_worker_status("alice", "installed")
         .unwrap()
         .is_none_or(|v| v.phase != WorkerPhase::Stopped));
-    // A start before the stop is recorded is refused as Busy at once, not
-    // reported as running and then undone.
+    // Once the owner has finished, a start before the stop is recorded is
+    // still refused as Busy, not reported as running and then undone.
     assert!(matches!(
         service.start_active_blocking("alice", "installed", runtime.handle().clone()),
         Err(LifecycleError::Busy)
