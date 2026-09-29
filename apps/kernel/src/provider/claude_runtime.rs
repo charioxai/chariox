@@ -21,6 +21,7 @@ const DEFAULT_CLAUDE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 mod events;
 mod input;
+mod permission_prompt;
 mod process;
 mod state;
 mod tool_transcript;
@@ -29,6 +30,8 @@ mod watchdog;
 
 use events::apply_claude_message;
 use input::claude_user_content;
+use permission_prompt::claude_permission_prompt_pending;
+pub(crate) use permission_prompt::begin_claude_permission_prompt_wait;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
 use usage::apply_claude_usage_capture;
@@ -292,6 +295,11 @@ fn apply_claude_turn_stall_policy(
     state: &mut ClaudeRuntimeState,
     batch: &mut ProviderPromptSignalBatch,
 ) -> Result<(), DaemonError> {
+    if claude_permission_prompt_pending(run.id()) {
+        // Claude emits nothing while the user decides; that is not a stall.
+        state.turn_watchdog.record_runtime_message(Instant::now());
+        return Ok(());
+    }
     match state
         .turn_watchdog
         .action(Instant::now(), claude_turn_stall_timeout())
@@ -451,6 +459,7 @@ fn restart_claude_runtime(
         &claude_args_without_resume(&state.args),
         run.execution_mode(),
         run.permission_level(),
+        state.mcp_config_file.is_some() && run.runtime_mcp_auth_token().is_some(),
     );
     let mut args = base_args.clone();
     if let Some(session_id) = resume_session_id {

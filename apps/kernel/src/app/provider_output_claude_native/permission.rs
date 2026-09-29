@@ -400,7 +400,7 @@ pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
     event.get("hook_event_name").and_then(Value::as_str) != Some("PreToolUse") || !is_runtime_tool
 }
 
-pub(super) fn format_claude_permission_message(event: &Value) -> String {
+pub(crate) fn format_claude_permission_message(event: &Value) -> String {
     let tool_name = event
         .get("tool_name")
         .and_then(Value::as_str)
