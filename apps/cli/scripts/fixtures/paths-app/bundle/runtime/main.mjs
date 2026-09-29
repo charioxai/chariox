@@ -10,7 +10,7 @@
 // overlap the kernel's staging and publication; `overlapped` counts the rounds
 // in which at least one mutation landed while the write was pending, and
 // `fewestMutations` shows how thin the thinnest overlap was.
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const settle = (promise) => promise.then(() => 'ok', (error) => error?.code ?? 'failed');
@@ -38,7 +38,8 @@ async function racing(write, mutate) {
 export default function register(chariox) {
   const root = chariox.paths.data;
   const at = (path) => join(root, path);
-  // An unreadable directory (ext4's root-owned lost+found) is reported, not fatal.
+  // An unreadable directory (ext4's root-owned lost+found) or entry is reported,
+  // not fatal; a caller must treat such an entry as an incomplete listing.
   const walk = (dir) => {
     let entries;
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch (error) {
@@ -46,7 +47,11 @@ export default function register(chariox) {
     }
     return entries.flatMap((entry) => {
       const path = join(dir, entry.name);
-      return entry.isDirectory() ? walk(path) : [{ path: relative(root, path), bytes: statSync(path).size }];
+      if (entry.isDirectory()) return walk(path);
+      // lstat: a link is listed, not followed; an entry gone since readdir is reported.
+      try { return [{ path: relative(root, path), bytes: lstatSync(path).size }]; } catch (error) {
+        return [{ path: relative(root, path), error: error?.code ?? 'failed' }];
+      }
     });
   };
   // A payload is whole only if every byte is its round's marker.
