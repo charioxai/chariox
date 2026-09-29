@@ -56,9 +56,14 @@ fn bounded_kernel_records_reject_duplicates_ambiguity_and_old_baselines() {
 fn worker_identity_requires_private_pid_one_zero_authority_and_exact_parent() {
     let status = "Name:\tchariox-app\nPid:\t102\nPPid:\t101\nUid:\t1000 1000 1000 1000\nGid:\t1000 1000 1000 1000\nGroups:\t\nNoNewPrivs:\t1\nSeccomp:\t2\nNSpid:\t102 1\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapAmb:\t0000000000000000\n";
     assert!(policy::worker_status(status, 102, 101, 1000, 1000).is_ok());
+    // Its own primary group, as systemd and logins set it, is the only one allowed.
+    let primary = status.replace("Groups:\t\n", "Groups:\t1000 \n");
+    assert!(policy::worker_status(&primary, 102, 101, 1000, 1000).is_ok());
     for (old, new) in [
         ("PPid:\t101", "PPid:\t103"),
         ("Groups:\t\n", "Groups:\t10\n"),
+        ("Groups:\t\n", "Groups:\t1000 10\n"),
+        ("Groups:\t\n", "Groups:\t10 1000\n"),
         ("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
         ("Seccomp:\t2", "Seccomp:\t0"),
         ("NSpid:\t102 1", "NSpid:\t102"),
