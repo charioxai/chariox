@@ -43,6 +43,14 @@ impl ResourceDomain for Domain {
     fn check_running(&mut self, _pid: libc::pid_t, _now: Instant) -> Result<()> {
         self.leaf.check_running()
     }
+    fn exit_failure(&mut self) -> Option<super::WorkerError> {
+        // With memory.oom.group the whole domain dies at the limit, often
+        // before the next running check samples memory.events.
+        self.leaf
+            .oom_killed()
+            .ok()?
+            .then_some(super::WorkerError::MemoryLimit)
+    }
     fn terminate(&mut self, _pid: libc::pid_t) {
         self.leaf.terminate();
     }

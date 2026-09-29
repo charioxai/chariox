@@ -16,7 +16,7 @@ pub(crate) use startup::{FirstInstallHealth, HealthyAppWorker, RegisteredAppWork
 use chariox_app_runtime::{
     app_outbox::EventCatalog,
     worker_peer::{Broker, PeerTask, WorkerPeer},
-    worker_process::{WorkerCancellation, WorkerProcess},
+    worker_process::{WorkerCancellation, WorkerEnding, WorkerProcess},
     worker_readiness::RegisteredHandlers,
 };
 use std::sync::{Arc, Mutex, Weak};
@@ -34,7 +34,14 @@ pub(crate) enum AppWorkerError {
     Deadline,
     #[error("app_worker_request_invalid")]
     Invalid,
+    /// The worker was stopped for using more memory than its limit.
+    #[error("app_worker_memory_limit")]
+    MemoryLimit,
 }
+
+/// How long a call that lost its worker waits for the monitor to name why.
+/// The monitor decides within one poll of the kill or exit it observes.
+const ENDING_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Why a wake or event delivery did not complete.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +65,7 @@ struct Admission {
     phase: Mutex<Phase>,
     changed: watch::Sender<Phase>,
     cancellation: WorkerCancellation,
+    ending: WorkerEnding,
     broker: Weak<dyn Broker>,
     broker_draining: std::sync::atomic::AtomicBool,
     /// Set for a staged worker that migrates its data before it registers.
@@ -207,6 +215,19 @@ impl LiveWorker {
             return Err(AppWorkerError::Unavailable);
         }
         Ok(())
+    }
+    /// A call that lost this worker names a stop at its memory limit; any
+    /// other loss keeps the call's own error.
+    async fn lost(&self, error: AppWorkerError) -> AppWorkerError {
+        if error != AppWorkerError::Unavailable {
+            return error;
+        }
+        match self.admission.ending.failure(ENDING_WAIT).await {
+            Some(chariox_app_runtime::worker_process::WorkerError::MemoryLimit) => {
+                AppWorkerError::MemoryLimit
+            }
+            _ => error,
+        }
     }
 }
 impl ActivatedApp {

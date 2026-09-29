@@ -83,6 +83,13 @@ impl Child {
             }
         }
     }
+    fn exit_failure(&mut self) -> Option<WorkerError> {
+        self.prepared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .domain
+            .exit_failure()
+    }
     fn exited(&self) -> io::Result<bool> {
         let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
         let result = unsafe {
@@ -201,6 +208,7 @@ pub(super) fn run(
     limits: WorkerLimits,
     deadline: Instant,
     started: SyncSender<Result<(), WorkerError>>,
+    ending: tokio::sync::watch::Sender<Option<Option<WorkerError>>>,
 ) -> WorkerExit {
     let mut logs = Logs {
         tails: Default::default(),
@@ -239,7 +247,7 @@ pub(super) fn run(
         match child.exited() {
             Ok(true) => {
                 break if running {
-                    None
+                    child.exit_failure()
                 } else {
                     Some(WorkerError::EarlyExit)
                 }
@@ -364,6 +372,9 @@ pub(super) fn run(
     if !running {
         let _ = started.send(Err(failure.unwrap_or(WorkerError::EarlyExit)));
     }
+    // Before the kill closes the SDK channel, so a call that loses it can
+    // name this cause.
+    ending.send_replace(Some(failure));
     let status = child.reap();
     // One bounded final drain retains termination diagnostics without waiting
     // on a descendant that holds stdout open.

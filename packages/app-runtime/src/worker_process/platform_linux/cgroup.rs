@@ -169,13 +169,7 @@ impl Lease {
     }
     pub fn check_running(&self) -> Result<()> {
         self.verify_limits()?;
-        let memory = read_at(&self.directory, "memory.events")?;
-        if policy::number(
-            policy::fields(&memory, ' ')?
-                .get("oom_kill")
-                .ok_or(WorkerError::ResourceDomain)?,
-        )? != 0
-        {
+        if self.oom_killed()? {
             return Err(WorkerError::MemoryLimit);
         }
         let tasks = read_at(&self.directory, "pids.events")?;
@@ -188,6 +182,15 @@ impl Lease {
             return Err(WorkerError::ThreadLimit);
         }
         Ok(())
+    }
+    /// Whether the kernel killed a member at the domain's memory limit.
+    pub fn oom_killed(&self) -> Result<bool> {
+        let memory = read_at(&self.directory, "memory.events")?;
+        Ok(policy::number(
+            policy::fields(&memory, ' ')?
+                .get("oom_kill")
+                .ok_or(WorkerError::ResourceDomain)?,
+        )? != 0)
     }
     pub fn terminate(&self) {
         let _ = write(&self.kill, "1");

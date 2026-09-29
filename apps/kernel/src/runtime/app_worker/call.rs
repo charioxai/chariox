@@ -139,7 +139,10 @@ impl AppToolResponse {
     /// Dropping this future closes its response receiver and asks the one peer
     /// to cancel. This does not attest that a remote effect was rolled back.
     pub(crate) async fn receive(self) -> Result<AppToolReply, AppWorkerError> {
-        let response = self.response.await.map_err(peer_error)?;
+        let response = match self.response.await {
+            Ok(response) => response,
+            Err(error) => return Err(self.live.lost(peer_error(error)).await),
+        };
         self.live.available()?;
         Ok(AppToolReply {
             live: self.live,
