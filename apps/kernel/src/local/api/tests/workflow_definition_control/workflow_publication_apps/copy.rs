@@ -389,6 +389,86 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
         .runtime_state()
         .fixture_session(&session_id)
         .is_err());
+    // Starting again is durable before the copy is prepared, so a start that
+    // waits for App approvals does not leave the source looking stopped (the
+    // reconcile would remove the copies it installed). The start itself may
+    // fail here; its intent must not.
+    let _ = harness.dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+        crate::local::ControlWorkflowPublicationRuntimeRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            action: crate::local::WorkflowPublicationRuntimeAction::Start,
+            host: None,
+            port: None,
+            kernel_url: None,
+        },
+    ));
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let durable = states
+        .iter()
+        .find(|(id, _)| *id == deployed.graph.session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == deployed.publication.id())
+        })
+        .expect("the durable publication");
+    let deployment = durable.deployment().expect("the deployment metadata");
+    assert!(deployment.get("desired_state").is_none());
+    assert_eq!(
+        deployment.pointer("/binding/deployment_id"),
+        Some(&serde_json::json!(DEPLOYMENT)),
+    );
+    // A deploy (bind) is an explicit start too: it clears a stop first, so the
+    // launch does not yield to a stop that the deploy itself overrides.
+    let _ = harness.dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+        crate::local::ControlWorkflowPublicationRuntimeRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            action: crate::local::WorkflowPublicationRuntimeAction::Stop,
+            host: None,
+            port: None,
+            kernel_url: None,
+        },
+    ));
+    let _ = harness.dispatch(LocalDaemonRequest::BindWorkflowPublicationDeployment(
+        crate::local::BindWorkflowPublicationDeploymentRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            setup_id: "setup-2".into(),
+            operation_key: "deployment-setup:setup-2:runtime".into(),
+            deployment_id: DEPLOYMENT.into(),
+            environment_id: "environment-1".into(),
+            release_id: RELEASE.into(),
+            package_digest: deployed.digest.clone(),
+            desired_revision: 2,
+            caller_claims_public_key_pem: PEM.into(),
+        },
+    ));
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let rebound = states
+        .iter()
+        .find(|(id, _)| *id == deployed.graph.session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == deployed.publication.id())
+        })
+        .and_then(|publication| publication.deployment())
+        .expect("the durable deployment metadata");
+    assert!(rebound.get("desired_state").is_none(), "{rebound}");
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -729,6 +809,114 @@ fn a_release_without_apps_removes_the_copy_and_resumes_the_owner() {
         .runtime_state()
         .fixture_session(&copy_session)
         .is_err());
+
+#[test]
+fn a_stop_that_lands_while_a_runtime_starts_wins() {
+    let root = temp_root("copy-stop-race");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-stop-race", true);
+    let (session_id, publication_id) = (
+        deployed.graph.session_id.clone(),
+        deployed.publication.id().to_owned(),
+    );
+    harness.runtime_state().fixture_mark_publication_deployment(
+        &session_id,
+        &publication_id,
+        serde_json::json!({
+            "kind": "local_runtime",
+            "status": "starting",
+            "binding": {
+                "setup_id": "setup-1",
+                "operation_key": "deployment-setup:setup-1:runtime",
+                "deployment_id": DEPLOYMENT,
+                "environment_id": "environment-1",
+                "release_id": RELEASE,
+                "package_digest": deployed.digest,
+                "desired_revision": 1,
+                "caller_claims_public_key_pem": PEM,
+            },
+        }),
+    );
+    let register = || {
+        let (runtime, session_id, publication_id) = (
+            harness.runtime_state(),
+            session_id.clone(),
+            publication_id.clone(),
+        );
+        harness.block_on_test_task(async move {
+            let outcome = runtime
+                .fixture_register_launched_runtime(&session_id, &publication_id)
+                .await;
+            let running = runtime
+                .fixture_publication_runtime_running(&session_id, &publication_id)
+                .await;
+            (outcome, running)
+        })
+    };
+    let alive = |pid: u32| {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    // Without a stop, a launched gateway is registered and runs.
+    let ((outcome, first), running) = register();
+    outcome.expect("registered");
+    assert!(running && alive(first));
+    // The owner stops the deployment; its next gateway is still starting
+    // (not registered yet) when the stop lands.
+    harness
+        .dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+            crate::local::ControlWorkflowPublicationRuntimeRequest {
+                session_id: session_id.clone(),
+                publication_ref: publication_id.clone(),
+                action: crate::local::WorkflowPublicationRuntimeAction::Stop,
+                host: None,
+                port: None,
+                kernel_url: None,
+            },
+        ))
+        .expect("stop");
+    let ((outcome, pid), running) = register();
+    let error = outcome.expect_err("the stop wins");
+    assert!(
+        error
+            .to_string()
+            .contains("stopped while its runtime was starting"),
+        "{error}"
+    );
+    assert!(!running, "no runtime is registered");
+    assert!(!alive(pid), "the launched gateway is gone");
+    assert!(!alive(first), "the stop stopped the running gateway");
+    // The stop is durable: a restarted kernel does not serve it again.
+    let durable_owner = harness
+        .runtime_state()
+        .fixture_session(&session_id)
+        .unwrap()
+        .host_daemon_id()
+        .to_owned();
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let durable = states
+        .iter()
+        .find(|(id, _)| *id == session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == publication_id)
+        })
+        .and_then(|publication| publication.deployment())
+        .expect("the durable deployment metadata");
+    assert_eq!(
+        durable.get("desired_state"),
+        Some(&serde_json::json!("stopped")),
+        "{durable}"
+    );
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
