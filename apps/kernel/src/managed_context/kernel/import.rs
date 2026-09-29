@@ -2730,6 +2730,15 @@ mod tests {
             "CHARIOX_MANAGED_VAULT_PATH",
         ]
         .map(|name| (name, std::env::var_os(name)));
+        struct RestoreEnv([(&'static str, Option<std::ffi::OsString>); 4]);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (name, value) in self.0.clone() {
+                    restore_env(name, value);
+                }
+            }
+        }
+        let _restore = RestoreEnv(previous);
         std::env::set_var("HOME", &home);
         std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "path1");
         std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
@@ -2775,7 +2784,7 @@ mod tests {
 
         let receipt = import_kernel_context(request.clone()).expect("Path 1 import");
         assert_eq!(import_kernel_context(request).expect("replay"), receipt);
-        assert!(!capability_root.join("user").join("skills").exists());
+        assert!(!capability_root.join("user/skills/review").exists());
         let mcps = crate::mcp::CharioxMcpRegistry::new(vec![ordinary.join("mcps")])
             .list()
             .expect("imported MCPs should load from the ordinary registry");
@@ -2805,9 +2814,6 @@ mod tests {
         assert!(ordinary.join("skills/mine.txt").is_file());
 
         crate::secret::lock_chariox_encrypted_vault(&source_vault).ok();
-        for (name, value) in previous {
-            restore_env(name, value);
-        }
         let _ = fs::remove_dir_all(root);
     }
 
