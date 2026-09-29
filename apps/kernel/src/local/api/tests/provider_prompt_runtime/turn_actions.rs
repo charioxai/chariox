@@ -3,7 +3,11 @@ use super::*;
 #[test]
 fn public_session_state_preserves_failed_settlement_termination_after_late_completion() {
     let worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");
-    let harness = LocalRouterTestHarness::new();
+    // The prompt launches the default (OpenCode) provider, which waits for its
+    // runtime MCP endpoint to connect.
+    let mut config = crate::config::DaemonConfig::for_tests();
+    crate::test_support::serve_runtime_mcp(&mut config);
+    let harness = LocalRouterTestHarness::with_config(config);
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree.session_request(),
