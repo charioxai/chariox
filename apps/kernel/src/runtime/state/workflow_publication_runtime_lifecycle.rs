@@ -448,6 +448,8 @@ async fn recover_bound_publication_runtime(
         },
     )
     .await;
+    // An App-bound start can take seconds: the backoff counts from its end.
+    let finished_ms = crate::session::unix_epoch_ms();
     match result {
         Ok(_) => {
             // A gateway can report started and still exit during startup: the
@@ -455,7 +457,7 @@ async fn recover_bound_publication_runtime(
             runtime_state
                 .owned
                 .workflow_publication_runtimes
-                .record_recovery_launch(&process_key, now_ms)
+                .record_recovery_launch(&process_key, finished_ms)
                 .await;
             crate::logging::info_with_fields(
                 "daemon.publication_runtime",
@@ -471,7 +473,7 @@ async fn recover_bound_publication_runtime(
             runtime_state
                 .owned
                 .workflow_publication_runtimes
-                .record_recovery_failure(&process_key, now_ms)
+                .record_recovery_failure(&process_key, finished_ms)
                 .await;
             crate::logging::warn_with_fields(
                 "daemon.publication_runtime",
