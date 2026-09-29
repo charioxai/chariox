@@ -9,6 +9,7 @@ pub(super) struct Context {
     pub store: DurableKernelStateStore,
     pub publisher: AppWorkerPublisher,
     pub admission: Arc<Semaphore>,
+    pub preparation: Arc<Semaphore>,
     pub owner: String,
     pub installation: String,
     pub attempt: String,
@@ -41,14 +42,26 @@ impl Drop for Completion {
         self.0.complete();
     }
 }
-pub(super) fn run(
-    context: Context,
-    live: OwnedSemaphorePermit,
-    preparation: OwnedSemaphorePermit,
-    operation: OwnedSemaphorePermit,
-) {
+/// An accepted start waits its turn for one of `slots` instead of refusing
+/// Busy. A stop or kernel shutdown wakes and ends the wait.
+fn queue(control: &Control, slots: &Arc<Semaphore>) -> Result<OwnedSemaphorePermit> {
+    loop {
+        if control.stopped() {
+            return Err(LifecycleError::Stopped);
+        }
+        match slots.clone().try_acquire_owned() {
+            Ok(permit) => return Ok(permit),
+            Err(tokio::sync::TryAcquireError::Closed) => return Err(LifecycleError::Supervisor),
+            Err(tokio::sync::TryAcquireError::NoPermits) => control.wait(Duration::from_millis(20)),
+        }
+    }
+}
+pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     let _completion = Completion(context.control.clone());
     let _live = live;
+    // The claim is a writer operation: it holds a shared App slot, which a
+    // failed claim retains through its deferred stop write below.
+    let operation = queue(&context.control, &context.admission);
     let claim_budget = context.control.budget();
     #[cfg(test)]
     let claim_budget = match &context.claim_checkpoint {
@@ -57,6 +70,7 @@ pub(super) fn run(
     };
     let mut first_authority_withdrawn = false;
     let claim = match &context.kind {
+        _ if operation.is_err() => Err(LifecycleError::Stopped),
         StartKind::Active { recovery } => context
             .store
             .claim_active_app_start(
@@ -116,8 +130,9 @@ pub(super) fn run(
             return;
         }
     };
+    drop(operation);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        serve(&context, &mut admission, preparation, operation)
+        serve(&context, &mut admission)
     }));
     let uncertain = matches!(&outcome, Ok(Err(LifecycleError::CommitUnknown)));
     if uncertain {
@@ -173,12 +188,11 @@ pub(super) fn run(
         }
     }
 }
-fn serve(
-    context: &Context,
-    admission: &mut Admitted,
-    preparation: OwnedSemaphorePermit,
-    operation: OwnedSemaphorePermit,
-) -> Result<WorkerExit> {
+fn serve(context: &Context, admission: &mut Admitted) -> Result<WorkerExit> {
+    // Claimed (the row shows Starting); one App prepares at a time. A stop
+    // while queued records Stopped like a stop during preparation.
+    let preparation = queue(&context.control, &context.preparation)?;
+    let operation = queue(&context.control, &context.admission)?;
     let started = match admission {
         Admitted::Restart(active) => start::activate(context, active, preparation, operation)?,
         Admitted::First { pending, active } => {
