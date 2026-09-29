@@ -68,7 +68,9 @@ fn package(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> Vec<u8> {
     let inventory = json!({"schema":"chariox.integrity.v1","files":files.iter().map(|(path, data)| {
         json!({"path":path,"size":data.len(),"digest":hash(data)})
     }).collect::<Vec<_>>()});
-    let signed = canonical(&json!({"schema":"chariox.package-signature.v1","manifest":manifest,"inventory":inventory}));
+    let signed = canonical(
+        &json!({"schema":"chariox.package-signature.v1","manifest":manifest,"inventory":inventory}),
+    );
     let signature = json!({"key_id":"developer-1","algorithm":"ed25519","digest":hash(&signed),
         "value":BASE64.encode(key().sign(&signed).to_bytes())});
     let mut entries = vec![
@@ -83,8 +85,14 @@ fn package(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> Vec<u8> {
         if header.set_path(path).is_err() {
             return Vec::new();
         }
+        // The verifier accepts only its canonical header: without explicit
+        // octal uid/gid/mtime fields every package is refused as
+        // noncanonical before any JSON is read.
         header.set_entry_type(tar::EntryType::Regular);
         header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
         header.set_size(data.len() as u64);
         header.set_cksum();
         if builder.append(&header, data.as_slice()).is_err() {
@@ -94,8 +102,30 @@ fn package(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> Vec<u8> {
     builder.into_inner().unwrap_or_default()
 }
 
+fn policy() -> VerificationPolicy {
+    VerificationPolicy::new(
+        500,
+        vec![TrustedPublisher {
+            publisher_id: "com.example".to_owned(),
+            key_id: "developer-1".to_owned(),
+            public_key: key().verifying_key(),
+        }],
+    )
+}
+
+static BASELINE: std::sync::Once = std::sync::Once::new();
+
 fuzz_target!(|input: &[u8]| {
-    let Some((&selector, document)) = input.split_first() else { return };
+    // A harness whose unmodified package does not verify would only fuzz the
+    // rejection path; fail loudly instead.
+    BASELINE.call_once(|| {
+        if let Err(error) = verify(&package(&manifest(), &files()), &policy()) {
+            panic!("baseline package must verify: {error:?}");
+        }
+    });
+    let Some((&selector, document)) = input.split_first() else {
+        return;
+    };
     let mut manifest = manifest();
     let mut files = files();
     match DOCUMENTS[selector as usize % DOCUMENTS.len()] {
@@ -107,13 +137,5 @@ fuzz_target!(|input: &[u8]| {
             files.insert(path.to_owned(), document.to_vec());
         }
     }
-    let policy = VerificationPolicy::new(
-        500,
-        vec![TrustedPublisher {
-            publisher_id: "com.example".to_owned(),
-            key_id: "developer-1".to_owned(),
-            public_key: key().verifying_key(),
-        }],
-    );
-    let _ = verify(&package(&manifest, &files), &policy);
+    let _ = verify(&package(&manifest, &files), &policy());
 });

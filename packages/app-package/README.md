@@ -315,8 +315,13 @@ build). `archive` feeds arbitrary bytes to `inspect_untrusted()` and `verify()`.
 `signed` replaces the manifest or one declaration document of a valid package
 with the input and signs the result, so manifest, declaration and JSON Schema
 checks see arbitrary content behind a valid signature. Both must reject without
-panicking. Run, for example:
+panicking. `signed` panics on its first input if its unmodified package does not
+verify, so a harness that only reaches the rejection path cannot pass silently.
+`fuzz/seeds/archive/0` is that package, signed with the fuzz key that `archive`
+trusts, so `archive` can mutate its way into the manifest and declaration
+checks; a real `.cxapp` stops at the signature check. Run, for example:
 
     cargo +nightly fuzz run -O signed fuzz/seeds/signed -- -max_total_time=120 -rss_limit_mb=2048
+    cargo +nightly fuzz run -O archive fuzz/seeds/archive -- -max_total_time=120 -rss_limit_mb=2048
 
 (With a Homebrew `cargo`, put the nightly toolchain's `bin` first in `PATH`.)
