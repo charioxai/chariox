@@ -405,9 +405,9 @@ mod tests {
         }
 
         assert_eq!(prepared.provider_account_env, environment);
-        assert_eq!(
-            prepared.workspace_live_sync_roots,
-            vec![primary.clone(), supporting.clone()]
+        assert!(
+            prepared.workspace_live_sync_roots.is_empty(),
+            "managed isolation must not inject the Project workspace list"
         );
         for name in ["OPENAI_API_KEY", "CODEX_API_KEY"] {
             assert!(prepared
@@ -528,6 +528,7 @@ mod tests {
         let supporting = root.join("supporting");
         let instance_worktree = root.join("workflow-runtime").join("instance-2");
         let unregistered_worktree = root.join("workflow-runtime").join("unregistered");
+        let traversal_worktree = instance_worktree.join("..").join("unregistered");
         std::fs::create_dir_all(&primary).expect("primary workspace");
         std::fs::create_dir_all(&supporting).expect("supporting workspace");
         std::fs::create_dir_all(&instance_worktree).expect("runtime instance worktree");
@@ -592,7 +593,8 @@ mod tests {
             "default",
             "model",
         )
-        .with_agent_id(runtime_agent.id());
+        .with_agent_id(runtime_agent.id())
+        .with_workspace_live_sync_managed();
 
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
@@ -608,7 +610,8 @@ mod tests {
                 "default",
                 "model",
             )
-            .with_agent_id(unregistered_agent.id()),
+            .with_agent_id(unregistered_agent.id())
+            .with_workspace_live_sync_managed(),
             "http://127.0.0.1:43120/mcp".to_string(),
         );
         let traversal = runtime.owned.prepare_provider_launch_request(
@@ -620,7 +623,8 @@ mod tests {
                 "model",
             )
             .with_agent_id(runtime_agent.id())
-            .with_working_directory(instance_worktree.join("..").join("unregistered")),
+            .with_working_directory(traversal_worktree.clone())
+            .with_workspace_live_sync_managed(),
             "http://127.0.0.1:43120/mcp".to_string(),
         );
         #[cfg(unix)]
@@ -637,7 +641,8 @@ mod tests {
                     "model",
                 )
                 .with_agent_id(runtime_agent.id())
-                .with_working_directory(link),
+                .with_working_directory(link)
+                .with_workspace_live_sync_managed(),
                 "http://127.0.0.1:43120/mcp".to_string(),
             )
         };
@@ -666,7 +671,7 @@ mod tests {
             (
                 "lexical traversal",
                 &traversal.workspace_live_sync_roots,
-                &unregistered_worktree,
+                &traversal_worktree,
             ),
         ] {
             assert!(

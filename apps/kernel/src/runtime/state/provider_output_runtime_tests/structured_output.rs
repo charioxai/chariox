@@ -409,12 +409,15 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
         .expect("cloud owner should attach");
     let run = app
         .launch_provider(
+            // The account-authority mapping does not depend on the provider.
+            // Codex avoids the Claude launch-credential gate, which needs a
+            // vault or portable login this fixture does not have.
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
-                "claude",
+                "codex",
                 "default",
-                "sonnet",
+                "gpt-5",
             )
             .with_agent_id(agent.id()),
         )
@@ -444,7 +447,7 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
                 }],
                 account_usage: Some(crate::account_profile::ProviderAccountUsageSnapshot {
                     profile_id: "default".to_string(),
-                    provider: "claude".to_string(),
+                    provider: "codex".to_string(),
                     availability:
                         crate::account_profile::ProviderAccountUsageAvailability::Available,
                     meters: Vec::new(),
@@ -461,7 +464,7 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
     let profile = runtime
         .owned
         .provider_account_profiles
-        .get(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
         .expect("the local account authority profile should remain resolvable");
     assert_eq!(profile.usage.source, "cloud-owner-usage-test");
     assert_eq!(
