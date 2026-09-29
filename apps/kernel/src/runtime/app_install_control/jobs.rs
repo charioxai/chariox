@@ -13,6 +13,8 @@ pub(super) enum Outcome {
 }
 pub(super) enum Error {
     Busy,
+    /// Every live worker slot is taken: an idle worker can make room.
+    LiveLimit,
     Failed(&'static str),
     Storage,
     Unknown,
@@ -246,7 +248,8 @@ pub(super) async fn run(
                 } else {
                     Outcome::Done
                 }),
-                Err(LifecycleError::Busy | LifecycleError::LiveLimit) => Err(Error::Busy),
+                Err(LifecycleError::LiveLimit) => Err(Error::LiveLimit),
+                Err(LifecycleError::Busy) => Err(Error::Busy),
                 Err(LifecycleError::CommitUnknown) => Err(Error::Unknown),
                 Err(LifecycleError::Storage) => Err(Error::Storage),
                 Err(_) => Err(Error::Failed("app_install_start_rejected")),

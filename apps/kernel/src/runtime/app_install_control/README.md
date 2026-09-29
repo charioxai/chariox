@@ -23,8 +23,11 @@ a queued request cannot obtain a fresh authorization budget. An admitted Cancel
 retains its original deadline and completes its negative durable write while
 shutdown joins it, preserving cancellation across restart. Human
 waits hold no App permit. Tasks retain only stores and lifecycle services, never
-the containing runtime state. Shutdown cancels admission and joins the owned task
-sets before stopping workers. An already running blocking verifier retains its
+the containing runtime state, with one exception: the single idle-worker eviction
+(a first start at the live-worker limit) runs the runtime's own eviction and holds
+the runtime state until that eviction ends; a finished task drops it. Shutdown
+cancels admission and joins the owned task sets, the eviction included, before
+stopping workers. An already running blocking verifier retains its
 permit and release lease until completion even if its waiter is cancelled.
 
 Verification and immutable release publication use the enrolled publisher key.
