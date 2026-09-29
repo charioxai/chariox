@@ -160,6 +160,8 @@ function verifyXfsQuotaAndOverlay(commands, mountpoint) {
 
 function applyDockerRootOwnership(io, commands) {
   const owner = io.dockerOwner()
+  // Dependents re-run admission; a mount that predates this sandbox is read-only here.
+  if (commands.run("/usr/bin/stat", ["-c", "%u:%g:%a", DATA_ROOT]) === `${owner.uid}:${owner.gid}:700`) return
   commands.run("/usr/bin/chown", ["--", `${owner.uid}:${owner.gid}`, DATA_ROOT])
   commands.run("/usr/bin/chmod", ["0700", DATA_ROOT])
 }

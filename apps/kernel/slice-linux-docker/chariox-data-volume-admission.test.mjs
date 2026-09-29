@@ -51,6 +51,7 @@ function fakeAdmission({
   let filesystem = initialFilesystem
   let filesystemUuid = initialFilesystem ? UUID : ""
   let mounted = false
+  let ownership = "0:0:755"
   let binding
   let observation
   const calls = []
@@ -82,7 +83,11 @@ function fakeAdmission({
         return `Project quota state on ${DATA_ROOT} (/dev/sdb)\n  Accounting: ON\n  Enforcement: ON\n`
       }
       if (command === "/usr/sbin/xfs_info") return "meta-data=/dev/sdb isize=512 agcount=4, ftype=1\n"
-      if (command === "/usr/bin/chown" || command === "/usr/bin/chmod") return ""
+      if (command === "/usr/bin/stat") return ownership
+      if (command === "/usr/bin/chown" || command === "/usr/bin/chmod") {
+        ownership = "1001:1001:700"
+        return ""
+      }
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`)
     },
     tryRun(command, args) {
@@ -198,6 +203,13 @@ test("fresh matching blank volume is formatted once, bound, mounted, and quota-v
   const rebootResult = admitDataVolume(fake)
   assert.deepEqual(rebootResult, result)
   assert.equal(fake.calls.filter(([command]) => command === "/usr/sbin/mkfs.xfs").length, 1)
+  assert.equal(fake.calls.filter(([command]) => command === "/usr/bin/systemd-mount").length, 2)
+
+  // A dependent restart re-runs admission on the live mount: verify without writing.
+  const writes = () => fake.calls.filter(([command]) => command === "/usr/bin/chown" || command === "/usr/bin/chmod").length
+  const before = writes()
+  assert.deepEqual(admitDataVolume(fake), result)
+  assert.equal(writes(), before)
   assert.equal(fake.calls.filter(([command]) => command === "/usr/bin/systemd-mount").length, 2)
 })
 

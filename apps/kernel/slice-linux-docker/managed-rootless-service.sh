@@ -10,7 +10,8 @@ ROOTLESS_DOCKER_CONFIG="$ROOTLESS_HOME/.config/docker/daemon.json"
 ROOTLESS_QUOTA_DAEMON_CONFIG='{"features":{"containerd-snapshotter":false},"storage-driver":"overlay2"}'
 
 quota_storage_ready() {
-  quota_mount=$(findmnt --noheadings --raw --target "$ROOTLESS_DATA_ROOT" --output TARGET,FSTYPE,OPTIONS 2>/dev/null) || return 1
+  # Peer propagation can list one mount twice at the same target; distinct entries still fail.
+  quota_mount=$(findmnt --noheadings --raw --target "$ROOTLESS_DATA_ROOT" --output TARGET,FSTYPE,OPTIONS 2>/dev/null | sort -u) || return 1
   set -- $quota_mount
   [ "$#" -eq 3 ] || return 1
   [ "$1" = "$ROOTLESS_DATA_ROOT" ] && [ "$2" = xfs ] || return 1
