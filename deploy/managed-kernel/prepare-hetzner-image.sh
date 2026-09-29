@@ -517,8 +517,10 @@ if [ -e /var/lib/chariox-docker/data ] || [ -L /var/lib/chariox-docker/data ]; t
   if find /var/lib/chariox-docker/data -mindepth 1 -print -quit | grep -q .; then
     fail "Docker data-root contains volume data; refusing to erase it while preparing the image"
   fi
-  rmdir /var/lib/chariox-docker/data
 fi
+# Keep the empty mountpoint: data-volume admission names it in ReadWritePaths,
+# so systemd cannot build that unit's namespace on a fresh boot without it.
+install -d -o root -g root -m 0700 /var/lib/chariox-docker/data
 rm -rf /var/lib/chariox-docker/home/.docker
 if [ "$remove_seeded_rootless_quota_config" -eq 1 ] \
   && [ -f "$rootless_docker_config" ] \

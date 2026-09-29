@@ -183,3 +183,10 @@ test('production claims before start and cleans after verified shutdown', () => 
   const clear = source.indexOf('clear_owned_probe_root /var/lib/chariox-docker/data', stopped)
   assert.ok(claim > 0 && start > claim && stopped > start && clear > stopped)
 })
+
+test('frozen image keeps an empty root-owned data-volume mountpoint', () => {
+  const clear = source.indexOf('clear_owned_probe_root /var/lib/chariox-docker/data')
+  const keep = source.indexOf('install -d -o root -g root -m 0700 /var/lib/chariox-docker/data', clear)
+  assert.ok(clear > 0 && keep > clear)
+  assert.equal(source.includes('rmdir /var/lib/chariox-docker/data'), false)
+})
