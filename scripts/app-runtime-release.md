@@ -34,7 +34,8 @@ The builder's exact UTF-8 JSON bytes use this contract:
 
 `files` is the complete lexically sorted final inventory: every bundle file,
 its manifest, the three native executables and the eight platform libraries.
-Only those executables have `executable: true`. The detached builder signature
+Only those executables and the platform loader (the ELF interpreter of every
+worker executable, which Linux opens for execution) have `executable: true`. The detached builder signature
 is exactly 128 lowercase hexadecimal characters without a trailing newline.
 Builder and release keys are Ed25519 PEM files supplied outside the input tree.
 The private release key must be owned by the invoking user with no group or

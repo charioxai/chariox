@@ -25,7 +25,8 @@ sorted `files` entries with `path`, `size`, `sha256`, and `executable`.
 The allowed source graph comes from the kernel's compiled bundle contract.
 It includes the Node/runtime libraries, native launcher, bootstrap and complete
 SDK, licenses and build manifests. Linux additionally requires the native cgroup
-entry and bundled bubblewrap. Executables have mode0555; other files mode0444.
+entry and bundled bubblewrap. Executables and the Linux platform loader (the
+workers' ELF interpreter) have mode0555; other files mode0444.
 Unknown/missing files, extra directories, symlinks, hard links, incorrect modes,
 ABI/version mismatches and changed digests fail verification. Hashing uses a
 64KiB buffer and the existing 512MiB bundle ceiling. Nothing is executed here.
