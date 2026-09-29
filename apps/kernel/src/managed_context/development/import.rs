@@ -395,9 +395,10 @@ pub(crate) fn cleanup_development_context_publication(
 }
 
 /// Retires a publication written before materialization ownership proofs
-/// existed (transfer state schema <= 2). Those imports always materialized in
-/// place, so the receipt's publication id and canonical destination are the
-/// only identity they carry; the hardened cleanup above can never accept them.
+/// existed (any kernel before they were introduced); used by the schema <= 2
+/// transfer-state migration. Those imports always materialized in place, so
+/// the receipt's publication id and canonical destination are the only
+/// identity they carry, and the hardened cleanup above can never accept them.
 pub(crate) fn cleanup_legacy_development_context_publication(
     destination_root: &Path,
     publication_id: &str,
