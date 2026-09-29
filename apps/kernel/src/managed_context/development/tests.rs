@@ -1458,7 +1458,7 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
     .expect_err("unsafe target directory should fail before extraction");
     assert!(unsafe_error
         .to_string()
-        .contains("target directory is invalid"));
+        .contains("target directory is unsafe or invalid"));
     assert!(!unsafe_destination.exists());
 
     let managed_unsafe_destination = control_parent.join("unsafe-manifest");
@@ -1475,7 +1475,7 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
     .expect_err("managed import must reject a parent-directory target");
     assert!(managed_unsafe_error
         .to_string()
-        .contains("target directory is invalid"));
+        .contains("target directory is unsafe or invalid"));
     assert!(!managed_unsafe_destination.exists());
     assert!(!root.join("escape").exists());
     assert_no_import_temporaries(&control_parent);

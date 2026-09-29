@@ -358,27 +358,28 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
         })
     };
 
-    let _worker_error_private_key = send_client_request(
+    // A worker-side lease loss is healed by one binding refresh on native
+    // launch (remote_native_provider_launch::launch_with_one_binding_refresh),
+    // so it is no longer a client-visible business rejection. The
+    // non-retryable RelayTransport projection is covered by
+    // kernel_protocol::tests::relay_transport_errors_keep_the_stable_local_transport_projection.
+    let healed_private_key = send_client_request(
         &mut client_socket,
-        "worker-business-error-1",
+        "stale-lease-refresh-1",
         &config_home.daemon_id,
         &daemon_public_key,
         launch_request(),
     )
     .await;
-    let worker_error =
-        expect_client_response_error(&mut client_socket, "worker-business-error-1").await;
-    assert_eq!(
-        worker_error.code, "local_transport_error",
-        "stable client transport code should remain unchanged: {worker_error:?}"
-    );
+    let healed = expect_client_response(
+        &mut client_socket,
+        "stale-lease-refresh-1",
+        &healed_private_key,
+    )
+    .await;
     assert!(
-        worker_error.message.contains("leased_agent_not_found"),
-        "worker-authoritative diagnostic should survive the client boundary: {worker_error:?}"
-    );
-    assert!(
-        !worker_error.retryable,
-        "worker-authoritative business rejection must not be projected as retryable: {worker_error:?}"
+        matches!(healed, LocalDaemonResponse::ProviderRunLaunched { .. }),
+        "stale worker lease should be refreshed once and relaunched: {healed:?}"
     );
 
     let _ = shutdown_worker_tx.send(true);

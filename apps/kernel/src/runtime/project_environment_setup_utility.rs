@@ -825,7 +825,7 @@ mod tests {
         );
         for fragment in [
             "selected environment recipe",
-            "Invoke repair only after",
+            "Invoke repair only when the kernel has",
             "package.json",
             "pyproject.toml",
             "go.mod",

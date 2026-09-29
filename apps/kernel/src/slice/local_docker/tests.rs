@@ -1774,6 +1774,10 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
   case "$*" in
     *relay-peer-protocol-version*) printf '%s\n' "$EXPECTED_PROTOCOL" ;;
     *runtime-source-revision*) printf '%s\n' "$EXPECTED_REVISION" ;;
+    *selkies-version*) printf '0.0.0.dev0\n' ;;
+    *selkies-source-revision*) printf '3f87241fcd6abc44e205b22f6596e78ef4946670\n' ;;
+    *selkies-source*) printf 'https://github.com/selkies-project/selkies/commit/3f87241fcd6abc44e205b22f6596e78ef4946670\n' ;;
+    *selkies-license*) printf 'MPL-2.0\n' ;;
     *'{{.Id}}'*) printf 'sha256:backup-image\n' ;;
   esac
   exit 0
@@ -1802,8 +1806,15 @@ if [ "$1" = "rm" ] && [ "${2:-}" = "saved-slice" ]; then
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
-  [ -f "$DOCKER_VOLUME" ]
-  exit $?
+  if [ ! -f "$DOCKER_VOLUME" ]; then
+    printf 'Error response from daemon: get saved-slice-home: no such volume\n' >&2
+    exit 1
+  fi
+  case "$*" in
+    *saved-home.archive-sha256*) sed -n 's/^archive=//p' "$DOCKER_VOLUME" ;;
+    *saved-home.initialization-token*) sed -n 's/^token=//p' "$DOCKER_VOLUME" ;;
+  esac
+  exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
   rm -f "$DOCKER_VOLUME"
@@ -1811,6 +1822,12 @@ if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
 fi
 if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
   : > "$DOCKER_VOLUME"
+  for argument in "$@"; do
+    case "$argument" in
+      io.chariox.saved-home.archive-sha256=*) printf 'archive=%s\n' "${argument#*=}" >> "$DOCKER_VOLUME" ;;
+      io.chariox.saved-home.initialization-token=*) printf 'token=%s\n' "${argument#*=}" >> "$DOCKER_VOLUME" ;;
+    esac
+  done
   exit 0
 fi
 if [ "$1" = "create" ]; then
@@ -1888,7 +1905,10 @@ exit 0
     };
     let remove_container = position("rm saved-slice");
     let remove_volume = position("volume rm saved-slice-home");
-    let create_volume = position("volume create saved-slice-home");
+    let create_volume = calls
+        .iter()
+        .position(|call| call.starts_with("volume create ") && call.ends_with(" saved-slice-home"))
+        .expect("replacement home volume should be created with saved-home labels");
     let create_container = position("create --name saved-slice ");
     let start_container = calls
         .iter()
