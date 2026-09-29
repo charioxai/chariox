@@ -7,7 +7,7 @@ import { occurrenceId } from '../../../../packages/app-sdk/src/occurrences.js';
 import { AppError } from '../../../../packages/app-sdk/src/errors.js';
 import register from '../bundle/runtime/main.mjs';
 
-function fakeKernel({ automation = true } = {}) {
+function fakeKernel({ automation = true, automations = [] } = {}) {
   const state = new Map();
   const wakes = new Map();
   const occurrences = [];
@@ -17,7 +17,14 @@ function fakeKernel({ automation = true } = {}) {
   const chariox = {
     AppError,
     tools: { register: (name, handler) => tools.set(name, handler) },
-    events: { occurrenceId, register: (name, handler) => incoming.set(name, handler) },
+    events: {
+      occurrenceId,
+      register: (name, handler) => incoming.set(name, handler),
+      async automations() {
+        if (automations === null) throw new AppError('METHOD_NOT_FOUND', 'Unknown App storage operation');
+        return { automations };
+      },
+    },
     schedule: { onWake: handler => { onWake = handler; } },
     state: {
       async get(key) { return state.get(key) ?? null; },
@@ -125,4 +132,14 @@ test('an incoming request creates one Todo even when it is delivered twice', asy
   const { todos } = await kernel.tools.get('list_todos')({});
   assert.equal(todos.length, 1);
   assert.deepEqual(kernel.wakes.get(`todo-${todo.id}`), { id: `todo-${todo.id}`, dueAtMs: 9000, revision: '1' });
+});
+
+test('reminder status reports the reminders automation without naming its workflow', async () => {
+  const status = options => fakeKernel(options).tools.get('reminder_status')({});
+  const reminders = { automationId: 'reminders', event: 'todo_due', eventVersion: 1, state: 'broken',
+    lastReceipt: { receiptId: 'receipt-1', state: 'failed' } };
+  const other = { ...reminders, automationId: 'other', state: 'active', lastReceipt: null };
+  assert.deepEqual(await status({ automations: [other, reminders] }), { state: 'broken', last_delivery: 'failed' });
+  assert.deepEqual(await status({ automations: [other] }), { state: 'missing', last_delivery: null });
+  assert.deepEqual(await status({ automations: null }), { state: 'unknown', last_delivery: null });
 });
