@@ -173,7 +173,8 @@ fn local_request_api_runs_workflow_code_with_generated_agent() {
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
-    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    // Provider launch requires the session worktree itself to exist.
+    std::fs::create_dir_all(&worktree_root).expect("temporary worktree should be created");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

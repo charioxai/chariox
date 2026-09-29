@@ -3,8 +3,16 @@ use super::*;
 #[tokio::test]
 async fn get_session_state_reconciles_a_stale_projection_without_app_lock_access() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    // Provider launch requires an existing working directory.
+    let worktree = std::env::temp_dir().join(format!(
+        "chariox-interaction-reconcile-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&worktree).expect("worktree creates");
+    let worktree_path = worktree.display().to_string();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(CreateSessionRequest::new(&worktree_path, &worktree_path))
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -102,6 +110,7 @@ async fn get_session_state_reconciles_a_stale_projection_without_app_lock_access
         }
         _ => panic!("unexpected state response"),
     }
+    let _ = std::fs::remove_dir_all(worktree);
 }
 
 #[tokio::test]

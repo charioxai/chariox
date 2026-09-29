@@ -433,7 +433,16 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
         .event_generator_management_targets
         .insert("dev.chariox.dummy".to_string(), server.target());
     let harness = LocalRouterTestHarness::with_config(config);
-    let graph = create_publication_test_graph(&harness, "event-publication");
+    // Test delivery dispatches the queued prompt. The provider launch preflight rejects a
+    // synthetic worktree, which fails the run and archives it out of the session snapshot.
+    let worktree = crate::test_support::TestWorktree::new("event-publication");
+    let worktree_path = worktree.path().display().to_string();
+    let graph = create_publication_test_graph_in_workspace(
+        &harness,
+        "event-publication",
+        &worktree_path,
+        &worktree_path,
+    );
     let create_publication = |alias: &str| match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
             CreateWorkflowPublicationRequest {
