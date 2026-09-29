@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::app_call_errors;
 use chariox_app_runtime::app_catalog::{Actor, CallerContext};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -43,9 +44,9 @@ impl KernelRuntimeState {
         }
         let slot = lease
             .reserve_call(Duration::from_secs(30))
-            .map_err(app_error)?;
+            .map_err(|error| coded(app_call_errors::busy_error(&error)))?;
         slot.validate_input(&tool.tool_name, &input)
-            .map_err(app_error)?;
+            .map_err(|error| coded(app_call_errors::input_error(&error)))?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let owned = self.owned.clone();
         let expected = agent.clone();
@@ -67,14 +68,14 @@ impl KernelRuntimeState {
             let result = owned
                 .durable_state_store
                 .enqueue_app_tool(slot, &tool.tool_name, input, caller, budget)
-                .map_err(app_error);
+                .map_err(|error| coded(app_call_errors::enqueue_error(&error)));
             drop(agents);
             result.map(|response| (response, expected, tool, remote))
         })
         .await
         .map_err(|_| unavailable())??;
         let (response, expected, tool, remote) = response;
-        let reply = response.receive().await.map_err(app_error)?;
+        let reply = response.receive().await.map_err(worker_call_error)?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let owned = self.owned.clone();
         let payload = tokio::task::spawn_blocking(move || {
@@ -85,7 +86,7 @@ impl KernelRuntimeState {
             let result = owned
                 .durable_state_store
                 .accept_app_tool_reply(reply)
-                .map_err(app_error);
+                .map_err(tool_call_error);
             drop(agents);
             result
         })
