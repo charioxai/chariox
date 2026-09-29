@@ -8,7 +8,7 @@ use chariox_app_runtime::{
     worker_peer::{CallResponse, PeerError, RequestSlot},
 };
 use rusqlite::Transaction;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, thiserror::Error)]
@@ -188,7 +188,15 @@ impl AppWorkerLease {
             "id": wake.id, "dueAtMs": wake.due_at_ms, "revision": wake.revision, "overdue": overdue,
         });
         match slot
-            .request("schedule.wake", params, None)
+            .request(
+                "schedule.wake",
+                params,
+                Some(background_context(
+                    self.catalog().installation_id(),
+                    "schedule",
+                    format!("wake-{}", wake.id),
+                )),
+            )
             .await
             .map_err(peer_error)?
         {
@@ -218,7 +226,15 @@ impl AppWorkerLease {
             "name": item.event_name, "occurrence_id": item.occurrence_id, "payload": item.payload,
         });
         match slot
-            .request("events.deliver", params, None)
+            .request(
+                "events.deliver",
+                params,
+                Some(background_context(
+                    &item.installation_id,
+                    &format!("inbox:{}", item.route_id),
+                    format!("inbox-{}", item.sequence),
+                )),
+            )
             .await
             .map_err(peer_error)?
         {
@@ -232,5 +248,45 @@ impl AppWorkerLease {
             } => Err(handler_error(&failure.error)),
             _ => Err(AppWorkerError::Unavailable.into()),
         }
+    }
+}
+
+/// A kernel wake or an inbox delivery is background work: the handler gets the
+/// same descriptive attribution a tool call gets (`actor.kind` "background",
+/// naming the schedule or the inbox route), with no Room and no agent turn.
+fn background_context(installation: &str, source: &str, operation: String) -> Value {
+    json!({
+        "installation_id": installation,
+        "operation_id": operation,
+        "actor": { "kind": "background", "id": source },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::background_context;
+    use chariox_app_runtime::wire::{Message, Sender, WIRE_VERSION};
+
+    #[test]
+    fn background_deliveries_carry_background_attribution() {
+        let context = background_context("app_1", "inbox:requests", "inbox-7".into());
+        assert_eq!(context["actor"]["kind"], "background");
+        assert_eq!(context["actor"]["id"], "inbox:requests");
+        assert_eq!(context["operation_id"], "inbox-7");
+        assert_eq!(context["installation_id"], "app_1");
+        // No Room or agent turn is invented for background work.
+        assert!(context.get("room_id").is_none() && context.get("agent_id").is_none());
+        // The kernel may send it; the wire rejects it only from a worker.
+        let request = Message::Request {
+            version: WIRE_VERSION,
+            generation: "generation-1".into(),
+            id: "request-1".into(),
+            method: "events.deliver".into(),
+            params: serde_json::json!({}),
+            deadline_ms: 1_000,
+            context: Some(context),
+        };
+        assert!(request.validate("generation-1", Sender::Supervisor).is_ok());
+        assert!(request.validate("generation-1", Sender::Worker).is_err());
     }
 }
