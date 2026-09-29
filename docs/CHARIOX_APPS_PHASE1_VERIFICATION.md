@@ -131,7 +131,6 @@ The revised-plan additions V-PKG-09 and V-RUN-11 are both Partial.
 13. **Deploy closers (S–M):**
     - invoking an HTTP deployment (a signed-in audience or a public local deployment, V-UX-08 **[user step]**);
     - automation state in the App's own view (V-UX-09).
-    - a web rollback onto a release exported before the publication used any App: the kernel binds and recovers it (#537), but `PrepareDeploymentApps` still answers `InvalidRequest` for it while the web asks for consent whenever the publication's latest plan pins Apps; web and kernel should agree (the consent step skipped, or approved, for a release without Apps).
 14. **Candidate reruns (S):** the package corpus, the native probes and the `wire_decode` fuzz target on the release candidate. (The wire fuzzing, V-RUN-04, and the manifest error-code rendering tests, V-PKG-03, are done.)
 15. **Evidence gate (L).** Merge the stack, run hosted CI on the candidate, fix main's 122 baseline failures and follow up the 2 non-baseline ones (renamed environment-only test, load flake) (Apps triage done in #518), and republish dated evidence with revisions, digests and budgets under the plan's evidence path.
 
