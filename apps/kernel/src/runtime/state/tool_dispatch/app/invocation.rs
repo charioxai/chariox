@@ -14,9 +14,12 @@ impl Drop for CancelOnDrop {
 }
 
 impl KernelRuntimeState {
+    /// `caller_run_id` is the provider run that made the call: the local run,
+    /// or a leased agent's worker run.
     pub(super) async fn invoke_bound_app_tool(
         &self,
         agent: &crate::agent::AgentInstance,
+        caller_run_id: &str,
         tool: &RemoteExtensionTool,
         input: serde_json::Value,
         remote: Option<crate::transport::relay_peer::RemoteExtensionInvocationContext>,
@@ -24,6 +27,8 @@ impl KernelRuntimeState {
         if tool.kind != ExtensionKind::App {
             return Err(unavailable());
         }
+        // Captured at submission, before any wait for an on-demand start.
+        let turn_id = self.app_call_turn_id(agent, caller_run_id);
         let cancelled = CancelOnDrop(Arc::new(AtomicBool::new(false)));
         let observe = cancelled.0.clone();
         let budget =
@@ -54,9 +59,6 @@ impl KernelRuntimeState {
             // The blocking closure retains admission even if the awaiting MCP
             // connection closes. No guard is held while awaiting App execution.
             let _permit = permit;
-            // Read before taking the agent guard, so no session or prompt lock
-            // is taken while it is held.
-            let turn_id = agent_turn_id(&owned, &expected);
             let agents = owned.agent_store.read();
             let current = agents.get_agent(expected.id())?;
             require_binding(&current, &expected, &tool, remote.as_ref())?;
@@ -232,17 +234,42 @@ impl KernelRuntimeState {
     }
 }
 
-/// The agent's turn (its active Chariox prompt) when it makes the call. It is
-/// captured once at submission: a later turn or focus change never
-/// re-attributes an accepted call.
-fn agent_turn_id(
-    owned: &crate::runtime::state::KernelRuntimeOwnedState,
-    agent: &crate::agent::AgentInstance,
+impl KernelRuntimeState {
+    /// The agent's turn (its active Chariox prompt) when it makes the call. It
+    /// is captured once at submission: a later turn or focus change never
+    /// re-attributes an accepted call.
+    fn app_call_turn_id(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        caller_run_id: &str,
+    ) -> Option<String> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(agent.session_id())
+            .ok()?;
+        call_turn_id(
+            self.owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent.id()),
+            caller_run_id,
+        )
+    }
+}
+
+/// A prompt delivered to another run is not the calling turn (the previous turn
+/// settled, or the next one is not delivered yet): no turn beats a wrong one.
+/// An id the App context cannot carry is left out rather than failing the call.
+fn call_turn_id(
+    active: Option<crate::session::PromptQueueItem>,
+    caller_run_id: &str,
 ) -> Option<String> {
-    let session = owned.session_store.get_session(agent.session_id()).ok()?;
-    owned
-        .prompt_state_owner
-        .active_prompt_for_agent(&session, agent.id())
+    active
+        .filter(|prompt| {
+            prompt
+                .durable_delivery_provider_run_id()
+                .is_none_or(|run| run == caller_run_id)
+        })
         .map(|prompt| prompt.id().to_string())
         .filter(|id| CallerContext::valid_id(id))
 }
@@ -297,6 +324,44 @@ fn eviction_victim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_names_only_the_turn_its_own_run_is_serving() {
+        let prompt = |id: &str, run: Option<&str>| {
+            let mut prompt = crate::session::PromptQueueItem::new(
+                id,
+                "attachment-1",
+                "agent-1",
+                "use the App",
+                crate::session::PromptStatus::Running,
+            );
+            if let Some(run) = run {
+                prompt.set_durable_delivery(
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(run.to_string()),
+                    None,
+                );
+            }
+            prompt
+        };
+        // Delivered to the calling run (a local run, or a leased agent's
+        // worker run), or not yet recorded: that turn.
+        assert_eq!(
+            call_turn_id(Some(prompt("prompt-1", Some("run-a"))), "run-a").as_deref(),
+            Some("prompt-1")
+        );
+        assert_eq!(
+            call_turn_id(Some(prompt("prompt-1", None)), "run-a").as_deref(),
+            Some("prompt-1")
+        );
+        // Another run's turn, no turn, or an id the context cannot carry: none.
+        assert_eq!(
+            call_turn_id(Some(prompt("prompt-2", Some("run-b"))), "run-a"),
+            None
+        );
+        assert_eq!(call_turn_id(None, "run-a"), None);
+        assert_eq!(call_turn_id(Some(prompt("prompt 3", None)), "run-a"), None);
+    }
 
     #[test]
     fn eviction_picks_the_longest_idle_other_worker_past_the_threshold() {
