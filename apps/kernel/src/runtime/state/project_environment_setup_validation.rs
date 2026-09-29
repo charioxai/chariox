@@ -989,7 +989,7 @@ done
         assert!(prepared_path
             .starts_with(&preparation_home.path().join("go/bin").display().to_string()));
         run_worker_setup_steps(
-            &[r#"set -eu; mkdir -p "$HOME/go/bin"; printf '%s\n' '#!/bin/sh' 'printf "%s\n" installed-from-post-ready-provider' > "$HOME/go/bin/inner-tool"; chmod 700 "$HOME/go/bin/inner-tool"; printf '#!%s\n' "$HOME/go/bin/inner-tool" > "$HOME/go/bin/project-tool"; chmod 700 "$HOME/go/bin/project-tool""#.to_string()],
+            &[r#"set -eu; mkdir -p "$HOME/go/bin"; printf '%s\n' '#!/bin/sh' 'printf "%s\n" installed-from-post-ready-provider' > "$HOME/go/bin/inner-tool"; chmod 700 "$HOME/go/bin/inner-tool"; printf '#!/bin/sh\nexec "%s" "$@"\n' "$HOME/go/bin/inner-tool" > "$HOME/go/bin/project-tool"; chmod 700 "$HOME/go/bin/project-tool""#.to_string()],
             &workspace,
             &prepared_environment,
             || false,
@@ -1061,6 +1061,11 @@ done
         let testdata = root.join("testdata");
         std::fs::create_dir_all(&scripts).expect("script directory should exist");
         std::fs::create_dir_all(&testdata).expect("application fixture directory should exist");
+        // Production passes the canonical worker workspace; on macOS temp_dir()
+        // is behind a /var symlink.
+        let root = root
+            .canonicalize()
+            .expect("script fixture root should resolve");
         let fixture_contents = b"application test fixture, not an SSH credential\n";
         std::fs::write(testdata.join("private_key.pem"), fixture_contents)
             .expect("application private_key fixture should exist");
@@ -1147,6 +1152,9 @@ done
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&root).expect("input fixture workspace should exist");
+        let root = root
+            .canonicalize()
+            .expect("input fixture workspace should resolve");
         let path = root.join("package.json");
         let contents = br#"{"name":"fixture"}
 "#;
@@ -1190,6 +1198,9 @@ done
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&root).expect("input fixture workspace should exist");
+        let root = root
+            .canonicalize()
+            .expect("input fixture workspace should resolve");
         let path = root.join(".devcontainer/devcontainer.json");
         let contents = br#"{"name":"kernel-attested"}
 "#;

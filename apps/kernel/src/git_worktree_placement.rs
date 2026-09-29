@@ -947,7 +947,11 @@ mod tests {
         .expect("missing children below symlinked directories should be plan-able");
         assert_eq!(
             planned.canonical_path,
-            target.join("created-after-enrollment").join("deeper")
+            target
+                .canonicalize()
+                .unwrap()
+                .join("created-after-enrollment")
+                .join("deeper")
         );
         std::fs::remove_file(alias).expect("directory alias should be removable");
         std::fs::remove_dir_all(root).expect("symlink fixture should be removable");
