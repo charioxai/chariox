@@ -115,9 +115,11 @@ impl KernelRuntimeState {
             })?;
         let apps = plan["apps"].as_array().cloned().unwrap_or_default();
         let owner = publication.created_by_user_id().to_owned();
-        // A release that uses no App runs from the source, as one without a plan.
+        // A release that uses no App runs from the source, as one without a
+        // plan: the deployment's copy goes (its installations, routes and
+        // sessions) and the owner's routes resume.
         if apps.is_empty() {
-            self.remove_deployment_copy_sessions(&owner, deployment_id, None)
+            self.remove_deployment_app_copy(&owner, deployment_id)
                 .await?;
             return Ok(None);
         }
@@ -966,6 +968,21 @@ impl KernelRuntimeState {
     }
 
     /// Records deployment metadata (such as a binding) on a publication.
+    /// Records `plan` as the App plan of the release with `package_digest`.
+    pub(crate) fn fixture_record_release_app_plan(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+        package_digest: &str,
+        plan: serde_json::Value,
+    ) {
+        self.owned
+            .session_store
+            .write()
+            .record_workflow_publication_app_plan(session_id, publication_id, package_digest, plan)
+            .unwrap();
+    }
+
     pub(crate) fn fixture_mark_publication_deployment(
         &self,
         session_id: &str,

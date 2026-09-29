@@ -680,3 +680,55 @@ fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// A release whose plan names no App (its last App was removed) runs from the
+/// source: binding it removes the deployment's copy and resumes the owner.
+#[test]
+fn a_release_without_apps_removes_the_copy_and_resumes_the_owner() {
+    let root = temp_root("copy-no-apps");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-no-apps", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    let copy_session = ensure(&harness, &deployed).unwrap().expect("a copy");
+    let set = app_set(&harness);
+    assert!(installation(&set, "copy").inbox_routes[0].active);
+    assert!(!installation(&set, "installed").inbox_routes[0].active);
+
+    let empty = format!("sha256:{}", "e".repeat(64));
+    harness.runtime_state().fixture_record_release_app_plan(
+        &deployed.graph.session_id,
+        deployed.publication.id(),
+        &empty,
+        serde_json::json!({"schema": "chariox.publication-apps.v1", "apps": []}),
+    );
+    let next = Deployed {
+        graph: deployed.graph,
+        publication: deployed.publication,
+        digest: empty,
+    };
+    assert_eq!(ensure_release(&harness, &next, "release-2").unwrap(), None);
+    let set = app_set(&harness);
+    assert!(
+        set.iter()
+            .all(|installation| installation.deployment_id.as_deref() != Some(DEPLOYMENT)),
+        "the deployment's copy installations are gone: {set:?}"
+    );
+    assert!(
+        installation(&set, "installed").inbox_routes[0].active,
+        "the owner's route resumes"
+    );
+    assert!(harness
+        .runtime_state()
+        .fixture_session(&copy_session)
+        .is_err());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
