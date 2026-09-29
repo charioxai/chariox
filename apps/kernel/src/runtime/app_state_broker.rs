@@ -91,6 +91,23 @@ impl AppStorageBroker {
             }
             AppStateOutcome::Receipt(receipt) => receipt::value(&receipt),
             AppStateOutcome::Wakes(wakes) => json!({ "wakes": wakes }),
+            // Each automation's own state and latest receipt: never its
+            // workflow target, which belongs to the owner.
+            AppStateOutcome::Automations(automations) => {
+                let automations: Vec<_> = automations
+                    .iter()
+                    .map(|(automation, latest)| {
+                        json!({
+                            "automationId": automation.automation_id,
+                            "event": automation.event_name,
+                            "eventVersion": automation.event_version,
+                            "state": automation.status.name(),
+                            "lastReceipt": latest.as_ref().map(receipt::value),
+                        })
+                    })
+                    .collect();
+                json!({ "automations": automations })
+            }
         })
     }
 }

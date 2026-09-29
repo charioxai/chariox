@@ -18,6 +18,10 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
                 .map_err(errors::outbox)?;
             Ok(AppStateOperation::Emit(occurrence))
         }
+        "events.automations" => {
+            decode::fields(params, &[])?;
+            Ok(AppStateOperation::Automations)
+        }
         "events.status" | "events.retry" => {
             let mut params = decode::fields(params, &["receiptId"])?;
             let receipt_id = decode::key(decode::take(&mut params, "receiptId")?)?;

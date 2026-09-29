@@ -140,6 +140,27 @@ impl AppOutbox {
         )
     }
 
+    /// The App's own automations with each one's most recent retained receipt,
+    /// for the App to show their state; the admitted catalog must be current.
+    pub fn automations_in(
+        transaction: &Transaction<'_>,
+        catalog: &EventCatalog,
+        trusted_owner: &str,
+    ) -> Result<Vec<(AutomationConfiguration, Option<Receipt>)>> {
+        Self::configurations_in(transaction, catalog, trusted_owner)?
+            .into_iter()
+            .map(|automation| {
+                let latest = store::latest_receipt(
+                    transaction,
+                    trusted_owner,
+                    catalog.installation_id(),
+                    &automation.automation_id,
+                )?;
+                Ok((automation, latest))
+            })
+            .collect()
+    }
+
     /// Bounded candidate discovery. Consumers must claim/recheck each candidate
     /// in their committing transaction; this read grants no delivery authority.
     pub fn pending_in(

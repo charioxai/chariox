@@ -54,6 +54,16 @@ export interface EventReceipt {
   receiptId: string;
   state: 'accepted' | 'queued' | 'delivered' | 'retryable' | 'failed' | 'expired';
 }
+/** One of the App's automations as the owner configured it; never its workflow target. */
+export interface AppAutomation {
+  automationId: string;
+  event: string;
+  eventVersion: number;
+  /** No current request pauses an automation; treat `paused` like `disabled`. */
+  state: 'active' | 'paused' | 'broken' | 'disabled';
+  /** The most recent retained receipt, or null before any delivery or after cleanup. */
+  lastReceipt: EventReceipt | null;
+}
 export interface StateRecord { value: Json; version: number }
 export interface StateTransaction {
   schemaVersion: number;
@@ -111,6 +121,8 @@ export interface AppSdk {
     occurrenceId(sourceKey: string, occurredAtMs: number): string;
     /** Reconcile a due, kernel-classified retryable receipt; never restart a terminal operation. */
     retry(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
+    /** The owner's automations of this App's events, read from the kernel. */
+    automations(options?: CallOptions): Promise<{ automations: AppAutomation[] }>;
   };
   readonly lifecycle: { on(event: LifecycleEvent, handler: Handler): void };
   readonly state: {
