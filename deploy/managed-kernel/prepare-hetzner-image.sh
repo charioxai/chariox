@@ -593,8 +593,8 @@ fi
 if find /home/chariox/.chariox -mindepth 1 -print -quit | grep -q .; then
   fail "managed kernel state entered the image"
 fi
-if find /var/lib/chariox-docker -mindepth 1 ! -path /var/lib/chariox-docker/home -print -quit | grep -q . \
-  || find /var/lib/chariox-docker/home -mindepth 1 -print -quit | grep -q .; then
+if find /var/lib/chariox-docker -mindepth 1 ! -path /var/lib/chariox-docker/home ! -path /var/lib/chariox-docker/data -print -quit | grep -q . \
+  || find /var/lib/chariox-docker/home /var/lib/chariox-docker/data -mindepth 1 -print -quit | grep -q .; then
   fail "rootless Docker state entered the image"
 fi
 if find /var/lib/chariox-slice-share -mindepth 1 \
