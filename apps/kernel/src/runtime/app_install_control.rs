@@ -85,6 +85,8 @@ struct Entry {
     step: Step,
     busy: bool,
     next: Instant,
+    /// The approval prompt could not be shown; logged once until it is.
+    prompt_refused: bool,
 }
 enum Step {
     Work,
@@ -111,6 +113,7 @@ impl Entry {
             step: Step::Work,
             busy: false,
             next: Instant::now(),
+            prompt_refused: false,
         }
     }
 }

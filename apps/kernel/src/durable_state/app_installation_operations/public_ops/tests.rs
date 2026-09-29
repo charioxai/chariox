@@ -826,3 +826,17 @@ mod deployment_consent {
         assert!(prompts(arm_copy(&f, "copy", "app_deploy_1")));
     }
 }
+
+#[test]
+fn a_deployment_copy_prompt_names_its_deployment() {
+    let f = Fixture::new();
+    let copy = f.stage("copy-install");
+    f.store
+        .fixture_tag_app_installation("alice", &copy.token.installation_id, "deployment-7");
+    assert_eq!(
+        f.arm("copy-install", "nonce-copy").deployment_id(),
+        Some("deployment-7")
+    );
+    f.stage("own-install");
+    assert_eq!(f.arm("own-install", "nonce-own").deployment_id(), None);
+}
