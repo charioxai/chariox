@@ -811,14 +811,12 @@ fn a_stop_while_queued_for_the_claim_is_recorded_under_a_slot_without_waiting_fo
         .app_worker_status("alice", "installed")
         .unwrap()
         .is_none_or(|v| v.phase != WorkerPhase::Stopped));
-    // A start before maintenance records the stop is refused as Busy, not
+    // A start before the stop is recorded is refused as Busy at once, not
     // reported as running and then undone.
-    wait(|| {
-        matches!(
-            service.start_active_blocking("alice", "installed", runtime.handle().clone()),
-            Err(LifecycleError::Busy)
-        )
-    });
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Busy)
+    ));
     drop(permits);
     // Maintenance persists the pending stop under its own slot, once the
     // owner has finished.

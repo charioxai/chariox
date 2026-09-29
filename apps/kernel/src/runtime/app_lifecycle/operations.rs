@@ -64,9 +64,10 @@ impl AppLifecycleService {
             return Err(LifecycleError::Stopped);
         }
         if let Some(entry) = entries.get(&key).cloned() {
-            // A stop that ended a queued start is not recorded yet: this start
-            // would be reported as running and then undone. Retry after it.
-            if entry.control.finished() && entry.control.pending_manual_stop() {
+            // A stop that is not recorded yet (still draining, or deferred to
+            // maintenance) is a concurrent operation: this start would be
+            // reported as running and then undone. Retry after it.
+            if entry.control.pending_manual_stop() {
                 return Err(LifecycleError::Busy);
             }
             let replacing = match &kind {
