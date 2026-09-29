@@ -1206,7 +1206,23 @@ done
     );
     assert!(recovered_actor_ids
         .contains(crate::session::agent_environment_actor_id(&agent_id).as_str()));
-    assert_eq!(recovered_environment.actions.len(), 4);
+    // slice_browser_status/find are recorded as non-mutating Room observations.
+    assert_eq!(
+        recovered_environment
+            .actions
+            .iter()
+            .map(|action| action.kind.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "browser_status",
+            "browser_find",
+            "fill",
+            "click",
+            "submit",
+            "secret_input",
+            "browser_status"
+        ]
+    );
     assert!(recovered_environment
         .actions
         .iter()
@@ -1629,10 +1645,13 @@ done
             .map(|action| action.kind.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "browser_status",
+            "browser_find",
             "fill",
             "click",
             "submit",
             "secret_input",
+            "browser_status",
             "fill",
             "dialog",
             "download_configure",
@@ -1647,7 +1666,7 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)
