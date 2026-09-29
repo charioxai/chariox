@@ -26,11 +26,14 @@ impl AppControlService {
         agent: &AgentInstance,
         occupied: &BTreeSet<String>,
     ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
-        // Bound Apps are listed whether or not they run; a call starts them.
-        self.seed_bound_dormant(agent);
-        if !self.has_active_apps_for_agent(agent) {
+        if !agent
+            .extension_grants()
+            .iter()
+            .any(|grant| grant.kind == ExtensionKind::App)
+        {
             return Ok(Vec::new());
         }
+        // Seeding reads releases, so it runs under an App admission slot.
         let permit = self
             .try_admit()
             .map_err(|_| crate::runtime::app_worker::AppWorkerError::Busy)?;

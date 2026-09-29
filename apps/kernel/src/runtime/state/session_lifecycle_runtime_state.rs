@@ -521,19 +521,7 @@ impl KernelRuntimeState {
         self.owned.alias_session(session_id, alias)
     }
 
-    /// A new agent becomes the session's focus: it is bound to the session's
-    /// foreground App like any other focus change.
     pub(crate) async fn spawn_agent(
-        &self,
-        request: crate::agent::CreateAgentRequest,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self.spawn_agent_unbound(request).await?;
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        self.bind_foreground_app(agent.session_id(), false).await;
-        Ok(agent)
-    }
-
-    async fn spawn_agent_unbound(
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {

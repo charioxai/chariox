@@ -324,6 +324,13 @@ impl SessionRuntimeStore {
                         return self.with_session_projection_action_result(Err(error)).await;
                     }
                 }
+                // A person's new agent becomes the focus and gets the session's
+                // foreground App, like any focus change. An agent-initiated
+                // spawn does not: it would bind without authorization.
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                if caller_metaagent_id.is_none() {
+                    self.state.bind_foreground_app(&session_id, false).await;
+                }
                 if caller_metaagent_id.is_none() && !agent.is_metaagent() {
                     let _ = self
                         .state
@@ -543,6 +550,13 @@ impl SessionRuntimeStore {
             .collect::<Vec<_>>();
         if let Err(error) = self.state.attach_slice_agents(slice_attachments).await {
             return self.with_session_projection_action_result(Err(error)).await;
+        }
+        // Only the last (focus) agent of a person's batch gets the foreground App.
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if caller_metaagent_id.is_none() {
+            self.state
+                .bind_foreground_app(&request.session_id, false)
+                .await;
         }
         if caller_metaagent_id.is_none() {
             let _ = self

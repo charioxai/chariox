@@ -189,13 +189,11 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_list_extensions",
                     message: "App installation inventory is unavailable".into(),
                 })?;
-            // Bound Apps list their tools whether or not they run (a call
-            // starts them); a user stop or a failed generation keeps them out.
-            // Seeding reads releases, so it takes an App admission slot.
+            // An App whose worker runs or may start on demand is listed once
+            // bound (a call starts it); a user stop or a failed generation is
+            // not. The start gate answers that without loading the release.
             let control = self.app_control();
-            if let Ok(_permit) = control.try_admit() {
-                control.seed_bound_dormant(&agent);
-            }
+            let store = &self.owned.durable_state_store;
             let owner = agent.owner_user_id();
             let apps = page
                 .installations
@@ -206,7 +204,11 @@ impl KernelRuntimeState {
                         agent.has_extension_grant(crate::extension::ExtensionKind::App, id);
                     let active = installation.active.is_some();
                     let listed = control.active_app_lease(owner, id).is_some()
-                        || control.is_app_dormant(owner, id);
+                        || control.is_app_dormant(owner, id)
+                        || matches!(
+                            store.app_worker_start_gate(owner, id),
+                            Ok(crate::durable_state::app_worker_lifecycle::StartGate::Allowed)
+                        );
                     let (ready_state, effective) = app_readiness(active, granted, listed);
                     serde_json::json!({
                         "kind": "app", "name": id,
@@ -252,7 +254,8 @@ fn app_readiness(active: bool, granted: bool, listed: bool) -> (&'static str, &'
         (false, _, _) => ("unavailable", "unavailable"),
         (true, true, true) => ("ready", "now"),
         (true, true, false) => ("stopped", "binding_saved"),
-        (true, false, _) => ("available", "after_provider_reload"),
+        (true, false, true) => ("available", "after_provider_reload"),
+        (true, false, false) => ("stopped", "binding_saved"),
     }
 }
 
@@ -273,6 +276,11 @@ mod app_readiness_tests {
         assert_eq!(
             app_readiness(true, false, true),
             ("available", "after_provider_reload")
+        );
+        // Unbound but stopped by the user or failed: a request only saves it.
+        assert_eq!(
+            app_readiness(true, false, false),
+            ("stopped", "binding_saved")
         );
     }
 }

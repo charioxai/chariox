@@ -150,7 +150,15 @@ impl AppViews {
             Some(views) => {
                 views.revoked.insert(key);
             }
-            // Without App views there is no foreground App to bind again.
+            // Recorded even before the session opens an App: a later focus
+            // change must not bind the revoked pair again.
+            None if revoked => {
+                sessions
+                    .entry(session.to_owned())
+                    .or_default()
+                    .revoked
+                    .insert(key);
+            }
             None => {}
         }
     }
@@ -372,8 +380,8 @@ mod tests {
     #[test]
     fn a_revoked_binding_is_remembered_until_the_app_binds_it_again() {
         let views = AppViews::default();
-        views.set_foreground("s", "alice", "a");
         assert!(!views.is_revoked("s", "agent-1", "a"));
+        // Recorded even before the session has App views.
         views.set_revoked("s", "agent-1", "a", true);
         assert!(views.is_revoked("s", "agent-1", "a"));
         assert!(!views.is_revoked("s", "agent-2", "a"));

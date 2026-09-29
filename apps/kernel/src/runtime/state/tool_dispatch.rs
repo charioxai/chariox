@@ -92,10 +92,11 @@ impl KernelRuntimeState {
         }
         let Ok(permit) = self.app_control().try_admit() else {
             // Saturated: an agent whose Apps neither run nor are dormant keeps
-            // its other tools (its Apps are listed on the next discovery); a
-            // running App's tools must not silently disappear.
+            // its other tools now, and a catalog refresh lists its Apps once a
+            // slot frees; a running App's tools must not silently disappear.
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             if !self.has_active_apps_for_auth_token(&auth_token) {
+                self.refresh_app_catalog_later(&auth_token);
                 return Ok(self.runtime_tool_specs_without_apps_for_auth_token(&auth_token));
             }
             return Err(DaemonError::LocalTransport {

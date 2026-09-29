@@ -38,6 +38,27 @@ impl KernelRuntimeState {
             .collect())
     }
 
+    /// A listing served without the agent's Apps (App admission was busy):
+    /// the provider re-reads its tools shortly, through the usual refresh.
+    pub(super) fn refresh_app_catalog_later(&self, auth_token: &str) {
+        let runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token);
+        let [run] = runs.as_slice() else {
+            return;
+        };
+        let Ok(agent) = self.app_agent_for_provider_run(run) else {
+            return;
+        };
+        let state = self.clone();
+        let (session, agent) = (agent.session_id().to_owned(), agent.id().to_owned());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let _ = state.refresh_agent_runtime_tool_catalog(&session, &agent).await;
+        });
+    }
+
     /// Whether the run's agent has a running or dormant bound App.
     pub(super) fn has_active_apps_for_auth_token(&self, auth_token: &str) -> bool {
         let runs = self

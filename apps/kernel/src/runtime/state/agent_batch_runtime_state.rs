@@ -2,25 +2,7 @@ use super::*;
 use crate::agent::{AgentInstance, CreateAgentRequest};
 
 impl KernelRuntimeState {
-    /// The last new agent becomes the session's focus: it is bound to the
-    /// session's foreground App like any other focus change.
     pub(crate) async fn spawn_agents(
-        &self,
-        requests: Vec<CreateAgentRequest>,
-        caller_user_id: &str,
-        slice_refs: &[Option<String>],
-    ) -> Result<Vec<AgentInstance>, DaemonError> {
-        let agents = self
-            .spawn_agents_unbound(requests, caller_user_id, slice_refs)
-            .await?;
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(last) = agents.last() {
-            self.bind_foreground_app(last.session_id(), false).await;
-        }
-        Ok(agents)
-    }
-
-    async fn spawn_agents_unbound(
         &self,
         mut requests: Vec<CreateAgentRequest>,
         caller_user_id: &str,
