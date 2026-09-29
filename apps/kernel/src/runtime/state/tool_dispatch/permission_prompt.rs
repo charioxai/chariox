@@ -130,11 +130,9 @@ fn claude_permission_prompt_decision(
     if resolution.choice_id.as_deref() == Some("allow_once") {
         return serde_json::json!({ "behavior": "allow", "updatedInput": input });
     }
-    deny(if resolution.status == "timed_out" {
-        "Timed out waiting for Chariox approval."
-    } else {
-        "Denied through Chariox."
-    })
+    // Deny, including an unanswered prompt: its timeout picks the default
+    // Deny choice.
+    deny("Denied through Chariox.")
 }
 
 fn deny(message: &str) -> serde_json::Value {

@@ -2,6 +2,9 @@ use super::*;
 
 const CLAUDE_TOKEN: &str = "claude-print-permission-token";
 const NATIVE_TUI_TOKEN: &str = "claude-native-tui-permission-token";
+const PLAN_TOKEN: &str = "claude-print-plan-permission-token";
+const YOLO_TOKEN: &str = "claude-print-yolo-permission-token";
+const BROKEN_TOKEN: &str = "claude-print-broken-permission-token";
 
 fn insert_claude_run(
     app: &mut DaemonApp,
@@ -11,13 +14,36 @@ fn insert_claude_run(
     token: &str,
     client_interface: crate::provider::ProviderClientInterface,
 ) {
+    insert_claude_run_in_mode(
+        app,
+        session_id,
+        agent_id,
+        run_id,
+        token,
+        client_interface,
+        crate::provider::AgentExecutionMode::Build,
+        crate::provider::AgentPermissionLevel::Required,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_claude_run_in_mode(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    run_id: &str,
+    token: &str,
+    client_interface: crate::provider::ProviderClientInterface,
+    execution_mode: crate::provider::AgentExecutionMode,
+    permission_level: crate::provider::AgentPermissionLevel,
+) {
     let request = crate::provider::LaunchProviderRequest::new(
         session_id, "claude", "claude", "default", "sonnet",
     )
     .with_agent_id(agent_id)
     .with_client_interface(client_interface)
-    .with_execution_mode(crate::provider::AgentExecutionMode::Build)
-    .with_permission_level(crate::provider::AgentPermissionLevel::Required)
+    .with_execution_mode(execution_mode)
+    .with_permission_level(permission_level)
     .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
         "http://127.0.0.1:1/mcp",
         token,
@@ -67,19 +93,35 @@ async fn tool_names(router: &Arc<CommandRouter>, token: &str) -> Vec<String> {
         .collect()
 }
 
-async fn prompt_and_answer(
+fn active_interactions(
     router: &Arc<CommandRouter>,
     session_id: &str,
-    agent_id: &str,
+) -> Vec<crate::session::RuntimeInteraction> {
+    router
+        .runtime_state()
+        .session_snapshot_projection(session_id, 0)
+        .expect("session projection should remain available")
+        .session
+        .active_interactions()
+        .to_vec()
+}
+
+/// Calls the prompt tool as Claude does and waits for its interaction.
+async fn start_prompt(
+    router: &Arc<CommandRouter>,
+    token: &str,
+    session_id: &str,
     tool_use_id: &str,
-    choice_id: &str,
-) -> Value {
+) -> (
+    tokio::task::JoinHandle<Value>,
+    crate::session::RuntimeInteraction,
+) {
     let call_router = router.clone();
-    let tool_use = tool_use_id.to_string();
+    let (token, tool_use) = (token.to_string(), tool_use_id.to_string());
     let call = tokio::spawn(async move {
         rpc(
             &call_router,
-            CLAUDE_TOKEN,
+            &token,
             "tools/call",
             serde_json::json!({
                 "name": "chariox.permission_prompt",
@@ -94,23 +136,53 @@ async fn prompt_and_answer(
     });
     let interaction = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let session = router
-                .runtime_state()
-                .session_snapshot_projection(session_id, 0)
-                .expect("session projection should remain available")
-                .session;
-            if let Some(interaction) = session
-                .active_interactions()
-                .iter()
+            if let Some(interaction) = active_interactions(router, session_id)
+                .into_iter()
                 .find(|interaction| interaction.id().ends_with(tool_use_id))
             {
-                break interaction.clone();
+                break interaction;
             }
             tokio::task::yield_now().await;
         }
     })
     .await
     .expect("permission prompt should create a runtime interaction");
+    (call, interaction)
+}
+
+/// The documented `--permission-prompt-tool` result: exactly one text block
+/// holding the JSON-stringified decision, and nothing else.
+fn decision(response: &Value) -> Value {
+    let result = response["result"]
+        .as_object()
+        .unwrap_or_else(|| panic!("tool call should succeed: {response:#}"));
+    assert_eq!(
+        result.keys().collect::<Vec<_>>(),
+        vec!["content"],
+        "{response:#}"
+    );
+    let content = result["content"]
+        .as_array()
+        .expect("tool result should carry content");
+    assert_eq!(content.len(), 1, "Claude expects a single text block");
+    assert_eq!(content[0].as_object().map(|block| block.len()), Some(2));
+    assert_eq!(content[0]["type"], "text");
+    serde_json::from_str(
+        content[0]["text"]
+            .as_str()
+            .expect("permission decision should be text"),
+    )
+    .expect("permission decision text should be JSON")
+}
+
+async fn prompt_and_answer(
+    router: &Arc<CommandRouter>,
+    session_id: &str,
+    agent_id: &str,
+    tool_use_id: &str,
+    choice_id: &str,
+) -> Value {
+    let (call, interaction) = start_prompt(router, CLAUDE_TOKEN, session_id, tool_use_id).await;
     assert_eq!(
         interaction.kind(),
         crate::session::RuntimeInteractionKind::Permission
@@ -123,19 +195,7 @@ async fn prompt_and_answer(
         .resolve_runtime_interaction(session_id, interaction.id(), choice_id, None)
         .await
         .expect("permission interaction should resolve");
-    let response = call.await.expect("permission prompt call should join");
-    assert_eq!(response["result"]["isError"], false, "{response:#}");
-    let content = response["result"]["content"]
-        .as_array()
-        .expect("tool result should carry content");
-    assert_eq!(content.len(), 1, "Claude expects a single text block");
-    assert_eq!(content[0]["type"], "text");
-    serde_json::from_str(
-        content[0]["text"]
-            .as_str()
-            .expect("permission decision should be text"),
-    )
-    .expect("permission decision text should be JSON")
+    decision(&call.await.expect("permission prompt call should join"))
 }
 
 #[tokio::test]
@@ -241,5 +301,134 @@ async fn claude_print_permission_prompt_asks_the_user_and_maps_the_answer() {
         .session
         .active_interactions()
         .is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_prompt() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-permission-prompt-closed-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    insert_claude_run(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "provider-run-claude-print",
+        CLAUDE_TOKEN,
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    // Print runs in Plan mode or at the Yolo level have no prompt tool flag.
+    for (run_id, token, execution_mode, permission_level) in [
+        (
+            "provider-run-claude-plan",
+            PLAN_TOKEN,
+            crate::provider::AgentExecutionMode::Plan,
+            crate::provider::AgentPermissionLevel::Required,
+        ),
+        (
+            "provider-run-claude-yolo",
+            YOLO_TOKEN,
+            crate::provider::AgentExecutionMode::Build,
+            crate::provider::AgentPermissionLevel::Yolo,
+        ),
+    ] {
+        insert_claude_run_in_mode(
+            &mut app,
+            session.id(),
+            agent.id(),
+            run_id,
+            token,
+            crate::provider::ProviderClientInterface::Chariox,
+            execution_mode,
+            permission_level,
+        );
+    }
+    // Its interaction id exceeds the store's limit, so the bridge fails.
+    insert_claude_run(
+        &mut app,
+        session.id(),
+        agent.id(),
+        &format!("provider-run-{}", "x".repeat(120)),
+        BROKEN_TOKEN,
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    let call = |tool_use_id: &str| {
+        serde_json::json!({
+            "name": "chariox.permission_prompt",
+            "arguments": {
+                "tool_name": "Bash",
+                "input": {"command": "touch file.txt"},
+                "tool_use_id": tool_use_id,
+            }
+        })
+    };
+
+    for token in [PLAN_TOKEN, YOLO_TOKEN] {
+        assert!(!tool_names(&router, token)
+            .await
+            .contains(&"chariox.permission_prompt".to_string()));
+        let response = rpc(&router, token, "tools/call", call("toolu_other_mode")).await;
+        assert_eq!(response["result"]["isError"], true, "{response:#}");
+    }
+    // Without `input` the call is invalid, and Claude Code denies the tool.
+    let missing = rpc(
+        &router,
+        CLAUDE_TOKEN,
+        "tools/call",
+        serde_json::json!({
+            "name": "chariox.permission_prompt",
+            "arguments": {"tool_name": "Bash"}
+        }),
+    )
+    .await;
+    assert_eq!(missing["error"]["code"], -32000, "{missing:#}");
+
+    // An unanswered prompt times out to its default Deny choice.
+    let (pending, interaction) =
+        start_prompt(&router, CLAUDE_TOKEN, session.id(), "toolu_timeout").await;
+    router
+        .runtime_state()
+        .timeout_runtime_interaction(session.id(), interaction.id())
+        .await
+        .expect("permission interaction should time out");
+    assert_eq!(
+        decision(&pending.await.expect("permission prompt call should join")),
+        serde_json::json!({"behavior": "deny", "message": "Denied through Chariox."})
+    );
+
+    // Claude abandons the call: dropping the handler future closes the prompt.
+    let (abandoned, _interaction) =
+        start_prompt(&router, CLAUDE_TOKEN, session.id(), "toolu_abandoned").await;
+    abandoned.abort();
+    let _ = abandoned.await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !active_interactions(&router, session.id()).is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("an abandoned permission prompt should close");
+
+    // A bridge failure denies.
+    let broken = rpc(&router, BROKEN_TOKEN, "tools/call", call("toolu_broken")).await;
+    assert_eq!(
+        decision(&broken),
+        serde_json::json!({"behavior": "deny", "message": "Chariox permission bridge failed."})
+    );
+    assert!(active_interactions(&router, session.id()).is_empty());
     let _ = std::fs::remove_dir_all(root);
 }

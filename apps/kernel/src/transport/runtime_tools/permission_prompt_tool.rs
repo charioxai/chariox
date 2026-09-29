@@ -8,7 +8,8 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionPromptArgs {
     pub tool_name: String,
-    #[serde(default)]
+    /// Required: an allow echoes it as `updatedInput`, so a call without it
+    /// is invalid (Claude Code then denies the tool).
     pub input: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_use_id: Option<String>,

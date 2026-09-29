@@ -30,8 +30,8 @@ mod watchdog;
 
 use events::apply_claude_message;
 use input::claude_user_content;
-use permission_prompt::claude_permission_prompt_pending;
 pub(crate) use permission_prompt::begin_claude_permission_prompt_wait;
+use permission_prompt::claude_permission_prompt_pending;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
 use usage::apply_claude_usage_capture;
@@ -679,6 +679,56 @@ mod tests {
         assert!(
             !batch.explicit_provider_error,
             "stderr classifiers must not become durable explicit provider errors"
+        );
+    }
+
+    #[test]
+    fn a_pending_permission_prompt_is_not_a_turn_stall() {
+        let (mut state, mut batch) = parser_state();
+        let run = RuntimeProviderRun::new(
+            "run-permission-prompt-stall",
+            &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "test-claude".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-claude-runtime".to_string()),
+            },
+        );
+        let now = std::time::Instant::now();
+        let Some(stalled_since) =
+            now.checked_sub(super::claude_turn_stall_timeout() + std::time::Duration::from_secs(1))
+        else {
+            return;
+        };
+        state.turn_watchdog.begin(stalled_since);
+        assert_ne!(
+            state
+                .turn_watchdog
+                .action(now, super::claude_turn_stall_timeout()),
+            super::watchdog::ClaudeTurnStallAction::Wait,
+            "the turn has been silent past the stall timeout"
+        );
+
+        let wait = super::begin_claude_permission_prompt_wait(run.id());
+        super::apply_claude_turn_stall_policy(&run, &mut state, &mut batch)
+            .expect("stall policy should run");
+        drop(wait);
+
+        assert_eq!(state.active_turn_id.as_deref(), Some("turn-1"));
+        assert!(!batch.prompt_completed);
+        assert!(batch.terminal_failure.is_none());
+        assert_eq!(
+            state.turn_watchdog.action(
+                std::time::Instant::now(),
+                super::claude_turn_stall_timeout()
+            ),
+            super::watchdog::ClaudeTurnStallAction::Wait
         );
     }
 
