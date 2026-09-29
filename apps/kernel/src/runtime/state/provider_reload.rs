@@ -31,7 +31,9 @@ pub(crate) enum ProviderReloadOutcome {
 struct ProviderLaunchFingerprint {
     runtime_mcp_server_url: Option<String>,
     mcp_servers: Vec<crate::mcp::CharioxMcpServerConfig>,
-    provider_env_remove: Vec<String>,
+    // Compared as a set: provider launch sorts the run's copy and merges in
+    // the control variables that the request already lists.
+    provider_env_remove: std::collections::BTreeSet<String>,
     provider_config_overrides: std::collections::BTreeMap<String, serde_json::Value>,
     write_access_mode: crate::provider::ProviderWriteAccessMode,
     execution_mode: crate::provider::AgentExecutionMode,
@@ -43,7 +45,7 @@ impl ProviderLaunchFingerprint {
         Self {
             runtime_mcp_server_url: run.runtime_mcp_server_url().map(str::to_string),
             mcp_servers: run.mcp_servers().to_vec(),
-            provider_env_remove: run.pty_env_remove().to_vec(),
+            provider_env_remove: run.pty_env_remove().iter().cloned().collect(),
             provider_config_overrides: run.provider_config_overrides().clone(),
             write_access_mode: run.write_access_mode(),
             execution_mode: run.execution_mode(),
@@ -58,7 +60,7 @@ impl ProviderLaunchFingerprint {
                 .as_ref()
                 .map(|binding| binding.server_url.clone()),
             mcp_servers: request.mcp_servers.clone(),
-            provider_env_remove: request.provider_env_remove.clone(),
+            provider_env_remove: request.provider_env_remove.iter().cloned().collect(),
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             execution_mode: request.execution_mode.unwrap_or_default(),
