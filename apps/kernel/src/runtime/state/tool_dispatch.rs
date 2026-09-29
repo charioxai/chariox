@@ -90,13 +90,19 @@ impl KernelRuntimeState {
         if !needs_apps {
             return Ok(self.runtime_tool_specs_without_apps_for_auth_token(&auth_token));
         }
-        let permit = self
-            .app_control()
-            .try_admit()
-            .map_err(|_| DaemonError::LocalTransport {
+        let Ok(permit) = self.app_control().try_admit() else {
+            // Saturated: an agent whose Apps neither run nor are dormant keeps
+            // its other tools (its Apps are listed on the next discovery); a
+            // running App's tools must not silently disappear.
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            if !self.has_active_apps_for_auth_token(&auth_token) {
+                return Ok(self.runtime_tool_specs_without_apps_for_auth_token(&auth_token));
+            }
+            return Err(DaemonError::LocalTransport {
                 operation: "runtime_tools.list",
                 message: "App tool discovery is busy".into(),
-            })?;
+            });
+        };
         let state = self.clone();
         tokio::task::spawn_blocking(move || {
             let mut specs = state.runtime_tool_specs_without_apps_for_auth_token(&auth_token);

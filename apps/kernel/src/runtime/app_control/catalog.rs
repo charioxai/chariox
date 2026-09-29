@@ -26,6 +26,8 @@ impl AppControlService {
         agent: &AgentInstance,
         occupied: &BTreeSet<String>,
     ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
+        // Bound Apps are listed whether or not they run; a call starts them.
+        self.seed_bound_dormant(agent);
         if !self.has_active_apps_for_agent(agent) {
             return Ok(Vec::new());
         }
@@ -43,6 +45,7 @@ impl AppControlService {
         occupied: &BTreeSet<String>,
         _permit: &tokio::sync::OwnedSemaphorePermit,
     ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
+        self.seed_bound_dormant(agent);
         let leases = self.bound_app_leases(agent);
         let dormant = self.bound_dormant_catalogs(agent);
         let catalogs = leases

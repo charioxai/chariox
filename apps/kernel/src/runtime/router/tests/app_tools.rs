@@ -133,6 +133,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         .app_control()
         .publish_app_worker("alice", handle)
         .unwrap();
+    let mut bound = Vec::new();
     for (agent, token) in agents.iter().zip(&tokens) {
         let control = router.runtime_state.app_control();
         let permits = (0..8)
@@ -155,6 +156,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
                 "alice",
             ))
             .unwrap();
+        bound.push(granted.clone());
         let collision = control
             .app_extension_tools_for_agent(
                 &granted,
@@ -225,6 +227,14 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
     // whose binding was revoked does not.
     assert!(lists(&tokens[1]));
     assert!(!lists(&tokens[0]));
+    // The shared projection, which a leased agent's manifest uses too.
+    let control = router.runtime_state.app_control();
+    control.forget_app_dormant("alice", "installed");
+    assert!(control
+        .app_extension_tools_for_agent(&bound[1], &std::collections::BTreeSet::new())
+        .unwrap()
+        .iter()
+        .any(|tool| tool.tool_name == name));
     // A user stop keeps them out until an explicit start.
     store
         .stop_app_worker_intent(

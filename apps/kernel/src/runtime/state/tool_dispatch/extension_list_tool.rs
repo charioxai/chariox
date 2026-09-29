@@ -191,8 +191,11 @@ impl KernelRuntimeState {
                 })?;
             // Bound Apps list their tools whether or not they run (a call
             // starts them); a user stop or a failed generation keeps them out.
+            // Seeding reads releases, so it takes an App admission slot.
             let control = self.app_control();
-            control.seed_bound_dormant(&agent);
+            if let Ok(_permit) = control.try_admit() {
+                control.seed_bound_dormant(&agent);
+            }
             let owner = agent.owner_user_id();
             let apps = page
                 .installations
@@ -204,12 +207,7 @@ impl KernelRuntimeState {
                     let active = installation.active.is_some();
                     let listed = control.active_app_lease(owner, id).is_some()
                         || control.is_app_dormant(owner, id);
-                    let ready_state = match (active, granted, listed) {
-                        (false, _, _) => "unavailable",
-                        (true, true, true) => "ready",
-                        (true, true, false) => "stopped",
-                        (true, false, _) => "available",
-                    };
+                    let (ready_state, effective) = app_readiness(active, granted, listed);
                     serde_json::json!({
                         "kind": "app", "name": id,
                         "app_id": installation.app_id,
@@ -217,7 +215,7 @@ impl KernelRuntimeState {
                         "active_release": active,
                         "tools_available": granted && listed,
                         "ready_state": ready_state,
-                        "effective_when_requested": if active { "now" } else { "unavailable" }
+                        "effective_when_requested": effective
                     })
                 })
                 .collect::<Vec<_>>();
@@ -243,5 +241,38 @@ impl KernelRuntimeState {
             },
             None,
         ))
+    }
+}
+
+/// An App's readiness for this agent, and when a request for it takes effect
+/// (as `request_extension` answers it). `listed`: it runs or may start on
+/// demand, so its tools are in the agent's catalog once bound.
+fn app_readiness(active: bool, granted: bool, listed: bool) -> (&'static str, &'static str) {
+    match (active, granted, listed) {
+        (false, _, _) => ("unavailable", "unavailable"),
+        (true, true, true) => ("ready", "now"),
+        (true, true, false) => ("stopped", "binding_saved"),
+        (true, false, _) => ("available", "after_provider_reload"),
+    }
+}
+
+#[cfg(test)]
+mod app_readiness_tests {
+    #[test]
+    fn app_readiness_matches_what_a_request_answers() {
+        use super::app_readiness;
+        assert_eq!(
+            app_readiness(false, true, true),
+            ("unavailable", "unavailable")
+        );
+        assert_eq!(app_readiness(true, true, true), ("ready", "now"));
+        assert_eq!(
+            app_readiness(true, true, false),
+            ("stopped", "binding_saved")
+        );
+        assert_eq!(
+            app_readiness(true, false, true),
+            ("available", "after_provider_reload")
+        );
     }
 }
