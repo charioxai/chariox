@@ -930,6 +930,18 @@ fn append_managed_protected_namespace_directories(
         if directory == Path::new("/run") {
             continue;
         }
+        // A masked ancestor already hides this path; masking it again would
+        // recreate it inside the ancestor's otherwise empty mask.
+        if directories
+            .iter()
+            .any(|ancestor| {
+                ancestor != directory
+                    && ancestor != Path::new("/run")
+                    && directory.starts_with(ancestor)
+            })
+        {
+            continue;
+        }
         append_directory(args, directory, created);
         args.extend(["--tmpfs".to_string(), directory.display().to_string()]);
     }
@@ -1145,7 +1157,11 @@ pub(crate) fn apply_managed_provider_isolation(
         // would recreate its path inside the otherwise empty mask.
         let unmasked_protected_files = protected_namespace_files
             .iter()
-            .filter(|file| !protected_directories.iter().any(|directory| file.starts_with(directory)))
+            .filter(|file| {
+                !protected_directories
+                    .iter()
+                    .any(|directory| directory != Path::new("/run") && file.starts_with(directory))
+            })
             .cloned()
             .collect::<Vec<_>>();
         append_managed_protected_namespace_files(
