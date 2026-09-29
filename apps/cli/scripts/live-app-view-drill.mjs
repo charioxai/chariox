@@ -4,8 +4,10 @@
 // App's tools through the kernel's call pump. It also checks that App calls
 // and other Room commands can overlap: the call poll and answers must not
 // make Room commands fail with "already has an active" operation errors.
-// Protocol 351: the page reserves a private conversation panel and the Room
-// snapshot marks the App Tab with it, in desktop pixels, for the focus agent.
+// Protocol 351: the Room snapshot marks the App Tab with its private
+// conversation panel, in desktop pixels, for the session's focus agent. The
+// panel is automatic: the page lays out left of it and cannot reach it.
+// With --other-agent, a focus change moves the panel to that agent at once.
 // Protocol 357: the App Tab's accessibility outline lists every node after its
 // parent. Opening the App again shows the same, single App Tab, navigated to a
 // new document whose title the Room shows once the view calls.
@@ -17,7 +19,8 @@
 // installed, running App:
 //   node scripts/live-app-view-drill.mjs --session ID --installation ID \
 //     --slice-id ID --container NAME --tool LOCAL_TOOL [--input JSON] \
-//     [--calls 20] [--kernel-url ws://127.0.0.1:44240/kernel] [--evidence FILE]
+//     [--calls 20] [--other-agent ID] [--kernel-url ws://127.0.0.1:44240/kernel]
+//     [--evidence FILE]
 
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
@@ -57,16 +60,28 @@ try {
   assert.deepEqual([unknown.ok, unknown.code], [false, "UNKNOWN_TOOL"])
   evidence.steps.push({ step: "unknown_tool", error: unknown })
 
-  const reserved = await evaluate(view.target_id, `window.chariox.panel.reserve({ x: 880, y: 0, width: 400, height: 800 })`)
-  assert.deepEqual(reserved, { reserved: true })
-  // The App may reserve its own panel on load; wait for the drill's rect.
-  const marked = await roomApps((apps) => apps.find((app) => app.panel?.x === 880 && app.panel?.width === 400))
-  assert.deepEqual({ ...marked.panel, agent_id: undefined }, { x: 880, y: 0, width: 400, height: 800, agent_id: undefined })
-  assert.equal(marked.installation_id, options.installation)
+  // Every App Tab gets the panel at the right of the desktop, full height, and
+  // the page lays out in the rest; the App has no panel API.
+  const marked = await roomApps((apps) => apps.find((app) => app.panel))
+  const { viewport } = (await client.send({ GetRoomEnvironmentState: { session_id: options.session } }))
+    .RoomEnvironmentState.environment
+  const { x, y, width, height } = marked.panel
+  assert.deepEqual([x + width, y, height], [viewport.desktop_pixel_width, 0, viewport.desktop_pixel_height])
   assert.equal(marked.panel.agent_id, view.bound_agent_id ?? null)
-  assert.deepEqual(await evaluate(view.target_id, `window.chariox.panel.release()`), { released: true })
-  await roomApps((apps) => apps.every((app) => !app.panel))
-  evidence.steps.push({ step: "panel", marked })
+  const page = await evaluate(view.target_id, `({ width: innerWidth, panel: "panel" in window.chariox })`)
+  assert.deepEqual(page, { width: x / viewport.device_scale_factor, panel: false })
+  evidence.steps.push({ step: "panel", marked, page })
+  if (options.otherAgent) {
+    const focus = async (agentId) => {
+      const started = Date.now()
+      await client.send({ FocusAgent: { session_id: options.session, agent_id: agentId } })
+      await roomApps((apps) => apps.every((app) => app.panel?.agent_id === agentId))
+      return Date.now() - started
+    }
+    const moved_ms = await focus(options.otherAgent)
+    evidence.steps.push({ step: "panel_follows_focus", agent_id: options.otherAgent, moved_ms })
+    if (marked.panel.agent_id) await focus(marked.panel.agent_id)
+  }
 
   const tabId = await roomAppTab()
   const read = await client.send({ GetRoomEnvironmentTabAccessibility: { session_id: options.session, tab_id: tabId } })
@@ -299,6 +314,7 @@ function parseArgs(argv) {
     tool: values.tool,
     input: JSON.parse(values.input ?? "{}"),
     calls: Number(values.calls ?? 20),
+    otherAgent: values["other-agent"],
     evidence: values.evidence,
   }
 }

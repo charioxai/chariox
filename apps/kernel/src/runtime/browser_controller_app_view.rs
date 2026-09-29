@@ -88,17 +88,8 @@ pub(crate) struct BrowserAppViewCalls {
     /// Absent (an older controller) means "unknown": nothing is pruned.
     #[serde(default)]
     pub(crate) open_targets: Option<Vec<String>>,
-    /// Reserved conversation panels in page CSS pixels. Absent from an older
-    /// controller, which neither reports panels nor marks App Tabs.
+    /// The controller lays App pages out beside the trusted conversation
+    /// panel. An older controller does not, so its App Tabs get no panel.
     #[serde(default)]
-    pub(crate) panels: Option<Vec<BrowserAppViewPanel>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(crate) struct BrowserAppViewPanel {
-    pub(crate) target_id: String,
-    pub(crate) x: u32,
-    pub(crate) y: u32,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
+    pub(crate) app_panels: bool,
 }

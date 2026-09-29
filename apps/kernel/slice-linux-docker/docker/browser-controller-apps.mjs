@@ -10,9 +10,6 @@ const MAX_ASSETS = 256;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_CALLS = 64;
 const MAX_CALL_BYTES = 256 * 1024;
-// The trusted conversation panel needs room to be usable.
-const MIN_PANEL = { width: 240, height: 160 };
-const PANEL_METHOD = "chariox.panel";
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
@@ -53,12 +50,6 @@ const BRIDGE_SOURCE = `(() => {
   } });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
-    // Chariox draws the private conversation over this area of the page, in
-    // the trusted terminal. The App learns that it is reserved, nothing more.
-    panel: Object.freeze({
-      reserve(rect) { return request("${PANEL_METHOD}", { rect }); },
-      release() { return request("${PANEL_METHOD}", { rect: null }); },
-    }),
   }) });
 })();`;
 
@@ -124,13 +115,16 @@ export class AppTabs {
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
       return { target_id: open.targetId, origin };
     }
-    // Each App view gets its own fullscreen window: its page then covers the
-    // desktop exactly, so page and stream coordinates agree (see panels).
+    // Each App view gets its own fullscreen window, so page and desktop
+    // coordinates agree. Its page lays out left of the trusted conversation
+    // panel, which the terminal draws over the rest of the desktop.
     const { targetId } = await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, panel: null });
+    this.apps.set(sessionId, { ...app, targetId });
     try {
       await this.fullscreen(connection, targetId);
+      const metrics = this.browser.appMetrics?.();
+      if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
       await connection.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
       await connection.send("Runtime.addBinding", { name: BINDING }, sessionId);
       await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: BRIDGE_SOURCE }, sessionId);
@@ -145,7 +139,7 @@ export class AppTabs {
 
   // An update (or a kernel restart) rebinds an open view: serve the current
   // generation's assets and reload the page. A normal reload lets the App keep
-  // drafts in its own web storage; the Tab, window and panel stay.
+  // drafts in its own web storage; the Tab and window stay.
   async reload(params) {
     await this.reconcile();
     const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
@@ -221,32 +215,8 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
-    if (call.method === PANEL_METHOD) {
-      await this.reservePanel(app, sessionId, call);
-      return;
-    }
     this.calls.push({ installation_id: app.installation, target_id: app.targetId, call_id: call.id,
       method: call.method, params: call.params ?? {} });
-  }
-
-  // The controller, not the kernel, answers panel requests: only geometry.
-  async reservePanel(app, sessionId, call) {
-    const rect = call.params?.rect;
-    if (rect === null) {
-      app.panel = null;
-      await this.resolve(sessionId, call.id, true, { released: true });
-      return;
-    }
-    const valid = rect !== null && typeof rect === "object"
-      && ["x", "y", "width", "height"].every((key) => Number.isFinite(rect[key]) && rect[key] >= 0 && rect[key] <= 100000)
-      && rect.width >= MIN_PANEL.width && rect.height >= MIN_PANEL.height;
-    if (!valid) {
-      await this.resolve(sessionId, call.id, false, { code: "INVALID_PANEL",
-        message: `A panel is {x, y, width, height} in CSS pixels, at least ${MIN_PANEL.width}x${MIN_PANEL.height}` });
-      return;
-    }
-    app.panel = Object.fromEntries(["x", "y", "width", "height"].map((key) => [key, Math.round(rect[key])]));
-    await this.resolve(sessionId, call.id, true, { reserved: true });
   }
 
   async resolve(sessionId, callId, ok, value) {
@@ -256,7 +226,7 @@ export class AppTabs {
   }
 
   // True when the App's window already is fullscreen; otherwise restores it
-  // (someone pressed Esc) and reports false until the next check.
+  // (someone pressed Esc) and reports false.
   async fullscreen(connection, targetId) {
     const { windowId } = await connection.send("Browser.getWindowForTarget", { targetId });
     const { bounds } = await connection.send("Browser.getWindowBounds", { windowId });
@@ -289,16 +259,17 @@ export class AppTabs {
     await this.reconcile();
     const calls = this.calls;
     this.calls = [];
-    // Reserved panels in page CSS pixels, reported only while their window is
-    // fullscreen so they map exactly onto the desktop stream.
-    const panels = [];
+    // Keep App windows fullscreen (someone may press Esc), so the panel beside
+    // each page covers exactly the desktop the page leaves free.
     for (const app of this.apps.values()) {
-      if (app.panel && await this.fullscreen(this.connection, app.targetId).catch(() => false)) {
-        panels.push({ target_id: app.targetId, ...app.panel });
-      }
+      await this.fullscreen(this.connection, app.targetId).catch(() => false);
     }
     // Open App targets let the kernel drop views that closed or crashed.
-    return { calls, open_targets: [...this.apps.values()].map((app) => app.targetId), panels };
+    return {
+      calls,
+      open_targets: [...this.apps.values()].map((app) => app.targetId),
+      app_panels: Boolean(this.browser.appMetrics?.()),
+    };
   }
 
   async respond(params) {

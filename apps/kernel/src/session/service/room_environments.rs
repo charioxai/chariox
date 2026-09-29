@@ -242,14 +242,16 @@ impl SessionService {
     pub(crate) fn set_room_environment_app_tabs(
         &mut self,
         session_id: &str,
-        apps: &std::collections::BTreeMap<String, crate::session::EnvironmentTabApp>,
+        apps: std::collections::BTreeMap<String, String>,
+        agent_id: Option<String>,
     ) -> Result<(), EnvironmentError> {
         if !self.has_session(session_id) {
             return Err(EnvironmentError::RoomNotFound {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.set_app_tabs(session_id, apps)
+        self.room_environments
+            .set_app_tabs(session_id, apps, agent_id)
     }
 
     pub(crate) fn room_environment_controller_tab_binding(

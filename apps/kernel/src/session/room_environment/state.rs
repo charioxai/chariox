@@ -41,6 +41,10 @@ pub struct RoomEnvironment {
     /// Ordinary Tabs' windows show Chromium's tab strip and address bar
     /// (maximized) instead of covering the desktop (fullscreen).
     browser_bar_visible: bool,
+    /// App view Tabs by controller target, and the focus agent their panels
+    /// show. Kept across Tab churn so a Tab gets its marker once it appears.
+    app_installations: BTreeMap<String, String>,
+    panel_agent_id: Option<String>,
     event_log: EnvironmentEventLog,
 }
 
@@ -90,6 +94,8 @@ impl RoomEnvironment {
             action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
             browser_controller_recovering: false,
             browser_bar_visible: false,
+            app_installations: BTreeMap::new(),
+            panel_agent_id: None,
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -204,7 +210,7 @@ impl RoomEnvironment {
         let (tab_id, created) =
             self.tabs
                 .register_or_reconcile(controller_target_id.into(), url.into(), title.into());
-        if created {
+        if created | self.mark_app_tabs() {
             self.emit(EnvironmentEventKind::TabsChanged);
         }
         Ok(tab_id)
@@ -217,7 +223,8 @@ impl RoomEnvironment {
     ) {
         let changed = self
             .tabs
-            .reconcile_controller_tabs(observations, focused_runtime_target_id);
+            .reconcile_controller_tabs(observations, focused_runtime_target_id)
+            | self.mark_app_tabs();
         let input_ownership_changed = self.action_ledger.retain_input_targets(&self.tabs);
         self.element_references
             .retain_current(&self.tabs, self.runtime_generation);
@@ -243,13 +250,41 @@ impl RoomEnvironment {
         self.tabs.tab_id_for_controller_target(controller_target_id)
     }
 
+    /// The open App views (installation by controller target) and the
+    /// session's focus agent.
     pub(crate) fn set_app_tabs(
         &mut self,
-        apps: &std::collections::BTreeMap<String, super::model::EnvironmentTabApp>,
+        apps: BTreeMap<String, String>,
+        agent_id: Option<String>,
     ) {
-        if self.tabs.set_apps(apps) {
+        self.app_installations = apps;
+        self.panel_agent_id = agent_id;
+        if self.mark_app_tabs() {
             self.emit(EnvironmentEventKind::TabsChanged);
         }
+    }
+
+    /// The session's focus agent, shown in every App view's panel.
+    pub(crate) fn set_panel_agent(&mut self, agent_id: Option<String>) {
+        self.panel_agent_id = agent_id;
+        if self.mark_app_tabs() {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
+    }
+
+    fn mark_app_tabs(&mut self) -> bool {
+        let apps = self
+            .app_installations
+            .iter()
+            .map(|(target, installation_id)| {
+                let app = super::model::EnvironmentTabApp {
+                    installation_id: installation_id.clone(),
+                    panel: Some(self.viewport.app_panel(self.panel_agent_id.clone())),
+                };
+                (target.clone(), app)
+            })
+            .collect();
+        self.tabs.set_apps(&apps)
     }
 
     pub(crate) fn register_element_references(
@@ -594,6 +629,9 @@ impl RoomEnvironment {
         self.emit(EnvironmentEventKind::ViewportChanged {
             revision: self.viewport.revision,
         });
+        if self.mark_app_tabs() {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
     }
 
     pub fn submit_action(

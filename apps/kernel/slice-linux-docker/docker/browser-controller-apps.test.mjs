@@ -207,39 +207,38 @@ test("a reconnect sweeps App-origin Tabs without waiting for an App command", as
   assert.deepEqual(connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["left"]);
 });
 
-test("a reserved panel is answered by the controller and reported only while fullscreen", async () => {
-  const { tabs, connection } = await opened();
-  const bind = (id, rect) => connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
-    params: { name: "__charioxAppCall", payload: JSON.stringify({ id, method: "chariox.panel", params: { rect } }) } });
-  const resolved = () => connection.sent.filter((m) => m.method === "Runtime.evaluate").map((m) => m.params.expression);
-  await bind("1", { x: 880.4, y: 0, width: 400, height: 800 });
-  await bind("2", { x: 0, y: 0, width: 100, height: 100 });
-  await bind("3", { x: -1, y: 0, width: 400, height: 800 });
-  assert.deepEqual(resolved(), [
-    'globalThis.__charioxAppResolve("1", true, {"reserved":true})',
-    'globalThis.__charioxAppResolve("2", false, {"code":"INVALID_PANEL","message":"A panel is {x, y, width, height} in CSS pixels, at least 240x160"})',
-    'globalThis.__charioxAppResolve("3", false, {"code":"INVALID_PANEL","message":"A panel is {x, y, width, height} in CSS pixels, at least 240x160"})',
-  ]);
-  // Panel requests never reach the kernel as App calls.
-  let poll = await tabs.takeCalls();
-  assert.deepEqual(poll.calls, []);
-  assert.deepEqual(poll.panels, [{ target_id: "t1", x: 880, y: 0, width: 400, height: 800 }]);
-  // Someone left fullscreen: no panel until the window is fullscreen again.
-  connection.windowState = "normal";
-  assert.deepEqual((await tabs.takeCalls()).panels, []);
-  assert.equal(connection.windowState, "fullscreen");
-  assert.equal((await tabs.takeCalls()).panels.length, 1);
-  await bind("4", null);
-  assert.equal(resolved().at(-1), 'globalThis.__charioxAppResolve("4", true, {"released":true})');
-  assert.deepEqual((await tabs.takeCalls()).panels, []);
+test("App pages lay out beside the panel only when the kernel sizes it", async () => {
+  const { browser, connection } = fakeBrowser();
+  const metrics = { width: 900, height: 800, deviceScaleFactor: 1, mobile: false, screenWidth: 1280, screenHeight: 800 };
+  let panel = null;
+  browser.appMetrics = () => panel;
+  const tabs = new AppTabs(browser);
+  await tabs.open({ origin_label: "todo-1", installation_id: "inst-1", assets: [asset("index.html", "<p>hi</p>")] });
+  // A kernel without the panel: the page keeps the whole viewport.
+  assert.equal(connection.sent.some((m) => m.method === "Emulation.setDeviceMetricsOverride"), false);
+  assert.equal((await tabs.takeCalls()).app_panels, false);
+  panel = metrics;
+  await tabs.open({ origin_label: "docs-1", installation_id: "inst-2", assets: [asset("index.html", "<p>hi</p>")] });
+  const override = connection.sent.find((m) => m.method === "Emulation.setDeviceMetricsOverride");
+  assert.deepEqual(override, { method: "Emulation.setDeviceMetricsOverride", params: metrics, sessionId: "s-t2" });
+  // Before navigation, so the App's first layout already leaves the panel free.
+  const sent = connection.sent.map((m) => m.method);
+  assert.ok(sent.lastIndexOf("Emulation.setDeviceMetricsOverride") < sent.lastIndexOf("Page.navigate"));
+  assert.equal((await tabs.takeCalls()).app_panels, true);
 });
 
-test("the bridge exposes panel reserve and release next to call", async () => {
+test("polls keep every App window fullscreen", async () => {
+  const { tabs, connection } = await opened();
+  connection.windowState = "normal";
+  await tabs.takeCalls();
+  assert.equal(connection.windowState, "fullscreen");
+});
+
+test("the bridge exposes only call: the App cannot touch the panel", async () => {
   const { connection } = await opened();
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
-  assert.match(bridge, /panel: Object\.freeze\(\{/);
-  assert.match(bridge, /request\("chariox\.panel", \{ rect \}\)/);
-  assert.match(bridge, /request\("chariox\.panel", \{ rect: null \}\)/);
+  assert.doesNotMatch(bridge, /panel/);
+  assert.match(bridge, /call\(method, params = \{\}\) \{ return request\(method, params\); \}/);
 });
 
 test("reload serves the new generation's assets to the same Tab and reloads it", async () => {

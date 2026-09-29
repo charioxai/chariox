@@ -261,15 +261,23 @@ impl RoomEnvironmentRegistry {
     pub(crate) fn set_app_tabs(
         &mut self,
         session_id: &str,
-        apps: &std::collections::BTreeMap<String, super::EnvironmentTabApp>,
+        apps: std::collections::BTreeMap<String, String>,
+        agent_id: Option<String>,
     ) -> Result<(), EnvironmentError> {
         self.environments_by_session
             .get_mut(session_id)
             .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
                 session_id: session_id.to_string(),
             })?
-            .set_app_tabs(apps);
+            .set_app_tabs(apps, agent_id);
         Ok(())
+    }
+
+    /// A session without a Room has no App panels to update.
+    pub(crate) fn set_panel_agent(&mut self, session_id: &str, agent_id: Option<String>) {
+        if let Some(environment) = self.environments_by_session.get_mut(session_id) {
+            environment.set_panel_agent(agent_id);
+        }
     }
 
     pub(crate) fn controller_tab_binding(

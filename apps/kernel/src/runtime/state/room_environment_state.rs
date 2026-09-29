@@ -213,16 +213,17 @@ impl KernelRuntimeState {
             .reconcile_room_environment_controller_tabs(session_id, tabs, focused_runtime_target_id)
     }
 
-    /// App view Tabs by controller target; the Room's Tabs change only when
-    /// this differs from what they show.
+    /// App view Tabs (installation by controller target) and the focus agent
+    /// their panels show; the Room's Tabs change only when their markers do.
     pub(crate) fn set_room_environment_app_tabs(
         &self,
         session_id: &str,
-        apps: &std::collections::BTreeMap<String, crate::session::EnvironmentTabApp>,
+        apps: std::collections::BTreeMap<String, String>,
+        agent_id: Option<String>,
     ) -> Result<(), EnvironmentError> {
         self.owned
             .session_store
-            .set_room_environment_app_tabs(session_id, apps)
+            .set_room_environment_app_tabs(session_id, apps, agent_id)
     }
 
     pub(crate) fn room_environment_controller_tab_binding(

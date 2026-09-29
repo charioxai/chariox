@@ -280,7 +280,23 @@ fn controller_tab_reconciliation_preserves_identity_and_tracks_documents_and_foc
 
 #[test]
 fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
-    let mut environment = ready_environment();
+    let mut environment = ready_environment_with_agent();
+    environment.reconcile_controller_tabs(
+        vec![observed_tab("target-a", "loader-a1", "https://a.test", "A")],
+        Some("target-a"),
+    );
+    let tabs_changed = |environment: &RoomEnvironment, cursor| {
+        let EnvironmentReplay::Events { events, .. } = environment.events_after(cursor) else {
+            panic!("replay gap");
+        };
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EnvironmentEventKind::TabsChanged))
+            .count()
+    };
+    let apps = std::collections::BTreeMap::from([("target-app".to_string(), "app_1".to_string())]);
+    // Marked before the Room has projected the App's Tab: it is marked once it appears.
+    environment.set_app_tabs(apps.clone(), Some("agent-1".into()));
     environment.reconcile_controller_tabs(
         vec![
             observed_tab("target-a", "loader-a1", "https://a.test", "A"),
@@ -293,39 +309,60 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
         ],
         Some("target-app"),
     );
-    let cursor = environment.snapshot().event_cursor;
-    let app = super::EnvironmentTabApp {
-        installation_id: "app_1".into(),
-        panel: Some(super::EnvironmentAppPanel {
-            x: 880,
-            y: 0,
-            width: 400,
-            height: 800,
-            agent_id: Some("agent-1".into()),
-        }),
+    // 1440 CSS px at scale 1: a 380 px panel at the right, full height.
+    let panel = |agent: &str| super::EnvironmentAppPanel {
+        x: 1060,
+        y: 0,
+        width: 380,
+        height: 900,
+        agent_id: Some(agent.into()),
     };
-    let apps = std::collections::BTreeMap::from([("target-app".to_string(), app.clone())]);
-    environment.set_app_tabs(&apps);
-    environment.set_app_tabs(&apps);
-    let snapshot = environment.snapshot();
-    assert_eq!(
-        snapshot
+    let marker = |agent: &str| super::EnvironmentTabApp {
+        installation_id: "app_1".into(),
+        panel: Some(panel(agent)),
+    };
+    let apps_of = |environment: &RoomEnvironment| {
+        environment
+            .snapshot()
             .tabs
-            .iter()
-            .map(|tab| (tab.tab_id.as_str(), tab.app.clone()))
-            .collect::<Vec<_>>(),
-        vec![("tab-1", None), ("tab-2", Some(app))]
+            .into_iter()
+            .map(|tab| (tab.tab_id, tab.app))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        apps_of(&environment),
+        vec![
+            ("tab-1".into(), None),
+            ("tab-2".into(), Some(marker("agent-1")))
+        ]
     );
-    // One change, one event; an identical set emits nothing.
-    assert!(matches!(
-        environment.events_after(cursor),
-        EnvironmentReplay::Events { events, .. }
-            if matches!(events.as_slice(), [EnvironmentEvent {
-                kind: EnvironmentEventKind::TabsChanged,
-                ..
-            }])
-    ));
-    environment.set_app_tabs(&std::collections::BTreeMap::new());
+    // A focus change moves every panel at once: one change, one event.
+    let cursor = environment.snapshot().event_cursor;
+    environment.set_panel_agent(Some("agent-2".into()));
+    environment.set_panel_agent(Some("agent-2".into()));
+    environment.set_app_tabs(apps.clone(), Some("agent-2".into()));
+    assert_eq!(tabs_changed(&environment, cursor), 1);
+    assert_eq!(apps_of(&environment)[1].1, Some(marker("agent-2")));
+    // The panel follows the canonical viewport.
+    let revision = environment.snapshot().viewport.revision;
+    environment
+        .update_viewport(
+            "agent-1",
+            revision,
+            CanonicalViewport::new(900, 600, 2, 1800, 1200).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        apps_of(&environment)[1].1.as_ref().unwrap().panel,
+        Some(super::EnvironmentAppPanel {
+            x: 1200,
+            y: 0,
+            width: 600,
+            height: 1200,
+            agent_id: Some("agent-2".into()),
+        })
+    );
+    environment.set_app_tabs(std::collections::BTreeMap::new(), Some("agent-2".into()));
     assert!(environment
         .snapshot()
         .tabs

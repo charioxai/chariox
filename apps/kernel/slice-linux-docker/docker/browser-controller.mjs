@@ -43,6 +43,7 @@ export async function handleBrowserControllerRequest(
     if (request.method === "browser.reconcile") {
       const reconciled = await browser.reconcile(request.params?.viewport, {
         browserBarVisible: request.params?.browser_bar_visible,
+        appPanelCssWidth: request.params?.app_panel_css_width,
       });
       const observedInventory = reconciled?.resource_inventory
         ?? await resourceInventory();
