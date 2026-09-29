@@ -3,6 +3,8 @@ use std::sync::Mutex;
 
 enum Check {
     Error(WorkerError),
+    /// Every check fails, including the first: a limit the domain recorded.
+    Recorded(WorkerError),
     Panic,
     #[cfg(target_os = "macos")]
     Growth,
@@ -51,12 +53,16 @@ impl ResourceDomain for CheckedDomain {
             }
             return result;
         }
+        if let Check::Recorded(error) = self.check {
+            return Err(error);
+        }
         if count < 2 {
             return Ok(());
         }
         *self.observed.failure.lock().unwrap() = Some(Instant::now());
         match self.check {
             Check::Error(error) => Err(error),
+            Check::Recorded(_) => unreachable!(),
             Check::Panic => panic!("test-only running domain panic"),
             #[cfg(target_os = "macos")]
             Check::Growth => unreachable!(),
@@ -152,6 +158,34 @@ fn running_resource_failures_retain_admission_through_actual_reap() {
     assert!(matches!(result, Err(WorkerError::Supervisor)));
     assert_released(&observed);
     assert_sample_and_reap_times(&checks, "running monitor panic");
+}
+
+#[test]
+fn a_limit_recorded_when_a_running_worker_exits_is_named() {
+    // "normal" exits right after Continue, before the first periodic check:
+    // a cgroup OOM kill ends a worker the same way, between checks.
+    let fixture = Fixture::compile();
+    for (error, named) in [
+        (WorkerError::MemoryLimit, Some(WorkerError::MemoryLimit)),
+        (WorkerError::ThreadLimit, Some(WorkerError::ThreadLimit)),
+        (WorkerError::ResourceDomain, None),
+    ] {
+        let (prepared, observed, marker) = fixture.prepare("normal", false, false);
+        let (prepared, checks) = checked(prepared, Check::Recorded(error));
+        let result = wait_with_deadline(
+            WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(marker.exists());
+        assert_eq!(result.code, Some(0), "{error}: exited on its own");
+        assert_eq!(result.failure, named, "{error}");
+        assert_eq!(
+            checks.samples.lock().unwrap().len(),
+            1,
+            "{error}: one check, after the exit"
+        );
+        assert_released(&observed);
+    }
 }
 
 #[test]
