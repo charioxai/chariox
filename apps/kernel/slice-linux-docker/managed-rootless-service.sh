@@ -56,6 +56,8 @@ prepare_fresh_overlay2_backend() {
   fi
   chown chariox-docker:chariox-docker "$ROOTLESS_DATA_ROOT"
   chmod 0700 "$ROOTLESS_DATA_ROOT"
+  # A fresh image has no ~/.config; install -d would create it root-only under umask 077.
+  [ -e "$ROOTLESS_HOME/.config" ] || install -d -o chariox-docker -g chariox-docker -m 0700 "$ROOTLESS_HOME/.config"
   install -d -o root -g root -m 0755 "$ROOTLESS_HOME/.config/docker"
   temporary="$ROOTLESS_DOCKER_CONFIG.new.$$"
   (umask 022; printf '%s\n' "$ROOTLESS_QUOTA_DAEMON_CONFIG" > "$temporary")

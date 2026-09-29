@@ -37,3 +37,9 @@ test("Path-1 quota check still rejects distinct or non-quota mounts", () => {
   assert.equal(quotaReady([mount, "/var/lib/chariox-docker/data xfs rw,relatime,noquota"]), 1)
   assert.equal(quotaReady(["/var/lib/chariox-docker/data ext4 rw,relatime"]), 1)
 })
+
+test("fresh-image quota config keeps ~/.config owned by the rootless user", () => {
+  const userConfig = script.indexOf('install -d -o chariox-docker -g chariox-docker -m 0700 "$ROOTLESS_HOME/.config"')
+  const rootConfig = script.indexOf('install -d -o root -g root -m 0755 "$ROOTLESS_HOME/.config/docker"')
+  assert.ok(userConfig > 0 && rootConfig > userConfig)
+})
