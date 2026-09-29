@@ -35,7 +35,10 @@ Those are required implementation and validation work, not per-user setup.
 
 The native launcher validates canonical absolute roots, ownership and absence of
 group/other-writable ancestors, disjoint paths/inodes, inherited streams, bounds,
-and Linux mount/capability invariants. These checks complement the supervisor's
+and Linux mount/capability invariants. Owners must be the worker's UID or root;
+on Linux the runtime root may also show as the overflow UID, because the
+root-owned enrolled runtime is unmapped in the worker's user namespace (the
+supervisor verifies its root ownership on the host, and its mount is read-only). These checks complement the supervisor's
 held verified objects; they do not replace artifact signatures or independently
 attest that the supervisor created every namespace or cgroup correctly.
 
