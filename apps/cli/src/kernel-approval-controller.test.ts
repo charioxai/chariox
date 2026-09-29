@@ -118,7 +118,7 @@ test("global dialog keys and duplicate raw bytes cannot reach agent or prompt sh
   const forbidden = () => { throw new Error("reached an agent shortcut") }
   const global = createGlobalKeyboardShortcutController({
     handleKernelApprovalKey: h.controller.handleKey, handleHotkeysToggleShortcut: forbidden,
-    dialogOverlayOpen: () => false, closeActiveDialogOverlay: forbidden,
+    dialogOverlayOpen: () => false,
     requestExit: forbidden, requestPromptStop: forbidden, hasActiveTurnWork: () => true,
   })
   let rawKey = "return"

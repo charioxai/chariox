@@ -504,7 +504,6 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleKernelApprovalKey: (event) => deps.handleKernelApprovalKey?.(event) ?? false,
     handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
     dialogOverlayOpen: deps.dialogOverlayOpen,
-    closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     requestExit: () => {
       void deps.requestExit()
     },
