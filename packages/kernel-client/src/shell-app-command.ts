@@ -24,6 +24,13 @@ const usage = [
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
 ].join("\n")
 
+/** `/app` arguments with an `inbox test` payload taken from the raw line, so
+ * every shell passes the JSON exactly as typed, quotes and spaces included. */
+export function appCommandArgs(raw: string, args: readonly string[]): string[] {
+  const test = /^\/?app\s+inbox\s+test\s+(\S+)\s+(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(raw.trim())
+  return test ? ["inbox", "test", test[1]!, test[2]!, test[3]!, test[4]!.trim()] : [...args]
+}
+
 export async function executeAppCommand(
   args: string[],
   client: Client,
@@ -194,9 +201,10 @@ export function inboxRequest(args: string[]): Record<string, unknown> | null {
   if (!installation) return null
   if (verb === "list" && rest.length === 0) return listAppInboxRoutesRequest(installation)
   if (verb === "remove" && rest.length === 1 && rest[0]) return removeAppInboxRouteRequest(installation, rest[0])
-  if (verb === "test" && rest.length === 3 && rest[0] && rest[1]) {
+  // The JSON payload is the rest of the line: a terminal splits it at spaces.
+  if (verb === "test" && rest.length >= 3 && rest[0] && rest[1]) {
     try {
-      return testAppInboxRouteRequest(installation, rest[0], rest[1], JSON.parse(rest[2] ?? ""))
+      return testAppInboxRouteRequest(installation, rest[0], rest[1], JSON.parse(rest.slice(2).join(" ")))
     } catch {
       return null
     }
