@@ -47,7 +47,10 @@ impl KernelRuntimeState {
             .map_err(|error| coded(app_call_errors::busy_error(&error)))?;
         slot.validate_input(&tool.tool_name, &input)
             .map_err(|error| coded(app_call_errors::input_error(&error)))?;
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+        let permit = self
+            .app_control()
+            .try_admit()
+            .map_err(|_| admission_busy())?;
         let owned = self.owned.clone();
         let expected = agent.clone();
         let tool = tool.clone();
@@ -76,7 +79,11 @@ impl KernelRuntimeState {
         .map_err(|_| unavailable())??;
         let (response, expected, tool, remote) = response;
         let reply = response.receive().await.map_err(worker_call_error)?;
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+        let permit = self
+            .app_control()
+            .admit_reply(reply.remaining(crate::session::unix_epoch_ms()))
+            .await
+            .map_err(|_| coded(app_call_errors::reply_unrecorded()))?;
         let owned = self.owned.clone();
         let payload = tokio::task::spawn_blocking(move || {
             let _permit = permit;

@@ -150,6 +150,15 @@ impl AppToolResponse {
 }
 
 impl AppToolReply {
+    /// Time left before the call's deadline; after it the answer is refused.
+    pub(crate) fn remaining(&self, now_ms: u64) -> Duration {
+        match self.call.request() {
+            Message::Request { deadline_ms, .. } => {
+                Duration::from_millis(deadline_ms.saturating_sub(now_ms))
+            }
+            _ => Duration::ZERO,
+        }
+    }
     pub(crate) fn accept(self, tx: &Transaction<'_>, now_ms: u64) -> Result<Value, CatalogError> {
         self.live.available().map_err(|_| CatalogError::Stale)?;
         self.call
