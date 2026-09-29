@@ -255,3 +255,10 @@ test("admission runs when systemd starts it through the release symlink", async 
     assert.ok(result.stderr.trim().length > 0)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test("admission sandbox never bind-mounts the data root it must find unmounted", async () => {
+  const { readFile } = await import("node:fs/promises")
+  const unit = await readFile(new URL("./chariox-data-volume-admission.service", import.meta.url), "utf8")
+  const writable = unit.split("\n").filter(line => line.startsWith("ReadWritePaths=")).flatMap(line => line.slice(15).split(/\s+/))
+  assert.equal(writable.some(path => "/var/lib/chariox-docker/data".startsWith(path)), false)
+})

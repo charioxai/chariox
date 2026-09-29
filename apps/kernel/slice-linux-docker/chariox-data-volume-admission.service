@@ -24,5 +24,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/var/lib/chariox-docker/data /var/lib/chariox-data-volume /run/chariox-data-volume-observation
+# Never list the data root: ReadWritePaths bind-mounts it, which admission would read
+# as a non-XFS mount there. The XFS mount made through systemd-mount propagates in writable.
+ReadWritePaths=/var/lib/chariox-data-volume /run/chariox-data-volume-observation
 UMask=0077
