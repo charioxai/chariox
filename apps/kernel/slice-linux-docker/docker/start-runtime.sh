@@ -198,7 +198,7 @@ if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
     sleep 0.25
   done
   if pgrep -f "^$ROOT/bin/chariox-kernel|codex[^ ]* app-server" >/dev/null; then
-    printf '[slice-runtime] probe kernel did not stop\n' >&2
+    printf '[slice-runtime] probe kernel or its Codex app-server did not stop\n' >&2
     exit 1
   fi
   screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true

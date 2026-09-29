@@ -9,6 +9,38 @@ use crate::transport::room_browser_controller::{
 use super::*;
 
 impl KernelRuntimeState {
+    /// Send a Room request to its slice worker over the connected relay when one
+    /// matches the slice's relay. A temporary connection needs relay metadata
+    /// access, which a kernel-scoped Cloud relay token does not carry; the
+    /// connected path avoids it while the worker key is pinned or cached (managed
+    /// slice workers pin theirs at token refresh).
+    pub(super) async fn send_room_slice_peer_request(
+        &self,
+        config: &crate::config::DaemonConfig,
+        target: chariox_relay::protocol::ClientTarget,
+        request: RelayPeerRequest,
+        timeout: std::time::Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        match self.connected_relay_state_for_config(config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                    config,
+                    &relay_state,
+                    target,
+                    request,
+                    timeout,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    config, target, request, timeout,
+                )
+                .await
+            }
+        }
+    }
+
     pub(crate) fn browser_controller_enabled_for_room(&self, session_id: &str) -> bool {
         self.owned
             .slice_store
@@ -166,27 +198,8 @@ impl KernelRuntimeState {
                 ),
                 _ => Duration::from_secs(15),
             };
-            match self.connected_relay_state_for_config(&config).await {
-                Some(relay_state) => {
-                    crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
-                        &config,
-                        &relay_state,
-                        target,
-                        request(command),
-                        timeout,
-                    )
-                    .await
-                }
-                None => {
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                        &config,
-                        target,
-                        request(command),
-                        timeout,
-                    )
-                    .await
-                }
-            }
+            self.send_room_slice_peer_request(&config, target, request(command), timeout)
+                .await
         };
         let first = send(target.clone(), command.clone()).await;
         let response = match first {

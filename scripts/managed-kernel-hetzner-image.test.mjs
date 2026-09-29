@@ -191,7 +191,6 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /sshd -T/)
   assert.match(script, /grep -Fxq 'permitrootlogin prohibit-password'/)
   assert.match(script, /DenyUsers chariox chariox-docker/)
-  assert.match(script, /exit !\(denied\["chariox"\] && denied\["chariox-docker"\]\)/)
   assert.doesNotMatch(script, /grep -Fxq 'permitrootlogin without-password'/)
   assert.doesNotMatch(script, /install[^\n]*\/dev\/stdin/)
   assert.match(script, /managed_sshd_tmp=\$\(mktemp\)/)
@@ -867,4 +866,15 @@ test("Hetzner snapshot labels preserve the complete release digest within provid
   assert.match(runbook, /chariox\.dev\/runtime-release-b=<last 32 lowercase hex characters>/)
   assert.match(runbook, /Concatenating `runtime-release-a` and\n`runtime-release-b` must reproduce/)
   assert.doesNotMatch(runbook, /chariox\.dev\/runtime-release=<64 lowercase hex characters>/)
+})
+
+test("the sshd DenyUsers check accepts both sshd -T formats and requires both accounts", async () => {
+  const script = await readFile(new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url), "utf8")
+  assert.match(script, /DenyUsers chariox chariox-docker/)
+  const denyCheck = script.match(/awk '(\$1 == "denyusers"[^']*)'/)?.[1]
+  assert.ok(denyCheck, "sshd DenyUsers check must be an awk program")
+  const denies = (output) => spawnSync("awk", [denyCheck], { input: output }).status === 0
+  assert.equal(denies("denyusers chariox\ndenyusers chariox-docker\n"), true)
+  assert.equal(denies("denyusers chariox chariox-docker\n"), true)
+  assert.equal(denies("denyusers chariox\n"), false)
 })

@@ -2020,8 +2020,11 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   const unrelatedRelease = join(harness.installRoot, "usr/lib/chariox/releases/unrelated")
   await mkdir(unrelatedRelease)
   await writeFile(sourceKernel, "kernel fixture\n", { mode: 0o755 })
+  // A host that was Path 1 before returns to nologin on a shared-host install.
+  await writeFile(join(harness.state, "user-chariox-shell"), "/bin/bash")
   const second = spawnSync(installer, args, { encoding: "utf8", env })
   assert.equal(second.status, 0, second.stderr)
+  assert.equal(await readFile(join(harness.state, "usermod-shell"), "utf8"), "--shell /usr/sbin/nologin chariox\n")
   assert.equal((await stat(deterministicRelease)).ino, firstReleaseInode)
   assert.equal((await lstat(currentLink)).ino, firstCurrentInode)
   assert.equal(await lstat(stalePending).then(() => true, () => false), false)
