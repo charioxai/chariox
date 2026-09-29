@@ -9,6 +9,10 @@ pub const MAX_WAKES: usize = 256;
 pub const MAX_WAKE_CHANGES: usize = 16;
 const MAX_ATTEMPTS: u32 = 8;
 const RETRY_BASE_MS: u64 = 5_000;
+/// Longer than any delay a delivery outcome sets (the last backoff, or the
+/// kernel's short postponements). A next attempt further ahead was set by a
+/// wall clock that has since moved back, so it is not left waiting that long.
+const MAX_DELAY_MS: u64 = RETRY_BASE_MS << MAX_ATTEMPTS;
 
 /// A wake set by the App. `revision` is App-defined (for example a schedule
 /// revision) and is delivered back unchanged so stale wakes can be ignored.
@@ -140,23 +144,30 @@ fn row_wake(row: &rusqlite::Row<'_>) -> rusqlite::Result<Wake> {
 
 /// Due wakes across installations, oldest first. Reading claims nothing: the
 /// kernel's single wake pump delivers them and then completes or defers each.
+/// Due times are absolute epoch milliseconds, so time zones and DST never move
+/// them; after the wall clock moves back, a due wake whose retry was set by the
+/// earlier clock is due again at once.
 pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<Vec<DueWake>> {
     let mut statement = connection.prepare(
         "SELECT owner_id,installation_id,wake_id,due_at_ms,revision,attempts FROM app_wakes
-         WHERE next_attempt_at_ms<=?1 ORDER BY next_attempt_at_ms, installation_id, wake_id LIMIT ?2",
+         WHERE next_attempt_at_ms<=?1 OR (due_at_ms<=?1 AND next_attempt_at_ms>?1+?3)
+         ORDER BY next_attempt_at_ms, installation_id, wake_id LIMIT ?2",
     )?;
-    let rows = statement.query_map(params![now_ms as i64, limit as i64], |row| {
-        Ok(DueWake {
-            owner_id: row.get(0)?,
-            installation_id: row.get(1)?,
-            wake: Wake {
-                id: row.get(2)?,
-                due_at_ms: row.get::<_, i64>(3)?.max(0) as u64,
-                revision: row.get(4)?,
-            },
-            attempts: row.get::<_, i64>(5)?.max(0) as u32,
-        })
-    })?;
+    let rows = statement.query_map(
+        params![now_ms as i64, limit as i64, MAX_DELAY_MS as i64],
+        |row| {
+            Ok(DueWake {
+                owner_id: row.get(0)?,
+                installation_id: row.get(1)?,
+                wake: Wake {
+                    id: row.get(2)?,
+                    due_at_ms: row.get::<_, i64>(3)?.max(0) as u64,
+                    revision: row.get(4)?,
+                },
+                attempts: row.get::<_, i64>(5)?.max(0) as u32,
+            })
+        },
+    )?;
     rows.collect::<std::result::Result<_, _>>()
         .map_err(Into::into)
 }
