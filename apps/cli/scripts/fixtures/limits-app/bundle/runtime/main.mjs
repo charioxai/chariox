@@ -12,7 +12,8 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 
 const never = () => new Promise(() => {});
-const rssMb = () => Math.round(process.memoryUsage().rss / 1048576);
+// The confined worker may have no /proc, where Node reads its RSS; report null then.
+const rssMb = () => { try { return Math.round(process.memoryUsage.rss() / 1048576); } catch { return null; } };
 
 export default function register(chariox) {
   const startupMarker = join(chariox.paths.data, 'hang-next-startup');
