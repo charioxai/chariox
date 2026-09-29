@@ -35,7 +35,6 @@ struct SessionViews {
     called: std::collections::HashSet<String>,
     /// View calls still running, by call number.
     in_flight: HashMap<u64, InFlightCall>,
-    calls: u64,
 }
 
 /// A running view call: dropping its sender cancels it.
@@ -79,6 +78,9 @@ pub(crate) struct AppViews(
     Arc<Mutex<HashMap<String, SessionViews>>>,
     /// Sessions whose Room this kernel already swept for leftover views.
     Arc<Mutex<std::collections::HashSet<String>>>,
+    /// View call numbers. Never reset: a session's entry can be removed and
+    /// recreated while an old call still holds its number.
+    Arc<std::sync::atomic::AtomicU64>,
 );
 
 /// A failed reconnection is not retried sooner than this.
@@ -288,21 +290,17 @@ impl AppViews {
     ) -> ViewCall {
         let (cancel, cancelled) = tokio::sync::watch::channel(());
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let number = match sessions.get_mut(session) {
-            Some(views) => {
-                views.calls += 1;
-                views.in_flight.insert(
-                    views.calls,
-                    InFlightCall {
-                        target: target.to_owned(),
-                        document,
-                        _cancel: cancel,
-                    },
-                );
-                views.calls
-            }
-            None => 0,
-        };
+        let number = self.2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if let Some(views) = sessions.get_mut(session) {
+            views.in_flight.insert(
+                number,
+                InFlightCall {
+                    target: target.to_owned(),
+                    document,
+                    _cancel: cancel,
+                },
+            );
+        }
         ViewCall {
             views: self.clone(),
             session: session.to_owned(),
@@ -561,6 +559,36 @@ mod call_cancellation_tests {
         drop(views.track_call("s", "t1", Some("doc-1".into())));
         assert_eq!(views.cancel_gone_calls("s", Some(&[]), None), 0);
         assert!(views.track_call("gone", "t1", None).is_cancelled());
+    }
+
+    #[test]
+    fn an_old_call_ending_after_its_session_was_recreated_leaves_new_calls_alone() {
+        let views = views_with_tab();
+        let old = views.track_call("s", "t1", Some("doc-1".into()));
+        // The Tab closed and the pump removed the session; a new view reopens it.
+        views.retain_open("s", &[], views.registrations("s"));
+        assert!(!views.keep_pumping("s"));
+        assert!(old.is_cancelled());
+        views.register(
+            "s",
+            "t1",
+            AppViewBinding {
+                owner: "user".into(),
+                installation: "a".into(),
+                generation: 1,
+            },
+        );
+        let new = views.track_call("s", "t1", Some("doc-2".into()));
+        drop(old);
+        assert!(!new.is_cancelled());
+        assert_eq!(
+            views.cancel_gone_calls(
+                "s",
+                Some(&open(&["t1"])),
+                Some(&documents(&[("t1", "doc-2")]))
+            ),
+            0
+        );
     }
 
     #[tokio::test]
