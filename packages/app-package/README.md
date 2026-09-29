@@ -319,7 +319,10 @@ panicking. `signed` panics on its first input if its unmodified package does not
 verify, so a harness that only reaches the rejection path cannot pass silently.
 `fuzz/seeds/archive/0` is that package, signed with the fuzz key that `archive`
 trusts, so `archive` can mutate its way into the manifest and declaration
-checks; a real `.cxapp` stops at the signature check. Run, for example:
+checks; a real `.cxapp` stops at the signature check. `archive` panics on its
+first input if the seed no longer verifies; regenerate it with
+`CHARIOX_FUZZ_WRITE_ARCHIVE_SEED=$PWD/fuzz/seeds/archive/0 cargo +nightly fuzz run -O signed fuzz/seeds/signed -- -runs=1`.
+Run, for example:
 
     cargo +nightly fuzz run -O signed fuzz/seeds/signed -- -max_total_time=120 -rss_limit_mb=2048
     cargo +nightly fuzz run -O archive fuzz/seeds/archive -- -max_total_time=120 -rss_limit_mb=2048

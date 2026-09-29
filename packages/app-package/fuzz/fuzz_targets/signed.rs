@@ -119,8 +119,13 @@ fuzz_target!(|input: &[u8]| {
     // A harness whose unmodified package does not verify would only fuzz the
     // rejection path; fail loudly instead.
     BASELINE.call_once(|| {
-        if let Err(error) = verify(&package(&manifest(), &files()), &policy()) {
+        let baseline = package(&manifest(), &files());
+        if let Err(error) = verify(&baseline, &policy()) {
             panic!("baseline package must verify: {error:?}");
+        }
+        // Regenerates the archive target's seed (see the package README).
+        if let Some(path) = std::env::var_os("CHARIOX_FUZZ_WRITE_ARCHIVE_SEED") {
+            std::fs::write(path, &baseline).expect("write the archive seed");
         }
     });
     let Some((&selector, document)) = input.split_first() else {
