@@ -27,7 +27,7 @@ export type AppDevDeps = {
   pollMs?: number
 }
 
-const activePhases = new Set(["preparing", "starting", "awaiting_approval"])
+const activePhases = new Set(["preparing", "awaiting_approval", "queued", "starting"])
 export const defaultAppDevKey = (home: string) => join(home, ".chariox", "dev", "app-publisher", "private")
 
 /** One dev loop per terminal; starting another stops the previous one. */

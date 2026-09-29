@@ -445,3 +445,43 @@ async fn disconnected_request_shutdown(cancelling: bool) {
         assert!(matches!(result, Err(InstallOperationError::NotFound)));
     }
 }
+
+#[test]
+fn an_approved_install_waiting_to_start_reports_queued_not_awaiting_approval() {
+    let operation =
+        |phase, approved| crate::durable_state::app_installation_operations::InstallOperation {
+            input: None,
+            review: Some(serde_json::json!({})),
+            interaction_id: None,
+            request_id: "request".into(),
+            token: chariox_app_runtime::installation::StageToken {
+                installation_id: "app_1".into(),
+                base_generation: 0,
+                generation: 1,
+            },
+            package_digest: format!("sha256:{}", "a".repeat(64)),
+            phase,
+            attempt: None,
+            failure: None,
+            cleanup_pending: false,
+            approved,
+        };
+    let phase = |phase, approved| status(requests::projection(operation(phase, approved))).phase;
+    assert_eq!(
+        phase(InstallPhase::AwaitingApproval, false),
+        AppInstallOperationPhase::AwaitingApproval
+    );
+    // The owner's part is done; the start waits, e.g. for a worker slot.
+    assert_eq!(
+        phase(InstallPhase::AwaitingApproval, true),
+        AppInstallOperationPhase::Queued
+    );
+    assert_eq!(
+        phase(InstallPhase::Starting, true),
+        AppInstallOperationPhase::Starting
+    );
+    assert_eq!(
+        serde_json::to_value(AppInstallOperationPhase::Queued).unwrap(),
+        "queued"
+    );
+}

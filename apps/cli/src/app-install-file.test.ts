@@ -129,6 +129,9 @@ test("normal quoted /app install uses current session and only bytes cross the s
   k.status!.phase = "awaiting_approval"
   assert.equal((await installer.status()).phase, "awaiting_approval")
   assert.equal(k.upload!.phase, "aborted")
+  // Approved, waiting for a worker slot: a known, still active phase.
+  k.status!.phase = "queued"
+  assert.equal((await installer.status()).phase, "queued")
   assert.ok(!k.requests.some(v => v.RespondToInteraction))
 })
 
@@ -156,6 +159,7 @@ test("/app update fences the shared upload on the generation it read first", asy
   await assert.rejects(installer.install(f.path, "current-session"), /Another App installation or update is retained/)
   assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
   assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_schema_downgrade" } as never), /^App operation failed\. This release's data schema is older than the installed App's/)
+  assert.match(formatInstallOperation({ ...k.status!, phase: "queued" } as never), /^Approved; waiting for a free App worker slot to start/)
   assert.deepEqual(installer.retained(), { path: f.path, request: request_id, digest: digest(f.bytes), installation: "todo", begun: true })
   assert.equal(installer.discardRetained(), false)
   k.status!.phase = "committed"

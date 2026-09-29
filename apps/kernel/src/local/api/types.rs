@@ -188,4 +188,7 @@ pub use workspace::*;
 /// `chariox.panel` from the page) and the user move or minimize it
 /// (`SetAppViewPanel`); `EnvironmentAppPanel` carries `placement` and
 /// `minimized`, and an App that shows no panel has none.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 371;
+/// Version 372 adds the install operation phase `queued`: approved and waiting
+/// to start (for example for a free App worker slot), which earlier kernels
+/// reported as `awaiting_approval`, then as `starting`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 372;
