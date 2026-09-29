@@ -15,6 +15,16 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        // Every session-create path (local, sliced, remote) starts from here:
+        // the first agent gets a real provider, never the `default` placeholder.
+        let mut defaults = request.agent_defaults.take().unwrap_or_default();
+        defaults.provider = crate::account_profile::resolve_placeholder_provider(
+            &self.owned.config_projection.snapshot(),
+            &self.owned.provider_account_profiles,
+            &request.owner_user_id,
+            &defaults.provider,
+        );
+        request.agent_defaults = Some(defaults);
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
         if request.metaagent {
