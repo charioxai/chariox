@@ -17,7 +17,10 @@ impl Broker for Connections {
 }
 
 /// A generator that accepts every action and records the requests it got.
-fn fake_generator() -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
+/// With `reply` None it acts and then drops the connection unanswered; with a
+/// status it acts and answers that status, as a gateway losing the reply does;
+/// a 3xx redirects to an unreachable host.
+fn fake_generator(reply: Option<u16>) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let received = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -54,6 +57,24 @@ fn fake_generator() -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
             })
             .to_string();
             server_received.lock().unwrap().push(request);
+            match reply {
+                None => continue,
+                Some(200) => {}
+                Some(status @ 300..=399) => {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} See Other\r\nlocation: http://unreachable.invalid/after\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    continue;
+                }
+                Some(status) => {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    continue;
+                }
+            }
             let _ = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response}",
@@ -67,7 +88,7 @@ fn fake_generator() -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
 #[test]
 fn an_app_acts_only_through_granted_connections_with_declared_actions() {
     let fixture = Fixture::new(Mode::Ready);
-    let (url, received) = fake_generator();
+    let (url, received) = fake_generator(Some(200));
     let mut config = crate::config::DaemonConfig::for_tests();
     config.event_generator_management_targets = std::collections::BTreeMap::from([(
         "dev.chariox.slack".to_string(),
@@ -182,5 +203,85 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
     assert_eq!(
         received[2]["idempotency_key"], received[3]["idempotency_key"],
         "a retry with the App's key reaches the generator with the same key"
+    );
+}
+
+#[test]
+fn a_lost_generator_reply_is_uncertain_and_never_replayed() {
+    lost_reply_is_uncertain(None);
+}
+
+#[test]
+fn a_gateway_error_after_sending_is_uncertain_and_never_replayed() {
+    lost_reply_is_uncertain(Some(502));
+}
+
+#[test]
+fn a_redirect_after_sending_is_uncertain_and_never_replayed() {
+    lost_reply_is_uncertain(Some(303));
+}
+
+fn lost_reply_is_uncertain(reply: Option<u16>) {
+    let fixture = Fixture::new(Mode::Ready);
+    let (url, received) = fake_generator(reply);
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.event_generator_management_targets = std::collections::BTreeMap::from([(
+        "dev.chariox.slack".to_string(),
+        crate::config::EventGeneratorManagementTarget {
+            url,
+            token: "token".into(),
+            expires_at_ms: None,
+            owner_ids: None,
+            owner_scoped: None,
+        },
+    )]);
+    let event_config: crate::runtime::app_lifecycle::EventConfig = Default::default();
+    assert!(event_config
+        .set(crate::runtime::projection::DaemonConfigProjectionStore::new(config))
+        .is_ok());
+    let installation = fixture.catalog.installation_id().to_owned();
+    fixture
+        .store
+        .app_connection_grant(ConnectionGrantCommand::Grant {
+            owner: "alice".into(),
+            installation: installation.clone(),
+            generator_id: "dev.chariox.slack".into(),
+            connection_id: "connection-1".into(),
+            now_ms: 1,
+        })
+        .unwrap();
+    let broker = AppConnectionBroker::new(
+        fixture.store.clone(),
+        "alice".into(),
+        installation,
+        vec![chariox_app_package::ConnectionAccess {
+            generator: "dev.chariox.slack".into(),
+            actions: vec!["notification.reply".into()],
+        }],
+        fixture.admission.clone(),
+        event_config,
+    );
+    fixture.runtime.block_on(async {
+        let mut peer = TestPeer::start_with(Arc::new(Connections(broker)));
+        let reply = json!({"connectionId": "connection-1", "action": "notification.reply",
+            "input": {"text": "On it"}, "context": {"channel_id": "C1", "message_ts": "1.2"}});
+        // Without the App's key a retry would be a second action.
+        peer.send("unkeyed", "connections.action", reply.clone())
+            .await;
+        let failure = peer.response().await.1.unwrap_err();
+        assert_eq!(failure.code, "APP_CONNECTION_OUTCOME_UNCERTAIN");
+        assert_eq!(failure.retryable, Some(false));
+        let mut keyed = reply;
+        keyed["idempotencyKey"] = json!("k");
+        peer.send("keyed", "connections.action", keyed).await;
+        let failure = peer.response().await.1.unwrap_err();
+        assert_eq!(failure.code, "APP_CONNECTION_OUTCOME_UNCERTAIN");
+        assert_eq!(failure.retryable, Some(true));
+        peer.close().await;
+    });
+    assert_eq!(
+        received.lock().unwrap().len(),
+        2,
+        "the kernel never replays an action whose outcome is unknown"
     );
 }
