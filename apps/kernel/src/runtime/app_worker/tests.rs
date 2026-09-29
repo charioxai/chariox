@@ -76,7 +76,7 @@ fn start(
 ) {
     let (bytes, publisher) = if matches!(
         mode,
-        Mode::ToolEcho | Mode::ToolStall | Mode::ToolOverMemory
+        Mode::ToolEcho | Mode::ToolStall | Mode::ToolOverMemory | Mode::ToolKilledAtMemoryLimit
     ) {
         crate::durable_state::app_state::fixture_tool_package()
     } else {

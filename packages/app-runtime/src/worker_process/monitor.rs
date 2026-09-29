@@ -227,13 +227,20 @@ pub(super) fn run(
             // A worker exiting on its own closes its connection first, which
             // cancels it here: give it a moment to finish that exit.
             let grace = Instant::now() + EXIT_GRACE;
+            let mut exited = false;
             while running && Instant::now() < grace {
                 if matches!(child.exited(), Ok(true)) {
+                    exited = true;
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            break Some(WorkerError::Cancelled);
+            // A domain kill (Linux: at the memory limit) also closes the
+            // connection and so cancels the worker here: keep its cause.
+            break exited
+                .then(|| child.exit_failure())
+                .flatten()
+                .or(Some(WorkerError::Cancelled));
         }
         if !running && Instant::now() >= deadline {
             break Some(WorkerError::StartupTimeout);
