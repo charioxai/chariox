@@ -257,20 +257,29 @@ impl KernelRuntimeState {
     }
 }
 
-/// Only a prompt the calling run has received is the calling turn. One still
-/// being delivered (the provider is between turns) or delivered to another run
-/// is not: no turn beats a wrong one. An id the App context cannot carry is left
-/// out rather than failing the call.
+/// Only a turn the calling run has received is the calling turn: no turn beats
+/// a wrong one. An id the App context cannot carry is left out rather than
+/// failing the call.
 fn call_turn_id(
     active: Option<crate::session::PromptQueueItem>,
     caller_run_id: &str,
 ) -> Option<String> {
+    use crate::session::DurablePromptDeliveryPhase::{Accepted, Delivered, Dispatching};
     active
-        .filter(|prompt| {
-            !prompt.delivery_pending()
-                && prompt
-                    .durable_delivery_provider_run_id()
-                    .is_none_or(|run| run == caller_run_id)
+        .filter(|prompt| match prompt.durable_delivery_phase() {
+            // Dispatched by the kernel: once delivered, to the calling run.
+            Some(Delivered) => prompt
+                .durable_delivery_provider_run_id()
+                .is_none_or(|run| run == caller_run_id),
+            // Still on its way: the provider is between turns.
+            Some(Dispatching) => false,
+            // Recorded but never dispatched: a turn the provider started itself
+            // (typed in its native TUI) stays here for the whole turn. A kernel
+            // prompt passes through it only until its dispatch starts.
+            Some(Accepted) | None => {
+                prompt.status() == crate::session::PromptStatus::Running
+                    && prompt.durable_delivery_provider_run_id().is_none()
+            }
         })
         .map(|prompt| prompt.id().to_string())
         .filter(|id| CallerContext::valid_id(id))
@@ -348,7 +357,7 @@ mod tests {
             prompt
         };
         // Delivered to the calling run (a local run, or a leased agent's
-        // worker run), or running with no delivery record: that turn.
+        // worker run): that turn.
         assert_eq!(
             call_turn_id(
                 Some(prompt("prompt-1", Some((Delivered, Some("run-a"))))),
@@ -357,16 +366,14 @@ mod tests {
             .as_deref(),
             Some("prompt-1")
         );
+        // A turn typed in the provider's native TUI is recorded, never
+        // dispatched: the prompt owner leaves it Accepted with no run.
         assert_eq!(
-            call_turn_id(Some(prompt("prompt-1", None)), "run-a").as_deref(),
+            call_turn_id(Some(prompt("prompt-1", Some((Accepted, None)))), "run-a").as_deref(),
             Some("prompt-1")
         );
-        // Not delivered yet (even to the same run), another run's turn, no
-        // turn, or an id the context cannot carry: none.
-        assert_eq!(
-            call_turn_id(Some(prompt("prompt-2", Some((Accepted, None)))), "run-a"),
-            None
-        );
+        // Still being dispatched (even to the same run), another run's turn,
+        // no turn, or an id the context cannot carry: none.
         assert_eq!(
             call_turn_id(
                 Some(prompt("prompt-2", Some((Dispatching, Some("run-a"))))),
@@ -382,7 +389,10 @@ mod tests {
             None
         );
         assert_eq!(call_turn_id(None, "run-a"), None);
-        assert_eq!(call_turn_id(Some(prompt("prompt 3", None)), "run-a"), None);
+        assert_eq!(
+            call_turn_id(Some(prompt("prompt 3", Some((Accepted, None)))), "run-a"),
+            None
+        );
     }
 
     #[test]
