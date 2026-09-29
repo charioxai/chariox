@@ -390,6 +390,10 @@ test("chariox app install that outlasts its wait says only an approval needs the
       write: () => {},
       installWaitMs: 20,
       installPollMs: 1,
-    }), next)
+    }), (error: Error) => {
+      assert.match(error.message, next)
+      if (phase !== "awaiting_approval") assert.doesNotMatch(error.message, /Finish it in session/)
+      return true
+    })
   }
 })
