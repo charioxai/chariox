@@ -25,6 +25,24 @@ static bool is_prefix(const char* parent, const char* child) {
   return !strncmp(parent, child, length) && (child[length] == '/' || !child[length]);
 }
 
+#if defined(__linux__)
+// Inside the worker's user namespace only the kernel's own UID is mapped. A
+// root-owned host directory, such as the enrolled runtime, shows as the
+// kernel's default overflow UID. Only read-only roots may be owned that way;
+// cx_check_sandbox also requires their mounts to be read-only.
+#define CX_UNMAPPED_ROOT_UID ((uid_t)65534)
+#endif
+
+static bool trusted_owner(uid_t owner, bool writable) {
+  if (owner == geteuid() || owner == 0) return true;
+#if defined(__linux__)
+  return !writable && owner == CX_UNMAPPED_ROOT_UID;
+#else
+  (void)writable;
+  return false;
+#endif
+}
+
 static int open_root(const char* path, bool writable) {
   if (path[0] != '/' || path[1] == '\0') return -1;
   char* canonical = realpath(path, NULL);
@@ -45,7 +63,7 @@ static int open_root(const char* path, bool writable) {
     current = next;
     struct stat metadata;
     if (fstat(current, &metadata) ||
-        (metadata.st_uid != geteuid() && metadata.st_uid != 0) ||
+        !trusted_owner(metadata.st_uid, writable) ||
         (metadata.st_mode & (S_IWGRP | S_IWOTH))) { close(current); return -1; }
   }
   struct stat metadata;
