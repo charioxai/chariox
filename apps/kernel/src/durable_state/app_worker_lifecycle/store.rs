@@ -83,6 +83,15 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE app_worker_lifecycle ADD COLUMN failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0);",
         )?;
     }
+    // Opening the store is a kernel start, and no worker outlives the kernel
+    // that ran it: a `running` row is left over from before a crash. It becomes
+    // `stopped` with its desired state kept, so recovery or the next call starts
+    // it again and status stops reporting a worker that does not exist.
+    // `starting` rows are kept: a pending first install resumes its exact claim.
+    connection.execute(
+        "UPDATE app_worker_lifecycle SET phase='stopped' WHERE phase='running'",
+        [],
+    )?;
     Ok(())
 }
 

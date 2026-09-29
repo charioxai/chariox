@@ -263,3 +263,53 @@ fn a_failed_worker_restarts_with_backoff_then_is_quarantined() {
     // A fourth failure in a row quarantines it until an explicit start.
     assert!(!store::restart_allowed(&failed(4), u64::MAX / 2));
 }
+
+#[test]
+fn a_kernel_restart_turns_a_crashed_running_worker_into_a_recoverable_stop() {
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    fixture_event_catalog(&store);
+    let admission = claim(&store, "attempt-1");
+    store
+        .record_app_worker(&admission, WorkerPhase::Running, true, None, budget())
+        .unwrap();
+    // kill -9: the worker ends with its kernel and records nothing.
+    drop(store);
+    let store = fixture.open();
+    let row = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.phase, WorkerPhase::Stopped);
+    assert!(row.desired_running);
+    assert_eq!(row.attempt, "attempt-1");
+    // Recovery still starts it, and a new claim runs normally.
+    assert_eq!(
+        store.app_worker_recovery_candidates(None).unwrap(),
+        vec![("alice".into(), "installed".into())]
+    );
+    let restarted = store
+        .claim_active_app_start("alice", "installed", "attempt-2", true, budget())
+        .unwrap();
+    assert_eq!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .phase,
+        WorkerPhase::Starting
+    );
+    // A start still under way when the kernel died stays `starting`: a
+    // pending first install resumes that exact claim after the restart.
+    drop(restarted);
+    drop(store);
+    let store = fixture.open();
+    assert_eq!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .phase,
+        WorkerPhase::Starting
+    );
+}

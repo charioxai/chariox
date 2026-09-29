@@ -101,8 +101,10 @@ const ON_DEMAND_START: Duration = Duration::from_secs(20);
 const EVICTABLE_IDLE_MS: u64 = 60_000;
 
 impl KernelRuntimeState {
-    /// A dormant (idle-stopped) App starts on its next tool call. Only an App
-    /// whose verified catalog is already dormant can be started this way.
+    /// A dormant (idle-stopped) App starts on its next tool call, and so does
+    /// one that should be running but has no worker (its kernel restarted, or
+    /// recovery could not start it yet, e.g. every live slot was taken). A
+    /// user stop or a failed worker is never started this way.
     pub(crate) async fn app_lease_on_demand(
         &self,
         owner: &str,
@@ -114,17 +116,27 @@ impl KernelRuntimeState {
         }
         let deadline = tokio::time::Instant::now() + ON_DEMAND_START;
         if !control.is_app_dormant(owner, installation) {
+            use crate::durable_state::app_worker_lifecycle::WorkerPhase;
             // A start already under way (a user start, a restart after a
-            // crash) is waited for; a stopped or failed worker is not started.
-            while self.app_worker_phase(owner, installation).await
-                == Some(crate::durable_state::app_worker_lifecycle::WorkerPhase::Starting)
+            // crash) is waited for.
+            while self
+                .app_worker_status(owner, installation)
+                .await
+                .is_some_and(|status| status.phase == WorkerPhase::Starting)
                 && tokio::time::Instant::now() < deadline
             {
+                if let Some(lease) = control.active_app_lease(owner, installation) {
+                    return Ok(lease);
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            return control
-                .active_app_lease(owner, installation)
-                .ok_or_else(unavailable);
+            if let Some(lease) = control.active_app_lease(owner, installation) {
+                return Ok(lease);
+            }
+            let status = self.app_worker_status(owner, installation).await;
+            if !starts_on_demand(status.as_ref()) {
+                return Err(unavailable());
+            }
         }
         let mut started = false;
         let mut evicted = false;
@@ -226,15 +238,18 @@ impl KernelRuntimeState {
     }
 
     async fn app_start_failed(&self, owner: &str, installation: &str) -> bool {
-        self.app_worker_phase(owner, installation).await
-            == Some(crate::durable_state::app_worker_lifecycle::WorkerPhase::Failed)
+        self.app_worker_status(owner, installation)
+            .await
+            .is_some_and(|status| {
+                status.phase == crate::durable_state::app_worker_lifecycle::WorkerPhase::Failed
+            })
     }
 
-    async fn app_worker_phase(
+    async fn app_worker_status(
         &self,
         owner: &str,
         installation: &str,
-    ) -> Option<crate::durable_state::app_worker_lifecycle::WorkerPhase> {
+    ) -> Option<crate::durable_state::app_worker_lifecycle::WorkerStatus> {
         let store = self.owned.durable_state_store.clone();
         let (owner, installation) = (owner.to_owned(), installation.to_owned());
         tokio::task::spawn_blocking(move || store.app_worker_status(&owner, &installation))
@@ -242,8 +257,18 @@ impl KernelRuntimeState {
             .ok()
             .and_then(Result::ok)
             .flatten()
-            .map(|status| status.phase)
     }
+}
+
+/// A worker that should be running but has none starts on demand; a user
+/// stop (not desired) or a failed worker (restart backoff, quarantine) never.
+fn starts_on_demand(
+    status: Option<&crate::durable_state::app_worker_lifecycle::WorkerStatus>,
+) -> bool {
+    status.is_some_and(|status| {
+        status.desired_running
+            && status.phase != crate::durable_state::app_worker_lifecycle::WorkerPhase::Failed
+    })
 }
 
 fn require_binding(
@@ -319,5 +344,37 @@ mod tests {
         // A busy (undelivered events) idlest worker is skipped for the next one.
         let busy = |owner: &str, installation: &str| (owner, installation) == ("alice", "todo");
         assert_eq!(eviction_victim(&candidates, ("bob", "todo"), busy), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod on_demand_tests {
+    use super::starts_on_demand;
+    use crate::durable_state::app_worker_lifecycle::{WorkerPhase, WorkerStatus};
+
+    fn status(phase: WorkerPhase, desired_running: bool) -> WorkerStatus {
+        WorkerStatus {
+            generation: 1,
+            attempt: "attempt".into(),
+            phase,
+            desired_running,
+            failure: None,
+            updated_ms: 1,
+            failures: 0,
+        }
+    }
+
+    #[test]
+    fn a_worker_that_should_run_starts_on_demand_but_a_user_stop_or_failure_never_does() {
+        // Stopped by a kernel restart (or never started by recovery): start it.
+        assert!(starts_on_demand(Some(&status(WorkerPhase::Stopped, true))));
+        // A start that never completed, after the caller waited for it.
+        assert!(starts_on_demand(Some(&status(WorkerPhase::Starting, true))));
+        assert!(!starts_on_demand(Some(&status(
+            WorkerPhase::Stopped,
+            false
+        ))));
+        assert!(!starts_on_demand(Some(&status(WorkerPhase::Failed, true))));
+        assert!(!starts_on_demand(None));
     }
 }
