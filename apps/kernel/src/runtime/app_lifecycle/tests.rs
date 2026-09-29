@@ -780,3 +780,48 @@ fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
     assert!(!control.is_app_dormant("alice", "installed"));
     service.shutdown_blocking().unwrap();
 }
+
+#[test]
+fn a_stop_while_queued_for_the_claim_waits_for_a_slot_to_record_it() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    let permits = service
+        .0
+        .admission
+        .clone()
+        .try_acquire_many_owned(8)
+        .unwrap();
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Ok(StartDisposition::Starting { .. })
+    ));
+    // The stop cannot join a writer operation, but it ends the queued start;
+    // the owner records the stop once it gets a slot, not before.
+    assert!(matches!(
+        service.stop_blocking("alice", "installed"),
+        Err(LifecycleError::Busy)
+    ));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .is_none_or(|v| v.phase != WorkerPhase::Stopped));
+    drop(permits);
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|v| v.phase == WorkerPhase::Stopped && !v.desired_running)
+    });
+    assert!(observations.lock().unwrap().is_empty());
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    service.shutdown_blocking().unwrap();
+    assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
+    assert_eq!(service.0.preparation.available_permits(), 1);
+    assert_eq!(service.0.admission.available_permits(), 8);
+}

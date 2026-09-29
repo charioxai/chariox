@@ -56,11 +56,24 @@ fn queue(control: &Control, slots: &Arc<Semaphore>) -> Result<OwnedSemaphorePerm
         }
     }
 }
+/// A slot for a stopped owner's deferred stop write. Stop does not end this
+/// wait: every other holder's write is bounded, so a slot frees up.
+fn write_slot(slots: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+    loop {
+        match slots.clone().try_acquire_owned() {
+            Ok(permit) => return Some(permit),
+            Err(tokio::sync::TryAcquireError::Closed) => return None,
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+        }
+    }
+}
 pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     let _completion = Completion(context.control.clone());
     let _live = live;
-    // The claim is a writer operation: it holds a shared App slot, which a
-    // failed claim retains through its deferred stop write below.
+    // The claim is a writer operation: it holds a shared App slot through the
+    // claim and, if it fails, through the deferred stop write below.
     let operation = queue(&context.control, &context.admission);
     let claim_budget = context.control.budget();
     #[cfg(test)]
@@ -117,9 +130,16 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
                     }
                 }
             }
-            // Initial claim may have been cancelled while holding the eighth
-            // App permit. Retain that permit through the deferred stop write;
-            // no ActiveStartAdmission or native process exists yet.
+            // The claim failed or was cancelled; no ActiveStartAdmission or
+            // native process exists yet. A start stopped while queued for its
+            // claim holds no App slot, so it takes one for this write.
+            let _slot = match operation {
+                Ok(permit) => permit,
+                Err(_) => match write_slot(&context.admission) {
+                    Some(permit) => permit,
+                    None => return,
+                },
+            };
             let _ = manual_stop::persist(
                 &context.store,
                 &context.owner,
