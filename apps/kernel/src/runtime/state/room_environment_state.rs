@@ -219,8 +219,8 @@ impl KernelRuntimeState {
     pub(crate) fn set_room_environment_app_tabs(
         &self,
         session_id: &str,
-        apps: std::collections::BTreeMap<String, String>,
-    ) -> Result<(), EnvironmentError> {
+        apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
+    ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
         self.owned
             .session_store
             .set_room_environment_app_tabs(session_id, apps)

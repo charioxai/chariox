@@ -234,11 +234,25 @@ test("polls keep every App window fullscreen", async () => {
   assert.equal(connection.windowState, "fullscreen");
 });
 
-test("the bridge exposes only call: the App cannot touch the panel", async () => {
+test("the bridge asks the kernel for a panel placement; it never exposes the panel", async () => {
   const { connection } = await opened();
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
-  assert.doesNotMatch(bridge, /panel/);
-  assert.match(bridge, /call\(method, params = \{\}\) \{ return request\(method, params\); \}/);
+  assert.match(bridge, /set\(layout\) \{ return request\("chariox\.panel", layout \?\? \{\}\); \}/);
+  assert.match(bridge, /get\(\) \{ return request\("chariox\.panel", \{\}\); \}/);
+});
+
+test("the kernel resizes an App page beside its panel", async () => {
+  const { browser, connection } = fakeBrowser();
+  browser.appMetrics = (page) => page && { width: page.width, height: page.height, deviceScaleFactor: 1, mobile: false };
+  const tabs = new AppTabs(browser);
+  await tabs.open({ origin_label: "todo-1", installation_id: "inst-1", assets: [asset("index.html", "<p>hi</p>")],
+    page: { width: 1280, height: 540 } });
+  const overrides = () => connection.sent.filter((m) => m.method === "Emulation.setDeviceMetricsOverride").map((m) => m.params)
+  assert.deepEqual(overrides().at(-1), { width: 1280, height: 540, deviceScaleFactor: 1, mobile: false });
+  // Minimized: the page keeps all but a bar.
+  await tabs.layout({ target_id: "t1", page: { width: 1280, height: 768 } });
+  assert.deepEqual(overrides().at(-1), { width: 1280, height: 768, deviceScaleFactor: 1, mobile: false });
+  await assert.rejects(tabs.layout({ target_id: "nope", page: { width: 1, height: 1 } }));
 });
 
 test("reload serves the new generation's assets to the same Tab and reloads it", async () => {

@@ -50,6 +50,13 @@ const BRIDGE_SOURCE = `(() => {
   } });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    // Where Chariox draws the private agent panel beside this page: set
+    // {placement: "right" | "bottom" | "none", size?} or get the current
+    // layout. The user's own choice wins; the page never sees the panel.
+    panel: Object.freeze({
+      set(layout) { return request("chariox.panel", layout ?? {}); },
+      get() { return request("chariox.panel", {}); },
+    }),
   }) });
 })();`;
 
@@ -98,7 +105,7 @@ export class AppTabs {
     const origin = appOrigin(params?.origin_label);
     if (typeof params?.installation_id !== "string" || !params.installation_id) throw invalid("missing installation");
     const entry = params.entry ?? "index.html";
-    const app = { installation: params.installation_id, origin, entry, assets: assets(params.assets, entry) };
+    const app = { installation: params.installation_id, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
     const connection = await this.browser.ensureConnection();
     this.listen(connection);
     // One shared App Tab per Room and installation: opening it again (another
@@ -107,7 +114,9 @@ export class AppTabs {
     const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin);
     if (shown) {
       const [sessionId, open] = shown;
-      Object.assign(open, { entry, assets: app.assets });
+      Object.assign(open, { entry, assets: app.assets, page: app.page });
+      const metrics = this.browser.appMetrics?.(open.page);
+      if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId).catch(() => {});
       await connection.send("Target.activateTarget", { targetId: open.targetId });
       await this.fullscreen(connection, open.targetId).catch(() => false);
       // Navigate (not reload): it returns once the document commits, so the
@@ -123,7 +132,7 @@ export class AppTabs {
     this.apps.set(sessionId, { ...app, targetId });
     try {
       await this.fullscreen(connection, targetId);
-      const metrics = this.browser.appMetrics?.();
+      const metrics = this.browser.appMetrics?.(app.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
       await connection.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
       await connection.send("Runtime.addBinding", { name: BINDING }, sessionId);
@@ -149,6 +158,18 @@ export class AppTabs {
     app.assets = assets(params.assets, next);
     app.entry = next;
     await this.connection.send("Page.reload", { ignoreCache: true }, sessionId);
+    return { target_id: app.targetId };
+  }
+
+  // The kernel resized the page beside its panel (moved, minimized, hidden).
+  async layout(params) {
+    await this.reconcile();
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry) throw invalid("unknown App tab");
+    const [sessionId, app] = entry;
+    app.page = params.page ?? null;
+    const metrics = this.browser.appMetrics?.(app.page);
+    if (metrics) await this.connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
     return { target_id: app.targetId };
   }
 

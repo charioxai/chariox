@@ -448,6 +448,20 @@ pub struct OpenAppViewRequest {
     pub installation_id: String,
 }
 
+/// Protocol 371: the user's choice for an App's agent panel in this session:
+/// where it sits and whether it is minimized. It wins over the App's own
+/// placement; omitted fields keep their current value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetAppViewPanelRequest {
+    pub session_id: String,
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::session::AppPanelPlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimized: Option<bool>,
+}
+
 /// Protocol 361: the caller's App set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

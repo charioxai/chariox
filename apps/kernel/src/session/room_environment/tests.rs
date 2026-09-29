@@ -294,7 +294,14 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
             .filter(|event| matches!(event.kind, EnvironmentEventKind::TabsChanged))
             .count()
     };
-    let apps = std::collections::BTreeMap::from([("target-app".to_string(), "app_1".to_string())]);
+    let right = super::AppPanelLayout {
+        placement: Some(super::AppPanelPlacement::Right),
+        ..Default::default()
+    };
+    let apps = std::collections::BTreeMap::from([(
+        "target-app".to_string(),
+        ("app_1".to_string(), right),
+    )]);
     // Marked before the Room has projected the App's Tab: it is marked once it appears.
     environment.set_app_tabs(apps.clone(), Some("agent-1".into()));
     environment.reconcile_controller_tabs(
@@ -316,6 +323,8 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
         width: 380,
         height: 900,
         agent_id: Some(agent.into()),
+        placement: super::AppPanelPlacement::Right,
+        minimized: false,
     };
     let marker = |agent: &str| super::EnvironmentTabApp {
         installation_id: "app_1".into(),
@@ -360,8 +369,54 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
             width: 600,
             height: 1200,
             agent_id: Some("agent-2".into()),
+            placement: super::AppPanelPlacement::Right,
+            minimized: false,
         })
     );
+    // The App's own placement: bottom, minimized to a bar, or no panel. The
+    // page keeps the rest (900x600 CSS at scale 2).
+    let layout = |placement, size, minimized| {
+        std::collections::BTreeMap::from([(
+            "target-app".to_string(),
+            (
+                "app_1".to_string(),
+                super::AppPanelLayout {
+                    placement,
+                    size,
+                    minimized,
+                },
+            ),
+        )])
+    };
+    let bottom = Some(super::AppPanelPlacement::Bottom);
+    let pages = |environment: &RoomEnvironment| environment.app_page_sizes()["target-app"];
+    environment.set_app_tabs(layout(bottom, Some(250), false), Some("agent-2".into()));
+    let panel = apps_of(&environment)[1]
+        .1
+        .as_ref()
+        .unwrap()
+        .panel
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (panel.x, panel.y, panel.width, panel.height),
+        (0, 700, 1800, 500)
+    );
+    assert_eq!(pages(&environment), (900, 350));
+    environment.set_app_tabs(layout(bottom, None, true), Some("agent-2".into()));
+    let panel = apps_of(&environment)[1]
+        .1
+        .as_ref()
+        .unwrap()
+        .panel
+        .clone()
+        .unwrap();
+    assert!(panel.minimized);
+    assert_eq!((panel.y, panel.height), (1136, 64));
+    assert_eq!(pages(&environment), (900, 568));
+    environment.set_app_tabs(layout(None, None, false), Some("agent-2".into()));
+    assert_eq!(apps_of(&environment)[1].1.as_ref().unwrap().panel, None);
+    assert_eq!(pages(&environment), (900, 600));
     environment.set_app_tabs(std::collections::BTreeMap::new(), Some("agent-2".into()));
     assert!(environment
         .snapshot()

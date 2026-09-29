@@ -72,8 +72,26 @@ Wire control events never dispatch App event handlers.
   by the trusted worker. Ordinary private I/O continues to use `node:fs`.
 
 The SDK does not expose transcripts, a second prompt area, provider credentials,
-raw kernel requests, or an approval-resolution method. Conversation placement
-belongs to the separate App-view/terminal integration.
+raw kernel requests, or an approval-resolution method.
+
+## Agent panel placement (kernel protocol 371)
+
+Chariox draws the session focus agent's pane beside every App view, in the
+trusted terminal. The App's page never sees its content; it only lays out in the
+space left for it. The App chooses where the panel sits:
+
+- Default, in the signed manifest: `"ui": {"entry": "ui/index.html",
+  "agentPanel": {"placement": "right" | "bottom" | "none", "size": 320}}`.
+  `size` is the width at the right or the height at the bottom, 120 to 1200 CSS
+  pixels, at most half the page; `none` shows no panel and takes no size.
+  Declaring it needs `minKernelProtocol` 371. Omitted: at the right.
+- At runtime, from the page: `await window.chariox.panel.set({placement:
+  "bottom", size: 280})` answers the resulting layout, `{placement, minimized}`.
+  `window.chariox.panel.get()` reads it. The page is resized to the space left
+  (a normal `resize` event).
+- The user may move the panel or minimize it to a bar at the bottom, and that
+  choice wins over the App's. Only the user can minimize it, and an App with no
+  panel cannot hide pending approvals: the terminal shows them in its chrome.
 
 Inline file and buffered HTTP bodies support at most 512 KiB. SDK 0.7 adds a
 separate streaming Fetch adapter over the kernel stream broker, including

@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, io::Read};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chariox_app_package::{
-    inspect_untrusted, pack, verify, ErrorCode, Limits, Manifest, TrustedPublisher,
-    VerificationPolicy,
+    inspect_untrusted, pack, verify, AgentPanel, ErrorCode, Limits, Manifest, PanelPlacement,
+    TrustedPublisher, VerificationPolicy,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
@@ -319,6 +319,47 @@ fn closed_manifest_and_migration_contracts_are_enforced() {
         &raw_package(manifest_value(), payload),
         ErrorCode::UnexpectedEntry,
     );
+}
+
+#[test]
+fn an_agent_panel_placement_is_a_bounded_signed_default() {
+    let with_panel = |panel: Value| {
+        let mut value = manifest_value();
+        value["ui"]["agentPanel"] = panel;
+        value
+    };
+    let package = raw_package(
+        with_panel(json!({"placement":"bottom","size":260})),
+        files(),
+    );
+    let verified = verify(&package, &policy()).unwrap();
+    assert_eq!(
+        verified.manifest().ui.agent_panel,
+        Some(AgentPanel {
+            placement: PanelPlacement::Bottom,
+            size: Some(260)
+        })
+    );
+    assert!(verify(
+        &raw_package(with_panel(json!({"placement":"none"})), files()),
+        &policy()
+    )
+    .is_ok());
+    for bad in [
+        json!({"placement":"none","size":300}),
+        json!({"placement":"right","size":40}),
+        json!({"placement":"left"}),
+        json!({"placement":"right","hidden":true}),
+    ] {
+        assert_code(
+            &raw_package(with_panel(bad), files()),
+            ErrorCode::InvalidManifest,
+        );
+    }
+    // An older kernel cannot read the field: the App must require 371.
+    let mut value = with_panel(json!({"placement":"right"}));
+    value["minKernelProtocol"] = 370.into();
+    assert_code(&raw_package(value, files()), ErrorCode::InvalidManifest);
 }
 
 #[test]

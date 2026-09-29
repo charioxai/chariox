@@ -122,8 +122,8 @@ export class BrowserCdpClient {
       // A Tab can close while it is inspected (App Tabs are swept when the
       // browser connection is re-established): it drops out of this
       // reconcile; a live Tab whose session went stale is attached again.
-      const appTargets = new Set([...(this.appTabs?.apps?.values() ?? [])].map((app) => app.targetId));
-      const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics())
+      const appTargets = new Map([...(this.appTabs?.apps?.values() ?? [])].map((app) => [app.targetId, app]));
+      const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics(appTargets.get(target.targetId).page))
         || deviceMetricsFor(viewport);
       const inspected = (await Promise.all(pages.map(async (target) => {
         try {
@@ -343,11 +343,15 @@ export class BrowserCdpClient {
 
   // App pages are narrower than the canonical viewport: the trusted
   // conversation panel takes the right of the desktop. Null without a panel.
-  appMetrics() {
+  appMetrics(page) {
     if (!this.appViewport) return null;
     const { viewport, panelCssWidth } = this.appViewport;
-    return { ...deviceMetricsFor(viewport), width: viewport.css_width - panelCssWidth };
+    // The kernel sizes each App page beside its panel; before it does, the
+    // default panel takes the right of the page.
+    const size = validPage(page, viewport) ?? { width: viewport.css_width - panelCssWidth, height: viewport.css_height };
+    return { ...deviceMetricsFor(viewport), ...size };
   }
+
 
   async inspectPage(connection, target, metrics) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
@@ -1214,6 +1218,13 @@ function utf8ByteLengthAtMost(value, limit) {
     if (length > limit) return false;
   }
   return true;
+}
+
+function validPage(page, viewport) {
+  const fits = (value, max) => Number.isSafeInteger(value) && value > 0 && value <= max;
+  return fits(page?.width, viewport.css_width) && fits(page?.height, viewport.css_height)
+    ? { width: page.width, height: page.height }
+    : null;
 }
 
 function deviceMetricsFor(viewport) {

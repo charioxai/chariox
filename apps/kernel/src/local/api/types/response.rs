@@ -14,6 +14,8 @@ pub enum LocalDaemonResponse {
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
+    /// The user's panel choice for the App's views in this session.
+    AppViewPanelSet { installation_id: String, placement: Option<crate::session::AppPanelPlacement>, minimized: bool, },
     AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
     AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
     AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },

@@ -79,6 +79,7 @@ pub fn generate_manifest(options: ManifestOptions, limits: &Limits) -> Result<Ma
         },
         ui: Ui {
             entry: options.ui_entry,
+            agent_panel: None,
         },
         tools: options.tools,
         events: options.events,

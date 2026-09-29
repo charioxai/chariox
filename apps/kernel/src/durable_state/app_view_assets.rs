@@ -19,6 +19,8 @@ pub(crate) struct AppViewAssets {
     pub(crate) generation: u64,
     /// Entry path relative to `ui/`.
     pub(crate) entry: String,
+    /// The manifest's default agent panel placement, if it declares one.
+    pub(crate) panel: Option<chariox_app_package::AgentPanel>,
     pub(crate) assets: Vec<AppViewAsset>,
 }
 
@@ -32,6 +34,7 @@ impl DurableKernelStateStore {
             .active_app_release(owner, installation)
             .map_err(|_| "app_view_release_unavailable")?;
         let verified = release.verify().map_err(|_| "app_view_release_invalid")?;
+        let panel = verified.manifest().ui.agent_panel.clone();
         let entry = verified
             .manifest()
             .ui
@@ -58,6 +61,7 @@ impl DurableKernelStateStore {
         Ok(AppViewAssets {
             generation: release.generation(),
             entry,
+            panel,
             assets,
         })
     }

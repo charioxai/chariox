@@ -126,6 +126,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ConfigureAppAutomation(_)
             | LocalDaemonRequest::DisableAppAutomation(_)
             | LocalDaemonRequest::OpenAppView(_)
+            | LocalDaemonRequest::SetAppViewPanel(_)
             | LocalDaemonRequest::UninstallApp(_)
             | LocalDaemonRequest::GetAppLogs(_)
             | LocalDaemonRequest::CreateAppInboxRoute(_)

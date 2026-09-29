@@ -188,6 +188,16 @@ test("App pages get a narrower viewport; the panel takes the rest", async () => 
     .map((call) => [call.sessionId, call.params.width]));
   await browser.reconcile(viewport, { appPanelCssWidth: 380 });
   assert.equal(widths().get("session-a"), 900);
+  // A page the kernel sized (bottom panel) keeps its width and loses height.
+  browser.appTabs.apps.get("session-a").page = { width: 1280, height: 460 };
+  await browser.reconcile(viewport, { appPanelCssWidth: 380 });
+  const last = connection.calls.filter((call) => call.method === "Emulation.setDeviceMetricsOverride" && call.sessionId === "session-a").at(-1).params;
+  assert.deepEqual([last.width, last.height], [1280, 460]);
+  // A size larger than the viewport is ignored.
+  browser.appTabs.apps.get("session-a").page = { width: 5000, height: 460 };
+  await browser.reconcile(viewport, { appPanelCssWidth: 380 });
+  assert.equal(widths().get("session-a"), 900);
+  browser.appTabs.apps.get("session-a").page = null;
   assert.ok([...widths()].every(([session, width]) => session === "session-a" || width === 1280));
   assert.equal(browser.appMetrics().width, 900);
   // An older kernel sends no width, and a width that leaves no page is refused.
