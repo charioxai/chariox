@@ -323,6 +323,8 @@ fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
 
 async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
     let _relay_test_guard = relay_client_test_guard().await;
+    // The fixed worker ID gets a fresh key here; keep its pinned trust key private.
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
@@ -1397,6 +1399,8 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
     let _relay_test_guard = relay_client_test_guard().await;
+    // The fixed worker ID gets a fresh key here; keep its pinned trust key private.
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
@@ -1601,6 +1605,8 @@ async fn wait_for_leased_agent_active_prompt_attachments(
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
     let _relay_test_guard = relay_client_test_guard().await;
+    // The fixed worker ID gets a fresh key here; keep its pinned trust key private.
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
