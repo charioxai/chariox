@@ -263,13 +263,14 @@ impl RoomEnvironmentRegistry {
         session_id: &str,
         apps: std::collections::BTreeMap<String, String>,
         agent_id: Option<String>,
+        app_panels: bool,
     ) -> Result<(), EnvironmentError> {
         self.environments_by_session
             .get_mut(session_id)
             .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
                 session_id: session_id.to_string(),
             })?
-            .set_app_tabs(apps, agent_id);
+            .set_app_tabs(apps, agent_id, app_panels);
         Ok(())
     }
 

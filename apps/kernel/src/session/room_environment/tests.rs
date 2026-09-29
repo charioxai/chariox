@@ -296,7 +296,7 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
     };
     let apps = std::collections::BTreeMap::from([("target-app".to_string(), "app_1".to_string())]);
     // Marked before the Room has projected the App's Tab: it is marked once it appears.
-    environment.set_app_tabs(apps.clone(), Some("agent-1".into()));
+    environment.set_app_tabs(apps.clone(), Some("agent-1".into()), true);
     environment.reconcile_controller_tabs(
         vec![
             observed_tab("target-a", "loader-a1", "https://a.test", "A"),
@@ -340,7 +340,7 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
     let cursor = environment.snapshot().event_cursor;
     environment.set_panel_agent(Some("agent-2".into()));
     environment.set_panel_agent(Some("agent-2".into()));
-    environment.set_app_tabs(apps.clone(), Some("agent-2".into()));
+    environment.set_app_tabs(apps.clone(), Some("agent-2".into()), true);
     assert_eq!(tabs_changed(&environment, cursor), 1);
     assert_eq!(apps_of(&environment)[1].1, Some(marker("agent-2")));
     // The panel follows the canonical viewport.
@@ -362,7 +362,20 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
             agent_id: Some("agent-2".into()),
         })
     );
-    environment.set_app_tabs(std::collections::BTreeMap::new(), Some("agent-2".into()));
+    // An older controller: the App Tab is still marked, without a panel.
+    environment.set_app_tabs(apps.clone(), Some("agent-2".into()), false);
+    assert_eq!(
+        apps_of(&environment)[1].1,
+        Some(super::EnvironmentTabApp {
+            installation_id: "app_1".into(),
+            panel: None,
+        })
+    );
+    environment.set_app_tabs(
+        std::collections::BTreeMap::new(),
+        Some("agent-2".into()),
+        true,
+    );
     assert!(environment
         .snapshot()
         .tabs

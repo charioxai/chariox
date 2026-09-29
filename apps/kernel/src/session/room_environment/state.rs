@@ -44,6 +44,9 @@ pub struct RoomEnvironment {
     /// App view Tabs by controller target, and the focus agent their panels
     /// show. Kept across Tab churn so a Tab gets its marker once it appears.
     app_installations: BTreeMap<String, String>,
+    /// The browser controller lays App pages out beside the panel. An older
+    /// one does not: its App Tabs are marked without a panel.
+    app_panels: bool,
     panel_agent_id: Option<String>,
     event_log: EnvironmentEventLog,
 }
@@ -95,6 +98,7 @@ impl RoomEnvironment {
             browser_controller_recovering: false,
             browser_bar_visible: false,
             app_installations: BTreeMap::new(),
+            app_panels: false,
             panel_agent_id: None,
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
@@ -250,15 +254,17 @@ impl RoomEnvironment {
         self.tabs.tab_id_for_controller_target(controller_target_id)
     }
 
-    /// The open App views (installation by controller target) and the
-    /// session's focus agent.
+    /// The open App views (installation by controller target), the session's
+    /// focus agent, and whether the controller draws App pages beside a panel.
     pub(crate) fn set_app_tabs(
         &mut self,
         apps: BTreeMap<String, String>,
         agent_id: Option<String>,
+        app_panels: bool,
     ) {
         self.app_installations = apps;
         self.panel_agent_id = agent_id;
+        self.app_panels = app_panels;
         if self.mark_app_tabs() {
             self.emit(EnvironmentEventKind::TabsChanged);
         }
@@ -279,7 +285,9 @@ impl RoomEnvironment {
             .map(|(target, installation_id)| {
                 let app = super::model::EnvironmentTabApp {
                     installation_id: installation_id.clone(),
-                    panel: Some(self.viewport.app_panel(self.panel_agent_id.clone())),
+                    panel: self
+                        .app_panels
+                        .then(|| self.viewport.app_panel(self.panel_agent_id.clone())),
                 };
                 (target.clone(), app)
             })

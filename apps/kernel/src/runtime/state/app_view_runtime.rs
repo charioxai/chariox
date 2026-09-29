@@ -195,9 +195,9 @@ impl KernelRuntimeState {
                 views.retain_open(&session_id, open, polled_up_to);
                 views.set_open_tabs(&session_id, open.len());
             }
-            if batch.app_panels {
-                self.publish_app_tabs(&session_id, &views);
-            }
+            // App Tabs are always marked; an older controller, which does not
+            // lay pages out beside a panel, gets no panel.
+            self.publish_app_tabs(&session_id, &views, batch.app_panels);
             // A view's first call means its document loaded: project the
             // Room again so the Tab shows the App's title and URL, not the
             // blank page it had when it opened.
@@ -247,9 +247,10 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         views: &crate::runtime::app_views::AppViews,
+        app_panels: bool,
     ) {
         let apps = views.installations(session_id).into_iter().collect();
-        let _ = self.set_room_environment_app_tabs(session_id, apps);
+        let _ = self.set_room_environment_app_tabs(session_id, apps, app_panels);
     }
 
     async fn answer_app_view_call(self, session_id: String, call: BrowserAppViewCall) {
