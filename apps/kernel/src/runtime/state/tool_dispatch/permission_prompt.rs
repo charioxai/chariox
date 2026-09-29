@@ -38,6 +38,14 @@ impl KernelRuntimeState {
                 message: format!("invalid tool arguments: {error}"),
             }
         })?;
+        // An allow echoes it as `updatedInput`, which Claude expects to be the
+        // tool's input object.
+        if !args.input.is_object() {
+            return Err(DaemonError::LocalTransport {
+                operation: OPERATION,
+                message: "invalid tool arguments: `input` must be an object".to_string(),
+            });
+        }
         let agent_id =
             provider_run
                 .agent_instance_id()

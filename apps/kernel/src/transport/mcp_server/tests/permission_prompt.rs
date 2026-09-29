@@ -396,6 +396,17 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
     )
     .await;
     assert_eq!(missing["error"]["code"], -32000, "{missing:#}");
+    let null_input = rpc(
+        &router,
+        CLAUDE_TOKEN,
+        "tools/call",
+        serde_json::json!({
+            "name": "chariox.permission_prompt",
+            "arguments": {"tool_name": "Bash", "input": null}
+        }),
+    )
+    .await;
+    assert_eq!(null_input["error"]["code"], -32000, "{null_input:#}");
 
     // An unanswered prompt times out to its default Deny choice.
     let (pending, interaction) =
@@ -430,5 +441,100 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
         serde_json::json!({"behavior": "deny", "message": "Chariox permission bridge failed."})
     );
     assert!(active_interactions(&router, session.id()).is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The production trigger of the abandoned-call cleanup: Claude closes its
+/// HTTP connection while the prompt is open, and the runtime MCP server drops
+/// the handler future.
+#[tokio::test]
+async fn claude_closing_the_connection_during_a_permission_prompt_closes_it() {
+    use tokio::io::AsyncWriteExt;
+
+    let root = std::env::temp_dir().join(format!(
+        "chariox-permission-prompt-disconnect-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    insert_claude_run(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "provider-run-claude-print",
+        CLAUDE_TOKEN,
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("runtime MCP listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should have an address");
+    let server_router = router.clone();
+    let server = tokio::spawn(async move {
+        let _ =
+            crate::transport::mcp_server::run_mcp_http_server_on_listener(server_router, listener)
+                .await;
+    });
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "chariox.permission_prompt",
+            "arguments": {
+                "tool_name": "Bash",
+                "input": {"command": "touch file.txt"},
+                "tool_use_id": "toolu_disconnect",
+            }
+        }
+    })
+    .to_string();
+    let mut connection = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("client should connect");
+    connection
+        .write_all(
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {CLAUDE_TOKEN}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("request should be written");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !active_interactions(&router, session.id())
+            .iter()
+            .any(|interaction| interaction.id().ends_with("toolu_disconnect"))
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the prompt should open");
+
+    drop(connection);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !active_interactions(&router, session.id()).is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("closing the connection should close the prompt");
+    server.abort();
     let _ = std::fs::remove_dir_all(root);
 }
