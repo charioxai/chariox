@@ -38,11 +38,14 @@ pub struct SliceAgentAttachment {
     pub agent_id: String,
 }
 
+/// An exclusive slice operation, or (`operation: None`) one shared Room
+/// environment use. Room uses run concurrently; the worker serializes actions
+/// per tab. Exclusive operations wait for no use and admit none.
 #[derive(Debug)]
 pub struct SliceOperationGuard {
     store: SliceStore,
     slice_id: String,
-    operation: String,
+    operation: Option<String>,
 }
 
 impl Drop for SliceOperationGuard {
@@ -52,12 +55,20 @@ impl Drop for SliceOperationGuard {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
-            .active_operations
-            .get(&self.slice_id)
-            .is_some_and(|operation| operation == &self.operation)
-        {
-            state.active_operations.remove(&self.slice_id);
+        match &self.operation {
+            Some(operation) => {
+                if state.active_operations.get(&self.slice_id) == Some(operation) {
+                    state.active_operations.remove(&self.slice_id);
+                }
+            }
+            None => {
+                if let Some(uses) = state.environment_uses.get_mut(&self.slice_id) {
+                    *uses -= 1;
+                    if *uses == 0 {
+                        state.environment_uses.remove(&self.slice_id);
+                    }
+                }
+            }
         }
     }
 }
@@ -70,6 +81,7 @@ struct SliceStoreState {
     backups: BTreeMap<String, SliceBackupRecord>,
     pending_backup_restores: BTreeMap<String, SliceBackupRestoreTransactionRecord>,
     active_operations: BTreeMap<String, String>,
+    environment_uses: BTreeMap<String, usize>,
 }
 
 impl SliceStore {
@@ -694,6 +706,15 @@ impl SliceStore {
         slice_ref: &str,
         operation: &'static str,
     ) -> Result<SliceOperationGuard, DaemonError> {
+        self.begin_operation(slice_ref, operation, false)
+    }
+
+    pub(super) fn begin_operation(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+        environment_use: bool,
+    ) -> Result<SliceOperationGuard, DaemonError> {
         let slice_ref = slice_ref.trim();
         if slice_ref.is_empty() {
             return Err(DaemonError::LocalTransport {
@@ -738,26 +759,35 @@ impl SliceStore {
                 &pending.id,
             ));
         }
-        if let Some(existing) = state.active_operations.get(&slice_id) {
-            let record_name = state
-                .records
-                .get(&slice_id)
-                .map(|record| record.name.as_str())
-                .unwrap_or(slice_ref);
+        let record_name = state
+            .records
+            .get(&slice_id)
+            .map(|record| record.name.clone())
+            .unwrap_or_else(|| slice_ref.to_string());
+        let busy = match state.active_operations.get(&slice_id) {
+            Some(existing) => Some(format!("an active `{existing}` operation")),
+            None if !environment_use && state.environment_uses.contains_key(&slice_id) => {
+                Some("active Room environment use".to_string())
+            }
+            None => None,
+        };
+        if let Some(busy) = busy {
             return Err(DaemonError::LocalTransport {
                 operation: "slice.operation",
-                message: format!(
-                    "slice `{record_name}` already has an active `{existing}` operation"
-                ),
+                message: format!("slice `{record_name}` already has {busy}"),
             });
         }
-        state
-            .active_operations
-            .insert(slice_id.clone(), operation.to_string());
+        if environment_use {
+            *state.environment_uses.entry(slice_id.clone()).or_default() += 1;
+        } else {
+            state
+                .active_operations
+                .insert(slice_id.clone(), operation.to_string());
+        }
         Ok(SliceOperationGuard {
             store: self.clone(),
             slice_id,
-            operation: operation.to_string(),
+            operation: (!environment_use).then(|| operation.to_string()),
         })
     }
 

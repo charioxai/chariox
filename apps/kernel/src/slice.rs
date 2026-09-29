@@ -248,6 +248,43 @@ mod tests {
     }
 
     #[test]
+    fn room_environment_uses_share_a_slice_but_exclude_slice_operations() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("room-uses"))
+            .expect("slice should create");
+        store
+            .bind_environment("room-1", &slice.id, 43, |_| Ok(()))
+            .expect("Room should bind the slice");
+        let browser = store
+            .guard_environment_use(&slice.id, Some("room-1"), "browser_controller.route")
+            .expect("first Room use");
+        let screenshot = store
+            .guard_environment_use(&slice.id, Some("room-1"), "screenshot.capture")
+            .expect("a second agent's Room use runs alongside the first");
+        let busy = store
+            .try_begin_operation(&slice.id, "state.save")
+            .expect_err("slice operations wait for Room uses");
+        assert!(busy.to_string().contains("active Room environment use"));
+        drop(browser);
+        store
+            .try_begin_operation(&slice.id, "state.save")
+            .expect_err("one remaining Room use still excludes slice operations");
+        drop(screenshot);
+        let save = store
+            .try_begin_operation(&slice.id, "state.save")
+            .expect("slice operation after the last Room use");
+        let busy = store
+            .guard_environment_use(&slice.id, Some("room-1"), "screenshot.capture")
+            .expect_err("Room uses wait for slice operations");
+        assert!(busy.to_string().contains("active `state.save` operation"));
+        drop(save);
+        store
+            .guard_environment_use(&slice.id, Some("room-1"), "screenshot.capture")
+            .expect("Room use after the slice operation");
+    }
+
+    #[test]
     fn unresolved_backup_restore_quarantines_slice_until_durable_resolution() {
         let store = SliceStore::default();
         let slice = store

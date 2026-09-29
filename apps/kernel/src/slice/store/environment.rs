@@ -7,8 +7,8 @@ impl SliceStore {
         session_id: Option<&str>,
         operation: &'static str,
     ) -> Result<SliceOperationGuard, DaemonError> {
-        let guard = self.try_begin_operation(slice_ref, operation)?;
-        // Re-read under the operation marker: binding cannot change until admission ends.
+        let guard = self.begin_operation(slice_ref, operation, true)?;
+        // Re-read under the use marker: binding cannot change until admission ends.
         let state = self
             .inner
             .lock()
