@@ -293,7 +293,11 @@ fn run_adapter_request_once(
     request: &ConnectorAdapterRequest,
 ) -> Result<ConnectorAdapterResponse, DaemonError> {
     let command = adapter.resolved_command()?;
-    let mut child = Command::new(&command)
+    let mut process = Command::new(&command);
+    for name in crate::provider::managed_provider_control_env_remove() {
+        process.env_remove(name);
+    }
+    let mut child = process
         .args(&adapter.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

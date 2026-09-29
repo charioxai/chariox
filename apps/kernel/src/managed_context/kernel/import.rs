@@ -149,6 +149,9 @@ pub fn import_kernel_context(
             false,
             &mut budget,
         )?;
+        if let Some(home) = ordinary_user_root()? {
+            record_ordinary_entries(&staging, &home, &mut budget)?;
+        }
         ensure_tree_within_budget(&staging)?;
         sync_private_tree(&staging)?;
 
@@ -1124,44 +1127,33 @@ fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
     Ok(ordinary_user_root()?.unwrap_or_else(|| final_root.join("user")))
 }
 
-/// Move staged entries into the ordinary registries without replacing any.
-/// The entry list is durable before the first move, so a retry finishes the
-/// same set and a rollback removes exactly what this import published.
-fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    let staged = root.join("user");
-    let entries = match read_published_entries(root)? {
-        Some(entries) => entries,
-        None => {
-            let mut entries = Vec::new();
-            if staged.exists() {
-                collect_ordinary_entries(&staged, home, Path::new(""), &mut entries)?;
-            }
-            let bytes = serde_json::to_vec(&entries)
-                .map_err(|_| import_error("serialize published kernel context entries"))?;
-            let temporary = root.join(format!("{PUBLISHED_ENTRIES_NAME}.tmp"));
-            fs::write(&temporary, bytes)
-                .and_then(|()| File::open(&temporary)?.sync_all())
-                .and_then(|()| fs::rename(&temporary, root.join(PUBLISHED_ENTRIES_NAME)))
-                .map_err(|error| import_io_error("record published kernel context entries", error))?;
-            sync_directory(root)?;
-            entries
-        }
-    };
-    for relative in &entries {
-        let source = staged.join(relative);
-        if fs::symlink_metadata(&source).is_err() {
-            continue;
-        }
-        let destination = home.join(relative);
-        let parent = destination
-            .parent()
-            .ok_or_else(|| import_error("published kernel context entry has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| import_io_error("create ordinary registry directory", error))?;
-        publish_directory_no_clobber(&source, &destination)?;
-        sync_directory(parent)?;
+/// Registry directories an import may share with the user; only their
+/// children are published, so rollback never removes the directory itself.
+const ORDINARY_REGISTRY_DIRECTORIES: &[&str] = &[
+    "mcps",
+    "skills",
+    "scripts",
+    "credentials",
+    "envs",
+    "envs/.portable",
+    "connectors",
+    "connectors/definitions",
+    "connectors/adapters",
+];
+
+/// List every staged extension entry and reject any that already exists in the
+/// ordinary registries, before the Vault or capability root is installed.
+fn record_ordinary_entries(
+    staging: &Path,
+    home: &Path,
+    budget: &mut MaterializationBudget,
+) -> Result<(), DaemonError> {
+    let mut entries = Vec::new();
+    let staged = staging.join("user");
+    if staged.exists() {
+        collect_ordinary_entries(&staged, home, Path::new(""), &mut entries)?;
     }
-    Ok(())
+    write_json_file(&staging.join(PUBLISHED_ENTRIES_NAME), &entries, false, budget)
 }
 
 fn collect_ordinary_entries(
@@ -1176,23 +1168,19 @@ fn collect_ordinary_entries(
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
         let path = relative.join(child.file_name());
-        let staged_is_dir = child
-            .file_type()
-            .map_err(|error| import_io_error("inspect staged kernel context", error))?
-            .is_dir();
+        let path_text = path
+            .to_str()
+            .ok_or_else(|| import_error("kernel context entry is not UTF-8"))?
+            .to_string();
+        if ORDINARY_REGISTRY_DIRECTORIES.contains(&path_text.as_str()) {
+            collect_ordinary_entries(staged, home, &path, entries)?;
+            continue;
+        }
         match fs::symlink_metadata(home.join(&path)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => entries.push(
-                path.to_str()
-                    .ok_or_else(|| import_error("kernel context entry is not UTF-8"))?
-                    .to_string(),
-            ),
-            Ok(existing) if staged_is_dir && existing.is_dir() => {
-                collect_ordinary_entries(staged, home, &path, entries)?
-            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => entries.push(path_text),
             Ok(_) => {
                 return Err(import_error(format!(
-                    "kernel context entry `{}` already exists in the ordinary registry",
-                    path.display()
+                    "kernel context entry `{path_text}` already exists in the ordinary registry"
                 )))
             }
             Err(error) => return Err(import_io_error("inspect ordinary registry", error)),
@@ -1201,21 +1189,44 @@ fn collect_ordinary_entries(
     Ok(())
 }
 
-fn read_published_entries(root: &Path) -> Result<Option<Vec<String>>, DaemonError> {
-    let path = root.join(PUBLISHED_ENTRIES_NAME);
-    if !path.exists() {
-        return Ok(None);
+/// Move the recorded entries into the ordinary registries without replacing
+/// any. A replay finishes the same set; an entry already moved is skipped.
+fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
+    let staged = root.join("user");
+    for relative in read_published_entries(root)? {
+        let source = staged.join(&relative);
+        if fs::symlink_metadata(&source).is_err() {
+            continue;
+        }
+        let destination = home.join(&relative);
+        let parent = destination
+            .parent()
+            .ok_or_else(|| import_error("published kernel context entry has no parent"))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| import_io_error("create ordinary registry directory", error))?;
+        publish_directory_no_clobber(&source, &destination)?;
+        sync_directory(parent)?;
     }
-    let entries = serde_json::from_slice::<Vec<String>>(&read_bounded_file(&path, 4 * 1024 * 1024)?)
+    Ok(())
+}
+
+fn read_published_entries(root: &Path) -> Result<Vec<String>, DaemonError> {
+    let bytes = read_bounded_file(&root.join(PUBLISHED_ENTRIES_NAME), 4 * 1024 * 1024)?;
+    let entries = serde_json::from_slice::<Vec<String>>(&bytes)
         .map_err(|_| import_error("published kernel context entries are invalid"))?;
     for entry in &entries {
         validate_portable_package_path(entry)?;
     }
-    Ok(Some(entries))
+    Ok(entries)
 }
 
+/// Remove only entries this import moved: one still staged was never published.
 fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    for relative in read_published_entries(root)?.unwrap_or_default() {
+    let staged = root.join("user");
+    for relative in read_published_entries(root)? {
+        if fs::symlink_metadata(staged.join(&relative)).is_ok() {
+            continue;
+        }
         let path = home.join(&relative);
         let removed = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path),
@@ -2782,6 +2793,14 @@ mod tests {
             vault_path: target_vault.clone(),
         };
 
+        fs::create_dir_all(ordinary.join("scripts/helper")).expect("conflicting user script");
+        assert!(import_kernel_context(request.clone())
+            .expect_err("an existing ordinary entry must reject the import")
+            .to_string()
+            .contains("already exists"));
+        assert!(!capability_root.exists() && !target_vault.exists());
+        fs::remove_dir_all(ordinary.join("scripts/helper")).expect("remove conflict");
+
         let receipt = import_kernel_context(request.clone()).expect("Path 1 import");
         assert_eq!(import_kernel_context(request).expect("replay"), receipt);
         assert!(!capability_root.join("user/skills/review").exists());
@@ -2820,21 +2839,32 @@ mod tests {
     fn set_managed_import_paths(
         capability_root: &Path,
         vault_path: &Path,
-    ) -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
+    ) -> (
+        Option<std::ffi::OsString>,
+        Option<std::ffi::OsString>,
+        Option<std::ffi::OsString>,
+    ) {
         let previous = (
             std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT"),
             std::env::var_os("CHARIOX_MANAGED_VAULT_PATH"),
+            std::env::var_os("CHARIOX_MANAGED_PROVIDER_TOPOLOGY"),
         );
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
         std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", capability_root);
         std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", vault_path);
         previous
     }
 
     fn restore_managed_import_paths(
-        previous: (Option<std::ffi::OsString>, Option<std::ffi::OsString>),
+        previous: (
+            Option<std::ffi::OsString>,
+            Option<std::ffi::OsString>,
+            Option<std::ffi::OsString>,
+        ),
     ) {
         restore_env("CHARIOX_CAPABILITY_ISOLATION_ROOT", previous.0);
         restore_env("CHARIOX_MANAGED_VAULT_PATH", previous.1);
+        restore_env("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", previous.2);
     }
 
     fn test_root(label: &str) -> PathBuf {
