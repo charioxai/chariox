@@ -68,7 +68,7 @@ async function matchingPresence(receiptPath, releaseOverridePath, presenceRoot, 
     return false
   } else {
     if (
-      receipt?.schemaVersion !== 1 ||
+      ![1, 2, 3].includes(receipt?.schemaVersion) ||
       receipt.status !== "confirmed" ||
       !validIdentifier(receipt.kernelId) ||
       !validIdentifier(receipt.machineId) ||
