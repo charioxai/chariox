@@ -650,7 +650,7 @@ mod tests {
             fs::write(
                 &helper,
                 format!(
-                    "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$(stat -c %a -- \"$2\")\" >> '{}'\n",
+                    "#!/bin/sh\nmode=$(stat -c %a -- \"$2\" 2>/dev/null || stat -f %Lp -- \"$2\")\nprintf '%s %s\\n' \"$1\" \"$mode\" >> '{}'\n",
                     helper_log.display()
                 ),
             )
