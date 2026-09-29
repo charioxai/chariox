@@ -200,3 +200,92 @@ fn an_in_flight_call_names_the_memory_limit_that_stopped_its_worker() {
         );
     }
 }
+
+#[test]
+fn calls_an_update_refuses_or_ends_say_the_app_is_updating() {
+    let scratch = Scratch::new();
+    let store = scratch.store();
+    let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+    let tool = catalog.app_catalog().tools().next().unwrap().name.clone();
+    let runtime = runtime();
+    let fixture = NativeFixture::compile().unwrap();
+    let (starting, mut events, observed) = start(
+        &fixture,
+        Mode::ToolStall,
+        &runtime,
+        catalog,
+        broker(|_| Box::pin(async { Ok(Value::Null) })),
+    );
+    let (owner, handle) = activate(starting.await_registered_blocking(WAIT).unwrap(), &store);
+    event(&runtime, &mut events, "worker.fixture.ready_ack");
+    let lease = handle.lease("alice").unwrap();
+    let response = store
+        .enqueue_app_tool(
+            lease.reserve_call(WAIT).unwrap(),
+            &tool,
+            json!({"text":"slow"}),
+            caller(),
+            budget(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while observed.tool_invocations() == 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(observed.tool_invocations(), 1);
+    // The update's drain refuses new calls, then stopping the old generation
+    // ends the one in flight.
+    owner.drain_handle().begin_update();
+    assert!(matches!(
+        lease.reserve_call(WAIT),
+        Err(AppWorkerError::Updating)
+    ));
+    owner.shutdown_blocking();
+    let error = runtime
+        .block_on(async { tokio::time::timeout(WAIT, response.receive()).await })
+        .unwrap()
+        .err()
+        .unwrap();
+    assert_eq!(error, AppWorkerError::Updating);
+}
+
+#[test]
+fn a_call_a_plain_stop_ends_stays_unavailable() {
+    let scratch = Scratch::new();
+    let store = scratch.store();
+    let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+    let tool = catalog.app_catalog().tools().next().unwrap().name.clone();
+    let runtime = runtime();
+    let fixture = NativeFixture::compile().unwrap();
+    let (starting, mut events, _observed) = start(
+        &fixture,
+        Mode::ToolStall,
+        &runtime,
+        catalog,
+        broker(|_| Box::pin(async { Ok(Value::Null) })),
+    );
+    let (owner, handle) = activate(starting.await_registered_blocking(WAIT).unwrap(), &store);
+    event(&runtime, &mut events, "worker.fixture.ready_ack");
+    let lease = handle.lease("alice").unwrap();
+    let response = store
+        .enqueue_app_tool(
+            lease.reserve_call(WAIT).unwrap(),
+            &tool,
+            json!({"text":"slow"}),
+            caller(),
+            budget(),
+        )
+        .unwrap();
+    owner.drain_handle().begin();
+    owner.shutdown_blocking();
+    let error = runtime
+        .block_on(async { tokio::time::timeout(WAIT, response.receive()).await })
+        .unwrap()
+        .err()
+        .unwrap();
+    assert_eq!(error, AppWorkerError::Unavailable);
+    assert!(matches!(
+        lease.reserve_call(WAIT),
+        Err(AppWorkerError::Unavailable)
+    ));
+}

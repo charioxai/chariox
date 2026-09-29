@@ -14,6 +14,7 @@ impl Control {
         Self {
             first_request: None,
             stop: AtomicBool::new(false),
+            update: AtomicBool::new(false),
             manual: AtomicBool::new(false),
             manual_committed: AtomicBool::new(false),
             done: Mutex::new(false),
@@ -32,9 +33,23 @@ impl Control {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
         {
-            drain.begin();
+            self.begin_drain(drain);
         }
         self.wake.notify_all();
+    }
+    /// A local update replaces this owner's generation. Like an idle stop it
+    /// is not a user stop; calls its worker refuses or loses say the App is
+    /// updating.
+    pub(super) fn cancel_for_update(&self) {
+        self.update.store(true, Ordering::Release);
+        self.cancel(false);
+    }
+    fn begin_drain(&self, drain: &crate::runtime::app_worker::AppWorkerDrain) {
+        if self.update.load(Ordering::Acquire) {
+            drain.begin_update();
+        } else {
+            drain.begin();
+        }
     }
     pub(super) fn retain_drain(&self, drain: crate::runtime::app_worker::AppWorkerDrain) {
         let mut retained = self
@@ -42,7 +57,7 @@ impl Control {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.stopped() {
-            drain.begin();
+            self.begin_drain(&drain);
         }
         *retained = Some(drain);
     }

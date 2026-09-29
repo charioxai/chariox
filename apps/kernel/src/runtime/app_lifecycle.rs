@@ -134,6 +134,8 @@ struct Entry {
 struct Control {
     first_request: Option<String>,
     stop: AtomicBool,
+    /// The stop is a local update replacing this owner's generation.
+    update: AtomicBool,
     manual: AtomicBool,
     manual_committed: AtomicBool,
     done: Mutex<bool>,

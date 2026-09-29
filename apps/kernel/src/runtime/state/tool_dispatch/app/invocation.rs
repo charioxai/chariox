@@ -31,9 +31,16 @@ impl KernelRuntimeState {
             crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(move || {
                 observe.load(Ordering::Acquire)
             });
-        let lease = self
+        let lease = match self
             .app_lease_on_demand(agent.owner_user_id(), &tool.name)
-            .await?;
+            .await
+        {
+            Ok(lease) => lease,
+            Err(_) if self.app_updating(agent.owner_user_id(), &tool.name).await => {
+                return Err(coded(app_call_errors::updating()));
+            }
+            Err(error) => return Err(error),
+        };
         let expected_version = format!(
             "{}:{}",
             lease.catalog().generation(),
@@ -100,6 +107,18 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())??;
         Ok(RuntimeToolResult { ok: true, payload })
+    }
+
+    /// Whether a call that found no running worker met the App's approved
+    /// update in progress, rather than a stopped or failed App.
+    pub(crate) async fn app_updating(&self, owner: &str, installation: &str) -> bool {
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (owner.to_owned(), installation.to_owned());
+        tokio::task::spawn_blocking(move || store.app_update_underway(&owner, &installation))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false)
     }
 }
 

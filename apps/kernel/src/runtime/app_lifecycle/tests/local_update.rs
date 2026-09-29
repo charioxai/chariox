@@ -134,8 +134,13 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
             .is_some_and(|lease| lease.catalog().generation() == 1)
     });
 
+    let old = control.active_app_lease("alice", &id).unwrap();
+    assert!(!store.app_update_underway("alice", &id).unwrap());
     let update = stage_update(&store, &id, "good_update", "1.1.0", 0);
     assert_eq!(update.token.base_generation, 1);
+    // Approved and not yet committed: calls that find no worker are told the
+    // App is updating.
+    assert!(store.app_update_underway("alice", &id).unwrap());
     control
         .lifecycle()
         .start_first_blocking("alice", "good_update", runtime.handle().clone())
@@ -155,6 +160,12 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
     let installation = store.get_app_installation("alice", &id).unwrap();
     assert_eq!(installation.generation, update.token.generation);
     assert_eq!(installation.active.unwrap().release.version, "1.1.0");
+    assert!(!store.app_update_underway("alice", &id).unwrap());
+    // A call still holding the drained generation hears that it was updated.
+    assert!(matches!(
+        old.reserve_call(Duration::from_secs(1)),
+        Err(crate::runtime::app_worker::AppWorkerError::Updating)
+    ));
     let worker = store.app_worker_status("alice", &id).unwrap().unwrap();
     assert_eq!(worker.generation, update.token.generation);
     assert_eq!(worker.phase, WorkerPhase::Running);
@@ -164,7 +175,13 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
         let live = observations.iter().filter(|v| !v.was_reaped()).count();
         assert_eq!(live, 1);
     }
+    // A user stop is not an update.
+    let current = control.active_app_lease("alice", &id).unwrap();
     control.lifecycle().stop_blocking("alice", &id).unwrap();
+    assert!(matches!(
+        current.reserve_call(Duration::from_secs(1)),
+        Err(crate::runtime::app_worker::AppWorkerError::Unavailable)
+    ));
     assert!(all_reaped(&observations));
     control.lifecycle().shutdown_blocking().unwrap();
 }

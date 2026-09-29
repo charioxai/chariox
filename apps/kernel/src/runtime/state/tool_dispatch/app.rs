@@ -101,24 +101,48 @@ impl KernelRuntimeState {
         let state = self.clone();
         let run = provider_run.clone();
         let auth_token = auth_token.to_owned();
-        let tool_name = tool_name.to_owned();
+        let name = tool_name.to_owned();
         let (agent, tool) = tokio::task::spawn_blocking(move || {
             let agent = state.app_agent_for_provider_run(&run)?;
             let base = state.runtime_tool_specs_without_apps_for_auth_token(&auth_token);
             let tool = state
                 .app_tools_for_agent(&agent, &base, Some(&permit))?
                 .into_iter()
-                .find(|tool| tool.tool_name == tool_name);
+                .find(|tool| tool.tool_name == name);
             Ok::<_, DaemonError>((agent, tool))
         })
         .await
         .map_err(|_| unavailable())??;
         let Some(tool) = tool else {
+            // A bound App's tools are withdrawn while an update replaces it.
+            if self.app_tool_updating(&agent, tool_name).await {
+                return Err(coded(crate::runtime::app_call_errors::updating()));
+            }
             return Ok(None);
         };
         self.invoke_bound_app_tool(&agent, &tool, input, None)
             .await
             .map(Some)
+    }
+
+    /// Whether `tool_name` names a tool of one of the agent's bound Apps whose
+    /// approved update is in progress.
+    async fn app_tool_updating(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        tool_name: &str,
+    ) -> bool {
+        let Some(installation) = agent
+            .granted_extension_names(ExtensionKind::App)
+            .into_iter()
+            .find(|installation| {
+                chariox_app_runtime::app_catalog::is_installation_tool_name(tool_name, installation)
+            })
+        else {
+            return false;
+        };
+        self.app_updating(agent.owner_user_id(), &installation)
+            .await
     }
 
     pub(in crate::runtime::state::tool_dispatch) async fn dispatch_home_app_tool(
@@ -160,8 +184,21 @@ impl KernelRuntimeState {
                 .app_extension_tools_for_agent_admitted(&agent, &occupied, &permit)
                 .map_err(app_error)?
                 .into_iter()
-                .find(|tool| tool.tool_name == hinted.tool_name)
-                .ok_or_else(unavailable)?;
+                .find(|tool| tool.tool_name == hinted.tool_name);
+            let Some(current) = current else {
+                // A bound App's tools are withdrawn while an update replaces it.
+                let updating = agent.has_extension_grant(ExtensionKind::App, &hinted.name)
+                    && state
+                        .owned
+                        .durable_state_store
+                        .app_update_underway(agent.owner_user_id(), &hinted.name)
+                        .unwrap_or(false);
+                return Err(if updating {
+                    coded(crate::runtime::app_call_errors::updating())
+                } else {
+                    unavailable()
+                });
+            };
             super::home_extension_authorizer::validate_projected_tool_matches_current(
                 &current, &hinted,
             )?;

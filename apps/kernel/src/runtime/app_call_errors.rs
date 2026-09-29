@@ -1,8 +1,8 @@
 //! The code and message an App tool call's caller sees when it fails, the same
 //! for a view and for an agent: the App's own error passes through; a result
-//! that breaks the tool's declared output, a missed call deadline and a worker
-//! stopped at its memory limit have their own codes; other kernel-side
-//! failures stay a generic `APP_ERROR`.
+//! that breaks the tool's declared output, a missed call deadline, a worker
+//! stopped at its memory limit and an App that is updating have their own
+//! codes; other kernel-side failures stay a generic `APP_ERROR`.
 use crate::durable_state::app_tools::AppToolsError;
 use crate::runtime::app_worker::AppWorkerError;
 use chariox_app_runtime::{app_catalog::CatalogError, worker_process::WORKER_MEMORY_LIMIT_BYTES};
@@ -12,6 +12,17 @@ const INVALID_OUTPUT: (&str, &str) = (
     "The App's answer does not match the tool's declared output",
 );
 const DEADLINE: (&str, &str) = ("DEADLINE_EXCEEDED", "The App did not answer in time");
+/// A call the update's drain refused: the App never saw it.
+const UPDATING: (&str, &str) = (
+    "APP_UPDATING",
+    "The App is updating; try again when the update finishes",
+);
+/// A call in flight when the update stopped the old generation. The App may
+/// have acted before it stopped.
+const UPDATING_IN_FLIGHT: (&str, &str) = (
+    "APP_UPDATING",
+    "The App is updating and stopped before it answered; it may have acted, so check before trying again",
+);
 
 pub(crate) fn tool_call_error(error: &AppToolsError) -> (String, String) {
     match error {
@@ -25,9 +36,17 @@ pub(crate) fn tool_call_error(error: &AppToolsError) -> (String, String) {
     }
 }
 
-/// Every live call slot is taken.
-pub(crate) fn busy_error(error: &impl std::fmt::Display) -> (String, String) {
-    ("APP_BUSY".into(), error.to_string())
+/// Every live call slot is taken, unless an update is draining the worker.
+pub(crate) fn busy_error(error: &AppWorkerError) -> (String, String) {
+    match error {
+        AppWorkerError::Updating => owned(UPDATING),
+        error => ("APP_BUSY".into(), error.to_string()),
+    }
+}
+
+/// The App has no running worker because an approved update is replacing it.
+pub(crate) fn updating() -> (String, String) {
+    owned(UPDATING)
 }
 
 /// The input breaks the tool's declared input schema; the App never ran.
@@ -38,7 +57,10 @@ pub(crate) fn input_error(error: &impl std::fmt::Display) -> (String, String) {
 /// The call could not be sent to the App. No App answer exists yet, so even
 /// a deadline here is the kernel's (an unusable deadline), not a slow App.
 pub(crate) fn enqueue_error(error: &AppToolsError) -> (String, String) {
-    ("APP_ERROR".into(), error.to_string())
+    match error {
+        AppToolsError::Worker(AppWorkerError::Updating) => owned(UPDATING),
+        error => ("APP_ERROR".into(), error.to_string()),
+    }
 }
 
 /// The kernel's shared App admission is momentarily full. The App never saw
@@ -63,6 +85,7 @@ pub(crate) fn worker_call_error(error: &AppWorkerError) -> (String, String) {
     match error {
         AppWorkerError::Deadline => owned(DEADLINE),
         AppWorkerError::MemoryLimit => memory_limit(),
+        AppWorkerError::Updating => owned(UPDATING_IN_FLIGHT),
         error => ("APP_ERROR".into(), error.to_string()),
     }
 }
@@ -111,6 +134,26 @@ mod tests {
             "APP_ERROR"
         );
         assert_eq!(worker_call_error(&AppWorkerError::Busy).0, "APP_ERROR");
+    }
+
+    #[test]
+    fn a_call_an_update_refuses_or_stops_says_the_app_is_updating() {
+        let updating = AppWorkerError::Updating;
+        assert_eq!(super::updating().0, "APP_UPDATING");
+        assert_eq!(busy_error(&updating), super::updating());
+        assert_eq!(
+            enqueue_error(&AppToolsError::Worker(updating)),
+            super::updating()
+        );
+        let (code, message) = worker_call_error(&updating);
+        assert_eq!(code, "APP_UPDATING");
+        assert!(message.contains("may have acted"));
+        // Other worker losses keep their codes.
+        assert_eq!(busy_error(&AppWorkerError::Busy).0, "APP_BUSY");
+        assert_eq!(
+            enqueue_error(&AppToolsError::Worker(AppWorkerError::Unavailable)).0,
+            "APP_ERROR"
+        );
     }
 
     #[test]
