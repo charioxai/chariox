@@ -36,6 +36,7 @@ use super::{
 };
 
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
+const PUBLISHED_ENTRIES_NAME: &str = "published-entries.json";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RUNTIME_PROBE_BYTES: u64 = 64 * 1024;
@@ -165,6 +166,9 @@ pub fn import_kernel_context(
             }
             Err(error) => return Err(error),
         }
+        if let Some(home) = ordinary_user_root()? {
+            publish_ordinary_entries(&request.capability_root, &home)?;
+        }
         Ok(receipt.clone())
     })();
     if staging.exists() {
@@ -202,6 +206,9 @@ pub(crate) fn cleanup_kernel_context_import(
                 ));
             }
             verify_published_receipt(&receipt.capability_root, receipt)?;
+            if let Some(home) = ordinary_user_root()? {
+                remove_ordinary_entries(&receipt.capability_root, &home)?;
+            }
             fs::remove_dir_all(&receipt.capability_root)
                 .map_err(|error| import_io_error("remove failed kernel context", error))?;
             sync_directory(parent)?;
@@ -231,6 +238,9 @@ fn verify_existing_import(
     expected_receipt: &KernelContextImportReceipt,
 ) -> Result<KernelContextImportReceipt, DaemonError> {
     let receipt = verify_published_receipt(&request.capability_root, expected_receipt)?;
+    if let Some(home) = ordinary_user_root()? {
+        publish_ordinary_entries(&request.capability_root, &home)?;
+    }
     crate::secret::validate_installed_transferred_vault(
         &request.vault_path,
         &request.expected_source,
@@ -584,8 +594,9 @@ fn materialize_snapshot(
     budget: &mut MaterializationBudget,
 ) -> Result<(), DaemonError> {
     let user_root = staging.join("user");
+    let final_user_root = final_user_root(final_root)?;
     ensure_budgeted_directory(&user_root, budget)?;
-    materialize_dependencies(snapshot, staging, final_root, budget)?;
+    materialize_dependencies(snapshot, staging, &final_user_root, budget)?;
     for extension in &snapshot.payload.extensions {
         match &extension.definition {
             KernelExtensionDefinition::Mcp { config, runtime } => {
@@ -594,8 +605,7 @@ fn materialize_snapshot(
                 let mut materialized = config.clone();
                 if let Some(runtime) = runtime {
                     let staged_runtime_root = root.join(&extension.name);
-                    let final_runtime_root =
-                        final_root.join("user").join("mcps").join(&extension.name);
+                    let final_runtime_root = final_user_root.join("mcps").join(&extension.name);
                     ensure_budgeted_directory(&staged_runtime_root, budget)?;
                     for file in &runtime.files {
                         let bytes = decode_kernel_package_file(file)?;
@@ -703,14 +713,14 @@ fn materialize_snapshot(
 fn materialize_dependencies(
     snapshot: &KernelContextSnapshot,
     staging: &Path,
-    final_root: &Path,
+    final_user_root: &Path,
     budget: &mut MaterializationBudget,
 ) -> Result<(), DaemonError> {
     let user_root = staging.join("user");
     for dependency in &snapshot.payload.dependencies {
         match dependency {
             KernelExtensionDependency::Environment { name, runtime } => {
-                materialize_environment(name, runtime, staging, final_root, budget)?;
+                materialize_environment(name, runtime, staging, final_user_root, budget)?;
             }
             KernelExtensionDependency::UserConnectorAdapter { name, files, .. } => {
                 let root = user_root.join("connectors").join("adapters").join(name);
@@ -739,7 +749,7 @@ fn materialize_environment(
     name: &str,
     runtime: &PortableEnvironmentRuntime,
     staging: &Path,
-    final_root: &Path,
+    final_user_root: &Path,
     budget: &mut MaterializationBudget,
 ) -> Result<(), DaemonError> {
     let staged_package_root = staging
@@ -747,8 +757,7 @@ fn materialize_environment(
         .join("envs")
         .join(".portable")
         .join(name);
-    let final_package_root = final_root
-        .join("user")
+    let final_package_root = final_user_root
         .join("envs")
         .join(".portable")
         .join(name);
@@ -1057,12 +1066,8 @@ fn validate_import_paths(capability_root: &Path, vault_path: &Path) -> Result<()
             "kernel context capability and Vault destinations must be separate",
         ));
     }
-    let configured_capability_root = configured_absolute_path(
-        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
-        "managed capability isolation root",
-    )?;
-    let configured_vault_path =
-        configured_absolute_path("CHARIOX_MANAGED_VAULT_PATH", "managed Vault path")?;
+    let (configured_capability_root, configured_vault_path) =
+        configured_managed_kernel_context_paths()?;
     if capability_root != configured_capability_root || vault_path != configured_vault_path {
         return Err(import_error(
             "kernel context destinations do not match the running managed kernel configuration",
@@ -1088,18 +1093,139 @@ fn configured_absolute_path(name: &str, label: &str) -> Result<PathBuf, DaemonEr
     Ok(path)
 }
 
-pub(crate) fn configured_managed_vault_path() -> Result<PathBuf, DaemonError> {
-    configured_absolute_path("CHARIOX_MANAGED_VAULT_PATH", "managed Vault path")
-}
-
 pub(crate) fn configured_managed_kernel_context_paths() -> Result<(PathBuf, PathBuf), DaemonError> {
-    Ok((
-        configured_absolute_path(
+    let capability_root = match ordinary_user_root()? {
+        // Path 1 imports into the ordinary registries; this root keeps only the
+        // receipt and the list of entries it published there.
+        Some(home) => home.join("managed-context").join("kernel-context"),
+        None => configured_absolute_path(
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
             "managed capability isolation root",
         )?,
+    };
+    Ok((
+        capability_root,
         configured_absolute_path("CHARIOX_MANAGED_VAULT_PATH", "managed Vault path")?,
     ))
+}
+
+/// The ordinary `~/.chariox` registry root on Path 1, where the VM is the boundary.
+fn ordinary_user_root() -> Result<Option<PathBuf>, DaemonError> {
+    if !matches!(
+        crate::managed_bootstrap::managed_provider_topology(),
+        Ok(crate::managed_bootstrap::ManagedProviderTopology::Path1)
+    ) {
+        return Ok(None);
+    }
+    Ok(Some(configured_absolute_path("HOME", "managed service home")?.join(".chariox")))
+}
+
+fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
+    Ok(ordinary_user_root()?.unwrap_or_else(|| final_root.join("user")))
+}
+
+/// Move staged entries into the ordinary registries without replacing any.
+/// The entry list is durable before the first move, so a retry finishes the
+/// same set and a rollback removes exactly what this import published.
+fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
+    let staged = root.join("user");
+    let entries = match read_published_entries(root)? {
+        Some(entries) => entries,
+        None => {
+            let mut entries = Vec::new();
+            if staged.exists() {
+                collect_ordinary_entries(&staged, home, Path::new(""), &mut entries)?;
+            }
+            let bytes = serde_json::to_vec(&entries)
+                .map_err(|_| import_error("serialize published kernel context entries"))?;
+            let temporary = root.join(format!("{PUBLISHED_ENTRIES_NAME}.tmp"));
+            fs::write(&temporary, bytes)
+                .and_then(|()| File::open(&temporary)?.sync_all())
+                .and_then(|()| fs::rename(&temporary, root.join(PUBLISHED_ENTRIES_NAME)))
+                .map_err(|error| import_io_error("record published kernel context entries", error))?;
+            sync_directory(root)?;
+            entries
+        }
+    };
+    for relative in &entries {
+        let source = staged.join(relative);
+        if fs::symlink_metadata(&source).is_err() {
+            continue;
+        }
+        let destination = home.join(relative);
+        let parent = destination
+            .parent()
+            .ok_or_else(|| import_error("published kernel context entry has no parent"))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| import_io_error("create ordinary registry directory", error))?;
+        publish_directory_no_clobber(&source, &destination)?;
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+fn collect_ordinary_entries(
+    staged: &Path,
+    home: &Path,
+    relative: &Path,
+    entries: &mut Vec<String>,
+) -> Result<(), DaemonError> {
+    let mut children = fs::read_dir(staged.join(relative))
+        .and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
+        .map_err(|error| import_io_error("read staged kernel context", error))?;
+    children.sort_by_key(|entry| entry.file_name());
+    for child in children {
+        let path = relative.join(child.file_name());
+        let staged_is_dir = child
+            .file_type()
+            .map_err(|error| import_io_error("inspect staged kernel context", error))?
+            .is_dir();
+        match fs::symlink_metadata(home.join(&path)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => entries.push(
+                path.to_str()
+                    .ok_or_else(|| import_error("kernel context entry is not UTF-8"))?
+                    .to_string(),
+            ),
+            Ok(existing) if staged_is_dir && existing.is_dir() => {
+                collect_ordinary_entries(staged, home, &path, entries)?
+            }
+            Ok(_) => {
+                return Err(import_error(format!(
+                    "kernel context entry `{}` already exists in the ordinary registry",
+                    path.display()
+                )))
+            }
+            Err(error) => return Err(import_io_error("inspect ordinary registry", error)),
+        }
+    }
+    Ok(())
+}
+
+fn read_published_entries(root: &Path) -> Result<Option<Vec<String>>, DaemonError> {
+    let path = root.join(PUBLISHED_ENTRIES_NAME);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let entries = serde_json::from_slice::<Vec<String>>(&read_bounded_file(&path, 4 * 1024 * 1024)?)
+        .map_err(|_| import_error("published kernel context entries are invalid"))?;
+    for entry in &entries {
+        validate_portable_package_path(entry)?;
+    }
+    Ok(Some(entries))
+}
+
+fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
+    for relative in read_published_entries(root)?.unwrap_or_default() {
+        let path = home.join(&relative);
+        let removed = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path),
+            Ok(_) => fs::remove_file(&path),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        };
+        removed.map_err(|error| import_io_error("remove published kernel context entry", error))?;
+    }
+    Ok(())
 }
 
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
@@ -2585,6 +2711,104 @@ mod tests {
             Some(value) => std::env::set_var(name, value),
             None => std::env::remove_var(name),
         }
+    }
+
+    #[test]
+    fn path1_imports_into_ordinary_registries_and_rolls_back_only_its_entries() {
+        let _guard = crate::env_lock::lock();
+        let root = test_root("path1");
+        let home = root.join("home");
+        let ordinary = home.join(".chariox");
+        let source_vault = root.join("source-vault.json");
+        let target_vault = ordinary.join("vault").join("vault.json");
+        fs::create_dir_all(ordinary.join("skills")).expect("existing ordinary registry");
+        fs::write(ordinary.join("skills").join("mine.txt"), b"mine").expect("user file");
+        let previous = [
+            "HOME",
+            "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_MANAGED_VAULT_PATH",
+        ]
+        .map(|name| (name, std::env::var_os(name)));
+        std::env::set_var("HOME", &home);
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "path1");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", &target_vault);
+        let (capability_root, vault_path) =
+            configured_managed_kernel_context_paths().expect("Path 1 context paths");
+        assert_eq!(capability_root, ordinary.join("managed-context/kernel-context"));
+        assert_eq!(vault_path, target_vault);
+
+        let source_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let target_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let target_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&target_private)
+                .expect("target public key");
+        crate::secret::unlock_chariox_encrypted_vault(
+            &source_vault,
+            "correct horse battery staple",
+            VaultUnlockLease::KernelShutdown,
+        )
+        .expect("source Vault should unlock");
+        let vault = crate::secret::export_transferred_vault_snapshot(
+            &source_vault,
+            "context-1",
+            "source-kernel",
+            &source_private,
+            "target-kernel",
+            &target_public,
+        )
+        .expect("Vault snapshot should export");
+        let expected_source = TransferredVaultSourceBinding {
+            context_id: vault.context_id.clone(),
+            source_kernel_id: vault.source_kernel_id.clone(),
+            source_key_thumbprint: vault.source_key_thumbprint.clone(),
+        };
+        let request = KernelContextImportRequest {
+            snapshot: fixture_snapshot(vault),
+            expected_source,
+            target_kernel_id: "target-kernel".to_string(),
+            target_private_key: target_private.clone(),
+            capability_root: capability_root.clone(),
+            vault_path: target_vault.clone(),
+        };
+
+        let receipt = import_kernel_context(request.clone()).expect("Path 1 import");
+        assert_eq!(import_kernel_context(request).expect("replay"), receipt);
+        assert!(!capability_root.join("user").join("skills").exists());
+        let mcps = crate::mcp::CharioxMcpRegistry::new(vec![ordinary.join("mcps")])
+            .list()
+            .expect("imported MCPs should load from the ordinary registry");
+        let portable = mcps.iter().find(|config| config.name == "portable").expect("portable");
+        let CharioxMcpTransportConfig::Stdio { command, .. } = &portable.transport else {
+            panic!("portable MCP should remain stdio");
+        };
+        assert_eq!(Path::new(command), ordinary.join("mcps/portable/bin/server"));
+        assert!(ordinary.join("mcps/portable/bin/server").is_file());
+        let skills = crate::skill::CharioxSkillRegistry::new(vec![ordinary.join("skills")])
+            .list()
+            .expect("imported skills should load");
+        assert_eq!(skills.iter().filter(|skill| skill.name == "review").count(), 1);
+        assert_eq!(
+            crate::script::CharioxScriptRegistry::new(vec![ordinary.join("scripts")])
+                .list()
+                .expect("imported scripts should load")[0]
+                .name,
+            "helper"
+        );
+
+        cleanup_kernel_context_import(&receipt, &target_vault, &target_private)
+            .expect("Path 1 rollback");
+        assert!(!capability_root.exists());
+        assert!(!ordinary.join("skills/review").exists());
+        assert!(!ordinary.join("mcps/portable").exists());
+        assert!(ordinary.join("skills/mine.txt").is_file());
+
+        crate::secret::lock_chariox_encrypted_vault(&source_vault).ok();
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+        let _ = fs::remove_dir_all(root);
     }
 
     fn set_managed_import_paths(

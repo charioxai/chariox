@@ -16,8 +16,7 @@ use crate::managed_context::cloud_completion::{
     complete_managed_context_import, context_manifest_digest,
     validate_managed_context_completion_binding,
 };
-use crate::managed_bootstrap::{managed_provider_topology, ManagedProviderTopology};
-use crate::managed_context::kernel::{configured_managed_kernel_context_paths, configured_managed_vault_path};
+use crate::managed_context::kernel::configured_managed_kernel_context_paths;
 use crate::managed_context::package::ManagedContextPlanBinding;
 use crate::transport::relay_client::RelayClientState;
 
@@ -71,14 +70,14 @@ impl EmptyManagedContextCompletion {
         validate_managed_context_completion_binding(config, registration, &plan)?;
         let receipt = expected_receipt(registration, &plan);
         let receipt_path = empty_context_receipt_path(config)?;
-        let (capability_root, vault_path) = empty_context_paths()?;
+        let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
         let receipt_exists = read_receipt(&receipt_path)?.is_some();
         let workspace = ensure_empty_managed_context_workspace(config, &plan.context_id)?;
         if !receipt_exists {
             validate_empty_workspace(&workspace)?;
         }
         let receipt_json =
-            load_or_create_empty_receipt(&receipt_path, &receipt, capability_root.as_deref(), &vault_path)?;
+            load_or_create_empty_receipt(&receipt_path, &receipt, &capability_root, &vault_path)?;
         let manifest_digest = context_manifest_digest(&receipt_json)?;
         Ok(Some(Self {
             config: config.clone(),
@@ -272,7 +271,7 @@ fn empty_context_receipt_path(config: &DaemonConfig) -> Result<PathBuf, DaemonEr
 fn load_or_create_empty_receipt(
     path: &Path,
     expected: &EmptyManagedContextReceipt,
-    capability_root: Option<&Path>,
+    capability_root: &Path,
     vault_path: &Path,
 ) -> Result<String, DaemonError> {
     match read_receipt(path)? {
@@ -304,23 +303,7 @@ fn load_or_create_empty_receipt(
     }
 }
 
-/// Path 1 runs the ordinary kernel: capabilities live in CHARIOX_HOME, not an isolation root.
-fn empty_context_paths() -> Result<(Option<PathBuf>, PathBuf), DaemonError> {
-    if matches!(managed_provider_topology(), Ok(ManagedProviderTopology::Path1)) {
-        return Ok((None, configured_managed_vault_path()?));
-    }
-    let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
-    Ok((Some(capability_root), vault_path))
-}
-
-fn validate_pristine_context(capability_root: Option<&Path>, vault_path: &Path) -> Result<(), DaemonError> {
-    if let Some(capability_root) = capability_root {
-        validate_pristine_capability_root(capability_root)?;
-    }
-    validate_pristine_vault(vault_path)
-}
-
-fn validate_pristine_capability_root(capability_root: &Path) -> Result<(), DaemonError> {
+fn validate_pristine_context(capability_root: &Path, vault_path: &Path) -> Result<(), DaemonError> {
     match fs::symlink_metadata(capability_root) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -352,10 +335,6 @@ fn validate_pristine_capability_root(capability_root: &Path) -> Result<(), Daemo
             ))
         }
     }
-    Ok(())
-}
-
-fn validate_pristine_vault(vault_path: &Path) -> Result<(), DaemonError> {
     match fs::symlink_metadata(vault_path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Ok(_) => Err(empty_context_error(
@@ -482,14 +461,14 @@ mod tests {
         let expected = expected_receipt(&registration, &plan);
 
         let first =
-            load_or_create_empty_receipt(&receipt_path, &expected, Some(&capability_root), &vault_path)
+            load_or_create_empty_receipt(&receipt_path, &expected, &capability_root, &vault_path)
                 .expect("create empty receipt");
         fs::create_dir_all(&capability_root).expect("create capability root");
         fs::write(capability_root.join("user-extension.json"), b"later")
             .expect("write later Extension");
         fs::write(&vault_path, b"later encrypted Vault").expect("write later Vault");
         let second =
-            load_or_create_empty_receipt(&receipt_path, &expected, Some(&capability_root), &vault_path)
+            load_or_create_empty_receipt(&receipt_path, &expected, &capability_root, &vault_path)
                 .expect("reuse empty receipt after later changes");
 
         assert_eq!(first, second);
@@ -497,24 +476,6 @@ mod tests {
             context_manifest_digest(&first).expect("manifest digest"),
             context_manifest_digest(&second).expect("manifest digest")
         );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn path1_empty_receipt_needs_no_capability_isolation_root_but_a_pristine_vault() {
-        let root = test_root("path1");
-        fs::create_dir_all(&root).expect("create test root");
-        let vault_path = root.join("vault.json");
-        let config = test_config(&root, "machine-empty", "kernel-empty", "http://127.0.0.1:9");
-        let registration = test_registration("machine-empty", "kernel-empty", "context-empty");
-        let plan = registration.context_plan.as_ref().unwrap().package_binding();
-        let receipt_path = empty_context_receipt_path(&config).expect("receipt path");
-        let expected = expected_receipt(&registration, &plan);
-        fs::write(&vault_path, b"{}").expect("write vault");
-        assert!(load_or_create_empty_receipt(&receipt_path, &expected, None, &vault_path).is_err());
-        fs::remove_file(&vault_path).expect("remove vault");
-        load_or_create_empty_receipt(&receipt_path, &expected, None, &vault_path)
-            .expect("Path 1 empty receipt without an isolation root");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -537,7 +498,7 @@ mod tests {
         assert!(load_or_create_empty_receipt(
             &receipt_path,
             &expected,
-            Some(&capability_root),
+            &capability_root,
             &vault_path,
         )
         .is_err());
@@ -547,19 +508,19 @@ mod tests {
         assert!(load_or_create_empty_receipt(
             &receipt_path,
             &expected,
-            Some(&capability_root),
+            &capability_root,
             &vault_path,
         )
         .is_err());
         fs::remove_file(&vault_path).expect("remove stale Vault");
-        load_or_create_empty_receipt(&receipt_path, &expected, Some(&capability_root), &vault_path)
+        load_or_create_empty_receipt(&receipt_path, &expected, &capability_root, &vault_path)
             .expect("create clean receipt");
         let rebound = test_registration("machine-empty", "kernel-rebound", "context-empty");
         let rebound_plan = rebound.context_plan.as_ref().unwrap().package_binding();
         assert!(load_or_create_empty_receipt(
             &receipt_path,
             &expected_receipt(&rebound, &rebound_plan),
-            Some(&capability_root),
+            &capability_root,
             &vault_path,
         )
         .is_err());
