@@ -43,13 +43,15 @@ export default function register(chariox) {
   chariox.tools.register('wasm_grow', async ({ mb, step_mb = 32 }) => {
     const started = Date.now();
     const pagesPerStep = (step_mb * 1024 * 1024) / 65536;
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 65536 });
+    const targetPages = (mb * 1024 * 1024) / 65536;
+    // The schema caps mb at 4096 (65536 pages), so only an external limit fails a step.
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: targetPages });
     memories.push(memory);
     let error = null;
     while (memory.buffer.byteLength < mb * 1024 * 1024) {
       try {
         const before = memory.buffer.byteLength;
-        memory.grow(pagesPerStep);
+        memory.grow(Math.min(pagesPerStep, targetPages - before / 65536));
         new Uint8Array(memory.buffer, before).fill(7);
       } catch (e) { error = { name: e?.name ?? 'Error', message: String(e?.message ?? e).slice(0, 200) }; break; }
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -63,8 +65,8 @@ export default function register(chariox) {
       try {
         const worker = new Worker(new URL('./thread.mjs', import.meta.url), { workerData: { mb: mb_each } });
         worker.on('error', () => {});
-        threads.push(worker);
         await new Promise((resolve, reject) => { worker.once('online', resolve); worker.once('error', reject); });
+        threads.push(worker);
       } catch (e) { error = { name: e?.name ?? 'Error', code: e?.code ?? null, message: String(e?.message ?? e).slice(0, 200) }; break; }
     }
     return { threads: threads.length, error, rssMb: rssMb(), ms: Date.now() - started };

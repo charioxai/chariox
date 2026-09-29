@@ -2,15 +2,35 @@
 // changes inside its private data. Every tool reports what the App sees
 // afterwards; a correct kernel never tears a file, never leaves a staging
 // file behind and never writes outside the private data root.
-//   rename_race     atomicReplace into a directory the App keeps renaming
+//   rename_race     atomicReplace while the App keeps renaming its parent
 //   unicode_names   NFC/NFD and case variants of one name
-//   deleted_parent  atomicReplace into a directory the App keeps deleting
+//   deleted_parent  atomicReplace while the App keeps deleting its parent
 //   listing         every entry under private data, with sizes
+// The mutations run on every event-loop turn until the write settles, so they
+// overlap the kernel's staging and publication; `overlapped` counts the rounds
+// in which at least one mutation landed while the write was pending.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const settle = (promise) => promise.then(() => 'ok', (error) => error?.code ?? 'failed');
 const tally = (values) => values.reduce((counts, value) => ({ ...counts, [value]: (counts[value] ?? 0) + 1 }), {});
+
+/** Runs `mutate` on each event-loop turn until `write` settles. */
+async function racing(write, mutate) {
+  let settled = false;
+  const outcome = settle(write).then((value) => { settled = true; return value; });
+  let mutations = 0;
+  const errors = [];
+  await new Promise((resolve) => {
+    const turn = () => {
+      if (settled) { resolve(); return; }
+      try { mutate(); mutations += 1; } catch (error) { errors.push(error?.code ?? 'failed'); }
+      setImmediate(turn);
+    };
+    turn();
+  });
+  return { outcome: await outcome, mutations, errors };
+}
 
 export default function register(chariox) {
   const root = chariox.paths.data;
@@ -27,21 +47,29 @@ export default function register(chariox) {
     rmSync(at('race'), { recursive: true, force: true });
     mkdirSync(at('race/a'), { recursive: true });
     const outcomes = [];
+    const errors = [];
+    let overlapped = 0;
+    let mutations = 0;
     for (let round = 0; round < rounds; round += 1) {
-      const write = settle(chariox.files.atomicReplace('race/a/f', payload(round)));
-      try { renameSync(at('race/a'), at('race/b')); renameSync(at('race/b'), at('race/a')); } catch (error) { outcomes.push(`rename:${error.code}`); }
-      outcomes.push(await write);
-      if (!existsSync(at('race/a'))) mkdirSync(at('race/a'), { recursive: true });
+      const result = await racing(chariox.files.atomicReplace('race/a/f', payload(round)), () => {
+        if (existsSync(at('race/a'))) renameSync(at('race/a'), at('race/b'));
+        else renameSync(at('race/b'), at('race/a'));
+      });
+      outcomes.push(result.outcome);
+      errors.push(...result.errors);
+      mutations += result.mutations;
+      if (result.mutations > 0) overlapped += 1;
+      if (!existsSync(at('race/a'))) renameSync(at('race/b'), at('race/a'));
     }
     const files = walk(at('race'));
-    const torn = files.filter((file) => !whole(readFileSync(at(file.path))) && file.path.endsWith('/f'));
-    return { rounds, outcomes: tally(outcomes), files, torn: torn.length };
+    const torn = files.filter((file) => file.path.endsWith('/f') && !whole(readFileSync(at(file.path))));
+    return { rounds, overlapped, mutations, outcomes: tally(outcomes), mutationErrors: tally(errors), files, torn: torn.length };
   });
 
   chariox.tools.register('unicode_names', async () => {
     rmSync(at('names'), { recursive: true, force: true });
     mkdirSync(at('names'));
-    const names = { nfc: 'café', nfd: 'café', upper: 'Case', lower: 'case' };
+    const names = { nfc: 'caf\u00e9', nfd: 'cafe\u0301', upper: 'Case', lower: 'case' };
     const results = {};
     for (const [label, name] of Object.entries(names)) {
       results[label] = await settle(chariox.files.atomicReplace(`names/${name}`, label));
@@ -54,15 +82,25 @@ export default function register(chariox) {
   });
 
   chariox.tools.register('deleted_parent', async ({ rounds = 200 }) => {
+    rmSync(at('gone'), { recursive: true, force: true });
     const outcomes = [];
+    const errors = [];
+    let overlapped = 0;
+    let mutations = 0;
     for (let round = 0; round < rounds; round += 1) {
       mkdirSync(at('gone/x'), { recursive: true });
-      const write = settle(chariox.files.atomicReplace('gone/x/f', payload(round)));
-      rmSync(at('gone'), { recursive: true, force: true });
-      outcomes.push(await write);
+      const result = await racing(chariox.files.atomicReplace('gone/x/f', payload(round)), () => {
+        if (existsSync(at('gone'))) rmSync(at('gone'), { recursive: true, force: true });
+        else mkdirSync(at('gone/x'), { recursive: true });
+      });
+      outcomes.push(result.outcome);
+      errors.push(...result.errors);
+      mutations += result.mutations;
+      if (result.mutations > 0) overlapped += 1;
     }
     const left = existsSync(at('gone')) ? walk(at('gone')) : [];
-    return { rounds, outcomes: tally(outcomes), left };
+    const torn = left.filter((file) => file.path.endsWith('/f') && !whole(readFileSync(at(file.path))));
+    return { rounds, overlapped, mutations, outcomes: tally(outcomes), mutationErrors: tally(errors), left, torn: torn.length };
   });
 
   chariox.tools.register('listing', async () => ({ entries: walk(root) }));
