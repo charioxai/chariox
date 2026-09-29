@@ -39,7 +39,10 @@ impl KernelRuntimeState {
     }
 
     /// A listing served without the agent's Apps (App admission was busy):
-    /// the provider re-reads its tools shortly, through the usual refresh.
+    /// once a slot frees, the provider re-reads its tools through the usual
+    /// refresh. It waits for the slot rather than retrying on a timer, keeps
+    /// at most one refresh pending per agent, and skips the refresh when no
+    /// bound App can be listed (stopped, failed or uninstalled).
     pub(super) fn refresh_app_catalog_later(&self, auth_token: &str) {
         let runs = self
             .owned
@@ -51,11 +54,39 @@ impl KernelRuntimeState {
         let Ok(agent) = self.app_agent_for_provider_run(run) else {
             return;
         };
+        let control = self.app_control().clone();
+        if !control.begin_catalog_refresh(agent.id()) {
+            return;
+        }
         let state = self.clone();
         let (session, agent) = (agent.session_id().to_owned(), agent.id().to_owned());
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let _ = state.refresh_agent_runtime_tool_catalog(&session, &agent).await;
+            let listable = match control.admit().await {
+                Some(permit) => {
+                    let (control, state, agent) = (control.clone(), state.clone(), agent.clone());
+                    tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
+                        state
+                            .owned
+                            .agent_store
+                            .get_agent(&agent)
+                            .is_ok_and(|agent| {
+                                control.seed_bound_dormant(&agent);
+                                control.has_active_apps_for_agent(&agent)
+                            })
+                    })
+                    .await
+                    .unwrap_or(false)
+                }
+                None => false,
+            };
+            // A listing saturated again during the refresh schedules another.
+            control.end_catalog_refresh(&agent);
+            if listable {
+                let _ = state
+                    .refresh_agent_runtime_tool_catalog(&session, &agent)
+                    .await;
+            }
         });
     }
 

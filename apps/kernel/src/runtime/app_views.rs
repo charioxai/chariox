@@ -214,12 +214,26 @@ impl AppViews {
     /// The pump keeps running while the session has views, or App Tabs the
     /// controller still shows (their calls are answered, as unbound); the last
     /// pass removes the session atomically so a concurrent open restarts it.
+    /// The user's revocations outlive the views: a later focus change still
+    /// does not bind a revoked pair.
     pub(crate) fn keep_pumping(&self, session: &str) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(session) {
             Some(views) if !views.tabs.is_empty() || views.open_tabs > 0 => true,
             _ => {
-                sessions.remove(session);
+                let revoked = sessions
+                    .remove(session)
+                    .map(|views| views.revoked)
+                    .unwrap_or_default();
+                if !revoked.is_empty() {
+                    sessions.insert(
+                        session.to_owned(),
+                        SessionViews {
+                            revoked,
+                            ..Default::default()
+                        },
+                    );
+                }
                 false
             }
         }
@@ -386,6 +400,15 @@ mod tests {
         assert!(views.is_revoked("s", "agent-1", "a"));
         assert!(!views.is_revoked("s", "agent-2", "a"));
         assert!(!views.is_revoked("other", "agent-1", "a"));
+        // Kept when the session's last App view closes; a new view starts
+        // the pump again.
+        assert!(views.register("s", "t", binding("a")));
+        views.set_foreground("s", "user", "a");
+        views.retain_open("s", &[], u64::MAX);
+        assert!(!views.keep_pumping("s"));
+        assert!(views.is_revoked("s", "agent-1", "a"));
+        assert_eq!(views.foreground("s"), None);
+        assert!(views.register("s", "t", binding("a")));
         views.set_revoked("s", "agent-1", "a", false);
         assert!(!views.is_revoked("s", "agent-1", "a"));
     }

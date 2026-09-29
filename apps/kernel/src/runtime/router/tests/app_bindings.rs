@@ -363,3 +363,155 @@ async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_uninstall_unbi
     assert!(!granted(&app, &first).await && !granted(&app, &second).await);
     assert_eq!(state.app_control().views().foreground(&session), None);
 }
+
+#[tokio::test]
+async fn a_revoked_foreground_binding_returns_only_when_the_app_is_opened_again() {
+    let fixture = Fixture::new();
+    let (app, router, session, first, _auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Required);
+    let second = {
+        let mut app = app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(&session, "dev-stub").with_owner_user_id("alice"))
+            .unwrap()
+            .id()
+            .to_owned()
+    };
+    let state = &router.runtime_state;
+    state.focus_agent(&session, &first, "alice").await.unwrap();
+    assert_eq!(
+        state.foreground_app(&session, "alice", "installed").await,
+        Some(first.clone())
+    );
+    // Cycling the focus binds the next focus agent too.
+    let cycled = state.cycle_agent_focus(&session, "alice").await.unwrap();
+    assert_eq!(
+        cycled.map(|agent| agent.id().to_owned()),
+        Some(second.clone())
+    );
+    assert!(granted(&app, &second).await);
+    // A focus change does not bind a revoked pair again.
+    state
+        .revoke_agent_extension(&second, ExtensionKind::App, "installed", "alice")
+        .await
+        .unwrap();
+    state.focus_agent(&session, &first, "alice").await.unwrap();
+    state.focus_agent(&session, &second, "alice").await.unwrap();
+    assert!(!granted(&app, &second).await);
+    // Nor after the session's last App view closed and the App was opened
+    // again for another agent.
+    assert!(!state.app_control().views().keep_pumping(&session));
+    state.focus_agent(&session, &first, "alice").await.unwrap();
+    assert_eq!(
+        state.foreground_app(&session, "alice", "installed").await,
+        Some(first.clone())
+    );
+    state.focus_agent(&session, &second, "alice").await.unwrap();
+    assert!(!granted(&app, &second).await);
+    // Opening the App with that agent in focus binds it again.
+    assert_eq!(
+        state.foreground_app(&session, "alice", "installed").await,
+        Some(second.clone())
+    );
+    assert!(granted(&app, &second).await);
+}
+
+#[tokio::test]
+async fn a_persons_spawn_gets_the_foreground_app_and_a_meta_agents_spawn_does_not() {
+    let fixture = Fixture::new();
+    let (app, router, session, first, auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Yolo);
+    let state = &router.runtime_state;
+    state.focus_agent(&session, &first, "alice").await.unwrap();
+    assert_eq!(
+        state.foreground_app(&session, "alice", "installed").await,
+        Some(first.clone())
+    );
+    let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        account_profile: None,
+        session_id: session.clone(),
+        alias: Some("person-worker".into()),
+        provider: Some("dev-stub".into()),
+        model: None,
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: None,
+        kernel_ref: None,
+        slice_ref: None,
+        worktree_placement: None,
+        metaagent: false,
+    });
+    let mut command = KernelCommand::from_local_request("person-spawn", None, None, &request);
+    command.caller.user_id = Some("alice".into());
+    let LocalDaemonResponse::AgentSpawned { agent: spawned } =
+        router.dispatch(command, request).await.unwrap()
+    else {
+        panic!("unexpected spawn response");
+    };
+    assert!(granted(&app, spawned.id()).await);
+    // A Meta agent's new agent also becomes the focus, but its binding must
+    // be authorized: the spawn does not bind the foreground App.
+    app.lock()
+        .await
+        .agents_mut()
+        .activate_agent_meta_mode(&first, None)
+        .unwrap();
+    let result = router
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent spawn meta-worker" }),
+        )
+        .await
+        .unwrap();
+    assert!(result.ok, "{result:?}");
+    let worker = state
+        .focused_agent_id(&session)
+        .await
+        .unwrap()
+        .expect("the new agent is the focus");
+    assert_ne!(worker, spawned.id());
+    assert_ne!(worker, first);
+    assert!(!granted(&app, &worker).await);
+}
+
+#[tokio::test]
+async fn a_saturated_listing_omits_a_cold_app_and_refreshes_once_a_slot_frees() {
+    let fixture = Fixture::new();
+    let (app, router, _session, agent, auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Yolo);
+    let state = &router.runtime_state;
+    state
+        .grant_agent_extension(&agent, ExtensionGrant::app("installed"), "alice")
+        .await
+        .unwrap();
+    let control = state.app_control().clone();
+    control.forget_app_dormant("alice", "installed");
+    let permits = (0..8)
+        .map(|_| control.try_admit().unwrap())
+        .collect::<Vec<_>>();
+    // Nothing runs or is dormant: the listing answers without the App, and
+    // one refresh waits for a slot however often the agent lists.
+    for _ in 0..3 {
+        state
+            .runtime_tool_specs_for_auth_token_async(auth.clone())
+            .await
+            .expect("a cold App's listing does not fail when admission is busy");
+    }
+    assert!(control.catalog_refresh_pending(&agent));
+    // The shared projection (a leased agent's manifest) answers the same way.
+    let bound = app.lock().await.agents().get_agent(&agent).unwrap();
+    assert!(control
+        .app_extension_tools_for_agent(&bound, &std::collections::BTreeSet::new())
+        .unwrap()
+        .is_empty());
+    drop(permits);
+    timeout(Duration::from_secs(5), async {
+        while control.catalog_refresh_pending(&agent) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the refresh runs once a slot frees");
+}

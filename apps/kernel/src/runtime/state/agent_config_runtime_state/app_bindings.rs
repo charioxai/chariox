@@ -45,9 +45,19 @@ impl KernelRuntimeState {
             .map_err(|_| app_binding_error("App control is busy"))?;
         let owner = caller_user_id.to_string();
         let installation_id = grant.name.clone();
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let control = self.app_control().clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            store.check_app_binding(&owner, &installation_id)
+            let binding = store.check_app_binding(&owner, &installation_id);
+            // Under the same slot: its tools are listed at once, even before
+            // the App's first start. The dormant catalog is the owner's, and
+            // only agents bound to the App list it.
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            if binding.is_ok() {
+                control.seed_dormant(&owner, &installation_id);
+            }
+            binding
         })
         .await
         .map_err(|_| app_binding_error("App binding check did not complete"))?
@@ -76,12 +86,6 @@ impl KernelRuntimeState {
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
         self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
-        // Its tools are listed at once, even before the App's first start.
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        {
-            let (control, seeded) = (self.app_control().clone(), agent.clone());
-            let _ = tokio::task::spawn_blocking(move || control.seed_bound_dormant(&seeded)).await;
-        }
         Ok(agent)
     }
 

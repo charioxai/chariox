@@ -34,9 +34,15 @@ impl AppControlService {
             return Ok(Vec::new());
         }
         // Seeding reads releases, so it runs under an App admission slot.
-        let permit = self
-            .try_admit()
-            .map_err(|_| crate::runtime::app_worker::AppWorkerError::Busy)?;
+        let Ok(permit) = self.try_admit() else {
+            // Saturated: an agent whose Apps neither run nor are dormant gets
+            // no App tools now, as before seeding; a running App's tools must
+            // not silently disappear.
+            if self.has_active_apps_for_agent(agent) {
+                return Err(crate::runtime::app_worker::AppWorkerError::Busy.into());
+            }
+            return Ok(Vec::new());
+        };
         self.app_extension_tools_for_agent_admitted(agent, occupied, &permit)
     }
 
@@ -69,25 +75,31 @@ impl AppControlService {
     /// gets a dormant catalog from its verified active release: its tools are
     /// listed before the first call starts it, also after a kernel restart. A
     /// user stop, a failed generation or a revoked publisher keeps it unlisted.
+    /// The caller holds an App admission slot.
     pub(crate) fn seed_bound_dormant(&self, agent: &AgentInstance) {
-        let owner = agent.owner_user_id();
-        let publisher =
-            super::AppWorkerPublisher::new(self.workers.clone(), self.event_pump.clone());
         for grant in agent.extension_grants() {
-            let installation = grant.name.as_str();
-            if grant.kind != ExtensionKind::App
-                || self.active_app_lease(owner, installation).is_some()
-                || self.is_app_dormant(owner, installation)
-                || !matches!(
-                    self.store.app_worker_start_gate(owner, installation),
-                    Ok(crate::durable_state::app_worker_lifecycle::StartGate::Allowed)
-                )
-            {
-                continue;
+            if grant.kind == ExtensionKind::App {
+                self.seed_dormant(agent.owner_user_id(), &grant.name);
             }
-            if let Ok(catalog) = self.store.active_app_event_catalog(owner, installation) {
-                publisher.retain_dormant(owner, catalog);
-            }
+        }
+    }
+
+    /// One installation of `seed_bound_dormant`. The dormant catalog is the
+    /// owner's; only agents bound to the installation list it. The caller
+    /// holds an App admission slot.
+    pub(crate) fn seed_dormant(&self, owner: &str, installation: &str) {
+        if self.active_app_lease(owner, installation).is_some()
+            || self.is_app_dormant(owner, installation)
+            || !matches!(
+                self.store.app_worker_start_gate(owner, installation),
+                Ok(crate::durable_state::app_worker_lifecycle::StartGate::Allowed)
+            )
+        {
+            return;
+        }
+        if let Ok(catalog) = self.store.active_app_event_catalog(owner, installation) {
+            super::AppWorkerPublisher::new(self.workers.clone(), self.event_pump.clone())
+                .retain_dormant(owner, catalog);
         }
     }
 

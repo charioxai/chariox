@@ -40,6 +40,8 @@ pub(crate) struct AppControlService {
     validation_prompts:
         Arc<std::sync::Mutex<std::collections::BTreeMap<String, (String, Option<String>)>>>,
     publishers: super::app_publisher_control::AppPublisherControl,
+    /// Agents with a delayed App catalog refresh pending (at most one each).
+    catalog_refreshes: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     workers: workers::ActiveWorkers,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -91,6 +93,7 @@ impl AppControlService {
             validation_pump: Default::default(),
             validation_prompts: Default::default(),
             publishers,
+            catalog_refreshes: Default::default(),
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             workers,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -193,6 +196,35 @@ impl AppControlService {
         Arc::clone(&self.admission)
             .try_acquire_owned()
             .map_err(|_| AppRequestErrorCode::Busy)
+    }
+
+    /// Waits for an App admission slot.
+    pub(crate) async fn admit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.admission).acquire_owned().await.ok()
+    }
+
+    /// True when the caller should schedule the agent's delayed App catalog
+    /// refresh: none is pending yet.
+    pub(crate) fn begin_catalog_refresh(&self, agent: &str) -> bool {
+        self.catalog_refreshes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(agent.to_owned())
+    }
+
+    pub(crate) fn end_catalog_refresh(&self, agent: &str) {
+        self.catalog_refreshes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(agent);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn catalog_refresh_pending(&self, agent: &str) -> bool {
+        self.catalog_refreshes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(agent)
     }
 
     pub(crate) async fn execute(
