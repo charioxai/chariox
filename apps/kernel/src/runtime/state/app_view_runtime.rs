@@ -196,7 +196,7 @@ impl KernelRuntimeState {
                 views.set_open_tabs(&session_id, open.len());
             }
             if batch.app_panels {
-                self.publish_app_tabs(&session_id, &views).await;
+                self.publish_app_tabs(&session_id, &views);
             }
             // A view's first call means its document loaded: project the
             // Room again so the Tab shows the App's title and URL, not the
@@ -243,14 +243,13 @@ impl KernelRuntimeState {
 
     /// Marks the Room's App view Tabs. The Room draws each one's panel beside
     /// the App page, showing the session's focus agent.
-    async fn publish_app_tabs(
+    fn publish_app_tabs(
         &self,
         session_id: &str,
         views: &crate::runtime::app_views::AppViews,
     ) {
         let apps = views.installations(session_id).into_iter().collect();
-        let agent_id = self.focused_agent_id(session_id).await.ok().flatten();
-        let _ = self.set_room_environment_app_tabs(session_id, apps, agent_id);
+        let _ = self.set_room_environment_app_tabs(session_id, apps);
     }
 
     async fn answer_app_view_call(self, session_id: String, call: BrowserAppViewCall) {

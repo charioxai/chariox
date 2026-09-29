@@ -400,10 +400,8 @@ impl SessionStateStore {
         &self,
         session_id: &str,
         apps: std::collections::BTreeMap<String, String>,
-        agent_id: Option<String>,
     ) -> Result<(), EnvironmentError> {
-        self.write()
-            .set_room_environment_app_tabs(session_id, apps, agent_id)
+        self.write().set_room_environment_app_tabs(session_id, apps)
     }
 
     pub(crate) fn room_environment_controller_tab_binding(

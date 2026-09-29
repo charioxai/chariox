@@ -243,13 +243,15 @@ impl SessionService {
         &mut self,
         session_id: &str,
         apps: std::collections::BTreeMap<String, String>,
-        agent_id: Option<String>,
     ) -> Result<(), EnvironmentError> {
-        if !self.has_session(session_id) {
+        // Read under the same lock as every focus change, so a poll never
+        // puts back an agent the focus just moved away from.
+        let Some(session) = self.store.get(session_id) else {
             return Err(EnvironmentError::RoomNotFound {
                 session_id: session_id.to_string(),
             });
-        }
+        };
+        let agent_id = session.focused_agent_id().map(str::to_owned);
         self.room_environments
             .set_app_tabs(session_id, apps, agent_id)
     }
