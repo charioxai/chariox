@@ -136,17 +136,18 @@ impl KernelRuntimeState {
                 }
                 // Work accepted while this pass ran gets a pass of its own.
                 let started_ms = now_ms;
-                now_ms = crate::session::unix_epoch_ms();
-                match pass.finish(now_ms) {
+                match pass.finish(crate::session::unix_epoch_ms()) {
                     Some(next) => pass = next,
                     None => break,
                 }
                 let gap = crate::runtime::app_wake_pump::REQUESTED_GAP_MS
-                    .saturating_sub(now_ms.saturating_sub(started_ms));
+                    .saturating_sub(crate::session::unix_epoch_ms().saturating_sub(started_ms));
                 if gap > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(gap)).await;
-                    now_ms = crate::session::unix_epoch_ms();
                 }
+                // Read after the handoff: the rerun's clock is never earlier
+                // than an occurrence accepted before it, so that one is due.
+                now_ms = crate::session::unix_epoch_ms();
             }
         });
     }
