@@ -191,7 +191,7 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /sshd -T/)
   assert.match(script, /grep -Fxq 'permitrootlogin prohibit-password'/)
   assert.match(script, /DenyUsers chariox chariox-docker/)
-  assert.match(script, /grep -Fxq 'denyusers chariox chariox-docker'/)
+  assert.match(script, /exit !\(denied\["chariox"\] && denied\["chariox-docker"\]\)/)
   assert.doesNotMatch(script, /grep -Fxq 'permitrootlogin without-password'/)
   assert.doesNotMatch(script, /install[^\n]*\/dev\/stdin/)
   assert.match(script, /managed_sshd_tmp=\$\(mktemp\)/)

@@ -637,7 +637,9 @@ printf '%s\n' "$sshd_effective" | grep -Fxq 'kbdinteractiveauthentication no' \
   || fail "managed image must disable interactive SSH authentication"
 printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin prohibit-password' \
   || fail "managed image must restrict root SSH to public keys"
-printf '%s\n' "$sshd_effective" | grep -Fxq 'denyusers chariox chariox-docker' \
+# sshd -T prints DenyUsers one per line or space-separated, by OpenSSH version.
+printf '%s\n' "$sshd_effective" \
+  | awk '$1 == "denyusers" { for (i = 2; i <= NF; i++) denied[$i] = 1 } END { exit !(denied["chariox"] && denied["chariox-docker"]) }' \
   || fail "managed image must deny SSH to its service accounts"
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
