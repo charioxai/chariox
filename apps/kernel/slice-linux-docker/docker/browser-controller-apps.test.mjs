@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 
-import { APP_CSP, AppTabs, appOrigin } from "./browser-controller-apps.mjs";
+import { APP_CSP, APP_PERMISSIONS_POLICY, AppTabs, appOrigin } from "./browser-controller-apps.mjs";
 
 function fakeConnection(targets = []) {
   const sent = [];
@@ -127,6 +127,7 @@ test("serves verified assets with CSP and blocks everything else", async () => {
   assert.equal(root.method, "Fetch.fulfillRequest");
   assert.equal(Buffer.from(root.params.body, "base64").toString(), "<p>hi</p>");
   assert.ok(root.params.responseHeaders.some((h) => h.name === "Content-Security-Policy" && h.value === APP_CSP));
+  assert.ok(root.params.responseHeaders.some((h) => h.name === "Permissions-Policy" && h.value === APP_PERMISSIONS_POLICY));
   assert.equal(js.params.responseCode, 200);
   assert.equal(missing.params.responseCode, 404);
   assert.deepEqual([other.method, other.params.errorReason], ["Fetch.failRequest", "BlockedByClient"]);
@@ -173,6 +174,13 @@ test("malformed escapes are 404s and DNS prefetch is off", async () => {
     params: { requestId: "bad", request: { url: "https://todo-1.app.chariox.internal/%E0%A4%A", method: "GET" } } });
   assert.equal(connection.sent[0].params.responseCode, 404);
   assert.ok(connection.sent[0].params.responseHeaders.some((h) => h.name === "X-DNS-Prefetch-Control" && h.value === "off"));
+  assert.ok(connection.sent[0].params.responseHeaders.some((h) => h.name === "Permissions-Policy" && h.value === APP_PERMISSIONS_POLICY));
+});
+
+test("App pages may not capture the screen, go fullscreen or reach devices", () => {
+  for (const feature of ["display-capture", "fullscreen", "camera", "microphone", "geolocation", "clipboard-read", "usb"]) {
+    assert.ok(APP_PERMISSIONS_POLICY.split(", ").includes(`${feature}=()`), feature);
+  }
 });
 
 test("polls report open App targets so closed views can be dropped", async () => {

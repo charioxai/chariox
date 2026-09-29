@@ -24,6 +24,19 @@ export const APP_CSP = [
   "sandbox allow-scripts allow-same-origin allow-forms",
 ].join("; ");
 
+// Powerful features an App page must never reach. Screen capture would let
+// the page ask for (and list) the Room's other Tabs; fullscreen could cover
+// the private panel; devices, sensors and credentials are not App capabilities.
+// The kernel bridge is the App's only way out of its page.
+export const APP_PERMISSIONS_POLICY = [
+  "display-capture", "fullscreen", "camera", "microphone", "geolocation", "clipboard-read",
+  "usb", "serial", "hid", "bluetooth", "midi", "payment", "publickey-credentials-get",
+  "publickey-credentials-create", "identity-credentials-get", "otp-credentials",
+  "screen-wake-lock", "idle-detection", "local-fonts", "window-management",
+  "accelerometer", "gyroscope", "magnetometer", "ambient-light-sensor",
+  "xr-spatial-tracking", "storage-access", "browsing-topics", "attribution-reporting",
+].map((feature) => `${feature}=()`).join(", ");
+
 // Installed before any App script runs. The binding carries only JSON strings;
 // the kernel binds every call to this tab's installation, never to page data.
 const BRIDGE_SOURCE = `(() => {
@@ -206,6 +219,7 @@ export class AppTabs {
     const asset = path === null ? undefined : app.assets.get(path);
     const headers = [
       { name: "Content-Security-Policy", value: APP_CSP },
+      { name: "Permissions-Policy", value: APP_PERMISSIONS_POLICY },
       { name: "X-Content-Type-Options", value: "nosniff" },
       { name: "Cache-Control", value: "no-store" },
       { name: "Referrer-Policy", value: "no-referrer" },
