@@ -1186,7 +1186,6 @@ pub(crate) fn apply_managed_provider_isolation(
             }
         }
 
-        append_managed_namespace_environment(&mut args, request);
         let mut environment_remove = managed_provider_isolation_env_remove();
         environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
             (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
@@ -1218,6 +1217,8 @@ pub(crate) fn apply_managed_provider_isolation(
         for (name, value) in account_environment {
             args.extend(["--setenv".to_string(), name, value]);
         }
+        // After the scrub: the control set also names the isolation marker.
+        append_managed_namespace_environment(&mut args, request);
         append_managed_git_safe_directory_environment(&mut args, &workspace_roots);
         args.extend([
             "--chdir".to_string(),
@@ -4634,6 +4635,17 @@ printf 'managed account environment probe passed\n'
                 "{name} namespace --setenv must follow --unsetenv"
             );
         }
+        let marker = launch
+            .pty_args
+            .windows(3)
+            .rposition(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"])
+            .expect("managed launch should set the isolation marker");
+        assert!(
+            !launch.pty_args[marker..]
+                .windows(2)
+                .any(|window| window == ["--unsetenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV]),
+            "the isolation marker must survive the namespace scrub"
+        );
 
         let output = command_from_provider_launch(launch)
             .expect("managed account environment command should be constructed")
