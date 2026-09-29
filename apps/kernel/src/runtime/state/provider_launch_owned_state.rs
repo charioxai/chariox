@@ -310,10 +310,12 @@ impl KernelRuntimeOwnedState {
                 &config,
                 &request.owner_user_id,
             );
-        crate::provider::provider_account_credential_uses_vault(
+        crate::provider::launch_uses_vault_credential(
+            &self.provider_account_profiles,
             &account_owner_user_id,
             &request.provider,
             &request.account_profile,
+            request.client_interface,
         )
     }
 }
@@ -420,7 +422,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unattended_claude_launch_requires_portable_or_vaulted_credentials() {
+    async fn claude_agents_launch_on_the_accounts_own_login_on_every_platform() {
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-missing-claude-credential-{}-{}",
@@ -481,10 +483,10 @@ mod tests {
                 request.clone(),
                 "http://127.0.0.1:43120/mcp".to_string(),
             )
-            .expect_err("unattended launch without credentials must fail before spawn");
+            .expect_err("a launch on a signed-out account must fail before spawn");
         assert!(error
             .to_string()
-            .contains("unattended Claude launch requires"));
+            .contains("this Claude account is not signed in"));
 
         let foreground = runtime
             .owned
@@ -502,16 +504,67 @@ mod tests {
             br#"{"claudeAiOauth":{"refreshToken":"portable-refresh-token"}}"#,
         )
         .expect("portable Claude credential fixture should write");
-        let portable_launch = runtime
+        // One sign-in: the account's own login runs background agents on Linux
+        // (its credential file) and macOS (its verified Keychain login) alike.
+        app.lock()
+            .await
+            .provider_account_profile_registry()
+            .update_observation(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("the verified login should record");
+        let launch = runtime
             .owned
-            .prepare_provider_launch_request(request, "http://127.0.0.1:43120/mcp".to_string());
-        if cfg!(target_os = "linux") {
-            portable_launch.expect("Linux may use portable provider-native credentials");
-        } else {
-            portable_launch.expect_err(
-                "macOS and Windows unattended launches must require a Chariox setup token",
-            );
-        }
+            .prepare_provider_launch_request(request, "http://127.0.0.1:43120/mcp".to_string())
+            .expect("the account's own login runs background agents");
+        assert!(
+            launch.provider_credential_env.is_empty(),
+            "no Chariox-vault token is needed"
+        );
+        // A setup token left in the vault from before is not read either, so
+        // the launch asks for no vault unlock; the native Claude TUI still may.
+        let credential_id = crate::provider::provider_account_credential_id(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        );
+        crate::credential::CharioxCredentialRegistry::user()
+            .expect("credential registry should resolve")
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .expect("vault credential should register");
+        let profiles = app.lock().await.provider_account_profile_registry();
+        let uses_vault = |client_interface| {
+            crate::provider::launch_uses_vault_credential(
+                &profiles,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+                client_interface,
+            )
+            .expect("vault use should resolve")
+        };
+        assert!(!uses_vault(
+            crate::provider::ProviderClientInterface::Chariox
+        ));
+        assert!(uses_vault(
+            crate::provider::ProviderClientInterface::NativeTui
+        ));
+        drop(app);
 
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);
