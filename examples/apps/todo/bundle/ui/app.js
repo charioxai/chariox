@@ -103,10 +103,12 @@ async function refresh() {
 
 // Reminders only reach a workflow while the reminders automation is active.
 // Say so while a Todo still waits for its reminder; Chariox owns the fix.
+// Chariox cannot pause an automation yet; `paused` reads like `disabled`.
+const OFF = "Reminders are turned off in Chariox."
 const REMINDERS = {
-  paused: "Reminders are paused in Chariox.",
+  paused: OFF,
   broken: "Reminders are broken. Fix the reminders automation in Chariox.",
-  disabled: "Reminders are turned off in Chariox.",
+  disabled: OFF,
   missing: "Reminders are not set up. Add the reminders automation in Chariox.",
 }
 let reminderState = "unknown"
