@@ -1064,6 +1064,38 @@ where
     writer.send(Message::Text(payload.into())).await.is_ok()
 }
 
+/// Builds the error reply for a frame that failed typed decoding. When the
+/// payload is still a JSON object carrying a `request_id` (e.g. a request whose
+/// `LocalDaemonRequest` body is malformed or names an unknown variant), the reply
+/// echoes that id so the client can reject the pending request instead of
+/// waiting for its own timeout.
+fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> KernelOutgoingFrame {
+    let request_id = serde_json::from_slice::<Value>(payload)
+        .ok()
+        .and_then(|value| value.get("request_id")?.as_str().map(str::to_owned));
+    let (request_id, code, message) = match request_id {
+        Some(request_id) => (
+            request_id,
+            "invalid_request",
+            format!("invalid request: {error}"),
+        ),
+        None => (
+            "unknown".to_string(),
+            "invalid_frame",
+            format!("invalid kernel transport payload: {error}"),
+        ),
+    };
+    KernelOutgoingFrame::Response {
+        request_id,
+        response: Box::new(None),
+        error: Some(KernelTransportError {
+            code: code.to_string(),
+            message,
+            retryable: false,
+        }),
+    }
+}
+
 async fn handle_incoming_payload(
     runtime: &Arc<KernelTransportRuntime>,
     router: &Arc<CommandRouter>,
@@ -1083,15 +1115,7 @@ async fn handle_incoming_payload(
                 close_tx,
                 close_requested,
                 &runtime.transport_health,
-                KernelOutgoingFrame::Response {
-                    request_id: "unknown".to_string(),
-                    response: Box::new(None),
-                    error: Some(KernelTransportError {
-                        code: "invalid_frame".to_string(),
-                        message: format!("invalid kernel transport payload: {error}"),
-                        retryable: false,
-                    }),
-                },
+                incoming_frame_decode_error(payload, &error),
                 None,
                 None,
             );
