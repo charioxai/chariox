@@ -1,0 +1,1 @@
+{"informationSets": [{"name": "task_result", "purpose": "Show the created Todo", "sourceScope": "app_task", "schemaVersion": 1, "delivery": "both", "fieldsSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"], "additionalProperties": false}, "validator": "validate_result"}]}

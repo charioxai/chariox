@@ -309,3 +309,14 @@ duplicate JSON keys, protected routes, information-set scope, hostile header
 types, traversal, case/Unicode handling, limits, truncation, padding, compressed
 input, and canonical control encoding. These tests do not establish installer
 or App runtime conformance.
+
+`fuzz/` holds two cargo-fuzz targets (nightly only; not part of the workspace
+build). `archive` feeds arbitrary bytes to `inspect_untrusted()` and `verify()`.
+`signed` replaces the manifest or one declaration document of a valid package
+with the input and signs the result, so manifest, declaration and JSON Schema
+checks see arbitrary content behind a valid signature. Both must reject without
+panicking. Run, for example:
+
+    cargo +nightly fuzz run -O signed fuzz/seeds/signed -- -max_total_time=120 -rss_limit_mb=2048
+
+(With a Homebrew `cargo`, put the nightly toolchain's `bin` first in `PATH`.)
