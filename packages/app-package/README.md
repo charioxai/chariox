@@ -321,10 +321,11 @@ verify, so a harness that only reaches the rejection path cannot pass silently.
 trusts, so `archive` can mutate its way into the manifest and declaration
 checks; a real `.cxapp` stops at the signature check. `archive` panics on its
 first input if the seed no longer verifies; regenerate it with
-`CHARIOX_FUZZ_WRITE_ARCHIVE_SEED=$PWD/fuzz/seeds/archive/0 cargo +nightly fuzz run -O signed fuzz/seeds/signed -- -runs=1`.
-Run, for example:
+`CHARIOX_FUZZ_WRITE_ARCHIVE_SEED=$PWD/fuzz/seeds/archive/0 cargo +nightly fuzz run -O signed fuzz/corpus/signed fuzz/seeds/signed -- -runs=1`.
+Run, for example (libFuzzer writes new inputs to the first, ignored, corpus
+directory and only reads the committed seeds):
 
-    cargo +nightly fuzz run -O signed fuzz/seeds/signed -- -max_total_time=120 -rss_limit_mb=2048
-    cargo +nightly fuzz run -O archive fuzz/seeds/archive -- -max_total_time=120 -rss_limit_mb=2048
+    cargo +nightly fuzz run -O signed fuzz/corpus/signed fuzz/seeds/signed -- -max_total_time=120 -rss_limit_mb=2048
+    cargo +nightly fuzz run -O archive fuzz/corpus/archive fuzz/seeds/archive -- -max_total_time=120 -rss_limit_mb=2048
 
 (With a Homebrew `cargo`, put the nightly toolchain's `bin` first in `PATH`.)
