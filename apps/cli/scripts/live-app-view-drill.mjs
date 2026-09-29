@@ -68,8 +68,8 @@ try {
   const { x, y, width, height } = marked.panel
   assert.deepEqual([x + width, y, height], [viewport.desktop_pixel_width, 0, viewport.desktop_pixel_height])
   assert.equal(marked.panel.agent_id, view.bound_agent_id ?? null)
-  const page = await evaluate(view.target_id, `({ width: innerWidth, panel: "panel" in window.chariox })`)
-  assert.deepEqual(page, { width: x / viewport.device_scale_factor, panel: false })
+  const page = await evaluate(view.target_id, `({ width: innerWidth, panel: Object.keys(window.chariox.panel) })`)
+  assert.deepEqual(page, { width: x / viewport.device_scale_factor, panel: ["set", "get"] })
   evidence.steps.push({ step: "panel", marked, page })
   if (options.otherAgent) {
     const focus = async (agentId) => {
@@ -82,6 +82,35 @@ try {
     evidence.steps.push({ step: "panel_follows_focus", agent_id: options.otherAgent, moved_ms })
     if (marked.panel.agent_id) await focus(marked.panel.agent_id)
   }
+
+  // Protocol 371: the App chooses the placement; the user's choice wins.
+  const scale = viewport.device_scale_factor
+  const setPanel = (layout) => evaluate(view.target_id, `window.chariox.panel.set(${JSON.stringify(layout)})`)
+  const pageHeight = async (height) => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (await evaluate(view.target_id, "innerHeight") === height) return
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    throw new Error(`the App page never became ${height} CSS pixels tall`)
+  }
+  const user = (fields) => client.send({ SetAppViewPanel: { session_id: options.session, installation_id: options.installation, ...fields } })
+  assert.deepEqual(await setPanel({ placement: "none" }), { placement: "none", minimized: false })
+  await roomApps((apps) => apps.every((app) => !app.panel))
+  await pageHeight(viewport.css_height)
+  assert.deepEqual(await setPanel({ placement: "bottom", size: 250 }), { placement: "bottom", minimized: false })
+  const bottom = (await roomApps((apps) => apps.find((app) => app.panel?.placement === "bottom"))).panel
+  assert.deepEqual([bottom.x, bottom.y + bottom.height, bottom.width], [0, viewport.desktop_pixel_height, viewport.desktop_pixel_width])
+  await pageHeight(bottom.y / scale)
+  const minimizedSet = await user({ minimized: true })
+  assert.equal(minimizedSet.AppViewPanelSet?.minimized, true, JSON.stringify(minimizedSet))
+  const minimized = (await roomApps((apps) => apps.find((app) => app.panel?.minimized))).panel
+  await pageHeight(minimized.y / scale)
+  await user({ minimized: false, placement: "right" })
+  const right = (await roomApps((apps) => apps.find((app) => app.panel?.placement === "right" && !app.panel.minimized))).panel
+  await pageHeight(viewport.css_height)
+  // The user's choice wins over a later request from the App.
+  assert.deepEqual(await setPanel({ placement: "bottom" }), { placement: "right", minimized: false })
+  evidence.steps.push({ step: "panel_placement", bottom, minimized, right })
 
   const tabId = await roomAppTab()
   const read = await client.send({ GetRoomEnvironmentTabAccessibility: { session_id: options.session, tab_id: tabId } })
