@@ -198,6 +198,23 @@ fn copied_signed_graph_is_enrolled_sealed_and_retry_is_revision_idempotent() {
         fs::metadata(root.join("sdk/src/index.js")).unwrap().mode() & 0o777,
         0o444
     );
+    #[cfg(target_os = "linux")]
+    {
+        // The loader is each worker's ELF interpreter, so it is installed
+        // executable; the libraries beside it are not.
+        let loader = if cfg!(target_arch = "x86_64") {
+            "platform/ld-linux-x86-64.so.2"
+        } else {
+            "platform/ld-linux-aarch64.so.1"
+        };
+        for (path, mode) in [(loader, 0o555), ("platform/libc.so.6", 0o444)] {
+            assert_eq!(
+                fs::metadata(root.join(path)).unwrap().mode() & 0o777,
+                mode,
+                "{path}"
+            );
+        }
+    }
     assert_eq!(fixture.install(&source).unwrap().revision, 1);
     assert_eq!(
         fixture.current().public_key_hex,
