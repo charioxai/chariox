@@ -125,58 +125,58 @@ fi
 
 KERNEL_LOCAL_AUTH_FILE="$ROOT/private/kernel-local-auth.token"
 umask 077
-dd if=/dev/urandom bs=48 count=1 status=none | base64 | tr -d '\n' >"$KERNEL_LOCAL_AUTH_FILE"
-chmod 600 "$KERNEL_LOCAL_AUTH_FILE"
 
-provider_probe_kernel_env=()
+# Start the slice kernel with a fresh single-use local auth token. Extra
+# arguments are environment assignments for this kernel only.
+start_slice_kernel() {
+  dd if=/dev/urandom bs=48 count=1 status=none | base64 | tr -d '\n' >"$KERNEL_LOCAL_AUTH_FILE"
+  chmod 600 "$KERNEL_LOCAL_AUTH_FILE"
+  KERNEL_LOCAL_AUTH_TOKEN="$(cat "$KERNEL_LOCAL_AUTH_FILE")"
+  screen -dmS chariox-slice-kernel env \
+    CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
+    CHARIOX_MCP_PORT="$MCP_PORT" \
+    CHARIOX_CODEX_PORT_RANGE="$CODEX_PORT_RANGE" \
+    CHARIOX_CODEX_BIND_HOST="$PROVIDER_BIND_HOST" \
+    CHARIOX_OPENCODE_PORT_RANGE="$OPENCODE_PORT_RANGE" \
+    CHARIOX_OPENCODE_BIND_HOST="$PROVIDER_BIND_HOST" \
+    CHARIOX_DAEMON_ALIAS="$DAEMON_ALIAS" \
+    CHARIOX_MACHINE_ID="$MACHINE_ID" \
+    CHARIOX_MACHINE_ALIAS="$MACHINE_ALIAS" \
+    CHARIOX_SLICE_ID="$SLICE_ID" \
+    CHARIOX_SLICE_OWNER_KERNEL_ID="$SLICE_OWNER_KERNEL_ID" \
+    CHARIOX_SLICE_OWNER_MACHINE_ID="$SLICE_OWNER_MACHINE_ID" \
+    CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY="$SLICE_OWNER_PUBLIC_KEY" \
+    CHARIOX_CAPABILITY_ISOLATION_ROOT="$CAPABILITY_ISOLATION_ROOT" \
+    CHARIOX_BROWSER_CONTROLLER_SCRIPT="$ROOT/browser-controller.mjs" \
+    CHARIOX_BROWSER_IMPORT_MODULE="$ROOT/browser-session-import/production-destination.mjs" \
+    CHARIOX_BROWSER_DOWNLOAD_DIR="$BROWSER_DOWNLOAD_DIR" \
+    CHARIOX_BROWSER_UPLOAD_ROOTS="$BROWSER_UPLOAD_ROOTS" \
+    CHARIOX_MANAGED_PROVIDER_ISOLATION=1 \
+    CHARIOX_MANAGED_PROVIDER_HOME="$PROVIDER_HOME" \
+    CHARIOX_MANAGED_PROVIDER_BWRAP="/usr/local/libexec/chariox/managed-provider-bwrap" \
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE="$KERNEL_LOCAL_AUTH_FILE" \
+    "$@" \
+    CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
+    CHARIOX_OS_NAME="Linux slice" \
+    "${kernel_relay_env[@]}" \
+    CHARIOX_ACCEPT_REMOTE_LEASES=1 \
+    "$ROOT/bin/chariox-kernel"
+  sleep 1
+  wait_for_screen_session chariox-slice-kernel kernel
+  [[ ! -e "$KERNEL_LOCAL_AUTH_FILE" ]] || { printf '[slice-runtime] kernel did not consume local auth token\n' >&2; exit 1; }
+}
+
 provider_probe_result="/workspace/.chariox-managed-isolation-probe.result"
 if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
   real_codex="$(command -v codex)"
   [[ -x "$real_codex" ]] || { printf '[slice-runtime] real Codex executable is unavailable\n' >&2; exit 1; }
-  provider_probe_kernel_env=(
-    CHARIOX_CODEX_BIN="$ROOT/managed-provider-isolation-probe-wrapper.sh"
-    CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER="$real_codex"
-    CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE="/workspace"
+  # The probe kernel runs Codex through the probe wrapper; it must not become
+  # the long-lived slice kernel, or every real Codex launch would hit the probe.
+  start_slice_kernel \
+    CHARIOX_CODEX_BIN="$ROOT/managed-provider-isolation-probe-wrapper.sh" \
+    CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER="$real_codex" \
+    CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE="/workspace" \
     CHARIOX_MANAGED_ISOLATION_PROBE_RESULT="$provider_probe_result"
-  )
-fi
-
-KERNEL_LOCAL_AUTH_TOKEN="$(cat "$KERNEL_LOCAL_AUTH_FILE")"
-
-screen -dmS chariox-slice-kernel env \
-  CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
-  CHARIOX_MCP_PORT="$MCP_PORT" \
-  CHARIOX_CODEX_PORT_RANGE="$CODEX_PORT_RANGE" \
-  CHARIOX_CODEX_BIND_HOST="$PROVIDER_BIND_HOST" \
-  CHARIOX_OPENCODE_PORT_RANGE="$OPENCODE_PORT_RANGE" \
-  CHARIOX_OPENCODE_BIND_HOST="$PROVIDER_BIND_HOST" \
-  CHARIOX_DAEMON_ALIAS="$DAEMON_ALIAS" \
-  CHARIOX_MACHINE_ID="$MACHINE_ID" \
-  CHARIOX_MACHINE_ALIAS="$MACHINE_ALIAS" \
-  CHARIOX_SLICE_ID="$SLICE_ID" \
-  CHARIOX_SLICE_OWNER_KERNEL_ID="$SLICE_OWNER_KERNEL_ID" \
-  CHARIOX_SLICE_OWNER_MACHINE_ID="$SLICE_OWNER_MACHINE_ID" \
-  CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY="$SLICE_OWNER_PUBLIC_KEY" \
-  CHARIOX_CAPABILITY_ISOLATION_ROOT="$CAPABILITY_ISOLATION_ROOT" \
-  CHARIOX_BROWSER_CONTROLLER_SCRIPT="$ROOT/browser-controller.mjs" \
-  CHARIOX_BROWSER_IMPORT_MODULE="$ROOT/browser-session-import/production-destination.mjs" \
-  CHARIOX_BROWSER_DOWNLOAD_DIR="$BROWSER_DOWNLOAD_DIR" \
-  CHARIOX_BROWSER_UPLOAD_ROOTS="$BROWSER_UPLOAD_ROOTS" \
-  CHARIOX_MANAGED_PROVIDER_ISOLATION=1 \
-  CHARIOX_MANAGED_PROVIDER_HOME="$PROVIDER_HOME" \
-  CHARIOX_MANAGED_PROVIDER_BWRAP="/usr/local/libexec/chariox/managed-provider-bwrap" \
-  CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE="$KERNEL_LOCAL_AUTH_FILE" \
-  "${provider_probe_kernel_env[@]}" \
-  CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
-  CHARIOX_OS_NAME="Linux slice" \
-  "${kernel_relay_env[@]}" \
-  CHARIOX_ACCEPT_REMOTE_LEASES=1 \
-  "$ROOT/bin/chariox-kernel"
-
-sleep 1
-wait_for_screen_session chariox-slice-kernel kernel
-[[ ! -e "$KERNEL_LOCAL_AUTH_FILE" ]] || { printf '[slice-runtime] kernel did not consume local auth token\n' >&2; exit 1; }
-if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
   provider_probe_log="$LOGS/managed-provider-isolation-probe.log"
   if ! CHARIOX_KERNEL_URL="ws://127.0.0.1:$KERNEL_PORT" \
     CHARIOX_KERNEL_LOCAL_AUTH_TOKEN="$KERNEL_LOCAL_AUTH_TOKEN" \
@@ -189,6 +189,18 @@ if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
     exit 1
   fi
   cat "$provider_probe_log"
+  pkill -TERM -f "^$ROOT/bin/chariox-kernel" >/dev/null 2>&1 || true
+  for attempt in $(seq 1 120); do
+    pgrep -f "^$ROOT/bin/chariox-kernel" >/dev/null || break
+    sleep 0.25
+  done
+  if pgrep -f "^$ROOT/bin/chariox-kernel" >/dev/null; then
+    printf '[slice-runtime] probe kernel did not stop\n' >&2
+    exit 1
+  fi
+  screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
+  screen -wipe >/dev/null 2>&1 || true
 fi
+start_slice_kernel
 unset KERNEL_LOCAL_AUTH_TOKEN
 screen -ls | sed -n '/chariox-slice-/p'
