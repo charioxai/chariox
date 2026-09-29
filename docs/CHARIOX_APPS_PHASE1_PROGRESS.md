@@ -104,7 +104,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V1-INT-10 | Human validation lifecycle | One durable RuntimeInteraction and operation state; execution waits for human decision | Implemented (step-up = Phase 2) (see verification) |
 | V1-INT-11 | Approval parameter and effect binding | Only the exact approved effect can execute; stale/changed/reused authority is denied | Implemented (see verification) |
 | V1-INT-12 | Step-up authentication | Authenticator integration tests plus real human verification drill; test mocks never count as production authentication | Phase 2 (see verification) |
-| V1-INT-13 | Capability-expanding update | Decline keeps old release; recovery preserves accepted work; no early capability use | Partial (see verification) |
+| V1-INT-13 | Capability-expanding update | Decline keeps old release; recovery preserves accepted work; no early capability use | Verified (macOS kernel) (see verification) |
 | V1-INT-14 | App-origin escape | Browser-controlled origin and network policy holds; host loopback and metadata are not ambient authority | Partial (see verification) |
 | V1-INT-15 | Concurrent viewer semantics | Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal | Needs user (see verification) |
 | V1-INT-16 | Transport conformance and SSRF | Measured source adaptations; bounded trusted-side memory and actual connected-address checks | Partial (see verification) |
