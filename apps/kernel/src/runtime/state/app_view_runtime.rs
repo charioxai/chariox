@@ -77,6 +77,7 @@ impl KernelRuntimeState {
                 &request.installation_id,
                 request.placement,
                 request.minimized,
+                request.reset,
             )
             .ok_or(AppRequestErrorCode::NotFound)?;
         self.publish_app_tabs(&request.session_id, &views).await;

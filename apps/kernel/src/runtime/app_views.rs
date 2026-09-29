@@ -258,7 +258,6 @@ impl AppViews {
         }
     }
 
-    /// Bound Tabs: target → installation.
     /// Bound Tabs: target → (installation, resolved panel layout).
     pub(crate) fn layouts(
         &self,
@@ -326,6 +325,7 @@ impl AppViews {
         installation: &str,
         placement: Option<AppPanelPlacement>,
         minimized: Option<bool>,
+        reset: bool,
     ) -> Option<UserPanel> {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.get_mut(session)?;
@@ -335,6 +335,9 @@ impl AppViews {
             .any(|(binding, _)| binding.installation == installation)
         {
             return None;
+        }
+        if reset {
+            views.user_panels.remove(installation);
         }
         let user = views
             .user_panels
@@ -487,13 +490,18 @@ mod tests {
         };
         assert!(views.request_panel("s", "t1", bottom));
         assert!(!views.request_panel("s", "missing", bottom));
-        assert!(views.set_user_panel("s", "b", None, Some(true)).is_some());
         assert!(views
-            .set_user_panel("s", "closed", None, Some(true))
+            .set_user_panel("s", "b", None, Some(true), false)
+            .is_some());
+        assert!(views
+            .set_user_panel("s", "closed", None, Some(true), false)
             .is_none());
         let layouts = views.layouts("s");
         assert_eq!(layouts["t1"].1.placement, Some(AppPanelPlacement::Bottom));
         assert!(layouts["t2"].1.minimized);
+        // A reset hands the panel back to the App.
+        views.set_user_panel("s", "b", None, None, true);
+        assert!(!views.layouts("s")["t2"].1.minimized);
         // A new document (reload, reopen) starts from its manifest again.
         views.register("s", "t1", binding("a"));
         assert_eq!(

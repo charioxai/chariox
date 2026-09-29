@@ -324,6 +324,7 @@ fn app_view_panel_choice_shape_is_versioned() {
         installation_id: "todo".into(),
         placement: Some(crate::session::AppPanelPlacement::Bottom),
         minimized: None,
+        reset: false,
     });
     assert_eq!(
         serde_json::to_value(&request).unwrap(),
@@ -368,6 +369,14 @@ fn app_uninstall_shape_is_versioned_and_names_no_owner() {
         "UninstallApp": {"installation_id": "todo", "expected_generation": "3", "owner_id": "other"}
     }))
     .is_err());
+    assert!(matches!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "SetAppViewPanel": {"session_id": "s", "installation_id": "todo", "reset": true}
+        })),
+        Ok(LocalDaemonRequest::SetAppViewPanel(
+            crate::local::SetAppViewPanelRequest { reset: true, .. }
+        ))
+    ));
     // Protocol 363: deleting the data is explicit and omitted when not asked.
     let delete = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
         installation_id: "todo".into(),
