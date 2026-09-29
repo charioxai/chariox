@@ -101,7 +101,12 @@ test('native constructors and operations remain confined after exact supervisor 
   assert.equal(result.code, 0, JSON.stringify(result));
   assert.equal(result.signal, null);
   assert.ok(!result.stdout.includes(':FAIL'), result.stdout);
-  assert.equal(result.stdout.trim().split('\n').length, 23, result.stdout);
+  // One line per macOS check in native_probe.c, including the Node startup grants.
+  assert.equal(result.stdout.trim().split('\n').length, 29, result.stdout);
+  for (const grant of ['openssl_config_policy_allowed', 'page_size_sysctl_allowed', 'page_size_mib_sysctl_allowed',
+    'uname_allowed', 'root_directory_read_allowed', 'system_sibling_read_denied']) {
+    assert.match(result.stdout, new RegExp(`${grant}:ok`));
+  }
   assert.equal(result.sdk, 'PONG');
   assert.match(result.stdout, /constructor_host_read_denied:ok/);
   assert.match(result.stdout, /package_executable_mapping_denied:ok/);
