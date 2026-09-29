@@ -54,6 +54,8 @@ impl KernelRuntimeState {
             if let Some(last) = agents.last() {
                 self.owned
                     .focus_agent(last.session_id(), last.id(), caller_user_id)?;
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                self.bind_foreground_app(last.session_id(), false).await;
             }
             Ok(agents)
         }

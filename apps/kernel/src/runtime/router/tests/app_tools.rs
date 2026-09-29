@@ -39,7 +39,11 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
     std::fs::create_dir(&scratch.0).unwrap();
     let (router, store, catalog, agents, tokens) = {
         let _entered = runtime.enter();
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        // The release store refuses symlinked paths (macOS /var): resolve it.
+        let root = scratch.0.canonicalize().unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").to_string_lossy().into());
+        let mut app = DaemonApp::bootstrap(config).unwrap();
         let store = app.durable_state_store();
         let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
         let session = app
@@ -89,6 +93,20 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
     )
     .unwrap();
+    // As an install does: the verified release is stored, so a stopped App's
+    // catalog can be read back without its worker.
+    chariox_app_runtime::release_store::ReleaseStore::open_or_create(store.path())
+        .unwrap()
+        .stage(
+            &package,
+            &bytes,
+            chariox_app_runtime::release_store::StageBudget {
+                max_stage_bytes: 1024 * 1024,
+                reserved_bytes: 1024 * 1024,
+                host_reserve_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
     let (process, observed) = fixture.spawn_blocking(Mode::ToolEcho, &package).unwrap();
     let (starting, _control) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
         process,
@@ -195,19 +213,31 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         .is_err());
     assert_eq!(observed.tool_invocations(), 2);
     owner.shutdown_blocking();
-    let permits = (0..8)
-        .map(|_| router.runtime_state.app_control().try_admit().unwrap())
-        .collect::<Vec<_>>();
-    assert!(!runtime
-        .block_on(router.runtime_tool_specs_for_auth_token_async(tokens[1].clone()))
-        .expect("a saved offline binding needs no App database admission")
-        .iter()
-        .any(|tool| tool.name == name));
-    drop(permits);
-    assert!(!router
-        .runtime_tool_specs_for_auth_token(&tokens[1])
-        .iter()
-        .any(|tool| tool.name == name));
+    let lists = |token: &String| {
+        runtime
+            .block_on(router.runtime_tool_specs_for_auth_token_async(token.clone()))
+            .unwrap()
+            .iter()
+            .any(|tool| tool.name == name)
+    };
+    // No worker runs, but the App may start on demand: the bound agent still
+    // lists its tools from the verified release (a call starts it); the agent
+    // whose binding was revoked does not.
+    assert!(lists(&tokens[1]));
+    assert!(!lists(&tokens[0]));
+    // A user stop keeps them out until an explicit start.
+    store
+        .stop_app_worker_intent(
+            "alice",
+            "installed",
+            crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    router
+        .runtime_state
+        .app_control()
+        .forget_app_dormant("alice", "installed");
+    assert!(!lists(&tokens[1]));
     assert!(observed.was_reaped());
     assert!(observed.lease_was_dropped());
 }

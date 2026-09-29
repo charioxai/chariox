@@ -76,6 +76,12 @@ impl KernelRuntimeState {
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
         self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
+        // Its tools are listed at once, even before the App's first start.
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let (control, seeded) = (self.app_control().clone(), agent.clone());
+            let _ = tokio::task::spawn_blocking(move || control.seed_bound_dormant(&seeded)).await;
+        }
         Ok(agent)
     }
 
@@ -94,6 +100,10 @@ impl KernelRuntimeState {
             name,
             caller_user_id,
         )?;
+        // The foreground App is not bound to this agent again on a focus change.
+        self.app_control()
+            .views()
+            .set_revoked(agent.session_id(), agent.id(), name, true);
         self.append_agent_durable_event(
             "agent.extension_revoked",
             &agent,

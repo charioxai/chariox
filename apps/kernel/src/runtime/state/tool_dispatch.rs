@@ -84,7 +84,7 @@ impl KernelRuntimeState {
         auth_token: String,
     ) -> Result<Vec<crate::transport::runtime_tools::RuntimeToolSpec>, DaemonError> {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        let needs_apps = self.has_active_apps_for_auth_token(&auth_token);
+        let needs_apps = self.has_app_grants_for_auth_token(&auth_token);
         #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
         let needs_apps = false;
         if !needs_apps {

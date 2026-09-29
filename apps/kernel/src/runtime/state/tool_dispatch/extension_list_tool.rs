@@ -189,15 +189,38 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_list_extensions",
                     message: "App installation inventory is unavailable".into(),
                 })?;
-            let apps = page.installations.into_iter().map(|installation| serde_json::json!({
-                "kind": "app", "name": installation.installation_id,
-                "app_id": installation.app_id,
-                "granted": agent.has_extension_grant(crate::extension::ExtensionKind::App, &installation.installation_id),
-                "active_release": installation.active.is_some(),
-                "tools_available": false,
-                "ready_state": "activation_unavailable",
-                "effective_when_requested": "binding_saved"
-            })).collect::<Vec<_>>();
+            // Bound Apps list their tools whether or not they run (a call
+            // starts them); a user stop or a failed generation keeps them out.
+            let control = self.app_control();
+            control.seed_bound_dormant(&agent);
+            let owner = agent.owner_user_id();
+            let apps = page
+                .installations
+                .into_iter()
+                .map(|installation| {
+                    let id = installation.installation_id.as_str();
+                    let granted =
+                        agent.has_extension_grant(crate::extension::ExtensionKind::App, id);
+                    let active = installation.active.is_some();
+                    let listed = control.active_app_lease(owner, id).is_some()
+                        || control.is_app_dormant(owner, id);
+                    let ready_state = match (active, granted, listed) {
+                        (false, _, _) => "unavailable",
+                        (true, true, true) => "ready",
+                        (true, true, false) => "stopped",
+                        (true, false, _) => "available",
+                    };
+                    serde_json::json!({
+                        "kind": "app", "name": id,
+                        "app_id": installation.app_id,
+                        "granted": granted,
+                        "active_release": active,
+                        "tools_available": granted && listed,
+                        "ready_state": ready_state,
+                        "effective_when_requested": if active { "now" } else { "unavailable" }
+                    })
+                })
+                .collect::<Vec<_>>();
             (apps, page.next_cursor)
         } else {
             (Vec::new(), None)

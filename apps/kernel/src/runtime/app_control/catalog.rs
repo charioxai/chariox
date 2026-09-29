@@ -59,6 +59,32 @@ impl AppControlService {
         self.project_app_tools(current, leases, &dormant, occupied)
     }
 
+    /// A bound App that neither runs nor is dormant, but may start on demand,
+    /// gets a dormant catalog from its verified active release: its tools are
+    /// listed before the first call starts it, also after a kernel restart. A
+    /// user stop, a failed generation or a revoked publisher keeps it unlisted.
+    pub(crate) fn seed_bound_dormant(&self, agent: &AgentInstance) {
+        let owner = agent.owner_user_id();
+        let publisher =
+            super::AppWorkerPublisher::new(self.workers.clone(), self.event_pump.clone());
+        for grant in agent.extension_grants() {
+            let installation = grant.name.as_str();
+            if grant.kind != ExtensionKind::App
+                || self.active_app_lease(owner, installation).is_some()
+                || self.is_app_dormant(owner, installation)
+                || !matches!(
+                    self.store.app_worker_start_gate(owner, installation),
+                    Ok(crate::durable_state::app_worker_lifecycle::StartGate::Allowed)
+                )
+            {
+                continue;
+            }
+            if let Ok(catalog) = self.store.active_app_event_catalog(owner, installation) {
+                publisher.retain_dormant(owner, catalog);
+            }
+        }
+    }
+
     pub(crate) fn has_active_apps_for_agent(&self, agent: &AgentInstance) -> bool {
         !self.bound_app_leases(agent).is_empty() || !self.bound_dormant_catalogs(agent).is_empty()
     }

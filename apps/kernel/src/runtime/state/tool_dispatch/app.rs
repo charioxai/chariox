@@ -40,7 +40,7 @@ impl KernelRuntimeState {
 
     /// A cheap snapshot only decides whether current App trust needs a bounded
     /// SQLite read. Publication and invocation still check the full catalog.
-    pub(super) fn has_active_apps_for_auth_token(&self, auth_token: &str) -> bool {
+    pub(super) fn has_app_grants_for_auth_token(&self, auth_token: &str) -> bool {
         let runs = self
             .owned
             .provider_store
@@ -48,8 +48,12 @@ impl KernelRuntimeState {
         let [run] = runs.as_slice() else {
             return false;
         };
-        self.app_agent_for_provider_run(run)
-            .is_ok_and(|agent| self.app_control().has_active_apps_for_agent(&agent))
+        self.app_agent_for_provider_run(run).is_ok_and(|agent| {
+            agent
+                .extension_grants()
+                .iter()
+                .any(|grant| grant.kind == ExtensionKind::App)
+        })
     }
 
     fn app_tools_for_agent(
@@ -58,6 +62,8 @@ impl KernelRuntimeState {
         occupied: &[RuntimeToolSpec],
         permit: Option<&tokio::sync::OwnedSemaphorePermit>,
     ) -> Result<Vec<RemoteExtensionTool>, DaemonError> {
+        // Bound Apps are listed whether or not they run; a call starts them.
+        self.app_control().seed_bound_dormant(agent);
         let occupied = occupied
             .iter()
             .map(|tool| tool.name.clone())

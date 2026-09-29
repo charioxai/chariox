@@ -33,6 +33,9 @@ struct SessionViews {
     unreloadable: HashMap<String, std::time::Instant>,
     /// Tabs that called since they were (re)opened: their document loaded.
     called: std::collections::HashSet<String>,
+    /// (agent, installation) bindings the user revoked: a focus change does
+    /// not bind them again; opening the App again does.
+    revoked: std::collections::HashSet<(String, String)>,
 }
 
 #[derive(Clone, Default)]
@@ -128,6 +131,43 @@ impl AppViews {
     pub(crate) fn foreground(&self, session: &str) -> Option<(String, String)> {
         let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(session)?.foreground.clone()
+    }
+
+    /// Records (true) or forgets (false) a user revocation of this binding.
+    pub(crate) fn set_revoked(
+        &self,
+        session: &str,
+        agent: &str,
+        installation: &str,
+        revoked: bool,
+    ) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (agent.to_owned(), installation.to_owned());
+        match sessions.get_mut(session) {
+            Some(views) if !revoked => {
+                views.revoked.remove(&key);
+            }
+            Some(views) => {
+                views.revoked.insert(key);
+            }
+            None if revoked => {
+                sessions
+                    .entry(session.to_owned())
+                    .or_default()
+                    .revoked
+                    .insert(key);
+            }
+            None => {}
+        }
+    }
+
+    pub(crate) fn is_revoked(&self, session: &str, agent: &str, installation: &str) -> bool {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(session).is_some_and(|views| {
+            views
+                .revoked
+                .contains(&(agent.to_owned(), installation.to_owned()))
+        })
     }
 
     pub(crate) fn binding(&self, session: &str, target: &str) -> Option<AppViewBinding> {
@@ -333,6 +373,19 @@ mod tests {
         // Two Tabs in one batch are each marked.
         assert!(views.first_call("s", "t2"));
         assert!(!views.first_call("s", "t2"));
+    }
+
+    #[test]
+    fn a_revoked_binding_is_remembered_until_the_app_binds_it_again() {
+        let views = AppViews::default();
+        assert!(!views.is_revoked("s", "agent-1", "a"));
+        // Recorded even before the session has App views.
+        views.set_revoked("s", "agent-1", "a", true);
+        assert!(views.is_revoked("s", "agent-1", "a"));
+        assert!(!views.is_revoked("s", "agent-2", "a"));
+        assert!(!views.is_revoked("other", "agent-1", "a"));
+        views.set_revoked("s", "agent-1", "a", false);
+        assert!(!views.is_revoked("s", "agent-1", "a"));
     }
 
     #[test]
