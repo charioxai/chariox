@@ -1852,8 +1852,11 @@ Workflow trigger and deployment direction:
   rest (the controller narrows its viewport) and has no panel API; the trusted
   terminal draws the focus agent's conversation in the strip, outside the
   App's page. A focus change updates every App Tab's `agent_id` at once, and a
-  viewport change moves the panel; each change emits `TabsChanged`. (Before
-  this, the page reserved the area with `window.chariox.panel.reserve`.)
+  viewport change moves the panel; each change emits `TabsChanged`. While the
+  slice's Room browser controller does not lay App pages out beside the strip
+  (a controller that predates the automatic panel, or a viewport too narrow
+  for it), App Tabs keep `installation_id` and have no `panel`. (Before this,
+  the page reserved the area with `window.chariox.panel.reserve`.)
 - protocol 352: `CreateAgentWorkflow {session_id, agent_id, reason:
   trigger|deploy, surface: web|tui|cli, alias?}` creates a visible workflow
   for one of the caller's own agents when it gets a trigger or deployment:
