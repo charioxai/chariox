@@ -134,12 +134,18 @@ impl KernelRuntimeState {
                 if runtime.app_control().wake_pump().prune_due(now_ms) {
                     runtime.prune_dormant_apps().await;
                 }
-                drop(pass);
                 // Work accepted while this pass ran gets a pass of its own.
+                let started_ms = now_ms;
                 now_ms = crate::session::unix_epoch_ms();
-                match runtime.app_control().wake_pump().begin_requested(now_ms) {
+                match pass.finish(now_ms) {
                     Some(next) => pass = next,
                     None => break,
+                }
+                let gap = crate::runtime::app_wake_pump::REQUESTED_GAP_MS
+                    .saturating_sub(now_ms.saturating_sub(started_ms));
+                if gap > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(gap)).await;
+                    now_ms = crate::session::unix_epoch_ms();
                 }
             }
         });
@@ -380,7 +386,12 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|(_, settle)| *settle == Settle::Failed));
         assert!(matches!(
-            wake_record(due("a", "w"), Settle::Failed, 100, "the App could not start"),
+            wake_record(
+                due("a", "w"),
+                Settle::Failed,
+                100,
+                "the App could not start"
+            ),
             AppWakeOperation::Failed { now_ms: 100, .. }
         ));
     }
