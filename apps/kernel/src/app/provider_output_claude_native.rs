@@ -46,7 +46,8 @@ use permission::{
     write_claude_headless_workspace_trust_denied_marker,
     write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
-    write_claude_permission_input, write_claude_permission_response,
+    write_claude_permission_input, write_claude_permission_passthrough,
+    write_claude_permission_response,
 };
 #[cfg(test)]
 use transcript::drain_claude_transcript_file;
@@ -1054,6 +1055,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         }
         let Some(bridge) = native_interaction_bridge else {
+            // No Chariox client can answer: release the waiting hook so Claude
+            // asks in its own dialog instead of after the decision deadline.
+            write_claude_permission_passthrough(context_file, request_id);
             return Ok(());
         };
         let tool_name = event

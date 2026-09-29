@@ -339,7 +339,7 @@ if (eventName === "UserPromptSubmit") {
   }
   // The kernel bridges only events that name a tool; waiting on any other
   // event would hold Claude for the full decision deadline.
-  if (!String(input.tool_name ?? "").trim()) {
+  if (typeof input.tool_name !== "string" || !input.tool_name.trim()) {
     process.exit(0)
   }
   clearTimeout(hookWatchdog)
@@ -780,7 +780,13 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        for (behavior, message) in [("deny", "Denied in the Room."), ("allow", "")] {
+        // The kernel's decisions, and its pass-through when no client can
+        // answer (see write_claude_permission_response and _passthrough).
+        for decision in [
+            serde_json::json!({ "behavior": "deny", "message": "Denied in the Room." }),
+            serde_json::json!({ "behavior": "allow", "message": "" }),
+            serde_json::json!({}),
+        ] {
             let known = recorded_request_ids();
             let child = spawn_hook(serde_json::json!({
                 "hook_event_name": "PermissionRequest",
@@ -802,13 +808,11 @@ mod tests {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             };
-            // The kernel answers through the response file named by the
-            // request id (see write_claude_permission_response).
             fs::write(
                 native
                     .permission_response_dir
                     .join(format!("{request_id}.json")),
-                serde_json::json!({ "behavior": behavior, "message": message }).to_string(),
+                decision.to_string(),
             )
             .expect("decision should write");
             let output = child
@@ -816,9 +820,14 @@ mod tests {
                 .expect("hook handler should finish");
             assert!(
                 output.status.success(),
-                "hook handler failed for {behavior}: {}",
+                "hook handler failed for {decision}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            if decision.get("behavior").is_none() {
+                // No decision: Claude falls back to its own dialog.
+                assert!(output.stdout.is_empty(), "{decision}");
+                continue;
+            }
             let response: serde_json::Value =
                 serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
             assert_eq!(
@@ -827,33 +836,35 @@ mod tests {
             );
             assert_eq!(
                 response["hookSpecificOutput"]["decision"]["behavior"],
-                behavior
+                decision["behavior"]
             );
-            if behavior == "deny" {
+            if decision["behavior"] == "deny" {
                 assert_eq!(
                     response["hookSpecificOutput"]["decision"]["message"],
-                    message
+                    decision["message"]
                 );
             }
         }
 
         // A request that names no tool is never bridged, so the hook must
         // return at once instead of waiting for a decision.
-        let started = std::time::Instant::now();
-        let output = spawn_hook(serde_json::json!({
-            "hook_event_name": "PermissionRequest",
-            "permission_mode": "default",
-            "tool_name": " "
-        }))
-        .wait_with_output()
-        .expect("hook handler should finish");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(output.stdout.is_empty());
-        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        for tool_name in [serde_json::json!(" "), serde_json::json!(7)] {
+            let started = std::time::Instant::now();
+            let output = spawn_hook(serde_json::json!({
+                "hook_event_name": "PermissionRequest",
+                "permission_mode": "default",
+                "tool_name": tool_name
+            }))
+            .wait_with_output()
+            .expect("hook handler should finish");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.stdout.is_empty());
+            assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        }
     }
 
     #[test]
