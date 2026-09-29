@@ -102,7 +102,7 @@ async function refresh() {
 }
 
 // Reminders only reach a workflow while the reminders automation is active.
-// Say so when a Todo has a due time; Chariox owns the fix, not this view.
+// Say so while a Todo still waits for its reminder; Chariox owns the fix.
 const REMINDERS = {
   paused: "Reminders are paused. Resume the reminders automation in Chariox.",
   broken: "Reminders are broken. Fix the reminders automation in Chariox.",
@@ -120,7 +120,7 @@ async function checkReminders() {
 }
 function showReminders() {
   const hint = $("reminders")
-  const message = todos.some((todo) => !todo.done && todo.due_at_ms != null) ? REMINDERS[reminderState] : undefined
+  const message = todos.some((todo) => !todo.done && !todo.reminded && todo.due_at_ms != null) ? REMINDERS[reminderState] : undefined
   if (hint.textContent !== (message ?? "")) hint.textContent = message ?? ""
   hint.hidden = !message
 }

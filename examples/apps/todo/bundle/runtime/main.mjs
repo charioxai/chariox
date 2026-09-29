@@ -74,13 +74,16 @@ export default function register(chariox) {
 
   // Whether due reminders reach the workflow: the reminders automation's
   // state as Chariox shows it ('missing' when none is configured, 'unknown'
-  // on a kernel without this read). The workflow itself is never revealed.
+  // when the App runtime or kernel predates this read). The workflow itself
+  // is never revealed.
   chariox.tools.register('reminder_status', async () => {
+    const unknown = { state: 'unknown', last_delivery: null };
+    if (typeof chariox.events.automations !== 'function') return unknown;
     let automations;
     try {
       ({ automations } = await chariox.events.automations());
     } catch (error) {
-      if (error?.code === 'METHOD_NOT_FOUND') return { state: 'unknown', last_delivery: null };
+      if (error?.code === 'METHOD_NOT_FOUND') return unknown;
       throw error;
     }
     const reminders = automations.find(automation => automation.automationId === AUTOMATION);

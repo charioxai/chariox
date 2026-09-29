@@ -7,7 +7,7 @@ import { occurrenceId } from '../../../../packages/app-sdk/src/occurrences.js';
 import { AppError } from '../../../../packages/app-sdk/src/errors.js';
 import register from '../bundle/runtime/main.mjs';
 
-function fakeKernel({ automation = true, automations = [] } = {}) {
+function fakeKernel({ automation = true, automations = [], sdkReads = true } = {}) {
   const state = new Map();
   const wakes = new Map();
   const occurrences = [];
@@ -50,6 +50,7 @@ function fakeKernel({ automation = true, automations = [] } = {}) {
       },
     },
   };
+  if (!sdkReads) delete chariox.events.automations;
   register(chariox);
   // Like the kernel, a successful delivery completes the wake at its revision.
   async function wake(delivered) {
@@ -142,4 +143,6 @@ test('reminder status reports the reminders automation without naming its workfl
   assert.deepEqual(await status({ automations: [other, reminders] }), { state: 'broken', last_delivery: 'failed' });
   assert.deepEqual(await status({ automations: [other] }), { state: 'missing', last_delivery: null });
   assert.deepEqual(await status({ automations: null }), { state: 'unknown', last_delivery: null });
+  // An App runtime enrolled before the SDK read has no events.automations.
+  assert.deepEqual(await status({ sdkReads: false }), { state: 'unknown', last_delivery: null });
 });
