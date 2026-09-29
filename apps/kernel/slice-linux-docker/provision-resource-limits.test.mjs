@@ -121,3 +121,14 @@ test("nested provider namespaces can use a host-installed AppArmor profile", asy
   assert.match(profile, /profile chariox-slice-provider flags=\(unconfined\)/)
   assert.match(profile, /^\s*userns,\s*$/m)
 })
+
+test("the isolation probe runs on its own kernel and the slice kernel starts without probe env", async () => {
+  const source = await readFile(runtime, "utf8")
+  const probeStart = source.match(/^  start_slice_kernel \\\n((?:    .*\n)+)/m)?.[1] ?? ""
+  assert.match(probeStart, /CHARIOX_ACCEPT_REMOTE_LEASES=0/)
+  assert.match(probeStart, /CHARIOX_CODEX_BIN="\$ROOT\/managed-provider-isolation-probe-wrapper\.sh"/)
+  // Probe overrides come after the defaults so they win in env(1).
+  assert.match(source, /CHARIOX_ACCEPT_REMOTE_LEASES=1 \\\n    "\$@" \\\n    "\$ROOT\/bin\/chariox-kernel"/)
+  assert.match(source, /pkill -TERM -f "codex\[\^ \]\* app-server"/)
+  assert.match(source, /\nfi\nstart_slice_kernel\n/)
+})

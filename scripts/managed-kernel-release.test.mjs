@@ -1151,6 +1151,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     assert.equal((await lstat(installedArtifact)).isSymbolicLink(), true, `${relativePath} must be release-backed`)
     assert.deepEqual(await readFile(installedArtifact), expectedBytes)
   }
+  assert.equal(await readFile(join(harness.state, "usermod-shell"), "utf8"), "--shell /bin/bash chariox\n")
   const systemctlCalls = await readFile(join(harness.state, "systemctl"), "utf8")
   assert.match(systemctlCalls, /enable chariox-path1-managed-bootstrap\.service/)
   assert.doesNotMatch(systemctlCalls, /enable chariox-managed-bootstrap\.service/)
@@ -1799,7 +1800,9 @@ if [ "\${1:-}" = "group" ] && [ -f "$HARNESS_STATE/group-\${2:-}" ]; then echo "
 if [ "\${1:-}" = "passwd" ] && [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ]; then
   home=/home/chariox
   [ -f "$HARNESS_STATE/user-chariox-home" ] && home=$(cat "$HARNESS_STATE/user-chariox-home")
-  echo "chariox:x:998:998::\${home}:/usr/sbin/nologin"
+  shell=/usr/sbin/nologin
+  [ -f "$HARNESS_STATE/user-chariox-shell" ] && shell=$(cat "$HARNESS_STATE/user-chariox-shell")
+  echo "chariox:x:998:998::\${home}:\${shell}"
   exit 0
 fi
 if [ "\${1:-}" = "passwd" ] && [ "\${2:-}" = "chariox-docker" ] && [ -f "$HARNESS_STATE/user-chariox-docker" ]; then echo 'chariox-docker:x:997:997::/var/lib/chariox-docker/home:/usr/sbin/nologin'; exit 0; fi
@@ -1807,7 +1810,7 @@ exit 2
 `)
   await writeHarnessCommand(join(bin, "groupadd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/group-$name\"\n")
   await writeHarnessCommand(join(bin, "useradd"), "#!/bin/sh\nprevious=\nfor value in \"$@\"; do if [ \"$previous\" = --home-dir ]; then printf '%s' \"$value\" > \"$HARNESS_STATE/user-$name-home\"; fi; previous=$value; name=$value; done\ntouch \"$HARNESS_STATE/user-$name\"\n")
-  await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nif [ \"\${1:-}\" = --home ] && [ \"\${3:-}\" = chariox ]; then printf '%s' \"$2\" > \"$HARNESS_STATE/user-chariox-home\"; fi\nexit 0\n")
+  await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nif [ \"\${1:-}\" = --shell ]; then printf '%s\\n' \"$*\" >> \"$HARNESS_STATE/usermod-shell\"; printf '%s' \"$2\" > \"$HARNESS_STATE/user-chariox-shell\"; fi\nif [ \"\${1:-}\" = --home ] && [ \"\${3:-}\" = chariox ]; then printf '%s' \"$2\" > \"$HARNESS_STATE/user-chariox-home\"; fi\nexit 0\n")
   await writeHarnessCommand(join(bin, "loginctl"), `#!/bin/sh
 [ "$*" = "enable-linger chariox-docker" ] || exit 1
 [ "\${HARNESS_LOGINCTL_FAIL:-0}" = 0 ] || exit 1
@@ -1963,6 +1966,8 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     env: { ...env, HARNESS_MUTATE_SOURCE: sourceKernel },
   })
   assert.equal(first.status, 0, first.stderr)
+  // Shared hosts keep chariox on nologin.
+  assert.equal(await lstat(join(harness.state, "usermod-shell")).then(() => true, () => false), false)
   const contextPath = "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker"
   for (const [link, source] of [
     ["etc/systemd/user/chariox-rootless-engine.service", "chariox-rootless-engine.service"],

@@ -110,7 +110,14 @@ export function requestSliceDiskQuota(request, {
 }
 
 // The provisioner runs this through the release symlink; compare real paths.
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+function launchedAsEntrypoint() {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
+}
+if (launchedAsEntrypoint()) {
   const operation = process.argv[2]
   if (!new Set(["apply_home", "apply_layer", "ensure_before_start"]).has(operation)) {
     process.stderr.write("disk quota client operation is not allowed\n")

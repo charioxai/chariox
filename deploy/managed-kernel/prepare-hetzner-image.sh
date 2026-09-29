@@ -623,6 +623,8 @@ managed_sshd_tmp=$(mktemp)
   printf '%s\n' 'PasswordAuthentication no'
   printf '%s\n' 'KbdInteractiveAuthentication no'
   printf '%s\n' 'PermitRootLogin prohibit-password'
+  # Service accounts may own a login shell (Path 1 chariox) but never inbound SSH.
+  printf '%s\n' 'DenyUsers chariox chariox-docker'
 } >"$managed_sshd_tmp"
 install -o root -g root -m 0644 "$managed_sshd_tmp" "$managed_sshd_config"
 rm -f "$managed_sshd_tmp"
@@ -635,6 +637,8 @@ printf '%s\n' "$sshd_effective" | grep -Fxq 'kbdinteractiveauthentication no' \
   || fail "managed image must disable interactive SSH authentication"
 printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin prohibit-password' \
   || fail "managed image must restrict root SSH to public keys"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'denyusers chariox chariox-docker' \
+  || fail "managed image must deny SSH to its service accounts"
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed

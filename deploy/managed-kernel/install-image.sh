@@ -363,11 +363,14 @@ fi
 if ! id chariox >/dev/null 2>&1; then
   useradd --system --gid chariox --home-dir /home/chariox --shell /usr/sbin/nologin chariox
 fi
+# Path 1: the VM is the boundary and chariox is its ordinary user. Providers
+# such as OpenCode run tools through the passwd login shell. Shared hosts keep
+# (or return to) nologin.
+chariox_login_shell=/usr/sbin/nologin
 if [ "$managed_provider_topology" = path1 ]; then
-  # Path 1: the VM is the boundary and chariox is its ordinary user. Providers
-  # such as OpenCode run tools through the passwd login shell.
-  [ "$(getent passwd chariox | cut -d: -f7)" = /bin/bash ] || usermod --shell /bin/bash chariox
+  chariox_login_shell=/bin/bash
 fi
+[ "$(getent passwd chariox | cut -d: -f7)" = "$chariox_login_shell" ] || usermod --shell "$chariox_login_shell" chariox
 chariox_home_from_passwd=$(getent passwd chariox | cut -d: -f6)
 if [ "$chariox_home_from_passwd" = "/var/lib/chariox/home" ]; then
   usermod --home /home/chariox chariox

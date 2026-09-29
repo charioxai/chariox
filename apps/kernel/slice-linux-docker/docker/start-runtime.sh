@@ -155,11 +155,11 @@ start_slice_kernel() {
     CHARIOX_MANAGED_PROVIDER_HOME="$PROVIDER_HOME" \
     CHARIOX_MANAGED_PROVIDER_BWRAP="/usr/local/libexec/chariox/managed-provider-bwrap" \
     CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE="$KERNEL_LOCAL_AUTH_FILE" \
-    "$@" \
     CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
     CHARIOX_OS_NAME="Linux slice" \
     "${kernel_relay_env[@]}" \
     CHARIOX_ACCEPT_REMOTE_LEASES=1 \
+    "$@" \
     "$ROOT/bin/chariox-kernel"
   sleep 1
   wait_for_screen_session chariox-slice-kernel kernel
@@ -173,6 +173,7 @@ if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
   # The probe kernel runs Codex through the probe wrapper; it must not become
   # the long-lived slice kernel, or every real Codex launch would hit the probe.
   start_slice_kernel \
+    CHARIOX_ACCEPT_REMOTE_LEASES=0 \
     CHARIOX_CODEX_BIN="$ROOT/managed-provider-isolation-probe-wrapper.sh" \
     CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER="$real_codex" \
     CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE="/workspace" \
@@ -189,12 +190,14 @@ if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
     exit 1
   fi
   cat "$provider_probe_log"
+  # Stop the probe kernel and any Codex app-server it launched before the real start.
   pkill -TERM -f "^$ROOT/bin/chariox-kernel" >/dev/null 2>&1 || true
+  pkill -TERM -f "codex[^ ]* app-server" >/dev/null 2>&1 || true
   for attempt in $(seq 1 120); do
-    pgrep -f "^$ROOT/bin/chariox-kernel" >/dev/null || break
+    pgrep -f "^$ROOT/bin/chariox-kernel|codex[^ ]* app-server" >/dev/null || break
     sleep 0.25
   done
-  if pgrep -f "^$ROOT/bin/chariox-kernel" >/dev/null; then
+  if pgrep -f "^$ROOT/bin/chariox-kernel|codex[^ ]* app-server" >/dev/null; then
     printf '[slice-runtime] probe kernel did not stop\n' >&2
     exit 1
   fi

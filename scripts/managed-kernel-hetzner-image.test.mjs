@@ -190,6 +190,8 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /PermitRootLogin prohibit-password/)
   assert.match(script, /sshd -T/)
   assert.match(script, /grep -Fxq 'permitrootlogin prohibit-password'/)
+  assert.match(script, /DenyUsers chariox chariox-docker/)
+  assert.match(script, /grep -Fxq 'denyusers chariox chariox-docker'/)
   assert.doesNotMatch(script, /grep -Fxq 'permitrootlogin without-password'/)
   assert.doesNotMatch(script, /install[^\n]*\/dev\/stdin/)
   assert.match(script, /managed_sshd_tmp=\$\(mktemp\)/)
@@ -865,11 +867,4 @@ test("Hetzner snapshot labels preserve the complete release digest within provid
   assert.match(runbook, /chariox\.dev\/runtime-release-b=<last 32 lowercase hex characters>/)
   assert.match(runbook, /Concatenating `runtime-release-a` and\n`runtime-release-b` must reproduce/)
   assert.doesNotMatch(runbook, /chariox\.dev\/runtime-release=<64 lowercase hex characters>/)
-})
-
-test("Path-1 installs give the chariox user a real login shell; shared hosts keep nologin", async () => {
-  const install = await readFile(new URL("../deploy/managed-kernel/install-image.sh", import.meta.url), "utf8")
-  assert.match(install, /useradd --system --gid chariox --home-dir \/home\/chariox --shell \/usr\/sbin\/nologin chariox/)
-  const gate = install.indexOf('if [ "$managed_provider_topology" = path1 ]; then\n  # Path 1: the VM is the boundary')
-  assert.ok(gate > 0 && install.indexOf("usermod --shell /bin/bash chariox", gate) > gate)
 })

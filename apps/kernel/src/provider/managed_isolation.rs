@@ -941,6 +941,24 @@ fn append_managed_protected_namespace_directories(
     }
 }
 
+// A file inside a masked directory is already hidden; masking it again would
+// recreate its path inside the otherwise empty mask. /run is not re-masked.
+#[cfg(target_os = "linux")]
+fn protected_files_outside_masked_directories(
+    files: &[PathBuf],
+    directories: &[PathBuf],
+) -> Vec<PathBuf> {
+    files
+        .iter()
+        .filter(|file| {
+            !directories
+                .iter()
+                .any(|directory| directory != Path::new("/run") && file.starts_with(directory))
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(target_os = "linux")]
 fn append_managed_protected_namespace_files(
     args: &mut Vec<String>,
@@ -1147,20 +1165,12 @@ pub(crate) fn apply_managed_provider_isolation(
             &protected_directories,
             &mut created_directories,
         );
-        // A file inside a masked directory is already hidden; masking it again
-        // would recreate its path inside the otherwise empty mask.
-        let unmasked_protected_files = protected_namespace_files
-            .iter()
-            .filter(|file| {
-                !protected_directories
-                    .iter()
-                    .any(|directory| directory != Path::new("/run") && file.starts_with(directory))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
         append_managed_protected_namespace_files(
             &mut args,
-            &unmasked_protected_files,
+            &protected_files_outside_masked_directories(
+                &protected_namespace_files,
+                &protected_directories,
+            ),
             &mut created_directories,
         );
         append_managed_protected_namespace_files(
@@ -2553,6 +2563,38 @@ mod tests {
 
         assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 0);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn protected_paths_inside_a_masked_directory_are_not_masked_again() {
+        let directories = [
+            PathBuf::from("/run"),
+            PathBuf::from("/run/chariox"),
+            PathBuf::from("/home/u/.chariox"),
+            PathBuf::from("/home/u/.chariox/provider-home"),
+        ];
+        let mut args = Vec::new();
+        append_managed_protected_namespace_directories(&mut args, &directories, &mut BTreeSet::new());
+        let masks = args
+            .windows(2)
+            .filter(|window| window[0] == "--tmpfs")
+            .map(|window| window[1].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(masks, ["/run/chariox", "/home/u/.chariox"]);
+
+        let files = protected_files_outside_masked_directories(
+            &[
+                PathBuf::from("/home/u/.chariox/vault.json"),
+                PathBuf::from("/run/control.sock"),
+                PathBuf::from("/etc/managed.json"),
+            ],
+            &directories,
+        );
+        assert_eq!(
+            files,
+            [PathBuf::from("/run/control.sock"), PathBuf::from("/etc/managed.json")]
+        );
     }
 
     #[cfg(target_os = "linux")]
