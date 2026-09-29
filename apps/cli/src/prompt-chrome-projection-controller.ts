@@ -19,7 +19,10 @@ export type PromptChromeProjectionControllerDeps<Color> = {
   isAttached: () => boolean
   workflowScreenActive: () => boolean
   workflowPromptState: () => WorkflowPromptState
+  /** The session has a focus agent for the prompt area to address. */
+  hasFocusAgent: () => boolean
   attachedPlaceholder: string
+  noFocusPlaceholder: string
   detachedPlaceholder: string
   trackThemeRevision?: () => unknown
   attachedBackground: () => Color
@@ -48,7 +51,7 @@ export function createPromptChromeProjectionController<Color>(
       attached: deps.isAttached(),
       workflowScreenActive: deps.workflowScreenActive(),
       workflowPromptState: deps.workflowPromptState(),
-      attachedPlaceholder: deps.attachedPlaceholder,
+      attachedPlaceholder: deps.hasFocusAgent() ? deps.attachedPlaceholder : deps.noFocusPlaceholder,
       detachedPlaceholder: deps.detachedPlaceholder,
     }),
     promptAreaBackground: () => {

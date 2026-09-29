@@ -4,6 +4,7 @@ import test from "node:test"
 import type { PromptAttachmentPart, RuntimeAttachment, RuntimeSession } from "./cli-types.js"
 import {
   createNormalPromptSubmitController,
+  NO_FOCUS_AGENT_MESSAGE,
   type NormalPromptSubmitControllerDeps,
 } from "./normal-prompt-submit-controller.js"
 import type { PendingPromptAttachment } from "./prompt-attachment-state.js"
@@ -111,6 +112,7 @@ test("normal prompt submit appends prompt acknowledgement metadata", async () =>
 test("normal prompt submit drops stale focused agent ids", async () => {
   const harness = createHarness({
     focusedAgentId: "old-agent",
+    session: runtimeSession("session-1", null, { focused_agent_id: "old-agent", agents: [agent("agent-1")] }),
     hasAgent: (agentId) => agentId === "agent-1",
   })
 
@@ -123,6 +125,24 @@ test("normal prompt submit drops stale focused agent ids", async () => {
     attachments: [],
   }])
   assert.deepEqual(harness.appendedPrompts(), [{ text: "hello\n", agentId: null }])
+})
+
+test("normal prompt submit keeps the prompt when the session has no focus agent", async () => {
+  const harness = createHarness({
+    focusedAgentId: null,
+    session: runtimeSession("session-1", null, { focused_agent_id: null, agents: [agent("agent-1")] }),
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.deepEqual(harness.submissions(), [])
+  assert.equal(harness.clearPromptCount(), 0)
+  assert.deepEqual(harness.fatalErrors(), [])
+  assert.deepEqual(harness.footerMessages(), [{ message: NO_FOCUS_AGENT_MESSAGE, tone: "error" }])
+
+  await harness.controller.submit("@agent-1 hello")
+
+  assert.equal(harness.submissions().length, 1, "an @alias prompt still goes to the kernel, which routes it")
 })
 
 test("normal prompt submit reports queued status with active prompt id", async () => {
@@ -364,7 +384,7 @@ function createHarness(options: {
   const controller = createNormalPromptSubmitController({
     getPendingAttachments: () => options.pendingAttachments ?? [],
     waitForPendingAgentFocusTransition: async () => {},
-    getFocusedAgentId: () => options.focusedAgentId ?? "agent-1",
+    getFocusedAgentId: () => options.focusedAgentId === undefined ? "agent-1" : options.focusedAgentId,
     getSession: () => options.session ?? runtimeSession("session-1", null, { agents: [agent("agent-1")] }),
     hasAgent: options.hasAgent ?? ((agentId) => agentId === "agent-1"),
     clearActiveToolLabels: () => {},

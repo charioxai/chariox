@@ -244,7 +244,7 @@ function printUsage() {
     "  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r|--kernel k|--slice off|new|s] [--slice-display headless|headed] spawn a local, remote, or slice agent",
     "  /agent delete [r]     delete the focused or referenced agent",
     "  /agent destroy [r]    alias for /agent delete",
-    "  /agent focus <id>     focus a specific agent",
+    "  /agent focus <r>      move the session focus to the referenced agent",
     "  /agent list           list all agents in the session",
     "  /agent inspect [r]    show provider, worktree, placement, grants, and sync state",
     "  /agent cycle          cycle to the next agent (or use Tab)",

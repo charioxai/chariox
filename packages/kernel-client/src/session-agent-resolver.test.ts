@@ -14,13 +14,13 @@ test("resolveSessionAgentReference returns the focused agent without an explicit
   assert.equal(resolveSessionAgentReference(session, " agent-2 ").agent?.id, "agent-2")
 })
 
-test("resolveSessionAgentReference falls back to the first agent without focused identity", () => {
+test("resolveSessionAgentReference names no agent while the session has no focus", () => {
   const session = sessionWithAgents([
     agent({ id: "agent-1", agent_ref: "a1" }),
     agent({ id: "agent-2", agent_ref: "a2" }),
   ])
 
-  assert.equal(resolveSessionAgentReference(session, null).agent?.id, "agent-1")
+  assert.deepEqual(resolveSessionAgentReference(session, null), { agent: null, error: "no focused agent available" })
 })
 
 test("resolveSessionAgentReference resolves id, agent ref, and alias", () => {

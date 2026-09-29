@@ -494,7 +494,7 @@ test("sessionAgentRuntimeDisplayState maps unfocused unread idle output to done"
   })), "Idle")
 })
 
-test("sessionFocusedAgentId keeps only session-scoped focus and falls back without explicit focus", () => {
+test("sessionFocusedAgentId keeps only the session's focus, including none", () => {
   assert.equal(sessionFocusedAgentId(makeSession({
     focused_agent_id: "agent-2",
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
@@ -513,7 +513,7 @@ test("sessionFocusedAgentId keeps only session-scoped focus and falls back witho
   assert.equal(sessionFocusedAgentId(makeSession({
     focused_agent_id: null,
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
-  })), "agent-1")
+  })), null)
 })
 
 test("sessionActiveInteractionForAgent returns active interaction scoped to agent", () => {

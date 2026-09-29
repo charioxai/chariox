@@ -133,14 +133,12 @@ export function sessionFocusedAgentId<TAgent extends { id: string }>(
     readonly focused_agent_id?: string | null
   },
 ): string | null {
+  // The kernel owns the focus. A session without one (every visible agent
+  // deleted) has no focus agent here either, not the first agent in the list.
   const focusedAgentId = session.focused_agent_id?.trim()
-  if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
-    return focusedAgentId
-  }
-  if (focusedAgentId) {
-    return null
-  }
-  return session.agents[0]?.id ?? null
+  return focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)
+    ? focusedAgentId
+    : null
 }
 
 export function resolveSessionStreamingAgentId(
