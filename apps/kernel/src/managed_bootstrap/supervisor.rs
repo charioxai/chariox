@@ -215,7 +215,11 @@ fn spawn_kernel_with_handoff(
     } else {
         None
     };
-    let provider_home = prepare_managed_provider_home(config)?;
+    // Path 1 providers use the ordinary HOME; only the shared host keeps a provider home.
+    let provider_home = match topology {
+        ManagedProviderTopology::Path1 => None,
+        ManagedProviderTopology::SharedHost => Some(prepare_managed_provider_home(config)?),
+    };
     let local_auth_path = prepare_kernel_local_auth_file(config)?;
     let mut command = Command::new(&release.kernel_binary);
     command
@@ -223,7 +227,7 @@ fn spawn_kernel_with_handoff(
         .env("HOME", &config.process_home)
         .env("CHARIOX_HOME", &config.chariox_home)
         .env(super::MANAGED_REPOSITORY_ROOT_ENV, managed_repository_root)
-        .env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home)
+        .env_remove("CHARIOX_MANAGED_PROVIDER_HOME")
         .env(
             crate::runtime_transport::KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV,
             &local_auth_path,
@@ -249,6 +253,9 @@ fn spawn_kernel_with_handoff(
             .env_remove("LD_PRELOAD")
             .env_remove("BASH_ENV")
             .env_remove("ENV");
+    }
+    if let Some(provider_home) = provider_home {
+        command.env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home);
     }
     if let Some(isolation_root) = isolation_root {
         command
@@ -1245,7 +1252,6 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         path: &std::path::Path,
         process_home: &std::path::Path,
         chariox_home: &std::path::Path,
-        provider_home: &std::path::Path,
         path_value: &str,
     ) {
         let observed =
@@ -1257,7 +1263,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             format!("chariox_home={}\n", chariox_home.display()),
             "repository_root=/home/chariox\n".to_string(),
             "topology=path1\n".to_string(),
-            format!("provider_home={}\n", provider_home.display()),
+            "provider_home=<unset>\n".to_string(),
             "CHARIOX_SLICE_ROOT=/var/lib/chariox-slice-share/slices\n".to_string(),
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET=<unset>\n".to_string(),
             "CHARIOX_SLICE_DOCKER_BROKER_FD=<unset>\n".to_string(),
@@ -1463,7 +1469,6 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
                 &std::path::PathBuf::from(format!("{}.{generation}", capture.display())),
                 &process_home,
                 &chariox_home,
-                &provider_home,
                 &path_value,
             );
         }
