@@ -681,6 +681,38 @@ pub fn state(connection: &Connection, sequence: i64) -> Result<InboxState> {
     InboxState::parse(&value)
 }
 
+/// One occurrence without its payload: what the owner's notice names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OccurrenceSummary {
+    pub owner_id: String,
+    pub installation_id: String,
+    pub route_id: String,
+    pub event_name: String,
+    pub occurrence_id: String,
+    pub attempts: u32,
+}
+
+pub fn occurrence(connection: &Connection, sequence: i64) -> Result<OccurrenceSummary> {
+    connection
+        .query_row(
+            "SELECT owner_id,installation_id,route_id,event_name,occurrence_id,attempts
+             FROM app_inbox WHERE sequence=?1",
+            [sequence],
+            |row| {
+                Ok(OccurrenceSummary {
+                    owner_id: row.get(0)?,
+                    installation_id: row.get(1)?,
+                    route_id: row.get(2)?,
+                    event_name: row.get(3)?,
+                    occurrence_id: row.get(4)?,
+                    attempts: row.get(5)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or(InboxError::NotFound)
+}
+
 /// Occurrence outcomes of one route, so poison and expiry stay visible.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InboxCounts {

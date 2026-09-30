@@ -388,9 +388,11 @@ fn failed_app_transaction_keeps_ordinary_writes_and_leaves_no_initial_identity()
 }
 
 #[test]
-fn inbox_accepts_only_for_the_active_generation_and_settles_undeliverable_occurrences() {
+fn inbox_accepts_only_for_the_active_generation_and_settles_failed_occurrences_with_a_notice() {
     use super::app_inbox::{AppInboxOperation, AppInboxOutcome};
-    use chariox_app_runtime::app_inbox::{Accepted, InboxError, InboxRoute, InboxState};
+    use chariox_app_runtime::app_inbox::{
+        Accepted, InboxError, InboxRoute, InboxState, MAX_ATTEMPTS,
+    };
     let database = Database::new();
     let store = database.open();
     let token = staged_token(
@@ -473,16 +475,86 @@ fn inbox_accepts_only_for_the_active_generation_and_settles_undeliverable_occurr
         panic!("the active generation's occurrence must be accepted");
     };
     // A delivery the App can no longer take (its generation moved on) ends
-    // failed rather than retrying.
+    // failed rather than retrying, and the owner is told which one and why.
     assert!(matches!(
-        store.app_inbox(AppInboxOperation::Undeliverable { sequence }),
+        store.app_inbox(AppInboxOperation::Undeliverable {
+            sequence,
+            now_ms: 30
+        }),
         Ok(AppInboxOutcome::Recorded(Some(InboxState::Failed)))
     ));
+    let notices = store.app_logs("owner", "todo", 0, 10).unwrap();
+    assert_eq!(notices.len(), 1);
+    assert_eq!((notices[0].at_ms, notices[0].level.as_str()), (30, "warn"));
+    assert_eq!(
+        notices[0].message,
+        "An incoming todo_requested event from route slack was not delivered and will not be \
+         retried: the App's current version no longer accepts it (an update removed the event \
+         or changed its schema)."
+    );
+    assert_eq!(
+        notices[0].fields,
+        serde_json::json!({
+            "kernel": true, "route_id": "slack", "event_name": "todo_requested",
+            "occurrence_id": "occ", "attempts": 0,
+        })
+    );
+    // A poison occurrence: retried attempts add no notice; the last one adds
+    // one naming the occurrence and the handler's error.
+    let Ok(AppInboxOutcome::Accepted(Accepted::New(poison))) =
+        accept("slack", "poison", token.generation)
+    else {
+        panic!("a second occurrence must be accepted");
+    };
+    let fail = |now_ms: u64| {
+        store.app_inbox(AppInboxOperation::Failed {
+            sequence: poison,
+            now_ms,
+            reason: "app_handler_failed: Error: boom".into(),
+        })
+    };
+    for attempt in 1..MAX_ATTEMPTS {
+        assert!(matches!(
+            fail(40 + u64::from(attempt)),
+            Ok(AppInboxOutcome::Recorded(Some(InboxState::Retryable)))
+        ));
+    }
+    assert_eq!(store.app_logs("owner", "todo", 0, 10).unwrap().len(), 1);
+    assert!(matches!(
+        fail(100),
+        Ok(AppInboxOutcome::Recorded(Some(InboxState::Failed)))
+    ));
+    let notices = store
+        .app_logs("owner", "todo", notices[0].sequence, 10)
+        .unwrap();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notices[0].message,
+        "An incoming todo_requested event from route slack was not delivered and will not be \
+         retried: its last of 8 delivery attempts failed."
+    );
+    assert_eq!(
+        notices[0].fields,
+        serde_json::json!({
+            "kernel": true, "route_id": "slack", "event_name": "todo_requested",
+            "occurrence_id": "poison", "attempts": 8,
+            "reason": "app_handler_failed: Error: boom",
+        })
+    );
+    // A settled occurrence is not failed again, and adds no notice.
+    assert!(matches!(fail(101), Err(InboxError::NotFound)));
+    assert_eq!(
+        store
+            .app_logs("owner", "todo", notices[0].sequence, 10)
+            .unwrap()
+            .len(),
+        0
+    );
     let Ok(AppInboxOutcome::Routes(routes)) = store.app_inbox(AppInboxOperation::Routes {
         owner: "owner".into(),
         installation: "todo".into(),
     }) else {
         panic!("routes must list");
     };
-    assert_eq!((routes[0].1.pending, routes[0].1.failed), (0, 1));
+    assert_eq!((routes[0].1.pending, routes[0].1.failed), (0, 2));
 }
