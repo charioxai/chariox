@@ -9,6 +9,7 @@ use chariox_app_runtime::{
     app_catalog::CatalogError,
     app_outbox::{
         AppOutbox, AutomationConfiguration, EventCatalog, Occurrence, OutboxError, Receipt,
+        MAX_PENDING,
     },
     managed_state::{
         ManagedStateStore, StateChanges, StateError, StateRecord, StateScope, Wake, WakeChange,
@@ -203,7 +204,51 @@ pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
     {
         super::storage_full::observe(error);
     }
+    if matches!(result, Err(AppStateError::Outbox(OutboxError::Full))) {
+        // The refusal rolled its own transaction back; the owner's warning is
+        // a separate write, and a failure to write it changes nothing else.
+        let _ = warn_full_outbox(
+            connection,
+            &request.owner,
+            request.catalog.installation_id(),
+        );
+    }
     let _ = request.response.send(result);
+}
+
+/// Tells the owner once per backlog that the App's event outbox is full: a
+/// new warning needs every event that was waiting at the last one to have
+/// left the outbox, so a steady refusal loop writes one notice, not one per
+/// refused event.
+fn warn_full_outbox(
+    connection: &mut Connection,
+    owner: &str,
+    installation: &str,
+) -> Result<(), OutboxError> {
+    const MARKER: &str = "outbox_full";
+    // Mostly reads that decide to write nothing; the writer's own connection
+    // takes the write lock only if it appends the notice.
+    let transaction = connection.transaction()?;
+    let oldest = AppOutbox::oldest_waiting_accepted_at_in(&transaction, owner, installation)?;
+    let warned =
+        super::app_logs::latest_kernel_notice_at_in(&transaction, owner, installation, MARKER)?;
+    if warned.is_some_and(|warned| oldest.is_some_and(|oldest| warned >= oldest)) {
+        return Ok(());
+    }
+    let mut fields = serde_json::Map::new();
+    fields.insert(MARKER.into(), true.into());
+    fields.insert("pending".into(), MAX_PENDING.into());
+    super::app_logs::append_kernel_notice_in(
+        &transaction,
+        owner,
+        installation,
+        crate::session::unix_epoch_ms(),
+        &format!(
+            "The App's event outbox is full: {MAX_PENDING} events are waiting for delivery, so its new events are refused until some are delivered. Check that its automations' workflow targets are running."
+        ),
+        fields,
+    )?;
+    Ok(transaction.commit()?)
 }
 
 fn apply(

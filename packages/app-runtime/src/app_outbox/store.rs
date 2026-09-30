@@ -168,8 +168,10 @@ pub(super) fn accept(
          FROM app_outbox WHERE owner_id=?1 AND installation_id=?2",
         params![automation.owner,automation.installation_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     )?;
+    if pending >= MAX_PENDING as i64 {
+        return Err(OutboxError::Full);
+    }
     if count >= MAX_RECEIPTS as i64
-        || pending >= MAX_PENDING as i64
         || bytes < 0
         || bytes
             .checked_add((payload.len() + invocation.len()) as i64)
@@ -248,6 +250,23 @@ pub(super) fn latest_receipt(
     Ok(tx.query_row(&format!("SELECT {COLUMNS} FROM app_outbox WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3 ORDER BY sequence DESC LIMIT 1"),
         params![owner,installation,automation],decode).optional()?)
 }
+
+pub(super) fn oldest_waiting_accepted_at(
+    tx: &Transaction<'_>,
+    owner: &str,
+    installation: &str,
+) -> Result<Option<u64>> {
+    let oldest: Option<i64> = tx.query_row(
+        "SELECT min(accepted_at_ms) FROM app_outbox
+         WHERE owner_id=?1 AND installation_id=?2 AND state IN ('accepted','retryable')",
+        params![owner, installation],
+        |row| row.get(0),
+    )?;
+    oldest
+        .map(|value| u64::try_from(value).map_err(|_| OutboxError::Corrupt))
+        .transpose()
+}
+
 pub(super) fn pending(
     tx: &Connection,
     owner: &str,

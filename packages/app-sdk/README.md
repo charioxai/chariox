@@ -179,6 +179,13 @@ null. It is read-only and never names the target workflow, so an App can tell
 its user to fix a broken or turned-off automation in Chariox. It is additive to SDK
 0.8.0: check `typeof chariox.events.automations === 'function'` and treat
 `METHOD_NOT_FOUND` as unknown, for runtimes and kernels that predate it.
+
+An installation's outbox holds at most 1024 occurrences waiting for delivery.
+When it is full, `events.emit` (or a state transaction with occurrences) fails
+with `LIMIT_EXCEEDED`, `retryable: true`, "App event outbox is full", and
+nothing in that call commits. It is backpressure: send the same envelope again
+after deliveries drain. The kernel also writes one warning to the App's log for
+each full backlog, so the owner sees it.
 The current outbox component accepts new occurrences up to 30 days old with at
 most five minutes of future clock skew. Already retained exact duplicates return
 their existing receipt; changed content conflicts. Terminal cleanup requires the

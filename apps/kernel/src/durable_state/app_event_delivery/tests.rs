@@ -488,3 +488,102 @@ fn a_full_disk_fails_the_handoff_without_stopping_the_writer() {
     let queued = store.commit_app_event_queue(prepared, budget()).unwrap();
     assert_eq!(queued.state, ReceiptState::Queued);
 }
+
+fn emit(
+    store: &DurableKernelStateStore,
+    fixture: &Fixture,
+    name: &str,
+) -> std::result::Result<AppStateOutcome, crate::durable_state::app_state::AppStateError> {
+    let occurred_at = crate::session::unix_epoch_ms();
+    store.execute_app_state(
+        "local",
+        fixture.catalog.clone(),
+        AppStateOperation::Emit(Occurrence {
+            automation_id: "automation".into(),
+            occurrence_id: chariox_app_runtime::app_outbox::occurrence_id(name, occurred_at)
+                .unwrap(),
+            event_version: 1,
+            occurred_at_ms: occurred_at,
+            schedule_revision: None,
+            payload: serde_json::json!({}),
+            invocation: Invocation {
+                prompt: "Review the change".into(),
+                artifacts: Vec::new(),
+            },
+        }),
+        budget(),
+    )
+}
+
+/// Copies of an accepted event that wait for delivery, accepted at `at`.
+fn fill_waiting(db: &Connection, receipt: &Receipt, prefix: &str, count: usize, at: u64) {
+    db.execute(
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?1)
+         INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,occurrence_id,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,invocation_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,occurred_at_ms,schedule_revision)
+         SELECT owner_id,installation_id,?3||i,automation_id,event_version,?3||i,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,invocation_json,?4,expires_at_ms,'accepted',1,0,next_attempt_at_ms,occurred_at_ms,schedule_revision
+         FROM app_outbox,n WHERE receipt_id=?2",
+        rusqlite::params![count as i64, receipt.receipt_id, prefix, at as i64],
+    )
+    .unwrap();
+}
+
+fn full_outbox_notices(store: &DurableKernelStateStore, installation: &str) -> usize {
+    store
+        .app_logs("local", installation, 0, 200)
+        .unwrap()
+        .iter()
+        .filter(|entry| entry.fields["kernel"] == true && entry.fields["outbox_full"] == true)
+        .count()
+}
+
+#[test]
+fn a_full_outbox_refuses_new_events_as_backpressure_and_warns_the_owner_once_per_backlog() {
+    use chariox_app_runtime::app_outbox::{OutboxError, MAX_PENDING};
+    let fixture = Fixture::new();
+    let (store, _sessions, _session, receipt) = setup(&fixture);
+    let installation = fixture.catalog.installation_id().to_owned();
+    let db = Connection::open(store.path()).unwrap();
+    fill_waiting(
+        &db,
+        &receipt,
+        "first-",
+        MAX_PENDING - 1,
+        receipt.accepted_at_ms,
+    );
+    let full = |result| {
+        matches!(
+            result,
+            Err(crate::durable_state::app_state::AppStateError::Outbox(
+                OutboxError::Full
+            ))
+        )
+    };
+    assert!(full(emit(&store, &fixture, "refused")));
+    assert_eq!(full_outbox_notices(&store, &installation), 1);
+    // A steady refusal loop on the same backlog warns once.
+    for attempt in 0..5 {
+        assert!(full(emit(&store, &fixture, &format!("again-{attempt}"))));
+    }
+    assert_eq!(full_outbox_notices(&store, &installation), 1);
+    let warned_at = store
+        .app_logs("local", &installation, 0, 200)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.fields["outbox_full"] == true)
+        .unwrap()
+        .at_ms;
+
+    // Once that backlog has been delivered, the same event is accepted.
+    db.execute(
+        "UPDATE app_outbox SET state='delivered', revision=revision+1
+         WHERE state IN ('accepted','retryable')",
+        [],
+    )
+    .unwrap();
+    assert!(emit(&store, &fixture, "refused").is_ok());
+
+    // A new backlog, all accepted after the last warning, warns again.
+    fill_waiting(&db, &receipt, "second-", MAX_PENDING, warned_at + 1);
+    assert!(full(emit(&store, &fixture, "refused-again")));
+    assert_eq!(full_outbox_notices(&store, &installation), 2);
+}

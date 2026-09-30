@@ -53,6 +53,10 @@ pub enum OutboxError {
     Schema,
     #[error("app_outbox_limit")]
     Limit,
+    /// `MAX_PENDING` events wait for delivery. Backpressure, not a bad
+    /// request: the same occurrence is accepted once deliveries drain.
+    #[error("app_outbox_full")]
+    Full,
     #[error("app_outbox_corrupt")]
     Corrupt,
     #[error("app_outbox_occurrence_too_old")]
@@ -159,6 +163,15 @@ impl AppOutbox {
                 Ok((automation, latest))
             })
             .collect()
+    }
+
+    /// When the oldest event still waiting for delivery was accepted.
+    pub fn oldest_waiting_accepted_at_in(
+        transaction: &Transaction<'_>,
+        trusted_owner: &str,
+        installation_id: &str,
+    ) -> Result<Option<u64>> {
+        store::oldest_waiting_accepted_at(transaction, trusted_owner, installation_id)
     }
 
     /// Bounded candidate discovery. Consumers must claim/recheck each candidate
