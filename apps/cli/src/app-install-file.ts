@@ -264,7 +264,7 @@ export class AppFileInstaller {
         }
       }
       if (status?.phase === "preparing" || status?.phase === "starting" || status?.phase === "awaiting_approval") return status
-      if (!attempt.released && !attempt.handle && attempt.digest && attempt.size) {
+      if (!attempt.handle && attempt.digest && attempt.size) {
         const reply = await this.request(beginAppPackageUploadRequest({ requestId: attempt.uploadRequest, expectedSize: attempt.size, sha256: attempt.digest }), () => false)
         const upload = reply.AppPackageUploadStatus as { upload?: { handle?: unknown } } | undefined
         if (typeof upload?.upload?.handle !== "string" || !/^upload_[0-9a-f]{64}$/.test(upload.upload.handle)) throw new Error("Kernel returned an invalid upload receipt")
