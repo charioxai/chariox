@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
+import { LocalIpcError } from "./local-ipc-error.js"
 import { executeAppCommand } from "./shell-app-command.js"
 
 test("App list preserves large generations and pages without unbounded collection", async () => {
@@ -47,6 +48,30 @@ test("App worker control uses owner-free requests and shows dormant Apps", async
     assert.equal(result.ok, true)
     assert.equal(result.message, "todo · dormant")
   }
+})
+
+test("A worker control or uninstall whose connection is lost is reported as unknown, not resent", async () => {
+  for (const [args, check] of [
+    [["restart", "todo"], "app worker todo"],
+    [["stop", "todo"], "app worker todo"],
+    [["uninstall", "todo", "--generation", "3"], "app status todo"],
+  ] as const) {
+    let sends = 0
+    const result = await executeAppCommand([...args], { send: async () => {
+      sends += 1
+      throw new LocalIpcError("kernel websocket", "socket closed", "connection_closed", true)
+    } })
+    assert.equal(result.ok, false)
+    assert.equal(sends, 1)
+    assert.match(result.message!, new RegExp(`may still happen\\. Check with ${check} before trying again`))
+  }
+  // A closed client, or a lost read, is still an error.
+  await assert.rejects(executeAppCommand(["restart", "todo"], { send: async () => {
+    throw new LocalIpcError("kernel websocket", "closed", "client_closed", false)
+  } }), /closed/)
+  await assert.rejects(executeAppCommand(["worker", "todo"], { send: async () => {
+    throw new LocalIpcError("kernel websocket", "socket closed", "connection_closed", true)
+  } }), /socket closed/)
 })
 
 test("App automation commands route one event to one workflow and validate arguments", async () => {

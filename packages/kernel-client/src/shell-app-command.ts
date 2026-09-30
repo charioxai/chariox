@@ -7,6 +7,7 @@ import {
   grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
 } from "./ipc-app-requests.js"
 import type { AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
+import { LocalIpcError } from "./local-ipc-error.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
 type Client = { send(request: Record<string, unknown>): Promise<Record<string, unknown>> }
@@ -86,7 +87,19 @@ export async function executeAppCommand(
     request = parsed
   } else return { ok: false, message: usage }
 
-  const response = await client.send(request)
+  let response: Record<string, unknown>
+  try {
+    response = await client.send(request)
+  } catch (error) {
+    // The client does not resend a worker control or an uninstall the kernel
+    // may already be running; a connection lost before the answer leaves the
+    // outcome to check rather than to retry.
+    if (["start", "stop", "restart", "uninstall"].includes(action) && error instanceof LocalIpcError && error.retryable) {
+      const check = action === "uninstall" ? `app status ${rest[0]}` : `app worker ${rest[0]}`
+      return { ok: false, message: `The connection to the kernel was lost before it answered, so the ${action} may still happen. Check with ${check} before trying again.` }
+    }
+    throw error
+  }
   if (response.AppRequestFailed) return appFailure(response, action === "connection" ? `connection ${rest[0]}` : action)
   if (response.AppLogs) {
     const data = expect<{ installation_id: string; entries: AppLogEntry[] }>(response, "AppLogs")
