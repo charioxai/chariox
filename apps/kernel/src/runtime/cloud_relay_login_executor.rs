@@ -5,9 +5,10 @@ use crate::local::{
     LogoutCloudRelayRequest, PollCloudRelayLoginRequest, StartCloudRelayLoginRequest,
 };
 use crate::runtime::cloud_api_client::{
-    cloud_profile_from_persisted, normalize_cloud_api_url, post_cloud_json,
+    cloud_profile_from_persisted, normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
     CloudDevicePollResponse, CloudDeviceStartResponse,
 };
+use crate::runtime::cloud_relay_logout::request_cloud_logout;
 use crate::runtime::cloud_relay_profile_store::{clear_cloud_profile, persist_cloud_profile};
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -120,21 +121,9 @@ pub(crate) async fn execute_logout_cloud_relay_request(
     request: LogoutCloudRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let profile = config_projection.snapshot().cloud_relay;
-    if let Some(profile) = profile.as_ref() {
-        let _ = post_cloud_json::<serde_json::Value>(
-            profile.api_url.clone(),
-            "/auth/logout",
-            serde_json::json!({
-                "sessionToken": profile.cloud_session_token,
-                "accountId": profile.account_id,
-                "clientId": profile.client_id,
-                "machineId": profile.machine_id,
-                "revokeClient": request.revoke_client,
-                "revokeMachine": request.revoke_machine,
-            }),
-        )
-        .await;
-    }
+    request_cloud_logout(profile.as_ref(), &request, |api_url, body| {
+        post_cloud_acknowledged(api_url, "/auth/logout", body)
+    }).await?;
     clear_cloud_profile(runtime_state).await?;
     Ok(LocalDaemonResponse::CloudRelayLoggedOut)
 }

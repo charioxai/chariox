@@ -22,6 +22,7 @@ pub(crate) mod cloud_relay_connection_executor;
 pub(crate) mod cloud_relay_control;
 pub(crate) mod cloud_relay_executor;
 pub(crate) mod cloud_relay_login_executor;
+mod cloud_relay_logout;
 pub(crate) mod cloud_relay_pairing_executor;
 pub(crate) mod cloud_relay_profile_store;
 pub(crate) mod cloud_session_control_executor;

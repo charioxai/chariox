@@ -34,6 +34,21 @@ where
         })?
 }
 
+pub(crate) async fn post_cloud_acknowledged(
+    api_url: String,
+    path: &'static str,
+    body: serde_json::Value,
+) -> Result<(), DaemonError> {
+    tokio::task::spawn_blocking(move || {
+        post_cloud_acknowledged_blocking_with_timeout(api_url, path, body, CLOUD_API_REQUEST_TIMEOUT)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "acknowledge cloud relay request",
+        message: error.to_string(),
+    })?
+}
+
 pub(crate) async fn post_cloud_json_dynamic<T>(
     api_url: String,
     path: String,
@@ -172,6 +187,27 @@ pub(crate) async fn post_cloud_to_file(
         operation: "download cloud artifact",
         message: error.to_string(),
     })?
+}
+
+fn post_cloud_acknowledged_blocking_with_timeout(
+    api_url: String,
+    path: &str,
+    body: serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<(), DaemonError> {
+    let agent = ureq::AgentBuilder::new().timeout(timeout).redirects(0).build();
+    let response = agent
+        .post(&format!("{api_url}{path}"))
+        .set("content-type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(cloud_transport_error)?;
+    match response.status() {
+        200 | 204 => Ok(()),
+        status => Err(DaemonError::LocalTransport {
+            operation: "acknowledge cloud relay request",
+            message: format!("Cloud did not acknowledge completed logout (HTTP {status})"),
+        }),
+    }
 }
 
 fn post_cloud_json_blocking<T>(
@@ -494,6 +530,77 @@ mod tests {
             operation: "decode cloud relay response",
             message: "unexpected response shape".to_string(),
         }));
+    }
+
+    fn acknowledgement_fixture(status: u16, body: &str) -> Result<(), DaemonError> {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind Cloud acknowledgement fixture");
+        let address = listener.local_addr().expect("Cloud fixture address");
+        let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Cloud request");
+            let mut request = [0; 4096];
+            stream.read(&mut request).expect("read Cloud request");
+            stream.write_all(response.as_bytes()).expect("send Cloud acknowledgement fixture");
+        });
+        let result = post_cloud_acknowledged_blocking_with_timeout(
+            format!("http://{address}"), "/auth/logout", serde_json::json!({}),
+            std::time::Duration::from_secs(1),
+        );
+        fixture.join().expect("Cloud acknowledgement fixture");
+        result
+    }
+
+    #[test]
+    fn cloud_acknowledgement_accepts_an_empty_completed_204_response() {
+        let result = acknowledgement_fixture(204, "");
+        assert!(result.is_ok(), "HTTP 204 must acknowledge completed revocation: {result:?}");
+    }
+
+    #[test]
+    fn cloud_acknowledgement_accepts_completed_200_without_requiring_json() {
+        assert!(acknowledgement_fixture(200, "completed").is_ok());
+    }
+
+    #[test]
+    fn cloud_acknowledgement_rejects_pending_redirect_and_failed_responses() {
+        for status in [201, 202, 301, 302, 307, 308, 400, 401, 403, 409, 500] {
+            assert!(acknowledgement_fixture(status, "").is_err(), "HTTP {status} is not completed acknowledgement");
+        }
+        let error = acknowledgement_fixture(401, r#"{"error":{"code":"session_invalid"}}"#).expect_err("Cloud failure must remain an error");
+        assert_eq!(cloud_error_code(&error), Some("session_invalid"));
+    }
+
+    #[test]
+    fn cloud_acknowledgement_does_not_follow_a_redirect_to_success() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirect fixture");
+        let address = listener.local_addr().expect("redirect fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept original logout");
+            let mut request = [0; 4096];
+            stream.read(&mut request).expect("read original logout");
+            let response = format!("HTTP/1.1 302 Found\r\nLocation: http://{address}/redirected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream.write_all(response.as_bytes()).expect("send redirect");
+            drop(stream);
+            listener.set_nonblocking(true).expect("poll redirect listener");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            while std::time::Instant::now() < deadline {
+                if let Ok((mut followed, _)) = listener.accept() {
+                    followed.read(&mut request).expect("read followed redirect");
+                    followed.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").expect("send redirected success");
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            false
+        });
+        let result = post_cloud_acknowledged_blocking_with_timeout(
+            format!("http://{address}"), "/auth/logout", serde_json::json!({}),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(result.is_err());
+        assert!(!fixture.join().expect("redirect fixture"), "logout must not follow redirects");
     }
 
     #[test]
