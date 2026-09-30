@@ -312,6 +312,23 @@ pub(super) fn write_claude_permission_response(
     allowed: bool,
     reason: &str,
 ) {
+    write_claude_permission_payload(
+        context_file,
+        request_id,
+        serde_json::json!({
+            "behavior": if allowed { "allow" } else { "deny" },
+            "message": reason,
+        }),
+    );
+}
+
+/// No decision: the waiting hook returns at once without one, and Claude asks
+/// in its own dialog.
+pub(super) fn write_claude_permission_passthrough(context_file: &str, request_id: &str) {
+    write_claude_permission_payload(context_file, request_id, serde_json::json!({}));
+}
+
+fn write_claude_permission_payload(context_file: &str, request_id: &str, payload: Value) {
     if request_id.trim().is_empty() {
         return;
     }
@@ -320,10 +337,6 @@ pub(super) fn write_claude_permission_response(
     };
     let dir = root.join("permission-responses");
     let _ = fs::create_dir_all(&dir);
-    let payload = serde_json::json!({
-        "behavior": if allowed { "allow" } else { "deny" },
-        "message": reason,
-    });
     let _ = fs::write(dir.join(format!("{request_id}.json")), payload.to_string());
 }
 

@@ -17,6 +17,15 @@ use crate::session::{RuntimeInteraction, RuntimeInteractionKind};
 use crate::transport::relay_peer::RemoteNativeInteractionContext;
 
 const REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER: Duration = Duration::from_secs(15);
+// A Claude permission hook outwaits a forwarded interaction's timeout and relay
+// buffer, with room for event pickup and the relay connection, so the deny it
+// resolves to still reaches Claude.
+const _: () = assert!(
+    crate::provider::CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
+        >= crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS
+            + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER.as_secs()
+            + 15
+);
 
 struct RuntimeStateNativeInteractionBridge {
     handle: Handle,

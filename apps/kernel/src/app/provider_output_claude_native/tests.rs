@@ -425,6 +425,83 @@ fn yolo_hook_permission_uses_kernel_policy_when_claude_reports_auto() {
 }
 
 #[test]
+fn hook_permission_without_an_interaction_bridge_releases_the_waiting_hook() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-permission-passthrough-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-ask-hook",
+        "claude",
+        "claude",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id("agent-ask-hook")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Required);
+    let run = RuntimeProviderRun::new(
+        "provider-run-ask-hook",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-ask-hook-permission".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let event = serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "hook_context_request_id": "request-no-bridge",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": { "command": "true" },
+    });
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .resolve_permission_event(
+            "session-ask-hook",
+            run.id(),
+            "agent-ask-hook",
+            &context_file,
+            &run,
+            None,
+            &event,
+        )
+        .expect("an unbridged permission should resolve");
+
+    let response: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("permission-responses/request-no-bridge.json"))
+            .expect("the waiting hook should get an immediate response"),
+    )
+    .expect("the response should be valid JSON");
+    assert_eq!(
+        response,
+        serde_json::json!({}),
+        "no decision: Claude asks itself"
+    );
+    assert!(!claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with("permission:")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");

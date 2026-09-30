@@ -16,6 +16,16 @@ pub(crate) const CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS: usize = 8;
 pub(crate) const CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES: usize = 6_000;
 pub(crate) const CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES: usize =
     CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES;
+/// The timeout of the kernel interaction a Claude permission request raises.
+pub(crate) const CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS: u64 = 300;
+/// How long the hook waits for the kernel's decision (`deadline` in the
+/// handler): past the interaction timeout plus a forwarded interaction's relay
+/// buffer, so the deny a timed-out interaction resolves to finds it waiting.
+pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 = 330;
+/// Claude's timeout for the permission hook, past the hook's own wait.
+const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;
+const _: () =
+    assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
 pub(crate) fn ensure_claude_native_hidden_context_fits(
     provider_run_id: &str,
@@ -143,7 +153,8 @@ pub(super) fn prepare_claude_native_tui_files(
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
-            "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command }] }]
+            // Claude must not cancel the hook before its own decision wait.
+            "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command, "timeout": CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS }] }]
         },
         "statusLine": {
             "type": "command",
@@ -337,7 +348,9 @@ if (eventName === "UserPromptSubmit") {
     }
     process.exit(0)
   }
-  if (!toolName) {
+  // The kernel bridges only events that name a tool; waiting on any other
+  // event would hold Claude for the full decision deadline.
+  if (typeof input.tool_name !== "string" || !input.tool_name.trim()) {
     process.exit(0)
   }
   clearTimeout(hookWatchdog)
@@ -346,7 +359,8 @@ if (eventName === "UserPromptSubmit") {
     ? join(responseDir, `${hookContextRequestId}.json`)
     : null
   if (responseFile) {
-    const deadline = Date.now() + 300000
+    // CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
+    const deadline = Date.now() + 330000
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
         try {
@@ -517,6 +531,10 @@ mod tests {
         assert!(!handler.contains("permissionDecision"));
         assert!(!handler.contains("toolName.startsWith"));
         assert!(handler.contains("process.exit(0)"));
+        assert!(handler.contains(&format!(
+            "const deadline = Date.now() + {}",
+            super::CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS * 1000
+        )));
     }
 
     #[test]
@@ -717,6 +735,151 @@ mod tests {
                 "{}",
                 contract_case["name"]
             );
+        }
+    }
+
+    #[test]
+    fn ask_mode_permission_request_hook_returns_the_kernel_decision() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-hook-ask",
+            "claude",
+            "claude-headless",
+            "default",
+            "opus",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let hook_handler = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .join("hook-handler.mjs");
+        let spawn_hook = |input: serde_json::Value| {
+            let mut child = Command::new("node")
+                .arg(&hook_handler)
+                .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+                    &native.context_response_dir,
+                )
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                    &native.permission_response_dir,
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("hook handler should start");
+            child
+                .stdin
+                .take()
+                .expect("hook stdin should be piped")
+                .write_all(input.to_string().as_bytes())
+                .expect("hook input should write");
+            child
+        };
+        let recorded_request_ids = || {
+            fs::read_to_string(&native.events_file)
+                .expect("events should be readable")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter_map(|event| {
+                    event["hook_context_request_id"]
+                        .as_str()
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // The kernel's decisions, and its pass-through when no client can
+        // answer (see write_claude_permission_response and _passthrough).
+        for decision in [
+            serde_json::json!({ "behavior": "deny", "message": "Denied in the Room." }),
+            serde_json::json!({ "behavior": "allow", "message": "" }),
+            serde_json::json!({}),
+        ] {
+            let known = recorded_request_ids();
+            let child = spawn_hook(serde_json::json!({
+                "hook_event_name": "PermissionRequest",
+                "permission_mode": "default",
+                "tool_name": "Bash",
+                "tool_input": { "command": "true" }
+            }));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let request_id = loop {
+                if let Some(id) = recorded_request_ids()
+                    .into_iter()
+                    .find(|id| !known.contains(id))
+                {
+                    break id;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "hook never recorded its permission request"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            fs::write(
+                native
+                    .permission_response_dir
+                    .join(format!("{request_id}.json")),
+                decision.to_string(),
+            )
+            .expect("decision should write");
+            let output = child
+                .wait_with_output()
+                .expect("hook handler should finish");
+            assert!(
+                output.status.success(),
+                "hook handler failed for {decision}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if decision.get("behavior").is_none() {
+                // No decision: Claude falls back to its own dialog.
+                assert!(output.stdout.is_empty(), "{decision}");
+                continue;
+            }
+            let response: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
+            assert_eq!(
+                response["hookSpecificOutput"]["hookEventName"],
+                "PermissionRequest"
+            );
+            assert_eq!(
+                response["hookSpecificOutput"]["decision"]["behavior"],
+                decision["behavior"]
+            );
+            if decision["behavior"] == "deny" {
+                assert_eq!(
+                    response["hookSpecificOutput"]["decision"]["message"],
+                    decision["message"]
+                );
+            }
+        }
+
+        // A request that names no tool is never bridged, so the hook must
+        // return at once instead of waiting for a decision.
+        for tool_name in [serde_json::json!(" "), serde_json::json!(7)] {
+            let started = std::time::Instant::now();
+            let output = spawn_hook(serde_json::json!({
+                "hook_event_name": "PermissionRequest",
+                "permission_mode": "default",
+                "tool_name": tool_name
+            }))
+            .wait_with_output()
+            .expect("hook handler should finish");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.stdout.is_empty());
+            assert!(started.elapsed() < std::time::Duration::from_secs(3));
         }
     }
 
@@ -1111,6 +1274,10 @@ mod tests {
         assert_eq!(
             yolo_settings["hooks"]["PermissionRequest"][0]["matcher"],
             "*"
+        );
+        assert_eq!(
+            yolo_settings["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
+            360
         );
     }
 }
