@@ -315,6 +315,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         let mut backing_prompt_active = backing_active_prompt.is_some();
+        let completion_waits_for_runtime_tools = backing_active_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.status() != PromptStatus::Cancelling)
+            && self
+                .app
+                .runtime_tool_call_activity
+                .active_count(provider_run_id)
+                > 0;
         let backing_active_prompt_id = backing_active_prompt
             .as_ref()
             .map(|prompt| prompt.id().to_string());
@@ -336,7 +344,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
         // and Claude can likewise finish intermediate native items. Only the
         // provider-owned prompt transition may release the home turn.
         let completion_waits_for_native_prompt_settlement = requires_explicit_completion;
-        if completion_waits_for_native_prompt_settlement
+        let unprojected_replay_for_turn =
+            leased_agent
+                .replayable_completion
+                .as_ref()
+                .is_some_and(|replay| {
+                    replay.provider_run_id == provider_run_id
+                        && replay.home_prompt_id == home_prompt_id
+                        && !leased_agent.projected_completion_keys.iter().any(|key| {
+                            key == &leased_provider_run_completion_key(
+                                &leased_agent,
+                                provider_run_id,
+                                &replay.message_id,
+                            )
+                        })
+                });
+        if (completion_waits_for_native_prompt_settlement || unprojected_replay_for_turn)
             && !backing_prompt_active
             && leased_agent
                 .replayable_completion
@@ -374,7 +397,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && completion_waits_for_native_prompt_settlement
             && backing_prompt_active
             && !provider_run_failed;
-        if completion_waits_for_output || completion_waits_for_native_stop {
+        if completion_waits_for_output
+            || completion_waits_for_native_stop
+            || (completion_waits_for_runtime_tools && !completions.is_empty())
+        {
             if let Some(completion) = completions.last() {
                 if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
                     agent.replayable_completion =
@@ -426,11 +452,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .any(|key| key == &completion_key)
             });
         if completions.is_empty()
-            && requires_explicit_completion
+            && !completion_waits_for_runtime_tools
+            && (requires_explicit_completion || unprojected_replay_for_turn)
             && !explicit_completion_waiting_for_prompt_settlement
             && (native_prompt_has_settled
                 || current_batch_has_provider_output
-                || provider_run_has_projected_output)
+                || provider_run_has_projected_output
+                || unprojected_replay_for_turn)
         {
             if let Some(replay) = leased_agent
                 .replayable_completion
@@ -457,6 +485,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         let should_complete_from_history = completions.is_empty()
+            && !completion_waits_for_runtime_tools
             && prompts.is_empty()
             && backing_active_prompt
                 .as_ref()
@@ -495,6 +524,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         if completions.is_empty()
+            && !completion_waits_for_runtime_tools
             && !backing_prompt_active
             && !explicit_completion_waiting
             && !((requires_explicit_completion || provider_run_failed)
@@ -667,7 +697,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         // A leased output poll must not complete the prompt underneath an
         // authenticated runtime tool still executing on this worker.
         if active_prompt.status() != PromptStatus::Cancelling
-            && self.app.runtime_tool_call_activity.active_count(provider_run_id) > 0
+            && self
+                .app
+                .runtime_tool_call_activity
+                .active_count(provider_run_id)
+                > 0
         {
             return Ok(false);
         }

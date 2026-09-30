@@ -1,6 +1,14 @@
 use super::*;
 
-async fn quiet_settlement_during_runtime_mcp(leased_projection: bool) {
+#[derive(Clone, Copy)]
+enum SettlementPath {
+    AppOutput,
+    LeasedQuiet,
+    LeasedOutputHistory,
+    LeasedCompletionRecord,
+}
+
+async fn quiet_settlement_during_runtime_mcp(path: SettlementPath) {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap");
@@ -27,6 +35,14 @@ async fn quiet_settlement_during_runtime_mcp(leased_projection: bool) {
     let crate::session::PromptSubmissionOutcome::Started { prompt } = outcome else {
         panic!("prompt starts");
     };
+    if matches!(
+        path,
+        SettlementPath::LeasedOutputHistory | SettlementPath::LeasedCompletionRecord
+    ) {
+        crate::app::RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased.id, &run_id, false)
+            .expect("prime initial prompt projection");
+    }
     let run = app.providers.get_run(&run_id).expect("provider run");
     let token = run
         .runtime_mcp_auth_token()
@@ -59,7 +75,7 @@ async fn quiet_settlement_during_runtime_mcp(leased_projection: bool) {
     })
     .await
     .expect("actual runtime MCP dispatch is blocked in its handler");
-    let (prompt_retained, run_state) = {
+    let (prompt_retained, run_state, output_projected, completion_deferred) = {
         let mut app = app.lock().await;
         crate::transport::flow_control::note_prompt_response_content(&mut app, &run_id);
         app.prompt_activity
@@ -68,10 +84,42 @@ async fn quiet_settlement_during_runtime_mcp(leased_projection: bool) {
             .expect("prompt activity")
             .last_output_at =
             Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
-        if leased_projection {
-            crate::app::RemoteLeaseRuntime::new(&mut app)
+        if matches!(path, SettlementPath::LeasedOutputHistory) {
+            app.fan_out_output_for_agent(
+                &leased.backing_session_id,
+                &run_id,
+                Some(&leased.backing_agent_id),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                Some("fixture-runtime-output".into()),
+                vec![leased.backing_attachment_id.clone()],
+                b"fixture buffered provider output",
+            );
+        }
+        if matches!(path, SettlementPath::LeasedCompletionRecord) {
+            app.terminal().record_assistant_message_completion(
+                &leased.backing_session_id,
+                &run_id,
+                Some(&leased.backing_agent_id),
+                vec![leased.backing_attachment_id.clone()],
+                "fixture-runtime-tool-completion",
+                crate::session::unix_epoch_ms(),
+            );
+        }
+        let mut output_projected = false;
+        let mut completion_deferred = true;
+        if !matches!(path, SettlementPath::AppOutput) {
+            let released_projection = crate::app::RemoteLeaseRuntime::new(&mut app)
                 .drain_leased_runtime_projection(&leased.id, &run_id, true)
-                .expect("leased projection drain");
+                .expect("leased projection drain")
+                .map(|(_, event)| {
+                    let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        output_chunks,
+                        completions,
+                        ..
+                    } = event;
+                    output_projected = !output_chunks.is_empty();
+                    completion_deferred = completions.is_empty();
+                });
         } else {
             crate::app::provider_output::pump_terminal_output_for_attachment(
                 &mut app,
@@ -88,6 +136,8 @@ async fn quiet_settlement_during_runtime_mcp(leased_projection: bool) {
             .expect("active prompt snapshot")
             .is_some(),
             app.providers.get_run(&run_id).unwrap().state(),
+            output_projected,
+            completion_deferred,
         )
     };
     drop(gate);
@@ -110,9 +160,43 @@ async fn quiet_settlement_during_runtime_mcp(leased_projection: bool) {
                 .expect("retained prompt activity")
                 .last_output_at =
                 Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
-            crate::app::RemoteLeaseRuntime::new(&mut app)
+            let released_projection = crate::app::RemoteLeaseRuntime::new(&mut app)
                 .drain_leased_runtime_projection(&leased.id, &run_id, true)
                 .expect("post-handler quiet projection");
+            if matches!(path, SettlementPath::LeasedCompletionRecord) {
+                let Some((
+                    _,
+                    crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        completions,
+                        ..
+                    },
+                )) = released_projection
+                else {
+                    panic!("completion projection after guard drop");
+                };
+                assert!(
+                    completions.iter().any(
+                        |completion| completion.message_id == "fixture-runtime-tool-completion"
+                    ),
+                    "original completion identity retained through guard drop"
+                );
+                let duplicate = crate::app::RemoteLeaseRuntime::new(&mut app)
+                    .drain_leased_runtime_projection(&leased.id, &run_id, false)
+                    .expect("duplicate completion drain");
+                if let Some((
+                    _,
+                    crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        completions,
+                        ..
+                    },
+                )) = duplicate
+                {
+                    assert!(
+                        completions.is_empty(),
+                        "deferred completion projects exactly once"
+                    );
+                }
+            }
             assert!(
                 app.prompt_owner_active_prompt_for_agent_snapshot(
                     &leased.backing_session_id,
@@ -131,14 +215,34 @@ async fn quiet_settlement_during_runtime_mcp(leased_projection: bool) {
         "app quiet settlement must retain an in-flight runtime MCP prompt"
     );
     assert_eq!(run_state, crate::provider::ProviderRunState::Running);
+    assert!(
+        completion_deferred,
+        "completion must not project while handler is active"
+    );
+    if matches!(path, SettlementPath::LeasedOutputHistory) {
+        assert!(
+            output_projected,
+            "guard must allow buffered output to project"
+        );
+    }
 }
 
 #[tokio::test]
 async fn app_output_quiet_settlement_preserves_active_runtime_mcp_handler() {
-    quiet_settlement_during_runtime_mcp(false).await;
+    quiet_settlement_during_runtime_mcp(SettlementPath::AppOutput).await;
 }
 
 #[tokio::test]
 async fn leased_projection_quiet_settlement_preserves_active_runtime_mcp_handler() {
-    quiet_settlement_during_runtime_mcp(true).await;
+    quiet_settlement_during_runtime_mcp(SettlementPath::LeasedQuiet).await;
+}
+
+#[tokio::test]
+async fn leased_output_history_preserves_active_runtime_mcp_handler() {
+    quiet_settlement_during_runtime_mcp(SettlementPath::LeasedOutputHistory).await;
+}
+
+#[tokio::test]
+async fn leased_completion_record_preserves_active_runtime_mcp_handler() {
+    quiet_settlement_during_runtime_mcp(SettlementPath::LeasedCompletionRecord).await;
 }
