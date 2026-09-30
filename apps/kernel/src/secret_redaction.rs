@@ -40,6 +40,15 @@ use std::borrow::Cow;
 /// Replaces every secret-shaped substring of `text` with `[redacted:<kind>]`.
 /// Borrows when nothing matched; applying it again changes nothing.
 pub(crate) fn redact_secrets(text: &str) -> Cow<'_, str> {
+    redact(text, None)
+}
+
+/// Like `redact_secrets`, with the one `marker` for every kind.
+pub(crate) fn redact_secrets_as<'a>(text: &'a str, marker: &str) -> Cow<'a, str> {
+    redact(text, Some(marker))
+}
+
+fn redact<'a>(text: &'a str, marker: Option<&str>) -> Cow<'a, str> {
     let bytes = text.as_bytes();
     let mut redacted: Option<String> = None;
     let mut copied = 0;
@@ -70,9 +79,14 @@ pub(crate) fn redact_secrets(text: &str) -> Cow<'_, str> {
         // boundaries.
         let out = redacted.get_or_insert_with(|| String::with_capacity(text.len()));
         out.push_str(&text[copied..hit.start]);
-        out.push_str("[redacted:");
-        out.push_str(hit.kind);
-        out.push(']');
+        match marker {
+            Some(marker) => out.push_str(marker),
+            None => {
+                out.push_str("[redacted:");
+                out.push_str(hit.kind);
+                out.push(']');
+            }
+        }
         copied = hit.end;
         index = hit.end;
     }
@@ -83,11 +97,6 @@ pub(crate) fn redact_secrets(text: &str) -> Cow<'_, str> {
             Cow::Owned(out)
         }
     }
-}
-
-/// Whether `text` holds anything `redact_secrets` would replace.
-pub(crate) fn contains_secret(text: &str) -> bool {
-    matches!(redact_secrets(text), Cow::Owned(_))
 }
 
 /// Redacts every string in `value`, object keys included, and replaces the
@@ -366,8 +375,8 @@ fn quote_at(bytes: &[u8], at: usize) -> Option<(usize, Quote)> {
     }
 }
 
-fn skip_spaces(bytes: &[u8], mut at: usize) -> usize {
-    while matches!(bytes.get(at), Some(b' ' | b'\t')) {
+fn skip_whitespace(bytes: &[u8], mut at: usize) -> usize {
+    while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
         at += 1;
     }
     at
@@ -444,21 +453,28 @@ fn keeps_value(value: &[u8]) -> bool {
 }
 
 /// The value after a secret-named key ending at `key_end`: `key=value`,
-/// `key: value`, `"key": "value"`, `\"key\":\"value\"`.
+/// `key: value`, `"key": "value"`, `\"key\":\"value\"`, with any whitespace
+/// (line breaks included) around the separator, as JSON allows.
 fn assigned_value(bytes: &[u8], key_end: usize, kind: &'static str) -> Option<Hit> {
     let mut at = quote_at(bytes, key_end).map_or(key_end, |(after, _)| after);
-    at = skip_spaces(bytes, at);
+    at = skip_whitespace(bytes, at);
     match bytes.get(at) {
         Some(b'=') => {}
         // Not a path (`secret::Vault`) or a URL scheme (`token://`).
         Some(b':') if !matches!(bytes.get(at + 1), Some(b':' | b'/')) => {}
         _ => return None,
     }
-    at = skip_spaces(bytes, at + 1);
+    at = skip_whitespace(bytes, at + 1);
     let quote = quote_at(bytes, at).map(|(after, quote)| {
         at = after;
         quote
     });
+    // A PEM block spans lines and spaces, whatever delimits the value.
+    if bytes[at..].starts_with(b"-----BEGIN") {
+        if let Some(hit) = private_key_block(bytes, at) {
+            return Some(hit);
+        }
+    }
     let value_end = |from| match quote {
         Some(quote) => quoted_end(bytes, from, quote),
         None => unquoted_end(bytes, from),
@@ -472,7 +488,7 @@ fn assigned_value(bytes: &[u8], key_end: usize, kind: &'static str) -> Option<Hi
             .count();
         let scheme_end = at + scheme_len;
         if (1..=16).contains(&scheme_len) && bytes.get(scheme_end) == Some(&b' ') {
-            let start = skip_spaces(bytes, scheme_end);
+            let start = skip_whitespace(bytes, scheme_end);
             let end = value_end(start);
             if end == start || keeps_value(&bytes[start..end]) {
                 return None;
@@ -496,7 +512,7 @@ fn assigned_value(bytes: &[u8], key_end: usize, kind: &'static str) -> Option<Hi
 /// `Bearer <token>` outside an Authorization header. The token needs a digit
 /// or 20 characters, so prose such as "Bearer authentication" stays.
 fn bearer_token(bytes: &[u8], word_end: usize) -> Option<Hit> {
-    let start = skip_spaces(bytes, word_end);
+    let start = skip_whitespace(bytes, word_end);
     if start == word_end {
         return None;
     }
@@ -518,26 +534,28 @@ fn bearer_token(bytes: &[u8], word_end: usize) -> Option<Hit> {
 }
 
 /// The password in a URL's user info, `scheme://user:password@host`, read
-/// from just after `://`.
+/// from just after `://`. As URL parsers do, the user info ends at the
+/// authority's last `@` and the password starts after its first `:`. The
+/// scan stops at the authority's end, so it never passes the next `://`.
 fn url_password(bytes: &[u8], from: usize) -> Option<Hit> {
-    let mut colon = None;
-    for at in from..bytes.len().min(from + 256) {
-        match bytes[at] {
-            b'@' => {
-                let colon = colon?;
-                return (at > colon + 1).then_some(Hit {
-                    start: colon + 1,
-                    end: at,
-                    kind: "url-password",
-                });
-            }
-            b':' if colon.is_none() => colon = Some(at),
-            b'/' | b'?' | b'#' | b'[' | b']' | b'"' | b'\'' | b'<' | b'>' | b'\\' => return None,
-            byte if byte.is_ascii_whitespace() => return None,
-            _ => {}
-        }
-    }
-    None
+    let end = bytes[from..]
+        .iter()
+        .position(|byte| {
+            byte.is_ascii_whitespace()
+                || matches!(
+                    byte,
+                    b'/' | b'?' | b'#' | b'[' | b']' | b'"' | b'\'' | b'<' | b'>' | b'\\'
+                )
+        })
+        .map_or(bytes.len(), |offset| from + offset);
+    let authority = &bytes[from..end];
+    let at = authority.iter().rposition(|byte| *byte == b'@')?;
+    let colon = authority[..at].iter().position(|byte| *byte == b':')?;
+    (at > colon + 1).then_some(Hit {
+        start: from + colon + 1,
+        end: from + at,
+        kind: "url-password",
+    })
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

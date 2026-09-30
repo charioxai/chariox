@@ -100,6 +100,9 @@ impl ProviderRunTermination {
 }
 
 pub(crate) fn sanitize_provider_diagnostic(reason: &str) -> String {
+    // The shared secret shapes first, over the whole text: a PEM block spans
+    // lines, so no single token below shows it.
+    let reason = crate::secret_redaction::redact_secrets_as(reason, REDACTED_DIAGNOSTIC_VALUE);
     let normalized = reason
         .chars()
         .map(|character| {
@@ -319,18 +322,16 @@ fn contains_json_sensitive_field(token: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
-/// Every shape `secret_redaction` knows, plus the short vendor-prefixed and
-/// bare base64-JSON tokens that App-authored text keeps: a diagnostic drops
-/// more.
+/// Short vendor-prefixed and bare base64-JSON tokens, which App-authored
+/// text keeps: a diagnostic drops more than `secret_redaction` does.
 fn looks_like_secret_token(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
-    ((lower.starts_with("sk-")
+    (lower.starts_with("sk-")
         || lower.starts_with("sk_")
         || lower.starts_with("ghp_")
         || lower.starts_with("xoxb-")
         || lower.starts_with("eyj"))
-        && token.chars().count() >= 12)
-        || crate::secret_redaction::contains_secret(token)
+        && token.chars().count() >= 12
 }
 
 fn push_diagnostic_token(output: &mut String, token: &str) {
@@ -409,14 +410,25 @@ mod tests {
     #[test]
     fn shared_secret_shapes_are_dropped_from_diagnostics() {
         let aws = format!("AKIA{}", "IOSFODNN7EXAMPLE");
-        let url = "postgres://app:pa55word@db/app";
-        let explicit = ProviderRunTermination::explicit_provider_error(
-            &format!("upload failed for {aws} via {url}"),
-            10,
+        let pem = format!(
+            "-----BEGIN {} KEY-----\n{}\n{}\n-----END {} KEY-----",
+            "PRIVATE",
+            "MIIEv".repeat(12),
+            "QwIBADANBg".repeat(4),
+            "PRIVATE",
         );
-        assert_eq!(
-            explicit.reason,
-            "upload failed for [redacted] via [redacted]"
+        let diagnostic = provider_launch_failure_diagnostic(
+            "provider-run-2",
+            &"launch failed",
+            Some(&format!(
+                "upload for {aws} via postgres://app:pa55word@db/app\nloaded {pem}\ndone"
+            )),
+        );
+        assert!(
+            diagnostic.ends_with(
+                "upload for [redacted] via postgres://app:[redacted]db/app loaded [redacted] done"
+            ),
+            "{diagnostic}"
         );
     }
 

@@ -64,7 +64,7 @@ fn each_token_family_is_redacted_with_its_kind() {
             redacted(&format!("[\"{secret}\"],(x-{secret})")),
             format!("[\"{marker}\"],(x-{marker})"),
         );
-        assert!(contains_secret(&secret));
+        assert!(matches!(redact_secrets(&secret), Cow::Owned(_)));
     }
 }
 
@@ -134,6 +134,40 @@ fn secrets_named_by_their_context_are_redacted() {
             "redis://:pa55@cache".into(),
             "redis://:[redacted:url-password]@cache",
         ),
+        // The user info ends at the authority's last `@`, however long.
+        (
+            format!("https://u:{}@host/path", "a".repeat(300)),
+            "https://u:[redacted:url-password]@host/path",
+        ),
+        (
+            "https://u:p@ss@host".into(),
+            "https://u:[redacted:url-password]@host",
+        ),
+        // JSON allows line breaks around the separator.
+        (
+            "{\"password\":\n  \"hunter2\"}".into(),
+            "{\"password\":\n  \"[redacted:password]\"}",
+        ),
+        (
+            "{\"token\"\r\n:\r\n\"abc\"}".into(),
+            "{\"token\"\r\n:\r\n\"[redacted:token]\"}",
+        ),
+        // A PEM block under a secret-named key, however it is delimited.
+        (
+            format!("private_key={} next", pem("PRIVATE KEY")),
+            "private_key=[redacted:private-key] next",
+        ),
+        (
+            format!("{{\"private_key\": \"{}\"}}", pem("RSA PRIVATE KEY")),
+            "{\"private_key\": \"[redacted:private-key]\"}",
+        ),
+        (
+            format!(
+                "{{\\\"secret\\\":\\\"{}\\\"}}",
+                pem("PRIVATE KEY").replace('\n', "\\n")
+            ),
+            "{\\\"secret\\\":\\\"[redacted:private-key]\\\"}",
+        ),
     ];
     for (text, expected) in cases {
         assert_eq!(redacted(&text), expected, "{text}");
@@ -163,6 +197,7 @@ fn ordinary_text_ids_and_hashes_are_kept() {
         "Bearer authentication is required",
         "see https://docs.example.com/p?q=1#frag or mailto:someone@example.com",
         "secret::Vault::open(token://local)",
+        "https://user@host:443/p and http://host:8080/a@b",
         "ASIAPACIFIC region, AKIA short",
         "eyJhbGciOiJIUzI1NiJ9 alone is a header, not a token",
         "caf\u{e9} \u{1F600} password",

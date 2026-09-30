@@ -347,6 +347,22 @@ mod tests {
                 &serde_json::json!({"password": "hunter2", "url": "https://u:pa55@h/x", "n": 1}),
             )
             .unwrap();
+        // A PEM under a key, and JSON with line breaks around the separator.
+        let pem = format!(
+            "-----BEGIN {} KEY-----\n{}\n-----END {} KEY-----",
+            "PRIVATE",
+            "MIIEv".repeat(12),
+            "PRIVATE"
+        );
+        store
+            .append_app_log(
+                "alice",
+                "todo",
+                "warn",
+                &format!("private_key={pem} and {{\"password\":\n\"hunter2\"}}"),
+                &serde_json::json!({"note": format!("{{\"private_key\": \"{pem}\"}}")}),
+            )
+            .unwrap();
         // A message of short secrets grows under redaction; fields too.
         let short = "token=x ".repeat(MAX_MESSAGE_BYTES / 8);
         let many = (0..400)
@@ -368,10 +384,18 @@ mod tests {
                 "n": 1,
             })
         );
-        assert!(entries[1].message.starts_with("token=[redacted:token] "));
-        assert!(entries[1].message.len() <= MAX_MESSAGE_BYTES);
+        assert_eq!(
+            entries[1].message,
+            "private_key=[redacted:private-key] and {\"password\":\n\"[redacted:password]\"}"
+        );
         assert_eq!(
             entries[1].fields,
+            serde_json::json!({"note": "{\"private_key\": \"[redacted:private-key]\"}"})
+        );
+        assert!(entries[2].message.starts_with("token=[redacted:token] "));
+        assert!(entries[2].message.len() <= MAX_MESSAGE_BYTES);
+        assert_eq!(
+            entries[2].fields,
             serde_json::json!({"redacted": "fields too large after redaction"})
         );
         drop(store);
