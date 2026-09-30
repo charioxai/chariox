@@ -166,6 +166,12 @@ fn secrets_named_by_their_context_are_redacted() {
             "Authorization: AWS4-HMAC-SHA256 [redacted:authorization]",
         ),
         (
+            "Authorization: Digest username = \"alice\",\tresponse\t=\t\"0123abcd\", \
+             nc= 00000001, qop =auth done"
+                .into(),
+            "Authorization: Digest [redacted:authorization] done",
+        ),
+        (
             "Authorization: Custom abc123".into(),
             "Authorization: [redacted:authorization]",
         ),

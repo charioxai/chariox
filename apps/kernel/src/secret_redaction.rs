@@ -562,18 +562,21 @@ fn is_auth_scheme(word: &[u8]) -> bool {
 }
 
 /// The end of unquoted credentials after a scheme: one token (`token68`), or
-/// an auth-param list, `name=value, name="value", …` (RFC 9110), whose values
-/// end at a comma or whitespace unless quoted.
+/// an auth-param list, `name=value, name = "value", …` (RFC 9110, blanks
+/// allowed around `=` and `,`), whose values end at a comma or whitespace
+/// unless quoted.
 fn credentials_end(bytes: &[u8], start: usize) -> usize {
     let mut end = unquoted_end(bytes, start);
     let mut at = start;
     loop {
         let name_end = run_end(bytes, at);
-        let value = name_end + 1;
-        if name_end == at
-            || bytes.get(name_end) != Some(&b'=')
-            || matches!(bytes.get(value), None | Some(b'='))
-        {
+        let equals = skip_blanks(bytes, name_end);
+        if name_end == at || bytes.get(equals) != Some(&b'=') {
+            return end;
+        }
+        let value = skip_blanks(bytes, equals + 1);
+        // `token68` padding (`abc==`), or no value.
+        if matches!(bytes.get(value), None | Some(b'=' | b',' | b'\n' | b'\r')) {
             return end;
         }
         let value_end = if bytes[value] == b'"' {

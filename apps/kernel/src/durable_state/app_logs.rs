@@ -361,7 +361,7 @@ mod tests {
                 "warn",
                 &format!(
                     "private_key={pem} and {{\"password\":\n\"hunter2\"}} and \
-                     Authorization: Digest username=\"a\", response=\"0123abcd\""
+                     Authorization: Digest username = \"a\", response\t= \"0123abcd\""
                 ),
                 &serde_json::json!({
                     "note": format!("{{\"private_key\": \"{pem}\"}}"),
