@@ -107,7 +107,9 @@ impl FailingTurn {
             .load_events_after(0)
             .unwrap()
             .into_iter()
-            .filter(|event| event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
+            .filter(|event| {
+                event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
+            })
             .filter_map(|event| {
                 let mut payload: crate::durable_prompt_state::DurablePromptStateEventPayload =
                     serde_json::from_value(event.payload).unwrap();
