@@ -306,6 +306,11 @@ test('an AppError the App made malformed fails its call as HANDLER_FAILED and ke
     message: 'Tool fail threw an AppError that cannot be sent, so that call failed with HANDLER_FAILED: '
       + 'its code is not 1 to 128 bytes without spaces or control characters' });
   assert.deepEqual(reply.error, { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false });
+  thrown = withCode('\ud800');
+  transport.receive(request('call-surrogate', 'tools.invoke', { name: 'fail', input: null }));
+  await flush();
+  assert.equal(transport.sent.at(-2).params.message, 'Tool fail threw an AppError that cannot be sent, so that call '
+    + 'failed with HANDLER_FAILED: error.code is a string that is not well-formed Unicode');
   sdk.close();
 });
 

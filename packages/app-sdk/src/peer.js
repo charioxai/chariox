@@ -96,10 +96,10 @@ export class AppPeer {
     const refused = this.#send({ kind: 'response', id: request.id, ...outcome });
     if (!refused) return;
     const result = Object.hasOwn(outcome, 'result');
-    // wireError sends only string fields, bounded and well-formed: the wire
-    // refuses an AppError only for its code.
-    const reason = result ? detail(refused) ?? 'it could not be read as JSON'
-      : 'its code is not 1 to 128 bytes without spaces or control characters';
+    // wireError bounds the message and makes it well-formed: the wire refuses
+    // an AppError only for its code.
+    const reason = detail(refused) ?? (result ? 'it could not be read as JSON'
+      : 'its code is not 1 to 128 bytes without spaces or control characters');
     const reply = wireError(result ? new AppError('INVALID_OUTPUT', `The App's result cannot be sent: ${reason}`) : null);
     try { this.onInvalidOutput?.(request.method, request.params, reason, reply.code); } catch { /* best effort */ }
     this.#control({ kind: 'response', id: request.id, error: reply });
