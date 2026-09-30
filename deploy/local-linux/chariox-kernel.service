@@ -3,6 +3,9 @@
 # child as the owner's App cgroup root.
 [Unit]
 Description=Chariox kernel
+# A crash-looping kernel stops restarting after 5 failures in 5 minutes.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -18,6 +21,10 @@ DelegateSubgroup=supervisor
 ExecStart=%h/.local/lib/chariox/start-kernel.sh %h/.local/bin/chariox-kernel
 KillMode=control-group
 TimeoutStopSec=60s
+# Restart after a crash (owner decision, 2026-09-30); a clean stop stays stopped.
+# Apps and pending work recover through the kernel's own startup recovery.
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=default.target
