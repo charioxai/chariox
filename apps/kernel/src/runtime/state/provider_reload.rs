@@ -342,6 +342,7 @@ mod tests {
     #[test]
     fn provider_reload_fingerprint_matches_adapter_and_isolation_launch_inputs() {
         let _env = crate::env_lock::lock();
+        let profile = crate::test_support::TestWorktree::new("reload-fingerprint-claude-profile");
         let previous = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         let launches = [
@@ -355,10 +356,31 @@ mod tests {
                 LaunchProviderRequest::new("reload-session", adapter, provider, "default", "model");
             request.provider_env_remove =
                 vec!["RELOAD_CONTROL_B".into(), "RELOAD_CONTROL_A".into()];
+            if adapter == "claude" {
+                request.provider_account_env.insert(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    profile.path().display().to_string(),
+                );
+            }
+
             let launch = crate::provider::ProviderRegistry::new()
                 .resolve(adapter)
                 .unwrap()
                 .connect(&request);
+            if let Ok(launch) = &launch {
+                if let Some(events) = launch.pty_env.get("CHARIOX_CLAUDE_NATIVE_EVENTS") {
+                    let root = std::path::Path::new(events).parent().unwrap();
+                    assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+                    assert!(root
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("chariox-claude-remote-native-"));
+                    std::fs::remove_dir_all(root)
+                        .expect("generated native launch files should clean up");
+                }
+            }
             (request, launch)
         })
         .collect::<Vec<_>>();
