@@ -40,17 +40,42 @@ impl ActiveWorkers {
         let Ok(mut unlisted) = self.2.lock() else {
             return;
         };
-        if unlisted.len >= MAX_UNLISTED {
-            return;
-        }
         let key = (owner.to_owned(), installation.to_owned());
         if unlisted
             .by_app
+            .get(&key)
+            .is_some_and(|agents| agents.contains(agent))
+        {
+            return;
+        }
+        if unlisted.len >= MAX_UNLISTED {
+            tracing::debug!(
+                installation,
+                agent,
+                "listing omissions at their bound; this App's start will not refresh the agent"
+            );
+            return;
+        }
+        unlisted
+            .by_app
             .entry(key)
             .or_default()
-            .insert(agent.to_owned())
-        {
-            unlisted.len += 1;
+            .insert(agent.to_owned());
+        unlisted.len += 1;
+    }
+    pub(super) fn forget_unlisted(&self, owner: &str, installation: &str, agent: &str) {
+        let Ok(mut unlisted) = self.2.lock() else {
+            return;
+        };
+        let key = (owner.to_owned(), installation.to_owned());
+        let Some(agents) = unlisted.by_app.get_mut(&key) else {
+            return;
+        };
+        if agents.remove(agent) {
+            if agents.is_empty() {
+                unlisted.by_app.remove(&key);
+            }
+            unlisted.len -= 1;
         }
     }
     /// The App runs now: agents whose listing left it out are due a refresh.
@@ -65,6 +90,15 @@ impl ActiveWorkers {
         unlisted.due.extend(agents);
         drop(unlisted);
         self.3.notify_one();
+    }
+    #[cfg(test)]
+    pub(super) fn is_unlisted(&self, owner: &str, installation: &str, agent: &str) -> bool {
+        self.2
+            .lock()
+            .unwrap()
+            .by_app
+            .get(&(owner.to_owned(), installation.to_owned()))
+            .is_some_and(|agents| agents.contains(agent))
     }
     pub(super) fn take_due(&self) -> Vec<String> {
         self.2.lock().map_or_else(
@@ -240,6 +274,9 @@ mod tests {
         workers.note_unlisted("alice", "todo", "agent-1");
         workers.note_unlisted("alice", "todo", "agent-1");
         workers.note_unlisted("alice", "docs", "agent-2");
+        workers.note_unlisted("alice", "docs", "agent-3");
+        // Listed (or revoked) since: no refresh when the App starts.
+        workers.forget_unlisted("alice", "docs", "agent-3");
         workers.started(&key("todo"));
         assert_eq!(workers.take_due(), vec!["agent-1".to_owned()]);
         assert!(workers.take_due().is_empty());

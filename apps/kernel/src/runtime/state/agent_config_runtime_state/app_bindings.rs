@@ -27,41 +27,59 @@ impl KernelRuntimeState {
         grant: ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.checked_app_grant(agent_ref, grant, caller_user_id, false)
+        match self
+            .checked_app_grant(agent_ref, grant, caller_user_id, false)
             .await?
-            .ok_or_else(|| {
-                app_binding_error(
-                    "App installation is unavailable or its publisher verification is no longer valid",
-                )
-            })
+        {
+            Ok(agent) => Ok(agent),
+            Err(NotBound::Busy) => Err(app_binding_error("App control is busy")),
+            Err(NotBound::Refused) => Err(app_binding_error(
+                "App installation is unavailable or its publisher verification is no longer valid",
+            )),
+        }
     }
 
     /// A fork copies its source's App bindings, the owner's explicit choice,
-    /// through the same checked and audited grant as any binding. None when
-    /// the check refuses the App now (uninstalled, publisher revoked): that
-    /// binding is not copied. It waits briefly for an App admission slot
-    /// rather than drop a binding while App control is busy.
+    /// through the same checked and audited grant as any binding. It waits
+    /// briefly for an App admission slot. None when the binding is not
+    /// copied: the check refuses the App now (uninstalled, publisher revoked)
+    /// or App control stayed busy; the fork itself still completes.
     pub(in crate::runtime::state) async fn copy_agent_app_grant(
         &self,
         agent_id: &str,
         grant: ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
-        self.checked_app_grant(agent_id, grant, caller_user_id, true)
-            .await
+        let installation = grant.name.clone();
+        Ok(
+            match self
+                .checked_app_grant(agent_id, grant, caller_user_id, true)
+                .await?
+            {
+                Ok(agent) => Some(agent),
+                Err(NotBound::Busy) => {
+                    tracing::warn!(%installation, "App control stayed busy; the fork does not copy this App binding");
+                    None
+                }
+                Err(NotBound::Refused) => {
+                    tracing::warn!(%installation, "App binding refused; the fork does not copy it");
+                    None
+                }
+            },
+        )
     }
 
     /// The App binding path: owner authority, the installation and publisher
-    /// check under an App admission slot, then the grant with its durable
-    /// event, audit, leased manifest sync and workflow copy invalidation.
-    /// None when the check refuses the installation.
+    /// check under an App admission slot (waiting for one when
+    /// `wait_for_slot`), then the grant with its durable event, audit, leased
+    /// manifest sync and workflow copy invalidation.
     async fn checked_app_grant(
         &self,
         agent_ref: &str,
         grant: ExtensionGrant,
         caller_user_id: &str,
         wait_for_slot: bool,
-    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
+    ) -> Result<Result<crate::agent::AgentInstance, NotBound>, DaemonError> {
         grant.validate_app_binding()?;
         self.owned.ensure_agent_extension_authority(
             agent_ref,
@@ -81,8 +99,10 @@ impl KernelRuntimeState {
                 .flatten()
         } else {
             self.app_control().try_admit().ok()
-        }
-        .ok_or_else(|| app_binding_error("App control is busy"))?;
+        };
+        let Some(permit) = permit else {
+            return Ok(Err(NotBound::Busy));
+        };
         let owner = caller_user_id.to_string();
         let installation_id = grant.name.clone();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -102,7 +122,7 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| app_binding_error("App binding check did not complete"))?;
         if checked.is_err() {
-            return Ok(None);
+            return Ok(Err(NotBound::Refused));
         }
         // Ownership is checked again after the writer wait. A binding does not
         // retain invocation authority if the App is subsequently retired/revoked.
@@ -127,7 +147,7 @@ impl KernelRuntimeState {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control()
             .note_unlisted_binding(&agent, &grant.name);
-        Ok(Some(agent))
+        Ok(Ok(agent))
     }
 
     /// Agents whose App tool listing left out an App that has since started
@@ -176,6 +196,8 @@ impl KernelRuntimeState {
         self.app_control()
             .views()
             .set_revoked(agent.session_id(), agent.id(), name, true);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control().forget_unlisted_binding(&agent, name);
         self.append_agent_durable_event(
             "agent.extension_revoked",
             &agent,
@@ -279,6 +301,14 @@ impl KernelRuntimeState {
         }
         Ok(resolution.choice_id.as_deref() == Some("allow"))
     }
+}
+
+/// Why the App binding path saved no binding.
+enum NotBound {
+    /// No App admission slot was free.
+    Busy,
+    /// The installation is not the owner's active, verified App.
+    Refused,
 }
 
 /// How long a fork waits for an App admission slot to copy one binding.

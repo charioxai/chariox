@@ -202,7 +202,8 @@ impl AppViews {
     /// controller still shows (their calls are answered, as unbound); the last
     /// pass removes the session atomically so a concurrent open restarts it.
     /// The user's revocations outlive the views: a later focus change still
-    /// does not bind a revoked pair.
+    /// does not bind a revoked pair. Such an entry holds only the session's
+    /// revoked (agent, App) pairs and stays for the kernel's lifetime.
     pub(crate) fn keep_pumping(&self, session: &str) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(session) {

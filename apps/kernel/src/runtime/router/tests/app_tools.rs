@@ -224,10 +224,31 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
             .iter()
             .any(|tool| tool.name == name)
     };
+    // A listing while App admission is saturated leaves the cold App out; the
+    // next listing shows it, so the App's start will refresh no one.
+    let control = router.runtime_state.app_control();
+    let permits = (0..8)
+        .map(|_| control.try_admit().unwrap())
+        .collect::<Vec<_>>();
+    runtime
+        .block_on(router.runtime_tool_specs_for_auth_token_async(tokens[1].clone()))
+        .unwrap();
+    assert!(control.app_unlisted("alice", "installed", &agents[1]));
+    drop(permits);
+    runtime.block_on(async {
+        timeout(Duration::from_secs(5), async {
+            while control.catalog_refresh_pending(&agents[1]) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the delayed refresh runs once a slot frees");
+    });
     // No worker runs, but the App may start on demand: the bound agent still
     // lists its tools from the verified release (a call starts it); the agent
     // whose binding was revoked does not.
     assert!(lists(&tokens[1]));
+    assert!(!control.app_unlisted("alice", "installed", &agents[1]));
     assert!(!lists(&tokens[0]));
     // The shared projection, which a leased agent's manifest uses too.
     let control = router.runtime_state.app_control();

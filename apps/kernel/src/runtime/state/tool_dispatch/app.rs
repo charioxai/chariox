@@ -57,7 +57,7 @@ impl KernelRuntimeState {
         let control = self.app_control().clone();
         // Listed without any App: one that cannot start yet is refreshed
         // when it starts.
-        control.note_unlisted_apps(&agent, &BTreeSet::new());
+        control.note_listing(&agent, &BTreeSet::new());
         if !control.begin_catalog_refresh(agent.id()) {
             return;
         }
@@ -124,20 +124,18 @@ impl KernelRuntimeState {
         })
     }
 
+    /// The App tools the agent's provider lists.
     fn app_tools_for_agent(
         &self,
         agent: &crate::agent::AgentInstance,
         occupied: &[RuntimeToolSpec],
         permit: Option<&tokio::sync::OwnedSemaphorePermit>,
     ) -> Result<Vec<RemoteExtensionTool>, DaemonError> {
-        let occupied = occupied
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect::<BTreeSet<_>>();
+        let occupied = occupied_names(occupied);
         match permit {
             Some(permit) => self
                 .app_control()
-                .app_extension_tools_for_agent_admitted(agent, &occupied, permit),
+                .app_extension_listing_admitted(agent, &occupied, permit),
             None => self
                 .app_control()
                 .app_extension_tools_for_agent(agent, &occupied),
@@ -175,7 +173,9 @@ impl KernelRuntimeState {
             let agent = state.app_agent_for_provider_run(&run)?;
             let base = state.runtime_tool_specs_without_apps_for_auth_token(&auth_token);
             let tool = state
-                .app_tools_for_agent(&agent, &base, Some(&permit))?
+                .app_control()
+                .app_extension_tools_for_agent_admitted(&agent, &occupied_names(&base), &permit)
+                .map_err(app_error)?
                 .into_iter()
                 .find(|tool| tool.tool_name == tool_name);
             Ok::<_, DaemonError>((agent, tool))
@@ -236,6 +236,10 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())?
     }
+}
+
+fn occupied_names(specs: &[RuntimeToolSpec]) -> BTreeSet<String> {
+    specs.iter().map(|tool| tool.name.clone()).collect()
 }
 
 fn unavailable() -> DaemonError {

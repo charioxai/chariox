@@ -622,6 +622,8 @@ async fn a_saturated_listing_omits_a_cold_app_and_refreshes_once_a_slot_frees() 
             .expect("a cold App's listing does not fail when admission is busy");
     }
     assert!(control.catalog_refresh_pending(&agent));
+    // Listed without its App: it is due a refresh when the App starts.
+    assert!(control.app_unlisted("alice", "installed", &agent));
     // The shared projection (a leased agent's manifest) answers the same way.
     let bound = app.lock().await.agents().get_agent(&agent).unwrap();
     assert!(control
@@ -636,6 +638,34 @@ async fn a_saturated_listing_omits_a_cold_app_and_refreshes_once_a_slot_frees() 
     })
     .await
     .expect("the refresh runs once a slot frees");
+}
+
+#[tokio::test]
+async fn a_binding_saved_while_its_app_is_stopped_waits_for_its_start_unless_revoked() {
+    let fixture = Fixture::new();
+    let (app, router, _session, agent, _auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Yolo);
+    let state = &router.runtime_state;
+    app.lock()
+        .await
+        .durable_state_store()
+        .stop_app_worker_intent(
+            "alice",
+            "installed",
+            crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    state
+        .grant_agent_extension(&agent, ExtensionGrant::app("installed"), "alice")
+        .await
+        .unwrap();
+    let control = state.app_control();
+    assert!(control.app_unlisted("alice", "installed", &agent));
+    state
+        .revoke_agent_extension(&agent, ExtensionKind::App, "installed", "alice")
+        .await
+        .unwrap();
+    assert!(!control.app_unlisted("alice", "installed", &agent));
 }
 
 #[tokio::test]

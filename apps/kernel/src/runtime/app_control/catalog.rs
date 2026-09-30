@@ -21,6 +21,8 @@ impl AppControlService {
     /// `agent` and the occupied runtime namespace come from the existing kernel
     /// stores, never App request data. All callers share this projection instead
     /// of creating an MCP server or a second remote installation registry.
+    /// A listing (a leased agent's manifest, the synchronous tool listing):
+    /// see `note_listing`.
     pub(crate) fn app_extension_tools_for_agent(
         &self,
         agent: &AgentInstance,
@@ -41,20 +43,45 @@ impl AppControlService {
             if self.has_active_apps_for_agent(agent) {
                 return Err(crate::runtime::app_worker::AppWorkerError::Busy.into());
             }
-            self.note_unlisted_apps(agent, &BTreeSet::new());
+            self.note_listing(agent, &BTreeSet::new());
             return Ok(Vec::new());
         };
-        self.app_extension_tools_for_agent_admitted(agent, occupied, &permit)
+        self.app_extension_listing_admitted(agent, occupied, &permit)
+    }
+
+    /// The tools an agent's provider lists, under the caller's App admission
+    /// permit (see `app_extension_tools_for_agent_admitted`); it records which
+    /// bound Apps the listing left out (`note_listing`).
+    pub(crate) fn app_extension_listing_admitted(
+        &self,
+        agent: &AgentInstance,
+        occupied: &BTreeSet<String>,
+        _permit: &tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
+        let (tools, listed) = self.project_for_agent(agent, occupied)?;
+        self.note_listing(agent, &listed);
+        Ok(tools)
     }
 
     /// Caller obtained this AppControl service's shared permit before entering
     /// its bounded blocking task. This avoids a second semaphore acquisition.
+    /// A dispatch resolving a tool: nothing is listed, so nothing is recorded.
     pub(crate) fn app_extension_tools_for_agent_admitted(
         &self,
         agent: &AgentInstance,
         occupied: &BTreeSet<String>,
         _permit: &tokio::sync::OwnedSemaphorePermit,
     ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
+        Ok(self.project_for_agent(agent, occupied)?.0)
+    }
+
+    /// The agent's App tools and the installations they come from. The caller
+    /// holds an App admission slot.
+    fn project_for_agent(
+        &self,
+        agent: &AgentInstance,
+        occupied: &BTreeSet<String>,
+    ) -> Result<(Vec<RemoteExtensionTool>, BTreeSet<String>), AppToolsError> {
         self.seed_bound_dormant(agent);
         let leases = self.bound_app_leases(agent);
         let dormant = self.bound_dormant_catalogs(agent);
@@ -64,26 +91,36 @@ impl AppControlService {
             .chain(dormant.iter().cloned())
             .collect::<Vec<_>>();
         if catalogs.is_empty() {
-            self.note_unlisted_apps(agent, &BTreeSet::new());
-            return Ok(Vec::new());
+            return Ok(Default::default());
         }
         let current = self
             .store
             .current_app_catalogs(agent.owner_user_id(), &catalogs)?;
-        let (tools, listed) = self.project_app_tools(current, leases, &dormant, occupied)?;
-        self.note_unlisted_apps(agent, &listed);
-        Ok(tools)
+        self.project_app_tools(current, leases, &dormant, occupied)
     }
 
-    /// Remembers the agent's bound Apps its listing left out (`listed` names
-    /// the ones it showed): once one starts, the agent's catalog is refreshed.
-    pub(crate) fn note_unlisted_apps(&self, agent: &AgentInstance, listed: &BTreeSet<String>) {
+    /// A listing showed the agent the bound Apps in `listed`: the others are
+    /// remembered, so the agent's catalog is refreshed once one starts; a
+    /// listed App needs no refresh.
+    pub(crate) fn note_listing(&self, agent: &AgentInstance, listed: &BTreeSet<String>) {
         for grant in agent.extension_grants() {
-            if grant.kind == ExtensionKind::App && !listed.contains(&grant.name) {
+            if grant.kind != ExtensionKind::App {
+                continue;
+            }
+            if listed.contains(&grant.name) {
+                self.workers
+                    .forget_unlisted(agent.owner_user_id(), &grant.name, agent.id());
+            } else {
                 self.workers
                     .note_unlisted(agent.owner_user_id(), &grant.name, agent.id());
             }
         }
+    }
+
+    /// A revoked binding needs no refresh when its App starts.
+    pub(crate) fn forget_unlisted_binding(&self, agent: &AgentInstance, installation: &str) {
+        self.workers
+            .forget_unlisted(agent.owner_user_id(), installation, agent.id());
     }
 
     /// A binding saved while its App neither runs nor is dormant lists no
@@ -95,6 +132,11 @@ impl AppControlService {
         {
             self.workers.note_unlisted(owner, installation, agent.id());
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn app_unlisted(&self, owner: &str, installation: &str, agent: &str) -> bool {
+        self.workers.is_unlisted(owner, installation, agent)
     }
 
     /// Agents due a catalog refresh because an App their listing left out

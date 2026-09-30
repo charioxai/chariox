@@ -147,15 +147,11 @@ impl KernelRuntimeState {
         for grant in source_agent.extension_grants() {
             // App bindings take the checked, audited binding path.
             if grant.kind == crate::extension::ExtensionKind::App {
-                match self
+                if let Some(agent) = self
                     .copy_agent_app_grant(forked_agent.id(), grant.clone(), &caller_user_id)
                     .await?
                 {
-                    Some(agent) => forked_agent = agent,
-                    None => tracing::warn!(
-                        installation = %grant.name,
-                        "App binding refused; the fork does not copy it"
-                    ),
+                    forked_agent = agent;
                 }
                 continue;
             }
