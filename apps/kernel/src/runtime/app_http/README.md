@@ -34,7 +34,7 @@ Headers are limited to 64 entries/16 KiB. A DNS lookup asks one name server at a
 time, in the host's order, for up to two seconds each. A server that drops the
 query or answers an error code (REFUSED, NOTIMP, SERVFAIL) gives way to the next
 at once. Each server is asked at most twice, and the whole lookup has six seconds,
-so one bad server cannot fail it. An NXDOMAIN answer is final. At most 32
+so one bad server cannot fail it. An NXDOMAIN or no-address (NODATA) answer is final. At most 32
 addresses are returned, and 16 driver tasks are tracked per attempt. These are
 policy limits, not performance evidence. The existing lifecycle service owns
 one shared `HttpLimits` pool.

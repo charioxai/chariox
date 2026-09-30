@@ -10,7 +10,8 @@ use super::{policy::ApprovedTarget, HttpError, Result};
 use hickory_resolver::{
     config::{LookupIpStrategy, ResolveHosts, ResolverConfig, ResolverOpts},
     lookup_ip::LookupIp,
-    proto::rr::Name,
+    net::{DnsError, NetError, NoRecords},
+    proto::{op::ResponseCode, rr::Name},
     Resolver,
 };
 use std::{net::SocketAddr, time::Duration};
@@ -46,7 +47,8 @@ pub(super) struct DnsConfig {
 /// What one server's attempt settled.
 enum Answer {
     Addresses(LookupIp),
-    /// The name does not exist, from a server whose negative answers count.
+    /// NXDOMAIN or no addresses (NODATA), from a server whose negative
+    /// answers count: final, as with glibc.
     Missing,
     /// No usable answer: the next server is asked.
     Next,
@@ -181,7 +183,7 @@ impl DnsConfig {
                     _ = tokio::time::sleep_until(until) => Ok(Answer::Next),
                     result = resolver.lookup_ip(name.clone()) => Ok(match result {
                         Ok(answer) if answer.iter().next().is_some() => Answer::Addresses(answer),
-                        Err(error) if trusted && error.is_nx_domain() => Answer::Missing,
+                        Err(error) if trusted && negative(&error) => Answer::Missing,
                         _ => Answer::Next,
                     }),
                 };
@@ -198,4 +200,15 @@ impl DnsConfig {
             result
         }
     }
+}
+
+/// An answer that the name does not exist or has no addresses, not a failure.
+fn negative(error: &NetError) -> bool {
+    matches!(
+        error,
+        NetError::Dns(DnsError::NoRecordsFound(NoRecords {
+            response_code: ResponseCode::NXDomain | ResponseCode::NoError,
+            ..
+        }))
+    )
 }

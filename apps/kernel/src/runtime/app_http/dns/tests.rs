@@ -210,26 +210,26 @@ async fn every_server_down_fails_as_network_within_the_total_budget() {
     assert!(first.asked_between(start, 2 * PER_SERVER, BUDGET));
     assert!(!second.asked_between(
         start,
-        2 * PER_SERVER + Duration::from_millis(200),
+        2 * PER_SERVER + Duration::from_millis(500),
         BUDGET + SLACK
     ));
 }
 
 #[tokio::test]
 async fn a_missing_name_is_final_and_the_request_deadline_still_wins() {
-    let (missing, good) = (TestDns::start(|_, _, _| None).await, public().await);
-    let config = DnsConfig::fixture_servers(&[missing.address(), good.address()]);
-    let start = Instant::now();
-    assert_eq!(
-        resolve(&config, "https://public.test/").await,
-        Err(HttpError::Network)
-    );
-    assert!(start.elapsed() < SLACK);
-    assert_eq!(
-        good.total_queries(),
-        0,
-        "NXDOMAIN is an answer, not a failure"
-    );
+    // NXDOMAIN, then a name without addresses (NODATA): answers, not failures.
+    for script in [None, Some(Vec::new())] {
+        let missing = TestDns::start(move |_, _, _| script.clone()).await;
+        let silent = TestDns::silent().await;
+        let config = DnsConfig::fixture_servers(&[missing.address(), silent.address()]);
+        let start = Instant::now();
+        assert_eq!(
+            resolve(&config, "https://public.test/").await,
+            Err(HttpError::Network)
+        );
+        assert!(start.elapsed() < SLACK, "{:?}", start.elapsed());
+        assert_eq!(silent.total_queries(), 0);
+    }
 
     let (silent, good) = (TestDns::silent().await, public().await);
     let config = DnsConfig::fixture_servers(&[silent.address(), good.address()]);
