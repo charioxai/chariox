@@ -1776,7 +1776,10 @@ fn release_verifier_requires_signed_v3_update_evidence_capability() {
         if let Some(version) = capability {
             invalid["managedUpdateEvidenceVersion"] = serde_json::json!(version);
         } else {
-            invalid.as_object_mut().expect("manifest object").remove("managedUpdateEvidenceVersion");
+            invalid
+                .as_object_mut()
+                .expect("manifest object")
+                .remove("managedUpdateEvidenceVersion");
         }
         let digest = fixture.write_signed_manifest(invalid);
         let error = verify_release(
@@ -1798,7 +1801,8 @@ fn release_verifier_requires_signed_v3_update_evidence_capability() {
         &fixture.config.public_key_path,
         &digest,
         &fixture.config.kernel_binary,
-    ).is_err());
+    )
+    .is_err());
     fixture.cleanup();
 }
 

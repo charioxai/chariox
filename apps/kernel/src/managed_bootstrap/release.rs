@@ -127,20 +127,24 @@ pub(super) fn verify_release(
     if manifest.artifacts.is_empty() || manifest.artifacts.len() > 32 {
         return Err(release_error("release manifest schema is unsupported"));
     }
-    match (manifest.schema_version, manifest.managed_update_evidence_version) {
+    match (
+        manifest.schema_version,
+        manifest.managed_update_evidence_version,
+    ) {
         (1 | 2, None) | (3, Some(1)) => {}
         _ => return Err(release_error("release manifest schema is unsupported")),
     }
     match manifest.schema_version {
         1 if manifest.source_commit.is_none() && manifest.source_tree.is_none() => {}
-        2 | 3 if manifest
-            .source_commit
-            .as_deref()
-            .is_some_and(is_git_object_id)
-            && manifest
-                .source_tree
+        2 | 3
+            if manifest
+                .source_commit
                 .as_deref()
-                .is_some_and(is_git_object_id) => {}
+                .is_some_and(is_git_object_id)
+                && manifest
+                    .source_tree
+                    .as_deref()
+                    .is_some_and(is_git_object_id) => {}
         1 | 2 | 3 => {
             return Err(release_error("release manifest source identity is invalid"));
         }
