@@ -540,7 +540,7 @@ fn signed_schemas_version_checks_publisher_revocation_and_pending_capacity_are_e
     let mut tx = db.transaction().unwrap();
     assert!(matches!(
         AppOutbox::apply_in(&mut tx, &authority, &[occurrence("full", "value")], 100),
-        Err(OutboxError::Limit)
+        Err(OutboxError::Full)
     ));
     drop(tx);
     PublisherTrustRegistry::new(&mut db)

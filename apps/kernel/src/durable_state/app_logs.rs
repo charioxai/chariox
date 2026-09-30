@@ -4,7 +4,7 @@
 //! its own notices about the App here too, marked by the `kernel` field an
 //! App cannot write.
 use super::{DurableKernelStateStore, DurableWriterRequest};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::mpsc;
 
 /// Entries kept per installation; older ones are dropped on write.
@@ -211,6 +211,27 @@ pub(super) fn append_kernel_notice_in(
         message,
         &fields,
     )
+}
+
+/// When the installation's latest kernel notice carrying `marker` was
+/// written, if one is still kept.
+pub(super) fn latest_kernel_notice_at_in(
+    transaction: &Connection,
+    owner: &str,
+    installation: &str,
+    marker: &str,
+) -> rusqlite::Result<Option<u64>> {
+    transaction
+        .query_row(
+            "SELECT at_ms FROM app_logs WHERE owner_id=?1 AND installation_id=?2
+               AND json_extract(fields_json, '$.kernel') = 1
+               AND json_extract(fields_json, '$.' || ?3) = 1
+             ORDER BY sequence DESC LIMIT 1",
+            params![owner, installation, marker],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|at| at.map(|at| at.max(0) as u64))
 }
 
 /// Appends one entry and drops the installation's oldest beyond `KEEP`.

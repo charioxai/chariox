@@ -486,7 +486,7 @@ fn automation_error(
         E::Stopped(_) => AppRequestErrorCode::Busy,
         E::Outbox(O::Conflict) | E::TargetChanged => AppRequestErrorCode::Conflict,
         E::Outbox(O::NotFound) | E::NotOwner => AppRequestErrorCode::NotFound,
-        E::Outbox(O::Limit) => AppRequestErrorCode::LimitExceeded,
+        E::Outbox(O::Limit | O::Full) => AppRequestErrorCode::LimitExceeded,
         E::Outbox(O::Invalid | O::Schema | O::Catalog(_) | O::Inactive | O::TooOld)
         | E::InvalidTarget => AppRequestErrorCode::InvalidRequest,
         E::Storage(crate::error::DaemonError::SessionNotFound { .. }) => {

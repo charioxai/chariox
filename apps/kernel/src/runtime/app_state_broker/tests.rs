@@ -177,3 +177,18 @@ fn response_errors_do_not_include_input_values_paths_or_internal_database_detail
         assert!(error.message.len() < 128);
     }
 }
+
+#[test]
+fn a_full_outbox_is_retryable_backpressure_that_names_the_outbox() {
+    let full = errors::outbox(chariox_app_runtime::app_outbox::OutboxError::Full);
+    assert_eq!(full.code, "LIMIT_EXCEEDED");
+    assert_eq!(full.retryable, Some(true));
+    assert!(
+        full.message.contains("event outbox is full"),
+        "{}",
+        full.message
+    );
+    assert!(full.message.contains("1024"), "{}", full.message);
+    let limit = errors::outbox(chariox_app_runtime::app_outbox::OutboxError::Limit);
+    assert_eq!(limit.retryable, Some(false));
+}
