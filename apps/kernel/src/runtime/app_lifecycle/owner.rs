@@ -18,6 +18,8 @@ pub(super) struct Context {
     #[cfg(test)]
     pub fixture: Option<start::FixturePlatform>,
     #[cfg(test)]
+    pub start_checkpoint: Option<StartObserver>,
+    #[cfg(test)]
     pub claim_checkpoint: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 enum Admitted {
@@ -56,6 +58,10 @@ pub(super) fn run(
         None => claim_budget,
     };
     let mut first_authority_withdrawn = false;
+    #[cfg(test)]
+    if let Some(checkpoint) = &context.start_checkpoint {
+        checkpoint(StartCheckpoint::BeforeClaim);
+    }
     let claim = match &context.kind {
         StartKind::Active { recovery } => context
             .store
@@ -211,6 +217,10 @@ fn serve(
         )?;
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
+        }
+        #[cfg(test)]
+        if let Some(checkpoint) = &context.start_checkpoint {
+            checkpoint(StartCheckpoint::BeforePublication);
         }
         context
             .publisher

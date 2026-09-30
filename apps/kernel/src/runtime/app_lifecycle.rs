@@ -118,7 +118,17 @@ struct Inner {
     fixture: Mutex<Option<start::FixturePlatform>>,
     #[cfg(test)]
     claim_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    start_checkpoint: Mutex<Option<StartObserver>>,
 }
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartCheckpoint {
+    BeforeClaim,
+    BeforePublication,
+}
+#[cfg(test)]
+type StartObserver = Arc<dyn Fn(StartCheckpoint) + Send + Sync>;
 struct Maintenance {
     running: bool,
     next: Instant,
@@ -183,6 +193,8 @@ impl AppLifecycleService {
             fixture: Mutex::new(None),
             #[cfg(test)]
             claim_checkpoint: Mutex::new(None),
+            #[cfg(test)]
+            start_checkpoint: Mutex::new(None),
         }))
     }
 }

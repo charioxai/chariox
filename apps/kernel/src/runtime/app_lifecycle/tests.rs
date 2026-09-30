@@ -724,3 +724,114 @@ fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
     assert!(!control.is_app_dormant("alice", "installed"));
     service.shutdown_blocking().unwrap();
 }
+
+fn assert_call_waits_at_start_checkpoint(checkpoint: StartCheckpoint) {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let (entered, received) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let released = Mutex::new(released);
+    *control.lifecycle().0.start_checkpoint.lock().unwrap() = Some(Arc::new(move |at| {
+        if at == checkpoint {
+            entered.send(()).unwrap();
+            let _ = released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        }
+    }));
+    control
+        .lifecycle()
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    let phase = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .map(|row| row.phase);
+    assert_eq!(
+        phase,
+        match checkpoint {
+            StartCheckpoint::BeforeClaim => None,
+            StartCheckpoint::BeforePublication => Some(WorkerPhase::Running),
+        }
+    );
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    runtime.block_on(async {
+        let call = control.wait_for_app_lease(
+            "alice",
+            "installed",
+            tokio::time::Instant::now() + Duration::from_secs(3),
+        );
+        tokio::pin!(call);
+        // Poll the real call path while the lifecycle owner is held on either
+        // side of the durable Starting phase. It must remain pending.
+        tokio::select! {
+            biased;
+            _ = &mut call => panic!("accepted start returned before callable publication"),
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
+        release.send(()).unwrap();
+        assert!(call.await.is_some());
+    });
+    control
+        .lifecycle()
+        .stop_blocking("alice", "installed")
+        .unwrap();
+    let after_stop = runtime.block_on(control.wait_for_app_lease(
+        "alice",
+        "installed",
+        tokio::time::Instant::now() + Duration::from_secs(3),
+    ));
+    assert!(after_stop.is_none());
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn callable_readiness_waits_before_durable_start_claim() {
+    assert_call_waits_at_start_checkpoint(StartCheckpoint::BeforeClaim);
+}
+
+#[test]
+fn callable_readiness_waits_after_running_before_publication() {
+    assert_call_waits_at_start_checkpoint(StartCheckpoint::BeforePublication);
+}
+
+#[test]
+fn callable_readiness_refuses_terminal_start_failure() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    // No staged release: the accepted start fails preparation permanently.
+    let control = AppControlService::new(store.clone());
+    control
+        .lifecycle()
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|row| row.phase == WorkerPhase::Failed)
+    });
+    let lease = runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            control.wait_for_app_lease(
+                "alice",
+                "installed",
+                tokio::time::Instant::now() + Duration::from_secs(20),
+            ),
+        )
+        .await
+        .expect("terminal failure must refuse promptly")
+    });
+    assert!(lease.is_none());
+    control.lifecycle().shutdown_blocking().unwrap();
+}

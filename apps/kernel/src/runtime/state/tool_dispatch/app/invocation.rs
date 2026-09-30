@@ -114,16 +114,9 @@ impl KernelRuntimeState {
         }
         let deadline = tokio::time::Instant::now() + ON_DEMAND_START;
         if !control.is_app_dormant(owner, installation) {
-            // A start already under way (a user start, a restart after a
-            // crash) is waited for; a stopped or failed worker is not started.
-            while self.app_worker_phase(owner, installation).await
-                == Some(crate::durable_state::app_worker_lifecycle::WorkerPhase::Starting)
-                && tokio::time::Instant::now() < deadline
-            {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
             return control
-                .active_app_lease(owner, installation)
+                .wait_for_app_lease(owner, installation, deadline)
+                .await
                 .ok_or_else(unavailable);
         }
         let mut started = false;
