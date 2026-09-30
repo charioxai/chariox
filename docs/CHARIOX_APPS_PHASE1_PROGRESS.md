@@ -1532,6 +1532,17 @@ event contract hash (its fixture, crates and serde_json are unchanged). Main's
 four relay peer shape tests are updated from 56 to 57. The CLI typecheck reports
 one error in the unfinished publisher-file WIP carried into this merge.
 
+### One browser controller (2026-09-30)
+
+The exact-target controller from 2026-09-08 (`runtime/browser_controller.rs`)
+is deleted. It never gained a caller: App views (protocol 346 onward), the Room
+Tab outline and Room input were built on main's controller instead
+(`browser-controller-apps.mjs`, `browser_controller_app_view.rs`,
+`browser_controller_snapshot.rs` and the Room human actions). The hosted
+Chromium profile drill drops its controller stage and keeps the sandbox probe
+and profile restore. Runs `34171378772` and `34193432289` stay evidence for the
+launcher and profile, not for a controller the kernel ships.
+
 ## Implementation status (2026-09-26)
 
 Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS stack is #433 → #434 → #435 → #436 → #438 → #439 → #441 → #442 → #443 → #444 → #445 → #446 → #447 → #455 → #456 → #457 → #458 → #459 → #460 → #461 → #462 → #463 → #464 → #470 → #471 → #473 → #474 → #477 → #478 → #479 → #480 → #481. Side fixes #467, #468, #472, #476. Side PRs are #430, #431, #437, #440, #448, #452. Web work is in chariox-cloud #218 → #220 → #221 → #222.
