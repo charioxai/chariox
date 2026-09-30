@@ -775,35 +775,72 @@ test("managed slice broker pins a provisioner path inode across caller replaceme
     return
   }
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-pin-"))
-  context.after(async () => {
-    const handle = createHash("sha256").update("chariox-slice-dev\0workspace").digest("hex")
-    const target = join(root, "handles", handle)
-    if (spawnSync("/usr/bin/mountpoint", ["-q", "--", target]).status === 0) {
-      assert.equal(spawnSync("/usr/bin/umount", [target], { timeout: 3000 }).status, 0)
-    }
-    await rm(root, { recursive: true, force: true })
-  })
   const share = join(root, "share")
   const workspace = join(share, "slices/development/slice-dev/development/workspace")
   const moved = join(share, "workspace-original")
   const outside = join(root, "outside")
   const started = join(root, "started")
   const release = join(root, "release")
+  const quotaRoot = join(root, "quota")
+  const isolatedRun = join(root, "run")
+  const handle = createHash("sha256").update("chariox-slice-dev\0workspace").digest("hex")
+  const target = join(root, "handles", handle)
+  let child
+  context.after(async () => {
+    if (child?.exitCode === null) {
+      const exited = once(child, "exit")
+      process.kill(-child.pid, "SIGTERM")
+      await exited
+    }
+    // The child namespace owns the bind mount; exiting it must leave no host mount.
+    assert.notEqual(spawnSync("/usr/bin/mountpoint", ["-q", "--", target]).status, 0)
+    await rm(root, { recursive: true, force: true })
+  })
   await mkdir(workspace, { recursive: true })
   await mkdir(outside)
+  await mkdir(quotaRoot, { mode: 0o700 })
+  await mkdir(isolatedRun, { mode: 0o700 })
+  await writeFile(join(quotaRoot, "reservations.json"), JSON.stringify({
+    schemaVersion: 1, nextProjectId: 1073741824, reservations: {},
+  }), { mode: 0o600 })
   await writeFile(join(workspace, "value"), "safe")
-  await writeFile(join(outside, "value"), "secret")
+  await writeFile(join(outside, "value"), "outside-fixture")
+  const fakeDocker = join(root, "docker.sh")
+  await writeFile(fakeDocker, `#!/bin/sh
+set -eu
+case "$*" in
+  'container inspect --format {{json .Config.Labels}} chariox-slice-dev'|'container inspect --format {{json .Mounts}} chariox-slice-dev')
+    printf 'Error: No such container: chariox-slice-dev\\n' >&2; exit 1 ;;
+  'volume inspect --format {{json .Labels}} chariox-slice-dev-home')
+    printf 'Error: No such volume: chariox-slice-dev-home\\n' >&2; exit 1 ;;
+  *) printf 'unexpected Docker operation: %s\\n' "$*" >&2; exit 99 ;;
+esac
+`)
+  await chmod(fakeDocker, 0o755)
+  const namespaceEntrypoint = join(root, "namespace.sh")
+  await writeFile(namespaceEntrypoint, `#!/bin/sh
+set -eu
+mount --bind "$1" /usr/bin/docker
+mount --bind "$2" /var/lib/chariox-slice-disk-quota
+mount --bind "$3" /run
+exec "$4" "$5" --stdio
+`)
+  await chmod(namespaceEntrypoint, 0o755)
   const provisioner = join(root, "provisioner.sh")
   await writeFile(provisioner, `#!/bin/sh
 set -eu
+mountpoint -q -- "$CHARIOX_SLICE_WORKSPACE_SOURCE"
 : > '${started}'
 while [ ! -e '${release}' ]; do sleep 0.01; done
-# Match provision-linux-docker-slice.sh: WORKSPACE is the container destination;
-# the broker-owned SOURCE is the host bind mount, pinned across path replacement.
+# WORKSPACE is the container destination; SOURCE is the broker's pinned bind mount.
 cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
 `)
   await chmod(provisioner, 0o755)
-  const child = spawn(process.execPath, [broker, "--stdio"], {
+  child = spawn("/usr/bin/unshare", [
+    "--mount", "--propagation", "private", namespaceEntrypoint,
+    fakeDocker, quotaRoot, isolatedRun, process.execPath, broker,
+  ], {
+    detached: true,
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
@@ -813,7 +850,6 @@ cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
       CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
     },
   })
-  context.after(() => child.kill())
   let stdout = ""
   let stderr = ""
   child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
@@ -825,14 +861,18 @@ cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
       CHARIOX_SLICE_NAME: "chariox-slice-dev",
       CHARIOX_SLICE_ID: "slice-dev",
       CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+      CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-dev",
+      CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-dev",
       CHARIOX_SLICE_WORKSPACE: workspace,
     },
     files: [],
   })}\n`)
-  await waitFor(() => access(started).then(() => true, () => false))
+  await waitFor(async () => await access(started).then(() => true, () => false) || stdout.includes("\n"))
+  const failure = stdout.includes("\n") ? Buffer.from(JSON.parse(stdout).stderrBase64, "base64").toString() : stderr
+  assert.equal(await access(started).then(() => true, () => false), true, failure)
   await rename(workspace, moved)
   await symlink(outside, workspace)
-  assert.equal(await readFile(join(workspace, "value"), "utf8"), "secret")
+  assert.equal(await readFile(join(workspace, "value"), "utf8"), "outside-fixture")
   await writeFile(release, "go")
   await waitFor(() => Promise.resolve(stdout.includes("\n")))
   child.stdin.end()
