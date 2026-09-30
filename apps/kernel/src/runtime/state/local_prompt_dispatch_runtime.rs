@@ -1857,9 +1857,12 @@ mod tests {
             .into_iter()
             .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
             .collect::<Vec<_>>();
-        assert_eq!(provider_errors.len(), 1);
+        // The dispatch error, then the failed turn's "not carried out" entry.
+        assert_eq!(provider_errors.len(), 2);
         assert!(String::from_utf8_lossy(&provider_errors[0].bytes)
             .contains("Provider prompt dispatch failed"));
+        assert!(String::from_utf8_lossy(&provider_errors[1].bytes)
+            .starts_with("Request not carried out: "));
 
         let completions = runtime
             .owned
@@ -1881,6 +1884,393 @@ mod tests {
                 .state(),
             crate::provider::ProviderRunState::Running,
         );
+    }
+
+    const FAILED_REQUEST_NOTE: &str = "Your previous request (\"active prompt\") failed";
+
+    async fn submit_and_dispatch(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+        source_id: &str,
+        prompt: &str,
+    ) {
+        let submission = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.to_string(),
+                prompt: PromptQueueItem::new(
+                    format!("pending-{}", prompt.replace(' ', "-")),
+                    source_id,
+                    agent_id,
+                    prompt,
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("prompt should be admitted");
+        runtime
+            .enqueue_prompt_dispatch(&submission.dispatch.expect("prompt should need dispatch"))
+            .await
+            .expect("prompt should reach the provider");
+    }
+
+    fn provider_inputs_containing(runtime: &KernelRuntimeState, text: &str) -> Vec<String> {
+        runtime
+            .owned
+            .terminal_stream
+            .input_records()
+            .iter()
+            .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+            .filter(|input| input.contains(text))
+            .collect()
+    }
+
+    fn not_carried_out_entries(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        observer_id: &str,
+    ) -> Vec<String> {
+        runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session_id, observer_id)
+            .into_iter()
+            .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+            .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+            .filter(|text| text.starts_with("Request not carried out: "))
+            .collect()
+    }
+
+    fn failed_requests(
+        runtime: &KernelRuntimeState,
+        agent_id: &str,
+    ) -> Vec<crate::agent::FailedRequest> {
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent_id)
+            .expect("agent should remain available")
+            .failed_requests()
+            .to_vec()
+    }
+
+    fn last_durable_failed_requests(runtime: &KernelRuntimeState) -> serde_json::Value {
+        runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("agent.updated")
+            .expect("agent updates should load")
+            .last()
+            .expect("the failed request should be recorded durably")
+            .payload["agent"]["failed_requests"]
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn failed_turn_is_marked_and_noted_to_the_next_turn_once() {
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let source_id = dispatch.source_attachment_id.clone();
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "test prompt dispatch",
+                    message: "rejected".to_string(),
+                },
+            )
+            .await
+            .expect_err("dispatch failure should be returned");
+
+        let entries = not_carried_out_entries(&runtime, &session_id, &observer_id);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert!(entries[0].contains("rejected"), "{entries:?}");
+        assert!(entries[0].ends_with("It was dropped; send it again to retry."));
+        let failed = failed_requests(&runtime, &agent_id);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].excerpt, "active prompt");
+        assert_eq!(
+            last_durable_failed_requests(&runtime)[0]["excerpt"],
+            "active prompt",
+            "the note must survive a kernel restart"
+        );
+
+        submit_and_dispatch(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &source_id,
+            "second prompt",
+        )
+        .await;
+        let second = provider_inputs_containing(&runtime, "second prompt");
+        assert_eq!(second.len(), 1);
+        assert!(second[0].contains(FAILED_REQUEST_NOTE), "{second:?}");
+        assert!(failed_requests(&runtime, &agent_id).is_empty());
+        assert_eq!(
+            last_durable_failed_requests(&runtime),
+            serde_json::Value::Null
+        );
+
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(&session_id, &agent_id, Some(&provider_run_id))
+            .expect("second prompt should settle");
+        submit_and_dispatch(&runtime, &session_id, &agent_id, &source_id, "third prompt").await;
+        assert_eq!(
+            provider_inputs_containing(&runtime, "third prompt").len(),
+            1
+        );
+        assert_eq!(
+            provider_inputs_containing(&runtime, FAILED_REQUEST_NOTE).len(),
+            1,
+            "the note is delivered exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_request_note_survives_mailbox_enqueue_until_provider_acceptance() {
+        for accepted in [false, true] {
+            let (_worktree, runtime, session_id, agent_id, _, run_id, dispatch) =
+                runtime_with_admitted_prompt().await;
+            let request = LaunchProviderRequest::new(
+                &session_id,
+                if accepted { "dev-stub" } else { "codex" },
+                if accepted { "slow-structured" } else { "codex" },
+                "default",
+                "model",
+            )
+            .with_agent_id(&agent_id);
+            let mut run = crate::provider::RuntimeProviderRun::new(
+                &run_id,
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                    process_label: "failed-note-submit".to_string(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: Vec::new(),
+                    pty_env: std::collections::BTreeMap::new(),
+                    pty_env_remove: Vec::new(),
+                    working_directory: None,
+                    structured_endpoint: Some("test".to_string()),
+                },
+            );
+            run.mark_running();
+            runtime
+                .owned
+                .provider_store
+                .write()
+                .insert_run_for_test(run.clone());
+            runtime
+                .owned
+                .agent_store
+                .record_failed_request_durably(
+                    &runtime.owned.durable_state_store,
+                    &agent_id,
+                    crate::agent::FailedRequest::new(
+                        "earlier-failure",
+                        "earlier request",
+                        "rejected".to_string(),
+                    ),
+                )
+                .expect("prior failure should persist");
+            runtime
+                .enqueue_prompt_dispatch_after_liveness(&dispatch, &runtime.owned)
+                .await
+                .expect("mailbox enqueue should succeed");
+            assert_eq!(
+                failed_requests(&runtime, &agent_id).len(),
+                1,
+                "enqueue is not provider acceptance"
+            );
+            let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let jobs = runtime
+                        .owned
+                        .provider_store
+                        .drain_finished_structured_prompt_submit_jobs();
+                    if let Some(finished) = jobs.into_iter().next() {
+                        break finished;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("actor should return its provider result");
+            assert_eq!(
+                finished.result.is_ok(),
+                accepted,
+                "actual provider submit result: {:?}",
+                finished.result
+            );
+            runtime
+                .owned
+                .provider_store
+                .push_finished_structured_prompt_submit_for_test(
+                    finished.session_id,
+                    finished.provider_run_id,
+                    finished.agent_id,
+                    finished.prompt_id,
+                    finished.result,
+                );
+            runtime.owned.reap_structured_prompt_jobs();
+            let failed = failed_requests(&runtime, &agent_id);
+            if accepted {
+                assert!(
+                    failed.is_empty(),
+                    "accepted context must be consumed: {failed:?}"
+                );
+            } else {
+                assert!(
+                    failed
+                        .iter()
+                        .any(|note| note.prompt_id == "earlier-failure"),
+                    "provider rejection must preserve undelivered note: {failed:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_and_cancelled_turns_add_no_failed_request_note() {
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let source_id = dispatch.source_attachment_id.clone();
+        runtime
+            .enqueue_prompt_dispatch(&dispatch)
+            .await
+            .expect("prompt should reach the provider");
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(&session_id, &agent_id, Some(&provider_run_id))
+            .expect("prompt should complete");
+        submit_and_dispatch(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &source_id,
+            "after success",
+        )
+        .await;
+        runtime
+            .owned
+            .cancel_local_prompt(&session_id, &agent_id, &source_id)
+            .expect("cancellation should succeed")
+            .expect("local cancellation should be owned");
+        runtime
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                &session_id,
+                &agent_id,
+                Some(&provider_run_id),
+            )
+            .expect("cancellation should finalize");
+        submit_and_dispatch(&runtime, &session_id, &agent_id, &source_id, "after cancel").await;
+
+        assert!(failed_requests(&runtime, &agent_id).is_empty());
+        assert!(not_carried_out_entries(&runtime, &session_id, &observer_id).is_empty());
+        assert!(provider_inputs_containing(&runtime, "Your previous request").is_empty());
+    }
+
+    async fn assert_provider_limit_records_failed_request(
+        adapter: &str,
+        provider: &str,
+        message: &str,
+    ) {
+        let worktree =
+            crate::test_support::TestWorktree::new(&format!("failed-request-{provider}"));
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .expect("session should create");
+        let observer = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "failed-request-observer",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("observer should attach");
+        let request =
+            LaunchProviderRequest::new(session.id(), adapter, provider, "default", "model")
+                .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            format!("failed-request-{provider}-run"),
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: format!("failed-request-{provider}"),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: (adapter != "claude")
+                    .then(|| "ws://failed-request-test".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("run should become active");
+        app.update_provider_run_projection(run.clone());
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            observer.id(),
+            agent.id(),
+            "record r372-mcp-1, then r372-mcp-2",
+            PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+
+        runtime
+            .fail_owned_provider_prompt(session.id(), run.id(), message, false)
+            .await
+            .expect("provider failure should settle");
+
+        let failed = failed_requests(&runtime, agent.id());
+        assert_eq!(failed.len(), 1, "{provider}");
+        assert_eq!(failed[0].excerpt, "record r372-mcp-1, then r372-mcp-2");
+        assert_eq!(failed[0].reason, "usage limit reached", "{provider}");
+        assert_eq!(
+            not_carried_out_entries(&runtime, session.id(), observer.id()),
+            vec!["Request not carried out: usage limit reached. It was dropped; send it again to retry."],
+            "{provider}"
+        );
+        assert!(runtime
+            .owned
+            .agent_store
+            .hidden_context_with_failed_requests(agent.id(), "")
+            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (usage limit reached)"));
+    }
+
+    #[tokio::test]
+    async fn provider_limit_failures_record_the_failed_request_for_each_provider() {
+        assert_provider_limit_records_failed_request(
+            "claude",
+            "claude-headless",
+            "Provider prompt dispatch failed: You've hit your session limit · resets 8:30am",
+        )
+        .await;
+        assert_provider_limit_records_failed_request(
+            "codex",
+            "codex",
+            "Provider prompt dispatch failed: You exceeded your current quota, please check your plan and billing details.",
+        )
+        .await;
+        assert_provider_limit_records_failed_request(
+            "opencode",
+            "opencode",
+            "Provider prompt dispatch failed: insufficient_quota",
+        )
+        .await;
     }
 
     // The replacement is an unattended Claude launch. Without a vault setup token it
@@ -2732,6 +3122,10 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
+        let hidden_system_context = owned.hidden_context_with_failed_requests(
+            &dispatch.agent_id,
+            &dispatch.hidden_system_context,
+        );
         if owned
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
@@ -2756,7 +3150,7 @@ impl KernelRuntimeState {
                 &prompt_with_handoff,
             )?;
             let hidden_system_context =
-                join_hidden_context(&dispatch.hidden_system_context, &granted_skill_context);
+                join_hidden_context(&hidden_system_context, &granted_skill_context);
             let (source_client_id, _source_user_id) =
                 owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
@@ -2784,13 +3178,6 @@ impl KernelRuntimeState {
                 mode,
                 dispatch.steering,
             );
-            if result.is_ok() {
-                owned.consume_pending_context_handoff(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &provider_run,
-                );
-            }
             return result;
         }
         if !internal_recovery
@@ -2820,7 +3207,7 @@ impl KernelRuntimeState {
             &dispatch.prompt,
         );
         let prompt_with_hidden_context =
-            join_hidden_context(&dispatch.hidden_system_context, &prompt_with_handoff);
+            join_hidden_context(&hidden_system_context, &prompt_with_handoff);
         let provider_prompt = owned.apply_granted_skill_summary(
             &dispatch.session_id,
             &dispatch.agent_id,
@@ -2895,6 +3282,7 @@ impl KernelRuntimeState {
                     Some(dispatch.provider_run_id.clone()),
                     provider_run.provider_session_id().map(str::to_string),
                 )?;
+                owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
             }
             return Ok(());
         }
@@ -2911,7 +3299,7 @@ impl KernelRuntimeState {
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &provider_run,
-                    &dispatch.hidden_system_context,
+                    &hidden_system_context,
                 ),
                 attachments: dispatch.attachments.clone(),
                 prompt_origin: dispatch.prompt_origin,
@@ -2966,6 +3354,8 @@ impl KernelRuntimeState {
                     }
                 }
             }
+            // Claude's hook acknowledgement consumes the failure note. PTY
+            // injection alone does not prove the provider accepted its context.
             owned.consume_pending_context_handoff(
                 &dispatch.session_id,
                 &dispatch.agent_id,
@@ -3015,9 +3405,10 @@ impl KernelRuntimeState {
                 });
             }
         }
-        owned.consume_pending_context_handoff(
+        owned.consume_delivered_turn_context(
             &dispatch.session_id,
             &dispatch.agent_id,
+            &dispatch.prompt_id,
             &provider_run,
         );
         if !dispatch.steering {
@@ -3237,6 +3628,24 @@ impl KernelRuntimeState {
                     (cancelled, released_claim)
                 }
             };
+            if let Some(failed_prompt) = failed_prompt
+                .as_ref()
+                .filter(|_| should_advance && failed_prompt_matches)
+            {
+                let adapter_key = owned
+                    .provider_store
+                    .get_run(&dispatch.provider_run_id)
+                    .map(|run| run.adapter_key().to_string())
+                    .unwrap_or_default();
+                owned.record_failed_request(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &adapter_key,
+                    &dispatch.agent_id,
+                    failed_prompt,
+                    &dispatch_failure,
+                );
+            }
             if should_advance && retire_failed_provider {
                 restart_provider_for_queued_prompt = owned
                     .prompt_state_owner

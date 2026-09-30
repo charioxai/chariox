@@ -2726,3 +2726,133 @@ fn claude_headless_bypass_selection_marker_is_distinct_from_prompt_state() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptance() {
+    let worktree = crate::test_support::TestWorktree::new("claude-queued-failed-note");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "failed-note-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-failed-note-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "failed-note-claude-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    let mut ready_run = serde_json::to_value(&run).unwrap();
+    ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    run = serde_json::from_value(ready_run).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "next queued request",
+            Vec::new(),
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt: {other:?}"),
+    };
+    app.agents
+        .record_failed_request_durably(
+            &app.durable_state_store(),
+            agent.id(),
+            crate::agent::FailedRequest::new(
+                "earlier-failure",
+                "earlier request",
+                "rejected".to_string(),
+            ),
+        )
+        .unwrap();
+    let context_path = context_file.display().to_string();
+    write_claude_native_marker(&context_path, &format!("post-stop-ready:{}", prompt.id()));
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let hidden = fs::read_to_string(&context_file).unwrap();
+    assert!(
+        hidden.contains("Your previous request (\"earlier request\") failed"),
+        "{hidden}"
+    );
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .unwrap()
+            .failed_requests()
+            .len(),
+        1,
+        "writing hook context does not prove provider acceptance"
+    );
+    crate::app::prompt_lifecycle::ProviderPromptDispatcher::new(&mut app)
+        .dispatch_prompt_to_provider(
+            session.id(),
+            run.id(),
+            prompt.id(),
+            attachment.id(),
+            prompt.prompt(),
+            prompt.hidden_system_context(),
+            prompt.attachments(),
+        )
+        .unwrap();
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .unwrap()
+            .failed_requests()
+            .len(),
+        1,
+        "app dispatch must retain context until the hook accepts it"
+    );
+    write_claude_native_marker(&context_path, &format!("injected:{}", prompt.id()));
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit", "prompt": prompt.prompt(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    assert!(app
+        .agents
+        .get_agent(agent.id())
+        .unwrap()
+        .failed_requests()
+        .is_empty());
+    assert!(
+        claude_native_marker(&context_path).as_deref()
+            == Some(format!("accepted:{}", prompt.id()).as_str())
+    );
+    let _ = fs::remove_dir_all(root);
+}

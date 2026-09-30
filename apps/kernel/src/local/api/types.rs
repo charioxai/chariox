@@ -191,4 +191,10 @@ pub use workspace::*;
 /// Version 372 adds the install operation phase `queued`: approved and waiting
 /// to start (for example for a free App worker slot), which earlier kernels
 /// reported as `awaiting_approval`, then as `starting`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 383;
+/// Version 384 adds `AgentInstance.failed_requests` (`{prompt_id, excerpt,
+/// reason}`, omitted when empty): requests whose turn failed before completing
+/// are dropped. The failed turn gets a "Request not carried out" provider-error
+/// transcript entry, and the agent's next turn delivered to its provider
+/// carries a one-time hidden note not to act on them unless the user asks
+/// again; the field clears once a provider accepted that turn.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 384;

@@ -179,6 +179,12 @@ Provider adapter hidden-context channels:
 - Live provider drills validate direct provider hidden-context channels in current supported harnesses. Prompt assembly changes that touch these channels must keep or update `pnpm --filter @chariox/cli run provider-context-injection:drill`.
 - End-to-end prompt assembly changes must also keep `pnpm --filter @chariox/cli run prompt-assembly:drill` passing. That drill edits a temporary `~/.chariox/prompts/runtime/base.md`, runs real Chariox provider turns for Codex/OpenCode/Claude, verifies the model sees the hidden registry token through the provider-native hidden channel on successive turns, and verifies Chariox user-prompt history does not contain the hidden token.
 
+Failed requests (protocol 384):
+
+- A turn that fails before completing (provider error, rate or usage limit, crash, or a dispatch the provider did not accept) is not retried: its request is dropped. A user cancel keeps its own semantics and adds nothing.
+- The failed turn gets a provider-error transcript entry, `Request not carried out: <reason>. It was dropped; send it again to retry.`, on every surface; provider rate, usage and billing limits read `usage limit reached`.
+- The request stays on the agent as `AgentInstance.failed_requests` (`{prompt_id, excerpt, reason}`, omitted when empty, durable across kernel restarts). The next turn delivered to the agent's provider, which may resume a session still holding the request (Claude `--resume`, a Codex thread, an OpenCode session), carries a one-time `hidden_system_context` note: `Your previous request ("<excerpt>") failed (<reason>) and was not carried out. Do not act on it unless the user asks again; answer only the current request.` The field clears once the provider accepted that turn.
+
 Prompt template storage:
 
 - Chariox prompt templates are user-owned markdown files under `~/.chariox/prompts`.

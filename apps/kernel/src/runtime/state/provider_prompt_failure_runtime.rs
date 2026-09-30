@@ -190,6 +190,18 @@ impl KernelRuntimeState {
                 provider_termination,
             )?
         };
+        // Recorded before any queued prompt or substitute is started, so the
+        // agent's next turn carries the note.
+        if completion.is_some() {
+            owned.record_failed_request(
+                session_id,
+                provider_run_id,
+                provider_run.adapter_key(),
+                &agent_id,
+                &active_prompt,
+                message,
+            );
+        }
         // Settle the failed turn first, then choose its successor provider before
         // preparing any queued work. Otherwise admission retries the exhausted
         // account and can return before automatic substitution is reached.
