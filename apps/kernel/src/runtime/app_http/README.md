@@ -16,6 +16,12 @@ parameters as the whole `application/json` body. The durable writer spends the
 approval (bound to that parameter digest, installation, generation and action)
 after local admission and commits it before the task that sends any byte
 exists; otherwise the request fails `VALIDATION_REQUIRED` and nothing is sent.
+The transport tracks whether the effect's request may have reached the origin:
+hyper hands a request back only when none of it was written. After that point,
+a reset or close, or the inactivity or lifetime limit, before any response head
+is `APP_HTTP_OUTCOME_UNCERTAIN`; before it, the failure stays a plain network
+error or deadline. Any response head, a gateway's 5xx included, is the answer.
+Ordinary requests keep plain network errors and deadlines.
 The route's symbolic `connection` class is not enforced yet: no credential is
 attached, and scoped connections arrive with the Slack App (P1.11).
 Connection authority remains unsupported.

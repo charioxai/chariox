@@ -15,7 +15,17 @@ use hyper::{
     header, Request,
 };
 use hyper_util::rt::TokioIo;
-use std::{future::Future, io, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -44,6 +54,22 @@ pub(super) struct Exchange {
     upload: UploadBody,
     headers: Option<oneshot::Sender<Result<ResponseHead>>>,
     chunks: mpsc::Sender<Result<Bytes>>,
+    /// A protected effect: the kernel's approved body, spent approval.
+    effect: bool,
+}
+
+/// How far an exchange got. A protected effect whose request may have reached
+/// the origin, with no response head yet, has an unknown outcome: the origin
+/// may have acted even though its reply was lost.
+const UNSENT: u8 = 0;
+const SENT: u8 = 1;
+const ANSWERED: u8 = 2;
+fn lost_reply(effect: bool, phase: &AtomicU8, error: HttpError) -> HttpError {
+    if effect && phase.load(Ordering::Acquire) == SENT {
+        HttpError::OutcomeUncertain
+    } else {
+        error
+    }
 }
 #[cfg(test)]
 impl Exchange {
@@ -58,12 +84,16 @@ impl Exchange {
     }
 }
 pub(super) fn channels(has_body: bool) -> (UploadPort, ReceivePort, Exchange) {
-    exchange(body::channel(has_body))
+    exchange(body::channel(has_body), false)
 }
+/// A protected effect's exchange: the approved parameters are the whole body.
 pub(super) fn fixed_channels(bytes: Bytes) -> (UploadPort, ReceivePort, Exchange) {
-    exchange(body::fixed(bytes))
+    exchange(body::fixed(bytes), true)
 }
-fn exchange((upload, body): (UploadPort, UploadBody)) -> (UploadPort, ReceivePort, Exchange) {
+fn exchange(
+    (upload, body): (UploadPort, UploadBody),
+    effect: bool,
+) -> (UploadPort, ReceivePort, Exchange) {
     let (send_head, headers) = oneshot::channel();
     let (send_chunks, chunks) = mpsc::channel(2);
     (
@@ -73,6 +103,7 @@ fn exchange((upload, body): (UploadPort, UploadBody)) -> (UploadPort, ReceivePor
             upload: body,
             headers: Some(send_head),
             chunks: send_chunks,
+            effect,
         },
     )
 }
@@ -230,18 +261,24 @@ async fn exchange_io<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         .handshake::<_, UploadBody>(TokioIo::new(io))
         .await
         .map_err(|_| HttpError::Network)?;
-    let operation = exchange.perform(sender, target);
+    let phase = AtomicU8::new(UNSENT);
+    let effect = exchange.effect;
+    let operation = exchange.perform(sender, target, &phase);
     tokio::pin!(operation, connection);
     let mut connection_done = false;
     loop {
         tokio::select! {
             biased;
             _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),
-            _ = tokio::time::sleep_until(lifetime) => return Err(HttpError::Deadline),
-            _ = progress.inactive(NETWORK_INACTIVITY) => return Err(HttpError::Deadline),
+            _ = tokio::time::sleep_until(lifetime) => {
+                return Err(lost_reply(effect, &phase, HttpError::Deadline))
+            }
+            _ = progress.inactive(NETWORK_INACTIVITY) => {
+                return Err(lost_reply(effect, &phase, HttpError::Deadline))
+            }
             result = &mut operation => return result,
             result = &mut connection, if !connection_done => {
-                result.map_err(|_| HttpError::Network)?;
+                result.map_err(|_| lost_reply(effect, &phase, HttpError::Network))?;
                 connection_done = true;
             }
         }
@@ -253,6 +290,7 @@ impl Exchange {
         &mut self,
         mut sender: http1::SendRequest<UploadBody>,
         target: &ApprovedTarget,
+        phase: &AtomicU8,
     ) -> Result<()> {
         if matches!(*target.method(), hyper::Method::GET | hyper::Method::HEAD)
             && !self.upload.is_end_stream()
@@ -280,10 +318,18 @@ impl Exchange {
             header::CONNECTION,
             hyper::header::HeaderValue::from_static("close"),
         );
-        let response = sender
-            .send_request(request)
-            .await
-            .map_err(|_| HttpError::Network)?;
+        phase.store(SENT, Ordering::Release);
+        let response = match sender.try_send_request(request).await {
+            Ok(response) => response,
+            // hyper hands the request back only when none of it was written.
+            Err(error) if error.message().is_some() => {
+                phase.store(UNSENT, Ordering::Release);
+                return Err(HttpError::Network);
+            }
+            Err(_) => return Err(lost_reply(self.effect, phase, HttpError::Network)),
+        };
+        // Any received response, including a gateway's 5xx, is the answer.
+        phase.store(ANSWERED, Ordering::Release);
         if response.status().as_u16() == 101 {
             return Err(HttpError::Invalid);
         }

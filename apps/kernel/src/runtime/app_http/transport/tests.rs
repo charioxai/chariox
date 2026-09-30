@@ -321,3 +321,81 @@ async fn a_socket_whose_peer_is_not_the_checked_address_is_closed_before_tls() {
         received.len()
     );
 }
+
+/// The origin reads the whole request, then its connection ends with no
+/// reply: a protected effect's outcome is unknown, an ordinary request's is a
+/// plain network failure.
+async fn reply_lost(effect: bool) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, mut server) = sockets().await;
+        let body = Bytes::from_static(br#"{"amount":5,"to":"x"}"#);
+        let (_upload, _receive, exchange) = if effect {
+            fixed_channels(body.clone())
+        } else {
+            channels(false)
+        };
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive(client, exchange, signal, Duration::from_secs(2)));
+        let head = request_head(&mut server).await;
+        if effect {
+            let mut received = vec![0; body.len()];
+            server.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, body);
+        }
+        assert!(head.starts_with("POST /fixture"));
+        drop(server);
+        driver.await.unwrap()
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_effect_whose_reply_is_lost_after_sending_has_an_uncertain_outcome() {
+    assert!(matches!(
+        reply_lost(true).await,
+        Err(HttpError::OutcomeUncertain)
+    ));
+    assert!(matches!(reply_lost(false).await, Err(HttpError::Network)));
+}
+
+#[tokio::test]
+async fn an_effect_answered_by_a_gateway_error_is_a_response() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, mut server) = sockets().await;
+        let (_upload, mut receive, exchange) =
+            fixed_channels(Bytes::from_static(br#"{"amount":5,"to":"x"}"#));
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive(client, exchange, signal, Duration::from_secs(2)));
+        request_head(&mut server).await;
+        server
+            .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 15\r\nConnection: close\r\n\r\nerror code: 502")
+            .await
+            .unwrap();
+        drop(server);
+        assert_eq!(receive.headers.await.unwrap().unwrap().status, 502);
+        assert_eq!(
+            receive.chunks.recv().await.unwrap().unwrap(),
+            "error code: 502"
+        );
+        driver.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn only_an_effect_sent_and_unanswered_is_uncertain() {
+    use std::sync::atomic::AtomicU8;
+    for (effect, phase, expected) in [
+        (true, UNSENT, HttpError::Deadline),
+        (true, SENT, HttpError::OutcomeUncertain),
+        (true, ANSWERED, HttpError::Deadline),
+        (false, SENT, HttpError::Deadline),
+    ] {
+        assert_eq!(
+            lost_reply(effect, &AtomicU8::new(phase), HttpError::Deadline),
+            expected
+        );
+    }
+}

@@ -204,7 +204,13 @@ reached only with the `operationId` of an approved `validation.request`; the
 kernel consumes that single-use approval before sending, sends the approved
 parameters as the JSON body (the App passes none), and otherwise returns
 `VALIDATION_REQUIRED`. Effect routes use `POST`, `PUT` or `PATCH`, and the request
-may carry no header but `accept`. Opaque connections return explicit unsupported responses.
+may carry no header but `accept`. A spent approval then answers
+`VALIDATION_CONSUMED` to `validation.status`. If the effect's request may have
+reached the origin but no response arrived (reset, close, or a deadline before
+the response head), the call fails `APP_HTTP_OUTCOME_UNCERTAIN`: check the
+outcome before asking for a new approval. Any received response, including a
+gateway's 5xx, is returned as a response. See `WIRE.md`.
+Opaque connections return explicit unsupported responses.
 No provider account credentials, redirects, cookies, automatic decompression,
 raw sockets, or body retries are supplied by these methods.
 

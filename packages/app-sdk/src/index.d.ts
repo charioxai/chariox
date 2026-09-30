@@ -110,6 +110,7 @@ export interface HttpResponse {
 }
 export interface ValidationOperation {
   operationId: string;
+  /** A spent approval is not returned: it fails `VALIDATION_CONSUMED`. */
   state: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled' | 'reconciliation';
 }
 
