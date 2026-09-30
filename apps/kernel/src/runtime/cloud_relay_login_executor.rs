@@ -5,8 +5,8 @@ use crate::local::{
     LogoutCloudRelayRequest, PollCloudRelayLoginRequest, StartCloudRelayLoginRequest,
 };
 use crate::runtime::cloud_api_client::{
-    cloud_profile_from_persisted, normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
-    CloudDevicePollResponse, CloudDeviceStartResponse,
+    cloud_profile_from_persisted, normalize_cloud_api_url, post_cloud_acknowledged,
+    post_cloud_json, CloudDevicePollResponse, CloudDeviceStartResponse,
 };
 use crate::runtime::cloud_relay_logout::request_cloud_logout;
 use crate::runtime::cloud_relay_profile_store::{clear_cloud_profile, persist_cloud_profile};
@@ -123,7 +123,8 @@ pub(crate) async fn execute_logout_cloud_relay_request(
     let profile = config_projection.snapshot().cloud_relay;
     request_cloud_logout(profile.as_ref(), &request, |api_url, body| {
         post_cloud_acknowledged(api_url, "/auth/logout", body)
-    }).await?;
+    })
+    .await?;
     clear_cloud_profile(runtime_state).await?;
     Ok(LocalDaemonResponse::CloudRelayLoggedOut)
 }
