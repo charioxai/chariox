@@ -102,7 +102,8 @@ without `--allow-worker` (a worker thread cannot start another one). An App's
 `execArgv` may only repeat launcher flags, `NODE_OPTIONS` is dropped from the
 worker's environment, `SHARE_ENV` is refused, and `module.register` fails with
 `ERR_ACCESS_DENIED`, as Node itself does without `--allow-worker`. The
-replacement `Worker` is a Proxy, so the native constructor is not reachable
+replacement `Worker` is a plain wrapper function (not a Proxy, which
+`util.inspect` could unwrap), so the native constructor is not reachable
 from the export, its prototype or an instance. The instance's native thread
 handle, and the same handle published on the `worker_threads` diagnostics
 channel, still expose the handle's own constructor, which is the one reachable
