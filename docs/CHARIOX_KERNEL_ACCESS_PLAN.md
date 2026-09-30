@@ -44,7 +44,7 @@ Phase 1 (protocol 383, implemented in a separate PR) requires the Chariox passke
 |---|---|
 | Secret | The Chariox passkey, which is the vault passphrase. No new secret. |
 | Protocol | The approve choice on the projected `RuntimeInteractionChoice` carries `requires_passkey: true`. `RespondToInteraction` gains an optional `passkey` (redacted, zeroized, never logged or persisted) and an optional `passkey_remember_minutes` (1 to 15). |
-| Verification | The kernel derives the vault key with Argon2id and authenticates the vault file. The vault unlock state does not change. |
+| Verification | The kernel derives the key with Argon2id and compares it with a pinned commitment (the vault's KDF parameters and a hash of the derived key), kept durably. The pin is taken from the vault the boot configuration names, when the kernel first unlocks it or first sees a passkey that opens it, and is never replaced: a later change of the configured vault path or of the vault file cannot redirect verification. The vault unlock state does not change. A same-user process that can write the kernel's files before the first pin could still plant a vault; that needs the file isolation of option D. |
 | Rate limit | 5 failures, then an exponential lockout capped at 15 minutes. |
 | Remember window | Optional, off by default, up to 15 minutes, per owner, kernel memory only. Separate from the vault unlock window, because the vault is usually unlocked and its unlock does not prove a human is present. While it is open, any caller the kernel accepts as the owner (on a laptop, any same-user local process) can approve a critical action without the passkey; that is the accepted cost of opting in. |
 | Deny | Needs no passkey. |
