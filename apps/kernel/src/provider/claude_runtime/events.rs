@@ -261,7 +261,7 @@ fn apply_assistant_message(
             let Some(text) = claude_block_text(block, block_kind) else {
                 continue;
             };
-            let key = claude_assistant_block_key(state, message, block_kind, index);
+            let key = claude_assistant_block_key(state, message, block_kind, index, text);
             emit_authoritative_text(provider_run_id, state, batch, &key, block_kind, text);
             if state
                 .emitted_text_by_block
@@ -402,9 +402,15 @@ fn claude_assistant_block_key(
     message: &Value,
     block_kind: &str,
     index: usize,
+    text: &str,
 ) -> String {
     let message_id = message.get("id").and_then(Value::as_str);
     let key = claude_scoped_block_key(message_id, block_kind, index as u64);
+    if let Some(streamed) = message_id.and_then(|message_id| {
+        claude_streamed_block_for_snapshot(state, message_id, &key, block_kind, text)
+    }) {
+        return streamed;
+    }
     if message_id.is_some() && !state.emitted_text_by_block.contains_key(&key) {
         let legacy_key = claude_scoped_block_key(None, block_kind, index as u64);
         if let Some(emitted) = state.emitted_text_by_block.remove(&legacy_key) {
@@ -415,6 +421,32 @@ fn claude_assistant_block_key(
         }
     }
     key
+}
+
+/// Claude Code sends one `assistant` event per content block, so a snapshot's
+/// array index is not the block's stream index: a reply that follows a
+/// thinking block streams as block 1 but arrives here as block 0. When the
+/// snapshot's own key has not streamed a prefix of it, use the streamed block
+/// of the same message and kind whose text it continues (the longest one), so
+/// the streamed text is not emitted a second time.
+fn claude_streamed_block_for_snapshot(
+    state: &ClaudeRuntimeState,
+    message_id: &str,
+    key: &str,
+    block_kind: &str,
+    text: &str,
+) -> Option<String> {
+    let continues = |emitted: &String| !emitted.is_empty() && text.starts_with(emitted.as_str());
+    if state.emitted_text_by_block.get(key).is_some_and(continues) {
+        return None;
+    }
+    let prefix = format!("message:{message_id}:{block_kind}:");
+    state
+        .emitted_text_by_block
+        .iter()
+        .filter(|(candidate, emitted)| candidate.starts_with(&prefix) && continues(emitted))
+        .max_by_key(|(_, emitted)| emitted.len())
+        .map(|(candidate, _)| candidate.clone())
 }
 
 fn claude_scoped_block_key(message_id: Option<&str>, block_kind: &str, index: u64) -> String {

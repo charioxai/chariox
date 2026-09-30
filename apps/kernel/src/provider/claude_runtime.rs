@@ -1225,6 +1225,96 @@ cat >/dev/null
         assert_eq!(second_completed.chunks[0].bytes, b" message");
     }
 
+    fn thinking_then_text_stream(
+        state: &mut ClaudeRuntimeState,
+        deltas: &[&str],
+    ) -> ProviderPromptSignalBatch {
+        let mut streamed = ProviderPromptSignalBatch::default();
+        for event in [
+            json!({ "type": "message_start", "message": { "id": "msg-1" } }),
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "thinking", "thinking": "" } }),
+            json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } }),
+        ]
+        .into_iter()
+        .chain(deltas.iter().map(|text| {
+            json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": text } })
+        })) {
+            apply_claude_message("run-1", state, json!({ "type": "stream_event", "event": event }), &mut streamed);
+        }
+        streamed
+    }
+
+    // Claude Code sends one `assistant` event per content block: the reply
+    // that streamed as block 1 (after a thinking block) arrives as block 0.
+    fn split_thinking_then_text_snapshots(
+        state: &mut ClaudeRuntimeState,
+        text: &str,
+    ) -> ProviderPromptSignalBatch {
+        let mut completed = ProviderPromptSignalBatch::default();
+        for block in [
+            json!({ "type": "thinking", "thinking": "" }),
+            json!({ "type": "text", "text": text }),
+        ] {
+            apply_claude_message(
+                "run-1",
+                state,
+                json!({ "type": "assistant", "message": { "id": "msg-1", "content": [block] } }),
+                &mut completed,
+            );
+        }
+        completed
+    }
+
+    #[test]
+    fn split_assistant_snapshot_after_thinking_does_not_repeat_streamed_text() {
+        let (mut state, _) = parser_state();
+        let streamed = thinking_then_text_stream(&mut state, &["hello ", "world"]);
+        let text: Vec<u8> = streamed
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.clone())
+            .collect();
+        assert_eq!(text, b"hello world");
+
+        let completed = split_thinking_then_text_snapshots(&mut state, "hello world");
+        assert!(
+            completed.chunks.is_empty(),
+            "the streamed reply was emitted again"
+        );
+
+        let mut duplicate = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({ "type": "assistant", "message": { "id": "msg-1", "content": [{ "type": "text", "text": "hello world" }] } }),
+            &mut duplicate,
+        );
+        assert!(duplicate.chunks.is_empty());
+
+        let mut late = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({ "type": "stream_event", "event": { "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": "world" } } }),
+            &mut late,
+        );
+        assert!(
+            late.chunks.is_empty(),
+            "a late delta of the completed block was emitted"
+        );
+    }
+
+    #[test]
+    fn split_assistant_snapshot_after_thinking_emits_only_the_unstreamed_rest() {
+        let (mut state, _) = parser_state();
+        thinking_then_text_stream(&mut state, &["hello "]);
+
+        let completed = split_thinking_then_text_snapshots(&mut state, "hello world");
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].kind, TerminalOutputKind::ProviderOutput);
+        assert_eq!(completed.chunks[0].bytes, b"world");
+    }
+
     #[test]
     fn marks_result_completion_and_usage() {
         let (mut state, mut batch) = parser_state();
