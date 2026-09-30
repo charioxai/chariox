@@ -22,7 +22,7 @@ export function patchSourceViews(file, classifyPath) {
       const path = match[2];
       const format = classifyPath(path);
       if (format === "patch") throw new Error(`nested patch source is unsupported: ${file.path}`);
-      view = { path, format, lineOffset: index, lines: [], patchLines: [] };
+      view = { path, format, lineOffset: index, lines: [], patchLines: [], hunkStarts: [] };
       views.push(view);
     }
     if (!view) {
@@ -33,6 +33,7 @@ export function patchSourceViews(file, classifyPath) {
     view.lines[local] = "";
     if (line.startsWith("@@")) {
       finishHunk();
+      view.hunkStarts.push(local);
       const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/.exec(line);
       if (!match) throw new Error(`unsupported patch hunk: ${file.path}:${index + 1}`);
       hunk = {
@@ -64,7 +65,16 @@ export function patchSourceViews(file, classifyPath) {
   }
   finishHunk();
   if (!views.length) throw new Error(`patch has no source sections: ${file.path}`);
-  return views.filter((view) => view.format).flatMap((view) => {
+  // Omitted source between hunks has unknown lexical state. Keep each hunk
+  // separate so an opener cannot mask later executable source when its closing
+  // delimiter was omitted from the diff. Unknown context stays conservative.
+  const regions = views.filter((view) => view.format).flatMap((view) =>
+    view.hunkStarts.map((start, index) => {
+      const end = view.hunkStarts[index + 1] ?? view.lines.length;
+      return { ...view, lineOffset: view.lineOffset + start,
+        lines: view.lines.slice(start, end), patchLines: view.patchLines.slice(start, end) };
+    }));
+  return regions.flatMap((view) => {
     // Old and new sides have independent comment state. Removed comments must
     // never mask added source, and context candidates are emitted only once.
     const active = { ...view,

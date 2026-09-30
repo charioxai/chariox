@@ -927,3 +927,25 @@ test("removed patch block comments cannot hide active added selectors", () => {
     assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_REMOVED_COMMENT"));
   });
 });
+
+for (const [side, selector] of [["added", "CHARIOX_MANAGED_ADDED_GAP"], ["removed", "CHARIOX_MANAGED_REMOVED_GAP"]]) {
+  test("omitted inter-hunk comment closure cannot hide " + side + " patch source", () => {
+    withFixture({}, (fixture) => {
+      fixture.addFile("deploy/openship/patches/lexical-gap.patch", [
+        "diff --git a/apps/api/src/control.ts b/apps/api/src/control.ts",
+        "--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts",
+        "@@ -1 +1 @@", "-/* old comment", "+/* new comment",
+        "@@ -20 +20 @@",
+        '-const selector = "' + (side === "removed" ? selector : "ordinary") + '";',
+        '+const selector = "' + (side === "added" ? selector : "ordinary") + '";',
+      ].join("\n") + "\n");
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.ok(entry, "unknown omitted lexical context must retain a candidate");
+      assert.equal(entry.patchSource.change, side);
+      assert.equal(entry.patchSource[side === "added" ? "newLine" : "oldLine"], 20);
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
