@@ -817,8 +817,18 @@ impl ProviderAccountLocator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ProviderAccountLabelSource {
-    Automatic,
+    /// A `<provider>-<n>` fallback: the identity is unknown or not an email.
+    AutomaticAlias,
+    /// Derived from the account email; re-derived only if that email changes.
+    AutomaticIdentity,
+    /// Set by the user (rename) or carried from a replica's source; kept as-is.
     Explicit,
+}
+
+impl ProviderAccountLabelSource {
+    fn is_automatic(self) -> bool {
+        matches!(self, Self::AutomaticAlias | Self::AutomaticIdentity)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1063,7 +1073,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles.push(StoredProviderAccountProfile {
                 public: profile,
                 locator,
-                label_source: Some(ProviderAccountLabelSource::Automatic),
+                label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
                 materialized_replica: false,
                 pending_native_validation: false,
                 legacy_unpinned_replica: false,
@@ -1671,7 +1681,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
-            label_source: Some(ProviderAccountLabelSource::Automatic),
+            label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
             materialized_replica: false,
             pending_native_validation: false,
             legacy_unpinned_replica: false,
@@ -3753,7 +3763,7 @@ fn resolved_new_profile_label(
     if requested.is_empty() {
         Ok((
             next_automatic_label(document, owner_user_id, provider),
-            ProviderAccountLabelSource::Automatic,
+            ProviderAccountLabelSource::AutomaticAlias,
         ))
     } else {
         Ok((
@@ -3763,38 +3773,58 @@ fn resolved_new_profile_label(
     }
 }
 
-/// The local part of an email identity, when it is usable as a label.
+/// The local part of an email identity, when the summary is a single, clean
+/// address usable as a label. Non-email summaries keep the fallback alias.
 fn identity_label_base(identity: Option<&str>) -> Option<&str> {
-    let (local, domain) = normalized_account_identity(identity)?.rsplit_once('@')?;
-    (!domain.is_empty()
-        && local.chars().count() <= 64
-        && !local
-            .chars()
-            .any(|character| character.is_whitespace() || character.is_control()))
-    .then_some(local)
-    .filter(|local| validate_label(local).is_ok())
+    let identity = normalized_account_identity(identity)?;
+    if identity
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return None;
+    }
+    let (local, domain) = identity.split_once('@')?;
+    if local.is_empty()
+        || local.chars().count() > 64
+        || domain.contains('@')
+        || !domain.contains('.')
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+    {
+        return None;
+    }
+    validate_label(local).ok().map(|_| local)
 }
 
-/// Give an automatic label the account's email local part, suffixed `-2`,
-/// `-3`, ... on a collision. A label already derived from that local part is
-/// kept, so labels do not churn when an earlier collision disappears.
-fn refresh_automatic_label(document: &mut RegistryDocument, index: usize) -> bool {
-    let profile = &document.profiles[index];
-    if profile.label_source != Some(ProviderAccountLabelSource::Automatic) {
-        return false;
-    }
-    let Some(base) = identity_label_base(profile.public.identity_summary.as_deref()) else {
-        return false;
-    };
-    let current = profile.public.label.as_str();
-    let derived = current.eq_ignore_ascii_case(base)
+/// Whether `current` is `base` or `base-<n>` (n >= 2), the forms a derivation
+/// from `base` produces, so an unchanged email does not churn the label.
+fn label_matches_identity_base(current: &str, base: &str) -> bool {
+    current.eq_ignore_ascii_case(base)
         || current
             .get(..base.len())
             .filter(|prefix| prefix.eq_ignore_ascii_case(base))
             .and_then(|_| current[base.len()..].strip_prefix('-'))
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .is_some_and(|suffix| suffix >= 2);
-    if derived {
+            .is_some_and(|suffix| suffix >= 2)
+}
+
+/// Give an automatic label the account's email local part, suffixed `-2`,
+/// `-3`, ... on a collision within the provider. A `<provider>-<n>` fallback
+/// alias is always replaced once an email is known; a label already derived
+/// from the same email is kept, so an unchanged email never churns the label.
+fn refresh_automatic_label(document: &mut RegistryDocument, index: usize) -> bool {
+    let profile = &document.profiles[index];
+    let Some(source) = profile.label_source.filter(|source| source.is_automatic()) else {
+        return false;
+    };
+    let Some(base) = identity_label_base(profile.public.identity_summary.as_deref()) else {
+        return false;
+    };
+    // Only an already email-derived label is kept; a fallback alias, even one
+    // that happens to read like `<base>-<n>`, is always re-derived.
+    if source == ProviderAccountLabelSource::AutomaticIdentity
+        && label_matches_identity_base(&profile.public.label, base)
+    {
         return false;
     }
     let (owner_user_id, provider) = (&profile.public.owner_user_id, &profile.public.provider);
@@ -3813,6 +3843,7 @@ fn refresh_automatic_label(document: &mut RegistryDocument, index: usize) -> boo
         suffix += 1;
     }
     document.profiles[index].public.label = label;
+    document.profiles[index].label_source = Some(ProviderAccountLabelSource::AutomaticIdentity);
     true
 }
 
@@ -3955,7 +3986,7 @@ fn migrate_legacy_default_profile_labels(document: &mut RegistryDocument) -> boo
     for (index, owner_user_id, provider) in &legacy_profiles {
         let label = next_automatic_label(document, owner_user_id, provider);
         document.profiles[*index].public.label = label;
-        document.profiles[*index].label_source = Some(ProviderAccountLabelSource::Automatic);
+        document.profiles[*index].label_source = Some(ProviderAccountLabelSource::AutomaticAlias);
     }
     !legacy_profiles.is_empty()
 }
@@ -3978,7 +4009,7 @@ fn migrate_automatic_labels(document: &mut RegistryDocument) -> bool {
                         !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
                     });
             profile.label_source = Some(if automatic {
-                ProviderAccountLabelSource::Automatic
+                ProviderAccountLabelSource::AutomaticAlias
             } else {
                 ProviderAccountLabelSource::Explicit
             });
@@ -6691,7 +6722,15 @@ mod tests {
         assert_eq!(unnamed.label, "codex-3");
         assert_eq!(not_an_email.label, "codex-3");
         let stored = fs::read_to_string(root.join("accounts.json")).unwrap();
-        assert!(stored.contains("\"label_source\": \"automatic\""));
+        // The two codex profiles that learned an email are identity-derived; the
+        // unnamed codex profile (and the other providers' defaults) stay aliases.
+        assert_eq!(
+            stored
+                .matches("\"label_source\": \"automatic_identity\"")
+                .count(),
+            2
+        );
+        assert!(stored.contains("\"label_source\": \"automatic_alias\""));
         let reopened = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
         assert_eq!(
             reopened.get("owner-a", "codex", "default").unwrap().label,
@@ -6845,8 +6884,78 @@ mod tests {
         );
         assert_eq!(unknown.label, "later");
         let stored = fs::read_to_string(&path).unwrap();
-        assert_eq!(stored.matches("\"label_source\": \"automatic\"").count(), 2);
+        assert_eq!(
+            stored
+                .matches("\"label_source\": \"automatic_identity\"")
+                .count(),
+            2
+        );
         assert_eq!(stored.matches("\"label_source\": \"explicit\"").count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_email_local_part_equal_to_the_provider_replaces_the_fallback_alias() {
+        let (root, registry) = fixture();
+        let first = registry.create_managed("owner-a", "codex", "").unwrap();
+        let second = registry.create_managed("owner-a", "codex", "").unwrap();
+        assert_eq!(
+            (first.label.as_str(), second.label.as_str()),
+            ("codex-1", "codex-2")
+        );
+
+        // `codex-2` reads like a `codex` suffix, but it is a fallback alias, so
+        // the known email `codex@` still claims the base label `codex`.
+        let second = observe_identity(
+            &registry,
+            "codex",
+            &second.profile_id,
+            Some("codex@example.test"),
+        );
+        let second_again = observe_identity(
+            &registry,
+            "codex",
+            &second.profile_id,
+            Some("codex@example.test"),
+        );
+
+        assert_eq!(second.label, "codex");
+        assert_eq!(second_again.label, "codex");
+        assert_eq!(
+            registry
+                .get("owner-a", "codex", &first.profile_id)
+                .unwrap()
+                .label,
+            "codex-1"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_email_identity_summaries_keep_the_fallback_alias() {
+        let (root, registry) = fixture();
+        let profile = registry.create_managed("owner-a", "codex", "").unwrap();
+        for summary in [
+            "dev@corp test",
+            "dev@@corp.test",
+            "dev@corp",
+            "dev@.corp",
+            "@corp.test",
+        ] {
+            let observed = observe_identity(&registry, "codex", &profile.profile_id, Some(summary));
+            assert_eq!(
+                observed.label, "codex-1",
+                "summary {summary:?} should not relabel"
+            );
+        }
+        // A single clean address is still accepted.
+        let observed = observe_identity(
+            &registry,
+            "codex",
+            &profile.profile_id,
+            Some("dev@corp.test"),
+        );
+        assert_eq!(observed.label, "dev");
         let _ = fs::remove_dir_all(root);
     }
 
