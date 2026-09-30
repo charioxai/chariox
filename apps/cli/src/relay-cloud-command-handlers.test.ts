@@ -52,6 +52,102 @@ test("relay cloud client-token pairs a client and emits the relay command", asyn
   assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
 })
 
+test("explicit Cloud revocation preserves the link when acknowledgement fails", async () => {
+  for (const flag of ["--revoke-machine", "--revoke-client"]) {
+    const linked = profile({ machineId: "machine-1", clientId: "client-1" })
+    let current: RelayCloudProfile | null = linked
+    const notices: string[] = []
+    await assert.rejects(handleRelayCloudCommand({
+      appendNotice: (message) => { notices.push(message) },
+      flashFooter: () => {},
+      formatError: (error) => String(error),
+      sessionState: () => session(),
+      getCloudRelayProfile: () => current,
+      saveCloudRelayProfile: async (next) => { current = next },
+      logoutCloudRelay: async () => { throw new Error("Cloud acknowledgement unavailable") },
+    }, ["logout", flag]), /Cloud acknowledgement unavailable/)
+    assert.equal(current, linked)
+    assert.equal(notices.includes("cloud link cleared"), false)
+  }
+})
+
+test("explicit Cloud revocation clears the link only after acknowledgement", async () => {
+  const linked = profile({ machineId: "machine-1", clientId: "client-1" })
+  let current: RelayCloudProfile | null = linked
+  const notices: string[] = []
+  let acknowledge!: () => void
+  const acknowledgement = new Promise<void>((resolve) => { acknowledge = resolve })
+  const logout = handleRelayCloudCommand({
+    appendNotice: (message) => { notices.push(message) },
+    flashFooter: () => {},
+    formatError: (error) => String(error),
+    sessionState: () => session(),
+    getCloudRelayProfile: () => current,
+    saveCloudRelayProfile: async (next) => { current = next },
+    logoutCloudRelay: async (_profile, options) => {
+      assert.deepEqual(options, { revokeClient: true, revokeMachine: true })
+      await acknowledgement
+    },
+  }, ["logout", "--revoke-machine", "--revoke-client"])
+  await Promise.resolve()
+  assert.equal(current, linked)
+  assert.equal(notices.includes("cloud link cleared"), false)
+  acknowledge()
+  await logout
+  assert.equal(current, null)
+  assert.equal(notices.at(-1), "cloud link cleared")
+})
+
+test("explicit Cloud revocation rejects an unavailable link or logout capability", async () => {
+  for (const availableProfile of [false, true]) {
+    const linked = availableProfile ? profile({ machineId: "machine-1" }) : null
+    let current: RelayCloudProfile | null = linked
+    const notices: string[] = []
+    await assert.rejects(handleRelayCloudCommand({
+      appendNotice: (message) => { notices.push(message) },
+      flashFooter: () => {},
+      formatError: (error) => String(error),
+      sessionState: () => session(),
+      getCloudRelayProfile: () => current,
+      saveCloudRelayProfile: async (next) => { current = next },
+      ...(availableProfile ? {} : { logoutCloudRelay: async () => { throw new Error("must not request Cloud without a profile") } }),
+    }, ["disable", "--revoke-machine"]), /requires a linked profile and logout support/)
+    assert.equal(current, linked)
+    assert.equal(notices.includes("cloud link cleared"), false)
+  }
+})
+
+test("plain Cloud logout clears the local link while offline", async () => {
+  let current: RelayCloudProfile | null = profile()
+  const notices: string[] = []
+  await handleRelayCloudCommand({
+    appendNotice: (message) => { notices.push(message) },
+    flashFooter: () => {},
+    formatError: (error) => String(error),
+    sessionState: () => session(),
+    getCloudRelayProfile: () => current,
+    saveCloudRelayProfile: async (next) => { current = next },
+    logoutCloudRelay: async () => { throw new Error("offline") },
+  }, ["logout"])
+  assert.equal(current, null)
+  assert.match(notices[0] ?? "", /offline/)
+  assert.equal(notices.at(-1), "cloud link cleared")
+})
+
+test("plain Cloud logout is idempotent without a link", async () => {
+  const notices: string[] = []
+  await handleRelayCloudCommand({
+    appendNotice: (message) => { notices.push(message) },
+    flashFooter: () => {},
+    formatError: (error) => String(error),
+    sessionState: () => session(),
+    getCloudRelayProfile: () => null,
+    saveCloudRelayProfile: async (next) => { assert.equal(next, null) },
+    logoutCloudRelay: async () => { throw new Error("must not request Cloud without a profile") },
+  }, ["logout"])
+  assert.deepEqual(notices, ["cloud link cleared"])
+})
+
 function profile(overrides: Partial<RelayCloudProfile> = {}): RelayCloudProfile {
   return {
     apiUrl: "https://cloud.example",

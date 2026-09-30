@@ -235,16 +235,24 @@ async function issueRelayCloudClientToken(deps: RelayCloudCommandHandlerDeps, cl
 }
 
 async function logoutRelayCloud(deps: RelayCloudCommandHandlerDeps, cloudArgs: string[]): Promise<void> {
+  const options = {
+    revokeClient: cloudArgs.includes("--revoke-client"),
+    revokeMachine: cloudArgs.includes("--revoke-machine"),
+  }
+  const requiresAcknowledgement = options.revokeClient || options.revokeMachine
   if (!deps.saveCloudRelayProfile) {
+    if (requiresAcknowledgement) throw new Error("cloud relay profile storage is unavailable in this build")
     deps.flashFooter("cloud relay profile storage is unavailable in this build", "error")
     return
   }
   const profile = deps.getCloudRelayProfile?.() ?? null
-  if (profile && deps.logoutCloudRelay) {
-    await deps.logoutCloudRelay(profile, {
-      revokeClient: cloudArgs.includes("--revoke-client"),
-      revokeMachine: cloudArgs.includes("--revoke-machine"),
-    }).catch((error) => {
+  if (requiresAcknowledgement) {
+    if (!profile || !deps.logoutCloudRelay) {
+      throw new Error("cloud remote revocation requires a linked profile and logout support")
+    }
+    await deps.logoutCloudRelay(profile, options)
+  } else if (profile && deps.logoutCloudRelay) {
+    await deps.logoutCloudRelay(profile, options).catch((error) => {
       deps.appendNotice(`cloud logout remote revocation failed: ${deps.formatError(error)}`)
     })
   }
