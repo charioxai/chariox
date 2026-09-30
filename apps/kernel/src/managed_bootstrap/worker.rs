@@ -1115,10 +1115,10 @@ mod tests {
             "CHARIOX_MACHINE_ID",
             "CHARIOX_MANAGED_BOOTSTRAP_PATH",
         ];
-        let previous = names
-            .iter()
-            .map(|name| (*name, env::var_os(name)))
-            .collect::<Vec<_>>();
+        // Restores the parent environment and the broker lease even if an
+        // assertion fails, so a failure here cannot leak broker or managed
+        // state into later tests in the process.
+        let saved_env = WorkerSpawnTestEnv::capture(&names);
         env::set_var("HOME", &config.process_home);
         env::set_var("CHARIOX_WORKER_ISOLATION_PROBE_MARKER", &marker);
         env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
@@ -1175,9 +1175,7 @@ mod tests {
             .expect("disposable worker should start the managed kernel");
         let status = child.wait().expect("worker probe kernel should exit");
 
-        for (name, value) in previous {
-            restore_worker_test_env(name, value);
-        }
+        saved_env.restore();
 
         assert!(status.success(), "worker probe kernel failed: {status}");
         let observed = fs::read_to_string(&marker).expect("worker probe should record its env");
@@ -1227,6 +1225,8 @@ mod tests {
         );
         env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_FD");
         env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+        // The probe kernel records its environment at this marker path.
+        env::set_var("CHARIOX_WORKER_ISOLATION_PROBE_MARKER", &marker);
         let mut child = spawn_kernel(&config, &release, &receipt, ManagedProviderTopology::Path1)
             .expect("disposable worker kernel should receive the broker lease");
         let status = child.wait().expect("broker probe kernel should exit");
@@ -1242,7 +1242,7 @@ mod tests {
         assert!(broker_observed.contains("broker_required=<unset>\n"));
         assert!(broker_observed
             .contains("slice_root=/var/lib/chariox-slice-share/slices/development\n"));
-        super::super::supervisor::clear_test_broker_lease();
+        drop(saved_env);
         drop(broker_peer);
 
         assert!(config.process_home.join("ordinary-worker-write").is_file());
@@ -1386,8 +1386,16 @@ mod tests {
             );
         }
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            // Without a broker lease, spawn_with_broker_lease marks the child
+            // broker-required (fail closed) instead of inheriting the parent's
+            // value; every other selector must be scrubbed.
+            let expected = if *name == "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED" {
+                "1"
+            } else {
+                "<unset>"
+            };
             assert!(
-                observed.contains(&format!("{name}=<unset>\n")),
+                observed.contains(&format!("{name}={expected}\n")),
                 "restart child inherited {name}: {observed}"
             );
         }
@@ -2897,6 +2905,38 @@ mod tests {
         match value {
             Some(value) => env::set_var(name, value),
             None => env::remove_var(name),
+        }
+    }
+
+    /// Parent environment for the disposable-worker spawn probe. `restore`
+    /// may run early; dropping it restores again and clears the test broker
+    /// lease, including when the test unwinds.
+    #[cfg(target_os = "linux")]
+    struct WorkerSpawnTestEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    #[cfg(target_os = "linux")]
+    impl WorkerSpawnTestEnv {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, env::var_os(name)))
+                    .collect(),
+            )
+        }
+
+        fn restore(&self) {
+            for (name, value) in &self.0 {
+                restore_worker_test_env(name, value.clone());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for WorkerSpawnTestEnv {
+        fn drop(&mut self) {
+            self.restore();
+            super::super::supervisor::clear_test_broker_lease();
         }
     }
 
