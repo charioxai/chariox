@@ -438,6 +438,17 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
         return handle.startThread();
       }));
     }),
+    // util.inspect({ showProxy: true }) must not hand back an unguarded native
+    // constructor: the wrapper is not a Proxy, so the recovered value is itself.
+    inspectCapture: await (async () => {
+      const { inspect } = require('node:util');
+      let recovered;
+      Worker[inspect.custom] = function () { recovered = this; return 'worker'; };
+      inspect(Worker, { showProxy: true });
+      delete Worker[inspect.custom];
+      if (recovered !== Worker) return 'leaked-native-constructor';
+      return run(recovered, { execArgv: [] });
+    })(),
     // A handle faked with Object.create has no native state, so startThread
     // rejects it; the neutralized constructor is the only lever, and it is gone.
     fakeHandleDenied: (() => {
@@ -500,6 +511,7 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
   assert.deepEqual(outcome, {
     app: denied, register: denied, childProcess: denied, binding: denied, sameWorker: true,
     handleConstructor: denied, diagnosticsCapture: denied, fakeHandleDenied: true,
+    inspectCapture: contained,
     inherited: contained, emptyExecArgv: contained, repeatedExecArgv: contained,
     constructorExecArgv: contained, subclassExecArgv: contained,
     customExecArgv: denied, widerExecArgv: denied, envNodeOptions: contained, shareEnv: denied,

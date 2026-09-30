@@ -95,10 +95,19 @@ function guardWorkerPermission() {
     writable: true, configurable: true,
   });
 
-  // A Proxy never exposes the native constructor; subclasses keep new.target.
-  const Worker = new Proxy(NativeWorker, {
-    construct: (target, args, newTarget) => construct(target, [args[0], workerOptions(args[1])], newTarget),
-  });
+  // Not a Proxy: a Proxy keeps the native constructor as its target, which
+  // util.inspect(worker, { showProxy: true }) formats and hands back through a
+  // forwarded custom-inspect hook. A plain wrapper closes over the native
+  // constructor instead; getPrototypeOf(Worker) is Function.prototype, and
+  // neither the wrapper, its prototype nor an instance leads back to it.
+  // Subclasses keep new.target, so `class extends Worker` still works.
+  const Worker = function Worker(filename, options) {
+    if (new.target === undefined) {
+      throw failure("Class constructor Worker cannot be invoked without 'new'", 'ERR_CONSTRUCTION', TypeError);
+    }
+    return construct(NativeWorker, [filename, workerOptions(options)], new.target);
+  };
+  Worker.prototype = NativeWorker.prototype;
   defineProperty(NativeWorker.prototype, 'constructor', { value: Worker, writable: true, configurable: true });
   threads.Worker = Worker;
   // Node refuses register itself when --allow-worker is absent.
