@@ -43,6 +43,8 @@ export type WorkflowPublicationConfig = {
   queue_ref?: string
   kernel_endpoint?: string
   transport?: string
+  /** The kernel trigger kind: an `event_based` (App-event) trigger takes no requests. */
+  kind?: string
   route?: string
   methods?: Array<"GET" | "POST">
   parser?: ParserConfig
