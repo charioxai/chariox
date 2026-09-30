@@ -494,6 +494,15 @@ fn an_update_breaks_only_automations_whose_event_schema_changed_and_logs_why() {
         serde_json::from_str::<serde_json::Value>(&fields).unwrap(),
         serde_json::json!({"automation_id": "stale", "undelivered": 1, "kernel": true})
     );
+    // The undelivered event failed with its automation, in the commit.
+    let state: String = db
+        .query_row(
+            "SELECT state FROM app_outbox WHERE receipt_id='receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "failed");
     let logged: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM app_logs WHERE message LIKE 'Automation same %'",

@@ -152,7 +152,8 @@ impl AppOutbox {
             .collect::<Vec<_>>();
         let mut broken = Vec::with_capacity(changed.len());
         for id in changed {
-            let undelivered = Self::break_one_in(tx, trusted_owner, catalog.installation_id(), &id)?;
+            let undelivered =
+                Self::break_one_in(tx, trusted_owner, catalog.installation_id(), &id)?;
             broken.push((id, undelivered));
         }
         Ok(broken)
@@ -196,12 +197,19 @@ impl AppOutbox {
              WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",
             params![trusted_owner, installation_id, automation_id],
         )?;
-        Ok(tx.query_row(
-            "SELECT COUNT(*) FROM app_outbox WHERE owner_id=?1 AND installation_id=?2
-             AND automation_id=?3 AND state IN ('accepted','retryable')",
+        // Its undelivered events fail now, in this transaction: none can be
+        // delivered at the old revision, the caller's one notice counts them,
+        // and they stop holding the installation's pending capacity. Left
+        // accepted, each would fail on its own later delivery pass (one per
+        // pass) with a notice of its own.
+        let failed = tx.execute(
+            "UPDATE app_outbox SET state='failed',payload_json=NULL,invocation_json=NULL,
+               revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END
+             WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3
+               AND state IN ('accepted','retryable')",
             params![trusted_owner, installation_id, automation_id],
-            |row| row.get::<_, i64>(0).map(|count| count as u64),
-        )?)
+        )?;
+        Ok(failed as u64)
     }
 
     /// An uninstalled App's automations are disabled with a new revision, so a
