@@ -1476,3 +1476,20 @@ for (const quote of ['`', '"']) {
     });
   }
 }
+
+
+test("manual shutdown declarations retain MP09 and require independent disposition", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "managed-auto-stop-deadline");
+    fixture.addFile(rule.path, "export function normalizeAutoStopPolicy(policy) {}\nexport function managedEnvironmentIdleDeadline(environment, idleAt) {}\n", "100644", rule.blob);
+    const report = collect(fixture);
+    const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
+    assert.equal(entries.length, 2);
+    for (const entry of entries) {
+      assert.ok(entry.applicableMpIds.includes("MP-09"));
+      assert.equal(entry.sourceClassification.status, "source_inspected");
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+    }
+    assert.equal(report.status, "fail");
+  });
+});

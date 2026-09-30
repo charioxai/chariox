@@ -15,6 +15,34 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## Shutdown deadline and activity audit (2026-10-01)
+
+MP-09 and MP-11 remain open. Two additional exact-blob observations inspect
+Cloud `8e9c24e4be0e87062343f60cda66f4c153539f91` shutdown deadlines and
+activity/enrollment reconciliation. An enabled idle deadline retains the maximum
+of minimum runtime, time since the idle transition plus its configured delay,
+and the warning interval. Repeated unchanged idle reports preserve that deadline.
+Active reports clear it. Signed reports bind the confirmed kernel and active
+Machine, reject regressing transitions and ignore already accepted sequences.
+Expired enrollment cleanup requires the current revision's terminal,
+nonretryable create operation before it records an idempotent delete operation.
+
+These are provisional observations of the allowed shutdown/deployment lifecycle.
+They do not inspect the full downstream quiescence/provider-stop chain or prove
+live timing, restart, cancellation, or every configured shutdown trigger.
+Manual shutdown declaration candidates now carry MP-09 explicitly; the new
+inventory regression fails before that correction and passes afterward.
+
+The full scanner suite passes 78/78 without skips. Exact OSS65d/Cloud8e9 scans
+now enumerate 5,995 + 2,859 candidates, including eight new declaration anchors.
+The 55 rules provisionally classify 325 candidates; 8,529 remain outside scoped
+inspection. All 8,854 remain independently unreviewed, both reports fail closed,
+and no expected declaration/assembly gaps were found. Tool bundle SHA-256 is
+`c967da536f4b07f363c95d54b294a5051809acaa87aef8292be8798f532cbf18`.
+The preceding scanner head9650 received independent review5372055977 with no
+actionable findings; this later audit increment requires its own exact review.
+Historical source counts and defects below retain their original source binding.
+
 ## Caddy heredoc token boundary correction (2026-09-30)
 
 Review [5371953727](https://github.com/charioxai/chariox/pull/664#pullrequestreview-5371953727)

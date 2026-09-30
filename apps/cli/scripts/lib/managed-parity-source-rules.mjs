@@ -7,6 +7,22 @@ const CLOUD = "a8f5ee1bc80f13f508cf950752d779399df1aa55";
 const CLOUD_CURRENT = "8e9c24e4be0e87062343f60cda66f4c153539f91";
 export const SOURCE_AUDIT_RULES = Object.freeze([
   {
+    id: "managed-auto-stop-deadline", sourceCommit: CLOUD_CURRENT,
+    path: "apps/api/src/managed-environments/auto-stop-deadline.ts",
+    blob: "7c7b41da124ff1e8b7ef0ee67e0c19b834be4c45",
+    classification: "mandatory_managed_shutdown_control",
+    rationale: "The managed lifecycle validates configured durations and returns no idle deadline when idle stopping is disabled. An active deadline is the maximum of minimum runtime, delay since the idle transition and the shutdown warning interval. This is the permitted shutdown policy, not a provider/runtime restriction. Live timing and trigger coverage remain open.",
+    anchors: [["automatic_shutdown_selector", "normalizeAutoStopPolicy"], ["automatic_shutdown_selector", "managedEnvironmentIdleDeadline"]],
+  },
+  {
+    id: "managed-activity-and-enrollment-cleanup", sourceCommit: CLOUD_CURRENT,
+    path: "apps/api/src/managed-environments/activity-service.ts",
+    blob: "60da3c3e037c491fe9a1f8c7a16973f285c1d600",
+    classification: "managed_shutdown_and_enrollment_lifecycle",
+    rationale: "Signed activity reports require the active exact machine and confirmed kernel, preserve monotonic sequence/transition time and retain an unchanged idle deadline. Due ready machines request quiescence; expired enrollment cleanup requires the current revision's terminal nonretryable create operation and atomically creates an idempotent delete operation. These are shutdown/deployment lifecycle controls. This file does not establish downstream quiescence, provider stop execution or fresh-machine coverage.",
+    anchors: [["automatic_shutdown_selector", "createManagedEnvironmentActivityService"], ["automatic_shutdown_selector", "validateReport"], ["automatic_shutdown_selector", "activitySignature"], ["automatic_shutdown_selector", "activityDeadline"], ["automatic_shutdown_selector", "activityResult"], ["release_activation", "requestDueEnrollmentCleanup"]],
+  },
+  {
     id: "release-update-outcome-evidence", sourceCommit: OSS,
     path: "apps/kernel/src/runtime/managed_release_update_evidence.rs",
     blob: "3a2391e350caf9b232b28aa2c5151066161fa2b3",
@@ -858,7 +874,8 @@ export function sourceRuleCandidates(file, lines, embeddedPath = null) {
           category, symbol, selector: symbol, lineIndex,
           column: lines[lineIndex].indexOf(symbol) + 1,
           affectedBehavior: rule.rationale, ruleId: rule.id,
-          applicableMpIds: category === "release_activation" ? ["MP-07", "MP-11"]
+          applicableMpIds: category === "automatic_shutdown_selector" ? ["MP-09", "MP-11"]
+            : category === "release_activation" ? ["MP-07", "MP-11"]
             : category === "protected_path_filter" ? ["MP-02", "MP-03", "MP-11"]
               : category === "cleanup_selector" ? ["MP-08", "MP-10", "MP-11"] : ["MP-08", "MP-11"],
         });
