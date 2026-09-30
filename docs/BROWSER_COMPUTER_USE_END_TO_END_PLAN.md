@@ -232,6 +232,8 @@ absence of another user report cannot close an item.
   crash-safe migration without moving or replacing `~/.chariox`. Treat this
   as the production install contract for managed machines. Do not replace it
   with a source checkout, `pnpm` installation, or mutable release directory.
+  On a Cloud-managed machine the release change is Cloud-coordinated; see
+  the locked decisions for 2026-09-30.
 - [ ] `MP-08` Keep the ordinary kernel protocol, provider adapters, state model,
   history, reconnect behavior, Project setup behavior, and clients unchanged
   by managed placement. Record and close every difference found by the parity
@@ -555,6 +557,36 @@ preservation, collision failure, and ordinary-versus-managed result parity.
 The managed-machine drill separately proves every automatic shutdown trigger,
 including the last-agent-finished idle timer, without treating shutdown as a
 parity defect.
+
+### Locked decisions for 2026-09-30
+
+These decisions were confirmed by the user and join the same completion gate:
+
+- The Path-1 worker user has full rights on its VM. `chariox` has passwordless
+  `sudo` through a root-owned sudoers drop-in that Path-1 image preparation
+  writes and the image verifier checks. Agents may install system packages,
+  run services, and change system configuration, as on Cursor Cloud Agents or
+  Ona environments. The disposable single-tenant VM remains the isolation
+  boundary. The shared-host topology is unchanged.
+- Because agents are effectively root, nothing on a Path-1 VM may grant
+  authority beyond its owner's own machine and account. Machine and relay
+  credentials are scoped to that machine. Bootstrap tokens are single-use and
+  consumed. No platform-wide secret, operator credential, or other user's
+  credential is present, and the instance metadata service exposes nothing
+  reusable. Automatic shutdown, billing, and deletion stay enforced from Cloud
+  through the provider API, outside the VM. `MP-11` audits this and `MP-10`
+  records it.
+- A kernel update on a Cloud-managed machine is Cloud-coordinated and in
+  place. Cloud accepts the new signed release for that environment and updates
+  its authoritative release record and the retained bootstrap binding. The
+  machine then activates the release with the signed upgrade transaction:
+  crash-safe recovery, automatic rollback, and no change to `~/.chariox`.
+  Reimage is not the update path, because it replaces the root disk that holds
+  user state. An in-place upgrade that Cloud did not authorize must keep
+  failing closed.
+- The `MP-10` comparison matrix includes `sudo -n true` and an agent-run system
+  package install (`apt-get install`) on a fresh machine, alongside
+  user-level installs.
 
 ## Product and architecture decisions
 
