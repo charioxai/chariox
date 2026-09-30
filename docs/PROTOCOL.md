@@ -2144,6 +2144,27 @@ Workflow trigger and deployment direction:
   or bound to another deployment; the owner's routes resume. Events an
   automation accepted but could not deliver are recorded in the App's log.
   App data is never copied from the owner's installations.
+- protocol 383: critical approvals need the Chariox passkey (the encrypted
+  vault's passphrase). A `RuntimeInteractionChoice` may carry
+  `requires_passkey: true` (absent means false); only kernel-operation
+  decisions set it (today the approve choice of an App's critical-action
+  validation), and an agent's interaction that sets it is refused.
+  `RespondToInteraction` gains optional `passkey` (a string, redacted in
+  command projections, never logged or stored) and `passkey_remember_minutes`
+  (1 to 15). Answering such a choice needs a passkey the kernel verifies
+  against the vault file (the vault's unlock state is unchanged), or an open
+  remember window: a verified passkey with `passkey_remember_minutes` accepts
+  the owner's critical approvals without it for that long, in kernel memory
+  only, independent of the vault's own unlock window. Otherwise the answer is
+  refused with `PASSKEY_REQUIRED`; a wrong passkey with `PASSKEY_REJECTED`;
+  after five consecutive wrong passkeys the owner's attempts are refused with
+  `PASSKEY_RATE_LIMITED` for 30 seconds, doubling per further failure up to
+  15 minutes. Without the encrypted Chariox vault the approval fails closed
+  (`PASSKEY_UNAVAILABLE`). Denying needs no passkey, and a passkey sent for any
+  other choice is ignored. Each check appends a durable
+  `critical_approval.passkey` event (outcome only). Clients prompt for the
+  passkey with hidden input only for a `requires_passkey` choice; to a remote
+  kernel it travels inside the end-to-end encrypted relay request.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

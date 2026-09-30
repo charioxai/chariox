@@ -45,6 +45,8 @@ fn interaction_requests_use_volatile_command_deduplication() {
         interaction_id: "interaction-1".to_string(),
         choice_id: "submit_callback".to_string(),
         custom_reply: Some("secret-callback".to_string()),
+        passkey: None,
+        passkey_remember_minutes: None,
     });
 
     for request in [&helper_request, &native_request, &response_request] {

@@ -426,6 +426,8 @@ fn preparing_deployment_apps_asks_once_and_records_the_answer() {
                     interaction_id: interaction_id.into(),
                     choice_id: choice.into(),
                     custom_reply: None,
+                    passkey: None,
+                    passkey_remember_minutes: None,
                 },
             ))
             .expect("the owner answers");

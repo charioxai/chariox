@@ -28,6 +28,36 @@ fn interaction_error(message: &str) -> DaemonError {
 }
 
 impl KernelRuntimeOwnedState {
+    /// The owner and operation of a pending decision whose chosen choice needs
+    /// the passkey, when the caller owns that decision.
+    pub(super) fn passkey_gate(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        caller_user_id: Option<&str>,
+    ) -> Option<(String, String)> {
+        let owner = self
+            .pending_interactions
+            .write()
+            .get(interaction_id)
+            .filter(|pending| pending.session_id == session_id)
+            .and_then(|pending| pending.kernel_operation_owner.clone())
+            .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
+        let session = self.session_store.get_session(session_id).ok()?;
+        let interaction = session
+            .active_interactions()
+            .iter()
+            .find(|interaction| interaction.id() == interaction_id)?;
+        interaction
+            .choice(choice_id)
+            .filter(|choice| choice.requires_passkey())?;
+        Some((owner, interaction.kernel_operation_id()?.to_owned()))
+    }
+
+    /// `passkey_verified`: the answer proved the owner's presence (see
+    /// `critical_approval_passkey`); a choice that requires the passkey is
+    /// refused without it.
     pub(super) fn resolve_runtime_interaction(
         &self,
         session_id: &str,
@@ -35,6 +65,7 @@ impl KernelRuntimeOwnedState {
         choice_id: &str,
         custom_reply: Option<&str>,
         caller_user_id: Option<&str>,
+        passkey_verified: bool,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -95,6 +126,16 @@ impl KernelRuntimeOwnedState {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} is not active in session"),
             })?;
+        if !passkey_verified
+            && interaction
+                .choice(choice_id)
+                .is_some_and(crate::session::RuntimeInteractionChoice::requires_passkey)
+        {
+            return Err(super::critical_approval_passkey::passkey_error(
+                super::critical_approval_passkey::PASSKEY_REQUIRED,
+                "approving this critical action needs your Chariox passkey",
+            ));
+        }
         let resolved_reply = if let Some(choice) = interaction.choice(choice_id) {
             if let Some(reply) = custom_reply {
                 let custom_choice =

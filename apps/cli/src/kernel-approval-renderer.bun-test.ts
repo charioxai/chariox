@@ -7,7 +7,7 @@ import { createKernelApprovalController, type KernelApprovalView } from "./kerne
 import type { RuntimeSession } from "./cli-types.js"
 
 const view: KernelApprovalView = {
-  open: false, count: 1, index: 0, selected: null, pending: false, connected: true, error: null,
+  open: false, count: 1, index: 0, selected: null, pending: false, connected: true, error: null, passkey: null,
   interaction: {
     id: "approval-1", kernel_operation_id: "install-1", kind: "permission", level: "warning",
     title: "Install Linear", message: "Allow this App to use the capabilities listed in the installation?",
@@ -21,7 +21,7 @@ test("global approvals render over a zero-agent workspace and preserve the sole 
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(new TextRenderable(harness.renderer, { content: "App workspace · no focus agent\nPrompt > draft kept", top: 22 }))
   harness.renderer.root.add(box)
-  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {} })
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {}, cycleRemember() {}, submitPasskey() {} })
   surface.assign(box)
   try {
     surface.render(view, { width: 80, height: 24 })
@@ -49,7 +49,7 @@ test("approval title, text and choice controls fit narrow terminals without hori
   const harness = await createTestRenderer({ width: 48, height: 18, useThread: false })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(box)
-  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {} })
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {}, cycleRemember() {}, submitPasskey() {} })
   surface.assign(box)
   try {
     surface.render({ ...view, open: true, selected: 0 }, { width: 48, height: 18 })
@@ -109,7 +109,7 @@ test("actual mouse clicks require the primary button and a connected, nonpending
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(box)
   const choices: string[] = []
-  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose: (interactionId, id) => { assert.equal(interactionId, "approval-1"); choices.push(id) } })
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose: (interactionId, id) => { assert.equal(interactionId, "approval-1"); choices.push(id) }, cycleRemember() {}, submitPasskey() {} })
   surface.assign(box)
   try {
     surface.render({ ...view, open: true }, { width: 80, height: 24 })

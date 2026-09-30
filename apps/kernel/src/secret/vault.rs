@@ -281,6 +281,38 @@ pub fn unlock_chariox_encrypted_vault(
     })
 }
 
+/// Whether `passphrase` is the vault's passphrase, without unlocking it: the
+/// key is derived with the file's KDF and must authenticate the ciphertext.
+/// A missing or unreadable vault is an error; nothing is stored.
+pub fn verify_chariox_vault_passphrase(
+    path: impl AsRef<Path>,
+    passphrase: &str,
+) -> Result<bool, DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let file = read_vault_file(&path)?;
+    if passphrase.is_empty() {
+        return Ok(false);
+    }
+    let key = derive_key(passphrase, &file.kdf)?;
+    Ok(decrypt_vault_payload(&file, key.as_ref()).is_ok())
+}
+
+/// A locked vault with a light KDF, for tests that verify its passphrase.
+#[cfg(test)]
+pub(crate) fn create_chariox_encrypted_vault_for_test(
+    path: &Path,
+    passphrase: &str,
+) -> Result<(), DaemonError> {
+    let kdf = VaultKdfProfile {
+        memory_kib: 1024,
+        iterations: 1,
+        parallelism: 1,
+    }
+    .new_kdf_config();
+    let key = derive_key(passphrase, &kdf)?;
+    write_vault_file(path, key.as_ref(), &VaultPlaintext::default(), kdf)
+}
+
 pub fn lock_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     unlocked_vaults()

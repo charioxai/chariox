@@ -611,6 +611,8 @@ mod tests {
                     interaction_id: "interaction-1".to_string(),
                     choice_id: "cancel".to_string(),
                     custom_reply: None,
+                    passkey: None,
+                    passkey_remember_minutes: None,
                 },
             )),
             Some(SessionMembershipScope::SessionId("session-1".to_string()))

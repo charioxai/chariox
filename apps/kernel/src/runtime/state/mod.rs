@@ -72,6 +72,7 @@ mod app_validation_pump_runtime;
 mod app_file_pick_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
+mod critical_approval_passkey;
 mod native_catalog_refresh;
 mod provider_output_deadline_store;
 mod provider_reload;
@@ -111,6 +112,7 @@ pub(crate) struct KernelRuntimeState {
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
+    critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -595,6 +597,7 @@ impl KernelRuntimeState {
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
                 app_control,
+                critical_approval_passkeys: Default::default(),
                 config_projection,
                 session_store,
                 agent_store,

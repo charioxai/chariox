@@ -23,6 +23,8 @@ export function createCliKernelApprovalComposition(deps: {
   const surface = createKernelApprovalRenderer(deps.renderer, {
     show: () => controller.show(),
     choose: (interactionId, choiceId) => { void controller.choose(interactionId, choiceId) },
+    cycleRemember: () => controller.cycleRemember(),
+    submitPasskey: () => { void controller.submitPasskey() },
   })
   const controller = createKernelApprovalController({
     getSession: deps.session,
@@ -34,8 +36,8 @@ export function createCliKernelApprovalComposition(deps: {
     },
     onClose: () => { restoreCliDialogFocus(savedFocus); savedFocus = null },
     scroll: surface.scroll,
-    respond: (sessionId, interactionId, choiceId) =>
-      respondToInteraction(deps.client, sessionId, interactionId, choiceId, null),
+    respond: (sessionId, interactionId, choiceId, proof) =>
+      respondToInteraction(deps.client, sessionId, interactionId, choiceId, null, proof),
     applySession: deps.applySession,
   })
   createEffect(() => { deps.themeRevision(); deps.dimensions(); controller.sync() })

@@ -127,12 +127,13 @@ fn validation_interaction(operation: &ValidationOperation) -> RuntimeInteraction
         format!("validation:{}", operation.operation_id),
         "Approve App action",
         format!(
-            "An App asks to perform a protected action.\n\nInstallation: {}\nAction: {}\nParameters: {}\n\nOnly {} (the App's owner) can answer. Approve only if you expect this exact action with these exact parameters.",
+            "An App asks to perform a protected action.\n\nInstallation: {}\nAction: {}\nParameters: {}\n\nOnly {} (the App's owner) can answer. Approve only if you expect this exact action with these exact parameters. Approving needs your Chariox passkey.",
             operation.installation, operation.action, operation.parameters, operation.owner
         ),
         vec![
             RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
-            RuntimeInteractionChoice::new("approve", "Approve", "allow", None),
+            // A critical approval: the human proves presence with the passkey.
+            RuntimeInteractionChoice::new("approve", "Approve", "allow", None).requiring_passkey(),
         ],
     )
 }

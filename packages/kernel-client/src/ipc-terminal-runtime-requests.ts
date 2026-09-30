@@ -293,11 +293,20 @@ export function getTerminalCommandCatalogRequest() {
   return { GetTerminalCommandCatalog: null }
 }
 
+/** Protocol 383: the Chariox passkey for a `requires_passkey` choice, and an
+ * optional window (1 to 15 minutes) in which the owner's critical approvals
+ * need no passkey. */
+export type InteractionPasskeyProof = {
+  passkey: string
+  rememberMinutes?: number | null
+}
+
 export function respondToInteractionRequest(
   sessionId: string,
   interactionId: string,
   choiceId: string,
   customReply?: string | null,
+  proof?: InteractionPasskeyProof | null,
 ) {
   return {
     RespondToInteraction: {
@@ -305,6 +314,10 @@ export function respondToInteractionRequest(
       interaction_id: interactionId,
       choice_id: choiceId,
       custom_reply: customReply ?? null,
+      ...(proof ? {
+        passkey: proof.passkey,
+        ...(proof.rememberMinutes ? { passkey_remember_minutes: proof.rememberMinutes } : {}),
+      } : {}),
     },
   }
 }

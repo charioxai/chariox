@@ -28,7 +28,8 @@ pub use api::{
     AliasWorkflowRequest, AppendNativeProviderOutputBatchItem,
     AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest,
     ApplyWorkflowCodeArtifactRequest, ApplyWorkflowCodeRequest, ApplyWorkflowDesignOpRequest,
-    ApproveRemoteMachineRequest, ArchiveProjectRequest, ArmDeploymentCredentialEnrollmentRequest,
+    ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveProjectRequest,
+    ArmDeploymentCredentialEnrollmentRequest,
     AttachToSessionRequest, AttachWorkspaceLinkRequest, BatchOperationFailure,
     BindWorkflowCodeSourceRequest, BindWorkflowEndpointRequest,
     BindWorkflowPublicationDeploymentRequest, BrowseEventGeneratorCategoryRequest,
@@ -234,6 +235,7 @@ pub use api::{
     WorkspaceLiveSyncTargetStatus, WorkspacePullRequestRecord, WorkspaceRepoFileEntry,
     WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
     DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX, LOCAL_DAEMON_PROTOCOL_VERSION,
+    PASSKEY_REMEMBER_MAX_MINUTES,
     PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
 };
 pub use api::{

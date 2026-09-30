@@ -339,6 +339,8 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
             interaction_id,
             choice_id: "allow_once".to_string(),
             custom_reply: None,
+            passkey: None,
+            passkey_remember_minutes: None,
         });
     let provider_runtime_lanes = {
         let app = app_home.lock().await;

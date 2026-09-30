@@ -37,6 +37,8 @@ fn reply(session: &str, interaction: &str) -> LocalDaemonRequest {
         interaction_id: interaction.into(),
         choice_id: "allow".into(),
         custom_reply: None,
+        passkey: None,
+        passkey_remember_minutes: None,
     })
 }
 

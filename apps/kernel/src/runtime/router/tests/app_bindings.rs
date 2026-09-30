@@ -297,6 +297,8 @@ async fn ask_app_self_grant_waits_for_the_existing_permission_interaction() {
                 interaction_id,
                 choice_id: choice.into(),
                 custom_reply: None,
+                passkey: None,
+                passkey_remember_minutes: None,
             });
         let mut command = KernelCommand::from_local_request(
             format!("app-binding-{choice}"),

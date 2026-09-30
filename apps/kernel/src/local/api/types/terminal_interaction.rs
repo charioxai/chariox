@@ -29,6 +29,43 @@ pub struct RespondToInteractionRequest {
     pub choice_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_reply: Option<String>,
+    /// The Chariox passkey (the vault passphrase), only for a choice marked
+    /// `requires_passkey`. The kernel verifies it and never stores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkey: Option<ApprovalPasskey>,
+    /// With a verified passkey: accept this owner's critical approvals
+    /// without it for this many minutes (1 to 15). Off when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkey_remember_minutes: Option<u32>,
+}
+
+/// Longest optional window in which critical approvals need no passkey.
+pub const PASSKEY_REMEMBER_MAX_MINUTES: u32 = 15;
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ApprovalPasskey(String);
+
+impl ApprovalPasskey {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ApprovalPasskey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApprovalPasskey([REDACTED])")
+    }
+}
+
+impl Drop for ApprovalPasskey {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

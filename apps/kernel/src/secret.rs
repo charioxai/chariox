@@ -18,6 +18,8 @@ use crate::credential::CharioxCredentialRegistry;
 use crate::error::DaemonError;
 
 mod vault;
+#[cfg(test)]
+pub(crate) use vault::create_chariox_encrypted_vault_for_test;
 pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
 pub use vault::{
@@ -26,8 +28,8 @@ pub use vault::{
     install_transferred_vault_snapshot, is_chariox_vault_locked_error,
     lock_chariox_encrypted_vault, restore_transferred_vault_unlock, unlock_chariox_encrypted_vault,
     validate_installed_transferred_vault, validate_transferred_vault_snapshot_for_export,
-    CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
-    TransferredVaultSourceBinding, VaultUnlockLease,
+    verify_chariox_vault_passphrase, CharioxVaultUnlockStatus, CredentialVaultStore,
+    TransferredVaultSnapshot, TransferredVaultSourceBinding, VaultUnlockLease,
 };
 
 #[cfg(test)]
