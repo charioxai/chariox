@@ -9,9 +9,13 @@ impl DurableKernelStateStore {
     /// Blocking fatal shutdown, not transient write cancellation. Previously
     /// executing commits may finish; return waits for the writer to stop, and no
     /// queued or subsequent request can commit afterward. Restart reloads durable
-    /// workflow/prompt intents before admitting new work.
+    /// workflow/prompt intents before admitting new work. A full disk is not a
+    /// reason to fence: its failed commits did not commit (see `storage_full`).
+    #[track_caller]
     pub(crate) fn fence_writer(&self) -> Result<(), DaemonError> {
-        self.writer.health.fatal.store(true, Ordering::Release);
+        self.writer
+            .health
+            .stop_uncertain(&std::panic::Location::caller().to_string());
         self.writer
             .sender
             .lock()
@@ -26,6 +30,24 @@ impl DurableKernelStateStore {
             worker.join().map_err(|_| fenced_writer_error())?;
         }
         Ok(())
+    }
+}
+
+impl DurableWriterHealth {
+    /// A commit's outcome is unknown: take no more writes until a restart
+    /// reloads authoritative state, and say so once, with where it happened.
+    pub(super) fn stop_uncertain(&self, source: &str) {
+        self.fatal.store(true, Ordering::Release);
+        if !self.stopped_uncertain.swap(true, Ordering::AcqRel) {
+            crate::logging::error_with_fields(
+                "durable_state.writer",
+                "kernel durable writer stopped after a commit whose outcome is unknown; restart the kernel to recover",
+                serde_json::json!({
+                    "source": source,
+                    "storage_full": self.storage_full_since_ms.load(Ordering::Acquire) != 0,
+                }),
+            );
+        }
     }
 }
 

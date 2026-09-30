@@ -62,6 +62,9 @@ pub(super) fn execute(
     request: WorkflowQueueStartRequest,
 ) -> super::app_event_delivery::WriterDisposition {
     let result = apply(connection, &request.encoded);
+    if let Err(WorkflowQueueStartError::Database(error)) = &result {
+        super::storage_full::observe(error);
+    }
     let disposition = if matches!(&result, Err(WorkflowQueueStartError::CommitUnknown)) {
         super::app_event_delivery::WriterDisposition::Stop
     } else {
@@ -79,6 +82,8 @@ fn apply(connection: &mut Connection, encoded: &Encoded) -> Result<()> {
     write(&tx, encoded)?;
     match tx.commit() {
         Ok(()) => Ok(()),
+        // A full disk rolled the commit back: nothing to reconcile.
+        Err(original) if super::storage_full::observe(&original) => Err(original.into()),
         Err(original) => reconcile(connection, encoded, original),
     }
 }

@@ -255,8 +255,7 @@ fn commit(
     operation: InstallOperation,
 ) -> Result<Reply> {
     limit(budget)?;
-    tx.commit()
-        .map_err(|_| InstallOperationError::CommitUnknown)?;
+    tx.commit().map_err(commit_failed)?;
     Ok(Reply::Operation(operation))
 }
 pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Result<Reply> {
@@ -423,8 +422,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 .map_err(|_| InstallOperationError::Stale)?;
             if matches!(update.decision, CapabilityDecision::Approved { .. }) {
                 limit(&budget)?;
-                tx.commit()
-                    .map_err(|_| InstallOperationError::CommitUnknown)?;
+                tx.commit().map_err(commit_failed)?;
                 return Ok(Reply::Review(InstallReviewDisposition::Approved));
             }
             if update.decision != CapabilityDecision::Pending {
@@ -465,8 +463,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                         )
                         .map_err(|_| InstallOperationError::Stale)?;
                     limit(&budget)?;
-                    tx.commit()
-                        .map_err(|_| InstallOperationError::CommitUnknown)?;
+                    tx.commit().map_err(commit_failed)?;
                     return Ok(Reply::Review(InstallReviewDisposition::Approved));
                 }
             }
@@ -497,8 +494,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                     )
                     .map_err(|_| InstallOperationError::Stale)?;
                 limit(&budget)?;
-                tx.commit()
-                    .map_err(|_| InstallOperationError::CommitUnknown)?;
+                tx.commit().map_err(commit_failed)?;
                 return Ok(Reply::Review(InstallReviewDisposition::Approved));
             }
             let review = current.review.ok_or(InstallOperationError::Storage)?;
@@ -516,8 +512,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 .optional())?;
             sql(tx.execute("UPDATE app_installation_operations SET interaction_id=?1,updated_ms=?2 WHERE owner_id=?3 AND request_id=?4",params![interaction_id,now()?,owner,request_id]))?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Review(InstallReviewDisposition::Prompt(
                 InstallApprovalChallenge {
                     owner,

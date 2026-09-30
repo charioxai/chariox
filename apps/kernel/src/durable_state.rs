@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -48,6 +48,7 @@ pub(crate) mod apps;
 mod apps_tests;
 pub(crate) mod browser_import;
 mod owner;
+pub(crate) mod storage_full;
 mod writer_fence;
 use writer_fence::fenced_writer_error;
 pub(crate) mod workflow_dispatch_intents;
@@ -113,6 +114,13 @@ struct DurableStateWriter {
 #[derive(Debug, Default)]
 struct DurableWriterHealth {
     fatal: AtomicBool,
+    /// Set with `fatal` only when a commit's outcome is unknown, not at an
+    /// ordinary writer shutdown.
+    stopped_uncertain: AtomicBool,
+    /// Nonzero while the disk is full: when the writer first saw it.
+    storage_full_since_ms: AtomicU64,
+    /// The condition last reported to the owner.
+    announced: AtomicU8,
     committed_batches: AtomicU64,
     committed_records: AtomicU64,
     max_batch_records: AtomicU64,
@@ -347,6 +355,7 @@ impl DurableKernelStateStore {
                 operation: "durable_state.migrate",
                 message: error.to_string(),
             })?;
+        storage_full::initialize(&connection)?;
         apps::initialize(&mut connection)?;
         app_publishers::initialize(&mut connection)?;
         app_publisher_operations::initialize(&connection)?;
@@ -1411,8 +1420,16 @@ fn run_durable_writer(
         }
     }
     let _stopped = MarkStopped(health.clone());
+    let mut storage = storage_full::StorageProbe::new(&connection);
     let mut pending = None;
-    while let Some(first) = pending.take().or_else(|| receiver.recv().ok()) {
+    loop {
+        storage.after_request(&health);
+        let Some(first) = pending
+            .take()
+            .or_else(|| storage.next_request(&receiver, &mut connection, &health))
+        else {
+            break;
+        };
         if health.fatal.load(Ordering::Acquire) {
             break;
         }
@@ -1431,7 +1448,7 @@ fn run_durable_writer(
                     app_publisher_operations::execute(&mut connection, *request, &health.fatal),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
-                    health.fatal.store(true, Ordering::Release);
+                    health.stop_uncertain("app_publisher_operation");
                     break;
                 }
                 continue;
@@ -1494,7 +1511,7 @@ fn run_durable_writer(
                     app_installation_operations::execute(&mut connection, *request),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
-                    health.fatal.store(true, Ordering::Release);
+                    health.stop_uncertain("app_installation_operation");
                     break;
                 }
                 continue;
@@ -1523,7 +1540,7 @@ fn run_durable_writer(
                     app_event_delivery::execute(&mut connection, *request),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
-                    health.fatal.store(true, Ordering::Release);
+                    health.stop_uncertain("app_event_queue");
                     // Drop queued replies and the receiver so stale sessions
                     // cannot overwrite an uncertain commit. Restart reloads
                     // authoritative state before the kernel accepts writes.
@@ -1536,7 +1553,7 @@ fn run_durable_writer(
                     workflow_queue_start::execute(&mut connection, *request),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
-                    health.fatal.store(true, Ordering::Release);
+                    health.stop_uncertain("workflow_queue_start");
                     break;
                 }
                 continue;
@@ -1607,6 +1624,7 @@ fn commit_durable_write_batch(
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
         Err(error) => {
+            storage_full::observe(&error);
             send_durable_batch_error(batch, error.to_string());
             return;
         }
@@ -1737,6 +1755,7 @@ fn commit_durable_write_batch(
         match result {
             Ok(sequence) => results.push(sequence),
             Err(error) => {
+                storage_full::observe(&error);
                 failure = Some(error.to_string());
                 break;
             }
@@ -1751,6 +1770,7 @@ fn commit_durable_write_batch(
         return;
     }
     if let Err(error) = transaction.commit() {
+        storage_full::observe(&error);
         send_durable_batch_error(batch, error.to_string());
         return;
     }

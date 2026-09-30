@@ -5,7 +5,19 @@ use chariox_app_runtime::publisher_trust::{
 use rusqlite::{params, OptionalExtension, Transaction};
 
 pub(super) fn sql<T>(value: rusqlite::Result<T>) -> Result<T> {
-    value.map_err(|_| PublisherOperationError::Storage)
+    value.map_err(|error| {
+        crate::durable_state::storage_full::observe(&error);
+        PublisherOperationError::Storage
+    })
+}
+/// A COMMIT that failed on a full disk did not commit: an ordinary storage
+/// failure. Any other COMMIT failure may have committed.
+pub(super) fn commit_failed(error: rusqlite::Error) -> PublisherOperationError {
+    if crate::durable_state::storage_full::observe(&error) {
+        PublisherOperationError::Storage
+    } else {
+        PublisherOperationError::CommitUnknown
+    }
 }
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS app_publisher_operations (

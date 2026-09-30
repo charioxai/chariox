@@ -5,7 +5,7 @@
 //! and only when the owner already approved the same capabilities
 //! interactively. It is written on the installation writer, so the policy
 //! reads it in the install decision's transaction.
-use super::store::{identity, limit, now, sql};
+use super::store::{commit_failed, identity, limit, now, sql};
 use super::*;
 use chariox_app_runtime::installation::ReleaseMetadata;
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
@@ -155,8 +155,7 @@ pub(super) fn apply(connection: &mut Connection, command: ConsentCommand) -> Res
             let value =
                 load(&tx, &owner, &consent.request_id)?.ok_or(InstallOperationError::Storage)?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Consent(value))
         }
         ConsentCommand::Decide {
@@ -180,8 +179,7 @@ pub(super) fn apply(connection: &mut Connection, command: ConsentCommand) -> Res
             if changed != 1 {
                 return Err(InstallOperationError::Conflict);
             }
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Done)
         }
     }

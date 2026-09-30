@@ -196,6 +196,13 @@ pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
         request.operation,
         &request.budget,
     );
+    if let Err(
+        AppStateError::State(StateError::Database(error))
+        | AppStateError::Outbox(OutboxError::Database(error)),
+    ) = &result
+    {
+        super::storage_full::observe(error);
+    }
     let _ = request.response.send(result);
 }
 

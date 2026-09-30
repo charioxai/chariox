@@ -76,6 +76,10 @@ pub(super) fn commit(
             }
             Ok(committed)
         }
+        // A full disk rolled the commit back: nothing to reconcile.
+        Err(error) if crate::durable_state::storage_full::observe(&error) => {
+            Err(InstallOperationError::Storage)
+        }
         Err(_) => reconcile(connection, admission, health),
     }
 }
