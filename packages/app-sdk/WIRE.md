@@ -224,6 +224,9 @@ The effect's outcome follows what the kernel's socket saw:
   open. `validation.status` then tells: still `approved` means the kernel never
   started the effect (the same `operationId` can be used again),
   `VALIDATION_CONSUMED` means it may have reached the origin.
+- The App's own abort (`CANCELLED`, through the call's `signal`) after `http.open`
+  was sent is passed through as is, but it leaves an effect's outcome just as
+  unknown; `validation.status` applies the same way.
 
 `host.pick_file {multiple?, accept?}` (Apps whose signed manifest declares
 `capabilities.externalFiles: ["user_selected"]`; others get
