@@ -902,9 +902,11 @@ export function collectSourceInventory({
     const views = file.format === "patch" ? patchSourceViews(file, classifyProductionPath)
       : [{ path: file.path, format: file.format, text: file.text, lineOffset: 0, patchLines: [] }];
     for (const view of views) {
-      // A patch hunk can begin inside a literal/comment opened in omitted
-      // source. Incomplete lexical context must never suppress a candidate.
-      const lines = (file.format === "patch" || file.unverifiedFragment ? view.text : stripComments(view.text, view.format)).split(/\r?\n/);
+      // Patch context may be omitted. Even with a verified fragment order,
+      // the generic JavaScript mask cannot parse nested templates or regexes.
+      // Retain raw fragment candidates, including apparent comments, for review.
+      const preserveCandidates = file.format === "patch" || file.unverifiedFragment || file.assembly;
+      const lines = (preserveCandidates ? view.text : stripComments(view.text, view.format)).split(/\r?\n/);
       const testRanges = view.format === "rust" ? findRustTestRanges(view.text, view.path) : [];
       const unitTopology = explicitUnitTopology(view.path, view.text);
       const embeddedPath = file.format === "patch" ? view.path : null;
@@ -946,6 +948,10 @@ export function collectSourceInventory({
           if (file.unverifiedFragment) {
             sourceRoleHints.lexicalContext = "unknown_fragment_assembly";
             sourceRoleHints.executionRole = "unverified_fragment_candidate";
+          }
+          if (file.assembly) {
+            sourceRoleHints.lexicalContext = "unparsed_fragment_assembly";
+            sourceRoleHints.executionRole = "fragment_candidate";
           }
           if (patchSource?.change === "removed") {
             sourceRoleHints.executionRole = "removed_patch_source_candidate";

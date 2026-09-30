@@ -85,7 +85,7 @@ export function fragmentSourceViews(files) {
     const text = members.map((file) => file.text).join("");
     const assembly = { directory, suffix, dependencies: rule.dependencies,
       members: members.map(({ path, blob }) => ({ path, blob })) };
-    assemblies.push({ ...assembly, status: "verified_sort_join_empty" });
+    assemblies.push({ ...assembly, status: "verified_sort_join_empty", lexicalContext: "unparsed_fragment_assembly" });
     normal.push({ ...members[0], text, assembly: { ...assembly, spans, lineStarts: lineStarts(text) } });
   }
   return { files: normal, gaps, assemblies };

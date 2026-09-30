@@ -15,6 +15,26 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## Fragment lexical completeness correction (2026-09-30)
+
+Review [5371819365](https://github.com/charioxai/chariox/pull/664#pullrequestreview-5371819365)
+found that a nested JavaScript template in a verified fragment assembly could
+make the generic comment mask hide an executable selector in the next fragment.
+An adjacent regular-expression literal has the same problem. Both cases execute
+as valid JavaScript in the regression fixtures.
+
+Verified ordering now permits reconstruction and physical source mapping only.
+All fragment assemblies retain raw candidates, including apparent comments,
+with `unparsed_fragment_assembly` lexical context. Independent semantic review
+must distinguish executable controls from comments. Unknown assembly consumers
+still produce an explicit assembly gap. This avoids claiming JavaScript parser
+accuracy from the comment mask. Existing source inspection and independent
+approval remain separate requirements.
+
+The four new regressions fail before this correction and pass afterward for
+both `.tsfrag` and `.mjsfrag`; the complete scanner suite passes 73/73. Earlier
+scan counts below retain their original tool binding.
+
 ## Current namespace and adjacent-control audit (2026-09-30)
 
 Inspection input OSS `65d381d3184bd1e8e3630e6de081d9b62be0646f`

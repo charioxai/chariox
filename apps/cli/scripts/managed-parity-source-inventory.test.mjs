@@ -1416,3 +1416,41 @@ test("Caddy escaped heredoc openers keep true comments while uncertain heredocs 
     assert.equal(report.status, "fail");
   });
 });
+
+
+for (const suffix of [".tsfrag", ".mjsfrag"]) {
+  test("assembled " + suffix + " preserves nested templates before active controls", () => {
+    withFixture({}, (fixture) => {
+      const fragments = ['const banner = `${`/* banner text`}`;\n',
+        'const selector = "CHARIOX_MANAGED_NESTED_FRAGMENT";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "CHARIOX_MANAGED_NESTED_FRAGMENT");
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_NESTED_FRAGMENT");
+      assert.equal(entry?.path, directory + "/part-002" + suffix);
+      assert.equal(entry?.line, 1);
+      assert.equal(entry?.sourceRoleHints.lexicalContext, "unparsed_fragment_assembly");
+      assert.equal(entry?.fragmentSource.assemblyStatus, "verified_sort_join_empty");
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    });
+  });
+
+  test("assembled " + suffix + " retains regex and apparent-comment candidates conservatively", () => {
+    withFixture({}, (fixture) => {
+      const fragments = ['const punctuation = /[/*]/;\n',
+        '// CHARIOX_MANAGED_FRAGMENT_COMMENT_CANDIDATE\nconst selector = "CHARIOX_MANAGED_REGEX_FRAGMENT";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "CHARIOX_MANAGED_REGEX_FRAGMENT");
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      for (const [selector, line] of [["CHARIOX_MANAGED_FRAGMENT_COMMENT_CANDIDATE", 1], ["CHARIOX_MANAGED_REGEX_FRAGMENT", 2]]) {
+        const entry = report.entries.find((entry) => entry.selector === selector);
+        assert.equal(entry?.path, directory + "/part-002" + suffix);
+        assert.equal(entry?.line, line);
+        assert.equal(entry?.sourceRoleHints.lexicalContext, "unparsed_fragment_assembly");
+        assert.equal(entry?.semanticDisposition.status, "unreviewed");
+      }
+      assert.equal(report.fragmentAssemblies[0]?.lexicalContext, "unparsed_fragment_assembly");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
