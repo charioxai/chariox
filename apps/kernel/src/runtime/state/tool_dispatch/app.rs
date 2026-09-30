@@ -168,6 +168,7 @@ impl KernelRuntimeState {
             .app_control()
             .try_admit()
             .map_err(|_| admission_busy())?;
+        let app_shaped = has_app_tool_shape(tool_name);
         let state = self.clone();
         let run = provider_run.clone();
         let auth_token = auth_token.to_owned();
@@ -189,6 +190,13 @@ impl KernelRuntimeState {
             // A bound App's tools are withdrawn while an update replaces it.
             if self.app_tool_updating(&agent, tool_name).await {
                 return Err(coded(crate::runtime::app_call_errors::updating()));
+            }
+            // An App tool none of the agent's bound Apps offers: the binding was
+            // revoked, or the provider still lists a withdrawn tool (Codex keeps
+            // its list for the turn). Refuse it here; the dispatchers after this
+            // one would answer with an unrelated workflow-turn error.
+            if app_shaped {
+                return Err(unavailable());
             }
             return Ok(None);
         };
@@ -297,6 +305,19 @@ fn unavailable() -> DaemonError {
         message: "App operation is not currently available to this agent".into(),
     }
 }
+/// `app_<local>_<32 hex>`, the shape of every App tool name
+/// (`chariox_app_runtime::app_catalog`), whichever installation it names.
+fn has_app_tool_shape(name: &str) -> bool {
+    name.strip_prefix("app_")
+        .and_then(|rest| rest.rsplit_once('_'))
+        .is_some_and(|(local, digest)| {
+            !local.is_empty()
+                && digest.len() == 32
+                && digest
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
 fn app_error(error: impl std::fmt::Display) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "app.tools",
@@ -342,5 +363,25 @@ mod tests {
             )),
             "DEADLINE_EXCEEDED: The App did not answer in time",
         );
+    }
+
+    #[test]
+    fn only_app_tool_names_are_refused_as_unbound_app_calls() {
+        // A live App tool name (drill-actor `record`).
+        assert!(has_app_tool_shape(
+            "app_record_3fb6e439d5632a7d966fa946a2899d58"
+        ));
+        assert!(has_app_tool_shape(
+            "app_list_todos_0123456789abcdef0123456789abcdef"
+        ));
+        // Anything else keeps falling through to the other dispatchers.
+        assert!(!has_app_tool_shape("app_record"));
+        assert!(!has_app_tool_shape("app__0123456789abcdef0123456789abcdef"));
+        assert!(!has_app_tool_shape(
+            "app_record_0123456789ABCDEF0123456789ABCDEF"
+        ));
+        assert!(!has_app_tool_shape("app_record_0123456789abcdef"));
+        assert!(!has_app_tool_shape("apply_patch"));
+        assert!(!has_app_tool_shape("chariox_slice_browser_click"));
     }
 }

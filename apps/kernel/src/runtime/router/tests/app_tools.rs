@@ -258,13 +258,23 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         .runtime_tool_specs_for_auth_token(&tokens[0])
         .iter()
         .any(|tool| tool.name == name));
-    assert!(runtime
+    let revoked = runtime
         .block_on(router.dispatch_authenticated_runtime_tool_call(
             &tokens[0],
             &name,
-            serde_json::json!({"text":"revoked"})
+            serde_json::json!({"text":"revoked"}),
         ))
-        .is_err());
+        .unwrap_err();
+    // Refused as an App call the agent may no longer make, not passed on to
+    // the workflow dispatcher ("no active workflow turn ...").
+    assert!(
+        matches!(
+            &revoked,
+            crate::error::DaemonError::LocalTransport { operation, message }
+                if *operation == "app.tools" && message.contains("not currently available")
+        ),
+        "{revoked:?}"
+    );
     assert_eq!(observed.tool_invocations(), 2);
     owner.shutdown_blocking();
     let lists = |token: &String| {
