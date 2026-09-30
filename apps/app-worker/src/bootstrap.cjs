@@ -3,7 +3,8 @@
 // A trusted runtime artifact, loaded through Node's actual CommonJS loader.
 // Embedded LoadEnvironment's initial require only supports built-in modules.
 const { Socket } = require('node:net');
-const { writeSync } = require('node:fs');
+const fs = require('node:fs');
+const { writeSync } = fs;
 const { pathToFileURL } = require('node:url');
 const { configuration } = require('./bootstrap-config.cjs');
 const exit = process.exit.bind(process);
@@ -130,6 +131,41 @@ function installDirectoryWatch(platform) {
   require('node:module').syncBuiltinESMExports();
 }
 
+// App durability (packages/app-sdk/README.md, "Durability"). Node's own guard
+// on descriptor fsync varies across releases (the pinned 24.20 denies the sync
+// and callback forms but not the FileHandle forms; some releases deny none,
+// newer ones deny all). Deny every form on the App's thread, so an App sees one
+// behavior across runtime updates and does not come to depend on one release's gap.
+// Durable data goes through state
+// transactions or files.atomicReplace, which the kernel syncs before answering.
+// This is policy, not containment: a worker thread keeps Node's own behavior.
+async function denyFsync() {
+  const denied = syscall => Object.assign(new Error(
+    `${syscall} is not available to Apps; use chariox.files.atomicReplace or a state transaction for durable data`),
+  { code: 'ERR_ACCESS_DENIED', syscall });
+  const deniedCallback = syscall => function (fd, callback) {
+    if (typeof callback !== 'function') {
+      throw Object.assign(new TypeError('The "callback" argument must be of type function'), { code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    process.nextTick(callback, denied(syscall));
+  };
+  fs.fsyncSync = () => { throw denied('fsync'); };
+  fs.fdatasyncSync = () => { throw denied('fdatasync'); };
+  fs.fsync = deniedCallback('fsync');
+  fs.fdatasync = deniedCallback('fdatasync');
+  // FileHandle is reachable only through an instance; this file is readable.
+  const probe = await fs.promises.open(__filename, 'r');
+  const fileHandlePrototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  for (const [name, syscall] of [['sync', 'fsync'], ['datasync', 'fdatasync']]) {
+    Object.defineProperty(fileHandlePrototype, name, {
+      value: async function () { throw denied(syscall); }, writable: true, configurable: true,
+    });
+  }
+  // ESM `import { fsyncSync } from 'node:fs'` must see the same functions.
+  require('node:module').syncBuiltinESMExports();
+}
+
 function start(input) {
   let sdk;
   let transport;
@@ -157,6 +193,7 @@ function start(input) {
   arm(config.migrations.length ? config.migrationTimeoutMs : config.startupTimeoutMs);
 
   async function load() {
+    await denyFsync();
     // Runtime packaging pins this complete SDK source graph. Never resolve an
     // SDK from the App, cwd, NODE_PATH, an installation script, or a URL.
     const { createAppSdk } = require('./sdk/src/index.js');

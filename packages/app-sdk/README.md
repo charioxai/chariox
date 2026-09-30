@@ -109,6 +109,40 @@ workflow/agent asset methods and consented output callback registration also
 remain integration work. No broker operation is complete merely because its
 forwarding method exists here.
 
+## Durability
+
+An App's private files are ordinary `node:fs` files on its own data volume.
+What survives a crash:
+- **State transactions** (`state.transaction`, with their occurrences and
+  wakes) are committed by the kernel's database with full synchronous writes
+  before the call answers. They survive a crash of the App, the kernel or the
+  host, and power loss, as far as the host's disk honors a sync.
+- **`files.atomicReplace`** writes the new file, syncs it, renames it into
+  place and syncs its directory before it answers. The file is then the old or
+  the new version after any crash, never a mix. Use it for a raw file that must
+  survive power loss.
+- **Plain `node:fs` writes** are in the host's page cache when the call
+  returns. They survive the App or the kernel being killed, but not
+  necessarily a host crash or power loss.
+
+The runtime denies `fsync` and `fdatasync` in every form: `fs.fsyncSync`,
+`fs.fdatasyncSync`, `fs.fsync`, `fs.fdatasync`, `FileHandle.sync()` and
+`datasync()`. So do the forms built on them:
+- `writeFile`, `writeFileSync`, `appendFile` and `appendFileSync` with
+  `flush: true` write the data, then fail.
+- Write streams with `flush: true` (`fs.createWriteStream` and
+  `FileHandle#createWriteStream`) fail at close, after `'finish'`. Only
+  `'close'`, `'error'` and `finished()` observers see it.
+
+Each fails `ERR_ACCESS_DENIED`. The runtime's bootstrap denies them: Node's
+own guard varies across releases (the pinned 24.20 denies the sync and callback
+forms but not the `FileHandle` forms; some releases deny none, newer ones deny
+all), so denying every form gives an App one behavior on its own thread across
+runtime updates.
+A worker thread (`node:worker_threads`) keeps Node's own behavior.
+(Node's own fast path for `writeFileSync` of a UTF-8 string ignores `flush`
+without an error.)
+
 ## Worker integration
 
 ```js
