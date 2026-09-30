@@ -5,6 +5,10 @@ export const DOWNLOAD_LIMIT = 256 * 1024 * 1024;
 export const FETCH_LIFETIME = 60 * 60 * 1000;
 export const CHUNK_BYTES = 64 * 1024;
 export const unsupported = message => new TypeError(`Chariox Fetch: ${message}`);
+// Fetch forbidden request headers the kernel broker owns.
+const FORBIDDEN = new Set(['accept-charset', 'accept-encoding', 'connection', 'cookie', 'cookie2',
+  'date', 'expect', 'host', 'keep-alive', 'set-cookie', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'via']);
+const METHOD_OVERRIDE = new Set(['x-http-method-override', 'x-method-override', 'x-http-method']);
 
 function snapshot(body) {
   if (body === undefined || body === null) return { source: null, replayable: true };
@@ -67,7 +71,17 @@ export function requestValue(input, init = {}) {
     headers.delete('content-length');
   }
   if (!headers.has('accept')) headers.set('accept', '*/*');
-  if (!headers.has('accept-encoding')) headers.set('accept-encoding', 'gzip, deflate, br');
+  // Connection-level headers are the kernel's, as the user agent's in Fetch,
+  // where they are forbidden request headers: they are dropped here, so the
+  // broker never refuses a request for them.
+  for (const name of [...headers.keys()]) {
+    if (FORBIDDEN.has(name) || name.startsWith('proxy-') || name.startsWith('sec-')) headers.delete(name);
+  }
+  // Allowed in Fetch but refused by the broker: say why instead of failing later.
+  for (const name of headers.keys()) {
+    if (name === 'authorization') throw unsupported('authorization headers require an opaque App connection');
+    if (METHOD_OVERRIDE.has(name)) throw unsupported(`${name} is not supported; use the request method`);
+  }
   return { request, url, method: request.method, headers, retained, expectedBytes,
     // A new multipart Request chooses a new boundary on replay. Only remove an
     // automatically generated content type; preserve an explicit caller value.
