@@ -73,9 +73,22 @@ elif after == 'marker-unlink':
         return result
     os.unlink = unlink
 elif after in ('journal-write', 'marker-write'):
-    real_write = os.write
+    # Track descriptors from the actual open/close calls on every platform.
+    # Removing closed descriptors prevents a reused fd from inheriting a target.
+    real_open, real_close, real_write = os.open, os.close, os.write
+    opened_paths = {}
+    def open_file(name, *args, **kwargs):
+        fd = real_open(name, *args, **kwargs)
+        opened_paths[fd] = os.fsdecode(name)
+        return fd
+    def close_file(fd):
+        try:
+            return real_close(fd)
+        finally:
+            opened_paths.pop(fd, None)
+    os.open, os.close = open_file, close_file
     def write(fd, data):
-        target = os.readlink('/proc/self/fd/' + str(fd))
+        target = opened_paths.get(fd, '')
         suffix = '.owner.tmp' if after == 'journal-write' else '.marker.tmp'
         if path.exists() and target.endswith(suffix):
             real_write(fd, data[:5])
@@ -142,6 +155,10 @@ getattr(storage, operation)(root, update_id, expected_uid=os.geteuid())
                 self.cleanup()
                 self.interrupted_operation('prepare', after)
                 self.assertTrue(self.attempt.exists())
+                suffix = '.owner.tmp' if after == 'journal-write' else '.marker.tmp'
+                temporary = self.root / ('.' + UPDATE_ID + suffix)
+                expected_prefix = b'{"ver' if after == 'journal-write' else UPDATE_ID.encode()[:5]
+                self.assertEqual(temporary.read_bytes(), expected_prefix)
                 storage.prepare(self.root, UPDATE_ID, expected_uid=self.uid)
                 self.cleanup()
                 self.assertFalse(self.attempt.exists())
