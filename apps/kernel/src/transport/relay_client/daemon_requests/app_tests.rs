@@ -237,10 +237,16 @@ async fn app_relay_upload_replays_preserve_owner_offset_and_abort_receipt() {
     );
     assert_eq!(router.dispatch(command, status).await.unwrap(), expected);
     complete.phase = AppPackageUploadPhase::Aborted;
-    let aborted = LocalDaemonResponse::AppPackageUploadStatus { upload: complete };
+    let aborted = dispatch(&router, &cache, Some("alice"), abort, "abort").await;
+    let LocalDaemonResponse::AppPackageUploadStatus { upload } = &aborted else {
+        panic!("abort should answer the upload status: {aborted:?}")
+    };
+    // The aborted receipt answers retries for a minute, not the upload's TTL.
+    assert!(upload.expires_at_ms < complete.expires_at_ms);
+    complete.expires_at_ms = upload.expires_at_ms;
     assert_eq!(
-        dispatch(&router, &cache, Some("alice"), abort, "abort").await,
-        aborted
+        aborted,
+        LocalDaemonResponse::AppPackageUploadStatus { upload: complete }
     );
     assert_eq!(
         dispatch(&router, &cache, Some("alice"), begin, "begin").await,
