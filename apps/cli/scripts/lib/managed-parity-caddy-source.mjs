@@ -50,13 +50,16 @@ export function stripCaddyComments(text) {
       // Valid heredocs are literal tokens. If a recognized opener has no
       // certain closing line, retain the remainder conservatively; masking
       // its # lines could hide active content in an incomplete/uncertain view.
-      const opening = /^<<([^\n]*)\n/.exec(text.slice(index));
+      const opening = /^<\r*<([^\n]*)\n/.exec(text.slice(index));
       const marker = opening?.[1].replaceAll("\r", "");
       if (marker && /^[A-Za-z0-9_-]+$/.test(marker)) {
         const bodyStart = index + opening[0].length;
-        const closing = new RegExp("^[\\t ]*" + marker + "(?=\\r?$)", "m").exec(text.slice(bodyStart));
-        if (!closing) break;
-        index = bodyStart + closing.index + closing[0].length - 1;
+        // Upstream ends the token at the first complete marker, before
+        // reading the next character. A quote/token may start immediately;
+        // requiring a marker-only line can skip into that token's contents.
+        const closing = text.indexOf(marker, bodyStart);
+        if (closing < 0) break;
+        index = closing + marker.length - 1;
         escaped = false;
         continue;
       }

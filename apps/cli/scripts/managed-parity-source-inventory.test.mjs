@@ -1454,3 +1454,25 @@ for (const suffix of [".tsfrag", ".mjsfrag"]) {
     });
   });
 }
+
+
+for (const quote of ['`', '"']) {
+  for (const opener of ['<<END', '<\r<END']) {
+    test("Caddy heredoc preserves an adjacent multiline " + JSON.stringify(quote) + " token after " + JSON.stringify(opener), () => {
+      withFixture({}, (fixture) => {
+        fixture.addFile("deploy/production/control-edge.Caddyfile", [
+          ':8080 {', '  map {host} {first} {second} {', '    default ' + opener,
+          'body', 'END' + quote + 'first line', 'END',
+          '#{$CHARIOX_MANAGED_CADDY_EARLY_END}', 'last line' + quote,
+          '# CHARIOX_MANAGED_CADDY_AFTER_ADJACENT_COMMENT',
+          '  }', '  respond "{second}"', '}', '',
+        ].join('\n'));
+        const report = collect(fixture);
+        const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_EARLY_END");
+        assert.equal(entry?.line, 7);
+        assert.equal(entry?.semanticDisposition.status, "unreviewed");
+        assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_AFTER_ADJACENT_COMMENT"));
+      });
+    });
+  }
+}

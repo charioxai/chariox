@@ -15,6 +15,17 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## Caddy heredoc token boundary correction (2026-09-30)
+
+Review [5371953727](https://github.com/charioxai/chariox/pull/664#pullrequestreview-5371953727)
+found a heredoc followed immediately by a quoted token could hide an active
+selector. The mask now ends the heredoc at the first marker, matching the pinned
+upstream lexer's token transition instead of requiring a marker-only line.
+It also preserves the upstream rule that CR is ignored in an unquoted opener.
+Four failing regressions cover adjacent backtick/double-quoted multiline tokens
+and CR-split openers. All 77 scanner tests pass after correction; this does not
+close any runtime or independent semantic acceptance gate.
+
 ## Fragment lexical completeness correction (2026-09-30)
 
 Review [5371819365](https://github.com/charioxai/chariox/pull/664#pullrequestreview-5371819365)
