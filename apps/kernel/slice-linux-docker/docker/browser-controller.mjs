@@ -41,7 +41,9 @@ export async function handleBrowserControllerRequest(
       });
     }
     if (request.method === "browser.reconcile") {
-      const reconciled = await browser.reconcile(request.params?.viewport);
+      const reconciled = await browser.reconcile(request.params?.viewport, {
+        browserBarVisible: request.params?.browser_bar_visible,
+      });
       const observedInventory = reconciled?.resource_inventory
         ?? await resourceInventory();
       return successResponse(

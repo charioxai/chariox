@@ -512,6 +512,54 @@ fn viewport_updates_are_actor_attributed_and_revision_guarded() {
 }
 
 #[test]
+fn the_browser_bar_is_hidden_by_default_and_changes_once_per_request() {
+    let mut environment = ready_environment();
+    assert!(!environment.snapshot().browser_bar_visible);
+    let human = |id: &str| EnvironmentActor::new(id, EnvironmentActorKind::Human, id);
+    let cursor = environment.snapshot().event_cursor;
+    environment
+        .set_browser_bar_visible_as_actor(human("user-1"), true)
+        .expect("a member shows the bar");
+    environment
+        .set_browser_bar_visible_as_actor(human("user-1"), true)
+        .expect("showing it again is a no-op");
+    assert!(environment.snapshot().browser_bar_visible);
+    let EnvironmentReplay::Events { events, .. } = environment.events_after(cursor) else {
+        panic!("the events are within the replay window");
+    };
+    let changes: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event.kind, EnvironmentEventKind::TabsChanged))
+        .collect();
+    assert_eq!(changes.len(), 1);
+
+    // Like a viewport change, it waits while someone else drives the desktop.
+    environment
+        .request_takeover_as_actor(human("user-2"), InputTarget::Desktop)
+        .expect("user-2 takes the desktop");
+    assert_eq!(
+        environment.set_browser_bar_visible_as_actor(human("user-1"), false),
+        Err(EnvironmentError::InputOwnedByAnotherActor {
+            target: InputTarget::Desktop,
+            actor_id: "user-2".to_string(),
+        })
+    );
+    environment
+        .set_browser_bar_visible_as_actor(human("user-2"), false)
+        .expect("the desktop's owner may hide it");
+    assert!(!environment.snapshot().browser_bar_visible);
+
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut stopped = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
+    assert_eq!(
+        stopped.set_browser_bar_visible_as_actor(human("user-1"), true),
+        Err(EnvironmentError::EnvironmentNotReady {
+            lifecycle: EnvironmentLifecycle::Stopped,
+        })
+    );
+}
+
+#[test]
 fn viewport_updates_reject_unknown_actors() {
     let mut environment = ready_environment();
     let replacement = CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();

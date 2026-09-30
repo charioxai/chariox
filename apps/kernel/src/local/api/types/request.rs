@@ -83,6 +83,7 @@ pub enum LocalDaemonRequest {
     RetryRoomEnvironment(RetryRoomEnvironmentRequest),
     UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest),
     UpdateRoomEnvironmentPointer(UpdateRoomEnvironmentPointerRequest),
+    SetRoomBrowserBar(SetRoomBrowserBarRequest),
     RequestRoomEnvironmentInputTakeover(RequestRoomEnvironmentInputTakeoverRequest),
     ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest),
     SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest),

@@ -162,6 +162,14 @@ pub struct RetryRoomEnvironmentRequest {
     pub session_id: String,
 }
 
+/// Shows or hides the Room browser bar (protocol 370): ordinary Tabs' windows
+/// are fullscreen, like App views, unless the bar is shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetRoomBrowserBarRequest {
+    pub session_id: String,
+    pub visible: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateRoomEnvironmentViewportRequest {
     pub session_id: String,

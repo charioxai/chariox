@@ -188,14 +188,16 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
-        let viewport = self
+        let environment = self
             .room_environment_snapshot(session_id)
-            .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?
-            .viewport;
+            .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?;
         let RoomBrowserControllerResult::Reconciled { reconciliation } = self
             .room_browser_controller_command(
                 session_id,
-                RoomBrowserControllerCommand::Reconcile { viewport },
+                RoomBrowserControllerCommand::Reconcile {
+                    viewport: environment.viewport,
+                    browser_bar_visible: environment.browser_bar_visible,
+                },
             )
             .await?
         else {
@@ -283,6 +285,7 @@ impl KernelRuntimeState {
                 session_id,
                 RoomBrowserControllerCommand::Reconcile {
                     viewport: environment.viewport.clone(),
+                    browser_bar_visible: environment.browser_bar_visible,
                 },
             )
             .await?

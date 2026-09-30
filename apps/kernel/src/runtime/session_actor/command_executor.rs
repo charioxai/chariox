@@ -227,6 +227,11 @@ impl SessionRuntimeCommandExecutor {
                     .update_room_environment_viewport(request, caller_user_id)
                     .await
             }
+            LocalDaemonRequest::SetRoomBrowserBar(request) => {
+                self.store
+                    .set_room_browser_bar(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => {
                 self.store
                     .update_room_environment_pointer(request, caller_user_id)

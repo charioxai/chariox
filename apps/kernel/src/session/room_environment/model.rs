@@ -193,6 +193,10 @@ pub struct RoomEnvironmentSnapshot {
     pub input_ownership: Vec<InputOwnership>,
     #[serde(default)]
     pub pending_input_takeovers: Vec<PendingInputTakeover>,
+    /// Ordinary Tabs show the browser bar (maximized windows) instead of
+    /// covering the desktop like App views (fullscreen, the default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser_bar_visible: bool,
     pub event_cursor: u64,
 }
 

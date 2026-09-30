@@ -9,6 +9,9 @@
 // Protocol 357: the App Tab's accessibility outline lists every node after its
 // parent. Opening the App again shows the same, single App Tab, navigated to a
 // new document whose title the Room shows once the view calls.
+// Protocol 370: the Room browser bar. An ordinary Tab's window is fullscreen
+// by default and maximized while the bar is shown; the App view's window stays
+// fullscreen either way.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
 // installed, running App:
@@ -94,6 +97,31 @@ try {
   assert.ok(reloadedAt > loadedAt, "reopening did not load the App again")
   const title = await roomTabTitle()
   evidence.steps.push({ step: "reopen", target_id: again.target_id, loaded_at: loadedAt, reloaded_at: reloadedAt, title })
+
+  // The Room browser bar: an ordinary Tab next to the App view.
+  // Its own window: a Tab opened while the App view has focus would join the
+  // App's window, which the bar leaves to the App view.
+  const { targetId: ordinary } = await browserCdp("Target.createTarget", { url: "about:blank", newWindow: true })
+  try {
+    const barStates = {}
+    for (const visible of [true, false]) {
+      const set = (await client.send({ SetRoomBrowserBar: { session_id: options.session, visible } }))
+        .RoomEnvironmentUpdated?.environment
+      assert.equal(set?.browser_bar_visible ?? false, visible, `SetRoomBrowserBar ${visible} was not kept`)
+      const state = async (targetId) => {
+        const { windowId } = await browserCdp("Browser.getWindowForTarget", { targetId })
+        return (await browserCdp("Browser.getWindowBounds", { windowId })).bounds.windowState
+      }
+      barStates[visible ? "shown" : "hidden"] = { ordinary: await state(ordinary), app: await state(view.target_id) }
+    }
+    assert.deepEqual(barStates, {
+      shown: { ordinary: "maximized", app: "fullscreen" },
+      hidden: { ordinary: "fullscreen", app: "fullscreen" },
+    })
+    evidence.steps.push({ step: "browser_bar", windows: barStates })
+  } finally {
+    await browserCdp("Target.closeTarget", { targetId: ordinary }).catch(() => {})
+  }
 
   // Room commands run while the page makes calls back to back.
   let calling = true
@@ -223,6 +251,33 @@ async function evaluate(targetId, expression) {
   )
   const line = stdout.trim().split("\n").at(-1)
   if (!line) throw new Error(`the App tab gave no answer: ${stderr.trim()}`)
+  return JSON.parse(line)
+}
+
+// One browser-level CDP command in the slice (window state lives on the
+// browser target, not a page).
+async function browserCdp(method, params) {
+  const script = `
+    const [method, params] = process.argv.slice(1)
+    const version = await (await fetch("http://127.0.0.1:9222/json/version")).json()
+    const socket = new WebSocket(version.webSocketDebuggerUrl)
+    await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject })
+    socket.send(JSON.stringify({ id: 1, method, params: JSON.parse(params) }))
+    const reply = await new Promise((resolve, reject) => {
+      socket.onmessage = (event) => { const message = JSON.parse(event.data); if (message.id === 1) resolve(message) }
+      socket.onclose = () => reject(new Error("DevTools socket closed before the answer"))
+    })
+    socket.close()
+    if (reply.error) throw new Error(JSON.stringify(reply.error))
+    console.log(JSON.stringify(reply.result))
+  `
+  const { stdout, stderr } = await run(
+    "docker",
+    ["exec", options.container, "node", "--input-type=module", "-e", script, method, JSON.stringify(params)],
+    { timeout: 30_000 },
+  )
+  const line = stdout.trim().split("\n").at(-1)
+  if (!line) throw new Error(`${method} gave no answer: ${stderr.trim()}`)
   return JSON.parse(line)
 }
 

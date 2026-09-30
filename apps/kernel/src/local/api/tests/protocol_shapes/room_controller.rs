@@ -18,7 +18,7 @@ fn browser_import_peer_contract_is_private_redacted_bounded_and_versioned() {
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     use zeroize::Zeroizing;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
     let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
     let payload_json = serde_json::json!([{"name":"session","value":generated_value}]).to_string();
@@ -94,7 +94,7 @@ fn browser_history_peer_contract_is_document_bound_and_versioned() {
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
     let command = RoomBrowserControllerCommand::History {
         execution_id: "00000000000000000000000000000001".into(),
@@ -136,7 +136,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
         BrowserControllerDownloadCancellationResult, BrowserDownloadCancellation,
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
     let command = RoomBrowserControllerCommand::CancelDownload {
         cancellation: BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
@@ -303,7 +303,7 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 369);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
     for (command, wire_command) in [
         (
@@ -676,12 +676,24 @@ fn room_controller_protocol_shapes_are_versioned() {
         (
             RoomBrowserControllerCommand::Reconcile {
                 viewport: crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+                browser_bar_visible: false,
             },
             serde_json::json!({"kind":"reconcile","viewport":{
                 "css_width":1280,"css_height":800,"device_scale_factor":1,
                 "desktop_pixel_width":1280,"desktop_pixel_height":800,
                 "revision":1,"last_actor_id":null
             }}),
+        ),
+        (
+            RoomBrowserControllerCommand::Reconcile {
+                viewport: crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+                browser_bar_visible: true,
+            },
+            serde_json::json!({"kind":"reconcile","viewport":{
+                "css_width":1280,"css_height":800,"device_scale_factor":1,
+                "desktop_pixel_width":1280,"desktop_pixel_height":800,
+                "revision":1,"last_actor_id":null
+            },"browser_bar_visible":true}),
         ),
     ] {
         let request = RelayPeerRequest::RoomBrowserController {

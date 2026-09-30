@@ -171,6 +171,22 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn set_browser_bar_visible_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        visible: bool,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.set_browser_bar_visible_as_actor(actor, visible)?;
+        Ok(environment.snapshot())
+    }
+
     pub(crate) fn update_viewport_as_actor(
         &mut self,
         session_id: &str,

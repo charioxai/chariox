@@ -203,6 +203,10 @@ pub(crate) enum RoomBrowserControllerCommand {
     Acquire,
     Reconcile {
         viewport: CanonicalViewport,
+        /// The Room's browser bar; a worker older than the flag leaves
+        /// windows as they are.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        browser_bar_visible: bool,
     },
     Snapshot {
         target_id: String,
