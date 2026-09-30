@@ -739,11 +739,12 @@ impl SessionService {
             }
             let ordinal =
                 session.next_workflow_runtime_instance_ordinal(workflow.id(), endpoint.id());
+            let primary = count == 0 && session.workflow_may_run_on_source_agents(&workflow);
             return Ok(Some(WorkflowRuntimeInstanceProvisionCandidate {
                 workflow,
                 endpoint,
                 ordinal,
-                primary: count == 0,
+                primary,
                 source_worktree_id: session.worktree_id().to_string(),
             }));
         }

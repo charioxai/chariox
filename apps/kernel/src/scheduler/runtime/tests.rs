@@ -108,6 +108,81 @@ fn prepare_active_workflow_run(
         .expect("workflow run should become active")
 }
 
+fn session_focus(app: &DaemonApp, session_id: &str) -> Option<String> {
+    crate::app::KernelSessionReadService::new(app)
+        .session_snapshot(session_id)
+        .expect("session snapshot should resolve")
+        .focused_agent_id()
+        .map(str::to_string)
+}
+
+#[test]
+fn workflow_turn_leaves_the_session_focus_where_the_person_put_it() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let worktree = crate::test_support::TestWorktree::new("scheduler-focus-stays");
+    let (session, owner_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should exist");
+    let workflow_agent_id = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("workflow-agent")
+                .with_model("test-model")
+                .with_worktree(worktree.path().display().to_string()),
+        )
+        .expect("workflow agent should spawn")
+        .id()
+        .to_string();
+    // The owner talks to their own agent.
+    let owner_focus = owner_agent.id().to_string();
+    crate::app::KernelSessionService::new(&mut app)
+        .focus_agent(session.id(), &owner_focus)
+        .expect("the owner focuses their agent");
+    let (workflow_id, node_id) =
+        create_workflow_node(&mut app, session.id(), "wf-focus-stays", &workflow_agent_id);
+    let workflow_run = prepare_active_workflow_run(&mut app, session.id(), &workflow_id, &node_id);
+
+    super::schedule_workflow_run_entry_node(&mut app, session.id(), &workflow_run)
+        .expect("the workflow turn should schedule on its agent");
+
+    let state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    let turn_on_workflow_agent = state
+        .active_prompt_for_agent(&workflow_agent_id)
+        .into_iter()
+        .chain(
+            state
+                .queued_prompts_for_agent(&workflow_agent_id)
+                .into_iter()
+                .flatten(),
+        )
+        .any(|prompt| prompt.workflow_run_id() == Some(workflow_run.id()));
+    assert!(
+        turn_on_workflow_agent,
+        "the workflow turn goes to its own agent"
+    );
+    assert_eq!(
+        session_focus(&app, session.id()),
+        Some(owner_focus.clone()),
+        "a workflow turn must not move the session focus"
+    );
+
+    // A person's focus change still moves it.
+    crate::app::KernelSessionService::new(&mut app)
+        .focus_agent(session.id(), &workflow_agent_id)
+        .expect("a person focuses the workflow agent");
+    assert_eq!(
+        session_focus(&app, session.id()),
+        Some(workflow_agent_id.clone())
+    );
+    crate::app::KernelSessionService::new(&mut app)
+        .focus_agent(session.id(), &owner_focus)
+        .expect("a person focuses their agent again");
+    assert_eq!(session_focus(&app, session.id()), Some(owner_focus));
+}
+
 #[test]
 fn direct_user_prompt_starts_before_active_workflow_reaches_idle_agent() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");

@@ -48,7 +48,9 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
             collaboration_level.can_view_agent_trace() || agent.owner_user_id() == user_id
         });
         for agent in &mut session.agents {
-            agent.set_visible_in_freeform(visible_agent_ids.contains(agent.id()));
+            // A runtime workflow copy has no Freeform pane for anyone.
+            let visible = agent.visible_in_freeform() && visible_agent_ids.contains(agent.id());
+            agent.set_visible_in_freeform(visible);
         }
     } else {
         session.agents = session
@@ -56,12 +58,14 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
             .into_iter()
             .map(|agent| {
                 if agent.owner_user_id() == user_id {
-                    let mut agent = agent;
-                    agent.set_visible_in_freeform(true);
+                    // The owner's own agents keep their visibility: a runtime
+                    // workflow copy stays out of the owner's Freeform too.
                     agent
                 } else {
                     let mut agent = agent.redacted_parameters();
-                    agent.set_visible_in_freeform(visible_agent_ids.contains(agent.id()));
+                    let visible =
+                        agent.visible_in_freeform() && visible_agent_ids.contains(agent.id());
+                    agent.set_visible_in_freeform(visible);
                     agent
                 }
             })
