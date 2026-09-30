@@ -173,16 +173,17 @@ impl KernelRuntimeState {
         let run = provider_run.clone();
         let auth_token = auth_token.to_owned();
         let name = tool_name.to_owned();
-        let (agent, tool) = tokio::task::spawn_blocking(move || {
+        let (agent, tool, published_elsewhere) = tokio::task::spawn_blocking(move || {
             let agent = state.app_agent_for_provider_run(&run)?;
             let base = state.runtime_tool_specs_without_apps_for_auth_token(&auth_token);
+            let published_elsewhere = base.iter().any(|tool| tool.name == name);
             let tool = state
                 .app_control()
                 .app_extension_tools_for_agent_admitted(&agent, &occupied_names(&base), &permit)
                 .map_err(app_error)?
                 .into_iter()
                 .find(|tool| tool.tool_name == name);
-            Ok::<_, DaemonError>((agent, tool))
+            Ok::<_, DaemonError>((agent, tool, published_elsewhere))
         })
         .await
         .map_err(|_| unavailable())??;
@@ -195,7 +196,9 @@ impl KernelRuntimeState {
             // revoked, or the provider still lists a withdrawn tool (Codex keeps
             // its list for the turn). Refuse it here; the dispatchers after this
             // one would answer with an unrelated workflow-turn error.
-            if app_shaped {
+            // Scripts and connectors can publish the same name shape. Keep
+            // routing those names to their own authenticated dispatchers.
+            if app_shaped && !published_elsewhere {
                 return Err(unavailable());
             }
             return Ok(None);
