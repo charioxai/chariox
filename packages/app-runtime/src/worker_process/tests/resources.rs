@@ -134,11 +134,12 @@ fn running_resource_failures_retain_admission_through_actual_reap() {
     ] {
         let (prepared, observed, marker) = fixture.prepare("hang", false, false);
         let (prepared, checks) = checked(prepared, Check::Error(error));
-        let result = wait_with_deadline(
-            WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).unwrap(),
-        )
-        .unwrap();
+        let worker = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).unwrap();
+        let ending = worker.ending();
+        let result = wait_with_deadline(worker).unwrap();
         assert_eq!(result.failure, Some(error));
+        // A call that lost the SDK channel can name the same cause.
+        assert_eq!(ended(&ending), Some(error));
         assert_eq!(result.signal, Some(libc::SIGKILL));
         assert!(marker.exists());
         assert_released(&observed);
@@ -152,6 +153,38 @@ fn running_resource_failures_retain_admission_through_actual_reap() {
     assert!(matches!(result, Err(WorkerError::Supervisor)));
     assert_released(&observed);
     assert_sample_and_reap_times(&checks, "running monitor panic");
+}
+
+/// Linux's cgroup kills the whole domain at its memory limit, so the worker
+/// exits by itself before a running check samples it.
+struct OomKilled(Box<dyn ResourceDomain>);
+impl ResourceDomain for OomKilled {
+    fn verify_before_continue(&mut self, pid: libc::pid_t) -> Result<(), WorkerError> {
+        self.0.verify_before_continue(pid)
+    }
+    fn exit_failure(&mut self) -> Option<WorkerError> {
+        Some(WorkerError::MemoryLimit)
+    }
+    fn terminate(&mut self, pid: libc::pid_t) {
+        self.0.terminate(pid);
+    }
+    fn reap_domain_blocking(&mut self) {
+        self.0.reap_domain_blocking();
+    }
+}
+
+#[test]
+fn a_running_worker_the_domain_killed_at_its_memory_limit_ends_with_that_failure() {
+    let fixture = Fixture::compile();
+    let (mut prepared, observed, marker) = fixture.prepare("normal", false, false);
+    prepared.domain = Box::new(OomKilled(prepared.domain));
+    let worker = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).unwrap();
+    let ending = worker.ending();
+    let result = wait_with_deadline(worker).unwrap();
+    assert!(marker.exists());
+    assert_eq!(result.failure, Some(WorkerError::MemoryLimit));
+    assert_eq!(ended(&ending), Some(WorkerError::MemoryLimit));
+    assert_released(&observed);
 }
 
 #[test]

@@ -83,6 +83,7 @@ impl AppWorkerOwner {
             phase: Mutex::new(Phase::Starting),
             changed,
             cancellation: process.cancellation(),
+            ending: process.ending(),
             broker: Arc::downgrade(&delegate),
             broker_draining: std::sync::atomic::AtomicBool::new(false),
             migrating: std::sync::atomic::AtomicBool::new(migrating),

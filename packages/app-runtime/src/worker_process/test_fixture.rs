@@ -30,6 +30,14 @@ pub enum Mode {
     NoReport,
     BrokerCall,
     ToolEcho,
+    /// Declares the echo tool; its first call is never answered.
+    ToolStall,
+    /// As ToolStall, and the worker's resource check then finds it over its
+    /// memory limit, so the monitor stops it under the call.
+    ToolOverMemory,
+    /// Declares the echo tool and dies by SIGKILL during its first call; its
+    /// domain reports that kill as the memory limit (a Linux cgroup OOM kill).
+    ToolKilledAtMemoryLimit,
     Files,
     Http,
     HttpPaused,
@@ -49,6 +57,8 @@ impl Mode {
             Self::NoReport => "sdk_no_report",
             Self::BrokerCall => "sdk_broker_call",
             Self::ToolEcho => "sdk_tool",
+            Self::ToolStall | Self::ToolOverMemory => "sdk_tool_stall",
+            Self::ToolKilledAtMemoryLimit => "sdk_tool_killed",
             Self::Files => "sdk_files",
             Self::Http => "sdk_http",
             Self::HttpPaused => "sdk_http_paused",
@@ -279,6 +289,8 @@ impl Fixture {
                 _scratch: self.scratch.clone(),
             };
             let private_data = objects[1].try_clone()?;
+            let over_memory = matches!(mode, Mode::ToolOverMemory)
+                .then(|| Path::new(&roots[1]).join("tool-effects"));
             Ok((
                 PreparedWorker {
                     program: CString::new(self.executable.as_os_str().as_bytes()).unwrap(),
@@ -298,6 +310,8 @@ impl Fixture {
                     _objects: objects,
                     domain: Box::new(FixtureDomain {
                         private_data,
+                        over_memory,
+                        killed_at_memory_limit: matches!(mode, Mode::ToolKilledAtMemoryLimit),
                         reaped,
                         dropped,
                         _scratch: self.scratch.clone(),
@@ -320,6 +334,10 @@ impl Fixture {
 
 struct FixtureDomain {
     private_data: File,
+    /// Reported over its memory limit once this tool-effect marker exists.
+    over_memory: Option<PathBuf>,
+    /// The worker's own exit is reported as a kill at its memory limit.
+    killed_at_memory_limit: bool,
     reaped: Arc<AtomicBool>,
     dropped: Arc<AtomicBool>,
     _scratch: Arc<Scratch>,
@@ -335,6 +353,16 @@ impl ResourceDomain for FixtureDomain {
             return Err(WorkerError::ResourceDomain);
         }
         Ok(())
+    }
+    fn check_running(&mut self, _pid: libc::pid_t, _now: Instant) -> Result<(), WorkerError> {
+        match &self.over_memory {
+            Some(marker) if marker.exists() => Err(WorkerError::MemoryLimit),
+            _ => Ok(()),
+        }
+    }
+    fn exit_failure(&mut self) -> Option<WorkerError> {
+        self.killed_at_memory_limit
+            .then_some(WorkerError::MemoryLimit)
     }
     fn terminate(&mut self, _pid: libc::pid_t) {}
     fn reap_domain_blocking(&mut self) {

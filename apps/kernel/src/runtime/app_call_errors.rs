@@ -1,10 +1,11 @@
 //! The code and message an App tool call's caller sees when it fails, the same
 //! for a view and for an agent: the App's own error passes through; a result
-//! that breaks the tool's declared output and a missed call deadline have
-//! their own codes; other kernel-side failures stay a generic `APP_ERROR`.
+//! that breaks the tool's declared output, a missed call deadline and a worker
+//! stopped at its memory limit have their own codes; other kernel-side
+//! failures stay a generic `APP_ERROR`.
 use crate::durable_state::app_tools::AppToolsError;
 use crate::runtime::app_worker::AppWorkerError;
-use chariox_app_runtime::app_catalog::CatalogError;
+use chariox_app_runtime::{app_catalog::CatalogError, worker_process::WORKER_MEMORY_LIMIT_BYTES};
 
 const INVALID_OUTPUT: (&str, &str) = (
     "INVALID_OUTPUT",
@@ -61,8 +62,21 @@ pub(crate) fn reply_unrecorded() -> (String, String) {
 pub(crate) fn worker_call_error(error: &AppWorkerError) -> (String, String) {
     match error {
         AppWorkerError::Deadline => owned(DEADLINE),
+        AppWorkerError::MemoryLimit => memory_limit(),
         error => ("APP_ERROR".into(), error.to_string()),
     }
+}
+
+/// The worker was stopped at its memory limit while the call ran. The App may
+/// have acted before it was stopped.
+fn memory_limit() -> (String, String) {
+    (
+        "APP_MEMORY_LIMIT".into(),
+        format!(
+            "The App used more than its {} MiB memory limit and was stopped",
+            WORKER_MEMORY_LIMIT_BYTES / (1024 * 1024)
+        ),
+    )
 }
 
 fn owned((code, message): (&str, &str)) -> (String, String) {
@@ -97,6 +111,20 @@ mod tests {
             "APP_ERROR"
         );
         assert_eq!(worker_call_error(&AppWorkerError::Busy).0, "APP_ERROR");
+    }
+
+    #[test]
+    fn a_call_whose_worker_hit_its_memory_limit_names_the_limit() {
+        let (code, message) = worker_call_error(&AppWorkerError::MemoryLimit);
+        assert_eq!(code, "APP_MEMORY_LIMIT");
+        assert_eq!(
+            message,
+            "The App used more than its 512 MiB memory limit and was stopped"
+        );
+        assert_eq!(
+            tool_call_error(&AppToolsError::Worker(AppWorkerError::MemoryLimit)).0,
+            "APP_MEMORY_LIMIT"
+        );
     }
 
     #[test]

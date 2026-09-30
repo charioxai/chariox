@@ -119,6 +119,10 @@ impl PreparedWorker {
     }
 }
 
+/// Each worker's memory limit on both platforms. macOS terminates a worker its
+/// monitor observes above it; Linux sets it as the worker cgroup's memory.max.
+pub const WORKER_MEMORY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
+
 /// The bootstrap's budget for all migration steps of one update; App startup
 /// then gets its normal budget.
 pub const MIGRATION_TIMEOUT_MS: u64 = 120_000;
@@ -166,6 +170,11 @@ trait ResourceDomain: Send {
         _now: Instant,
     ) -> Result<(), WorkerError> {
         Ok(())
+    }
+    /// The limit this domain enforced on a running worker that then exited
+    /// by itself (Linux: the cgroup's OOM kill at its memory limit), if any.
+    fn exit_failure(&mut self) -> Option<WorkerError> {
+        None
     }
     fn terminate(&mut self, launcher_pid: libc::pid_t);
     /// Must await an empty owned domain after the direct child is reaped,
@@ -258,6 +267,24 @@ pub struct WorkerExit {
     pub stderr_tail: Vec<u8>,
 }
 
+/// The failure that ends a worker, published by its monitor before it kills
+/// and reaps the process. A call that loses the SDK channel meanwhile reads it
+/// to name the cause, such as the memory limit, instead of a disconnect.
+#[derive(Clone)]
+pub struct WorkerEnding(tokio::sync::watch::Receiver<Option<Option<WorkerError>>>);
+impl WorkerEnding {
+    /// Waits at most `bound` for the monitor's decision. None: the worker ended
+    /// without a failure, or its monitor has not decided yet.
+    pub async fn failure(&self, bound: Duration) -> Option<WorkerError> {
+        let mut decision = self.0.clone();
+        let decided = tokio::time::timeout(bound, decision.wait_for(Option::is_some)).await;
+        match decided {
+            Ok(Ok(failure)) => (*failure).flatten(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WorkerCancellation {
     cancelled: Arc<AtomicBool>,
@@ -276,6 +303,7 @@ pub struct WorkerProcess {
     release_digest: String,
     sdk: Option<UnixStream>,
     cancellation: WorkerCancellation,
+    ending: WorkerEnding,
     monitor: Option<JoinHandle<WorkerExit>>,
     // The monitor may finish or unwind before the kernel has drained callbacks.
     // Its wait owner shares this preparation; dropping Child must not drop pins.
@@ -319,13 +347,14 @@ impl WorkerProcess {
         let child = monitor::Child::new(pid, prepared.clone());
         drop((input, stdout_file, stderr_file, sdk_file, control_file));
         let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (ending_tx, ending) = tokio::sync::watch::channel(None);
         let cancelled = cancellation.cancelled.clone();
         let monitor = thread::Builder::new()
             .name("chariox-app-worker".into())
             .spawn(move || {
                 monitor::run(
                     child, control, stdout, stderr, wake_read, cancelled, record, ready, limits,
-                    deadline, started_tx,
+                    deadline, started_tx, ending_tx,
                 )
             })
             .map_err(|_| WorkerError::Spawn)?;
@@ -335,6 +364,7 @@ impl WorkerProcess {
             release_digest,
             sdk: Some(sdk),
             cancellation,
+            ending: WorkerEnding(ending),
             monitor: Some(monitor),
             _preparation: prepared,
         };
@@ -353,6 +383,10 @@ impl WorkerProcess {
 
     pub fn cancellation(&self) -> WorkerCancellation {
         self.cancellation.clone()
+    }
+
+    pub fn ending(&self) -> WorkerEnding {
+        self.ending.clone()
     }
 
     /// Identity captured from the private trusted preparation, never the App's

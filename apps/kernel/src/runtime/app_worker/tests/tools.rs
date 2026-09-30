@@ -156,3 +156,47 @@ fn cancellation_during_real_sqlite_writer_wait_never_reaches_sdk() {
     assert_eq!(observed.tool_invocations(), 0);
     owner.shutdown_blocking();
 }
+
+#[test]
+fn an_in_flight_call_names_the_memory_limit_that_stopped_its_worker() {
+    // The monitor stops it over its limit (macOS), or its domain kills it and
+    // the lost channel cancels it first (a Linux cgroup OOM kill).
+    for mode in [Mode::ToolOverMemory, Mode::ToolKilledAtMemoryLimit] {
+        let scratch = Scratch::new();
+        let store = scratch.store();
+        let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+        let tool = catalog.app_catalog().tools().next().unwrap().name.clone();
+        let runtime = runtime();
+        let fixture = NativeFixture::compile().unwrap();
+        let (starting, mut events, observed) = start(
+            &fixture,
+            mode,
+            &runtime,
+            catalog,
+            broker(|_| Box::pin(async { Ok(Value::Null) })),
+        );
+        let (owner, handle) = activate(starting.await_registered_blocking(WAIT).unwrap(), &store);
+        event(&runtime, &mut events, "worker.fixture.ready_ack");
+        let response = store
+            .enqueue_app_tool(
+                handle.lease("alice").unwrap().reserve_call(WAIT).unwrap(),
+                &tool,
+                json!({"text":"grow"}),
+                caller(),
+                budget(),
+            )
+            .unwrap();
+        let error = runtime
+            .block_on(async { tokio::time::timeout(WAIT, response.receive()).await })
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(error, AppWorkerError::MemoryLimit);
+        assert_eq!(observed.tool_invocations(), 1);
+        let exit = owner.finish_blocking().unwrap();
+        assert_eq!(
+            exit.failure,
+            Some(chariox_app_runtime::worker_process::WorkerError::MemoryLimit)
+        );
+    }
+}

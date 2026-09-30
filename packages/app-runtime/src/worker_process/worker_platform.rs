@@ -26,7 +26,7 @@ impl ResourcePolicy {
     // Candidate Phase 1 worker policy. Actual pinned-Node/reference-App and
     // aggregate-pressure measurements must validate it before release.
     pub(super) const PHASE1: Self = Self {
-        memory_bytes: 512 * 1024 * 1024,
+        memory_bytes: super::WORKER_MEMORY_LIMIT_BYTES,
         threads: 64,
     };
 }

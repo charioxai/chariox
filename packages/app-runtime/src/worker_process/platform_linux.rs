@@ -18,7 +18,7 @@ mod tests;
 
 use super::WorkerError;
 type Result<T> = std::result::Result<T, WorkerError>;
-const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+const MEMORY_BYTES: u64 = super::WORKER_MEMORY_LIMIT_BYTES;
 const TASKS: u64 = 64;
 // This is the initial installer/hosted validation baseline, not a statement
 // that other distributions or architectures have already passed acceptance.
