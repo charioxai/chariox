@@ -342,6 +342,7 @@ impl KernelRuntimeState {
             unlock_lease_for_choice(&choice_id, &vault_config, force_prompt);
         let status =
             crate::secret::unlock_chariox_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
+        self.pin_critical_approval_verifier_after_unlock(&vault_path);
         crate::logging::info_with_fields(
             "credential_vault",
             "Chariox vault unlocked",

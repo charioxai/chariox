@@ -597,7 +597,10 @@ impl KernelRuntimeState {
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
                 app_control,
-                critical_approval_passkeys: Default::default(),
+                critical_approval_passkeys:
+                    critical_approval_passkey::CriticalApprovalPasskeys::new(
+                        &config_projection.snapshot().user_config.credential_vault,
+                    ),
                 config_projection,
                 session_store,
                 agent_store,

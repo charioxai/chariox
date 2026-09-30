@@ -2,21 +2,32 @@
 //! marked `requires_passkey`) needs the Chariox passkey, which is the encrypted
 //! vault's passphrase, or the owner's optional remember window. The vault is
 //! usually unlocked, so its unlock proves no human is present; the passkey is
-//! checked against the vault file at answer time, then dropped. Deny and
-//! routine decisions never reach this gate.
+//! checked at answer time, then dropped. Deny and routine decisions never
+//! reach this gate.
+//!
+//! The passkey is checked against a pinned commitment to the vault key
+//! (`VaultPasskeyVerifier`), kept durably: pinned the first time the kernel
+//! holds a proven key for the vault its boot configuration names (an unlock,
+//! or the first right passkey). Changing the configured vault path or the file
+//! later never moves it.
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::KernelRuntimeState;
+use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::local::{ApprovalPasskey, PASSKEY_REMEMBER_MAX_MINUTES};
+use crate::secret::VaultPasskeyVerifier;
 
 pub(crate) const PASSKEY_REQUIRED: &str = "PASSKEY_REQUIRED";
 pub(crate) const PASSKEY_REJECTED: &str = "PASSKEY_REJECTED";
 pub(crate) const PASSKEY_RATE_LIMITED: &str = "PASSKEY_RATE_LIMITED";
 pub(crate) const PASSKEY_UNAVAILABLE: &str = "PASSKEY_UNAVAILABLE";
 const AUDIT_EVENT: &str = "critical_approval.passkey";
+const PIN_EVENT: &str = "critical_approval.passkey_verifier";
+const PIN_SUBJECT: &str = "chariox-vault";
 
 /// Wrong passkeys allowed before each further one locks the owner out.
 const FREE_FAILURES: u32 = 5;
@@ -39,14 +50,62 @@ struct OwnerPresence {
 
 /// Per-owner failure count, lockout and remember window, in kernel memory
 /// only: a restart forgets every window.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct CriticalApprovalPasskeys {
     owners: Arc<std::sync::Mutex<BTreeMap<String, OwnerPresence>>>,
     /// One verification at a time, so parallel guesses cannot outrun the limit.
     verifying: Arc<tokio::sync::Mutex<()>>,
+    /// The encrypted vault named by the boot configuration; a pin is only
+    /// ever taken from it.
+    boot_vault: Option<PathBuf>,
+    pinned: Arc<std::sync::Mutex<Option<VaultPasskeyVerifier>>>,
 }
 
 impl CriticalApprovalPasskeys {
+    pub(super) fn new(boot_config: &crate::config::UserCredentialVaultConfig) -> Self {
+        Self {
+            owners: Default::default(),
+            verifying: Default::default(),
+            boot_vault: (boot_config.backend
+                == crate::config::CredentialVaultBackend::CharioxEncrypted)
+                .then(|| super::runtime_vault_unlock_state::expand_vault_path(&boot_config.path)),
+            pinned: Default::default(),
+        }
+    }
+
+    /// The pinned verifier, from memory or durable state.
+    fn pinned(
+        &self,
+        durable: &DurableKernelStateStore,
+    ) -> Result<Option<VaultPasskeyVerifier>, DaemonError> {
+        let mut pinned = self.pinned.lock().expect("passkey verifier poisoned");
+        if pinned.is_none() {
+            *pinned = durable
+                .load_subject_events_by_kind(PIN_SUBJECT, PIN_EVENT, 1)?
+                .into_iter()
+                .next()
+                .and_then(|event| serde_json::from_value(event.payload).ok());
+        }
+        Ok(pinned.clone())
+    }
+
+    /// Pins `verifier` durably unless one is pinned already.
+    fn pin(
+        &self,
+        durable: &DurableKernelStateStore,
+        verifier: VaultPasskeyVerifier,
+    ) -> Result<(), DaemonError> {
+        if self.pinned(durable)?.is_some() {
+            return Ok(());
+        }
+        let payload = serde_json::to_value(&verifier).map_err(|error| {
+            passkey_error(PASSKEY_UNAVAILABLE, &format!("passkey pin: {error}"))
+        })?;
+        durable.append_event(PIN_EVENT, Some(PIN_SUBJECT.to_owned()), payload)?;
+        *self.pinned.lock().expect("passkey verifier poisoned") = Some(verifier);
+        Ok(())
+    }
+
     fn with_owner<R>(&self, owner: &str, apply: impl FnOnce(&mut OwnerPresence) -> R) -> R {
         let mut owners = self
             .owners
@@ -161,26 +220,36 @@ impl KernelRuntimeState {
                 ),
             ));
         }
-        let vault = self
-            .owned
-            .config_projection
-            .snapshot()
-            .user_config
-            .credential_vault;
-        if vault.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
-            audit("unavailable")?;
-            return Err(passkey_error(
-                PASSKEY_UNAVAILABLE,
-                "critical approvals need the encrypted Chariox vault, whose passphrase is the passkey",
-            ));
-        }
-        let path = super::runtime_vault_unlock_state::expand_vault_path(&vault.path);
+        let durable = self.owned.durable_state_store.clone();
+        let pinned = presence.pinned(&durable)?;
+        let boot_vault = presence.boot_vault.clone();
         let secret = zeroize::Zeroizing::new(passkey.expose_secret().to_owned());
-        let verified = tokio::task::spawn_blocking(move || {
-            crate::secret::verify_chariox_vault_passphrase(&path, secret.as_str())
+        // Verify against the pin; without one yet, pin from the boot vault
+        // (the kernel's unlocked key, else this passkey if it opens the vault).
+        let checked = tokio::task::spawn_blocking(move || {
+            if let Some(verifier) = pinned {
+                return verifier.verify(&secret).map(|ok| (ok, None));
+            }
+            let path = boot_vault
+                .ok_or_else(|| passkey_error(PASSKEY_UNAVAILABLE, "no encrypted Chariox vault"))?;
+            if let Some(verifier) = VaultPasskeyVerifier::from_unlocked(&path)? {
+                return Ok((verifier.verify(&secret)?, Some(verifier)));
+            }
+            Ok(
+                match VaultPasskeyVerifier::from_passphrase(&path, &secret)? {
+                    Some(verifier) => (true, Some(verifier)),
+                    None => (false, None),
+                },
+            )
         })
         .await
         .map_err(|_| passkey_error(PASSKEY_UNAVAILABLE, "passkey verification stopped"))?;
+        let verified = checked.and_then(|(verified, new_pin)| {
+            if let Some(verifier) = new_pin {
+                presence.pin(&durable, verifier)?;
+            }
+            Ok(verified)
+        });
         match verified {
             Ok(true) => {
                 presence.record_success(&owner, Instant::now(), remember_minutes);
@@ -199,9 +268,22 @@ impl KernelRuntimeState {
                 audit("unavailable")?;
                 Err(passkey_error(
                     PASSKEY_UNAVAILABLE,
-                    "the Chariox vault could not be read; set it up with its passphrase first",
+                    "critical approvals need the encrypted Chariox vault, set up with its passphrase",
                 ))
             }
+        }
+    }
+
+    /// Pins the verifier as soon as the kernel unlocks its boot vault, so a
+    /// later change of vault path or file cannot supply the first pin.
+    pub(super) fn pin_critical_approval_verifier_after_unlock(&self, vault: &std::path::Path) {
+        let presence = &self.owned.critical_approval_passkeys;
+        if presence.boot_vault.as_deref() != Some(vault) {
+            return;
+        }
+        let durable = &self.owned.durable_state_store;
+        if let Ok(Some(verifier)) = VaultPasskeyVerifier::from_unlocked(vault) {
+            let _ = presence.pin(durable, verifier);
         }
     }
 

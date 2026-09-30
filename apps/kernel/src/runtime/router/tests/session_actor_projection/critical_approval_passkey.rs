@@ -40,6 +40,7 @@ impl Fixture {
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.path = vault_path.display().to_string();
+        config.user_config_path = root.join("config.toml");
         let app = DaemonApp::bootstrap(config).unwrap();
         let session = RuntimeSession::new(
             format!("passkey-{:016x}", rand::random::<u64>()),
@@ -330,4 +331,41 @@ async fn critical_approval_fails_closed_without_the_vault() {
     );
     assert_eq!(f.outcomes("no-vault"), ["unavailable"]);
     f.answer("no-vault", "deny", None, None).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_swapped_vault_path_or_file_cannot_supply_the_passkey() {
+    let f = Fixture::new(true);
+    let forged = f.vault.with_file_name("forged.json");
+    crate::secret::create_chariox_encrypted_vault_for_test(&forged, "agent passphrase").unwrap();
+    let first = f.critical("first").await;
+    let second = f.critical("second").await;
+    // A local caller points the live vault config at a vault it made...
+    let request = LocalDaemonRequest::SetUserConfigValue(crate::local::SetUserConfigValueRequest {
+        path: "credential_vault.path".into(),
+        value: forged.display().to_string(),
+    });
+    let command = KernelCommand::from_local_request("forge-vault-path", None, None, &request);
+    f.router.dispatch(command, request).await.unwrap();
+    Fixture::refused_with(
+        f.answer("first", "approve", Some("agent passphrase"), None)
+            .await,
+        "PASSKEY_REJECTED",
+    );
+    // The boot vault still decides, and the right passkey pins it.
+    f.answer("first", "approve", Some(PASSKEY), None)
+        .await
+        .unwrap();
+    assert_eq!(first.await.unwrap().choice_id.as_deref(), Some("approve"));
+    // ...or replaces the vault file itself: the pin does not move.
+    std::fs::copy(&forged, &f.vault).unwrap();
+    Fixture::refused_with(
+        f.answer("second", "approve", Some("agent passphrase"), None)
+            .await,
+        "PASSKEY_REJECTED",
+    );
+    f.answer("second", "approve", Some(PASSKEY), None)
+        .await
+        .unwrap();
+    assert_eq!(second.await.unwrap().choice_id.as_deref(), Some("approve"));
 }
