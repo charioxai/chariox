@@ -176,6 +176,23 @@ async fn an_error_code_gives_way_to_the_next_server_at_once() {
 }
 
 #[tokio::test]
+async fn an_error_code_for_one_family_still_gives_way_to_the_next_server() {
+    // The other family answers without data; that alone is not final.
+    for kind in [RecordType::A, RecordType::AAAA] {
+        let failing = TestDns::failing_only(ResponseCode::Refused, kind).await;
+        let good = public().await;
+        let config = DnsConfig::fixture_servers(&[failing.address(), good.address()]);
+        let start = Instant::now();
+        assert_eq!(
+            resolve(&config, "https://public.test/").await.unwrap(),
+            answered(),
+            "{kind:?}"
+        );
+        assert!(start.elapsed() < SLACK, "{kind:?}: {:?}", start.elapsed());
+    }
+}
+
+#[tokio::test]
 async fn a_lone_server_is_asked_again_before_the_lookup_fails() {
     let silent = TestDns::silent().await;
     let config = DnsConfig::fixture_servers(&[silent.address()]);

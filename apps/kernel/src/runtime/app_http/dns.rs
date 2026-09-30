@@ -8,13 +8,17 @@ mod tasks;
 
 use super::{policy::ApprovedTarget, HttpError, Result};
 use hickory_resolver::{
-    config::{LookupIpStrategy, ResolveHosts, ResolverConfig, ResolverOpts},
+    config::{ResolveHosts, ResolverConfig, ResolverOpts},
+    lookup::Lookup,
     lookup_ip::LookupIp,
     net::{DnsError, NetError, NoRecords},
     proto::{op::ResponseCode, rr::Name},
     Resolver,
 };
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 use tokio::{sync::watch, time::Instant};
 
 /// One attempt at one name server; Hickory retransmits UDP within it. A server
@@ -46,9 +50,9 @@ pub(super) struct DnsConfig {
 
 /// What one server's attempt settled.
 enum Answer {
-    Addresses(LookupIp),
-    /// NXDOMAIN or no addresses (NODATA), from a server whose negative
-    /// answers count: final, as with glibc.
+    Addresses(Vec<IpAddr>),
+    /// Both families answered NXDOMAIN or no addresses (NODATA), from a
+    /// server whose negative answers count: final, as with glibc.
     Missing,
     /// No usable answer: the next server is asked.
     Next,
@@ -99,7 +103,6 @@ impl DnsConfig {
         options.cache_size = 0;
         options.preserve_intermediates = false;
         options.use_hosts_file = ResolveHosts::Never;
-        options.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
         let servers = config
             .name_servers()
             .iter()
@@ -143,9 +146,11 @@ impl DnsConfig {
                 .ask(server, &name, until, deadline, &mut cancelled, &lease)
                 .await?
             {
-                Answer::Addresses(answer) => {
+                Answer::Addresses(addresses) => {
                     return target.validate_addresses(
-                        answer.iter().map(|ip| SocketAddr::new(ip, target.port())),
+                        addresses
+                            .into_iter()
+                            .map(|ip| SocketAddr::new(ip, target.port())),
                     )
                 }
                 Answer::Missing => return Err(HttpError::Network),
@@ -181,11 +186,9 @@ impl DnsConfig {
                     _ = super::cancelled(cancelled) => Err(HttpError::Cancelled),
                     _ = tokio::time::sleep_until(deadline) => Err(HttpError::Deadline),
                     _ = tokio::time::sleep_until(until) => Ok(Answer::Next),
-                    result = resolver.lookup_ip(name.clone()) => Ok(match result {
-                        Ok(answer) if answer.iter().next().is_some() => Answer::Addresses(answer),
-                        Err(error) if trusted && negative(&error) => Answer::Missing,
-                        _ => Answer::Next,
-                    }),
+                    answers = async {
+                        tokio::join!(resolver.ipv4_lookup(name.clone()), resolver.ipv6_lookup(name.clone()))
+                    } => Ok(settle(trusted, [answers.0, answers.1])),
                 };
                 drop(resolver);
                 result
@@ -199,6 +202,28 @@ impl DnsConfig {
         } else {
             result
         }
+    }
+}
+
+/// A and AAAA are decided per family: addresses from either, and the name
+/// missing only when both families answered so. An error code or silence for
+/// one family gives way to the next server.
+fn settle(trusted: bool, answers: [std::result::Result<Lookup, NetError>; 2]) -> Answer {
+    let mut addresses = Vec::new();
+    let mut missing = 0;
+    for answer in answers {
+        match answer {
+            Ok(lookup) => addresses.extend(LookupIp::from(lookup).iter()),
+            Err(error) if negative(&error) => missing += 1,
+            Err(_) => {}
+        }
+    }
+    if !addresses.is_empty() {
+        Answer::Addresses(addresses)
+    } else if trusted && missing == 2 {
+        Answer::Missing
+    } else {
+        Answer::Next
     }
 }
 

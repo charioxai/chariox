@@ -29,8 +29,9 @@ enum Behavior {
     Answer(Arc<Script>),
     /// Counts queries and never replies, like a blackholed server.
     Silent,
-    /// Replies to every query with this error code.
-    Fail(ResponseCode),
+    /// Replies to queries of one record type (or all) with this error code;
+    /// other types get an answer without data.
+    Fail(ResponseCode, Option<RecordType>),
 }
 
 pub(in crate::runtime::app_http) struct TestDns {
@@ -54,7 +55,16 @@ impl TestDns {
 
     /// A server that answers every query with an error code.
     pub(in crate::runtime::app_http) async fn failing(code: ResponseCode) -> Self {
-        Self::serve(Behavior::Fail(code)).await
+        Self::serve(Behavior::Fail(code, None)).await
+    }
+
+    /// A server that answers one record type with an error code, and every
+    /// other type without data.
+    pub(in crate::runtime::app_http) async fn failing_only(
+        code: ResponseCode,
+        kind: RecordType,
+    ) -> Self {
+        Self::serve(Behavior::Fail(code, Some(kind))).await
     }
 
     async fn serve(behavior: Behavior) -> Self {
@@ -156,8 +166,10 @@ fn answer(
     let script = match behavior {
         Behavior::Answer(script) => script,
         Behavior::Silent => return None,
-        Behavior::Fail(code) => {
-            reply.metadata.response_code = *code;
+        Behavior::Fail(code, only) => {
+            if only.is_none_or(|only| only == kind) {
+                reply.metadata.response_code = *code;
+            }
             return Some(reply);
         }
     };
