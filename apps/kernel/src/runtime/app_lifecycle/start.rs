@@ -346,7 +346,11 @@ fn spawn(
             committed,
             migrate_from,
         )
-        .map_err(|error| failed("prepare", error.to_string()))?;
+        .map_err(|error| {
+            disk_space::preparation_error_with_diagnostic(error, |other| {
+                failed("prepare", other.to_string())
+            })
+        })?;
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }

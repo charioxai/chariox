@@ -254,6 +254,7 @@ fn held_file_identity_and_private_root_reject_replacement_and_aliases() {
 
 #[test]
 fn accounting_reserves_full_unallocated_image_capacity_and_host_headroom() {
+    use crate::worker_process::{HostDiskSpace, HOST_RESERVE_BYTES as HOST_RESERVE};
     let reserved = 132 * 1024 * 1024;
     assert_eq!(
         require_capacity(MAX_RESERVED_BYTES, reserved, HOST_RESERVE + reserved),
@@ -265,11 +266,17 @@ fn accounting_reserves_full_unallocated_image_capacity_and_host_headroom() {
     );
     assert_eq!(
         require_capacity(reserved, reserved, HOST_RESERVE + reserved - 1),
-        Err(Error::Capacity)
+        Err(Error::HostReserve(HostDiskSpace {
+            free: HOST_RESERVE + reserved - 1,
+            needed: HOST_RESERVE + reserved
+        }))
     );
     assert_eq!(
         require_capacity(reserved, reserved, 0),
-        Err(Error::Capacity)
+        Err(Error::HostReserve(HostDiskSpace {
+            free: 0,
+            needed: HOST_RESERVE + reserved
+        }))
     );
 }
 

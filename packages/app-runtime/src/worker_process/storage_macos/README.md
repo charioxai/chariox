@@ -129,3 +129,5 @@ mount options, and identity-based detach. Apple also describes fixed read/write
 images in [Disk Utility Help](https://support.apple.com/guide/disk-utility/create-a-disk-image-dskutl11888/mac)
 and the APFS tool model in its [archived APFS guide](https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/APFS_Guide/ToolsandAPIs/ToolsandAPIs.html).
 The hosted tool output is the compatibility gate for the current macOS release.
+
+Host-space refusals preserve the measured free bytes and required reserve through `WorkerError::HostDiskSpace`. Native worker preparation and the kernel lifecycle retain those numbers for the owner warning; other preparation failures retain their existing diagnostics.
