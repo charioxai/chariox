@@ -1,6 +1,19 @@
 //! Serialized internal start/stop actions; all authority stays on the writer.
 use super::*;
 impl AppLifecycleService {
+    /// An accepted owner spans admission, the durable claim, and publication.
+    /// A user stop or a finished owner must never make a call wait for restart.
+    pub(crate) fn has_pending_owner(&self, owner: &str, installation: &str) -> bool {
+        !self.0.stopped.load(Ordering::Acquire)
+            && self
+                .0
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&(owner.to_owned(), installation.to_owned()))
+                .is_some_and(|entry| !entry.control.stopped() && !entry.control.finished())
+    }
+
     /// Internal kernel action only. No client-selected path, package metadata,
     /// runtime executable, permission decision or sandbox flag is accepted.
     pub(crate) fn start_active_blocking(
@@ -150,6 +163,8 @@ impl AppLifecycleService {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
+            #[cfg(test)]
+            start_checkpoint: self.0.start_checkpoint.lock().unwrap().clone(),
             #[cfg(test)]
             claim_checkpoint: self
                 .0

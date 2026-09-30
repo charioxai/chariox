@@ -22,6 +22,8 @@ mod uploads;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod workers;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod readiness;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) use workers::AppWorkerPublisher;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod catalog;

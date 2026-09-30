@@ -150,21 +150,10 @@ impl KernelRuntimeState {
         }
         let deadline = tokio::time::Instant::now() + ON_DEMAND_START;
         if !control.is_app_dormant(owner, installation) {
-            use crate::durable_state::app_worker_lifecycle::WorkerPhase;
-            // A start already under way (a user start, a restart after a
-            // crash) is waited for.
-            while self
-                .app_worker_status(owner, installation)
+            if let Some(lease) = control
+                .wait_for_app_lease(owner, installation, deadline)
                 .await
-                .is_some_and(|status| status.phase == WorkerPhase::Starting)
-                && tokio::time::Instant::now() < deadline
             {
-                if let Some(lease) = control.active_app_lease(owner, installation) {
-                    return Ok(lease);
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if let Some(lease) = control.active_app_lease(owner, installation) {
                 return Ok(lease);
             }
             let status = self.app_worker_status(owner, installation).await;
