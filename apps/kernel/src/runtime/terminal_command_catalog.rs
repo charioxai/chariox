@@ -779,6 +779,30 @@ mod tests {
     }
 
     #[test]
+    fn terminal_command_catalog_lists_app_install_as_an_exact_session_command() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let mut nodes = Vec::new();
+        collect(&catalog.nodes, &mut nodes);
+        let install = nodes
+            .into_iter()
+            .find(|node| node.id == "app-install")
+            .expect("app install should be present");
+
+        // No trailing space: an exact `/app install` submits (the web opens its
+        // package picker) instead of completing to the `/app` group.
+        assert_eq!(install.value, "/app install");
+        assert_eq!(install.kind, TerminalCommandCatalogNodeKind::Command);
+        assert_eq!(
+            install.execution_target,
+            TerminalCommandCatalogExecutionTarget::TerminalLocal
+        );
+        assert_eq!(
+            install.surfaces,
+            vec![TerminalCommandCatalogSurface::Session]
+        );
+    }
+
+    #[test]
     fn terminal_command_catalog_registers_workflow_trigger_lifecycle() {
         let catalog = terminal_command_catalog().expect("catalog should load");
         let workflow = catalog

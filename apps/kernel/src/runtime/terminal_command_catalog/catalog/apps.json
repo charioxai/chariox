@@ -119,6 +119,19 @@
         ]
       },
       {
+        "id": "app-install",
+        "label": "install",
+        "description": "Install an App from a local .cxapp package",
+        "value": "/app install",
+        "execution_target": "terminal_local",
+        "examples": [
+          "/app install \"./My App.cxapp\""
+        ],
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
         "id": "app-update",
         "label": "update",
         "description": "Replace an installed App's release with a local .cxapp package; its data is kept",
