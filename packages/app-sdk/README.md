@@ -102,11 +102,18 @@ What survives a crash:
 
 The runtime denies `fsync` and `fdatasync` in every form: `fs.fsyncSync`,
 `fs.fdatasyncSync`, `fs.fsync`, `fs.fdatasync`, `FileHandle.sync()` and
-`datasync()`, and so `writeFile`/`writeFileSync` with `flush: true` (after the
-data is written). Each fails `ERR_ACCESS_DENIED`. Node's permission model
-cannot tie an operation on an open descriptor to a path grant: it already
-denies the sync and callback forms, and later Node releases deny the
-`FileHandle` forms too. Denying all of them now gives Apps one behavior.
+`datasync()`. So do the forms built on them:
+- `writeFile`, `writeFileSync`, `appendFile` and `appendFileSync` with
+  `flush: true` write the data, then fail.
+- Write streams with `flush: true` (`fs.createWriteStream` and
+  `FileHandle#createWriteStream`) fail at close, after `'finish'`. Only
+  `'close'`, `'error'` and `finished()` observers see it.
+
+Each fails `ERR_ACCESS_DENIED`. Node's permission model cannot tie an
+operation on an open descriptor to a path grant: it already denies the sync and
+callback forms, and later Node releases deny the `FileHandle` forms too.
+Denying all of them now gives an App one behavior on its own thread. A worker
+thread (`node:worker_threads`) keeps Node's own behavior.
 (Node's own fast path for `writeFileSync` of a UTF-8 string ignores `flush`
 without an error.)
 

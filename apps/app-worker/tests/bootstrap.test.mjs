@@ -402,6 +402,25 @@ export default chariox => chariox.tools.register('echo', async () => {
   await handle.close();
   outcome.promisesWriteFileFlush = await settled(fs.promises.writeFile(file + '-3', 'x', { flush: true }));
   outcome.written = fs.readFileSync(file, 'utf8');
+  // A worker thread gets its own node:fs and keeps Node's behavior (here,
+  // without --permission, both forms work).
+  const { Worker } = await import('node:worker_threads');
+  outcome.worker = await new Promise((resolve, reject) => {
+    const worker = new Worker(\`
+      const fs = require('node:fs');
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        const fd = fs.openSync(workerData, 'r+');
+        let sync; try { fs.fsyncSync(fd); sync = 'ok'; } catch (error) { sync = error.code; }
+        fs.closeSync(fd);
+        const handle = await fs.promises.open(workerData, 'r+');
+        const fileHandle = await handle.sync().then(() => 'ok', error => error.code);
+        await handle.close();
+        parentPort.postMessage({ fsyncSync: sync, fileHandleSync: fileHandle });
+      })();\`, { eval: true, workerData: file });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+  });
   return outcome;
 });`;
   const running = start(await fixture(source));
@@ -413,6 +432,7 @@ export default chariox => chariox.tools.register('echo', async () => {
     fsyncSync: denied, importedFsyncSync: denied, fdatasyncSync: denied, writeFileSyncFlush: denied,
     fsync: denied, fdatasync: denied, fileHandleSync: denied, fileHandleDatasync: denied,
     promisesWriteFileFlush: denied, written: 'x',
+    worker: { fsyncSync: 'ok', fileHandleSync: 'ok' },
   });
   running.child.kill('SIGKILL');
   await running.completed;

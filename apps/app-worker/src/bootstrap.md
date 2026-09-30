@@ -10,10 +10,16 @@ Scaffolding should generate `runtime/main.mjs` with `export default function
 register(chariox) { ... }` and let the existing packer choose that entry.
 
 Before any App module loads, the bootstrap replaces every `node:fs` fsync and
-fdatasync form (sync, callback, and the `FileHandle` methods, the only ones
-Node 24.20's permission model still lets through) with one that fails
-`ERR_ACCESS_DENIED`, and re-syncs the built-in ESM exports. The SDK README's
-"Durability" section is the contract.
+fdatasync form with one that fails `ERR_ACCESS_DENIED`: the sync and callback
+forms, which Node 24.20's permission model already denies, and the `FileHandle`
+methods, which it lets through. It then re-syncs the built-in ESM exports. The
+SDK README's "Durability" section is the contract. This applies to the App's
+own thread only. A worker thread gets its own `node:fs` and keeps Node's
+behavior. It cannot be patched reliably: a `Worker` started with its own
+`execArgv` does not even inherit `--permission` on Node 24.20, which is why the
+OS sandbox, not Node's permission model, is the containment. If the deny's
+probe of its own file fails, the worker exits 131, like an App import failure.
+That file is readable wherever this one could be loaded.
 
 This source is a runtime artifact, never an App-selected module. The release
 bundle must contain `bootstrap.cjs`, `bootstrap-config.cjs`, and the exact

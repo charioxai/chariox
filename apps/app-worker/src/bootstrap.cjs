@@ -16,14 +16,15 @@ let started = false;
 // model denies fsync and fdatasync on a descriptor, since a descriptor cannot
 // be tied to a path grant. Node 24.20 denies the sync and callback forms but
 // still lets FileHandle sync() and datasync() through; later Node releases deny
-// those too. Deny every form, so an App sees one behavior and does not come to
-// depend on that gap. Durable data goes through state transactions or
-// files.atomicReplace, which the kernel syncs before answering.
+// those too. Deny every form on the App's thread, so an App sees one behavior
+// and does not come to depend on that gap. Durable data goes through state
+// transactions or files.atomicReplace, which the kernel syncs before answering.
+// This is policy, not containment: a worker thread keeps Node's own behavior.
 async function denyFsync() {
   const denied = syscall => Object.assign(new Error(
     `${syscall} is not available to Apps; use chariox.files.atomicReplace or a state transaction for durable data`),
   { code: 'ERR_ACCESS_DENIED', syscall });
-  const later = syscall => function (fd, callback) {
+  const deniedCallback = syscall => function (fd, callback) {
     if (typeof callback !== 'function') {
       throw Object.assign(new TypeError('The "callback" argument must be of type function'), { code: 'ERR_INVALID_ARG_TYPE' });
     }
@@ -31,14 +32,14 @@ async function denyFsync() {
   };
   fs.fsyncSync = () => { throw denied('fsync'); };
   fs.fdatasyncSync = () => { throw denied('fdatasync'); };
-  fs.fsync = later('fsync');
-  fs.fdatasync = later('fdatasync');
+  fs.fsync = deniedCallback('fsync');
+  fs.fdatasync = deniedCallback('fdatasync');
   // FileHandle is reachable only through an instance; this file is readable.
   const probe = await fs.promises.open(__filename, 'r');
-  const handle = Object.getPrototypeOf(probe);
+  const fileHandlePrototype = Object.getPrototypeOf(probe);
   await probe.close();
   for (const [name, syscall] of [['sync', 'fsync'], ['datasync', 'fdatasync']]) {
-    Object.defineProperty(handle, name, {
+    Object.defineProperty(fileHandlePrototype, name, {
       value: async function () { throw denied(syscall); }, writable: true, configurable: true,
     });
   }
