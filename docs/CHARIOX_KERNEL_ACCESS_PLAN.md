@@ -90,13 +90,15 @@ Phase 1 protects critical approvals. Everything else a same-user process can do 
 ### 4.1 Why reuse the vault passphrase
 
 - **One secret to remember.** Users already choose and type the vault passphrase. A second secret would be weaker in practice, because users would pick something short or reuse it anyway.
-- **The kernel can already verify it.** The encrypted vault (`apps/kernel/src/secret/vault.rs`) derives its key with Argon2id and authenticates its contents with AES-256-GCM. Verifying the passkey is the same derivation followed by an authentication check.
+- **The kernel can already verify it.** Phase 1's `VaultPasskeyVerifier` derives a key with the pinned Argon2id parameters and compares its hash with the durable commitment. This milestone reuses that verifier. Authentication of the encrypted vault file is used only to establish the initial pin through the controlled bootstrap in section 1.3.
 - **It is never given to agents.** The M26 vault plan (`docs/M26_CHARIOX_ENCRYPTED_VAULT_PLAN.md`) already guarantees that the passphrase is captured by a kernel-owned prompt and never delivered to an agent.
 - **Chariox-wide.** One secret for every critical action on a kernel, whatever the surface: TUI, web, or CLI. It belongs to the kernel's vault, so a user with several kernels has one passkey per kernel unless they choose the same passphrase for each.
 
 ### 4.2 Verification without unlocking
 
-Verification derives the key from the vault header's salt and KDF parameters, then authenticates the vault file with it. It must not touch the unlocked-vault map or change any unlock expiry. Unlock policies (`operation`, `ttl`, `kernel_init`, `always`, see `apps/kernel/src/runtime/state/runtime_vault_unlock_state.rs`) are independent of verification. A verified passkey neither unlocks a locked vault nor extends an unlocked one.
+Every passkey check in this milestone, including token minting and `/sudo` entry, uses the same durable pinned verifier as Phase 1. Verification derives the key using the pin's salt and KDF parameters and compares its hash with the pinned commitment. Once the pin exists, verification does not read the current vault file or accept a changed configured path as a replacement authority. Vault-file authentication is confined to the controlled initial pin bootstrap described in section 1.3. A missing pin must not enable a separate bootstrap path for token minting or `/sudo`.
+
+Verification must not touch the unlocked-vault map or change any unlock expiry. Unlock policies (`operation`, `ttl`, `kernel_init`, `always`, see `apps/kernel/src/runtime/state/runtime_vault_unlock_state.rs`) are independent of verification. A verified passkey neither unlocks a locked vault nor extends an unlocked one.
 
 Argon2id is deliberately slow and memory-hungry. Verification runs on a blocking worker, and the kernel allows one verification at a time so that a flood of attempts cannot exhaust memory. Callers that queue behind it count toward the rate limit.
 
@@ -108,7 +110,9 @@ A same-user process can deliberately send wrong passkeys to lock the owner out f
 
 ### 4.4 Rotation
 
-Changing the vault passphrase changes the passkey. When it changes, the kernel:
+This milestone must add an explicit authenticated rotation operation before it can change an established pin. The operation verifies the existing passkey against the current pinned verifier, then updates the encrypted vault and the durable pin to the new passphrase through a crash-safe transition. An ordinary vault-file replacement, configuration change, or successful unlock of a different vault never rotates the pin. Phase 1 alone does not implement this rotation operation.
+
+As part of a successful rotation, the kernel:
 
 1. revokes every kernel access token,
 2. ends every sudo window and every Phase 1 remember window,
