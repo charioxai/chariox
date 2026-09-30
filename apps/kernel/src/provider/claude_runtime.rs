@@ -21,8 +21,8 @@ const DEFAULT_CLAUDE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 mod events;
 mod input;
-mod permission_prompt;
 mod process;
+mod runtime_tool_wait;
 mod state;
 mod tool_transcript;
 pub(crate) mod usage;
@@ -30,9 +30,10 @@ mod watchdog;
 
 use events::apply_claude_message;
 use input::claude_user_content;
-pub(crate) use permission_prompt::begin_claude_permission_prompt_wait;
-use permission_prompt::claude_permission_prompt_pending;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
+pub(crate) use runtime_tool_wait::{
+    begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending, ClaudeRuntimeToolWait,
+};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
 use usage::apply_claude_usage_capture;
 use watchdog::ClaudeTurnStallAction;
@@ -295,8 +296,9 @@ fn apply_claude_turn_stall_policy(
     state: &mut ClaudeRuntimeState,
     batch: &mut ProviderPromptSignalBatch,
 ) -> Result<(), DaemonError> {
-    if claude_permission_prompt_pending(run.id()) {
-        // Claude emits nothing while the user decides; that is not a stall.
+    if claude_runtime_tool_wait_pending(run.id()) {
+        // Claude emits nothing while it waits on a runtime tool call, a
+        // person's decision included; that is not a stall.
         state.turn_watchdog.record_runtime_message(Instant::now());
         return Ok(());
     }
@@ -683,10 +685,10 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_permission_prompt_is_not_a_turn_stall() {
+    fn a_runtime_tool_call_in_flight_is_not_a_turn_stall() {
         let (mut state, mut batch) = parser_state();
         let run = RuntimeProviderRun::new(
-            "run-permission-prompt-stall",
+            "run-runtime-tool-stall",
             &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet"),
             ProviderLaunchResult {
                 endpoint_mode: AgentEndpointMode::Managed,
@@ -715,7 +717,7 @@ mod tests {
             "the turn has been silent past the stall timeout"
         );
 
-        let wait = super::begin_claude_permission_prompt_wait(run.id());
+        let wait = super::begin_claude_runtime_tool_wait(run.id());
         super::apply_claude_turn_stall_policy(&run, &mut state, &mut batch)
             .expect("stall policy should run");
         drop(wait);

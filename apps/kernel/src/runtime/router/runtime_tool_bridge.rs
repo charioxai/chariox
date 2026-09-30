@@ -47,6 +47,13 @@ impl CommandRouter {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        // A Claude run is silent while it waits on a runtime tool call, and a
+        // person's decision (a permission prompt, a popup, an App binding
+        // approval, also through Meta `run_command`) can take minutes: its turn
+        // stall watchdog must not end the turn meanwhile.
+        let _claude_waits = self
+            .runtime_state
+            .begin_claude_runtime_tool_waits(auth_token);
         if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
             == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
         {
