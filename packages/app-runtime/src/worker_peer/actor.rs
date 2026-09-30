@@ -23,6 +23,8 @@ struct Pending {
     reply: oneshot::Sender<Result<Message>>,
     deadline: Instant,
     live: Arc<FrameState>,
+    /// The caller the kernel named in this call's context.
+    actor: Option<serde_json::Value>,
     _permit: OwnedSemaphorePermit,
 }
 struct Active {
@@ -198,10 +200,14 @@ impl Actor {
             let _ = call.reply.send(Err(PeerError::Deadline));
             return Ok(());
         }
-        let Message::Request { id, .. } = &call.message else {
+        let Message::Request { id, context, .. } = &call.message else {
             return Err(PeerError::Invalid);
         };
         let id = id.clone();
+        let actor = context
+            .as_ref()
+            .and_then(|context| context.get("actor"))
+            .cloned();
         if self.pending.contains_key(&id) || self.pending.len() >= self.limits.pending_calls {
             return Err(PeerError::Protocol);
         }
@@ -213,6 +219,7 @@ impl Actor {
                 reply: call.reply,
                 deadline: call.deadline,
                 live,
+                actor,
                 _permit: call.permit,
             },
         );
@@ -272,12 +279,19 @@ impl Actor {
                     },
                 );
                 let broker = self.broker.clone();
+                let mut callers = Vec::new();
+                for actor in self.pending.values().filter_map(|call| call.actor.as_ref()) {
+                    if !callers.contains(actor) {
+                        callers.push(actor.clone());
+                    }
+                }
                 let request = BrokerRequest {
                     id: id.clone(),
                     method,
                     params,
                     deadline,
                     cancellation: BrokerCancellation(cancellation),
+                    callers,
                 };
                 self.handlers.spawn(async move {
                     if request.cancellation.is_cancelled() || Instant::now() >= request.deadline {

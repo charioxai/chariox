@@ -32,6 +32,7 @@ impl Fixture {
                 digest,
                 state: ValidationState::Pending,
                 expires_ms,
+                callers: "[]".into(),
             }))
             .unwrap()
             .unwrap()
@@ -211,6 +212,7 @@ fn open_operations_are_bounded_per_installation() {
             digest,
             state: ValidationState::Pending,
             expires_ms: 1_000_000,
+            callers: "[]".into(),
         })),
         Err("LIMIT_EXCEEDED")
     );
@@ -227,6 +229,7 @@ fn open_operations_are_bounded_per_installation() {
         digest,
         state: ValidationState::Pending,
         expires_ms: 1_000_000,
+        callers: "[]".into(),
     }))
     .unwrap();
     let pending: Vec<_> =
@@ -292,4 +295,35 @@ fn an_updated_or_uninstalled_apps_open_operations_expire() {
     f.1.app_validation(ValidationCommand::Expire { now_ms: 3 })
         .unwrap();
     assert_eq!(state(), ValidationState::Expired);
+}
+
+#[test]
+fn an_earlier_table_gains_the_callers_column_and_its_rows_record_none() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-validations-migration-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("kernel.sqlite");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE app_validations (
+                operation_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, installation_id TEXT NOT NULL,
+                generation INTEGER NOT NULL, action TEXT NOT NULL, parameters_json TEXT NOT NULL,
+                digest TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('pending','approved','denied','expired','consumed')),
+                expires_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL);
+             INSERT INTO app_validations VALUES
+                ('old-op','alice','pay',3,'send_payment','{}','sha256:x','pending',1000000,1);",
+        )
+        .unwrap();
+    let store = DurableKernelStateStore::open_owned(path.clone()).unwrap();
+    let old = store
+        .app_validation_status("alice", "pay", "old-op")
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.callers, "");
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
 }
