@@ -321,12 +321,82 @@ async fn ask_app_self_grant_waits_for_the_existing_permission_interaction() {
 }
 
 async fn granted(app: &Arc<Mutex<DaemonApp>>, agent: &str) -> bool {
+    granted_app(app, agent, "installed").await
+}
+
+async fn granted_app(app: &Arc<Mutex<DaemonApp>>, agent: &str, installation: &str) -> bool {
     app.lock()
         .await
         .agents()
         .get_agent(agent)
         .unwrap()
-        .has_extension_grant(ExtensionKind::App, "installed")
+        .has_extension_grant(ExtensionKind::App, installation)
+}
+
+async fn spawn_alice_agent(app: &Arc<Mutex<DaemonApp>>, session: &str) -> String {
+    let mut app = app.lock().await;
+    crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session, "dev-stub").with_owner_user_id("alice"))
+        .unwrap()
+        .id()
+        .to_owned()
+}
+
+/// The session's Room, ready for its browser controller's Tabs.
+async fn start_room(app: &Arc<Mutex<DaemonApp>>, session: &str) {
+    let store = app.lock().await.session_state_store();
+    let viewport = crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap();
+    store
+        .create_room_environment(session, "room", viewport.clone())
+        .unwrap();
+    store.start_room_environment(session, viewport).unwrap();
+    store
+        .transition_room_environment(session, crate::session::EnvironmentLifecycle::Ready)
+        .unwrap();
+}
+
+/// The Room's Tabs as its browser controller reports them: these controller
+/// targets are open and `focused` is in front.
+fn show_tabs(router: &CommandRouter, session: &str, targets: &[&str], focused: &str) {
+    let tabs = targets
+        .iter()
+        .map(|target| crate::session::EnvironmentTabObservation {
+            runtime_target_id: (*target).into(),
+            document_id: format!("document-{target}"),
+            url: format!("https://{target}.test/"),
+            title: (*target).into(),
+        })
+        .collect();
+    router
+        .runtime_state
+        .reconcile_room_environment_controller_tabs(session, tabs, Some(focused))
+        .unwrap();
+}
+
+/// An open view of `owner`'s App installation on a controller target.
+fn open_view(router: &CommandRouter, session: &str, target: &str, owner: &str, app: &str) {
+    router.runtime_state.app_control().views().register(
+        session,
+        target,
+        crate::runtime::app_views::AppViewBinding {
+            owner: owner.into(),
+            installation: app.into(),
+            generation: 1,
+        },
+    );
+}
+
+/// Only these App view Tabs are still open.
+fn close_views_except(router: &CommandRouter, session: &str, open: &[&str]) {
+    let open = open
+        .iter()
+        .map(|target| (*target).to_owned())
+        .collect::<Vec<_>>();
+    router
+        .runtime_state
+        .app_control()
+        .views()
+        .retain_open(session, &open, u64::MAX);
 }
 
 #[tokio::test]
@@ -335,33 +405,83 @@ async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_uninstall_unbi
     // Ask mode: a person foregrounding an App is an explicit selection.
     let (app, router, session, first, _auth) =
         fixture.router(crate::provider::AgentPermissionLevel::Required);
-    let second = {
-        let mut app = app.lock().await;
-        crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(CreateAgentRequest::new(&session, "dev-stub").with_owner_user_id("alice"))
-            .unwrap()
-            .id()
-            .to_owned()
-    };
+    let second = spawn_alice_agent(&app, &session).await;
     let state = &router.runtime_state;
+    start_room(&app, &session).await;
     state.focus_agent(&session, &first, "alice").await.unwrap();
     // Only the App's owner foregrounds it for their agents.
-    assert_eq!(
-        state.foreground_app(&session, "bob", "installed").await,
-        None
-    );
+    open_view(&router, &session, "bob-view", "bob", "installed");
+    show_tabs(&router, &session, &["bob-view"], "bob-view");
+    assert_eq!(state.foreground_app(&session, "bob-view").await, None);
     assert!(!granted(&app, &first).await);
+    open_view(&router, &session, "todo", "alice", "installed");
+    show_tabs(&router, &session, &["bob-view", "todo"], "todo");
     assert_eq!(
-        state.foreground_app(&session, "alice", "installed").await,
+        state.foreground_app(&session, "todo").await,
         Some(first.clone())
     );
     assert!(granted(&app, &first).await && !granted(&app, &second).await);
-    // The next focus agent gets the foreground App too.
+    // The next focus agent gets the App of the focused Tab too.
     state.focus_agent(&session, &second, "alice").await.unwrap();
     assert!(granted(&app, &second).await);
     state.unbind_uninstalled_app("alice", "installed").await;
     assert!(!granted(&app, &first).await && !granted(&app, &second).await);
-    assert_eq!(state.app_control().views().foreground(&session), None);
+    // Its Tab stays on screen, unbound: it is no foreground App.
+    let third = spawn_alice_agent(&app, &session).await;
+    state.focus_agent(&session, &third, "alice").await.unwrap();
+    assert!(!granted(&app, &third).await);
+}
+
+#[tokio::test]
+async fn the_foreground_app_is_the_app_of_the_rooms_focused_tab() {
+    let fixture = Fixture::new();
+    let (app, router, session, first, _auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Required);
+    crate::durable_state::app_state::fixture_installation(
+        &app.lock().await.durable_state_store(),
+        "alice",
+        "docs",
+    );
+    let second = spawn_alice_agent(&app, &session).await;
+    let third = spawn_alice_agent(&app, &session).await;
+    let state = &router.runtime_state;
+    start_room(&app, &session).await;
+    // Todo open and focused: the focus agent gets Todo.
+    open_view(&router, &session, "todo", "alice", "installed");
+    show_tabs(&router, &session, &["page", "todo"], "todo");
+    state.focus_agent(&session, &first, "alice").await.unwrap();
+    assert!(granted(&app, &first).await);
+    // Two Apps open: opening Documents binds it; its Tab is in front.
+    open_view(&router, &session, "docs", "alice", "docs");
+    show_tabs(&router, &session, &["page", "todo", "docs"], "docs");
+    assert_eq!(
+        state.foreground_app(&session, "docs").await,
+        Some(first.clone())
+    );
+    state.focus_agent(&session, &second, "alice").await.unwrap();
+    assert!(granted_app(&app, &second, "docs").await && !granted(&app, &second).await);
+    // Switching Tabs: the next focus agent gets the App now in front.
+    show_tabs(&router, &session, &["page", "todo", "docs"], "todo");
+    state.focus_agent(&session, &third, "alice").await.unwrap();
+    assert!(granted(&app, &third).await && !granted_app(&app, &third, "docs").await);
+    // Documents, the App opened last, closes and the Room shows Todo again:
+    // a focus change binds Todo, never Documents.
+    close_views_except(&router, &session, &["todo"]);
+    show_tabs(&router, &session, &["page", "todo"], "todo");
+    let fourth = spawn_alice_agent(&app, &session).await;
+    state.focus_agent(&session, &fourth, "alice").await.unwrap();
+    assert!(granted(&app, &fourth).await && !granted_app(&app, &fourth, "docs").await);
+    // A plain page in front: no foreground App.
+    show_tabs(&router, &session, &["page", "todo"], "page");
+    let fifth = spawn_alice_agent(&app, &session).await;
+    state.focus_agent(&session, &fifth, "alice").await.unwrap();
+    assert!(!granted(&app, &fifth).await);
+    // The Room still shows an App Tab whose view is gone: nothing is bound.
+    close_views_except(&router, &session, &[]);
+    show_tabs(&router, &session, &["page", "todo"], "todo");
+    let sixth = spawn_alice_agent(&app, &session).await;
+    state.focus_agent(&session, &sixth, "alice").await.unwrap();
+    assert!(!granted(&app, &sixth).await);
 }
 
 #[tokio::test]
@@ -369,18 +489,14 @@ async fn a_revoked_foreground_binding_returns_only_when_the_app_is_opened_again(
     let fixture = Fixture::new();
     let (app, router, session, first, _auth) =
         fixture.router(crate::provider::AgentPermissionLevel::Required);
-    let second = {
-        let mut app = app.lock().await;
-        crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(CreateAgentRequest::new(&session, "dev-stub").with_owner_user_id("alice"))
-            .unwrap()
-            .id()
-            .to_owned()
-    };
+    let second = spawn_alice_agent(&app, &session).await;
     let state = &router.runtime_state;
+    start_room(&app, &session).await;
+    open_view(&router, &session, "todo", "alice", "installed");
+    show_tabs(&router, &session, &["todo"], "todo");
     state.focus_agent(&session, &first, "alice").await.unwrap();
     assert_eq!(
-        state.foreground_app(&session, "alice", "installed").await,
+        state.foreground_app(&session, "todo").await,
         Some(first.clone())
     );
     // Cycling the focus binds the next focus agent too.
@@ -400,17 +516,20 @@ async fn a_revoked_foreground_binding_returns_only_when_the_app_is_opened_again(
     assert!(!granted(&app, &second).await);
     // Nor after the session's last App view closed and the App was opened
     // again for another agent.
+    close_views_except(&router, &session, &[]);
     assert!(!state.app_control().views().keep_pumping(&session));
     state.focus_agent(&session, &first, "alice").await.unwrap();
+    open_view(&router, &session, "todo-again", "alice", "installed");
+    show_tabs(&router, &session, &["todo-again"], "todo-again");
     assert_eq!(
-        state.foreground_app(&session, "alice", "installed").await,
+        state.foreground_app(&session, "todo-again").await,
         Some(first.clone())
     );
     state.focus_agent(&session, &second, "alice").await.unwrap();
     assert!(!granted(&app, &second).await);
     // Opening the App with that agent in focus binds it again.
     assert_eq!(
-        state.foreground_app(&session, "alice", "installed").await,
+        state.foreground_app(&session, "todo-again").await,
         Some(second.clone())
     );
     assert!(granted(&app, &second).await);
@@ -422,9 +541,12 @@ async fn a_persons_spawn_gets_the_foreground_app_and_a_meta_agents_spawn_does_no
     let (app, router, session, first, auth) =
         fixture.router(crate::provider::AgentPermissionLevel::Yolo);
     let state = &router.runtime_state;
+    start_room(&app, &session).await;
+    open_view(&router, &session, "todo", "alice", "installed");
+    show_tabs(&router, &session, &["todo"], "todo");
     state.focus_agent(&session, &first, "alice").await.unwrap();
     assert_eq!(
-        state.foreground_app(&session, "alice", "installed").await,
+        state.foreground_app(&session, "todo").await,
         Some(first.clone())
     );
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
@@ -514,4 +636,62 @@ async fn a_saturated_listing_omits_a_cold_app_and_refreshes_once_a_slot_frees() 
     })
     .await
     .expect("the refresh runs once a slot frees");
+}
+
+#[tokio::test]
+async fn a_fork_copies_app_bindings_through_the_checked_audited_grant() {
+    let fixture = Fixture::new();
+    let (app, router, session, first, _auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Required);
+    crate::durable_state::app_state::fixture_installation(
+        &app.lock().await.durable_state_store(),
+        "alice",
+        "docs",
+    );
+    let state = &router.runtime_state;
+    state
+        .grant_agent_extension(&first, ExtensionGrant::app("installed"), "alice")
+        .await
+        .unwrap();
+    // The source still holds a binding whose App is gone.
+    app.lock()
+        .await
+        .agents_mut()
+        .grant_extension(&first, ExtensionGrant::app("gone"))
+        .unwrap();
+    // Documents' Tab is in front: the fork, the new focus agent, gets it.
+    start_room(&app, &session).await;
+    open_view(&router, &session, "docs", "alice", "docs");
+    show_tabs(&router, &session, &["docs"], "docs");
+    let (_, fork, _, _) = state
+        .fork_agent(
+            crate::local::ForkAgentRequest {
+                session_id: session.clone(),
+                source_agent_ref: Some(first.clone()),
+                alias: Some("fork".into()),
+            },
+            "alice".into(),
+        )
+        .await
+        .unwrap();
+    assert!(fork.has_extension_grant(ExtensionKind::App, "installed"));
+    assert!(fork.has_extension_grant(ExtensionKind::App, "docs"));
+    assert!(!fork.has_extension_grant(ExtensionKind::App, "gone"));
+    // Each copied or foreground binding has its grant event and audit.
+    let audit = state
+        .list_home_extension_audit_events(fork.id(), "alice", 50)
+        .unwrap();
+    for app in ["installed", "docs"] {
+        assert!(audit
+            .iter()
+            .any(|event| event.kind == "agent.extension_granted"
+                && event.payload["capability_name"] == format!("app:{app}")));
+        assert!(audit
+            .iter()
+            .any(|event| event.kind == "home_extension.grant.created"
+                && event.payload["grant"]["name"] == app));
+    }
+    assert!(!audit
+        .iter()
+        .any(|event| event.payload["grant"]["name"] == "gone"));
 }

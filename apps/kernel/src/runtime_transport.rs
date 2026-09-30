@@ -660,6 +660,7 @@ where
                 _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => {}
                 _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => {}
                 _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
+                _ = pump_router.wait_for_started_app_refreshes() => {}
             }
         }
     });

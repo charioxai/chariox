@@ -278,6 +278,17 @@ pub(crate) fn fixture_event_catalog(store: &DurableKernelStateStore) -> Arc<Even
     tests::catalog(store)
 }
 
+/// Another active installation of the fixture package, for an owner who
+/// already trusts its publisher (after `fixture_catalog`).
+#[cfg(test)]
+pub(crate) fn fixture_installation(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+) {
+    tests::install_package(store, owner, installation_id, tests::package());
+}
+
 /// Installs `installed` for `owner` from a package that also declares the
 /// incoming event `received`; returns the package to stage its release.
 #[cfg(test)]

@@ -17,8 +17,6 @@ pub(crate) struct AppViewBinding {
 
 #[derive(Default)]
 struct SessionViews {
-    /// The App most recently opened in this session: (owner, installation).
-    foreground: Option<(String, String)>,
     /// Target → (binding, registration number).
     tabs: HashMap<String, (AppViewBinding, u64)>,
     registrations: u64,
@@ -120,17 +118,6 @@ impl AppViews {
                 .get(target)
                 .is_none_or(|failed| failed.elapsed() >= RELOAD_COOLDOWN)
         })
-    }
-
-    pub(crate) fn set_foreground(&self, session: &str, owner: &str, installation: &str) {
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.entry(session.to_owned()).or_default().foreground =
-            Some((owner.to_owned(), installation.to_owned()));
-    }
-
-    pub(crate) fn foreground(&self, session: &str) -> Option<(String, String)> {
-        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.get(session)?.foreground.clone()
     }
 
     /// Records (true) or forgets (false) a user revocation of this binding.
@@ -247,13 +234,6 @@ impl AppViews {
             views.tabs.retain(|_, (binding, _)| {
                 binding.owner != owner || binding.installation != installation
             });
-            if views
-                .foreground
-                .as_ref()
-                .is_some_and(|(o, i)| o == owner && i == installation)
-            {
-                views.foreground = None;
-            }
         }
     }
 
@@ -403,11 +383,10 @@ mod tests {
         // Kept when the session's last App view closes; a new view starts
         // the pump again.
         assert!(views.register("s", "t", binding("a")));
-        views.set_foreground("s", "user", "a");
         views.retain_open("s", &[], u64::MAX);
         assert!(!views.keep_pumping("s"));
         assert!(views.is_revoked("s", "agent-1", "a"));
-        assert_eq!(views.foreground("s"), None);
+        assert_eq!(views.binding("s", "t"), None);
         assert!(views.register("s", "t", binding("a")));
         views.set_revoked("s", "agent-1", "a", false);
         assert!(!views.is_revoked("s", "agent-1", "a"));

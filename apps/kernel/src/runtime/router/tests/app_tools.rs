@@ -37,7 +37,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         std::env::temp_dir().join(format!("chariox-app-mcp-{:016x}", rand::random::<u64>())),
     );
     std::fs::create_dir(&scratch.0).unwrap();
-    let (router, store, catalog, agents, tokens) = {
+    let (router, store, catalog, agents, tokens, runs) = {
         let _entered = runtime.enter();
         // The release store refuses symlinked paths (macOS /var): resolve it.
         let root = scratch.0.canonicalize().unwrap();
@@ -55,6 +55,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
             .unwrap();
         let mut agents = Vec::new();
         let mut tokens = Vec::new();
+        let mut runs = Vec::new();
         for meta in [false, true] {
             let mut agent = crate::app::KernelSessionService::new(&mut app)
                 .spawn_agent(
@@ -81,9 +82,10 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
             );
             agents.push(agent.id().to_owned());
             tokens.push(run.runtime_mcp_auth_token().unwrap().to_owned());
+            runs.push(run.id().to_owned());
         }
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-        (router, store, catalog, agents, tokens)
+        (router, store, catalog, agents, tokens, runs)
     };
     let name = catalog.app_catalog().tools().next().unwrap().name.clone();
     let fixture = Fixture::compile().unwrap();
@@ -111,7 +113,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
     let (starting, _control) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
         process,
         &package,
-        catalog,
+        catalog.clone(),
         Arc::new(RejectBroker),
         PeerLimits::default(),
         runtime.handle().clone(),
@@ -250,4 +252,62 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
     assert!(!lists(&tokens[1]));
     assert!(observed.was_reaped());
     assert!(observed.lease_was_dropped());
+    // Bound while it is stopped, the other agent lists nothing for it yet.
+    let changes = router.runtime_mcp_catalog_changes();
+    let watches = [
+        changes.subscribe(&runs[0]).unwrap(),
+        changes.subscribe(&runs[1]).unwrap(),
+    ];
+    let before = watches.each_ref().map(|watch| watch.current().desired);
+    runtime
+        .block_on(router.runtime_state.grant_agent_extension(
+            &agents[0],
+            crate::extension::ExtensionGrant::app("installed"),
+            "alice",
+        ))
+        .unwrap();
+    assert_eq!(watches[0].current().desired, before[0]);
+    // Starting it again refreshes, once, the catalogs of the bound agents
+    // whose listing left it out or that were bound while it was stopped.
+    let (process, restarted) = fixture.spawn_blocking(Mode::ToolEcho, &package).unwrap();
+    let (starting, _control) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
+        process,
+        &package,
+        catalog,
+        Arc::new(RejectBroker),
+        PeerLimits::default(),
+        runtime.handle().clone(),
+    )
+    .unwrap();
+    let mut registered = starting
+        .await_registered_blocking(std::time::Duration::from_secs(3))
+        .unwrap();
+    let proof = store
+        .confirm_app_activation(
+            "alice",
+            registered.catalog().clone(),
+            registered.take_activation_budget().unwrap(),
+        )
+        .unwrap();
+    let (owner, handle) = registered.activate_blocking(proof).unwrap();
+    let control = router.runtime_state.app_control();
+    control.publish_app_worker("alice", handle).unwrap();
+    runtime.block_on(async {
+        router.runtime_state.refresh_started_app_catalogs();
+        timeout(Duration::from_secs(5), async {
+            while watches
+                .iter()
+                .zip(before)
+                .any(|(watch, before)| watch.current().desired == before)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the started App refreshes both agents' catalogs");
+    });
+    assert!(lists(&tokens[0]) && lists(&tokens[1]));
+    assert!(control.take_started_app_refreshes().is_empty());
+    owner.shutdown_blocking();
+    assert!(restarted.was_reaped());
 }

@@ -329,7 +329,7 @@ impl SessionRuntimeStore {
                 // spawn does not: it would bind without authorization.
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 if caller_metaagent_id.is_none() {
-                    self.state.bind_foreground_app(&session_id, false).await;
+                    self.state.bind_foreground_app(&session_id).await;
                 }
                 if caller_metaagent_id.is_none() && !agent.is_metaagent() {
                     let _ = self
@@ -554,9 +554,7 @@ impl SessionRuntimeStore {
         // Only the last (focus) agent of a person's batch gets the foreground App.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         if caller_metaagent_id.is_none() {
-            self.state
-                .bind_foreground_app(&request.session_id, false)
-                .await;
+            self.state.bind_foreground_app(&request.session_id).await;
         }
         if caller_metaagent_id.is_none() {
             let _ = self

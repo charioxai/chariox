@@ -41,6 +41,7 @@ impl AppControlService {
             if self.has_active_apps_for_agent(agent) {
                 return Err(crate::runtime::app_worker::AppWorkerError::Busy.into());
             }
+            self.note_unlisted_apps(agent, &BTreeSet::new());
             return Ok(Vec::new());
         };
         self.app_extension_tools_for_agent_admitted(agent, occupied, &permit)
@@ -63,12 +64,48 @@ impl AppControlService {
             .chain(dormant.iter().cloned())
             .collect::<Vec<_>>();
         if catalogs.is_empty() {
+            self.note_unlisted_apps(agent, &BTreeSet::new());
             return Ok(Vec::new());
         }
         let current = self
             .store
             .current_app_catalogs(agent.owner_user_id(), &catalogs)?;
-        self.project_app_tools(current, leases, &dormant, occupied)
+        let (tools, listed) = self.project_app_tools(current, leases, &dormant, occupied)?;
+        self.note_unlisted_apps(agent, &listed);
+        Ok(tools)
+    }
+
+    /// Remembers the agent's bound Apps its listing left out (`listed` names
+    /// the ones it showed): once one starts, the agent's catalog is refreshed.
+    pub(crate) fn note_unlisted_apps(&self, agent: &AgentInstance, listed: &BTreeSet<String>) {
+        for grant in agent.extension_grants() {
+            if grant.kind == ExtensionKind::App && !listed.contains(&grant.name) {
+                self.workers
+                    .note_unlisted(agent.owner_user_id(), &grant.name, agent.id());
+            }
+        }
+    }
+
+    /// A binding saved while its App neither runs nor is dormant lists no
+    /// tools yet: the agent's catalog is refreshed once the App starts.
+    pub(crate) fn note_unlisted_binding(&self, agent: &AgentInstance, installation: &str) {
+        let owner = agent.owner_user_id();
+        if self.active_app_lease(owner, installation).is_none()
+            && !self.is_app_dormant(owner, installation)
+        {
+            self.workers.note_unlisted(owner, installation, agent.id());
+        }
+    }
+
+    /// Agents due a catalog refresh because an App their listing left out
+    /// has started since.
+    pub(crate) fn take_started_app_refreshes(&self) -> Vec<String> {
+        self.workers.take_due()
+    }
+
+    /// Notified when an App starts that an agent's listing left out.
+    pub(crate) fn started_app_refreshes_signal(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.workers.due_signal()
     }
 
     /// A bound App that neither runs nor is dormant, but may start on demand,
@@ -149,15 +186,17 @@ impl AppControlService {
         leases
     }
 
+    /// The tools, and the installations whose catalog was listed.
     fn project_app_tools(
         &self,
         current: Vec<std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>>,
         leases: Vec<crate::runtime::app_worker::AppWorkerLease>,
         dormant: &[std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>],
         occupied: &BTreeSet<String>,
-    ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
+    ) -> Result<(Vec<RemoteExtensionTool>, BTreeSet<String>), AppToolsError> {
         let mut names = occupied.clone();
         let mut output = Vec::new();
+        let mut listed = BTreeSet::new();
         let mut encoded = EncodingBudget(0);
         for catalog in current {
             if !leases.iter().any(|lease| {
@@ -168,6 +207,7 @@ impl AppControlService {
             {
                 continue;
             }
+            listed.insert(catalog.installation_id().to_owned());
             for tool in catalog.app_catalog().tools() {
                 if tool
                     .action
@@ -204,7 +244,7 @@ impl AppControlService {
                 output.push(value);
             }
         }
-        Ok(output)
+        Ok((output, listed))
     }
 }
 

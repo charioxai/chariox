@@ -55,6 +55,9 @@ impl KernelRuntimeState {
             return;
         };
         let control = self.app_control().clone();
+        // Listed without any App: one that cannot start yet is refreshed
+        // when it starts.
+        control.note_unlisted_apps(&agent, &BTreeSet::new());
         if !control.begin_catalog_refresh(agent.id()) {
             return;
         }

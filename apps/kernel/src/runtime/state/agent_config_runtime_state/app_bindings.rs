@@ -27,6 +27,41 @@ impl KernelRuntimeState {
         grant: ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.checked_app_grant(agent_ref, grant, caller_user_id, false)
+            .await?
+            .ok_or_else(|| {
+                app_binding_error(
+                    "App installation is unavailable or its publisher verification is no longer valid",
+                )
+            })
+    }
+
+    /// A fork copies its source's App bindings, the owner's explicit choice,
+    /// through the same checked and audited grant as any binding. None when
+    /// the check refuses the App now (uninstalled, publisher revoked): that
+    /// binding is not copied. It waits briefly for an App admission slot
+    /// rather than drop a binding while App control is busy.
+    pub(in crate::runtime::state) async fn copy_agent_app_grant(
+        &self,
+        agent_id: &str,
+        grant: ExtensionGrant,
+        caller_user_id: &str,
+    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
+        self.checked_app_grant(agent_id, grant, caller_user_id, true)
+            .await
+    }
+
+    /// The App binding path: owner authority, the installation and publisher
+    /// check under an App admission slot, then the grant with its durable
+    /// event, audit, leased manifest sync and workflow copy invalidation.
+    /// None when the check refuses the installation.
+    async fn checked_app_grant(
+        &self,
+        agent_ref: &str,
+        grant: ExtensionGrant,
+        caller_user_id: &str,
+        wait_for_slot: bool,
+    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
         grant.validate_app_binding()?;
         self.owned.ensure_agent_extension_authority(
             agent_ref,
@@ -39,15 +74,20 @@ impl KernelRuntimeState {
             .get_agent(agent_ref)
             .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
         let store = self.owned.durable_state_store.clone();
-        let permit = self
-            .app_control()
-            .try_admit()
-            .map_err(|_| app_binding_error("App control is busy"))?;
+        let permit = if wait_for_slot {
+            tokio::time::timeout(COPY_ADMISSION_WAIT, self.app_control().admit())
+                .await
+                .ok()
+                .flatten()
+        } else {
+            self.app_control().try_admit().ok()
+        }
+        .ok_or_else(|| app_binding_error("App control is busy"))?;
         let owner = caller_user_id.to_string();
         let installation_id = grant.name.clone();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         let control = self.app_control().clone();
-        tokio::task::spawn_blocking(move || {
+        let checked = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let binding = store.check_app_binding(&owner, &installation_id);
             // Under the same slot: its tools are listed at once, even before
@@ -60,12 +100,10 @@ impl KernelRuntimeState {
             binding
         })
         .await
-        .map_err(|_| app_binding_error("App binding check did not complete"))?
-        .map_err(|_| {
-            app_binding_error(
-                "App installation is unavailable or its publisher verification is no longer valid",
-            )
-        })?;
+        .map_err(|_| app_binding_error("App binding check did not complete"))?;
+        if checked.is_err() {
+            return Ok(None);
+        }
         // Ownership is checked again after the writer wait. A binding does not
         // retain invocation authority if the App is subsequently retired/revoked.
         let agent = self
@@ -86,7 +124,37 @@ impl KernelRuntimeState {
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
         self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
-        Ok(agent)
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control()
+            .note_unlisted_binding(&agent, &grant.name);
+        Ok(Some(agent))
+    }
+
+    /// Agents whose App tool listing left out an App that has since started
+    /// get the same refresh as after a grant: a leased agent's manifest, then
+    /// the provider's catalog, which lists under the usual admission rules.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    pub(crate) fn refresh_started_app_catalogs(&self) {
+        for agent_id in self.app_control().take_started_app_refreshes() {
+            let Ok(agent) = self.owned.agent_store.get_agent(&agent_id) else {
+                continue;
+            };
+            let state = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = state
+                    .sync_remote_extension_manifest_for_agent(&agent, None, Some(false))
+                    .await
+                {
+                    tracing::debug!(%error, "started App manifest sync failed");
+                }
+                if let Err(error) = state
+                    .refresh_agent_runtime_tool_catalog(agent.session_id(), agent.id())
+                    .await
+                {
+                    tracing::debug!(%error, "started App catalog refresh failed");
+                }
+            });
+        }
     }
 
     pub(super) async fn revoke_agent_app(
@@ -212,6 +280,9 @@ impl KernelRuntimeState {
         Ok(resolution.choice_id.as_deref() == Some("allow"))
     }
 }
+
+/// How long a fork waits for an App admission slot to copy one binding.
+const COPY_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn app_binding_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
