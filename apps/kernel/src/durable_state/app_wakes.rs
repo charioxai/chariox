@@ -1,7 +1,7 @@
 //! Due-wake reads and delivery outcomes on the sole durable writer. Wake
 //! registration itself composes with App state in `app_state`.
 use super::{DurableKernelStateStore, DurableWriterRequest};
-use chariox_app_runtime::managed_state::{self, DueWake, StateError};
+use chariox_app_runtime::managed_state::{self, DueWake, StateError, WakeFailureOutcome};
 use rusqlite::Connection;
 use std::sync::mpsc;
 
@@ -84,9 +84,11 @@ fn failed(
     reason: &str,
 ) -> Result<AppWakeOutcome, StateError> {
     let transaction = connection.transaction()?;
-    let retried = managed_state::defer_wake(&transaction, wake, now_ms)?;
+    let outcome = managed_state::defer_wake(&transaction, wake, now_ms)?;
     let mut fields = serde_json::Map::new();
     fields.insert("wake_id".into(), wake.wake.id.clone().into());
+    fields.insert("revision".into(), wake.wake.revision.clone().into());
+    fields.insert("due_at_ms".into(), wake.wake.due_at_ms.into());
     fields.insert("attempt".into(), (wake.attempts + 1).into());
     fields.insert("reason".into(), reason.into());
     super::app_logs::append_kernel_notice_in(
@@ -94,10 +96,12 @@ fn failed(
         &wake.owner_id,
         &wake.installation_id,
         now_ms,
-        if retried {
-            "A due wake failed; it will be retried"
-        } else {
-            "A due wake failed too often and was dropped"
+        match outcome {
+            WakeFailureOutcome::Retried => "A due wake failed; it will be retried",
+            WakeFailureOutcome::Dropped => "A due wake failed too often and was dropped",
+            WakeFailureOutcome::Obsolete => {
+                "A failed wake was cancelled or replaced; no retry was scheduled"
+            }
         },
         fields,
     )?;

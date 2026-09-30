@@ -654,3 +654,100 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
         AppWakeOutcome::Due(Vec::new())
     );
 }
+
+fn failed_wake_settlement_after_change(replaced: bool) {
+    use crate::durable_state::app_wakes::{AppWakeOperation, AppWakeOutcome};
+    use chariox_app_runtime::managed_state::{Wake, WakeChange};
+
+    // Both retry and final-attempt deletion must identify an obsolete delivery.
+    for attempts in [0, 7] {
+        let fixture = Fixture::new();
+        let store = fixture.open();
+        let catalog = catalog(&store);
+        store
+            .execute_app_state(
+                "alice",
+                Arc::clone(&catalog),
+                AppStateOperation::Schedule(vec![WakeChange::Set(Wake {
+                    id: "scheduled".into(),
+                    due_at_ms: 1_000,
+                    revision: "old".into(),
+                })]),
+                budget(),
+            )
+            .unwrap();
+        let AppWakeOutcome::Due(mut due) = store
+            .app_wakes(AppWakeOperation::Due {
+                now_ms: 1_000,
+                limit: 1,
+            })
+            .unwrap()
+        else {
+            panic!("due wake");
+        };
+        let mut delivered = due.pop().unwrap();
+        let installation = delivered.installation_id.clone();
+        delivered.attempts = attempts;
+        let change = if replaced {
+            WakeChange::Set(Wake {
+                id: "scheduled".into(),
+                due_at_ms: 2_000,
+                revision: "new".into(),
+            })
+        } else {
+            WakeChange::Cancel {
+                id: "scheduled".into(),
+            }
+        };
+        store
+            .execute_app_state(
+                "alice",
+                Arc::clone(&catalog),
+                AppStateOperation::Schedule(vec![change]),
+                budget(),
+            )
+            .unwrap();
+        store
+            .app_wakes(AppWakeOperation::Failed {
+                wake: delivered,
+                now_ms: 1_001,
+                reason: "handler failed".into(),
+            })
+            .unwrap();
+        let logs = store.app_logs("alice", &installation, 0, 8).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].message,
+            "A failed wake was cancelled or replaced; no retry was scheduled"
+        );
+        assert_eq!(logs[0].fields["revision"], "old");
+        assert_eq!(logs[0].fields["due_at_ms"], 1_000);
+        let AppWakeOutcome::Due(current) = store
+            .app_wakes(AppWakeOperation::Due {
+                now_ms: 2_000,
+                limit: 8,
+            })
+            .unwrap()
+        else {
+            panic!("due wake");
+        };
+        if replaced {
+            assert_eq!(current.len(), 1);
+            assert_eq!(current[0].wake.revision, "new");
+            assert_eq!(current[0].wake.due_at_ms, 2_000);
+            assert_eq!(current[0].attempts, 0);
+        } else {
+            assert!(current.is_empty());
+        }
+    }
+}
+
+#[test]
+fn failed_wake_settlement_after_cancellation_is_obsolete() {
+    failed_wake_settlement_after_change(false);
+}
+
+#[test]
+fn failed_wake_settlement_after_replacement_is_obsolete() {
+    failed_wake_settlement_after_change(true);
+}
