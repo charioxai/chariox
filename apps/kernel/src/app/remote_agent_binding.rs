@@ -20,6 +20,9 @@ use super::remote_kernel_selection::{
     no_remote_kernel_available_message, select_remote_kernel,
 };
 
+mod slice_recovery;
+use slice_recovery::SliceBindingRecovery;
+
 const REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS: usize = 20;
 const REMOTE_KERNEL_REF_DISCOVERY_RETRY_DELAY_MS: u64 = 250;
 
@@ -36,6 +39,7 @@ pub(crate) struct RemoteAgentBindingRefreshPlan {
     execution_mode: crate::provider::AgentExecutionMode,
     permission_level: crate::provider::AgentPermissionLevel,
     workspace_live_sync_mode: crate::config::WorkspaceLiveSyncMode,
+    slice_recovery: Option<SliceBindingRecovery>,
 }
 
 pub(crate) async fn execute_remote_agent_binding_refresh(
@@ -44,17 +48,10 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
     let old_binding = plan.expected_binding.clone();
     let old_worker_ref = old_binding.worker_kernel_id.clone();
     let mut discovery_config = plan.relay_config.clone();
-    let original_slice = remote_binding_refresh_slice_for_worker(
-        &plan.slice_store,
-        &plan.projected_kernels,
-        &old_worker_ref,
-    );
-    let hosted_shared_slice = original_slice
+    let hosted_shared_slice = plan
+        .slice_recovery
         .as_ref()
-        .and_then(|slice| slice.relay_endpoint.as_ref())
-        .is_some_and(|endpoint| {
-            !endpoint.private && plan.config.relay_url_uses_cloud_profile(&endpoint.url)
-        });
+        .is_some_and(|recovery| recovery.uses_connected_relay(&plan.config));
     if hosted_shared_slice {
         let profile =
             discovery_config
@@ -80,43 +77,40 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             .unwrap_or_else(|| old_binding.worker_machine_id.clone());
     let can_use_connected_inventory = discovery_config.relay_url == plan.config.relay_url
         && (discovery_config.relay_token == plan.config.relay_token || hosted_shared_slice);
+    let select_worker = |kernels| match plan.slice_recovery.as_ref() {
+        Some(recovery) => recovery.select(kernels, plan.agent.provider()),
+        None => Ok(select_remote_kernel(
+            slice_recovery::ordinary_machine_workers(&plan.slice_store, kernels),
+            &machine_ref,
+            plan.agent.provider(),
+        )),
+    };
     let worker_kernel = async {
         if can_use_connected_inventory {
-            if let Some(worker_kernel) = select_remote_kernel(
-                plan.projected_kernels.clone(),
-                &machine_ref,
-                plan.agent.provider(),
-            ) {
-                return Ok(worker_kernel);
+            if let Some(worker) = select_worker(plan.projected_kernels.clone())? {
+                return Ok(worker);
             }
         }
         let kernels =
             relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine_ref).await?;
         let message =
             no_remote_kernel_available_message(&kernels, &machine_ref, plan.agent.provider());
-        select_remote_kernel(kernels, &machine_ref, plan.agent.provider()).ok_or_else(|| {
-            DaemonError::NoRemoteKernelAvailable {
+        select_worker(kernels)?.ok_or_else(|| match plan.slice_recovery.as_ref() {
+            Some(recovery) => recovery.unavailable(),
+            None => DaemonError::NoRemoteKernelAvailable {
                 machine_ref: machine_ref.clone(),
                 provider: plan.agent.provider().to_string(),
                 message,
-            }
+            },
         })
     }
     .await?;
-
-    let worker_worktree_id = remote_binding_refresh_worktree_id(
-        &plan.slice_store,
-        &plan.projected_kernels,
-        &worker_kernel.kernel_id,
-        &worker_kernel.machine_id,
-    );
+    let worker_worktree_id = plan
+        .slice_recovery
+        .as_ref()
+        .map(SliceBindingRecovery::worktree_id);
     let relay_config = plan.relay_config.clone();
-    let use_connected_relay = remote_binding_refresh_uses_connected_relay(
-        &plan.slice_store,
-        &plan.projected_kernels,
-        &plan.config,
-        &worker_kernel.kernel_id,
-    );
+    let use_connected_relay = hosted_shared_slice;
     remember_remote_worker_public_key_off_lock(&relay_config, &worker_kernel, &plan.relay_state)
         .await?;
     let target = ClientTarget {
@@ -174,13 +168,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
     if crate::provider::canonical_provider_family(plan.agent.provider())
         .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
     {
-        let materialization_target_kind = if remote_binding_refresh_slice_for_worker(
-            &plan.slice_store,
-            &plan.projected_kernels,
-            &worker_kernel.kernel_id,
-        )
-        .is_some()
-        {
+        let materialization_target_kind = if plan.slice_recovery.is_some() {
             crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
         } else {
             crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
@@ -436,6 +424,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         relay_config,
         relay_state: plan.relay_state,
         use_connected_relay,
+        _slice_recovery: plan.slice_recovery,
     })
 }
 
@@ -446,6 +435,7 @@ pub(crate) struct RemoteAgentBindingRefreshResult {
     relay_config: DaemonConfig,
     relay_state: Arc<tokio::sync::RwLock<RelayClientState>>,
     use_connected_relay: bool,
+    _slice_recovery: Option<SliceBindingRecovery>,
 }
 
 impl DaemonApp {
@@ -1040,6 +1030,8 @@ impl DaemonApp {
         let uses_remote_execution_relay =
             current_binding.relay_url.is_some() && current_binding.relay_token.is_some();
         let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
+        let slice_recovery =
+            SliceBindingRecovery::admit(&self.slices, &current_binding, agent.session_id(), None)?;
         Ok(RemoteAgentBindingRefreshPlan {
             agent,
             expected_binding: current_binding.clone(),
@@ -1053,6 +1045,7 @@ impl DaemonApp {
             execution_mode: effective_config.mode,
             permission_level: effective_config.permission_level,
             workspace_live_sync_mode,
+            slice_recovery,
         })
     }
 
@@ -1114,6 +1107,8 @@ impl DaemonApp {
                 message: format!("agent `{agent_id}` is not remote-backed"),
             });
         };
+        let slice_recovery =
+            SliceBindingRecovery::admit(&self.slices, &remote_execution, agent.session_id(), None)?;
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
         let discovery_config = self.remote_worker_discovery_config(
             &remote_execution.worker_kernel_id,
@@ -1121,11 +1116,21 @@ impl DaemonApp {
         )?;
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
-        let worker_kernel = self.select_remote_kernel_for_machine_with_config(
-            &remote_execution.worker_machine_id,
-            agent.provider(),
-            &discovery_config,
-        )?;
+        let worker_kernel = match slice_recovery.as_ref() {
+            Some(recovery) => recovery.require_worker(
+                self.select_remote_kernel_by_ref_with_config(
+                    &remote_execution.worker_kernel_id,
+                    agent.provider(),
+                    &discovery_config,
+                )?,
+                agent.provider(),
+            )?,
+            None => self.select_remote_kernel_for_machine_with_config(
+                &remote_execution.worker_machine_id,
+                agent.provider(),
+                &discovery_config,
+            )?,
+        };
         let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
             &worker_kernel.kernel_id,
             &worker_kernel.machine_id,
@@ -1156,6 +1161,19 @@ impl DaemonApp {
         agent_id: &str,
         worker_kernel: &RelayKernelPresence,
     ) -> Result<AgentInstance, DaemonError> {
+        self.refresh_remote_agent_binding_to_worker_kernel_with_operation(
+            agent_id,
+            worker_kernel,
+            None,
+        )
+    }
+
+    pub(crate) fn refresh_remote_agent_binding_to_worker_kernel_with_operation(
+        &mut self,
+        agent_id: &str,
+        worker_kernel: &RelayKernelPresence,
+        operation: Option<&crate::slice::SliceOperationGuard>,
+    ) -> Result<AgentInstance, DaemonError> {
         let agent = self.agents.get_agent(agent_id)?;
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Err(DaemonError::LocalTransport {
@@ -1163,6 +1181,15 @@ impl DaemonApp {
                 message: format!("agent `{agent_id}` is not remote-backed"),
             });
         };
+        let slice_recovery = SliceBindingRecovery::admit(
+            &self.slices,
+            &remote_execution,
+            agent.session_id(),
+            operation,
+        )?;
+        if let Some(recovery) = slice_recovery.as_ref() {
+            recovery.require_worker(worker_kernel.clone(), agent.provider())?;
+        }
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
@@ -1231,11 +1258,20 @@ impl DaemonApp {
             .unwrap_or_else(|| self.config.clone());
         let discovery_config =
             self.remote_worker_discovery_config(machine_ref, relay_config.clone())?;
-        let worker_kernel = self.select_remote_kernel_for_machine_with_config(
-            machine_ref,
-            agent.provider(),
-            &discovery_config,
-        )?;
+        let worker_kernel =
+            if slice_recovery::recorded_slice_worker_id(&self.slices, machine_ref)?.is_some() {
+                self.select_remote_kernel_by_ref_with_config(
+                    machine_ref,
+                    agent.provider(),
+                    &discovery_config,
+                )?
+            } else {
+                self.select_remote_kernel_for_machine_with_config(
+                    machine_ref,
+                    agent.provider(),
+                    &discovery_config,
+                )?
+            };
         let worker_worktree_id = self.worker_worktree_id_for_kernel_ref(machine_ref, None);
         self.bind_remote_agent_to_worker(
             &agent,
@@ -1442,13 +1478,18 @@ impl DaemonApp {
             .unwrap_or_else(|| machine_ref.to_string());
         if self.can_use_connected_relay_inventory(&machine_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-            if let Some(kernel) = select_remote_kernel(projected_kernels, &machine_ref, provider) {
+            if let Some(kernel) = select_remote_kernel(
+                slice_recovery::ordinary_machine_workers(&self.slices, projected_kernels),
+                &machine_ref,
+                provider,
+            ) {
                 return Ok(kernel);
             }
         }
         let kernels = self.block_on_relay_future(
             relay_discovery::list_live_kernels_for_machine(relay_config, &machine_ref),
         )?;
+        let kernels = slice_recovery::ordinary_machine_workers(&self.slices, kernels);
         let message = no_remote_kernel_available_message(&kernels, &machine_ref, provider);
         select_remote_kernel(kernels, &machine_ref, provider).ok_or_else(|| {
             DaemonError::NoRemoteKernelAvailable {
@@ -1466,21 +1507,30 @@ impl DaemonApp {
         relay_config: &DaemonConfig,
     ) -> Result<RelayKernelPresence, DaemonError> {
         let kernel_ref = kernel_ref.trim();
+        let expected_slice_worker =
+            slice_recovery::recorded_slice_worker_id(&self.slices, kernel_ref)?;
         if self.can_use_connected_relay_inventory(kernel_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-            if let Some(kernel) = projected_kernels
-                .into_iter()
-                .find(|kernel| kernel_presence_matches_ref(kernel, kernel_ref))
-            {
+            if let Some(kernel) = projected_kernels.into_iter().find(|kernel| {
+                match expected_slice_worker.as_deref() {
+                    Some(expected) => kernel.kernel_id == expected,
+                    None => kernel_presence_matches_ref(kernel, kernel_ref),
+                }
+            }) {
                 return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
             }
         }
         let mut last_error = None;
         for attempt in 0..REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS {
-            match self
-                .block_on_relay_future(relay_discovery::get_live_kernel(relay_config, kernel_ref))
-            {
+            match self.block_on_relay_future(relay_discovery::get_live_kernel(
+                relay_config,
+                expected_slice_worker.as_deref().unwrap_or(kernel_ref),
+            )) {
                 Ok(kernel) => {
+                    let kernel = slice_recovery::require_selected_slice_worker(
+                        expected_slice_worker.as_deref(),
+                        kernel,
+                    )?;
                     return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
                 }
                 Err(error) => {
@@ -1708,58 +1758,6 @@ impl DaemonApp {
             Ok(())
         })
     }
-}
-
-fn remote_binding_refresh_slice_for_worker(
-    slices: &crate::slice::SliceStore,
-    projected_kernels: &[RelayKernelPresence],
-    worker_ref: &str,
-) -> Option<crate::slice::SliceRecord> {
-    slices.resolve_by_worker_kernel_ref(worker_ref).or_else(|| {
-        let worker = projected_kernels
-            .iter()
-            .find(|kernel| kernel_presence_matches_ref(kernel, worker_ref))?;
-        [
-            worker.kernel_alias.as_deref(),
-            worker.relay_alias.as_deref(),
-            worker.machine_alias.as_deref(),
-            Some(worker.machine_id.as_str()),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|candidate| slices.resolve_by_worker_kernel_ref(candidate))
-    })
-}
-
-fn remote_binding_refresh_uses_connected_relay(
-    slices: &crate::slice::SliceStore,
-    projected_kernels: &[RelayKernelPresence],
-    config: &DaemonConfig,
-    worker_ref: &str,
-) -> bool {
-    remote_binding_refresh_slice_for_worker(slices, projected_kernels, worker_ref)
-        .and_then(|slice| slice.relay_endpoint)
-        .is_some_and(|endpoint| {
-            !endpoint.private && config.relay_url_uses_cloud_profile(&endpoint.url)
-        })
-}
-
-fn remote_binding_refresh_worktree_id(
-    slices: &crate::slice::SliceStore,
-    projected_kernels: &[RelayKernelPresence],
-    worker_kernel_id: &str,
-    worker_machine_id: &str,
-) -> Option<String> {
-    remote_binding_refresh_slice_for_worker(slices, projected_kernels, worker_kernel_id)
-        .or_else(|| {
-            remote_binding_refresh_slice_for_worker(slices, projected_kernels, worker_machine_id)
-        })
-        .map(|slice| {
-            slice
-                .development_publication
-                .map(|publication| publication.primary_repository_path)
-                .unwrap_or_else(|| "/workspace".to_string())
-        })
 }
 
 async fn send_remote_binding_request_off_lock(
@@ -2847,3 +2845,6 @@ mod tests {
         assert!(relay_config.cloud_relay.is_none());
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;

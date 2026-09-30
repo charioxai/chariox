@@ -335,6 +335,7 @@ impl KernelRuntimeState {
         &self,
         manifests: Vec<SliceAgentRelaunchManifest>,
         worker: &chariox_relay::protocol::RelayKernelPresence,
+        operation: &crate::slice::SliceOperationGuard,
     ) -> Result<(), DaemonError> {
         for manifest in manifests {
             let source_agent = self.owned.agent_store.get_agent(&manifest.agent_id)?;
@@ -379,7 +380,11 @@ impl KernelRuntimeState {
             let worker = worker.clone();
             let rebound = self
                 .with_app_side_effect(move |app| {
-                    app.refresh_remote_agent_binding_to_worker_kernel(&agent_id, &worker)
+                    app.refresh_remote_agent_binding_to_worker_kernel_with_operation(
+                        &agent_id,
+                        &worker,
+                        Some(operation),
+                    )
                 })
                 .await?;
             self.append_agent_durable_event("agent.remote_binding_refreshed", &rebound, None)

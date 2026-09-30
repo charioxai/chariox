@@ -157,3 +157,42 @@ fn worker_refs(slice: &SliceRecord) -> impl Iterator<Item = &str> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
 }
+
+impl SliceOperationGuard {
+    /// A lifecycle operation already owns the slice exclusively. Its typed
+    /// guard may admit only that slice and its Room during agent relaunch.
+    pub(crate) fn require_environment_use(
+        &self,
+        store: &SliceStore,
+        slice_id: &str,
+        session_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if !Arc::ptr_eq(&self.store.inner, &store.inner)
+            || self.slice_id != slice_id
+            || self.operation.is_none()
+        {
+            return Err(access_error(
+                "slice recovery requires its own active operation guard",
+            ));
+        }
+        let state = store
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.active_operations.get(slice_id) != self.operation.as_ref() {
+            return Err(access_error(
+                "slice recovery operation guard is no longer active",
+            ));
+        }
+        let slice = state
+            .records
+            .get(slice_id)
+            .ok_or_else(|| access_error("unknown slice"))?;
+        if has_shared_worker(slice, &state) {
+            return Err(access_error(
+                "slice worker reference is shared by another slice",
+            ));
+        }
+        require_environment_session(slice, session_id)
+    }
+}

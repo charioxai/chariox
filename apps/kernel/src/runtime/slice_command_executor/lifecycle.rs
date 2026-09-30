@@ -571,7 +571,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     prepared_relaunch_manifests: Option<Vec<super::super::state::SliceAgentRelaunchManifest>>,
     start_mode: SliceStartMode,
     inherit_managed_git_credentials: bool,
-    _operation: crate::slice::SliceOperationGuard,
+    operation: crate::slice::SliceOperationGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
     let initial_record = runtime_state
@@ -750,7 +750,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
         )?;
         let worker = relay_presence_from_started_slice(&slice, &discovered, "slice.start")?;
         if let Err(source) = runtime_state
-            .rebind_and_relaunch_slice_agents(relaunch_manifests, worker)
+            .rebind_and_relaunch_slice_agents(relaunch_manifests, worker, &operation)
             .await
         {
             let error =
