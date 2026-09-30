@@ -222,6 +222,10 @@ fn remote(failure: HttpError) -> RemoteError {
         HttpError::Network | HttpError::Tls => {
             ("APP_HTTP_NETWORK", "HTTP transport did not complete")
         }
+        HttpError::OutcomeUncertain => (
+            "APP_HTTP_OUTCOME_UNCERTAIN",
+            "The approved effect was sent but its reply was lost; it may have taken effect. Check its outcome before requesting a new approval",
+        ),
     };
     error(code, message)
 }

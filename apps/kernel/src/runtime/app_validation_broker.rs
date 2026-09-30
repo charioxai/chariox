@@ -129,7 +129,7 @@ impl AppValidationBroker {
                         && operation.generation == self.generation
                 })
                 .ok_or_else(|| error("NOT_FOUND", false))?;
-            return Ok(reply(&existing));
+            return reply(&existing);
         }
         let operation = ValidationOperation {
             operation_id: format!("validation-{:032x}", rand::random::<u128>()),
@@ -147,7 +147,7 @@ impl AppValidationBroker {
             .app_validation(ValidationCommand::Create(operation))
             .map_err(|code| error(code, code == "STORAGE_UNAVAILABLE"))?
             .ok_or_else(|| error("STORAGE_UNAVAILABLE", true))?;
-        Ok(reply(&created))
+        reply(&created)
     }
 
     fn status(&self, params: Value) -> Result<Value, RemoteError> {
@@ -158,17 +158,18 @@ impl AppValidationBroker {
             .app_validation_status(&self.owner, &self.installation, &status.operation_id)
             .map_err(|code| error(code, true))?
             .ok_or_else(|| error("NOT_FOUND", false))?;
-        Ok(reply(&operation))
+        reply(&operation)
     }
 }
 
-/// The SDK's `ValidationOperation`; a consumed approval reads as approved.
-fn reply(operation: &ValidationOperation) -> Value {
-    let state = match operation.state {
-        ValidationState::Consumed => "approved",
-        state => state.name(),
-    };
-    json!({ "operationId": operation.operation_id, "state": state })
+/// The SDK's `ValidationOperation`. A spent approval is not approved any more:
+/// it answers `VALIDATION_CONSUMED`, so an App never takes it for one it can
+/// still spend (a replay of the operation needs a new approval).
+fn reply(operation: &ValidationOperation) -> Result<Value, RemoteError> {
+    if operation.state == ValidationState::Consumed {
+        return Err(error("VALIDATION_CONSUMED", false));
+    }
+    Ok(json!({ "operationId": operation.operation_id, "state": operation.state.name() }))
 }
 
 fn error(code: &str, retryable: bool) -> RemoteError {
@@ -176,6 +177,9 @@ fn error(code: &str, retryable: bool) -> RemoteError {
         "UNDECLARED_ACTION" => "The action is not declared as a critical action by this App",
         "INVALID_ARGUMENT" => "Invalid validation request",
         "NOT_FOUND" => "No such validation operation",
+        "VALIDATION_CONSUMED" => {
+            "This approval was spent by its operation; a new attempt needs a new approval"
+        }
         "LIMIT_EXCEEDED" => "Too many open validation requests",
         "APP_BUSY" => "App operation limit reached",
         _ => "Validation request did not complete",
@@ -292,9 +296,47 @@ mod tests {
             broker.status(json!({"operationId":id})).unwrap()["state"],
             "pending"
         );
+        use crate::durable_state::app_validations::{EffectReceipt, ValidationCommand};
+        let now = crate::session::unix_epoch_ms();
+        store
+            .app_validation(ValidationCommand::Decide {
+                operation_id: id.clone(),
+                approved: true,
+                now_ms: now,
+            })
+            .unwrap();
+        assert_eq!(
+            broker.status(json!({"operationId":id})).unwrap()["state"],
+            "approved"
+        );
+        // Once its effect spends it, the approval no longer reads as approved,
+        // to a status read or to a re-request of the same operation.
+        let (_, digest) = app_validations::canonical(&json!({"amount":5,"to":"x"}));
+        store
+            .app_validation(ValidationCommand::Consume {
+                receipt: EffectReceipt {
+                    owner: "alice".into(),
+                    installation: "pay".into(),
+                    generation: 2,
+                    action: "send_payment".into(),
+                    operation_id: id.clone(),
+                    digest,
+                },
+                now_ms: now + 1,
+            })
+            .unwrap();
+        let spent = broker.status(json!({"operationId":id})).unwrap_err();
+        assert_eq!(spent.code, "VALIDATION_CONSUMED");
+        assert_eq!(spent.retryable, Some(false));
+        assert_eq!(
+            code(broker.request(
+                json!({"action":"send_payment","parameters":{"to":"x","amount":5},"operationId":id})
+            )),
+            "VALIDATION_CONSUMED"
+        );
         // Another installation of the same owner cannot read it.
         let other = AppValidationBroker::new(
-            store,
+            store.clone(),
             "alice".into(),
             "other".into(),
             2,

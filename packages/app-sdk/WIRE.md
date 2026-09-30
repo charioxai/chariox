@@ -199,6 +199,24 @@ action's declared `POST`/`PUT`/`PATCH` effect routes (exact origin, method and
 path) with `hasBody: false` and no header but `accept`. The kernel sends the
 approved canonical parameters as the whole JSON body. Any other request to a protected origin fails
 `VALIDATION_REQUIRED` or is denied.
+Once spent, the operation no longer reads as approved: `validation.status` and a
+re-request with its `operationId` fail `VALIDATION_CONSUMED` (not retryable), and
+another attempt needs a new approval. After 24 hours a finished operation is gone
+(`NOT_FOUND`).
+
+The effect's outcome follows what the kernel's socket saw:
+- A received response, any status (a gateway's `502` or `520` included), is the
+  answer, passed through as for any request.
+- Failing before any request byte could be written (DNS, connect, TLS) is a
+  plain `APP_HTTP_NETWORK` or `APP_DEADLINE`: the effect was not sent, though its
+  approval is spent.
+- Once the request may have reached the origin, a lost reply (the connection
+  reset or closed, or the kernel's inactivity or lifetime limit, before any
+  response head) is `APP_HTTP_OUTCOME_UNCERTAIN`: the origin may have acted.
+  Check the outcome with the service before requesting a new approval; the
+  kernel never replays it. `http.request` also answers
+  `APP_HTTP_OUTCOME_UNCERTAIN` when its own deadline passes after the effect's
+  stream opened and before a response head arrived.
 
 `host.pick_file {multiple?, accept?}` (Apps whose signed manifest declares
 `capabilities.externalFiles: ["user_selected"]`; others get

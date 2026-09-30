@@ -98,6 +98,7 @@ export function createHttp(call) {
       return { signal: controller.signal, timeoutMs: remaining };
     };
     let streamId;
+    let answered = false;
     try {
       ({ streamId } = await call('http.open', parameters, options()));
       id(streamId);
@@ -112,6 +113,7 @@ export function createHttp(call) {
       const download = async () => {
         let head;
         do { head = await http.headers(streamId, options()); } while (head.pending);
+        answered = true;
         const chunks = [];
         let total = 0;
         for (;;) {
@@ -129,6 +131,14 @@ export function createHttp(call) {
       };
       const outcomes = await Promise.all([upload(), download()]);
       return outcomes[1];
+    } catch (error) {
+      // An approved effect spent its approval when the stream opened, and the
+      // kernel then sends it. Giving up before any response is not a plain
+      // timeout: the origin may have acted.
+      if (parameters.operationId !== undefined && streamId && !answered && error?.code === 'DEADLINE_EXCEEDED') {
+        throw new AppError('APP_HTTP_OUTCOME_UNCERTAIN', 'The approved effect was sent but no reply arrived in time; it may have taken effect. Check its outcome before requesting a new approval', { cause: error });
+      }
+      throw error;
     } finally {
       // Cancellation and cleanup are never sent with the already-aborted signal.
       // This does not retry any body operation, even if its completion was lost.
