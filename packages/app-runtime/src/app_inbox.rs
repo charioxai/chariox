@@ -296,8 +296,10 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     Ok(())
 }
 
-/// Removing a route also drops its occurrences, delivered or not: a route
-/// created again under the same name starts empty.
+/// Removing a route stops it accepting occurrences. Those it already accepted
+/// and has not settled are still delivered (with the same retries and expiry),
+/// so disabling an integration never silently drops accepted work. Its settled
+/// history goes with it.
 pub fn remove_route_in(
     tx: &Connection,
     owner_id: &str,
@@ -312,7 +314,8 @@ pub fn remove_route_in(
         return Err(InboxError::NotFound);
     }
     tx.execute(
-        "DELETE FROM app_inbox WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3",
+        "DELETE FROM app_inbox WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3
+         AND state IN ('delivered','failed','expired')",
         params![owner_id, installation_id, route_id],
     )?;
     Ok(())

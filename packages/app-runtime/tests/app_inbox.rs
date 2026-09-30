@@ -249,7 +249,7 @@ fn postponing_spends_no_attempt_and_old_occurrences_expire() {
 }
 
 #[test]
-fn routes_are_scoped_per_owner_and_installation_and_removal_forgets_occurrences() {
+fn routes_are_scoped_per_owner_and_installation_and_removal_keeps_accepted_work() {
     let db = db();
     app_inbox::create_route_in(&db, &route("mail"), 1).unwrap();
     let other = InboxRoute {
@@ -264,18 +264,44 @@ fn routes_are_scoped_per_owner_and_installation_and_removal_forgets_occurrences(
         Accepted::New(_)
     ));
     assert_eq!(app_inbox::counts(&db, &other).unwrap().pending, 1);
+    // A settled occurrence of the route, and one still pending.
+    let Accepted::New(settled) =
+        app_inbox::accept_in(&db, &route("mail"), "occ-0", &json!({"text":"z"}), 1, 0).unwrap()
+    else {
+        panic!("new occurrence expected");
+    };
+    app_inbox::delivered_in(&db, settled, 1).unwrap();
     app_inbox::remove_route_in(&db, "owner", "installed", "mail").unwrap();
-    app_inbox::create_route_in(&db, &route("mail"), 2).unwrap();
+    assert!(app_inbox::route(&db, "owner", "installed", "mail")
+        .unwrap()
+        .is_none());
+    // The accepted, unsettled occurrence is still delivered; the settled one is gone.
+    assert!(app_inbox::state(&db, settled).is_err());
+    let due = app_inbox::due(&db, 10, 10).unwrap();
+    assert_eq!(due.len(), 2);
+    let kept = due
+        .iter()
+        .find(|item| item.owner_id == "owner")
+        .expect("the removed route's accepted occurrence");
     assert_eq!(
-        app_inbox::counts(&db, &route("mail")).unwrap(),
-        app_inbox::InboxCounts::default()
+        (kept.route_id.as_str(), kept.occurrence_id.as_str()),
+        ("mail", "occ-1")
     );
+    // A route created again under the name starts without the settled
+    // history; a source replaying the pending occurrence is a duplicate.
+    app_inbox::create_route_in(&db, &route("mail"), 2).unwrap();
+    assert_eq!(app_inbox::counts(&db, &route("mail")).unwrap().pending, 1);
+    assert_eq!(app_inbox::counts(&db, &route("mail")).unwrap().delivered, 0);
     assert!(matches!(
-        app_inbox::accept_in(&db, &route("mail"), "occ-1", &json!({"text":"c"}), 1, 3).unwrap(),
+        app_inbox::accept_in(&db, &route("mail"), "occ-1", &json!({"text":"a"}), 1, 3).unwrap(),
+        Accepted::Duplicate(_)
+    ));
+    assert!(matches!(
+        app_inbox::accept_in(&db, &route("mail"), "occ-2", &json!({"text":"c"}), 1, 3).unwrap(),
         Accepted::New(_)
     ));
     let due = app_inbox::due(&db, 10, 10).unwrap();
-    assert_eq!(due.len(), 2);
+    assert_eq!(due.len(), 3);
     assert!(due.iter().all(|item| item.accepted_generation == 1));
     app_inbox::undeliverable_in(&db, due[0].sequence).unwrap();
     assert_eq!(
