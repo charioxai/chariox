@@ -1750,6 +1750,58 @@ fn release_verifier_accepts_v2_identity_and_legacy_v1() {
     fixture.cleanup();
 }
 
+#[test]
+fn release_verifier_requires_signed_v3_update_evidence_capability() {
+    let fixture = Fixture::new("release-v3-update-evidence");
+    let manifest = serde_json::json!({
+        "schemaVersion": 3,
+        "managedUpdateEvidenceVersion": 1,
+        "sourceCommit": "a".repeat(40),
+        "sourceTree": "b".repeat(40),
+        "artifacts": [fixture.kernel_artifact()],
+    });
+    let digest = fixture.write_signed_manifest(manifest.clone());
+    verify_release(
+        &fixture.config.manifest_path,
+        &fixture.config.signature_path,
+        &fixture.config.public_key_path,
+        &digest,
+        &fixture.config.kernel_binary,
+    )
+    .expect("schema v3 release must declare supported update evidence");
+
+    for (schema, capability) in [(3, None), (3, Some(2)), (2, Some(1)), (1, Some(1))] {
+        let mut invalid = manifest.clone();
+        invalid["schemaVersion"] = serde_json::json!(schema);
+        if let Some(version) = capability {
+            invalid["managedUpdateEvidenceVersion"] = serde_json::json!(version);
+        } else {
+            invalid.as_object_mut().expect("manifest object").remove("managedUpdateEvidenceVersion");
+        }
+        let digest = fixture.write_signed_manifest(invalid);
+        let error = verify_release(
+            &fixture.config.manifest_path,
+            &fixture.config.signature_path,
+            &fixture.config.public_key_path,
+            &digest,
+            &fixture.config.kernel_binary,
+        )
+        .expect_err("unsigned or unsupported update evidence capability must fail");
+        assert!(error.to_string().contains("schema is unsupported"));
+    }
+    let mut null_capability = manifest;
+    null_capability["managedUpdateEvidenceVersion"] = serde_json::Value::Null;
+    let digest = fixture.write_signed_manifest(null_capability);
+    assert!(verify_release(
+        &fixture.config.manifest_path,
+        &fixture.config.signature_path,
+        &fixture.config.public_key_path,
+        &digest,
+        &fixture.config.kernel_binary,
+    ).is_err());
+    fixture.cleanup();
+}
+
 #[cfg(unix)]
 #[test]
 fn release_verifier_pins_installer_owned_release_symlinks() {
