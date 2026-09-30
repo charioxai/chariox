@@ -51,20 +51,20 @@ async function opened() {
 }
 
 test("app origin labels are DNS labels", () => {
-  assert.equal(appOrigin("todo-1"), "https://todo-1.app.chariox.internal");
+  assert.equal(appOrigin("todo-1"), "https://app.todo-1.invalid");
   for (const bad of ["", "A", "a.b", "-a", "a/b"]) assert.throws(() => appOrigin(bad));
 });
 
 test("open intercepts every request, installs the bridge, and navigates to the App origin", async () => {
   const { connection, result } = await opened();
-  assert.deepEqual(result, { target_id: "t1", origin: "https://todo-1.app.chariox.internal" });
+  assert.deepEqual(result, { target_id: "t1", origin: "https://app.todo-1.invalid" });
   assert.deepEqual(connection.sent.map((m) => m.method), ["Target.createTarget", "Browser.getWindowForTarget",
     "Browser.getWindowBounds", "Browser.setWindowBounds", "Fetch.enable",
     "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.navigate"]);
   // Its own fullscreen window: page coordinates are desktop coordinates.
   assert.equal(connection.sent[0].params.newWindow, true);
   assert.equal(connection.windowState, "fullscreen");
-  assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
+  assert.equal(connection.sent.at(-1).params.url, "https://app.todo-1.invalid/");
 });
 
 test("opening an installation again shows its one App Tab with the current assets", async () => {
@@ -75,10 +75,10 @@ test("opening an installation again shows its one App Tab with the current asset
   assert.deepEqual(again, result);
   assert.deepEqual(connection.sent.map((m) => m.method), ["Target.activateTarget", "Browser.getWindowForTarget",
     "Browser.getWindowBounds", "Page.navigate"]);
-  assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
+  assert.equal(connection.sent.at(-1).params.url, "https://app.todo-1.invalid/");
   assert.deepEqual((await tabs.takeCalls()).open_targets, ["t1"]);
   await connection.emit({ method: "Fetch.requestPaused", sessionId: "s1",
-    params: { requestId: "r", request: { url: "https://todo-1.app.chariox.internal/", method: "GET" } } });
+    params: { requestId: "r", request: { url: "https://app.todo-1.invalid/", method: "GET" } } });
   assert.equal(Buffer.from(connection.sent.at(-1).params.body, "base64").toString(), "<p>v2</p>");
 });
 
@@ -123,11 +123,11 @@ test("serves verified assets with CSP and blocks everything else", async () => {
   connection.sent.length = 0;
   const pause = (requestId, url, method = "GET") => connection.emit({ method: "Fetch.requestPaused", sessionId: "s1",
     params: { requestId, request: { url, method } } });
-  await pause("r1", "https://todo-1.app.chariox.internal/");
-  await pause("r2", "https://todo-1.app.chariox.internal/app.js?v=1");
-  await pause("r3", "https://todo-1.app.chariox.internal/missing");
+  await pause("r1", "https://app.todo-1.invalid/");
+  await pause("r2", "https://app.todo-1.invalid/app.js?v=1");
+  await pause("r3", "https://app.todo-1.invalid/missing");
   await pause("r4", "https://evil.test/steal");
-  await pause("r5", "https://todo-1.app.chariox.internal/", "POST");
+  await pause("r5", "https://app.todo-1.invalid/", "POST");
   const [root, js, missing, other, post] = connection.sent;
   assert.equal(root.method, "Fetch.fulfillRequest");
   assert.equal(Buffer.from(root.params.body, "base64").toString(), "<p>hi</p>");
@@ -176,7 +176,7 @@ test("malformed escapes are 404s and DNS prefetch is off", async () => {
   const { connection } = await opened();
   connection.sent.length = 0;
   await connection.emit({ method: "Fetch.requestPaused", sessionId: "s1",
-    params: { requestId: "bad", request: { url: "https://todo-1.app.chariox.internal/%E0%A4%A", method: "GET" } } });
+    params: { requestId: "bad", request: { url: "https://app.todo-1.invalid/%E0%A4%A", method: "GET" } } });
   assert.equal(connection.sent[0].params.responseCode, 404);
   assert.ok(connection.sent[0].params.responseHeaders.some((h) => h.name === "X-DNS-Prefetch-Control" && h.value === "off"));
   assert.ok(connection.sent[0].params.responseHeaders.some((h) => h.name === "Permissions-Policy" && h.value === APP_PERMISSIONS_POLICY));
@@ -202,18 +202,21 @@ test("a CDP reconnect drops unconfined App Tabs and closes unowned App-origin Ta
   assert.deepEqual((await tabs.takeCalls()).open_targets, ["t1"]);
   // The socket dropped and another command reconnected: interception is gone.
   browser.connection = fakeConnection([
-    { targetId: "t1", url: "https://todo-1.app.chariox.internal/" },
+    { targetId: "t1", url: "https://app.todo-1.invalid/" },
+    { targetId: "legacy", url: "https://old.app.chariox.internal/" },
     { targetId: "user", url: "https://example.test/" },
+    { targetId: "reserved", url: "https://unrelated.invalid/" },
+    { targetId: "lookalike", url: "https://app.a.invalid.example.test/" },
   ]);
   assert.deepEqual((await tabs.takeCalls()).open_targets, []);
-  assert.deepEqual(browser.connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["t1"]);
+  assert.deepEqual(browser.connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["t1", "legacy"]);
   await assert.rejects(tabs.respond({ target_id: "t1", call_id: "1", result: null }));
 });
 
 test("a reconnect sweeps App-origin Tabs without waiting for an App command", async () => {
   const { browser } = fakeBrowser();
   new AppTabs(browser);
-  const connection = fakeConnection([{ targetId: "left", url: "https://a1.app.chariox.internal/" }]);
+  const connection = fakeConnection([{ targetId: "left", url: "https://app.a1.invalid/" }]);
   browser.connection = connection;
   browser.onConnected(connection);
   await new Promise((resolve) => setTimeout(resolve, 0));

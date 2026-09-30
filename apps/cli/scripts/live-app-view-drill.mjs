@@ -50,7 +50,7 @@ try {
   const view = opened.AppViewOpened
   assert.ok(view, `OpenAppView answered ${JSON.stringify(opened)}`)
   assert.equal(view.installation_id, options.installation)
-  assert.match(view.origin, /^https:\/\/a[0-9a-f]{24,}\.app\.chariox\.internal\/?$/)
+  assert.match(view.origin, /^https:\/\/app\.a[0-9a-f]{24,}\.invalid\/?$/)
   assert.equal(typeof view.target_id, "string")
   evidence.steps.push({ step: "open", view })
 

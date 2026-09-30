@@ -8,7 +8,11 @@
 // an answer for it is never delivered to the next one.
 import { BrowserControllerError } from "./browser-controller-cdp.mjs";
 
-export const APP_ORIGIN_SUFFIX = ".app.chariox.internal";
+// Each installation is a separate registrable domain. A shared parent such as
+// app.chariox.internal lets one App set Domain cookies readable by another.
+export const APP_ORIGIN_SUFFIX = ".invalid";
+const LEGACY_APP_ORIGIN_SUFFIX = ".app.chariox.internal";
+const APP_HOST = /^app\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.invalid$/;
 const MAX_ASSETS = 256;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_CALLS = 64;
@@ -85,7 +89,7 @@ export function appOrigin(label) {
   if (typeof label !== "string" || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) {
     throw invalid("App origin label must be a lowercase DNS label");
   }
-  return `https://${label}${APP_ORIGIN_SUFFIX}`;
+  return `https://app.${label}${APP_ORIGIN_SUFFIX}`;
 }
 
 function assets(raw, entry) {
@@ -303,7 +307,7 @@ export class AppTabs {
     for (const target of targetInfos) {
       let host = "";
       try { host = new URL(target.url).hostname; } catch {}
-      if (host.endsWith(APP_ORIGIN_SUFFIX) && !owned.has(target.targetId)) {
+      if ((APP_HOST.test(host) || host.endsWith(LEGACY_APP_ORIGIN_SUFFIX)) && !owned.has(target.targetId)) {
         await connection.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
       }
     }
