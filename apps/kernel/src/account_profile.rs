@@ -1304,6 +1304,7 @@ impl ProviderAccountProfileRegistry {
             }
         }
         let profile = &mut document.profiles[profile_index];
+        let previous_identity = profile.public.identity_summary.take();
         profile.public.auth_state = auth_state;
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
@@ -1312,7 +1313,7 @@ impl ProviderAccountProfileRegistry {
         if let Some(usage) = usage {
             profile.public.usage = usage;
         }
-        refresh_automatic_label(&mut document, profile_index);
+        refresh_automatic_label(&mut document, profile_index, previous_identity.as_deref());
         let result = document.profiles[profile_index].public.clone();
         self.persist_locked(&document)?;
         Ok(result)
@@ -3796,23 +3797,17 @@ fn identity_label_base(identity: Option<&str>) -> Option<&str> {
     validate_label(local).ok().map(|_| local)
 }
 
-/// Whether `current` is `base` or `base-<n>` (n >= 2), the forms a derivation
-/// from `base` produces, so an unchanged email does not churn the label.
-fn label_matches_identity_base(current: &str, base: &str) -> bool {
-    current.eq_ignore_ascii_case(base)
-        || current
-            .get(..base.len())
-            .filter(|prefix| prefix.eq_ignore_ascii_case(base))
-            .and_then(|_| current[base.len()..].strip_prefix('-'))
-            .and_then(|suffix| suffix.parse::<u64>().ok())
-            .is_some_and(|suffix| suffix >= 2)
-}
-
 /// Give an automatic label the account's email local part, suffixed `-2`,
 /// `-3`, ... on a collision within the provider. A `<provider>-<n>` fallback
-/// alias is always replaced once an email is known; a label already derived
-/// from the same email is kept, so an unchanged email never churns the label.
-fn refresh_automatic_label(document: &mut RegistryDocument, index: usize) -> bool {
+/// alias is always replaced once an email is known. A label already derived
+/// from an email is kept only while `previous_identity` has the same local
+/// part, so an unchanged email never churns the label (or its suffix) and a
+/// changed one is always re-derived, whatever the old label looks like.
+fn refresh_automatic_label(
+    document: &mut RegistryDocument,
+    index: usize,
+    previous_identity: Option<&str>,
+) -> bool {
     let profile = &document.profiles[index];
     let Some(source) = profile.label_source.filter(|source| source.is_automatic()) else {
         return false;
@@ -3820,10 +3815,9 @@ fn refresh_automatic_label(document: &mut RegistryDocument, index: usize) -> boo
     let Some(base) = identity_label_base(profile.public.identity_summary.as_deref()) else {
         return false;
     };
-    // Only an already email-derived label is kept; a fallback alias, even one
-    // that happens to read like `<base>-<n>`, is always re-derived.
     if source == ProviderAccountLabelSource::AutomaticIdentity
-        && label_matches_identity_base(&profile.public.label, base)
+        && identity_label_base(previous_identity)
+            .is_some_and(|previous| previous.eq_ignore_ascii_case(base))
     {
         return false;
     }
@@ -4015,7 +4009,9 @@ fn migrate_automatic_labels(document: &mut RegistryDocument) -> bool {
             });
             changed = true;
         }
-        changed |= refresh_automatic_label(document, index);
+        // Loading does not change the identity, so it is its own previous one.
+        let identity = document.profiles[index].public.identity_summary.clone();
+        changed |= refresh_automatic_label(document, index, identity.as_deref());
     }
     changed
 }
@@ -6927,6 +6923,39 @@ mod tests {
                 .unwrap()
                 .label,
             "codex-1"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_changed_email_rederives_even_when_the_old_label_reads_like_a_suffix() {
+        let (root, registry) = fixture();
+        let profile = registry.create_managed("owner-a", "codex", "").unwrap();
+        let first = observe_identity(
+            &registry,
+            "codex",
+            &profile.profile_id,
+            Some("dev-2@example.test"),
+        );
+        assert_eq!(first.label, "dev-2");
+
+        // `dev-2` reads like a collision suffix of `dev`, but it came from the
+        // old address; with `dev` free, the new address takes `dev`.
+        let changed = observe_identity(
+            &registry,
+            "codex",
+            &profile.profile_id,
+            Some("dev@example.test"),
+        );
+        assert_eq!(changed.label, "dev");
+        drop(registry);
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        assert_eq!(
+            registry
+                .get("owner-a", "codex", &profile.profile_id)
+                .unwrap()
+                .label,
+            "dev"
         );
         let _ = fs::remove_dir_all(root);
     }
