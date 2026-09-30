@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm, rename, symlink, open } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
+import { AppFileInstaller, formatInstallOperation, KernelFailure } from "./app-install-file.js"
 import { AppFileSource, chunkBytes, maxArchiveBytes, InstallFileChanged } from "./app-install-file/source.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
@@ -135,12 +135,12 @@ test("normal quoted /app install uses current session and only bytes cross the s
 test("/app install follows its operation and reports each phase through the outcome", async t => {
   const f = await sourceFixture(t)
   const k = kernel()
-  const installer = new AppFileInstaller(k.send, () => {}, f.root)
+  const installer = new AppFileInstaller(k.send, () => {}, f.root, 5)
   t.after(() => installer.dispose())
   const notices: string[] = []
   const command = parseSlashCommand('/app install "local App.cxapp"')! as Extract<ReturnType<typeof parseSlashCommand>, { kind: "app" }>
   const deps = {
-    sendAppRequest: k.send, appFileInstaller: installer, currentAppSessionId: () => "current-session", appInstallPollMs: 5,
+    sendAppRequest: k.send, appFileInstaller: installer, currentAppSessionId: () => "current-session",
     appendNotice: (value: string) => { notices.push(value) }, flashFooter: (value: string) => assert.fail(value),
   }
   // The command returns while the operation waits, so the prompt is free for the approval.
@@ -152,16 +152,47 @@ test("/app install follows its operation and reports each phase through the outc
       await new Promise(resolve => setTimeout(resolve, 5))
     }
   }
-  for (const phase of ["awaiting_approval", "starting"]) {
-    k.status!.phase = phase
-    await reached(phase === "starting" ? /^Starting App\./ : /^Awaiting approval/)
-  }
+  k.status!.phase = "awaiting_approval"
+  await reached(/^Awaiting approval/)
+  // Running the same command again (as a lost connection advises) joins the follow: no second report.
+  await handleAppSlashCommand(deps, command)
+  k.status!.phase = "starting"
+  await reached(/^Starting App\./)
   Object.assign(k.status!, { phase: "committed", installation_id: "app_1", generation: "1" })
   await reached(/^App operation complete: app_1\. Operation app-install-[^ ]+\.$/)
   const polls = k.requests.filter(v => v.GetAppInstallOperation).length
   await new Promise(resolve => setTimeout(resolve, 30))
   assert.equal(k.requests.filter(v => v.GetAppInstallOperation).length, polls, "polling stops at the outcome")
   assert.deepEqual(notices.filter(notice => notice.startsWith("App operation")), [notices.at(-1)])
+  assert.equal(notices.filter(notice => notice.startsWith("Starting App")).length, 1)
+})
+
+test("a followed App operation rides out busy status reads and gives up after ten in a row", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  let busy = 0
+  const send = async (request: Message): Promise<Message> => {
+    if (request.GetAppInstallOperation && busy > 0) { busy -= 1; throw new KernelFailure("busy") }
+    return k.send(request)
+  }
+  const installer = new AppFileInstaller(send, () => {}, f.root)
+  t.after(() => installer.dispose())
+  const started = await installer.install(f.path, "current-session")
+  busy = 3
+  Object.assign(k.status!, { phase: "committed", installation_id: "app_1" })
+  const reports: string[] = []
+  assert.equal((await installer.follow(started, next => reports.push(next.phase), { pollMs: 1 })).phase, "committed")
+  assert.deepEqual(reports, ["committed"])
+
+  const lost = kernel()
+  const lostSend = async (request: Message): Promise<Message> => {
+    if (request.GetAppInstallOperation) throw new KernelFailure("busy")
+    return lost.send(request)
+  }
+  const lostInstaller = new AppFileInstaller(lostSend, () => {}, f.root)
+  t.after(() => lostInstaller.dispose())
+  await assert.rejects(lostInstaller.follow(await lostInstaller.install(f.path, "current-session"), () => {}, { pollMs: 1 }),
+    /^Error: Lost contact with the kernel while following App operation app-install-/)
 })
 
 test("a followed App operation reports its failure, and closing the terminal stops following", async t => {

@@ -33,9 +33,10 @@ export class AppFileInstaller {
   private cleaning: Promise<AppInstallOperationSummary | undefined> | undefined
   private disposed = false
   private readonly closing = new AbortController()
+  private readonly following = new Map<string, Promise<AppInstallOperationSummary>>()
   private operations = new Set<Promise<unknown>>()
   constructor(private send: Send, private progress: (value: InstallProgress) => void = () => {},
-    private cwd: string = terminalCwd()) {}
+    private cwd: string = terminalCwd(), private followPollMs = 1_000) {}
 
   install(selected: string, session: string): Promise<AppInstallOperationSummary> {
     return this.start(selected, session)
@@ -119,14 +120,32 @@ export class AppFileInstaller {
     return this.own(() => this.cancelAttempt(requestId))
   }
 
-  /** Polls an operation until it ends, reporting each phase it moves to. It
-   * stops early, returning the last phase seen, when `until` passes or this
-   * terminal closes; a failed status read rejects. */
-  async follow(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
-    { pollMs = 1_000, until = Infinity }: { pollMs?: number; until?: number } = {}): Promise<AppInstallOperationSummary> {
-    while (!terminalPhases.has(value.phase) && Date.now() < until) {
+  /** Polls an operation until it ends, reporting each phase it moves to. An
+   * operation has one poller: following it again joins that one. It stops
+   * early, returning the last phase seen, when `until` passes or this terminal
+   * closes. A failed status read is retried at the next poll; a kernel refusal
+   * other than busy, or ten failures in a row, rejects. */
+  follow(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
+    { pollMs = this.followPollMs, until = Infinity }: { pollMs?: number; until?: number } = {}): Promise<AppInstallOperationSummary> {
+    const running = this.following.get(value.request_id)
+    if (running) return running
+    const job = this.poll(value, report, pollMs, until).finally(() => this.following.delete(value.request_id))
+    this.following.set(value.request_id, job)
+    return job
+  }
+
+  private async poll(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
+    pollMs: number, until: number): Promise<AppInstallOperationSummary> {
+    for (let failures = 0; !terminalPhases.has(value.phase) && Date.now() < until;) {
       try { await delay(pollMs, undefined, { signal: this.closing.signal }) } catch { break }
-      const next = await this.status(value.request_id)
+      let next: AppInstallOperationSummary
+      try { next = await this.status(value.request_id) } catch (error) {
+        if (this.disposed) break
+        if (error instanceof KernelFailure && error.code !== "busy") throw error
+        if (++failures < 10) continue
+        throw new Error(`Lost contact with the kernel while following App operation ${value.request_id}.`)
+      }
+      failures = 0
       if (next.phase !== value.phase) report(next)
       value = next
     }

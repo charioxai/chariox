@@ -11,8 +11,6 @@ import type { ParsedSlashCommand } from "./commands.js"
 
 export type AppCommandHandlerDeps = {
   appFileInstaller?: AppFileInstaller
-  /** Test seam: how often a started install or update is polled. */
-  appInstallPollMs?: number
   appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
   currentAppSessionId?: () => string | undefined
@@ -147,6 +145,6 @@ export async function handleAppSlashCommand(
  * The prompt stays free for the approval it may wait for. */
 function reportOutcome(installer: AppFileInstaller, value: AppInstallOperationSummary, deps: AppCommandHandlerDeps): void {
   deps.appendNotice(formatInstallOperation(value))
-  void installer.follow(value, next => deps.appendNotice(formatInstallOperation(next)), { pollMs: deps.appInstallPollMs ?? 1_000 })
-    .catch((error: unknown) => deps.appendNotice(`Stopped following App operation ${value.request_id}: ${error instanceof Error ? error.message : String(error)}`))
+  void installer.follow(value, next => deps.appendNotice(formatInstallOperation(next))).catch((error: unknown) =>
+    deps.appendNotice(`${error instanceof Error ? error.message : String(error)} Use /app operation ${value.request_id} to check it.`))
 }
