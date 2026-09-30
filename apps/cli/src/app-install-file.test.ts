@@ -132,6 +132,59 @@ test("normal quoted /app install uses current session and only bytes cross the s
   assert.ok(!k.requests.some(v => v.RespondToInteraction))
 })
 
+test("/app install follows its operation and reports each phase through the outcome", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  const installer = new AppFileInstaller(k.send, () => {}, f.root)
+  t.after(() => installer.dispose())
+  const notices: string[] = []
+  const command = parseSlashCommand('/app install "local App.cxapp"')! as Extract<ReturnType<typeof parseSlashCommand>, { kind: "app" }>
+  const deps = {
+    sendAppRequest: k.send, appFileInstaller: installer, currentAppSessionId: () => "current-session", appInstallPollMs: 5,
+    appendNotice: (value: string) => { notices.push(value) }, flashFooter: (value: string) => assert.fail(value),
+  }
+  // The command returns while the operation waits, so the prompt is free for the approval.
+  await handleAppSlashCommand(deps, command)
+  assert.match(notices.at(-1)!, /^Preparing App\. Operation app-install-/)
+  const reached = async (pattern: RegExp) => {
+    for (let wait = 0; !notices.some(notice => pattern.test(notice)); wait++) {
+      assert.ok(wait < 400, `no notice matching ${pattern}: ${notices.join(" | ")}`)
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+  }
+  for (const phase of ["awaiting_approval", "starting"]) {
+    k.status!.phase = phase
+    await reached(phase === "starting" ? /^Starting App\./ : /^Awaiting approval/)
+  }
+  Object.assign(k.status!, { phase: "committed", installation_id: "app_1", generation: "1" })
+  await reached(/^App operation complete: app_1\. Operation app-install-[^ ]+\.$/)
+  const polls = k.requests.filter(v => v.GetAppInstallOperation).length
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(k.requests.filter(v => v.GetAppInstallOperation).length, polls, "polling stops at the outcome")
+  assert.deepEqual(notices.filter(notice => notice.startsWith("App operation")), [notices.at(-1)])
+})
+
+test("a followed App operation reports its failure, and closing the terminal stops following", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  const installer = new AppFileInstaller(k.send, () => {}, f.root)
+  t.after(() => installer.dispose())
+  const started = await installer.install(f.path, "current-session")
+  const reports: string[] = []
+  const following = installer.follow(started, next => reports.push(next.phase), { pollMs: 5 })
+  Object.assign(k.status!, { phase: "failed", failure: "app_install_publisher_not_enrolled" })
+  assert.equal((await following).phase, "failed")
+  assert.deepEqual(reports, ["failed"])
+  assert.match(formatInstallOperation((await installer.status())), /^App operation failed\. This publisher must be enrolled/)
+
+  const other = kernel()
+  const closing = new AppFileInstaller(other.send, () => {}, f.root)
+  const pending = await closing.install(f.path, "current-session")
+  const stopped = closing.follow(pending, () => assert.fail("no report after close"), { pollMs: 60_000 })
+  await closing.dispose()
+  assert.equal((await stopped).phase, "preparing")
+})
+
 test("/app update fences the shared upload on the generation it read first", async t => {
   const f = await sourceFixture(t)
   const k = kernel()
@@ -154,7 +207,9 @@ test("/app update fences the shared upload on the generation it read first", asy
   assert.match(request_id, /^app-update-/)
   assert.match(notices.at(-1)!, /Preparing App/)
   await assert.rejects(installer.install(f.path, "current-session"), /Another App installation or update is retained/)
-  assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
+  // An ended operation has nothing left to check or cancel.
+  assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}.`)
+  assert.equal(formatInstallOperation({ ...k.status!, phase: "starting" } as never), `Starting App. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
   assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_schema_downgrade" } as never), /^App operation failed\. This release's data schema is older than the installed App's/)
   assert.deepEqual(installer.retained(), { path: f.path, request: request_id, digest: digest(f.bytes), installation: "todo", begun: true })
   assert.equal(installer.discardRetained(), false)

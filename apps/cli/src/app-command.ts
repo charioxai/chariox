@@ -114,13 +114,9 @@ async function installFile(
       ? await installer.install(targets[0]!, session)
       : await installer.update(targets[0]!, targets[1]!, session)
     deps.write(`${formatInstallOperation(value)}\n`)
-    const until = Date.now() + (deps.installWaitMs ?? 15 * 60_000)
-    while (!terminal.has(value.phase) && Date.now() < until) {
-      await new Promise((resolve) => setTimeout(resolve, deps.installPollMs ?? 2_000))
-      const next = await installer.status(value.request_id)
-      if (next.phase !== value.phase) deps.write(`${formatInstallOperation(next)}\n`)
-      value = next
-    }
+    value = await installer.follow(value, next => deps.write(`${formatInstallOperation(next)}\n`), {
+      pollMs: deps.installPollMs ?? 2_000, until: Date.now() + (deps.installWaitMs ?? 15 * 60_000),
+    })
     if (value.phase === "failed" || value.phase === "cancelled") throw new Error(formatInstallOperation(value))
     if (!terminal.has(value.phase)) {
       throw new Error(`Still ${value.phase} after waiting; the kernel keeps operation ${value.request_id}. Finish it in session ${session}'s terminal, then check \`chariox app list\`.`)

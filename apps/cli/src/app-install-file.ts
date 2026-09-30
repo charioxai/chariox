@@ -32,6 +32,7 @@ export class AppFileInstaller {
   private running: Promise<AppInstallOperationSummary> | undefined
   private cleaning: Promise<AppInstallOperationSummary | undefined> | undefined
   private disposed = false
+  private readonly closing = new AbortController()
   private operations = new Set<Promise<unknown>>()
   constructor(private send: Send, private progress: (value: InstallProgress) => void = () => {},
     private cwd: string = terminalCwd()) {}
@@ -118,6 +119,20 @@ export class AppFileInstaller {
     return this.own(() => this.cancelAttempt(requestId))
   }
 
+  /** Polls an operation until it ends, reporting each phase it moves to. It
+   * stops early, returning the last phase seen, when `until` passes or this
+   * terminal closes; a failed status read rejects. */
+  async follow(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
+    { pollMs = 1_000, until = Infinity }: { pollMs?: number; until?: number } = {}): Promise<AppInstallOperationSummary> {
+    while (!terminalPhases.has(value.phase) && Date.now() < until) {
+      try { await delay(pollMs, undefined, { signal: this.closing.signal }) } catch { break }
+      const next = await this.status(value.request_id)
+      if (next.phase !== value.phase) report(next)
+      value = next
+    }
+    return value
+  }
+
   private async cancelAttempt(requestId?: string): Promise<AppInstallOperationSummary | undefined> {
     const attempt = this.attempt
     if (requestId && requestId !== attempt?.request) return operation(await this.request(cancelAppInstallOperationRequest(requestId), () => false), requestId)
@@ -132,6 +147,7 @@ export class AppFileInstaller {
   /** Caller owns this promise through terminal shutdown; begun installs remain kernel-owned. */
   async dispose(): Promise<void> {
     this.disposed = true
+    this.closing.abort()
     const attempt = this.attempt
     if (!attempt) { await Promise.allSettled([...this.operations]); return }
     if (!attempt.beginSent) attempt.cancelled = true
@@ -288,7 +304,8 @@ export function formatInstallFailure(failure: string): string {
 export function formatInstallOperation(value: AppInstallOperationSummary): string {
   const label = { preparing: "Preparing App", awaiting_approval: "Awaiting approval in the operation's session", starting: "Starting App", committed: "App operation complete", cancelled: "App operation cancelled", failed: "App operation failed" }[value.phase]
   const detail = value.failure ? ` ${formatInstallFailure(value.failure)}` : ""
-  return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}. Use /app operation for status; /app cancel to cancel before it completes.`
+  const next = terminalPhases.has(value.phase) ? "" : " Use /app operation for status; /app cancel to cancel before it completes."
+  return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}.${next}`
 }
 
 export function formatInstallProgress(value: InstallProgress): string {
