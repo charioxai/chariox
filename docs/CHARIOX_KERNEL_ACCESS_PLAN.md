@@ -46,12 +46,12 @@ Phase 1 (protocol 383, implemented in a separate PR) requires the Chariox passke
 | Protocol | The approve choice on the projected `RuntimeInteractionChoice` carries `requires_passkey: true`. `RespondToInteraction` gains an optional `passkey` (redacted, zeroized, never logged or persisted) and an optional `passkey_remember_minutes` (1 to 15). |
 | Verification | The kernel derives the vault key with Argon2id and authenticates the vault file. The vault unlock state does not change. |
 | Rate limit | 5 failures, then an exponential lockout capped at 15 minutes. |
-| Remember window | Optional, off by default, up to 15 minutes, per owner, kernel memory only. Separate from the vault unlock window, because the vault is usually unlocked and its unlock does not prove a human is present. |
+| Remember window | Optional, off by default, up to 15 minutes, per owner, kernel memory only. Separate from the vault unlock window, because the vault is usually unlocked and its unlock does not prove a human is present. While it is open, any caller the kernel accepts as the owner (on a laptop, any same-user local process) can approve a critical action without the passkey; that is the accepted cost of opting in. |
 | Deny | Needs no passkey. |
 | Routine approvals | Unchanged. Tool permissions and App binding approvals in Ask mode can still be answered by the user or a metaagent without the passkey. |
 | Agents | Metaagent and MCP paths stay refused for kernel-operation decisions. |
-| Audit | Each passkey decision appends a durable `critical_approval.passkey` event with outcome `verified`, `remembered`, `rejected`, `missing` or `rate_limited`. The passkey is never recorded. |
-| Clients | The TUI approval panel and the web approval dialog and strip ask for the passkey with hidden input, for critical approvals only. To a remote kernel the passkey travels end-to-end encrypted through the relay like any other kernel request; the relay sees ciphertext only. |
+| Audit | Each passkey decision appends a durable `critical_approval.passkey` event with outcome `verified`, `remembered`, `rejected`, `missing`, `rate_limited` or `unavailable`. The passkey is never recorded. |
+| Clients | The TUI approval panel and the web approval dialog ask for the passkey with hidden input, for critical approvals only. (The web App panel's approval strip shows only agent interactions, which may never require the passkey.) To a remote kernel the passkey travels end-to-end encrypted through the relay like any other kernel request; the relay sees ciphertext only. |
 | Other vault backends | If the vault backend is not the encrypted Chariox vault, critical approvals fail closed. |
 
 ### 1.4 What is still open after Phase 1
