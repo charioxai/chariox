@@ -5,7 +5,10 @@ use crate::durable_state::app_wakes::{AppWakeOperation, AppWakeOutcome};
 use crate::durable_state::app_worker_lifecycle::StartGate;
 use crate::runtime::app_lifecycle::LifecycleError;
 use chariox_app_runtime::managed_state::DueWake;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 pub(super) const PAGE: usize = 8;
 /// A wake delivered this long after its due time is reported as overdue.
@@ -24,6 +27,9 @@ const IDLE_AFTER_MS: u64 = 10 * 60_000;
 pub(super) enum Start {
     /// Starting, already starting, or admission busy: wait without an attempt.
     Pending,
+    /// Every live worker slot is taken: wait without an attempt while the
+    /// pass makes room, as a tool call does, by stopping an idle worker.
+    AtLiveLimit,
     /// The user stopped the App: keep work without spending attempts.
     UserStopped,
     /// Failed generation, revocation or inactive installation: bounded attempts.
@@ -59,7 +65,9 @@ pub(super) fn plan<T>(
         }
         let outcome = *started.entry(key(&item)).or_insert_with(|| start(&item));
         let settle = match outcome {
-            Start::Pending => Settle::Postponed(now_ms.saturating_add(START_WAIT_MS)),
+            Start::Pending | Start::AtLiveLimit => {
+                Settle::Postponed(now_ms.saturating_add(START_WAIT_MS))
+            }
             Start::UserStopped => Settle::Postponed(now_ms.saturating_add(STOPPED_WAIT_MS)),
             Start::Refused => Settle::Failed,
         };
@@ -288,9 +296,10 @@ impl KernelRuntimeState {
     ) -> (Vec<T>, Vec<(T, Settle)>) {
         let planning = self.app_control().clone();
         let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
+        let (planned, at_live_limit) = tokio::task::spawn_blocking(move || {
             let lifecycle = planning.lifecycle().clone();
-            plan(
+            let mut at_live_limit = BTreeSet::new();
+            let planned = plan(
                 due,
                 now_ms,
                 key,
@@ -302,8 +311,10 @@ impl KernelRuntimeState {
                     let (owner, installation) = key(item);
                     match lifecycle.start_on_demand_blocking(&owner, &installation, handle.clone())
                     {
-                        Ok(_) | Err(LifecycleError::Busy | LifecycleError::LiveLimit) => {
-                            Start::Pending
+                        Ok(_) | Err(LifecycleError::Busy) => Start::Pending,
+                        Err(LifecycleError::LiveLimit) => {
+                            at_live_limit.insert((owner, installation));
+                            Start::AtLiveLimit
                         }
                         Err(LifecycleError::Stopped) => Start::UserStopped,
                         Err(_) => {
@@ -312,10 +323,19 @@ impl KernelRuntimeState {
                         }
                     }
                 },
-            )
+            );
+            (planned, at_live_limit)
         })
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+        // Due work must not wait for another App's idle stop (ten minutes):
+        // make room the way a tool call does, by stopping the least recently
+        // used worker idle for a minute (kept dormant). The item's next pass
+        // (START_WAIT_MS) starts its App.
+        for (owner, installation) in at_live_limit {
+            self.evict_idle_app(&owner, &installation).await;
+        }
+        planned
     }
 
     /// Whether an update of the installation is staged (not yet committed or
@@ -373,6 +393,26 @@ mod tests {
         assert_eq!(deliver.len(), 1);
         assert_eq!(deliver[0].wake.id, "b");
         assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .all(|(_, settle)| *settle == Settle::Postponed(100 + START_WAIT_MS)));
+    }
+
+    #[test]
+    fn wakes_at_the_live_limit_wait_without_spending_attempts() {
+        let starts = RefCell::new(0);
+        let (deliver, records) = plan(
+            vec![due("dormant", "a"), due("dormant", "b")],
+            100,
+            key,
+            |_| false,
+            |_| {
+                *starts.borrow_mut() += 1;
+                Start::AtLiveLimit
+            },
+        );
+        assert_eq!(starts.into_inner(), 1);
+        assert!(deliver.is_empty());
         assert!(records
             .iter()
             .all(|(_, settle)| *settle == Settle::Postponed(100 + START_WAIT_MS)));

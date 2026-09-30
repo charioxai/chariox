@@ -131,6 +131,8 @@ const ON_DEMAND_START: Duration = Duration::from_secs(20);
 /// When the live-worker limit is full, a worker idle at least this long may
 /// be stopped (and kept dormant) to admit an on-demand start.
 const EVICTABLE_IDLE_MS: u64 = 60_000;
+/// A call still waiting at the live limit tries another eviction this often.
+const EVICTION_RETRY: Duration = Duration::from_secs(1);
 
 impl KernelRuntimeState {
     /// A dormant (idle-stopped) App starts on its next tool call, and so does
@@ -171,7 +173,7 @@ impl KernelRuntimeState {
             }
         }
         let mut started = false;
-        let mut evicted = false;
+        let mut next_eviction = tokio::time::Instant::now();
         loop {
             if let Some(lease) = control.active_app_lease(owner, installation) {
                 return Ok(lease);
@@ -193,10 +195,13 @@ impl KernelRuntimeState {
                     // Transient contention (a concurrent operation on this
                     // installation) clears by itself: retry without evicting.
                     Err(crate::runtime::app_lifecycle::LifecycleError::Busy) => {}
-                    // Every live slot is taken: make room once, then retry.
+                    // Every live slot is taken: make room, then retry. A
+                    // concurrent call may take the freed slot or evict the
+                    // same idle worker first, so try again while the limit
+                    // holds, at most once per EVICTION_RETRY.
                     Err(crate::runtime::app_lifecycle::LifecycleError::LiveLimit) => {
-                        if !evicted {
-                            evicted = true;
+                        if tokio::time::Instant::now() >= next_eviction {
+                            next_eviction = tokio::time::Instant::now() + EVICTION_RETRY;
                             self.evict_idle_app(owner, installation).await;
                         }
                     }
