@@ -132,10 +132,11 @@ export function createHttp(call) {
       const outcomes = await Promise.all([upload(), download()]);
       return outcomes[1];
     } catch (error) {
-      // An approved effect spent its approval when the stream opened, and the
-      // kernel then sends it. Giving up before any response is not a plain
-      // timeout: the origin may have acted.
-      if (parameters.operationId !== undefined && streamId && !answered && error?.code === 'DEADLINE_EXCEEDED') {
+      // The kernel spends an approved effect's approval before it answers the
+      // open, and then sends the effect. Giving up before any response, even
+      // while the open is pending, is not a plain timeout: the origin may have
+      // acted. `validation.status` tells whether the approval was spent.
+      if (parameters.operationId !== undefined && !answered && error?.code === 'DEADLINE_EXCEEDED') {
         throw new AppError('APP_HTTP_OUTCOME_UNCERTAIN', 'The approved effect was sent but no reply arrived in time; it may have taken effect. Check its outcome before requesting a new approval', { cause: error });
       }
       throw error;

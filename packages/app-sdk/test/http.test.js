@@ -149,9 +149,12 @@ test('an approved effect with no reply by its deadline is an uncertain outcome, 
     await assert.rejects(pendingHeaders('validation-1'),{code:'APP_HTTP_OUTCOME_UNCERTAIN',retryable:false});
     // An ordinary request that times out is still a timeout.
     await assert.rejects(pendingHeaders(undefined),{code:'DEADLINE_EXCEEDED'});
-    // An effect that never opened spent nothing: its own error stands.
-    const unopened = createHttp(async () => { throw new AppError('DEADLINE_EXCEEDED','App request deadline exceeded'); });
-    await assert.rejects(unopened.request({url:FIXTURE_URL,method:'POST',operationId:'validation-2'}),{code:'DEADLINE_EXCEEDED'});
+    // An open that times out may already have spent the approval and sent the effect.
+    const opening = createHttp(async () => { throw new AppError('DEADLINE_EXCEEDED','App request deadline exceeded'); });
+    await assert.rejects(opening.request({url:FIXTURE_URL,method:'POST',operationId:'validation-2'}),{code:'APP_HTTP_OUTCOME_UNCERTAIN'});
+    // An open the kernel refused spent nothing: its own error stands.
+    const refused = createHttp(async () => { throw new AppError('VALIDATION_REQUIRED','needs approval'); });
+    await assert.rejects(refused.request({url:FIXTURE_URL,method:'POST',operationId:'validation-2'}),{code:'VALIDATION_REQUIRED'});
     // A received response, a gateway's 502 included, is passed through.
     const gateway = createHttp(async method => {
       if (method === 'http.cancel') return null;

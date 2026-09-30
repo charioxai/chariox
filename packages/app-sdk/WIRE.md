@@ -211,12 +211,16 @@ The effect's outcome follows what the kernel's socket saw:
   plain `APP_HTTP_NETWORK` or `APP_DEADLINE`: the effect was not sent, though its
   approval is spent.
 - Once the request may have reached the origin, a lost reply (the connection
-  reset or closed, or the kernel's inactivity or lifetime limit, before any
-  response head) is `APP_HTTP_OUTCOME_UNCERTAIN`: the origin may have acted.
-  Check the outcome with the service before requesting a new approval; the
-  kernel never replays it. `http.request` also answers
-  `APP_HTTP_OUTCOME_UNCERTAIN` when its own deadline passes after the effect's
-  stream opened and before a response head arrived.
+  reset or closed, a stop the App did not ask for, or the kernel's inactivity
+  or lifetime limit, before any response head) is `APP_HTTP_OUTCOME_UNCERTAIN`:
+  the origin may have acted. Check the outcome with the service before
+  requesting a new approval; the kernel never replays it.
+- `http.request` also answers `APP_HTTP_OUTCOME_UNCERTAIN` when its own deadline
+  passes before a response head, including while `http.open` is pending: the
+  kernel spends the approval before it answers the open. `validation.status`
+  then tells: still `approved` means the kernel never started the effect (the
+  same `operationId` can be used again), `VALIDATION_CONSUMED` means it may have
+  reached the origin.
 
 `host.pick_file {multiple?, accept?}` (Apps whose signed manifest declares
 `capabilities.externalFiles: ["user_selected"]`; others get
