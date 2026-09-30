@@ -1,5 +1,8 @@
 //! One bounded background pass shared by every clone of AppControl. The existing
 //! transport pump supplies ticks; this component owns no scheduler or thread.
+//! While a wake or backlog is pending, the pump tells the transport pump when
+//! its next pass is due, so passes follow the one-second floor instead of the
+//! idle tick.
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -9,6 +12,8 @@ pub(crate) struct AppEventPump(Arc<Mutex<State>>);
 struct State {
     in_flight: bool,
     wake: bool,
+    /// The last pass left work behind (more receipts, sessions or cleanup).
+    more: bool,
     next: Instant,
     delivery: Option<AppCursor>,
     maintenance: Option<AppCursor>,
@@ -26,6 +31,7 @@ impl AppEventPump {
         Self(Arc::new(Mutex::new(State {
             in_flight: false,
             wake: true,
+            more: false,
             next: Instant::now(),
             delivery: None,
             maintenance: None,
@@ -37,6 +43,15 @@ impl AppEventPump {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .wake = true;
+    }
+    /// When the next pass should run: only while a wake or backlog waits, and
+    /// never before the one-second floor.
+    pub(crate) fn next_due(&self) -> Option<Instant> {
+        let state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (!state.in_flight && (state.wake || state.more)).then_some(state.next)
     }
     pub(crate) fn try_begin(&self) -> Option<AppEventPass> {
         self.try_begin_at(Instant::now())
@@ -79,7 +94,7 @@ impl AppEventPass {
         delivery: Option<AppCursor>,
         maintenance: Option<AppCursor>,
         dispatch: Option<String>,
-        _more: bool,
+        more: bool,
     ) {
         let mut state = self
             .state
@@ -88,6 +103,7 @@ impl AppEventPass {
         state.delivery = delivery;
         state.maintenance = maintenance;
         state.dispatch = dispatch;
+        state.more = more;
         // Backlog and wakes cannot bypass the monotonic interval. In particular,
         // an unsubmitted Ready run blocked on a workspace must not busy-loop.
         state.next = Instant::now() + Duration::from_secs(1);
@@ -142,5 +158,34 @@ mod tests {
         assert!(pump
             .try_begin_at(Instant::now() + Duration::from_secs(2))
             .is_some());
+    }
+
+    #[test]
+    fn a_backlog_or_wake_makes_the_next_pass_due_at_the_floor_and_idle_does_not() {
+        let pump = AppEventPump::new();
+        // A new pump starts with a wake: its first pass is due now.
+        assert!(pump.next_due().is_some_and(|due| due <= Instant::now()));
+        let pass = pump.try_begin().unwrap();
+        assert_eq!(pump.next_due(), None, "no second pass while one runs");
+        pass.finish(None, None, None, true);
+        let due = pump.next_due().expect("a backlog keeps the pump due");
+        assert!(due > Instant::now() + Duration::from_millis(900));
+        assert!(due <= Instant::now() + Duration::from_secs(1));
+
+        let pass = pump.try_begin_at(due).unwrap();
+        pass.finish(None, None, None, false);
+        assert_eq!(
+            pump.next_due(),
+            None,
+            "idle: the transport's idle tick is enough"
+        );
+
+        // A wake while a pass runs (a worker was published) is not lost.
+        let pass = pump
+            .try_begin_at(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        pump.wake();
+        pass.finish(None, None, None, false);
+        assert!(pump.next_due().is_some());
     }
 }

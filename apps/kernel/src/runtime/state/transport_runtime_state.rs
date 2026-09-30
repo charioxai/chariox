@@ -362,6 +362,7 @@ impl KernelRuntimeState {
             self.next_structured_output_poll_due_at_ms(),
             self.owned.provider_output_deadlines.next_due_at_ms(),
             self.owned.provider_launch_failure_retries.next_due_at_ms(),
+            self.app_event_pump_due_at_ms(now_ms),
         ]
         .into_iter()
         .flatten()
@@ -376,6 +377,14 @@ impl KernelRuntimeState {
             active_interval_ms,
             idle_interval_ms,
         )
+    }
+
+    /// App event handoff with a backlog or wake runs at its own one-second
+    /// floor, not the five-second idle tick.
+    fn app_event_pump_due_at_ms(&self, now_ms: u64) -> Option<u64> {
+        let due = self.app_control().event_pump().next_due()?;
+        let wait = due.saturating_duration_since(std::time::Instant::now());
+        Some(now_ms.saturating_add(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)))
     }
 
     fn next_structured_output_poll_due_at_ms(&self) -> Option<u64> {

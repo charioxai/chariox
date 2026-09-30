@@ -133,7 +133,12 @@ future capacity change.
 The kernel pump retains one shared background pass and its App admission permit
 through blocking completion. Current worker/catalog leases gate new queue work;
 no foreground App view is required. Every pass has a monotonic one-second minimum
-interval, including backlog and coalesced wakes. Each pass attempts at most eight
+interval, including backlog and coalesced wakes. While a pass leaves backlog or a
+wake is pending, the transport pump runs the next pass at that floor rather than on
+its five-second idle tick. A pass hands off at most one receipt per live
+installation (eight installations per pass, rotating), so one App's backlog drains
+at about one event per second; the first event after an idle period waits for the
+next transport tick. Each pass attempts at most eight
 workflow dispatch sessions and preserves its rotating cursor; a blocked Ready
 entry does not rewrite its unchanged turn or repeat the workspace-conflict notice. New queue retries use 1, 2, 4, 8, 16, 32 and 60-second
 backoff, with at most eight admissions. Housekeeping rotates inactive installations
