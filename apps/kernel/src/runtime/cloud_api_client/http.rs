@@ -2,6 +2,9 @@
 
 use crate::error::DaemonError;
 
+#[path = "bounded_artifact.rs"]
+mod bounded_artifact;
+
 const CLOUD_API_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonError> {
@@ -148,14 +151,11 @@ pub(crate) async fn post_cloud_to_file(
         let written = (|| {
             let mut file =
                 std::fs::File::create(&partial).map_err(|error| io_error(error.to_string()))?;
-            let copied = std::io::copy(
-                &mut std::io::Read::take(response.into_reader(), max_bytes + 1),
-                &mut file,
-            )
-            .map_err(|error| io_error(error.to_string()))?;
-            if copied > max_bytes {
-                return Err(io_error(format!("artifact exceeds {max_bytes} bytes")));
-            }
+            let parent = destination.parent().ok_or_else(|| io_error("artifact has no parent directory".into()))?;
+            bounded_artifact::copy(
+                response.into_reader(), &mut file, max_bytes,
+                || fs2::available_space(parent),
+            ).map_err(|error| io_error(error.to_string()))?;
             file.sync_all()
                 .map_err(|error| io_error(error.to_string()))?;
             std::fs::rename(&partial, &destination).map_err(|error| io_error(error.to_string()))
