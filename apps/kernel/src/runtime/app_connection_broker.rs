@@ -135,6 +135,7 @@ impl AppConnectionBroker {
             .snapshot();
         // The App's key makes its retries act once; without one, every call
         // is a new action.
+        let keyed = action.idempotency_key.is_some();
         let idempotency_key = format!(
             "app:{}:{}",
             self.installation,
@@ -161,7 +162,15 @@ impl AppConnectionBroker {
             &config.event_generator_management_targets,
             &request,
         )
-        .map_err(|failure| error("CONNECTION_ACTION_FAILED", failure.retryable()))?;
+        .map_err(|failure| {
+            // The generator may have acted: never replay it, and a retry is
+            // safe only under the App's own idempotency key (V1-INT-08).
+            if failure.outcome_unknown() {
+                error("APP_CONNECTION_OUTCOME_UNCERTAIN", keyed)
+            } else {
+                error("CONNECTION_ACTION_FAILED", failure.retryable())
+            }
+        })?;
         Ok(json!({
             "accepted": response.accepted,
             "result": response.result,

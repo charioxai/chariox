@@ -210,3 +210,55 @@ fn reads_follow_neither_symlinks_nor_hard_links_and_stay_bounded() {
         assert!(f.data().read_file(path, 64).is_err(), "{path:?}");
     }
 }
+
+#[test]
+fn raw_app_writes_racing_an_sdk_replacement_never_tear_it() {
+    // V1-INT-04: the App writes the same file with node:fs while the SDK
+    // replaces it. Raw writes keep ordinary semantics, but the SDK never
+    // writes into an existing inode: the one it replaces never receives its
+    // bytes. Every replacement publishes, and the file ends as one writer's
+    // complete contents with no staging left behind.
+    use std::os::unix::fs::FileExt;
+    const LEN: usize = 256 * 1024;
+    const ROUNDS: usize = 200;
+    let f = Fixture::new();
+    let path = f.path.join("doc");
+    fs::write(&path, vec![b'a'; LEN]).unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let writer = std::thread::spawn({
+        let (path, done) = (path.clone(), done.clone());
+        move || {
+            while !done.load(Ordering::SeqCst) {
+                fs::write(&path, vec![b'a'; LEN]).unwrap();
+            }
+        }
+    });
+    for _ in 0..ROUNDS {
+        // Only replacements create inodes, and the racing writer writes only
+        // `a`, so the inode about to be replaced holds no `b` from here on.
+        let replaced = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        replaced.write_all_at(&vec![b'a'; LEN], 0).unwrap();
+        f.data()
+            .prepare_replace("doc", &vec![b'b'; LEN])
+            .unwrap()
+            .publish()
+            .unwrap();
+        let mut held = vec![0; LEN];
+        let read = replaced.read_at(&mut held, 0).unwrap();
+        assert!(
+            held[..read].iter().all(|b| *b == b'a'),
+            "the replacement wrote into the inode it replaced"
+        );
+    }
+    done.store(true, Ordering::SeqCst);
+    writer.join().unwrap();
+    let last = fs::read(&path).unwrap();
+    assert_eq!(last.len(), LEN);
+    assert!(last.iter().all(|b| *b == b'a') || last.iter().all(|b| *b == b'b'));
+    assert_eq!(fs::read_dir(&f.path).unwrap().count(), 1);
+}

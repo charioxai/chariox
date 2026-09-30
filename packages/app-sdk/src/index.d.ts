@@ -142,7 +142,7 @@ export interface AppSdk {
   /** Event generator connections the owner granted this App (kernel protocol 359). */
   readonly connections: {
     list(options?: CallOptions): Promise<{ connections: Array<{ generatorId: string; connectionId: string; actions: string[] }> }>;
-    /** Runs one declared action; `context` is a generator-issued reply context from an inbox occurrence. Calls with the same `idempotencyKey` act once; without one, every call acts. */
+    /** Runs one declared action; `context` is a generator-issued reply context from an inbox occurrence. Calls with the same `idempotencyKey` act once; without one, every call acts. An `APP_CONNECTION_OUTCOME_UNCERTAIN` error means the action may have run: retry only with an `idempotencyKey`. */
     action(request: { connectionId: string; action: string; input?: Json; context?: Json; idempotencyKey?: string }, options?: CallOptions): Promise<{ accepted: boolean; result: Json; idempotencyKey: string }>;
   };
   readonly files: {
