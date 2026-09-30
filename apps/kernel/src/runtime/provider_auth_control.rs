@@ -1056,10 +1056,11 @@ mod tests {
             },
         );
 
+        // The default wins the identity, so its automatic label follows the email.
         assert!(result
             .expect_err("duplicate login should be rejected")
             .to_string()
-            .contains(&format!("already authenticated as `{}`", default.label)));
+            .contains("already authenticated as `same`"));
         assert_eq!(
             registry
                 .get("owner-a", "claude", &default.profile_id)
