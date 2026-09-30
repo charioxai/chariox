@@ -1446,6 +1446,50 @@ fn path1_confirmed_generation_two_recovers_after_ack_with_cleared_freshness() {
 
 #[cfg(unix)]
 #[test]
+fn path1_grant_binding_survives_an_in_place_release_update() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("path1-grant-binding-release-update");
+    let config = fixture.config.clone();
+    let envelope = path1_test_envelope(&fixture.release_digest, "/srv/path1 managed workspaces");
+    let receipt = path1_test_receipt(
+        &fixture.release_digest,
+        2,
+        BootstrapReceiptStatus::Confirmed,
+        None,
+    );
+    // A machine bound before in-place updates carries a schema 1 binding.
+    ManagedBootstrapGrantBinding::legacy_for_receipt(&envelope, &receipt)
+        .persist_for_receipt(&config.receipt_path)
+        .expect("persist legacy binding");
+    super::validate_receipt_envelope_grant_binding(&config, &envelope, &receipt)
+        .expect("a legacy binding of the same receipt is accepted");
+    assert_eq!(
+        ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)
+            .expect("read binding")
+            .expect("binding exists"),
+        ManagedBootstrapGrantBinding::for_receipt(&envelope, &receipt),
+        "the legacy binding is rebound by identity"
+    );
+
+    let mut updated = receipt.clone();
+    updated.runtime_release_digest = format!("sha256:{}", "e".repeat(64));
+    super::validate_envelope_receipt_compatibility(&envelope, &updated)
+        .expect("a confirmed machine may run a release other than the provisioned one");
+    super::validate_receipt_envelope_grant_binding(&config, &envelope, &updated)
+        .expect("an in-place release update keeps the grant binding");
+
+    let mut exchanged = updated.clone();
+    exchanged.status = BootstrapReceiptStatus::Exchanged;
+    exchanged.confirmed_at = None;
+    assert!(
+        super::validate_envelope_receipt_compatibility(&envelope, &exchanged).is_err(),
+        "before confirmation the receipt must still name the provisioned release"
+    );
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
 fn path1_grant_binding_rejects_distinct_token_and_claim_substitution() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("path1-grant-binding-substitution");

@@ -472,8 +472,12 @@ fn validate_envelope_receipt_compatibility(
 ) -> Result<(), DaemonError> {
     let envelope_repository_root = envelope.managed_repository_root()?;
     let receipt_repository_root = receipt.managed_repository_root()?;
+    // The envelope names the provisioned release. A confirmed machine may since
+    // have been updated in place; its installed release is verified against the
+    // receipt instead.
     if envelope.environment_id != receipt.environment_id
-        || envelope.runtime_release_digest != receipt.runtime_release_digest
+        || receipt.status == BootstrapReceiptStatus::Exchanged
+            && envelope.runtime_release_digest != receipt.runtime_release_digest
         || envelope_repository_root != receipt_repository_root
         || receipt.status == BootstrapReceiptStatus::Exchanged
             && receipt.provider_rebuild_action_id.as_deref()
@@ -1109,6 +1113,13 @@ fn validate_receipt_envelope_grant_binding(
     let expected = ManagedBootstrapGrantBinding::for_receipt(envelope, receipt);
     match ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)? {
         Some(binding) if binding == expected => Ok(()),
+        // A schema 1 binding of this exact receipt predates in-place updates;
+        // rebind it by identity.
+        Some(binding)
+            if binding == ManagedBootstrapGrantBinding::legacy_for_receipt(envelope, receipt) =>
+        {
+            expected.persist_for_receipt(&config.receipt_path)
+        }
         Some(binding)
             if receipt.status == BootstrapReceiptStatus::Exchanged
                 && binding.grant_binding_digest == expected.grant_binding_digest

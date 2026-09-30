@@ -467,7 +467,31 @@ impl ManagedBootstrapGrantBinding {
         }
     }
 
+    /// The exchange happened on the envelope's provisioned release; the receipt
+    /// binding covers identity only, so an in-place update keeps the binding.
     pub(super) fn for_receipt(
+        envelope: &ManagedBootstrapEnvelope,
+        receipt: &BootstrapReceipt,
+    ) -> Self {
+        Self {
+            schema_version: RECEIPT_BINDING_SCHEMA,
+            envelope_schema_version: envelope.schema_version,
+            grant_binding_digest: envelope.grant_binding_digest(),
+            exchange_identity_digest: exchange_identity_digest(
+                &receipt.environment_id,
+                &receipt.machine_id,
+                &receipt.kernel_id,
+                &receipt.relay_public_key,
+                &envelope.runtime_release_digest,
+            ),
+            generation: Some(receipt.generation),
+            receipt_binding_digest: Some(receipt_binding_digest(receipt)),
+        }
+    }
+
+    /// A schema 1 binding, as written before in-place updates: it hashed the
+    /// receipt's installed release into both digests.
+    pub(super) fn legacy_for_receipt(
         envelope: &ManagedBootstrapEnvelope,
         receipt: &BootstrapReceipt,
     ) -> Self {
@@ -483,7 +507,7 @@ impl ManagedBootstrapGrantBinding {
                 &receipt.runtime_release_digest,
             ),
             generation: Some(receipt.generation),
-            receipt_binding_digest: Some(receipt_binding_digest(receipt)),
+            receipt_binding_digest: Some(legacy_receipt_binding_digest(receipt)),
         }
     }
 
@@ -509,7 +533,7 @@ impl ManagedBootstrapGrantBinding {
     }
 
     fn validate(&self) -> Result<(), DaemonError> {
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | RECEIPT_BINDING_SCHEMA)
             || self.envelope_schema_version != 3
             || !valid_digest(&self.grant_binding_digest)
             || !valid_digest(&self.exchange_identity_digest)
@@ -557,7 +581,24 @@ fn exchange_identity_digest(
     format!("sha256:{:x}", digest.finalize())
 }
 
+/// Schema 2 binds the receipt's identity, not its installed release: a
+/// Cloud-coordinated in-place update changes the release of the same machine.
+const RECEIPT_BINDING_SCHEMA: u32 = 2;
+
 fn receipt_binding_digest(receipt: &BootstrapReceipt) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"chariox/managed-bootstrap-receipt-binding/v2\0");
+    update_binding_component(&mut digest, &receipt.schema_version.to_be_bytes());
+    update_binding_component(&mut digest, receipt.environment_id.as_bytes());
+    update_binding_component(&mut digest, receipt.machine_id.as_bytes());
+    update_binding_component(&mut digest, receipt.kernel_id.as_bytes());
+    update_binding_component(&mut digest, &receipt.generation.to_be_bytes());
+    update_binding_component(&mut digest, receipt.relay_public_key.as_bytes());
+    update_optional_binding_component(&mut digest, receipt.managed_repository_root.as_deref());
+    format!("sha256:{:x}", digest.finalize())
+}
+
+fn legacy_receipt_binding_digest(receipt: &BootstrapReceipt) -> String {
     let mut digest = Sha256::new();
     digest.update(b"chariox/managed-bootstrap-receipt-binding/v1\0");
     update_binding_component(&mut digest, &receipt.schema_version.to_be_bytes());
