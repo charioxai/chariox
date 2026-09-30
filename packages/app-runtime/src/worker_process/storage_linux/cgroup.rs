@@ -101,8 +101,9 @@ impl Bound {
             }
             match self.kill.write_at(b"1", 0) {
                 Ok(1) => {}
-                // Removed after the observation above: observe it again.
-                Err(error) if error.raw_os_error() == Some(libc::ENODEV) => continue,
+                // Removed after the observation above: the next observation
+                // reports it (still within the deadline).
+                Err(error) if error.raw_os_error() == Some(libc::ENODEV) => {}
                 _ => return Err(Error::Io),
             }
             if Instant::now() >= deadline {
@@ -268,6 +269,21 @@ mod tests {
     #[ignore = "needs root and a writable cgroup v2 root at /sys/fs/cgroup"]
     fn quiesce_releases_a_leaf_removed_after_its_members_died() {
         use std::{fs, io::Write, os::unix::fs::DirBuilderExt, process::Command};
+        /// Removes the scratch cgroups (and kills a leftover member) even when
+        /// an assertion fails midway.
+        struct Scratch(std::path::PathBuf, std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::write(self.1.join("cgroup.kill"), "1");
+                for _ in 0..100 {
+                    if fs::remove_dir(&self.1).is_ok() || !self.1.exists() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
         let unique = format!(
             "{:08x}{:024x}",
             std::process::id(),
@@ -277,9 +293,10 @@ mod tests {
                 .as_nanos()
         );
         let root = std::path::PathBuf::from(format!("/sys/fs/cgroup/chariox-quiesce-{unique}"));
-        fs::DirBuilder::new().mode(0o755).create(&root).unwrap();
         let leaf = format!("app-{unique}");
         let path = root.join(&leaf);
+        fs::DirBuilder::new().mode(0o755).create(&root).unwrap();
+        let _scratch = Scratch(root.clone(), path.clone());
         fs::DirBuilder::new().mode(0o755).create(&path).unwrap();
         let owner = Owner {
             uid: 0,
@@ -309,7 +326,5 @@ mod tests {
         assert_eq!(bound.require_empty(), Err(Error::Io));
         // ...but the disconnect release it blocked forever now completes.
         assert_eq!(bound.quiesce(), Ok(()));
-        drop(bound);
-        fs::remove_dir(&root).unwrap();
     }
 }
