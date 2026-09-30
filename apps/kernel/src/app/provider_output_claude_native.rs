@@ -23,6 +23,8 @@ mod permission;
 mod tests;
 mod transcript;
 
+pub(crate) use permission::format_claude_permission_message;
+
 use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
     format_claude_native_attachment_prompt_suffix, join_claude_context,
@@ -36,14 +38,13 @@ use permission::{
     claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
     claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
     clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
-    extract_native_hidden_instructions, format_claude_permission_message,
-    mark_claude_yolo_rendered_permission_confirmed, normalize_claude_visible_prompt_for_headless,
-    read_claude_headless_submit_retry, redact_native_hidden_instructions,
-    should_bridge_claude_permission, take_claude_permission_inputs,
-    take_matching_claude_hook_permission_tombstone, timestamp_millis,
-    update_claude_permission_recent, write_claude_headless_bypass_selection_marker,
-    write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
-    write_claude_headless_workspace_trust_denied_marker,
+    extract_native_hidden_instructions, mark_claude_yolo_rendered_permission_confirmed,
+    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
+    redact_native_hidden_instructions, should_bridge_claude_permission,
+    take_claude_permission_inputs, take_matching_claude_hook_permission_tombstone,
+    timestamp_millis, update_claude_permission_recent,
+    write_claude_headless_bypass_selection_marker, write_claude_headless_startup_wait_marker,
+    write_claude_headless_submit_retry, write_claude_headless_workspace_trust_denied_marker,
     write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_response,

@@ -354,6 +354,28 @@ async fn handle_json_rpc_value(
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
                 .await;
             match result {
+                // Claude Code's `--permission-prompt-tool` contract: the result
+                // is exactly one text block holding the JSON-stringified
+                // decision. No `structuredContent`: Claude Code may forward
+                // that in place of the text block.
+                Ok(result)
+                    if result.ok
+                        && tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL =>
+                {
+                    Ok(json_response(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "jsonrpc": JSON_RPC_VERSION,
+                            "id": id,
+                            "result": {
+                                "content": [{
+                                    "type": "text",
+                                    "text": result.payload.to_string(),
+                                }],
+                            }
+                        }),
+                    ))
+                }
                 Ok(result) => {
                     let (content, structured_content) = runtime_tool_content(result.payload);
                     Ok(json_response(

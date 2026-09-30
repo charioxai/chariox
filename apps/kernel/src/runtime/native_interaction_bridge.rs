@@ -44,36 +44,12 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
                 .await
         })?;
         if let Some((config, target_daemon_id, context)) = remote_target {
-            let response_timeout = remote_native_interaction_response_timeout(
-                &interaction,
-                config.relay_request_timeout_ms,
-            );
-            let response = self.handle.block_on(async move {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                    &config,
-                    chariox_relay::protocol::ClientTarget {
-                        daemon_id: Some(target_daemon_id),
-                        daemon_alias: None,
-                    },
-                    crate::transport::relay_peer::RelayPeerRequest::ForwardNativeInteraction {
-                        context,
-                        interaction,
-                    },
-                    response_timeout,
-                )
-                .await
-            })?;
-            return match response {
-                crate::transport::relay_peer::RelayPeerResponse::NativeInteractionResolved {
-                    resolution,
-                } => Ok(resolution),
-                other => Err(DaemonError::LocalTransport {
-                    operation: "provider_native_interaction_bridge",
-                    message: format!(
-                        "unexpected relay response for remote native interaction: {other:?}"
-                    ),
-                }),
-            };
+            return self.handle.block_on(forward_native_interaction_to_home(
+                config,
+                target_daemon_id,
+                context,
+                interaction,
+            ));
         }
         let state = self.state.clone();
         let resolution = self.handle.block_on(async move {
@@ -90,6 +66,91 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
             choice_id: resolution.choice_id,
             reply: resolution.reply,
         })
+    }
+}
+
+async fn forward_native_interaction_to_home(
+    config: crate::config::DaemonConfig,
+    target_daemon_id: String,
+    context: RemoteNativeInteractionContext,
+    interaction: RuntimeInteraction,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+    let response_timeout =
+        remote_native_interaction_response_timeout(&interaction, config.relay_request_timeout_ms);
+    let response =
+        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+            &config,
+            chariox_relay::protocol::ClientTarget {
+                daemon_id: Some(target_daemon_id),
+                daemon_alias: None,
+            },
+            crate::transport::relay_peer::RelayPeerRequest::ForwardNativeInteraction {
+                context,
+                interaction,
+            },
+            response_timeout,
+        )
+        .await?;
+    match response {
+        crate::transport::relay_peer::RelayPeerResponse::NativeInteractionResolved {
+            resolution,
+        } => Ok(resolution),
+        other => Err(DaemonError::LocalTransport {
+            operation: "provider_native_interaction_bridge",
+            message: format!("unexpected relay response for remote native interaction: {other:?}"),
+        }),
+    }
+}
+
+/// Async counterpart of the provider bridge for runtime MCP tools: forwards a
+/// leased worker agent's interaction to its home kernel, otherwise creates it
+/// here. Dropping the future (the provider abandoned the call) closes a local
+/// interaction through its timeout path.
+pub(crate) async fn request_provider_native_interaction(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    interaction: RuntimeInteraction,
+    operation: &'static str,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+    let agent_id = interaction
+        .agent_id()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation,
+            message: "Provider interactions require an agent subject".into(),
+        })?
+        .to_string();
+    if let Some((config, target_daemon_id, context)) = state
+        .remote_native_interaction_context(session_id, &agent_id)
+        .await?
+    {
+        return forward_native_interaction_to_home(config, target_daemon_id, context, interaction)
+            .await;
+    }
+    let mut abandoned = AbandonedInteractionGuard(Some((
+        state.clone(),
+        session_id.to_string(),
+        interaction.id().to_string(),
+    )));
+    let resolution =
+        request_runtime_interaction_with_timeout(state, session_id, interaction, operation).await;
+    abandoned.0 = None;
+    resolution
+}
+
+struct AbandonedInteractionGuard(Option<(KernelRuntimeState, String, String)>);
+
+impl Drop for AbandonedInteractionGuard {
+    fn drop(&mut self) {
+        let Some((state, session_id, interaction_id)) = self.0.take() else {
+            return;
+        };
+        if let Ok(handle) = Handle::try_current() {
+            handle.spawn(async move {
+                let _ = state
+                    .timeout_runtime_interaction(&session_id, &interaction_id)
+                    .await;
+            });
+        }
     }
 }
 
