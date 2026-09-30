@@ -72,6 +72,24 @@ export default function register(chariox) {
     return { todos: openOnly ? todos.filter(todo => !todo.done) : todos };
   });
 
+  // Whether due reminders reach the workflow: the reminders automation's
+  // state as Chariox shows it ('missing' when none is configured, 'unknown'
+  // when the App runtime or kernel predates this read). The workflow itself
+  // is never revealed.
+  chariox.tools.register('reminder_status', async () => {
+    const unknown = { state: 'unknown', last_delivery: null };
+    if (typeof chariox.events.automations !== 'function') return unknown;
+    let automations;
+    try {
+      ({ automations } = await chariox.events.automations());
+    } catch (error) {
+      if (error?.code === 'METHOD_NOT_FOUND') return unknown;
+      throw error;
+    }
+    const reminders = automations.find(automation => automation.automationId === AUTOMATION);
+    return { state: reminders?.state ?? 'missing', last_delivery: reminders?.lastReceipt?.state ?? null };
+  });
+
   chariox.tools.register('create_todo', ({ title, due_at_ms: dueAtMs, notes }) => change(todos => {
     if (todos.length >= MAX_TODOS) throw fail('LIMIT_EXCEEDED', `At most ${MAX_TODOS} Todos`);
     const todo = { id: randomUUID().slice(0, 8), title, notes: notes ?? '', due_at_ms: dueAtMs ?? null,

@@ -98,6 +98,33 @@ async function refresh() {
   shown = next
   todos = result.todos
   render()
+  showReminders()
+}
+
+// Reminders only reach a workflow while the reminders automation is active.
+// Say so while a Todo still waits for its reminder; Chariox owns the fix.
+// Chariox cannot pause an automation yet; `paused` reads like `disabled`.
+const OFF = "Reminders are turned off in Chariox."
+const REMINDERS = {
+  paused: OFF,
+  broken: "Reminders are broken. Fix the reminders automation in Chariox.",
+  disabled: OFF,
+  missing: "Reminders are not set up. Add the reminders automation in Chariox.",
+}
+let reminderState = "unknown"
+async function checkReminders() {
+  try {
+    reminderState = (await window.chariox.call("reminder_status", {})).state
+  } catch {
+    reminderState = "unknown"
+  }
+  showReminders()
+}
+function showReminders() {
+  const hint = $("reminders")
+  const message = todos.some((todo) => !todo.done && !todo.reminded && todo.due_at_ms != null) ? REMINDERS[reminderState] : undefined
+  if (hint.textContent !== (message ?? "")) hint.textContent = message ?? ""
+  hint.hidden = !message
 }
 
 // Always re-render afterwards, so a refused change (e.g. a checkbox the
@@ -151,4 +178,6 @@ reservePanel()
 // Agents and other views change Todos too; a short poll keeps this view current
 // without any network access.
 refresh()
+checkReminders()
 setInterval(() => { if (!document.hidden) refresh() }, 2000)
+setInterval(() => { if (!document.hidden) checkReminders() }, 15000)
