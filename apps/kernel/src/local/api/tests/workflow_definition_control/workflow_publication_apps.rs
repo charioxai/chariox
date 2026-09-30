@@ -397,9 +397,9 @@ fn a_release_after_its_last_app_is_removed_records_an_empty_plan() {
         assert_eq!(
             harness
                 .runtime_state()
-                .fixture_bound_release_package_digest(&graph.session_id, publication.id(), digest)
+                .fixture_verify_bound_release(&graph.session_id, publication.id(), digest)
                 .expect("re-export"),
-            *digest
+            Ok(())
         );
     }
     drop(harness);
@@ -437,9 +437,9 @@ fn a_release_without_apps_still_binds_after_a_later_release_records_a_plan() {
         assert_eq!(
             harness
                 .runtime_state()
-                .fixture_bound_release_package_digest(&graph.session_id, publication.id(), digest)
+                .fixture_verify_bound_release(&graph.session_id, publication.id(), digest)
                 .expect("re-export"),
-            *digest
+            Ok(())
         );
     }
     // A release this kernel never exported is still refused.
