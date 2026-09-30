@@ -467,7 +467,11 @@ async fn runtime_with_substitutes(
     models: &[&str],
     reset_in_future: bool,
 ) -> (KernelRuntimeState, String, String, String) {
-    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    // Substitution launches a real OpenCode run for queued work; serve the
+    // runtime MCP endpoint it connects to.
+    let mut config = crate::config::DaemonConfig::for_tests();
+    crate::test_support::serve_runtime_mcp(&mut config);
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(config).await;
     let registry = app.lock().await.provider_account_profile_registry();
     let profile = registry
         .create_managed(
