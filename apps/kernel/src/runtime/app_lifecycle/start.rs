@@ -284,11 +284,16 @@ fn spawn(
             migrate_from,
             committed,
         )
-        .map_err(preparation_failed(
-            &binding.token().installation_id,
-            binding.token().generation,
-            "prepare",
-        ))?;
+        .map_err(|error| {
+            disk_space::preparation_error_with_diagnostic(
+                error,
+                preparation_failed(
+                    &binding.token().installation_id,
+                    binding.token().generation,
+                    "prepare",
+                ),
+            )
+        })?;
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }

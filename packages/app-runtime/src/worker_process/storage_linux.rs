@@ -44,6 +44,9 @@ pub(super) enum Error {
     Identity,
     #[error("app_storage_capacity")]
     Capacity,
+    /// Less free disk space than the host reserve and promised storage need.
+    #[error("app_storage_host_reserve")]
+    HostReserve(super::HostDiskSpace),
     #[error("app_storage_busy")]
     Busy,
     #[error("app_storage_io")]
@@ -67,7 +70,6 @@ const DATA_BYTES: u64 = super::DATA_QUOTA_BYTES;
 const TMP_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_INSTALLATIONS: usize = 64;
 const MAX_RESERVED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
-const HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const ROOT: &str = "/var/lib/chariox-app-storage";
 const CONFIG: &str = "/etc/chariox/app-storage.json";
 const SOCKET_ROOT: &str = "/run/chariox-app-storage";

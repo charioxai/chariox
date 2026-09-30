@@ -209,6 +209,7 @@ impl Client {
                             status: "acquired".into(),
                             grant: Some(grant),
                             code: None,
+                            host_disk: None,
                         },
                     )?;
                 }
@@ -264,6 +265,7 @@ impl Client {
                             status: "code_attached".into(),
                             grant: None,
                             code: Some(code),
+                            host_disk: None,
                         },
                     )?,
                     Err(error) => {
