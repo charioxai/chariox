@@ -462,21 +462,7 @@ impl RuntimeSession {
         affected.into_keys().collect()
     }
 
-    /// Whether a run of `workflow` may use its node agents themselves: the
-    /// primary lane. A Freeform trigger's runs never do, so they never become
-    /// turns in the owner's own conversation. A hidden session (a deployment
-    /// or publication copy) already runs on dedicated copies of the agents.
-    pub(crate) fn workflow_may_run_on_source_agents(&self, workflow: &WorkflowDefinition) -> bool {
-        self.is_hidden() || !workflow.runs_on_runtime_copies()
-    }
-
     pub fn reconcile_workflow_runtime_instances(&mut self) {
-        let copy_only_workflows = self
-            .workflows
-            .iter()
-            .filter(|workflow| !self.workflow_may_run_on_source_agents(workflow))
-            .map(|workflow| workflow.id().to_string())
-            .collect::<BTreeSet<_>>();
         let active_runs = self
             .workflow_runs
             .iter()
@@ -499,11 +485,7 @@ impl RuntimeSession {
             } else if let Some(run_id) = instance.active_run_id().map(str::to_string) {
                 instance.release(&run_id);
             }
-            // A primary lane left from before its workflow became copy-only
-            // retires once idle, so the next run provisions a copy.
-            let primary_not_allowed =
-                instance.primary() && copy_only_workflows.contains(instance.workflow_id());
-            if (!revision_is_current || primary_not_allowed) && active_run_id.is_none() {
+            if !revision_is_current && active_run_id.is_none() {
                 instance.mark_stale();
             }
         }

@@ -691,9 +691,13 @@ impl SessionService {
         Ok(session.pop_next_workflow_queued_prompt())
     }
 
+    /// `may_use_source_agents` decides whether a workflow's first lane may run
+    /// on its node agents themselves (see
+    /// `crate::app::workflow_runtime::workflow_may_use_source_agents`).
     pub(crate) fn workflow_runtime_instance_provision_candidate(
         &mut self,
         session_id: &str,
+        may_use_source_agents: &dyn Fn(&RuntimeSession, &WorkflowDefinition) -> bool,
     ) -> Result<Option<WorkflowRuntimeInstanceProvisionCandidate>, DaemonError> {
         let session =
             self.store
@@ -739,7 +743,7 @@ impl SessionService {
             }
             let ordinal =
                 session.next_workflow_runtime_instance_ordinal(workflow.id(), endpoint.id());
-            let primary = count == 0 && session.workflow_may_run_on_source_agents(&workflow);
+            let primary = count == 0 && may_use_source_agents(session, &workflow);
             return Ok(Some(WorkflowRuntimeInstanceProvisionCandidate {
                 workflow,
                 endpoint,
@@ -754,8 +758,10 @@ impl SessionService {
     pub(crate) fn ensure_primary_workflow_runtime_instance(
         &mut self,
         session_id: &str,
+        may_use_source_agents: &dyn Fn(&RuntimeSession, &WorkflowDefinition) -> bool,
     ) -> Result<Option<crate::session::WorkflowEndpointRuntimeInstance>, DaemonError> {
-        let Some(candidate) = self.workflow_runtime_instance_provision_candidate(session_id)?
+        let Some(candidate) =
+            self.workflow_runtime_instance_provision_candidate(session_id, may_use_source_agents)?
         else {
             return Ok(None);
         };

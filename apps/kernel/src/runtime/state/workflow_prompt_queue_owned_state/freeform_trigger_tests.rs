@@ -203,3 +203,43 @@ fn a_primary_lane_left_on_a_freeform_trigger_retires_before_the_next_run() {
         .iter()
         .all(|instance| !instance.primary()));
 }
+
+#[test]
+fn a_remote_backed_trigger_agent_keeps_running_on_its_lease() {
+    let fixture = trigger_on_the_focus_agent();
+    let agents = &fixture.runtime.owned.agent_store;
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .expect("session should resolve");
+    let workflow = session
+        .workflow(&fixture.workflow_id)
+        .expect("trigger workflow should exist")
+        .clone();
+    assert!(
+        !crate::app::workflow_runtime::workflow_may_use_source_agents(agents, &session, &workflow),
+        "a local agent's trigger runs on a runtime copy"
+    );
+
+    // A copy cannot keep a remote agent's placement: it has no lease of its
+    // own, so the trigger keeps running on the agent's lease.
+    let mut agent = agents
+        .get_agent(&fixture.focus_agent_id)
+        .expect("agent should exist");
+    agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel".to_string(),
+        worker_machine_id: "worker-machine".to_string(),
+        execution_lease_id: "lease-1".to_string(),
+        leased_agent_id: "leased-agent".to_string(),
+        active_worker_provider_run_id: None,
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: None,
+    }));
+    agents.restore_agent(agent);
+    assert!(
+        crate::app::workflow_runtime::workflow_may_use_source_agents(agents, &session, &workflow)
+    );
+}
