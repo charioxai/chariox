@@ -11,24 +11,25 @@ const POLICY_PATH = join(REPOSITORY_ROOT, "apps/kernel/managed-upgrade-protocol-
 const POLICY_RELATIVE_PATH = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
 const UPGRADE_STATE_SCRIPT = join(REPOSITORY_ROOT, "deploy/managed-kernel/managed-kernel-upgrade-state.mjs")
 
-test("protocol 367 retains the 343 fixture contract and rejects ambiguous branch protocols", async () => {
+test("protocol 368 retains the 343 and 367 contracts and rejects ambiguous branch protocols", async () => {
   const policy = JSON.parse(await readFile(POLICY_PATH, "utf8"))
   assert.deepEqual(Object.keys(policy).sort(), ["protocol", "rollbackTo", "schemaVersion", "upgradeFrom"])
   assert.equal(policy.schemaVersion, 1)
-  assert.equal(policy.protocol, 367)
+  assert.equal(policy.protocol, 368)
   for (const list of [policy.upgradeFrom, policy.rollbackTo]) {
     assert.ok(Array.isArray(list) && list.length > 0 && list.length <= 16)
     assert.ok(list.every((version, index) => Number.isSafeInteger(version)
       && version > 0 && (index === 0 || list[index - 1] < version)))
     assert.ok(list.includes(343), "tested predecessor fixture must remain reciprocal")
-    assert.ok(list.includes(367), "new protocol must include itself")
+    assert.ok(list.includes(367), "the previous release must stay reciprocal for in-place updates")
+    assert.ok(list.includes(368), "new protocol must include itself")
   }
-  assert.deepEqual(policy.upgradeFrom, [343, 367])
-  assert.deepEqual(policy.rollbackTo, [343, 367])
+  assert.deepEqual(policy.upgradeFrom, [343, 367, 368])
+  assert.deepEqual(policy.rollbackTo, [343, 367, 368])
 
-  const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-367-policy-"))
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-368-policy-"))
   try {
-    const newRoot = join(scratch, "protocol-367")
+    const newRoot = join(scratch, "protocol-368")
     const fixturePolicy = join(newRoot, POLICY_RELATIVE_PATH)
     await mkdir(dirname(fixturePolicy), { recursive: true })
     await writeFile(fixturePolicy, JSON.stringify(policy), { mode: 0o600, flag: "wx" })
@@ -44,13 +45,13 @@ test("protocol 367 retains the 343 fixture contract and rejects ambiguous branch
     // Policy fixtures do not prove real-binary persisted-state migration.
     for (const version of [343, 367]) {
       const oldRoot = join(scratch, `protocol-${version}`)
-      assert.equal(transition(oldRoot, version, newRoot, 367), "")
-      assert.equal(transition(newRoot, 367, oldRoot, version), "")
+      assert.equal(transition(oldRoot, version, newRoot, 368), "")
+      assert.equal(transition(newRoot, 368, oldRoot, version), "")
     }
     for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index)]) {
       const oldRoot = join(scratch, `protocol-${version}`)
-      assert.throws(() => transition(oldRoot, version, newRoot, 367), /not reciprocally authorized/)
-      assert.throws(() => transition(newRoot, 367, oldRoot, version), /not reciprocally authorized/)
+      assert.throws(() => transition(oldRoot, version, newRoot, 368), /not reciprocally authorized/)
+      assert.throws(() => transition(newRoot, 368, oldRoot, version), /not reciprocally authorized/)
     }
   } finally {
     await rm(scratch, { recursive: true, force: true })

@@ -126,6 +126,39 @@ pub(crate) async fn execute_managed_environment_control_request(
             }
             Ok(LocalDaemonResponse::ManagedEnvironmentReimageReceipt { receipt })
         }
+        LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(request) => {
+            let path = format!(
+                "/managed-environments/{}/release-update?{account_query}",
+                cloud_url_component(&request.environment_id),
+            );
+            let read: ReleaseUpdateRead =
+                get_cloud_json_authenticated(cloud.api_url.clone(), path, token.to_string())
+                    .await?;
+            release_update_for(&request.environment_id, read.update.as_ref())?;
+            Ok(LocalDaemonResponse::ManagedEnvironmentReleaseUpdateRead {
+                update: read.update,
+            })
+        }
+        LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(request) => {
+            let path = format!(
+                "/managed-environments/{}/release-update",
+                cloud_url_component(&request.environment_id),
+            );
+            let body = serde_json::json!({
+                "accountId": account_id,
+                "expectedProviderImageId": request.expected_provider_image_id,
+                "expectedProviderProfileId": request.expected_provider_profile_id,
+                "expectedProviderProfileDigest": request.expected_provider_profile_digest,
+                "expectedRuntimeReleaseDigest": request.expected_runtime_release_digest,
+                "expectedRuntimeSourceCommit": request.expected_runtime_source_commit,
+                "expectedRuntimeSourceTree": request.expected_runtime_source_tree,
+            });
+            let update: crate::local::ManagedEnvironmentReleaseUpdate =
+                post_cloud_json_authenticated(cloud.api_url.clone(), path, token.to_string(), body)
+                    .await?;
+            release_update_for(&request.environment_id, Some(&update))?;
+            Ok(LocalDaemonResponse::ManagedEnvironmentReleaseUpdateRequested { update })
+        }
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(request) => {
             let path = format!(
                 "/managed-environments/{}/context-transfer?{account_query}",
@@ -320,6 +353,23 @@ pub(super) fn authorized_cloud_profile<'a>(
         ));
     }
     Ok(cloud)
+}
+
+#[derive(serde::Deserialize)]
+struct ReleaseUpdateRead {
+    update: Option<crate::local::ManagedEnvironmentReleaseUpdate>,
+}
+
+fn release_update_for(
+    environment_id: &str,
+    update: Option<&crate::local::ManagedEnvironmentReleaseUpdate>,
+) -> Result<(), DaemonError> {
+    if update.is_some_and(|update| update.environment_id != environment_id) {
+        return Err(control_error(
+            "Cloud returned a release update for another managed environment",
+        ));
+    }
+    Ok(())
 }
 
 fn control_error(message: impl Into<String>) -> DaemonError {

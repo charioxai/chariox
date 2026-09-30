@@ -236,6 +236,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::RequestManagedEnvironmentReimage(_) => {
             LocalRequestMetadata::new("managed_environment.reimage", Interactive)
         }
+        LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_) => {
+            LocalRequestMetadata::new("managed_environment.release_update", Interactive)
+        }
+        LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_) => {
+            LocalRequestMetadata::new("managed_environment.release_update.get", Interactive)
+        }
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_) => {
             LocalRequestMetadata::new("managed_environment.reimage.observe", Interactive)
         }
@@ -961,6 +967,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::CreateManagedEnvironment(_)
         | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
         | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
         | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)

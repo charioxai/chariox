@@ -433,3 +433,32 @@ pub struct ManagedEnvironmentReimagePreflightDesiredRelease {
 pub enum ManagedEnvironmentReimageProviderId {
     Hetzner,
 }
+
+/// Ask Cloud to update a Path-1 machine in place to the currently placed release
+/// the user reviewed (plan, locked decisions for 2026-09-30).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestManagedEnvironmentReleaseUpdateRequest {
+    pub environment_id: String,
+    pub expected_provider_image_id: String,
+    pub expected_provider_profile_id: String,
+    pub expected_provider_profile_digest: String,
+    pub expected_runtime_release_digest: String,
+    pub expected_runtime_source_commit: String,
+    pub expected_runtime_source_tree: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedEnvironmentReleaseUpdate {
+    pub update_id: String,
+    pub environment_id: String,
+    pub status: String,
+    pub from_runtime_release_digest: String,
+    pub target_runtime_release_digest: String,
+    pub target_runtime_source_commit: String,
+    pub target_runtime_source_tree: String,
+    pub failure_code: Option<String>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}

@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn managed_reimage_receipt_read_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
     let request =
         LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
             environment_id: "environment-1".to_string(),
@@ -23,7 +23,7 @@ fn managed_reimage_receipt_read_shape_is_versioned() {
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -560,7 +560,7 @@ fn local_daemon_reimage_request_rejects_repository_root_override() {
 
 #[test]
 fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
     let preflight = ManagedEnvironmentReimagePreflight {
         environment_id: "environment-1".to_string(),
         retained: ManagedEnvironmentReimagePreflightRetained {
@@ -622,7 +622,7 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
 
 #[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {
@@ -741,5 +741,74 @@ fn remove_shutdown_observation_fields(value: &mut serde_json::Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[test]
+fn managed_release_update_shapes_are_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 368);
+    let request = LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(
+        RequestManagedEnvironmentReleaseUpdateRequest {
+            environment_id: "environment-1".to_string(),
+            expected_provider_image_id: "4242".to_string(),
+            expected_provider_profile_id: "hetzner-path1".to_string(),
+            expected_provider_profile_digest: format!("sha256:{}", "c".repeat(64)),
+            expected_runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
+            expected_runtime_source_commit: "1".repeat(40),
+            expected_runtime_source_tree: "2".repeat(40),
+        },
+    );
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({
+            "RequestManagedEnvironmentReleaseUpdate": {
+                "environmentId": "environment-1",
+                "expectedProviderImageId": "4242",
+                "expectedProviderProfileId": "hetzner-path1",
+                "expectedProviderProfileDigest": format!("sha256:{}", "c".repeat(64)),
+                "expectedRuntimeReleaseDigest": format!("sha256:{}", "b".repeat(64)),
+                "expectedRuntimeSourceCommit": "1".repeat(40),
+                "expectedRuntimeSourceTree": "2".repeat(40),
+            }
+        })
+    );
+    let read =
+        LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(GetManagedEnvironmentRequest {
+            environment_id: "environment-1".to_string(),
+        });
+    assert_eq!(
+        serde_json::to_value(&read).unwrap(),
+        serde_json::json!({ "GetManagedEnvironmentReleaseUpdate": { "environmentId": "environment-1" } })
+    );
+    let update = ManagedEnvironmentReleaseUpdate {
+        update_id: "managed_release_update_1".to_string(),
+        environment_id: "environment-1".to_string(),
+        status: "running".to_string(),
+        from_runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        target_runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
+        target_runtime_source_commit: "1".repeat(40),
+        target_runtime_source_tree: "2".repeat(40),
+        failure_code: None,
+        created_at: "2026-09-30T10:00:00.000Z".to_string(),
+        completed_at: None,
+    };
+    let response = LocalDaemonResponse::ManagedEnvironmentReleaseUpdateRead {
+        update: Some(update),
+    };
+    let value = serde_json::to_value(&response).unwrap();
+    assert_eq!(
+        value["ManagedEnvironmentReleaseUpdateRead"]["update"]["updateId"],
+        "managed_release_update_1"
+    );
+    assert_eq!(
+        value["ManagedEnvironmentReleaseUpdateRead"]["update"]["failureCode"],
+        serde_json::Value::Null
+    );
+    for request in [request, read] {
+        assert_eq!(
+            serde_json::from_value::<LocalDaemonRequest>(serde_json::to_value(&request).unwrap())
+                .unwrap(),
+            request
+        );
     }
 }

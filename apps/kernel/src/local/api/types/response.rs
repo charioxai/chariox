@@ -166,6 +166,8 @@ pub enum LocalDaemonResponse {
     ManagedEnvironmentCreated { result: ManagedEnvironmentResult, },
     ManagedEnvironmentLifecycleRequested { result: ManagedEnvironmentResult, },
     ManagedEnvironmentReimageRequested { result: ManagedEnvironmentReimageResult, },
+    ManagedEnvironmentReleaseUpdateRequested { update: ManagedEnvironmentReleaseUpdate, },
+    ManagedEnvironmentReleaseUpdateRead { update: Option<ManagedEnvironmentReleaseUpdate>, },
     ManagedEnvironmentPreReimageObserved { acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement, },
     ManagedContextTransferStarted { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },
     ManagedContextTransferStatus { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },

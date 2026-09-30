@@ -114,4 +114,5 @@ pub use workspace::*;
 /// Versions 344–365 also exist on a divergent Apps branch and do not imply these controls.
 /// Version 366 adds explicit kernel control capabilities to RelayStatus.
 /// Version 367 adds bounded, explicitly negotiated Unix guarded-control sessions.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 367;
+/// Version 368 adds Cloud-coordinated managed release update requests.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 368;
