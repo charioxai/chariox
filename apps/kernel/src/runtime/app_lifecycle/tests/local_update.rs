@@ -468,13 +468,21 @@ fn an_update_breaks_only_automations_whose_event_schema_changed_and_logs_why() {
         )
         .unwrap();
     }
+    // A complete, current-contract row (valid identity, payload and
+    // invocation), so no maintenance sweep could fail it: only the update's
+    // break can.
     db.execute(
         "INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,
            occurrence_id,occurred_at_ms,event_name,schema_digest,content_digest,automation_revision,
-           accepted_generation,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms)
-         VALUES('alice',?1,'receipt','stale',1,'occurrence',1,'changed',?2,?2,1,1,1,9007199254740991,
-           'accepted',1,0,0)",
-        rusqlite::params![id, "0".repeat(64)],
+           accepted_generation,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,
+           payload_json,invocation_json)
+         VALUES('alice',?1,'receipt','stale',1,?3,100,'changed',?2,?2,1,1,100,9007199254740991,
+           'accepted',1,0,100,'{\"text\":\"pending\"}','{\"prompt\":\"Handle the event\",\"artifacts\":[]}')",
+        rusqlite::params![
+            id,
+            "0".repeat(64),
+            chariox_app_runtime::app_outbox::occurrence_id("pending", 100).unwrap()
+        ],
     )
     .unwrap();
     stage_update(&store, &id, "schema_update", "1.1.0", 0);
@@ -511,6 +519,15 @@ fn an_update_breaks_only_automations_whose_event_schema_changed_and_logs_why() {
         serde_json::from_str::<serde_json::Value>(&fields).unwrap(),
         serde_json::json!({"automation_id": "stale", "undelivered": 1, "kernel": true})
     );
+    // The undelivered event failed with its automation, in the commit.
+    let state: String = db
+        .query_row(
+            "SELECT state FROM app_outbox WHERE receipt_id='receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "failed");
     let logged: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM app_logs WHERE message LIKE 'Automation same %'",

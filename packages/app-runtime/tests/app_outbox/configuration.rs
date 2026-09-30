@@ -267,7 +267,7 @@ fn an_update_that_changes_a_routed_event_schema_breaks_its_automation_visibly() 
     let (mut package, trust, catalog) = setup(&mut db);
     // One event is accepted but not yet delivered when the update lands.
     let current = automation(&mut db, &catalog);
-    accept(&mut db, &current, "accepted-before-update");
+    let pending = accept(&mut db, &current, "accepted-before-update");
     // The same schema in a new generation leaves the automation alone.
     let tx = db.transaction().unwrap();
     assert!(AppOutbox::break_changed_in(&tx, &catalog, "owner")
@@ -293,6 +293,10 @@ fn an_update_that_changes_a_routed_event_schema_breaks_its_automation_visibly() 
     let broken = AppOutbox::configuration_in(&tx, &updated, "owner", "automation").unwrap();
     assert_eq!(broken.status, AutomationStatus::Broken);
     assert_eq!(broken.revision, 2);
+    // The undelivered event failed with it, releasing its pending capacity.
+    let failed = AppOutbox::status_in(&tx, &updated, "owner", &pending.receipt_id).unwrap();
+    assert_eq!(failed.state, ReceiptState::Failed);
+    assert_eq!(failed.revision, pending.revision + 1);
     // Already broken: nothing more to do; re-adding it restores it.
     assert!(AppOutbox::break_changed_in(&tx, &updated, "owner")
         .unwrap()
@@ -312,4 +316,40 @@ fn an_update_that_changes_a_routed_event_schema_breaks_its_automation_visibly() 
         (restored.status, restored.event_version),
         (AutomationStatus::Active, 2)
     );
+}
+
+#[test]
+fn a_gone_target_fails_the_automations_other_undelivered_events_at_once() {
+    let directory = Database::new();
+    let mut db = directory.open();
+    let (_, _, catalog) = setup(&mut db);
+    let current = automation(&mut db, &catalog);
+    let first = accept(&mut db, &current, "undelivered-1");
+    let second = accept(&mut db, &current, "undelivered-2");
+    let tx = db.transaction().unwrap();
+    // A stale revision changes nothing.
+    assert_eq!(
+        AppOutbox::break_in(&tx, "owner", "installed", "automation", 7).unwrap(),
+        None
+    );
+    assert_eq!(
+        AppOutbox::break_in(&tx, "owner", "installed", "automation", 1).unwrap(),
+        Some(2)
+    );
+    for receipt in [&first, &second] {
+        let failed = AppOutbox::status_in(&tx, &catalog, "owner", &receipt.receipt_id).unwrap();
+        assert_eq!(failed.state, ReceiptState::Failed);
+        assert_eq!(failed.revision, receipt.revision + 1);
+    }
+    let broken = AppOutbox::configuration_in(&tx, &catalog, "owner", "automation").unwrap();
+    assert_eq!(
+        (broken.status, broken.revision),
+        (AutomationStatus::Broken, 2)
+    );
+    // Already broken: a later delivery pass finds nothing more to fail.
+    assert_eq!(
+        AppOutbox::break_in(&tx, "owner", "installed", "automation", 1).unwrap(),
+        None
+    );
+    tx.commit().unwrap();
 }
