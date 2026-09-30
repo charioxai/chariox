@@ -78,7 +78,8 @@ impl ProviderReloadReason {
 struct ProviderLaunchFingerprint {
     runtime_mcp_server_url: Option<String>,
     mcp_servers: Vec<crate::mcp::CharioxMcpServerConfig>,
-    provider_env_remove: Vec<String>,
+    // Compare request inputs, before adapter and isolation augmentation.
+    provider_env_remove: Option<std::collections::BTreeSet<String>>,
     provider_config_overrides: std::collections::BTreeMap<String, serde_json::Value>,
     write_access_mode: crate::provider::ProviderWriteAccessMode,
     execution_mode: crate::provider::AgentExecutionMode,
@@ -90,7 +91,9 @@ impl ProviderLaunchFingerprint {
         Self {
             runtime_mcp_server_url: run.runtime_mcp_server_url().map(str::to_string),
             mcp_servers: run.mcp_servers().to_vec(),
-            provider_env_remove: run.pty_env_remove().to_vec(),
+            provider_env_remove: run
+                .requested_provider_env_remove()
+                .map(|names| names.iter().cloned().collect()),
             provider_config_overrides: run.provider_config_overrides().clone(),
             write_access_mode: run.write_access_mode(),
             execution_mode: run.execution_mode(),
@@ -105,7 +108,7 @@ impl ProviderLaunchFingerprint {
                 .as_ref()
                 .map(|binding| binding.server_url.clone()),
             mcp_servers: request.mcp_servers.clone(),
-            provider_env_remove: request.provider_env_remove.clone(),
+            provider_env_remove: Some(request.provider_env_remove.iter().cloned().collect()),
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             execution_mode: request.execution_mode.unwrap_or_default(),
@@ -520,6 +523,93 @@ mod tests {
             reload.remote_extension_manifest,
             request.remote_extension_manifest
         );
+    }
+
+    #[test]
+    fn provider_reload_fingerprint_matches_adapter_and_isolation_launch_inputs() {
+        let _env = crate::env_lock::lock();
+        let profile = crate::test_support::TestWorktree::new("reload-fingerprint-claude-profile");
+        let previous = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let launches = [
+            ("codex", "codex"),
+            ("claude", "claude-headless"),
+            ("opencode", "opencode"),
+        ]
+        .into_iter()
+        .map(|(adapter, provider)| {
+            let mut request =
+                LaunchProviderRequest::new("reload-session", adapter, provider, "default", "model");
+            request.provider_env_remove =
+                vec!["RELOAD_CONTROL_B".into(), "RELOAD_CONTROL_A".into()];
+            if adapter == "claude" {
+                request.provider_account_env.insert(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    profile.path().display().to_string(),
+                );
+            }
+
+            let launch = crate::provider::ProviderRegistry::new()
+                .resolve(adapter)
+                .unwrap()
+                .connect(&request);
+            if let Ok(launch) = &launch {
+                if let Some(events) = launch.pty_env.get("CHARIOX_CLAUDE_NATIVE_EVENTS") {
+                    let root = std::path::Path::new(events).parent().unwrap();
+                    assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+                    assert!(root
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("chariox-claude-remote-native-"));
+                    std::fs::remove_dir_all(root)
+                        .expect("generated native launch files should clean up");
+                }
+            }
+            (request, launch)
+        })
+        .collect::<Vec<_>>();
+        if let Some(value) = previous {
+            std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", value);
+        }
+        for (request, launch) in launches {
+            let launch = launch.expect("official adapter launch plan should resolve");
+            for isolated in [false, true] {
+                let mut launch = launch.clone();
+                if isolated {
+                    // The Linux managed wrapper adds this same removal list.
+                    launch
+                        .pty_env_remove
+                        .extend(crate::provider::managed_provider_isolation_env_remove());
+                }
+                let run = crate::provider::RuntimeProviderRun::new("reload-run", &request, launch);
+                assert_eq!(
+                    super::ProviderLaunchFingerprint::from_run(&run),
+                    super::ProviderLaunchFingerprint::from_request(&request),
+                    "{} isolated={isolated}",
+                    request.adapter_key
+                );
+                let value = serde_json::to_value(&run).expect("run should serialize");
+                assert!(!value
+                    .as_object()
+                    .unwrap()
+                    .contains_key("requested_provider_env_remove"));
+                let restored: crate::provider::RuntimeProviderRun =
+                    serde_json::from_value(value).expect("run should restore");
+                assert_ne!(
+                    super::ProviderLaunchFingerprint::from_run(&restored),
+                    super::ProviderLaunchFingerprint::from_request(&request),
+                    "restored runs must reload without request provenance"
+                );
+                let mut changed = request.clone();
+                changed.provider_env_remove.push("NEW_CONTROL".into());
+                assert_ne!(
+                    super::ProviderLaunchFingerprint::from_run(&run),
+                    super::ProviderLaunchFingerprint::from_request(&changed)
+                );
+            }
+        }
     }
 
     #[test]

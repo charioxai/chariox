@@ -1142,6 +1142,15 @@ mod tests {
                 "Vaulted continuation Claude",
             )
             .expect("managed Claude profile should create");
+        // The continuation is a prompt submission, which requires an
+        // authenticated account; a new managed profile starts as Unknown.
+        crate::test_support::authenticate_provider_account(
+            &app.provider_account_profile_registry(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .expect("managed Claude profile should authenticate");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 crate::agent::CreateAgentRequest::new(session.id(), "claude")
@@ -1182,9 +1191,15 @@ mod tests {
             "claude-sonnet",
         )
         .with_agent_id(agent.id());
+        // The vault is already unlocked here. The Always unlock policy would
+        // raise a fresh passphrase prompt that this fixture never answers, so
+        // prepare the initial launch without the vault gate.
         let prepared = runtime
-            .prepare_provider_launch_request_with_vault(request, "prepare test provider run")
-            .await
+            .owned
+            .prepare_provider_launch_request(
+                request,
+                runtime.owned.config_projection.snapshot().runtime_mcp_url(),
+            )
             .expect("initial launch should prepare while vault is unlocked");
         let started = runtime
             .owned

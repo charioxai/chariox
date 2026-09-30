@@ -45,6 +45,10 @@ pub struct RuntimeProviderRun {
     pty_env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pty_env_remove: Vec<String>,
+    /// Request-level removals before adapter and isolation augmentation.
+    /// Restored runs lack this provenance and conservatively reload once.
+    #[serde(skip)]
+    requested_provider_env_remove: Option<Vec<String>>,
     working_directory: Option<PathBuf>,
     structured_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,6 +142,7 @@ impl RuntimeProviderRun {
             pty_args: launch_result.pty_args,
             pty_env: launch_result.pty_env,
             pty_env_remove: launch_result.pty_env_remove,
+            requested_provider_env_remove: Some(request.provider_env_remove.clone()),
             working_directory: launch_result.working_directory,
             structured_endpoint: launch_result.structured_endpoint,
             runtime_mcp_server_url: request
@@ -210,6 +215,7 @@ impl RuntimeProviderRun {
             pty_args: Vec::new(),
             pty_env: BTreeMap::new(),
             pty_env_remove: Vec::new(),
+            requested_provider_env_remove: None,
             working_directory: None,
             structured_endpoint: None,
             runtime_mcp_server_url: None,
@@ -336,6 +342,10 @@ impl RuntimeProviderRun {
 
     pub(crate) fn preparation_base_path(&self) -> Option<&str> {
         self.preparation_base_path.as_deref()
+    }
+
+    pub(crate) fn requested_provider_env_remove(&self) -> Option<&[String]> {
+        self.requested_provider_env_remove.as_deref()
     }
 
     pub fn pty_env_remove(&self) -> &[String] {
