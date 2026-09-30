@@ -407,9 +407,9 @@ fn claude_auth_status(
     ))
 }
 
-/// A provider status probe answers in seconds. A stalled one must not hold its
-/// caller, such as the post-import refresh, forever: past the deadline the child
-/// is killed and reaped.
+/// A provider status, version or usage probe answers in seconds. A stalled one
+/// must not hold its caller, such as the post-import refresh, forever: past the
+/// deadline its process group is killed and reaped.
 const PROVIDER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn bounded_status_output(
@@ -425,26 +425,35 @@ fn bounded_output(
     timeout: Duration,
 ) -> Result<std::process::Output, DaemonError> {
     use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    use std::sync::mpsc;
     use wait_timeout::ChildExt;
 
     let error = |message: String| DaemonError::LocalTransport {
         operation: "get_provider_auth_status",
         message,
     };
+    let deadline = std::time::Instant::now() + timeout;
+    // Its own process group: settling the probe also ends descendants that
+    // inherited its pipes.
     let mut child = command
+        .process_group(0)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|spawn_error| error(format!("failed to run {label}: {spawn_error}")))?;
+    let process_group = child.id() as i32;
     let read = |pipe: Option<Box<dyn Read + Send>>| {
+        let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let mut bytes = Vec::new();
             if let Some(mut pipe) = pipe {
                 let _ = pipe.read_to_end(&mut bytes);
             }
-            bytes
-        })
+            let _ = sender.send(bytes);
+        });
+        receiver
     };
     let stdout = read(
         child
@@ -458,26 +467,34 @@ fn bounded_output(
             .take()
             .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
     );
-    match child.wait_timeout(timeout) {
-        Ok(Some(status)) => Ok(std::process::Output {
-            status,
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
-        }),
+    let waited = child.wait_timeout(timeout);
+    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    let status = match waited {
+        Ok(Some(status)) => status,
         Ok(None) => {
-            let _ = child.kill();
             let _ = child.wait();
-            Err(error(format!(
+            return Err(error(format!(
                 "{label} did not answer within {}s; authentication state is inconclusive",
                 timeout.as_secs()
-            )))
+            )));
         }
         Err(wait_error) => {
             let _ = child.kill();
             let _ = child.wait();
-            Err(error(format!("failed to wait for {label}: {wait_error}")))
+            return Err(error(format!("failed to wait for {label}: {wait_error}")));
         }
-    }
+    };
+    let collect = |receiver: mpsc::Receiver<Vec<u8>>| {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        receiver
+            .recv_timeout(remaining.max(Duration::from_secs(1)))
+            .map_err(|_| error(format!("{label} output did not settle")))
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: collect(stdout)?,
+        stderr: collect(stderr)?,
+    })
 }
 
 fn opencode_auth_status(
@@ -555,7 +572,8 @@ fn opencode_usage_snapshot(
         )
         .ok()?;
         remove_account_auth_environment(&mut command, "opencode");
-        let output = command.output().ok()?;
+        let output =
+            bounded_output(command, "OpenCode usage", PROVIDER_STATUS_PROBE_TIMEOUT).ok()?;
         serde_json::from_slice::<serde_json::Value>(&output.stdout).ok()
     });
     if let Some(used) = local_stats
@@ -887,18 +905,16 @@ fn remove_account_auth_environment(command: &mut Command, provider: &str) {
 }
 
 fn command_version(executable: &std::path::Path) -> Result<String, DaemonError> {
-    let output = crate::provider::managed_isolated_utility_command(
-        executable.display().to_string(),
-        vec!["--version".to_string()],
-        BTreeMap::new(),
-        None,
-        "provider:version",
-    )?
-    .output()
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "provider_version",
-        message: error.to_string(),
-    })?;
+    let output = bounded_status_output(
+        crate::provider::managed_isolated_utility_command(
+            executable.display().to_string(),
+            vec!["--version".to_string()],
+            BTreeMap::new(),
+            None,
+            "provider:version",
+        )?,
+        "provider version",
+    )?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!text.is_empty())
         .then_some(text)
@@ -927,18 +943,16 @@ fn find_numeric_field(value: &serde_json::Value, keys: &[&str]) -> Option<f64> {
 
 fn claude_version() -> Result<String, DaemonError> {
     let executable = resolve_claude_executable()?;
-    let output = crate::provider::managed_isolated_utility_command(
-        executable.display().to_string(),
-        vec!["--version".to_string()],
-        BTreeMap::new(),
-        None,
-        "claude:version",
-    )?
-    .output()
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "get_provider_auth_status",
-        message: format!("failed to read Claude version: {error}"),
-    })?;
+    let output = bounded_status_output(
+        crate::provider::managed_isolated_utility_command(
+            executable.display().to_string(),
+            vec!["--version".to_string()],
+            BTreeMap::new(),
+            None,
+            "claude:version",
+        )?,
+        "Claude version",
+    )?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -2023,12 +2037,33 @@ mod bounded_output_tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"ok");
 
-        let mut stalled = Command::new("sleep");
-        stalled.arg("30");
+        // A launcher that exits while a descendant still holds its pipes.
+        let mut detached = Command::new("sh");
+        detached.args(["-c", "sleep 30 & printf ok"]);
+        let started = std::time::Instant::now();
+        let output = bounded_output(detached, "detached probe", Duration::from_secs(10)).unwrap();
+        assert_eq!(output.stdout, b"ok");
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        let survived = std::env::temp_dir().join(format!(
+            "chariox-bounded-probe-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let mut stalled = Command::new("sh");
+        stalled.args([
+            "-c",
+            &format!("(sleep 1; touch '{}') & sleep 30", survived.display()),
+        ]);
         let started = std::time::Instant::now();
         let error = bounded_output(stalled, "stalled probe", Duration::from_millis(200))
             .expect_err("a stalled probe fails at its deadline");
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(error.to_string().contains("stalled probe did not answer"));
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !survived.exists(),
+            "the timed-out probe's descendant is ended"
+        );
     }
 }
