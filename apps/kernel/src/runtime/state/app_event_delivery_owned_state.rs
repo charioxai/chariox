@@ -76,7 +76,14 @@ impl KernelRuntimeOwnedState {
             activity_mutation.record();
             // Publication follows the durable commit and activity capture. The
             // receipt is already queued, so a failed publication does not undo it.
-            let _ = self.session_snapshot(&session_id);
+            if let Err(error) = self.session_snapshot(&session_id) {
+                crate::logging::warn_with_fields(
+                    "daemon.app_events",
+                    "queued App event is not yet visible in the session projection",
+                    serde_json::json!({"session_id":session_id,"receipt_id":receipt.receipt_id,
+                        "error":error.to_string()}),
+                );
+            }
         }
         Ok(receipt)
     }

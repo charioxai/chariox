@@ -1,5 +1,6 @@
-//! One real AppControl pass through the writer and ordinary workflow prompt path.
-//! The fixed libc worker supplies readiness only; no Node/provider/App view runs.
+//! App event queue admission through the writer and ordinary workflow prompt path.
+//! The pass test's fixed libc worker supplies readiness only; no Node/provider/App
+//! view runs.
 use super::*;
 use crate::durable_state::{
     app_automations::{AppAutomationMutation, WorkflowAutomationTarget},
