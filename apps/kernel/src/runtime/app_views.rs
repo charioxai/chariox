@@ -33,6 +33,9 @@ struct SessionViews {
     unreloadable: HashMap<String, std::time::Instant>,
     /// Tabs that called since they were (re)opened: their document loaded.
     called: std::collections::HashSet<String>,
+    /// Tabs being reloaded onto a new generation: until the reload is sent,
+    /// the old page's calls are not run against the new backend.
+    reconnecting: std::collections::HashSet<String>,
 }
 
 impl SessionViews {
@@ -68,10 +71,11 @@ impl AppViews {
     }
 
     /// Binds a Tab whose call found it built for an older generation, or
-    /// unbound. A view's concurrent calls all get here; only the first binds
-    /// it and reloads the page. False when the Tab is already bound to this
-    /// generation: a second reload would find the slice busy with the first,
-    /// fail, and unbind the Tab the first one reconnected.
+    /// unbound, and marks it reconnecting until `finish_reconnect`. A view's
+    /// concurrent calls all get here; only the first binds it and reloads the
+    /// page. False while that reload is under way, or once the Tab is bound to
+    /// this generation: a second reload would find the slice busy with the
+    /// first, fail, and unbind the Tab the first one reconnected.
     pub(crate) fn claim_reconnect(
         &self,
         session: &str,
@@ -80,15 +84,32 @@ impl AppViews {
     ) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.entry(session.to_owned()).or_default();
-        if views
-            .tabs
-            .get(target)
-            .is_some_and(|(current, _)| *current == binding)
+        if views.reconnecting.contains(target)
+            || views
+                .tabs
+                .get(target)
+                .is_some_and(|(current, _)| *current == binding)
         {
             return false;
         }
         views.bind(target, binding);
+        views.reconnecting.insert(target.to_owned());
         true
+    }
+
+    /// The reconnect's reload was sent (or failed): calls run again.
+    pub(crate) fn finish_reconnect(&self, session: &str, target: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.reconnecting.remove(target);
+        }
+    }
+
+    pub(crate) fn is_reconnecting(&self, session: &str, target: &str) -> bool {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions
+            .get(session)
+            .is_some_and(|views| views.reconnecting.contains(target))
     }
 
     /// True for a Tab's first call since it was (re)opened: its document has
@@ -191,6 +212,9 @@ impl AppViews {
                 .unreloadable
                 .retain(|target, _| open_targets.contains(target));
             views.called.retain(|target| open_targets.contains(target));
+            views
+                .reconnecting
+                .retain(|target| open_targets.contains(target));
         }
     }
 
@@ -480,14 +504,24 @@ mod reconnect_tests {
         assert!(!views.claim_reconnect("s", "t1", binding_at(2)));
         assert!(!views.claim_reconnect("s", "t1", binding_at(2)));
         assert_eq!(views.binding("s", "t1"), Some(binding_at(2)));
+        // Until the reload is sent, the old page's calls do not run.
+        assert!(views.is_reconnecting("s", "t1"));
+        views.finish_reconnect("s", "t1");
+        assert!(!views.is_reconnecting("s", "t1"));
+        // A stale call answered after the reload still finds it bound.
+        assert!(!views.claim_reconnect("s", "t1", binding_at(2)));
         // The reload counts as a new document, whose first call re-projects the Room.
         assert!(views.first_call("s", "t1"));
         // A later update is claimed again.
         assert!(views.claim_reconnect("s", "t1", binding_at(3)));
+        views.finish_reconnect("s", "t1");
         // An unbound Tab (after a failed reload, once its cooldown passed) is claimed once.
         views.unbind("s", "t1");
         assert!(views.claim_reconnect("s", "t1", binding_at(3)));
         assert!(!views.claim_reconnect("s", "t1", binding_at(3)));
         assert!(views.reloadable("s", "t1"));
+        // A Tab closed mid-reconnect leaves no mark.
+        views.retain_open("s", &[], views.registrations("s"));
+        assert!(!views.is_reconnecting("s", "t1"));
     }
 }

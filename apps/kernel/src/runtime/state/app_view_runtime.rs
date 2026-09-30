@@ -26,8 +26,8 @@ use std::time::Duration;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const COMMAND_RETRY: Duration = Duration::from_millis(100);
-/// An Open waits for a running Room command (bounded by the controller's
-/// 15 s command timeout); an answer is retried a few times.
+/// An Open or a Reload waits for a running Room command (bounded by the
+/// controller's 15 s command timeout); an answer is retried a few times.
 const OPEN_WAIT: Duration = Duration::from_secs(16);
 const RESPOND_ATTEMPTS: u32 = 5;
 /// A view's first call re-projects the Room, waiting this long for a busy slice.
@@ -290,6 +290,13 @@ impl KernelRuntimeState {
         let views = self.app_control().views().clone();
         let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
         let outcome = match views.binding(&session_id, &call.target_id) {
+            // Bound to the new generation, but still showing the old page.
+            Some(binding)
+                if binding.installation == call.installation_id
+                    && views.is_reconnecting(&session_id, &call.target_id) =>
+            {
+                Err(view_reloading())
+            }
             Some(binding) if binding.installation == call.installation_id => {
                 match self
                     .invoke_app_view_tool(&session_id, &binding, &call.method, call.params)
@@ -373,12 +380,6 @@ impl KernelRuntimeState {
             views.unbind(session_id, target_id);
             return Err(unbound());
         };
-        let reloading = || {
-            view_error(
-                "APP_VIEW_RELOADING",
-                "The App changed; its view is reloading",
-            )
-        };
         // A view's concurrent calls each land here; one reload is enough.
         if !views.claim_reconnect(
             session_id,
@@ -389,7 +390,7 @@ impl KernelRuntimeState {
                 generation: view.generation,
             },
         ) {
-            return Err(reloading());
+            return Err(view_reloading());
         }
         let (entry, assets) = view_assets(view);
         let reloaded: Option<Value> = self
@@ -402,11 +403,12 @@ impl KernelRuntimeState {
                 },
             )
             .await;
+        views.finish_reconnect(session_id, target_id);
         if reloaded.is_none() {
             views.unbind(session_id, target_id);
             return Err(unbound());
         }
-        Err(reloading())
+        Err(view_reloading())
     }
 
     /// The session's host, who owns the Room's reconnected views.
@@ -543,6 +545,13 @@ fn budget() -> AppOperationBudget {
 
 fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
     crate::runtime::app_control::failed(code)
+}
+
+fn view_reloading() -> BrowserAppViewError {
+    view_error(
+        "APP_VIEW_RELOADING",
+        "The App changed; its view is reloading",
+    )
 }
 
 /// Commands that take the slice's operation slot and, refused because another
