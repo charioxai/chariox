@@ -33,6 +33,44 @@ struct SessionViews {
     unreloadable: HashMap<String, std::time::Instant>,
     /// Tabs that called since they were (re)opened: their document loaded.
     called: std::collections::HashSet<String>,
+    /// View calls still running, by call number.
+    in_flight: HashMap<u64, InFlightCall>,
+}
+
+/// A running view call: dropping its sender cancels it.
+struct InFlightCall {
+    target: String,
+    document: Option<String>,
+    _cancel: tokio::sync::watch::Sender<()>,
+}
+
+/// Held by the task answering a view call; the call is cancelled once its
+/// Tab closes or loads another document (see `AppViews::cancel_gone_calls`).
+pub(crate) struct ViewCall {
+    views: AppViews,
+    session: String,
+    number: u64,
+    cancelled: tokio::sync::watch::Receiver<()>,
+}
+
+impl ViewCall {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.has_changed().is_err()
+    }
+
+    /// Resolves once the call is cancelled.
+    pub(crate) async fn cancelled(&mut self) {
+        while self.cancelled.changed().await.is_ok() {}
+    }
+}
+
+impl Drop for ViewCall {
+    fn drop(&mut self) {
+        let mut sessions = self.views.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(&self.session) {
+            views.in_flight.remove(&self.number);
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -40,6 +78,9 @@ pub(crate) struct AppViews(
     Arc<Mutex<HashMap<String, SessionViews>>>,
     /// Sessions whose Room this kernel already swept for leftover views.
     Arc<Mutex<std::collections::HashSet<String>>>,
+    /// View call numbers. Never reset: a session's entry can be removed and
+    /// recreated while an old call still holds its number.
+    Arc<std::sync::atomic::AtomicU64>,
 );
 
 /// A failed reconnection is not retried sooner than this.
@@ -235,7 +276,63 @@ impl AppViews {
         if let Some(views) = sessions.get_mut(session) {
             views.tabs.clear();
             views.open_tabs = 0;
+            views.in_flight.clear();
         }
+    }
+
+    /// Tracks a view call made by the Tab's `document`. A session no longer
+    /// polled gets an already cancelled call.
+    pub(crate) fn track_call(
+        &self,
+        session: &str,
+        target: &str,
+        document: Option<String>,
+    ) -> ViewCall {
+        let (cancel, cancelled) = tokio::sync::watch::channel(());
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let number = self.2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if let Some(views) = sessions.get_mut(session) {
+            views.in_flight.insert(
+                number,
+                InFlightCall {
+                    target: target.to_owned(),
+                    document,
+                    _cancel: cancel,
+                },
+            );
+        }
+        ViewCall {
+            views: self.clone(),
+            session: session.to_owned(),
+            number,
+            cancelled,
+        }
+    }
+
+    /// Cancels the calls whose Tab closed or whose document the Tab no
+    /// longer shows (it reloaded or navigated); returns how many. `None`
+    /// (an older controller) judges nothing on that account.
+    pub(crate) fn cancel_gone_calls(
+        &self,
+        session: &str,
+        open_targets: Option<&[String]>,
+        documents: Option<&HashMap<String, String>>,
+    ) -> usize {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(views) = sessions.get_mut(session) else {
+            return 0;
+        };
+        let before = views.in_flight.len();
+        views.in_flight.retain(|_, call| {
+            let open = open_targets.is_none_or(|open| open.contains(&call.target));
+            let current = match (documents, &call.document) {
+                (Some(documents), Some(document)) => documents.get(&call.target) == Some(document),
+                _ => true,
+            };
+            // Dropping a call's sender is its cancellation.
+            open && current
+        });
+        before - views.in_flight.len()
     }
 }
 
@@ -354,6 +451,162 @@ mod tests {
         assert!(!views.publish("s", &apps));
         assert!(views.publish("s", &BTreeMap::new()));
         assert!(!views.publish("other", &apps));
+    }
+}
+
+#[cfg(test)]
+mod call_cancellation_tests {
+    use super::*;
+
+    fn views_with_tab() -> AppViews {
+        let views = AppViews::default();
+        views.register(
+            "s",
+            "t1",
+            AppViewBinding {
+                owner: "user".into(),
+                installation: "a".into(),
+                generation: 1,
+            },
+        );
+        views
+    }
+
+    fn open(targets: &[&str]) -> Vec<String> {
+        targets.iter().map(|target| (*target).to_owned()).collect()
+    }
+
+    fn documents(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(target, document)| ((*target).to_owned(), (*document).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_reload_or_navigation_cancels_only_the_old_documents_calls() {
+        let views = views_with_tab();
+        let old = views.track_call("s", "t1", Some("doc-1".into()));
+        // The poll that delivered the call still shows its document.
+        assert_eq!(
+            views.cancel_gone_calls(
+                "s",
+                Some(&open(&["t1"])),
+                Some(&documents(&[("t1", "doc-1")]))
+            ),
+            0
+        );
+        assert!(!old.is_cancelled());
+        let new = views.track_call("s", "t1", Some("doc-2".into()));
+        assert_eq!(
+            views.cancel_gone_calls(
+                "s",
+                Some(&open(&["t1"])),
+                Some(&documents(&[("t1", "doc-2")]))
+            ),
+            1
+        );
+        assert!(old.is_cancelled());
+        assert!(!new.is_cancelled());
+    }
+
+    #[test]
+    fn a_closed_tab_cancels_its_calls_and_other_tabs_keep_theirs() {
+        let views = views_with_tab();
+        let closing = views.track_call("s", "t1", Some("doc-1".into()));
+        let other = views.track_call("s", "t2", Some("doc-9".into()));
+        assert_eq!(
+            views.cancel_gone_calls(
+                "s",
+                Some(&open(&["t2"])),
+                Some(&documents(&[("t2", "doc-9")]))
+            ),
+            1
+        );
+        assert!(closing.is_cancelled());
+        assert!(!other.is_cancelled());
+        // The Room went away: every call of the session ends.
+        views.forget_session("s");
+        assert!(other.is_cancelled());
+    }
+
+    #[test]
+    fn an_older_controller_cancels_only_on_close() {
+        let views = views_with_tab();
+        // No document on the call, or none in the poll: only closure counts.
+        let unstamped = views.track_call("s", "t1", None);
+        let stamped = views.track_call("s", "t1", Some("doc-1".into()));
+        assert_eq!(
+            views.cancel_gone_calls(
+                "s",
+                Some(&open(&["t1"])),
+                Some(&documents(&[("t1", "doc-2")]))
+            ),
+            1
+        );
+        assert!(stamped.is_cancelled());
+        assert!(!unstamped.is_cancelled());
+        assert_eq!(views.cancel_gone_calls("s", None, None), 0);
+        assert_eq!(views.cancel_gone_calls("s", Some(&open(&["t1"])), None), 0);
+        assert!(!unstamped.is_cancelled());
+        assert_eq!(views.cancel_gone_calls("s", Some(&[]), None), 1);
+        assert!(unstamped.is_cancelled());
+    }
+
+    #[test]
+    fn a_finished_call_is_forgotten_and_an_unpolled_session_cancels_at_once() {
+        let views = views_with_tab();
+        drop(views.track_call("s", "t1", Some("doc-1".into())));
+        assert_eq!(views.cancel_gone_calls("s", Some(&[]), None), 0);
+        assert!(views.track_call("gone", "t1", None).is_cancelled());
+    }
+
+    #[test]
+    fn an_old_call_ending_after_its_session_was_recreated_leaves_new_calls_alone() {
+        let views = views_with_tab();
+        let old = views.track_call("s", "t1", Some("doc-1".into()));
+        // The Tab closed and the pump removed the session; a new view reopens it.
+        views.retain_open("s", &[], views.registrations("s"));
+        assert!(!views.keep_pumping("s"));
+        assert!(old.is_cancelled());
+        views.register(
+            "s",
+            "t1",
+            AppViewBinding {
+                owner: "user".into(),
+                installation: "a".into(),
+                generation: 1,
+            },
+        );
+        let new = views.track_call("s", "t1", Some("doc-2".into()));
+        drop(old);
+        assert!(!new.is_cancelled());
+        assert_eq!(
+            views.cancel_gone_calls(
+                "s",
+                Some(&open(&["t1"])),
+                Some(&documents(&[("t1", "doc-2")]))
+            ),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_wakes_the_waiting_call() {
+        let views = views_with_tab();
+        let mut call = views.track_call("s", "t1", Some("doc-1".into()));
+        let pending = tokio::time::timeout(std::time::Duration::from_millis(20), call.cancelled());
+        assert!(pending.await.is_err());
+        let waiter = tokio::spawn(async move {
+            call.cancelled().await;
+            call.cancelled().await;
+        });
+        tokio::task::yield_now().await;
+        views.cancel_gone_calls("s", Some(&[]), None);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("cancelled call wakes")
+            .unwrap();
     }
 }
 

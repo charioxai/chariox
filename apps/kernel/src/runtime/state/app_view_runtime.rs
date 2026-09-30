@@ -8,7 +8,7 @@ use crate::{
     runtime::{
         app_call_errors,
         app_operation_budget::AppOperationBudget,
-        app_views::AppViewBinding,
+        app_views::{AppViewBinding, ViewCall},
         browser_controller_app_view::{
             BrowserAppViewAsset, BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewError,
             BrowserAppViewOpened, BrowserAppViewRequest,
@@ -235,9 +235,26 @@ impl KernelRuntimeState {
                 });
             }
             for call in batch.calls {
+                let tracked =
+                    views.track_call(&session_id, &call.target_id, call.document_id.clone());
                 let state = self.clone();
                 let session = session_id.clone();
-                tokio::spawn(async move { state.answer_app_view_call(session, call).await });
+                tokio::spawn(
+                    async move { state.answer_app_view_call(session, call, tracked).await },
+                );
+            }
+            // A call whose Tab closed, reloaded or navigated away is
+            // cancelled: the worker gets `cancel` and its slot is freed.
+            let cancelled = views.cancel_gone_calls(
+                &session_id,
+                batch.open_targets.as_deref(),
+                batch.documents.as_ref(),
+            );
+            if cancelled > 0 {
+                tracing::debug!(
+                    cancelled,
+                    "App view calls cancelled: their document is gone"
+                );
             }
         }
     }
@@ -286,13 +303,27 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn answer_app_view_call(self, session_id: String, call: BrowserAppViewCall) {
+    async fn answer_app_view_call(
+        self,
+        session_id: String,
+        call: BrowserAppViewCall,
+        mut tracked: ViewCall,
+    ) {
+        if tracked.is_cancelled() {
+            return;
+        }
         let views = self.app_control().views().clone();
         let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
         let outcome = match views.binding(&session_id, &call.target_id) {
             Some(binding) if binding.installation == call.installation_id => {
                 match self
-                    .invoke_app_view_tool(&session_id, &binding, &call.method, call.params)
+                    .invoke_app_view_tool(
+                        &session_id,
+                        &binding,
+                        &call.method,
+                        call.params,
+                        &mut tracked,
+                    )
                     .await
                 {
                     // Built for an older generation: reload it with the current one.
@@ -331,6 +362,10 @@ impl KernelRuntimeState {
             },
             Some(_) => Err(unbound()),
         };
+        // Nobody is left to answer; the controller would not deliver it.
+        if tracked.is_cancelled() {
+            return;
+        }
         let (result, error) = match outcome {
             Ok(value) => (Some(value), None),
             Err(error) => (None, Some(error)),
@@ -430,6 +465,7 @@ impl KernelRuntimeState {
         binding: &AppViewBinding,
         tool: &str,
         input: Value,
+        tracked: &mut ViewCall,
     ) -> Result<Value, BrowserAppViewError> {
         let unavailable = || view_error("APP_UNAVAILABLE", "The App is not running");
         let lease = self
@@ -460,10 +496,14 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())?
         .map_err(|error| coded(app_call_errors::enqueue_error(&error)))?;
-        let reply = response
-            .receive()
-            .await
-            .map_err(|error| coded(app_call_errors::worker_call_error(&error)))?;
+        // Dropping the pending reply makes the worker peer send `cancel`.
+        let reply = tokio::select! {
+            reply = response.receive() => reply
+                .map_err(|error| coded(app_call_errors::worker_call_error(&error)))?,
+            () = tracked.cancelled() => {
+                return Err(view_error("CANCELLED", "The calling view went away"));
+            }
+        };
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
