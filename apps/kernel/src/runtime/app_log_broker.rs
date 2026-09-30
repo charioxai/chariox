@@ -170,4 +170,67 @@ mod tests {
         drop(broker);
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn a_flood_of_secrets_is_limited_noted_and_stored_redacted() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-log-broker-flood-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let store = DurableKernelStateStore::open_owned(root.join("kernel.sqlite")).unwrap();
+        let broker = AppLogBroker::new(
+            store,
+            "alice".into(),
+            "todo".into(),
+            Arc::new(Semaphore::new(1)),
+        );
+        let github = format!("ghp_{}", "a1B2c3".repeat(6));
+        let message = format!("login password=hunter2 with {github}");
+        let started = std::time::Instant::now();
+        // 5000 writes in each of two seconds, as `dispatch` admits them.
+        for now_ms in [20_000, 21_000] {
+            for _ in 0..5000 {
+                let (admitted, first) = broker.admit(now_ms);
+                if !admitted {
+                    broker.drop_write("RATE_LIMITED");
+                    continue;
+                }
+                let dropped = if first {
+                    broker.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
+                } else {
+                    0
+                };
+                broker
+                    .store
+                    .append_app_log_after_drops(
+                        "alice",
+                        "todo",
+                        "info",
+                        &message,
+                        &serde_json::json!({"token": github, "note": message}),
+                        dropped,
+                    )
+                    .unwrap();
+            }
+        }
+        let elapsed = started.elapsed();
+        let entries = broker.store.app_logs("alice", "todo", 0, 200).unwrap();
+        assert_eq!(entries.len(), 2 * PER_SECOND as usize + 1);
+        let notice = &entries[PER_SECOND as usize];
+        assert!(notice.message.starts_with("4950 log writes were dropped"));
+        assert_eq!(notice.fields["kernel"], true);
+        let redacted = "login password=[redacted:password] with [redacted:github-token]";
+        for entry in entries
+            .iter()
+            .filter(|entry| entry.fields.get("kernel").is_none())
+        {
+            assert_eq!(entry.message, redacted);
+            assert_eq!(entry.fields["token"], "[redacted:token]");
+            assert_eq!(entry.fields["note"], redacted);
+        }
+        assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+        drop(broker);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

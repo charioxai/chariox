@@ -319,14 +319,18 @@ fn contains_json_sensitive_field(token: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
+/// Every shape `secret_redaction` knows, plus the short vendor-prefixed and
+/// bare base64-JSON tokens that App-authored text keeps: a diagnostic drops
+/// more.
 fn looks_like_secret_token(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
-    (lower.starts_with("sk-")
+    ((lower.starts_with("sk-")
         || lower.starts_with("sk_")
         || lower.starts_with("ghp_")
         || lower.starts_with("xoxb-")
         || lower.starts_with("eyj"))
-        && token.chars().count() >= 12
+        && token.chars().count() >= 12)
+        || crate::secret_redaction::contains_secret(token)
 }
 
 fn push_diagnostic_token(output: &mut String, token: &str) {
@@ -400,6 +404,20 @@ mod tests {
         assert!(!explicit.reason.contains("sk-live-secret"));
         assert!(!explicit.reason.contains("private prompt"));
         assert!(!explicit.reason.contains("rm -rf"));
+    }
+
+    #[test]
+    fn shared_secret_shapes_are_dropped_from_diagnostics() {
+        let aws = format!("AKIA{}", "IOSFODNN7EXAMPLE");
+        let url = "postgres://app:pa55word@db/app";
+        let explicit = ProviderRunTermination::explicit_provider_error(
+            &format!("upload failed for {aws} via {url}"),
+            10,
+        );
+        assert_eq!(
+            explicit.reason,
+            "upload failed for [redacted] via [redacted]"
+        );
     }
 
     #[test]

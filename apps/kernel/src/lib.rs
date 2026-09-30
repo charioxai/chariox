@@ -38,6 +38,7 @@ pub mod runtime_transport;
 pub mod scheduler;
 pub mod script;
 pub mod secret;
+pub(crate) mod secret_redaction;
 pub mod session;
 pub mod session_history_page;
 pub mod skill;

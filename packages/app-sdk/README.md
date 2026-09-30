@@ -60,6 +60,8 @@ Wire control events never dispatch App event handlers.
   operation references. There is no direct network fallback.
 - `host.notify`, `openLink`, `writeClipboard`, `pickFile`: authorized host actions.
 - `log.write`: bounded structured logging, kept per installation (last 1000, 50/s) and read with `app logs`.
+  The kernel redacts secret-shaped text (API keys, tokens, JWTs, private keys, `password=` values)
+  before storing an entry, as `[redacted:<kind>]`.
 - `schedule.set`, `cancel`, `list`, `onWake`: kernel-owned wakes. The kernel
   starts the App when a wake falls due and delivers it at least once, so the App
   does not stay running to wait. A user stop holds wakes until the App starts.
