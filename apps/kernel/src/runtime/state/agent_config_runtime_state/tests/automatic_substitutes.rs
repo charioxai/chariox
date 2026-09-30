@@ -26,7 +26,7 @@ async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() 
 }
 
 async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
-    let (runtime, session_id, agent_id, profile_id) =
+    let (runtime, session_id, agent_id, profile_id, _worktree) =
         runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
     let starter_provider = if claude_hook {
         "claude-headless"
@@ -466,12 +466,24 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
 async fn runtime_with_substitutes(
     models: &[&str],
     reset_in_future: bool,
-) -> (KernelRuntimeState, String, String, String) {
+) -> (
+    KernelRuntimeState,
+    String,
+    String,
+    String,
+    crate::test_support::TestWorktree,
+) {
     // Substitution launches a real OpenCode run for queued work; serve the
     // runtime MCP endpoint it connects to.
     let mut config = crate::config::DaemonConfig::for_tests();
     crate::test_support::serve_runtime_mcp(&mut config);
-    let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(config).await;
+    let worktree = crate::test_support::TestWorktree::new("automatic-substitution");
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_in_worktree(
+        config,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        worktree.session_request(),
+    )
+    .await;
     let registry = app.lock().await.provider_account_profile_registry();
     let profile = registry
         .create_managed(
@@ -540,12 +552,12 @@ async fn runtime_with_substitutes(
             )
             .expect("configured substitute");
     }
-    (runtime, session_id, agent_id, profile.profile_id)
+    (runtime, session_id, agent_id, profile.profile_id, worktree)
 }
 
 #[tokio::test]
 async fn automatic_substitution_skips_exhausted_go_but_preserves_zen_on_same_account() {
-    let (runtime, session_id, agent_id, profile_id) = runtime_with_substitutes(
+    let (runtime, session_id, agent_id, profile_id, _worktree) = runtime_with_substitutes(
         &["opencode-go/deepseek-v4-pro", "opencode/deepseek-v4-pro"],
         true,
     )
@@ -579,7 +591,7 @@ async fn automatic_substitution_skips_exhausted_go_but_preserves_zen_on_same_acc
 
 #[tokio::test]
 async fn automatic_substitution_exhausted_chain_leaves_starter_unchanged() {
-    let (runtime, session_id, agent_id, _) = runtime_with_substitutes(
+    let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
         &[
             "opencode-go/deepseek-v4-pro",
             "opencode-go/deepseek-v4-flash",
@@ -602,7 +614,7 @@ async fn automatic_substitution_exhausted_chain_leaves_starter_unchanged() {
 
 #[tokio::test]
 async fn automatic_substitution_does_not_skip_a_passed_reset() {
-    let (runtime, session_id, agent_id, _) = runtime_with_substitutes(
+    let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
         &["opencode-go/deepseek-v4-pro", "opencode/deepseek-v4-pro"],
         false,
     )
@@ -624,7 +636,7 @@ async fn automatic_substitution_does_not_skip_a_passed_reset() {
 
 #[tokio::test]
 async fn automatic_substitution_skips_multiple_exhausted_entries_after_active_index() {
-    let (runtime, session_id, agent_id, _) = runtime_with_substitutes(
+    let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
         &[
             "opencode-go/deepseek-v4-pro",
             "opencode-go/deepseek-v4-flash",
@@ -655,7 +667,13 @@ async fn automatic_substitution_skips_multiple_exhausted_entries_after_active_in
 
 #[tokio::test]
 async fn automatic_substitution_skips_a_missing_account_and_reaches_the_next_candidate() {
-    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let worktree = crate::test_support::TestWorktree::new("substitute-missing-account");
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_in_worktree(
+        crate::config::DaemonConfig::for_tests(),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        worktree.session_request(),
+    )
+    .await;
     let registry = app.lock().await.provider_account_profile_registry();
     let removed = registry
         .create_managed(

@@ -104,6 +104,9 @@ const chromium = {
         state.documentId = `worker-document-${++state.documentSequence}`;
         persist();
         return {};
+      case "Page.createIsolatedWorld": return {
+        executionContextId: sessionId === "worker-popup-session" ? 8 : 7,
+      };
       case "Runtime.evaluate": return { result: { value:
         state.focusedTarget === (sessionId === "worker-popup-session" ? "worker-popup" : "worker-tab")
       } };

@@ -29,6 +29,7 @@ fn run_workflow_turn_completion_large_stack_test(name: &str, test: fn()) {
 
 fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes_inner(
 ) {
+    let worktree = crate::test_support::TestWorktree::new("local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes_inner");
     const FIRST_PRIVATE_INSTRUCTIONS: &str =
         "# First node\nProduce a tiny JSON payload.\nUPSTREAM_PRIVATE_INSTRUCTION_TOKEN\n";
     const SECOND_PRIVATE_INSTRUCTIONS: &str =
@@ -36,7 +37,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-ack", "worktree-ack"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -423,10 +424,13 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
 }
 
 fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns_inner() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns_inner",
+    );
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-mailbox", "worktree-mailbox"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {

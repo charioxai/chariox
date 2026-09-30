@@ -1386,12 +1386,22 @@ async fn agent_config_runtime_with_config_and_owner(
     config: crate::config::DaemonConfig,
     owner_user_id: &str,
 ) -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
+    agent_config_runtime_in_worktree(
+        config,
+        owner_user_id,
+        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1"),
+    )
+    .await
+}
+
+async fn agent_config_runtime_in_worktree(
+    config: crate::config::DaemonConfig,
+    owner_user_id: &str,
+    request: crate::session::CreateSessionRequest,
+) -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(
-            crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
-                .with_owner_user_id(owner_user_id),
-        )
+        .create_session(request.with_owner_user_id(owner_user_id))
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
