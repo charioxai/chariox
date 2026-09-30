@@ -6,6 +6,7 @@ use super::KernelRuntimeState;
 use crate::{
     local::{AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse},
     runtime::{
+        app_call_errors,
         app_operation_budget::AppOperationBudget,
         app_views::AppViewBinding,
         browser_controller_app_view::{
@@ -445,9 +446,9 @@ impl KernelRuntimeState {
             .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))?;
         let slot = lease
             .reserve_call(Duration::from_secs(30))
-            .map_err(|error| view_error("APP_BUSY", &error.to_string()))?;
+            .map_err(|error| coded(app_call_errors::busy_error(&error)))?;
         slot.validate_input(&tool, &input)
-            .map_err(|error| view_error("INVALID_INPUT", &error.to_string()))?;
+            .map_err(|error| coded(app_call_errors::input_error(&error)))?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let store = self.owned.durable_state_store.clone();
         let caller = view_caller(binding, session_id);
@@ -458,11 +459,11 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|_| unavailable())?
-        .map_err(|error| view_error("APP_ERROR", &error.to_string()))?;
+        .map_err(|error| coded(app_call_errors::enqueue_error(&error)))?;
         let reply = response
             .receive()
             .await
-            .map_err(|error| view_error("APP_ERROR", &error.to_string()))?;
+            .map_err(|error| coded(app_call_errors::worker_call_error(&error)))?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
@@ -476,14 +477,10 @@ impl KernelRuntimeState {
 }
 
 /// The App's own error (e.g. CONFLICT from a stale edit) reaches its view;
-/// kernel-side failures keep a generic code.
+/// see `app_call_errors` for the kernel's codes.
 fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAppViewError {
-    match error {
-        crate::durable_state::app_tools::AppToolsError::Catalog(
-            chariox_app_runtime::app_catalog::CatalogError::Worker(remote),
-        ) => view_error(&remote.code, &remote.message),
-        error => view_error("APP_ERROR", &error.to_string()),
-    }
+    let (code, message) = crate::runtime::app_call_errors::tool_call_error(&error);
+    view_error(&code, &message)
 }
 
 /// A view call runs as the view's owner, whoever drives the Tab: the view is
@@ -509,6 +506,10 @@ fn origin_label(owner: &str, installation: &str) -> String {
 
 fn hex_prefix(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn coded((code, message): (String, String)) -> BrowserAppViewError {
+    view_error(&code, &message)
 }
 
 fn view_error(code: &str, message: &str) -> BrowserAppViewError {
