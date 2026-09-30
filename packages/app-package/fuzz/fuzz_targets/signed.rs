@@ -12,12 +12,11 @@ use libfuzzer_sys::fuzz_target;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-const DOCUMENTS: [&str; 5] = [
+const DOCUMENTS: [&str; 4] = [
     "manifest.json",
     "schemas/tools.json",
     "schemas/events.json",
     "schemas/actions.json",
-    "schemas/information-sets.json",
 ];
 
 fn key() -> SigningKey {
@@ -38,7 +37,7 @@ fn manifest() -> Value {
         "resourcePolicy":"chariox.app.resources.v1",
         "runtime":{"engine":"node","entry":"runtime/main.js"}, "ui":{"entry":"ui/index.html"},
         "tools":"schemas/tools.json", "events":"schemas/events.json",
-        "actions":"schemas/actions.json", "informationSets":"schemas/information-sets.json",
+        "actions":"schemas/actions.json",
         "capabilities":{"network":[{"origin":"https://api.example.com","methods":["POST"]}]}
     })
 }
@@ -54,10 +53,6 @@ fn files() -> BTreeMap<String, Vec<u8>> {
             "name":"create_todo","inputSchema":closed,
             "criticalValidation":{"reason":"Confirm creation","userVerification":true},
             "effectRoutes":[{"origin":"https://api.example.com","method":"POST","path":"/todos","connection":"todo_account"}]
-        }]})).unwrap()),
-        ("schemas/information-sets.json".to_owned(), serde_json::to_vec(&json!({"informationSets":[{
-            "name":"task_result","purpose":"Show the created Todo","sourceScope":"app_task","schemaVersion":1,
-            "delivery":"both","fieldsSchema":closed,"validator":"validate_result"
         }]})).unwrap()),
     ])
 }
@@ -123,24 +118,41 @@ fuzz_target!(|input: &[u8]| {
         if let Err(error) = verify(&baseline, &policy()) {
             panic!("baseline package must verify: {error:?}");
         }
+        // Every declaration seed must reach acceptance before mutation, not
+        // merely exercise a malformed document behind a valid signature.
+        for seed in [
+            include_bytes!("../seeds/signed/0").as_slice(),
+            include_bytes!("../seeds/signed/1").as_slice(),
+            include_bytes!("../seeds/signed/2").as_slice(),
+            include_bytes!("../seeds/signed/3").as_slice(),
+        ] {
+            let package = mutated_package(seed).expect("seed carries a document");
+            verify(&package, &policy()).expect("committed signed seed must verify");
+        }
         // Regenerates the archive target's seed (see the package README).
         if let Some(path) = std::env::var_os("CHARIOX_FUZZ_WRITE_ARCHIVE_SEED") {
             std::fs::write(path, &baseline).expect("write the archive seed");
         }
     });
+    if let Some(package) = mutated_package(input) {
+        let _ = verify(&package, &policy());
+    }
+});
+
+fn mutated_package(input: &[u8]) -> Option<Vec<u8>> {
     let Some((&selector, document)) = input.split_first() else {
-        return;
+        return None;
     };
     let mut manifest = manifest();
     let mut files = files();
     match DOCUMENTS[selector as usize % DOCUMENTS.len()] {
         "manifest.json" => match serde_json::from_slice(document) {
             Ok(value) => manifest = value,
-            Err(_) => return,
+            Err(_) => return None,
         },
         path => {
             files.insert(path.to_owned(), document.to_vec());
         }
     }
-    let _ = verify(&package(&manifest, &files), &policy());
-});
+    Some(package(&manifest, &files))
+}

@@ -310,7 +310,10 @@ build). `archive` feeds arbitrary bytes to `inspect_untrusted()` and `verify()`.
 with the input and signs the result, so manifest, declaration and JSON Schema
 checks see arbitrary content behind a valid signature. Both must reject without
 panicking. `signed` panics on its first input if its unmodified package does not
-verify, so a harness that only reaches the rejection path cannot pass silently.
+verify, and verifies every committed signed declaration seed before mutation, so
+a harness that only reaches the rejection path cannot pass silently. The baseline
+uses the current manifest/declaration contract; retired information-set metadata
+is not a supported declaration.
 `fuzz/seeds/archive/0` is that package, signed with the fuzz key that `archive`
 trusts, so `archive` can mutate its way into the manifest and declaration
 checks; a real `.cxapp` stops at the signature check. `archive` panics on its
