@@ -279,6 +279,7 @@ impl AppInstallControl {
                     } else {
                         match result {
                             Ok(receiver) => {
+                                entry.prompt_refused = false;
                                 entry.step = Step::Waiting {
                                     session: prompt.session.clone(),
                                     deadline: prompt.challenge.deadline(),
@@ -286,7 +287,23 @@ impl AppInstallControl {
                                     receiver,
                                 }
                             }
-                            Err(_) => {
+                            Err(error) => {
+                                // Retried until shown; say why once, or an
+                                // install waits for an approval nobody sees.
+                                if !entry.prompt_refused {
+                                    entry.prompt_refused = true;
+                                    crate::logging::warn_with_fields(
+                                        "app.install",
+                                        "App install approval could not be shown; retrying",
+                                        serde_json::json!({
+                                            "owner_id": prompt.key.0,
+                                            "request_id": prompt.key.1,
+                                            "session_id": prompt.session,
+                                            "installation_id": prompt.challenge.installation_id(),
+                                            "error": error.to_string(),
+                                        }),
+                                    );
+                                }
                                 entry.step = Step::Work;
                                 entry.next = Instant::now() + RETRY;
                             }
