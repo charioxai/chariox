@@ -377,13 +377,17 @@ mod linux {
                 ),
             ])
             .unwrap();
-            assert_eq!(environment.get("AWS_PROFILE").unwrap(), "synthetic-profile");
-            assert_eq!(
-                environment
-                    .get(&STANDARD.encode(b"ARBITRARY_HELPER_SETTING"))
-                    .unwrap(),
-                &STANDARD.encode(b"synthetic-setting")
-            );
+            for (name, expected) in [
+                ("AWS_PROFILE", "synthetic-profile"),
+                ("ARBITRARY_HELPER_SETTING", "synthetic-setting"),
+            ] {
+                assert_eq!(
+                    STANDARD
+                        .decode(environment.get(&STANDARD.encode(name.as_bytes())).unwrap())
+                        .unwrap(),
+                    expected.as_bytes()
+                );
+            }
         }
 
         #[test]
