@@ -56,11 +56,30 @@ for (const request of [
     const { client, state } = await kernel(t, (socket) => socket.terminate())
 
     await assert.rejects(client.send(request), (error: unknown) =>
-      error instanceof LocalIpcError && error.code === "connection_closed")
+      error instanceof LocalIpcError && error.code === "outcome_unknown" && !error.retryable)
     await new Promise((resolve) => setTimeout(resolve, 300))
     assert.equal(state.requests, 1)
   })
 }
+
+test("LocalIpcClient keeps the transport error of an App worker control it never wrote", async () => {
+  // Nothing listens: the request is never written, so its outcome is known.
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>((resolve) => server.once("listening", resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, {
+    controlRequestRetryDeadlineMs: 300,
+    reconnectJitterMs: 0,
+  })
+  try {
+    await assert.rejects(client.send({ ControlAppWorker: { installation_id: "todo", action: "restart" } }),
+      (error: unknown) => error instanceof LocalIpcError && error.code !== "outcome_unknown")
+  } finally {
+    client.destroy()
+  }
+})
 
 test("LocalIpcClient still replays a stalled read", async (t) => {
   const { client, state } = await kernel(t, (socket, frame, count) => {

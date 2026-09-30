@@ -91,14 +91,11 @@ export async function executeAppCommand(
   try {
     response = await client.send(request)
   } catch (error) {
-    // The client does not resend a worker control or an uninstall the kernel
-    // may already be running; a connection lost before the answer leaves the
-    // outcome to check rather than to retry.
-    if (["start", "stop", "restart", "uninstall"].includes(action) && error instanceof LocalIpcError && error.retryable) {
-      const check = action === "uninstall" ? `app status ${rest[0]}` : `app worker ${rest[0]}`
-      return { ok: false, message: `The connection to the kernel was lost before it answered, so the ${action} may still happen. Check with ${check} before trying again.` }
-    }
-    throw error
+    // Only a worker control or an uninstall ends this way: the client does not
+    // resend one the kernel may be running, so its outcome is checked, not retried.
+    if (!(error instanceof LocalIpcError && error.code === "outcome_unknown")) throw error
+    const check = action === "uninstall" ? `app status ${rest[0]}` : `app worker ${rest[0]}`
+    return { ok: false, message: `The kernel did not answer, so the ${action} may still happen. Check with ${check} before trying again.` }
   }
   if (response.AppRequestFailed) return appFailure(response, action === "connection" ? `connection ${rest[0]}` : action)
   if (response.AppLogs) {
