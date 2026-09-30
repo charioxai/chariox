@@ -137,6 +137,13 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
             return Ok(());
         };
+        // Runtime MCP handlers may still be using this prompt after provider output
+        // becomes quiet. Share the same activity guard as the runtime-owned path.
+        if prompt.status() != PromptStatus::Cancelling
+            && self.app.runtime_tool_call_activity.active_count(provider_run_id) > 0
+        {
+            return Ok(());
+        }
         if prompt.status() != PromptStatus::Cancelling && prompt.delivery_pending() {
             return Ok(());
         }

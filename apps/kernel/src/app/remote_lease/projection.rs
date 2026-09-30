@@ -664,6 +664,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if active_prompt.workflow_run_id().is_some() {
             return Ok(false);
         }
+        // A leased output poll must not complete the prompt underneath an
+        // authenticated runtime tool still executing on this worker.
+        if active_prompt.status() != PromptStatus::Cancelling
+            && self.app.runtime_tool_call_activity.active_count(provider_run_id) > 0
+        {
+            return Ok(false);
+        }
         if !crate::transport::flow_control::prompt_output_quiet_after_response(
             self.app,
             provider_run_id,

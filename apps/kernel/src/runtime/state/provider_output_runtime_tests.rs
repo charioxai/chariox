@@ -193,6 +193,7 @@ mod prompt_cancellation;
 mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;
+mod app_quiet_tool_guard;
 mod structured_exit_diagnostic;
 mod structured_output;
 
