@@ -148,7 +148,7 @@ impl Lease {
         )?;
         let reply: Reply = wire::receive(&stream, 150)?;
         if reply.status != "acquired" || reply.code.is_some() {
-            return Err(Error::RecoveryRequired);
+            return Err(reply.refusal());
         }
         let grant = reply.grant.ok_or(Error::Identity)?;
         let path = Path::new(ROOT).join(format!("u-{uid}")).join(name);

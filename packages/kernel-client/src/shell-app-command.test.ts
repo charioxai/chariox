@@ -74,6 +74,17 @@ test("A worker control or uninstall whose answer was lost is reported as unknown
   } }), /closed/)
 })
 
+test("a worker refused for low host disk space points at the App log that says how much to free", async () => {
+  const worker = { installation_id: "docs", phase: "failed", enabled: true, failure: "app_lifecycle_disk_space", updated_at_ms: 1 }
+  const result = await executeAppCommand(["worker", "docs"], { send: async () => ({ AppWorker: { worker } }) })
+  assert.equal(result.message, "docs · failed · app_lifecycle_disk_space: not enough free disk space on the host; "
+    + "app logs docs says how much to free")
+  const other = await executeAppCommand(["worker", "docs"], {
+    send: async () => ({ AppWorker: { worker: { ...worker, failure: "app_lifecycle_preparation" } } }),
+  })
+  assert.equal(other.message, "docs · failed · app_lifecycle_preparation")
+})
+
 test("App automation commands route one event to one workflow and validate arguments", async () => {
   const automation = { automation_id: "reminders", revision: 1, event_name: "todo_due", event_version: 1, session_id: "s", publication_id: "p", endpoint_id: "e", queue_id: "q", scheduled: true, status: "active" }
   const result = await executeAppCommand(["automation", "add", "todo", "reminders", "todo_due", "s", "todo-flow", "--scheduled", "--queue", "main"], { send: async sent => {

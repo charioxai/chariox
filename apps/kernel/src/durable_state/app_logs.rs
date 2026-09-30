@@ -134,6 +134,31 @@ impl DurableKernelStateStore {
         receiver.recv().map_err(|_| "STORAGE_UNAVAILABLE")?
     }
 
+    /// A kernel notice about the installation (warn level, marked `kernel`)
+    /// for an event outside the writer transactions that write their own.
+    pub(crate) fn append_app_kernel_notice(
+        &self,
+        owner: &str,
+        installation: &str,
+        message: &str,
+        mut fields: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), &'static str> {
+        fields.insert(KERNEL_FIELD.into(), true.into());
+        let (response, receiver) = mpsc::channel();
+        self.writer
+            .enqueue(DurableWriterRequest::AppLog(Box::new(AppLogRequest {
+                owner: owner.into(),
+                installation: installation.into(),
+                level: "warn".into(),
+                message: message.into(),
+                fields: serde_json::Value::Object(fields).to_string(),
+                dropped: 0,
+                response,
+            })))
+            .map_err(|_| "STORAGE_UNAVAILABLE")?;
+        receiver.recv().map_err(|_| "STORAGE_UNAVAILABLE")?
+    }
+
     /// Entries after `after` (oldest first), at most `limit`.
     pub(crate) fn app_logs(
         &self,

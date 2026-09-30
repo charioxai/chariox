@@ -57,6 +57,9 @@ posix_fallocate reservation. The helper admits at most64 installation roots,
 32GiB promised capacity and8GiB additional host free space, counting every
 promised byte not yet backed by actual allocation, including failed creations
 and temporary images that need recreation. These are private initial policies.
+Short of host space, the helper refuses with `app_storage_host_reserve` and the
+free and needed bytes (`host_disk`); the worker then fails
+`app_lifecycle_disk_space`, and the App's log tells the owner how much to free.
 
 A kernel acquire also names the installation's committed generation, once one
 exists. Before the first install commits there is none (the kernel's 0): the

@@ -149,6 +149,14 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         serve(&context, &mut admission)
     }));
+    if let Ok(Err(LifecycleError::DiskSpace(space))) = &outcome {
+        disk_space::notify(
+            &context.store,
+            &context.owner,
+            &context.installation,
+            *space,
+        );
+    }
     let uncertain = matches!(&outcome, Ok(Err(LifecycleError::CommitUnknown)));
     if uncertain {
         // Native owner/peer already dropped and reaped during error unwinding.

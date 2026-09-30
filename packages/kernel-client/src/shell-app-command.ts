@@ -248,7 +248,10 @@ function formatInboxRoute(route: AppInboxRouteSummary): string {
 
 function formatWorker(worker: AppWorkerSummary): string {
   const enabled = worker.enabled ? "" : " (stopped by user)"
-  const failure = worker.failure ? ` · ${worker.failure}` : ""
+  const hint = worker.failure === "app_lifecycle_disk_space"
+    ? `: not enough free disk space on the host; app logs ${worker.installation_id} says how much to free`
+    : ""
+  const failure = worker.failure ? ` · ${worker.failure}${hint}` : ""
   return `${worker.installation_id} · ${worker.phase.replace("_", " ")}${enabled}${failure}`
 }
 

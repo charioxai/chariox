@@ -8,8 +8,7 @@ use super::{
     model::{
         self, Enrollment, Identity, Image, Journal, Owner, Request, Role, Snapshot, SNAPSHOT_IMAGE,
     },
-    mount, Error, Result, DATA_BYTES, HOST_RESERVE_BYTES, MAX_INSTALLATIONS, MAX_RESERVED_BYTES,
-    ROOT, TMP_BYTES,
+    mount, Error, Result, DATA_BYTES, MAX_INSTALLATIONS, MAX_RESERVED_BYTES, ROOT, TMP_BYTES,
 };
 use crate::private_fs::Dir;
 use serde::Serialize;
@@ -753,14 +752,7 @@ fn random_uuid() -> Result<String> {
 
 fn reserve(free: u64, promised: u64, allocated: u64) -> Result<()> {
     let missing = promised.checked_sub(allocated).ok_or(Error::Identity)?;
-    let needed = HOST_RESERVE_BYTES
-        .checked_add(missing)
-        .ok_or(Error::Capacity)?;
-    if free < needed {
-        Err(Error::Capacity)
-    } else {
-        Ok(())
-    }
+    crate::worker_process::HostDiskSpace::check(free, missing).map_err(Error::HostReserve)
 }
 #[cfg(test)]
 mod tests {
@@ -819,10 +811,15 @@ mod tests {
     }
     #[test]
     fn existing_directories_do_not_fabricate_disk_reservations() {
+        use crate::worker_process::{HostDiskSpace, HOST_RESERVE_BYTES};
         let promised = DATA_BYTES + TMP_BYTES;
+        // Short of the reserve: the owner is told what is free and needed.
         assert_eq!(
             reserve(HOST_RESERVE_BYTES, promised, DATA_BYTES),
-            Err(Error::Capacity)
+            Err(Error::HostReserve(HostDiskSpace {
+                free: HOST_RESERVE_BYTES,
+                needed: HOST_RESERVE_BYTES + TMP_BYTES,
+            }))
         );
         assert_eq!(
             reserve(HOST_RESERVE_BYTES + TMP_BYTES, promised, DATA_BYTES),
@@ -830,7 +827,10 @@ mod tests {
         );
         assert_eq!(
             reserve(HOST_RESERVE_BYTES + TMP_BYTES, promised, 0),
-            Err(Error::Capacity)
+            Err(Error::HostReserve(HostDiskSpace {
+                free: HOST_RESERVE_BYTES + TMP_BYTES,
+                needed: HOST_RESERVE_BYTES + promised,
+            }))
         );
         assert_eq!(reserve(HOST_RESERVE_BYTES + promised, promised, 0), Ok(()));
     }
