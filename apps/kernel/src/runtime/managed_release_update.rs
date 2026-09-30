@@ -25,7 +25,9 @@ use super::managed_kernel_quiescence::{hmac_signature, identity_values, Quiescen
 
 #[path = "managed_release_update_evidence.rs"]
 mod evidence;
-use evidence::{prepare_archive, read_evidence, settled_report, unit_settled, UpdateIdentity, UpdateReport};
+use evidence::{
+    prepare_archive, read_evidence, settled_report, unit_settled, UpdateIdentity, UpdateReport,
+};
 
 const POLL_ENDPOINT: &str = "/v1/managed-kernels/release-update/poll";
 const ARTIFACT_ENDPOINT: &str = "/v1/managed-kernels/release-update/artifact";
@@ -472,8 +474,13 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-        let retained = read_attempt(&path).expect("valid attempt").expect("persisted attempt");
-        assert_eq!(retained, attempt, "the next Cloud poll retains its failedUpdateId");
+        let retained = read_attempt(&path)
+            .expect("valid attempt")
+            .expect("persisted attempt");
+        assert_eq!(
+            retained, attempt,
+            "the next Cloud poll retains its failedUpdateId"
+        );
         assert_eq!(
             settled_report(
                 &digest('a'),
@@ -575,7 +582,10 @@ mod tests {
             invoked.trim(),
             format!(
                 "{} {} {} {}",
-                staging.join(&update.update_id).join("extracted/rootfs").display(),
+                staging
+                    .join(&update.update_id)
+                    .join("extracted/rootfs")
+                    .display(),
                 digest('a'),
                 digest('b'),
                 root.join("release/usr/lib/chariox/release-public-key")

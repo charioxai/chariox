@@ -165,13 +165,19 @@ pub(crate) async fn prepare_archive<E>(
     download: impl std::future::Future<Output = Result<(), E>>,
     io_error: impl Fn(std::io::Error) -> E,
 ) -> Result<PreparedArchive, E> {
-    let prepared = PreparedArchive { archive: archive.to_path_buf(), delegated: false };
+    let prepared = PreparedArchive {
+        archive: archive.to_path_buf(),
+        delegated: false,
+    };
     std::fs::write(attempt_path, attempt_bytes)
         .and_then(|()| std::fs::File::open(attempt_path)?.sync_all())
         .and_then(|()| {
-            std::fs::File::open(attempt_path.parent().ok_or_else(|| {
-                std::io::Error::other("release update attempt has no parent")
-            })?)?.sync_all()
+            std::fs::File::open(
+                attempt_path
+                    .parent()
+                    .ok_or_else(|| std::io::Error::other("release update attempt has no parent"))?,
+            )?
+            .sync_all()
         })
         .map_err(io_error)?;
     download.await?;
@@ -340,7 +346,8 @@ mod tests {
 
     #[test]
     fn an_unavailable_artifact_keeps_the_attempt_for_the_next_cloud_poll() {
-        let root = std::env::temp_dir().join(format!("chariox-download-failure-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("chariox-download-failure-{}", std::process::id()));
         std::fs::create_dir(&root).expect("scratch");
         let attempt = root.join("attempt.json");
         let archive = root.join("release.tar.gz");
@@ -350,26 +357,50 @@ mod tests {
             std::fs::write(archive.with_extension("partial"), "partial").expect("partial");
             Err(std::io::Error::other("artifact unavailable"))
         };
-        assert!(ready(prepare_archive(&attempt, &archive, bytes, download, |error| error)).is_err());
-        assert_eq!(std::fs::read(&attempt).expect("Cloud RUNNING must retain a failedUpdateId"), bytes);
+        assert!(ready(prepare_archive(
+            &attempt,
+            &archive,
+            bytes,
+            download,
+            |error| error
+        ))
+        .is_err());
+        assert_eq!(
+            std::fs::read(&attempt).expect("Cloud RUNNING must retain a failedUpdateId"),
+            bytes
+        );
         assert!(!archive.exists() && !archive.with_extension("partial").exists());
-        assert_eq!(settled_report("release-a", &identity(), None, false), UpdateReport::Failed);
+        assert_eq!(
+            settled_report("release-a", &identity(), None, false),
+            UpdateReport::Failed
+        );
         std::fs::remove_dir_all(root).expect("known synthetic scratch");
     }
 
     #[test]
     fn the_attempt_is_durable_before_requesting_the_artifact() {
-        let root = std::env::temp_dir().join(format!("chariox-download-order-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("chariox-download-order-{}", std::process::id()));
         std::fs::create_dir(&root).expect("scratch");
         let attempt = root.join("attempt.json");
         let archive = root.join("release.tar.gz");
         let bytes = b"Cloud-authorized attempt";
         let download = async {
-            assert_eq!(std::fs::read(&attempt).expect("attempt precedes artifact request"), bytes);
+            assert_eq!(
+                std::fs::read(&attempt).expect("attempt precedes artifact request"),
+                bytes
+            );
             std::fs::write(&archive, "downloaded").expect("archive");
             Ok::<_, std::io::Error>(())
         };
-        let prepared = ready(prepare_archive(&attempt, &archive, bytes, download, |error| error)).expect("prepare");
+        let prepared = ready(prepare_archive(
+            &attempt,
+            &archive,
+            bytes,
+            download,
+            |error| error,
+        ))
+        .expect("prepare");
         drop(prepared);
         assert!(attempt.exists() && !archive.exists());
         std::fs::remove_dir_all(root).expect("known synthetic scratch");
@@ -377,7 +408,10 @@ mod tests {
 
     #[test]
     fn delegated_files_remain_owned_by_the_possible_root_unit() {
-        let root = std::env::temp_dir().join(format!("chariox-download-delegation-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "chariox-download-delegation-{}",
+            std::process::id()
+        ));
         std::fs::create_dir(&root).expect("scratch");
         let attempt = root.join("attempt.json");
         let archive = root.join("release.tar.gz");
@@ -385,12 +419,28 @@ mod tests {
             std::fs::write(&archive, "downloaded").expect("archive");
             Ok::<_, std::io::Error>(())
         };
-        let mut prepared = ready(prepare_archive(&attempt, &archive, b"attempt", download, |error| error)).expect("prepare");
+        let mut prepared = ready(prepare_archive(
+            &attempt,
+            &archive,
+            b"attempt",
+            download,
+            |error| error,
+        ))
+        .expect("prepare");
         prepared.delegate();
         drop(prepared);
-        assert!(attempt.exists() && archive.exists(), "a failed CLI reply cannot discard state the root unit may still use");
-        assert_eq!(settled_report("release-a", &identity(), None, true), UpdateReport::Pending);
-        assert_eq!(settled_report("release-a", &identity(), None, false), UpdateReport::Failed);
+        assert!(
+            attempt.exists() && archive.exists(),
+            "a failed CLI reply cannot discard state the root unit may still use"
+        );
+        assert_eq!(
+            settled_report("release-a", &identity(), None, true),
+            UpdateReport::Pending
+        );
+        assert_eq!(
+            settled_report("release-a", &identity(), None, false),
+            UpdateReport::Failed
+        );
         std::fs::remove_dir_all(root).expect("known synthetic scratch");
     }
 
