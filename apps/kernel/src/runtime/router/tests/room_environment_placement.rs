@@ -80,6 +80,26 @@ impl TestState {
 impl Drop for TestState {
     fn drop(&mut self) {
         if self.root.exists() {
+            #[cfg(target_os = "linux")]
+            if self.root.join("upload-browser-lifetimes").exists() {
+                let lifecycle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("slice-linux-docker/docker/browser-lifecycle.py");
+                let stopped = std::process::Command::new("python3")
+                    .arg(lifecycle)
+                    .arg("stop")
+                    .arg(self.root.join("upload-browser-profile"))
+                    .env(
+                        "CHARIOX_BROWSER_LIFECYCLE_ROOT",
+                        self.root.join("upload-browser-lifetimes"),
+                    )
+                    .env("TMPDIR", &self.root)
+                    .output()
+                    .expect("retire fixture-owned upload browser");
+                assert!(
+                    stopped.status.success(),
+                    "fixture browser retirement failed"
+                );
+            }
             std::fs::remove_dir_all(&self.root).expect("remove drill-owned kernel state");
         }
     }

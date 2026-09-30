@@ -3,6 +3,7 @@
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { fixtureUploadBrowser } from "./upload-browser.fixture.mjs";
 
 const [directory, pidFile] = process.argv.slice(2);
 const { BrowserControllerStdioServer } = await import(pathToFileURL(join(directory, "browser-controller.mjs")));
@@ -12,6 +13,7 @@ const { BrowserCdpClient } = await import(pathToFileURL(join(directory, "browser
 // assertions and retain every PID so cleanup can prove that none leaked.
 writeFileSync(pidFile, String(process.pid));
 appendFileSync(`${pidFile}s`, `${process.pid}\n`);
+const uploadBrowser = await fixtureUploadBrowser(directory, dirname(pidFile));
 const stateFile = join(dirname(pidFile), "chromium-state.json");
 const actionRequestEvidencePath = join(dirname(pidFile), "controller-action-requests.ndjson");
 let state = existsSync(stateFile)
@@ -41,6 +43,7 @@ const chromium = {
   close: async () => { state.open = false; persist(); },
   async send(method, params = {}, sessionId) {
     switch (method) {
+      case "SystemInfo.getProcessInfo": return (await uploadBrowser.ensure()).processInfo;
       case "Target.getTargets": {
         const externalNavigation = join(dirname(pidFile), "external-browser-navigation");
         if (existsSync(externalNavigation)) {
@@ -326,6 +329,7 @@ const browser = new BrowserCdpClient({
     connectionFactory: async () => chromium,
     downloadDirectory: join(dirname(pidFile), "downloads"),
     uploadRoots: [dirname(pidFile)],
+    stageUploads: uploadBrowser.stageUploads,
 });
 const performBrowserAction = browser.performAction.bind(browser);
 browser.performAction = async (request, options = {}) => {
@@ -367,6 +371,7 @@ const fixtureResourceInventory = async () => ({
 });
 const uploadFiles = browser.uploadFiles.bind(browser);
 browser.uploadFiles = async (request, options = {}) => {
+  Object.assign(chromium, await uploadBrowser.ensure());
   const observedAbort = () => writeFileSync(join(dirname(pidFile), "upload-cancel-observed"), "cancel observed");
   options.signal?.addEventListener("abort", observedAbort, { once: true });
   try { return await uploadFiles(request, options); }
