@@ -100,19 +100,22 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
   let wakeHandler = null;
   const peer = new AppPeer({
     transport, generation, limits,
-    // The caller gets INVALID_OUTPUT; the App's own log tells its developer
-    // which handler returned what. Before readiness the kernel admits no log.
-    onInvalidOutput(method, params, detail) {
+    // The caller gets INVALID_OUTPUT (or HANDLER_FAILED for a malformed
+    // AppError); the App's own log tells its developer which handler did what.
+    // Before readiness the kernel admits no log.
+    onInvalidOutput(method, params, detail, code) {
       if (!active) return;
       const handler = method === 'tools.invoke' ? `Tool ${params.name}`
         : method === 'events.deliver' ? `Event handler ${params.name}`
           : method === 'schedule.wake' ? 'The wake handler'
             : method === 'lifecycle.dispatch' ? `The ${params.event} lifecycle handler` : 'An App handler';
-      const fields = { code: 'INVALID_OUTPUT', method };
+      const what = code === 'INVALID_OUTPUT' ? 'returned a result that cannot be sent'
+        : 'threw an AppError that cannot be sent';
+      const fields = { code, method };
       if (method === 'tools.invoke' || method === 'events.deliver') fields.name = params.name;
       peer.request('log.write', {
         level: 'error',
-        message: `${handler} returned a result that cannot be sent, so that call failed with INVALID_OUTPUT: ${detail}`,
+        message: `${handler} ${what}, so that call failed with ${code}: ${detail}`,
         fields,
       }).catch(() => { /* the call's own error still reaches its caller */ });
     },

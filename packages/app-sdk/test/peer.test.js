@@ -149,3 +149,13 @@ test('a transport failure while answering still closes the channel', async () =>
   assert.equal(transport.closed, true);
   await assert.rejects(peer.request('state.get', {}), { code: 'DISCONNECTED' });
 });
+
+test('a transport that throws without a refusal detail closes the channel, even if it stays open', async () => {
+  const transport = fakeTransport();
+  transport.send = () => { throw new Error('write failed'); };
+  const peer = new AppPeer({ transport, generation, handleRequest: () => ({ fine: true }) });
+  transport.receive(request('host-1', 'tools.invoke'));
+  await flush();
+  assert.equal(transport.closed, true);
+  await assert.rejects(peer.request('state.get', {}), { code: 'DISCONNECTED' });
+});

@@ -291,8 +291,21 @@ test('an AppError the App made malformed fails its call as HANDLER_FAILED and ke
   transport.receive(request('call-kept', 'tools.invoke', { name: 'fail', input: null }));
   await flush();
   assert.deepEqual(transport.sent.at(-1).error, { code: 'CONFLICT', message: 'stale � edit', retryable: false });
-  assert.equal(transport.sent.length, cases.length + 1);
+  assert.equal(transport.sent.length, cases.length + 1, 'Before readiness nothing is logged');
   assert.equal(transport.closed, false);
+  // Once ready, the App's log says why its own error became HANDLER_FAILED.
+  const ready = sdk.ready();
+  transport.receive(response(transport.sent.at(-1).id, null));
+  await ready;
+  thrown = withCode('has space');
+  const before = transport.sent.length;
+  transport.receive(request('call-logged', 'tools.invoke', { name: 'fail', input: null }));
+  await flush();
+  const [log, reply] = transport.sent.slice(before);
+  assert.deepEqual(log.params, { level: 'error', fields: { code: 'HANDLER_FAILED', method: 'tools.invoke', name: 'fail' },
+    message: 'Tool fail threw an AppError that cannot be sent, so that call failed with HANDLER_FAILED: '
+      + 'its code is not 1 to 128 bytes without spaces or control characters' });
+  assert.deepEqual(reply.error, { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false });
   sdk.close();
 });
 

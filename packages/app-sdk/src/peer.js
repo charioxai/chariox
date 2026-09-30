@@ -54,20 +54,32 @@ export class AppPeer {
       this.#pending.set(id, { settle });
       signal?.addEventListener('abort', abort, { once: true });
       const refused = this.#send({ kind: 'request', id, method, params, deadline_ms: Date.now() + timeoutMs });
-      if (refused) settle(new AppError('INVALID_ARGUMENT', `App request parameters cannot be sent: ${detail(refused)}`));
+      if (refused) {
+        const reason = detail(refused) ?? 'they could not be read as JSON';
+        settle(new AppError('INVALID_ARGUMENT', `App request parameters cannot be sent: ${reason}`));
+      }
     });
   }
 
   // Returns the error when a message is refused before any byte is written:
   // App code supplied a value that is not JSON (or too large), and only that
-  // call fails. A transport that fails closes itself, and this peer with it.
+  // call fails. Any other transport failure closes the channel.
   #send(message) {
     if (this.#closed) return null;
+    let envelope;
     try {
-      this.transport.send(validateMessage({ version: APP_WIRE_VERSION, generation: this.generation, ...message }, 'worker'));
+      envelope = validateMessage({ version: APP_WIRE_VERSION, generation: this.generation, ...message }, 'worker');
+    } catch (error) {
+      return error;
+    }
+    try {
+      this.transport.send(envelope);
       return null;
     } catch (error) {
-      return this.#closed ? null : error;
+      // encodeFrame refuses a value (with a `detail`) before writing a byte.
+      if (!this.#closed && detail(error) !== undefined) return error;
+      this.close(error);
+      return null;
     }
   }
 
@@ -78,18 +90,19 @@ export class AppPeer {
   }
 
   // The App's result or error for one call. A malformed one fails that call
-  // alone, as INVALID_OUTPUT or HANDLER_FAILED, and never closes the channel.
+  // alone, as INVALID_OUTPUT or HANDLER_FAILED, and never closes the channel;
+  // onInvalidOutput tells the App's developer why, before the reply is sent.
   #respond(request, outcome) {
     const refused = this.#send({ kind: 'response', id: request.id, ...outcome });
     if (!refused) return;
-    if (!Object.hasOwn(outcome, 'result')) {
-      this.#control({ kind: 'response', id: request.id, error: wireError(null) });
-      return;
-    }
-    const reason = detail(refused);
-    try { this.onInvalidOutput?.(request.method, request.params, reason); } catch { /* reporting is best effort */ }
-    const error = new AppError('INVALID_OUTPUT', `The App's result cannot be sent: ${reason}`);
-    this.#control({ kind: 'response', id: request.id, error: wireError(error) });
+    const result = Object.hasOwn(outcome, 'result');
+    // wireError sends only string fields, bounded and well-formed: the wire
+    // refuses an AppError only for its code.
+    const reason = result ? detail(refused) ?? 'it could not be read as JSON'
+      : 'its code is not 1 to 128 bytes without spaces or control characters';
+    const reply = wireError(result ? new AppError('INVALID_OUTPUT', `The App's result cannot be sent: ${reason}`) : null);
+    try { this.onInvalidOutput?.(request.method, request.params, reason, reply.code); } catch { /* best effort */ }
+    this.#control({ kind: 'response', id: request.id, error: reply });
   }
 
   #receive(message) {
@@ -178,5 +191,5 @@ function detail(error) {
   try {
     if (typeof error?.detail === 'string') return error.detail;
   } catch { /* an App-made error object */ }
-  return 'it could not be read as JSON';
+  return undefined;
 }

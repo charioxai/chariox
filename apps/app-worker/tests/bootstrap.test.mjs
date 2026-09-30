@@ -230,6 +230,9 @@ test('a result that is not JSON fails only its call; the App log says why and th
     assert.deepEqual(reply.error, { code: 'INVALID_OUTPUT', message: `The App's result cannot be sent: ${detail}`, retryable: false });
   }
   running.request('bad-error', 'tools.invoke', { name: 'echo', input: { mode: 'error' } });
+  const log = await running.receive(message => message.method === 'log.write' && message.params.fields.code === 'HANDLER_FAILED');
+  assert.match(log.params.message, /^Tool echo threw an AppError that cannot be sent, so that call failed with HANDLER_FAILED: its code/);
+  running.send({ kind: 'response', id: log.id, result: null });
   assert.deepEqual((await running.receive(message => message.id === 'bad-error')).error,
     { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false });
   running.request('good', 'tools.invoke', { name: 'echo', input: { text: 'still serving' } });
