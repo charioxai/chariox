@@ -25,3 +25,9 @@ exclude = [
 # next step, but it currently flags 2400+ pre-existing call sites; enabling it
 # needs a dedicated cleanup pass (or per-site allows) first, so it is left out
 # to keep `-D warnings` green.
+
+# Every App start verifies the enrolled App runtime (its 119 MB libnode) and the
+# App package with SHA-256. Unoptimized, sha2 hashes ~30 MB/s, which added ~4 s
+# to every debug-kernel App cold start (0.24 s optimized). Optimize just sha2.
+[profile.dev.package.sha2]
+opt-level = 3
