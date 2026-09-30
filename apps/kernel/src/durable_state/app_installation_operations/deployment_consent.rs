@@ -376,6 +376,40 @@ impl DurableKernelStateStore {
             .optional())
     }
 
+    /// Protocol 368: whether the owner already approved deploying this
+    /// deployment with exactly these App releases (for any of its releases).
+    pub(crate) fn deployment_apps_approved_before(
+        &self,
+        owner: &str,
+        deployment_id: &str,
+        apps: &[ConsentedApp],
+    ) -> Result<bool> {
+        let connection = self
+            .lock_connection("durable_state.deployment_apps_approved_before")
+            .map_err(|_| InstallOperationError::Storage)?;
+        let mut statement = sql(connection.prepare(
+            "SELECT apps_json FROM app_deployment_consents
+             WHERE owner_id=?1 AND deployment_id=?2 AND status='approved'",
+        ))?;
+        let sorted = |mut apps: Vec<ConsentedApp>| {
+            apps.sort_by(|a, b| {
+                (&a.app_id, &a.package_digest).cmp(&(&b.app_id, &b.package_digest))
+            });
+            apps
+        };
+        let wanted = sorted(apps.to_vec());
+        let rows =
+            sql(statement.query_map(params![owner, deployment_id], |r| r.get::<_, String>(0)))?;
+        for row in rows {
+            let prior: Vec<ConsentedApp> =
+                serde_json::from_str(&sql(row)?).map_err(|_| InstallOperationError::Storage)?;
+            if sorted(prior) == wanted {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn begin_deployment_consent(
         &self,
         owner: &str,

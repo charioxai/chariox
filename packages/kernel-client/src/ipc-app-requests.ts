@@ -131,14 +131,18 @@ export function getAppSetRequest() {
   return { GetAppSet: {} }
 }
 
-/** Protocol 367: the Apps a workflow publication would deploy with, before any
- * export (its pinned plan, or the plan the owner's App set gives). */
-export function previewDeploymentAppsRequest(sessionId: string, publicationRef: string) {
-  return { PreviewDeploymentApps: { session_id: sessionId, publication_ref: publicationRef } }
+/** Protocol 367/368: the Apps a new release of a workflow publication would deploy
+ * with (the owner's current App set); with `packageDigest` (368) also the Apps
+ * that release was exported with. */
+export function previewDeploymentAppsRequest(sessionId: string, publicationRef: string, packageDigest?: string) {
+  return { PreviewDeploymentApps: {
+    session_id: sessionId, publication_ref: publicationRef, ...(packageDigest ? { package_digest: packageDigest } : {}),
+  } }
 }
 
-/** Protocol 367: ask the owner once to deploy a workflow with the Apps of its
- * publication's pinned App plan; the same `requestId` polls the answer. */
+/** Protocol 367: ask the owner once to deploy a workflow with the Apps of this
+ * release's App plan; the same `requestId` polls the answer. Since 368 a
+ * release with the App releases the owner approved before is approved at once. */
 export function prepareDeploymentAppsRequest(options: {
   sessionId: string; requestId: string; publicationRef: string; deploymentId: string; releaseId: string; packageDigest: string
 }) {

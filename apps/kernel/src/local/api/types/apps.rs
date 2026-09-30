@@ -484,6 +484,9 @@ pub struct AppSetInstallation {
 pub struct PreviewDeploymentAppsRequest {
     pub session_id: String,
     pub publication_ref: String,
+    /// Protocol 368: also returns this release's recorded App plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_digest: Option<String>,
 }
 
 /// Protocol 367: asks the owner once to deploy a workflow together with the

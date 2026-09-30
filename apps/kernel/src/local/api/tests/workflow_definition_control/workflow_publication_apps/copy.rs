@@ -1,4 +1,4 @@
-//! P1.20: an App-bound deployment runs as a pinned independent copy.
+//! P1.20: an App-bound deployment runs as an independent copy of its release's Apps.
 use super::*;
 use crate::durable_state::app_inbox::AppInboxOperation;
 use chariox_app_runtime::app_inbox::{InboxRoute, InboxSource};
@@ -102,11 +102,16 @@ fn approve(harness: &LocalRouterTestHarness, deployed: &Deployed, release: &str)
         LocalDaemonResponse::DeploymentAppsConsent { consent } => consent,
         response => panic!("unexpected response: {response:?}"),
     };
+    let asked = request();
+    // Protocol 368: App releases approved before are not asked about again.
+    if asked.status == crate::local::DeploymentAppsConsentStatus::Approved {
+        return;
+    }
     harness
         .dispatch(LocalDaemonRequest::RespondToInteraction(
             crate::local::RespondToInteractionRequest {
                 session_id: deployed.graph.session_id.clone(),
-                interaction_id: request().interaction_id,
+                interaction_id: asked.interaction_id,
                 choice_id: "approve".into(),
                 custom_reply: None,
             },
@@ -179,11 +184,20 @@ fn pumped_ensure(
     harness: &LocalRouterTestHarness,
     deployed: &Deployed,
 ) -> Result<Option<String>, crate::DaemonError> {
+    pumped_ensure_release(harness, deployed, RELEASE)
+}
+
+fn pumped_ensure_release(
+    harness: &LocalRouterTestHarness,
+    deployed: &Deployed,
+    release: &str,
+) -> Result<Option<String>, crate::DaemonError> {
     let runtime = harness.runtime_state();
-    let (session_id, publication_id, digest) = (
+    let (session_id, publication_id, digest, release) = (
         deployed.graph.session_id.clone(),
         deployed.publication.id().to_owned(),
         deployed.digest.clone(),
+        release.to_owned(),
     );
     let task = harness.spawn_test_task(async move {
         runtime
@@ -191,7 +205,7 @@ fn pumped_ensure(
                 &session_id,
                 &publication_id,
                 DEPLOYMENT,
-                RELEASE,
+                &release,
                 &digest,
             )
             .await
@@ -513,7 +527,7 @@ fn a_copy_install_the_consent_does_not_cover_fails_the_deployment_clearly() {
 }
 
 #[test]
-fn a_copy_whose_data_schema_differs_from_the_release_fails_closed() {
+fn a_release_with_an_older_data_schema_than_the_copy_fails_closed() {
     let root = temp_root("copy-schema");
     let harness = harness_with_app(&root);
     let deployed = deployed(&harness, "copy-schema", true);
@@ -562,6 +576,61 @@ fn a_copy_whose_data_schema_differs_from_the_release_fails_closed() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Protocol 368: a release whose App has a newer data schema updates the copy
+/// in place (the update migrates its data); only an older schema fails closed.
+#[test]
+fn a_release_with_a_newer_data_schema_updates_the_copy() {
+    let root = temp_root("copy-migrate");
+    let harness = harness_with_app(&root);
+    let first = deployed(&harness, "copy-migrate", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    // The owner updates the App to a release with a newer data schema, and
+    // the next release of the deployment packages it.
+    let newer = crate::durable_state::app_state::fixture_inbox_package_version("1.1.0", 1);
+    stage_release(&harness, newer.clone());
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_update_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "installed",
+            newer,
+        )
+    });
+    let (digest, files) =
+        export(&harness, &first.graph, first.publication.id()).expect("the next release");
+    assert_eq!(
+        package_json_file(&files, "apps.json")["apps"][0]["schema_version"],
+        1
+    );
+    let next = Deployed {
+        graph: first.graph,
+        publication: first.publication,
+        digest,
+    };
+    approve(&harness, &next, "release-2");
+    // The copy's update is begun rather than refused for its schema; this
+    // harness runs no App worker, so the update itself cannot complete here:
+    // it fails, or (under load) is still running at the install deadline.
+    let error = pumped_ensure_release(&harness, &next, "release-2").expect_err("no App worker");
+    let error = error.to_string();
+    assert!(!error.contains("schema version"), "{error}");
+    assert!(
+        error.contains("could not be installed for the deployment")
+            || error.contains("did not finish installing for the deployment"),
+        "{error}"
+    );
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Rollback: binding another release of the deployment moves the copy to that
 /// release's session and plan, keeping the copy's installation (and its data)
 /// when the release pins the same App release.
@@ -580,7 +649,8 @@ fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
         )
     });
     let first = ensure(&harness, &deployed).unwrap().unwrap();
-    // Another release needs its own consent.
+    // Another release needs its own consent; with the same App releases it
+    // is approved without asking again (protocol 368).
     let refused = ensure_release(&harness, &deployed, "release-2").expect_err("no consent");
     assert!(refused.to_string().contains("approve"), "{refused}");
     approve(&harness, &deployed, "release-2");
@@ -607,6 +677,58 @@ fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
     // Rolling back applies release 1 again.
     assert_ne!(ensure(&harness, &deployed).unwrap().unwrap(), second);
     assert!(harness.runtime_state().fixture_session(&second).is_err());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A release whose plan names no App (its last App was removed) runs from the
+/// source: binding it removes the deployment's copy and resumes the owner.
+#[test]
+fn a_release_without_apps_removes_the_copy_and_resumes_the_owner() {
+    let root = temp_root("copy-no-apps");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-no-apps", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    let copy_session = ensure(&harness, &deployed).unwrap().expect("a copy");
+    let set = app_set(&harness);
+    assert!(installation(&set, "copy").inbox_routes[0].active);
+    assert!(!installation(&set, "installed").inbox_routes[0].active);
+
+    let empty = format!("sha256:{}", "e".repeat(64));
+    harness.runtime_state().fixture_record_release_app_plan(
+        &deployed.graph.session_id,
+        deployed.publication.id(),
+        &empty,
+        serde_json::json!({"schema": "chariox.publication-apps.v1", "apps": []}),
+    );
+    let next = Deployed {
+        graph: deployed.graph,
+        publication: deployed.publication,
+        digest: empty,
+    };
+    assert_eq!(ensure_release(&harness, &next, "release-2").unwrap(), None);
+    let set = app_set(&harness);
+    assert!(
+        set.iter()
+            .all(|installation| installation.deployment_id.as_deref() != Some(DEPLOYMENT)),
+        "the deployment's copy installations are gone: {set:?}"
+    );
+    assert!(
+        installation(&set, "installed").inbox_routes[0].active,
+        "the owner's route resumes"
+    );
+    assert!(harness
+        .runtime_state()
+        .fixture_session(&copy_session)
+        .is_err());
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
