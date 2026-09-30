@@ -48,17 +48,21 @@ pub(super) enum Settle {
     Failed,
 }
 
+pub(super) type Installations = BTreeSet<(String, String)>;
+type DeliveryPlan<T> = (Vec<T>, Vec<(T, Settle)>, Installations);
+
 /// Pure pass planning: deliver to live workers, start each stopped
-/// installation at most once, and never let waiting items block the page.
+/// installation at most once, and return deduplicated eviction requests.
 pub(super) fn plan<T>(
     due: Vec<T>,
     now_ms: u64,
     key: impl Fn(&T) -> (String, String),
     is_live: impl Fn(&T) -> bool,
     mut start: impl FnMut(&T) -> Start,
-) -> (Vec<T>, Vec<(T, Settle)>) {
+) -> DeliveryPlan<T> {
     let mut deliver = Vec::new();
     let mut records = Vec::new();
+    let mut at_live_limit = BTreeSet::new();
     let mut started: BTreeMap<(String, String), Start> = BTreeMap::new();
     for item in due {
         if is_live(&item) {
@@ -66,6 +70,9 @@ pub(super) fn plan<T>(
             continue;
         }
         let outcome = *started.entry(key(&item)).or_insert_with(|| start(&item));
+        if outcome == Start::AtLiveLimit {
+            at_live_limit.insert(key(&item));
+        }
         let settle = match outcome {
             Start::Pending | Start::AtLiveLimit => {
                 Settle::Postponed(now_ms.saturating_add(START_WAIT_MS))
@@ -75,7 +82,23 @@ pub(super) fn plan<T>(
         };
         records.push((item, settle));
     }
-    (deliver, records)
+    (deliver, records, at_live_limit)
+}
+
+/// Run both delivery pages before any idle-worker shutdown. Even a slow
+/// shutdown cannot block the page's live work, including the inbox page.
+async fn deliver_before_eviction<F: std::future::Future<Output = ()>>(
+    wakes: impl std::future::Future<Output = (bool, Installations)>,
+    inbox: impl std::future::Future<Output = (bool, Installations)>,
+    mut evict: impl FnMut(String, String) -> F,
+) -> bool {
+    let (wakes_full, mut at_live_limit) = wakes.await;
+    let (inbox_full, inbox_evictions) = inbox.await;
+    at_live_limit.extend(inbox_evictions);
+    for (owner, installation) in at_live_limit {
+        evict(owner, installation).await;
+    }
+    wakes_full || inbox_full
 }
 
 /// A delivered item completes. A failed one waits without spending an
@@ -146,9 +169,18 @@ impl KernelRuntimeState {
         tokio::spawn(async move {
             let mut now_ms = now_ms;
             loop {
-                let wakes_full = runtime.app_wake_pass(now_ms).await;
-                let inbox_full = runtime.app_inbox_pass(now_ms).await;
-                if wakes_full || inbox_full {
+                let wants_rerun = deliver_before_eviction(
+                    runtime.app_wake_pass(now_ms),
+                    runtime.app_inbox_pass(now_ms),
+                    |owner, installation| {
+                        let runtime = &runtime;
+                        async move {
+                            runtime.evict_idle_app(&owner, &installation).await;
+                        }
+                    },
+                )
+                .await;
+                if wants_rerun {
                     pass.again();
                 }
                 runtime.stop_idle_apps(now_ms).await;
@@ -222,7 +254,7 @@ impl KernelRuntimeState {
     }
 
     /// One bounded pass; true when it filled its page and delivered something.
-    async fn app_wake_pass(&self, now_ms: u64) -> bool {
+    async fn app_wake_pass(&self, now_ms: u64) -> (bool, Installations) {
         let store = self.owned.durable_state_store.clone();
         let due = tokio::task::spawn_blocking(move || {
             store.app_wakes(AppWakeOperation::Due {
@@ -232,11 +264,11 @@ impl KernelRuntimeState {
         })
         .await;
         let Ok(Ok(AppWakeOutcome::Due(due))) = due else {
-            return false;
+            return Default::default();
         };
         let page = due.len();
         let mut delivered_count = 0;
-        let (deliver, planned) = self
+        let (deliver, planned, at_live_limit) = self
             .plan_app_delivery(due, now_ms, |wake| {
                 (wake.owner_id.clone(), wake.installation_id.clone())
             })
@@ -293,7 +325,7 @@ impl KernelRuntimeState {
             }
         })
         .await;
-        page_wants_rerun(page, delivered_count)
+        (page_wants_rerun(page, delivered_count), at_live_limit)
     }
 
     /// Splits due work into items for live workers and items that wait,
@@ -303,13 +335,12 @@ impl KernelRuntimeState {
         due: Vec<T>,
         now_ms: u64,
         key: fn(&T) -> (String, String),
-    ) -> (Vec<T>, Vec<(T, Settle)>) {
+    ) -> DeliveryPlan<T> {
         let planning = self.app_control().clone();
         let handle = tokio::runtime::Handle::current();
-        let (planned, at_live_limit) = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let lifecycle = planning.lifecycle().clone();
-            let mut at_live_limit = BTreeSet::new();
-            let planned = plan(
+            plan(
                 due,
                 now_ms,
                 key,
@@ -322,10 +353,7 @@ impl KernelRuntimeState {
                     match lifecycle.start_on_demand_blocking(&owner, &installation, handle.clone())
                     {
                         Ok(_) | Err(LifecycleError::Busy) => Start::Pending,
-                        Err(LifecycleError::LiveLimit) => {
-                            at_live_limit.insert((owner, installation));
-                            Start::AtLiveLimit
-                        }
+                        Err(LifecycleError::LiveLimit) => Start::AtLiveLimit,
                         Err(LifecycleError::Stopped) => Start::UserStopped,
                         Err(_) => {
                             planning.forget_app_dormant(&owner, &installation);
@@ -333,19 +361,10 @@ impl KernelRuntimeState {
                         }
                     }
                 },
-            );
-            (planned, at_live_limit)
+            )
         })
         .await
-        .unwrap_or_default();
-        // Due work must not wait for another App's idle stop (ten minutes):
-        // make room the way a tool call does, by stopping the least recently
-        // used worker idle for a minute (kept dormant). The item's next pass
-        // (START_WAIT_MS) starts its App.
-        for (owner, installation) in at_live_limit {
-            self.evict_idle_app(&owner, &installation).await;
-        }
-        planned
+        .unwrap_or_default()
     }
 
     /// Whether an update of the installation is staged (not yet committed or
@@ -390,7 +409,7 @@ mod tests {
     #[test]
     fn stopped_installations_start_once_per_pass_and_waiting_wakes_step_aside() {
         let starts = RefCell::new(Vec::new());
-        let (deliver, records) = plan(
+        let (deliver, records, _) = plan(
             vec![due("stopped", "a"), due("live", "b"), due("stopped", "c")],
             100,
             key,
@@ -412,7 +431,7 @@ mod tests {
     #[test]
     fn wakes_at_the_live_limit_wait_without_spending_attempts() {
         let starts = RefCell::new(0);
-        let (deliver, records) = plan(
+        let (deliver, records, _) = plan(
             vec![due("dormant", "a"), due("dormant", "b")],
             100,
             key,
@@ -429,6 +448,92 @@ mod tests {
             .all(|(_, settle)| *settle == Settle::Postponed(100 + START_WAIT_MS)));
     }
 
+    #[tokio::test]
+    async fn both_delivery_pages_finish_before_a_blocked_eviction() {
+        use std::sync::{Arc, Mutex};
+        let served = Arc::new(Mutex::new(Vec::new()));
+        let wake_served = served.clone();
+        let inbox_served = served.clone();
+        let (shutdown_started, mut shutdown_observed) = tokio::sync::mpsc::channel(1);
+        let (release_shutdown, shutdown_gate) = tokio::sync::oneshot::channel();
+        let mut shutdown_gate = Some(shutdown_gate);
+        let pump = tokio::spawn(async move {
+            deliver_before_eviction(
+                async {
+                    wake_served.lock().unwrap().push("wake");
+                    (false, BTreeSet::from([("alice".into(), "dormant".into())]))
+                },
+                async {
+                    inbox_served.lock().unwrap().push("inbox");
+                    (false, BTreeSet::from([("alice".into(), "dormant".into())]))
+                },
+                move |_, _| {
+                    let started = shutdown_started.clone();
+                    let gate = shutdown_gate.take().expect("duplicate eviction");
+                    async move {
+                        started.send(()).await.unwrap();
+                        gate.await.unwrap();
+                    }
+                },
+            )
+            .await;
+        });
+        tokio::time::timeout(Duration::from_secs(2), shutdown_observed.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // Shutdown is still blocked. Both live pages must already have run.
+        assert_eq!(*served.lock().unwrap(), ["wake", "inbox"]);
+        assert!(!pump.is_finished());
+        release_shutdown.send(()).unwrap();
+        pump.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delivery_before_eviction_preserves_either_pages_backlog_request() {
+        for (wakes, inbox) in [(false, false), (true, false), (false, true)] {
+            let rerun = deliver_before_eviction(
+                async { (wakes, BTreeSet::new()) },
+                async { (inbox, BTreeSet::new()) },
+                |_, _| async { panic!("no eviction requested") },
+            )
+            .await;
+            assert_eq!(rerun, wakes || inbox);
+        }
+    }
+
+    #[test]
+    fn eviction_requests_are_deduplicated_and_live_work_stays_deliverable() {
+        let (deliver, records, at_live_limit) = plan(
+            vec![
+                due("dormant", "a"),
+                due("live", "b"),
+                due("dormant", "c"),
+                due("busy", "d"),
+            ],
+            100,
+            key,
+            |wake| wake.installation_id == "live",
+            |wake| {
+                if wake.installation_id == "dormant" {
+                    Start::AtLiveLimit
+                } else {
+                    Start::Pending
+                }
+            },
+        );
+        assert_eq!(
+            at_live_limit,
+            BTreeSet::from([("alice".into(), "dormant".into())])
+        );
+        assert_eq!(deliver.len(), 1);
+        assert_eq!(deliver[0].wake.id, "b");
+        assert_eq!(records.len(), 3);
+        assert!(records
+            .iter()
+            .all(|(_, settle)| *settle == Settle::Postponed(100 + START_WAIT_MS)));
+    }
+
     #[test]
     fn after_an_idle_stop_every_due_wake_starts_its_app_on_time() {
         // The App's own wake and a tool-armed one plan alike: each stopped
@@ -438,7 +543,7 @@ mod tests {
         let mut armed = due("armed", "b");
         armed.counts_as_use = true;
         let starts = RefCell::new(Vec::new());
-        let (deliver, records) = plan(
+        let (deliver, records, _) = plan(
             vec![own, armed],
             100,
             key,
@@ -457,7 +562,7 @@ mod tests {
 
     #[test]
     fn user_stopped_apps_keep_their_wakes_without_spending_attempts() {
-        let (_, records) = plan(
+        let (_, records, _) = plan(
             vec![due("stopped", "a")],
             100,
             key,
@@ -469,7 +574,7 @@ mod tests {
 
     #[test]
     fn refused_starts_consume_bounded_attempts_instead_of_restarting() {
-        let (deliver, records) = plan(
+        let (deliver, records, _) = plan(
             vec![due("user-stopped", "a"), due("user-stopped", "b")],
             100,
             key,
