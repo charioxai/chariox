@@ -134,15 +134,85 @@
       {
         "id": "app-dev",
         "label": "dev",
-        "description": "/app dev <directory>: pack an App source directory, install or update it, and repeat on every change; its data is kept. /app dev stop stops watching",
+        "description": "Pack an App source directory, install or update it, and repeat on every change; its data is kept",
         "value": "/app dev ",
         "execution_target": "terminal_local",
         "examples": [
           "/app dev ./my-app",
-          "/app dev stop"
+          "/app dev ./my-app --key ./private"
         ],
         "surfaces": [
           "session"
+        ]
+      },
+      {
+        "id": "app-dev-stop",
+        "label": "dev stop",
+        "description": "End the /app dev loop running in this terminal",
+        "value": "/app dev stop",
+        "execution_target": "terminal_local",
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-operation",
+        "label": "operation",
+        "description": "Show an App install or update: the one this terminal started last, or the operation you name",
+        "value": "/app operation ",
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-cancel",
+        "label": "cancel",
+        "description": "Cancel an App install or update before it completes",
+        "value": "/app cancel ",
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-publisher",
+        "label": "publisher",
+        "description": "Trust an App publisher's signing key in this kernel",
+        "value": "/app publisher ",
+        "surfaces": [
+          "session"
+        ],
+        "children": [
+          {
+            "id": "app-publisher-enroll",
+            "label": "enroll",
+            "description": "Ask this kernel to trust a publisher's public key file; you approve it in the approval panel",
+            "value": "/app publisher enroll ",
+            "execution_target": "terminal_local",
+            "examples": [
+              "/app publisher enroll \"./publisher.json\""
+            ],
+            "surfaces": [
+              "session"
+            ]
+          },
+          {
+            "id": "app-publisher-status",
+            "label": "status",
+            "description": "Show a publisher enrollment review: this terminal's last one, or the review you name",
+            "value": "/app publisher status",
+            "surfaces": [
+              "session"
+            ]
+          },
+          {
+            "id": "app-publisher-cancel",
+            "label": "cancel",
+            "description": "Cancel a publisher enrollment review before it is approved",
+            "value": "/app publisher cancel",
+            "surfaces": [
+              "session"
+            ]
+          }
         ]
       },
       {
@@ -218,16 +288,6 @@
             ]
           },
           {
-            "id": "app-inbox-move",
-            "label": "move",
-            "description": "Move a workflow event binding to an App inbox route",
-            "value": "/app inbox move ",
-            "surfaces": [
-              "session",
-              "waiting_room"
-            ]
-          },
-          {
             "id": "app-inbox-remove",
             "label": "remove",
             "description": "Remove an App inbox route",
@@ -242,6 +302,48 @@
             "label": "test",
             "description": "Send a test occurrence through an inbox route",
             "value": "/app inbox test ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-connection",
+        "label": "connection",
+        "description": "Let an App act through one of your event connections",
+        "value": "/app connection ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-connection-list",
+            "label": "list",
+            "description": "List the connections an App may act through",
+            "value": "/app connection list ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-connection-grant",
+            "label": "grant",
+            "description": "Let an App act through one of your connections (GENERATOR/CONNECTION)",
+            "value": "/app connection grant ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-connection-revoke",
+            "label": "revoke",
+            "description": "Revoke an App's use of a connection",
+            "value": "/app connection revoke ",
             "surfaces": [
               "session",
               "waiting_room"

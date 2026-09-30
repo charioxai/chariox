@@ -34,9 +34,26 @@ export function commandCenterExecutionCommand(item: CommandCenterItem): string |
   return commandCenterCompletionText(item)
 }
 
+/**
+ * The prompt is the item's command followed by arguments, e.g. "/app dev ./my-app"
+ * for "/app dev ". Enter then submits the prompt as typed: running the item would
+ * drop the arguments. The palette can still list such a command when its
+ * description mentions the typed words.
+ */
+export function promptAddsArgumentsToCommandCenterItem(item: CommandCenterItem, prompt: string): boolean {
+  if (item.kind !== "command") {
+    return false
+  }
+  const command = item.value.endsWith(" ") ? item.value : `${item.value} `
+  return prompt.startsWith(command) && prompt.slice(command.length).trim() !== ""
+}
+
 export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {
   if (item.kind !== "command") {
     return false
+  }
+  if (promptAddsArgumentsToCommandCenterItem(item, currentPrompt)) {
+    return true
   }
   if (!item.value.endsWith(" ")) {
     return currentPrompt.trim() === item.value
