@@ -149,4 +149,3 @@ test('a transport failure while answering still closes the channel', async () =>
   assert.equal(transport.closed, true);
   await assert.rejects(peer.request('state.get', {}), { code: 'DISCONNECTED' });
 });
-
