@@ -73,11 +73,36 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".release-extract-*")), [])
 
     def test_sparse_archive_rejected_before_member_writes(self):
-        source = self.root / "sparse"
-        with source.open("wb") as file:
-            file.seek(64 * 1024**2 - 1)
-            file.write(b"x")
-        subprocess.run(["tar", "--sparse", "-czf", str(self.archive), "-C", str(self.root), "sparse"], check=True)
+        # GNU sparse PAX format 0.1 stores the logical size and extent map in
+        # metadata while the regular header counts only the stored data bytes.
+        size = 64 * 1024**2
+        metadata = {
+            "GNU.sparse.size": str(size),
+            "GNU.sparse.numblocks": "1",
+            "GNU.sparse.name": "sparse",
+            "GNU.sparse.map": f"{size - 1},1",
+        }
+        with tarfile.open(self.archive, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+            member = tarfile.TarInfo("GNUSparseFile.0/sparse")
+            member.size = 1
+            member.pax_headers = metadata
+            archive.addfile(member, io.BytesIO(b"x"))
+        with gzip.open(self.archive, "rb") as stream:
+            header = stream.read(tarfile.BLOCKSIZE)
+            self.assertEqual(header[156:157], tarfile.XHDTYPE)
+            metadata_size = int(header[124:136].strip(b"\0 "), 8)
+            raw_metadata = stream.read(metadata_size)
+            for key, value in metadata.items():
+                self.assertIn(f"{key}={value}\n".encode(), raw_metadata)
+        with tarfile.open(self.archive, "r:gz") as archive:
+            members = archive.getmembers()
+            self.assertEqual(len(members), 1)
+            member = members[0]
+            self.assertEqual((member.name, member.size, member.sparse), ("sparse", size, [(size - 1, 1)]))
+            with archive.extractfile(member) as content:
+                self.assertEqual(content.read(1), b"\0")
+                content.seek(size - 1)
+                self.assertEqual(content.read(1), b"x")
         self.refused("sparse")
 
     def test_member_count_and_block_allocation_bounds(self):
