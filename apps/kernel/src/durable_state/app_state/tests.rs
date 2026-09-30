@@ -418,6 +418,7 @@ fn put(value: i32) -> AppStateOperation {
         .unwrap(),
         occurrences: Vec::new(),
         wakes: Vec::new(),
+        wakes_count_as_use: false,
     }
 }
 fn read() -> AppStateOperation {
@@ -697,7 +698,12 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
         .execute_app_state(
             "alice",
             Arc::clone(&catalog),
-            AppStateOperation::Schedule(vec![set("later", 5_000), set("soon", 1_000)]),
+            // Armed during a tool call: delivering it counts as use.
+            AppStateOperation::Schedule {
+                wakes: vec![set("later", 5_000), set("soon", 1_000)],
+                wakes_count_as_use: false,
+            }
+            .armed_during_use(true),
             budget(),
         )
         .unwrap();
@@ -713,7 +719,10 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
         .execute_app_state(
             "bob",
             Arc::clone(&catalog),
-            AppStateOperation::Schedule(vec![set("forged", 1)]),
+            AppStateOperation::Schedule {
+                wakes: vec![set("forged", 1)],
+                wakes_count_as_use: false,
+            },
             budget(),
         )
         .is_err());
@@ -737,6 +746,7 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].wake.id, "soon");
     assert_eq!(due[0].owner_id, "alice");
+    assert!(due[0].counts_as_use);
     // A failed delivery is retried later, and the App's log says why.
     store
         .app_wakes(AppWakeOperation::Failed {

@@ -88,6 +88,7 @@ impl AppWorkerOwner {
             broker_draining: std::sync::atomic::AtomicBool::new(false),
             migrating: std::sync::atomic::AtomicBool::new(migrating),
             updating: std::sync::atomic::AtomicBool::new(false),
+            deliveries: std::sync::atomic::AtomicUsize::new(0),
         });
         let (sender, registration) = oneshot::channel();
         let broker = Arc::new(StartupBroker {
@@ -204,7 +205,7 @@ impl RegisteredAppWorker {
             catalog: self.owner.catalog.clone(),
             peer: self.owner.peer.clone(),
             admission: self.owner.admission.clone(),
-            last_used_ms: crate::session::unix_epoch_ms().into(),
+            residency: super::Residency::new(crate::session::unix_epoch_ms()),
         });
         let handle = ActivatedApp(Arc::downgrade(&live));
         {

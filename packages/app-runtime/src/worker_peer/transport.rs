@@ -35,6 +35,10 @@ impl FrameState {
             .compare_exchange(QUEUED, SENT, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
+    /// Whether the call's frame reached the worker and it has not answered.
+    pub fn sent(&self) -> bool {
+        self.0.load(Ordering::Acquire) == SENT
+    }
     /// Retires the call; true when its frame had already reached the worker.
     pub fn retire(&self) -> bool {
         self.0.swap(RETIRED, Ordering::AcqRel) == SENT

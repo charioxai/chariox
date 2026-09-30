@@ -93,18 +93,20 @@ impl<'a> ManagedStateStore<'a> {
     }
 
     /// Compose wake changes with state in the caller's writer transaction.
-    /// Like `apply_in`, this does not commit the outer transaction.
+    /// Like `apply_in`, this does not commit the outer transaction. The host
+    /// supplies `counts_as_use` from the arming request's invocation context.
     pub fn apply_wakes_in(
         transaction: &mut Transaction<'_>,
         scope: StateScope<'_>,
         changes: &[WakeChange],
+        counts_as_use: bool,
     ) -> Result<()> {
         // No changes need no wake admission (a migrating worker has none).
         if changes.is_empty() {
             return Ok(());
         }
         let savepoint = transaction.savepoint()?;
-        wakes::apply(&savepoint, scope, changes)?;
+        wakes::apply(&savepoint, scope, changes, counts_as_use)?;
         savepoint.commit()?;
         Ok(())
     }

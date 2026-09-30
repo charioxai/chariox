@@ -29,6 +29,13 @@ impl AppWorkerDrain {
             .store(true, std::sync::atomic::Ordering::Release);
         let _ = admission.begin_draining();
     }
+    /// Begins draining for an idle stop; false while a wake is being
+    /// delivered, which keeps the worker running.
+    pub(crate) fn begin_idle(&self) -> bool {
+        self.0
+            .upgrade()
+            .is_none_or(|admission| admission.begin_idle_draining())
+    }
 }
 
 impl AppWorkerOwner {

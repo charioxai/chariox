@@ -72,6 +72,7 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
                 changes,
                 occurrences,
                 wakes,
+                wakes_count_as_use: false,
             })
         }
         "schedule.set" => {
@@ -79,14 +80,18 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
             let mut change = Map::new();
             change.insert("op".into(), Value::String("set".into()));
             change.extend(object);
-            Ok(AppStateOperation::Schedule(wake_changes(Value::Array(
-                vec![Value::Object(change)],
-            ))?))
+            Ok(AppStateOperation::Schedule {
+                wakes: wake_changes(Value::Array(vec![Value::Object(change)]))?,
+                wakes_count_as_use: false,
+            })
         }
         "schedule.cancel" => {
             let mut object = fields(params, &["id"])?;
             let id = key(take(&mut object, "id")?)?;
-            Ok(AppStateOperation::Schedule(vec![WakeChange::Cancel { id }]))
+            Ok(AppStateOperation::Schedule {
+                wakes: vec![WakeChange::Cancel { id }],
+                wakes_count_as_use: false,
+            })
         }
         "schedule.list" => {
             fields(params, &[])?;

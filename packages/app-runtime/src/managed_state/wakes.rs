@@ -1,6 +1,8 @@
 //! Kernel-owned App wakes. An App registers a durable due time; the kernel
 //! starts the worker when it falls due and delivers the wake at least once.
-//! Wakes are installation data, not a workflow trigger or a keep-alive grant.
+//! Wakes are installation data, not a workflow trigger or a keep-alive grant:
+//! only a wake armed while the App served a tool call or an inbound event
+//! counts as use when it is delivered (owner decision 6).
 use super::*;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -32,12 +34,16 @@ pub enum WakeChange {
 }
 
 /// A due wake claimed for delivery. `attempts` counts earlier failed deliveries.
+/// `counts_as_use` records whether it was armed during a tool call or an
+/// inbound event; a wake the App armed from its own wake handler or timer
+/// does not keep it running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DueWake {
     pub owner_id: String,
     pub installation_id: String,
     pub wake: Wake,
     pub attempts: u32,
+    pub counts_as_use: bool,
 }
 
 pub(super) fn initialize(connection: &Connection) -> Result<()> {
@@ -50,10 +56,22 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
            revision TEXT NOT NULL,
            attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
            next_attempt_at_ms INTEGER NOT NULL CHECK(next_attempt_at_ms >= 0),
+           counts_as_use INTEGER NOT NULL DEFAULT 0 CHECK(counts_as_use IN (0,1)),
            PRIMARY KEY(installation_id, wake_id)
          );
          CREATE INDEX IF NOT EXISTS app_wakes_due ON app_wakes(next_attempt_at_ms);",
     )?;
+    // Wakes armed before their origin was recorded do not count as use.
+    let recorded: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_wakes') WHERE name='counts_as_use')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !recorded {
+        connection.execute_batch(
+            "ALTER TABLE app_wakes ADD COLUMN counts_as_use INTEGER NOT NULL DEFAULT 0 CHECK(counts_as_use IN (0,1));",
+        )?;
+    }
     Ok(())
 }
 
@@ -78,10 +96,13 @@ fn validate(wake: &Wake) -> Result<()> {
     Ok(())
 }
 
+/// `counts_as_use` is the arming context: a set replaces the wake's origin
+/// along with its due time.
 pub(super) fn apply(
     transaction: &Connection,
     scope: StateScope<'_>,
     changes: &[WakeChange],
+    counts_as_use: bool,
 ) -> Result<()> {
     if changes.len() > MAX_WAKE_CHANGES {
         return Err(StateError::Limit);
@@ -95,12 +116,13 @@ pub(super) fn apply(
             WakeChange::Set(wake) => {
                 validate(wake)?;
                 transaction.execute(
-                    "INSERT INTO app_wakes(owner_id,installation_id,wake_id,due_at_ms,revision,attempts,next_attempt_at_ms)
-                     VALUES(?1,?2,?3,?4,?5,0,?4)
+                    "INSERT INTO app_wakes(owner_id,installation_id,wake_id,due_at_ms,revision,attempts,next_attempt_at_ms,counts_as_use)
+                     VALUES(?1,?2,?3,?4,?5,0,?4,?6)
                      ON CONFLICT(installation_id,wake_id) DO UPDATE SET
                        due_at_ms=excluded.due_at_ms, revision=excluded.revision,
-                       attempts=0, next_attempt_at_ms=excluded.due_at_ms",
-                    params![scope.owner, scope.installation, wake.id, wake.due_at_ms as i64, wake.revision],
+                       attempts=0, next_attempt_at_ms=excluded.due_at_ms,
+                       counts_as_use=excluded.counts_as_use",
+                    params![scope.owner, scope.installation, wake.id, wake.due_at_ms as i64, wake.revision, counts_as_use],
                 )?;
             }
             WakeChange::Cancel { id } => {
@@ -149,7 +171,7 @@ fn row_wake(row: &rusqlite::Row<'_>) -> rusqlite::Result<Wake> {
 /// earlier clock is due again at once.
 pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<Vec<DueWake>> {
     let mut statement = connection.prepare(
-        "SELECT owner_id,installation_id,wake_id,due_at_ms,revision,attempts FROM app_wakes
+        "SELECT owner_id,installation_id,wake_id,due_at_ms,revision,attempts,counts_as_use FROM app_wakes
          WHERE next_attempt_at_ms<=?1 OR (due_at_ms<=?1 AND next_attempt_at_ms>?1+?3)
          ORDER BY next_attempt_at_ms, installation_id, wake_id LIMIT ?2",
     )?;
@@ -165,6 +187,7 @@ pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<V
                     revision: row.get(4)?,
                 },
                 attempts: row.get::<_, i64>(5)?.max(0) as u32,
+                counts_as_use: row.get(6)?,
             })
         },
     )?;

@@ -4,6 +4,7 @@ use super::KernelRuntimeState;
 use crate::durable_state::app_wakes::{AppWakeOperation, AppWakeOutcome};
 use crate::durable_state::app_worker_lifecycle::StartGate;
 use crate::runtime::app_lifecycle::LifecycleError;
+use crate::runtime::app_worker::DeliveryError;
 use chariox_app_runtime::managed_state::DueWake;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,8 +19,9 @@ pub(super) const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const START_WAIT_MS: u64 = 2_000;
 /// A user-stopped App keeps its wakes until the user starts it again.
 const STOPPED_WAIT_MS: u64 = 60_000;
-/// A worker with no tool call or wake for this long stops; its tools stay
-/// discoverable and its next use starts it again.
+/// A worker with no use for this long stops (a tool call, an inbound event or
+/// a wake armed during either; see `AppWorkerLease::deliver_wake`). Its tools
+/// stay discoverable and its next use or due wake starts it again.
 const IDLE_AFTER_MS: u64 = 10 * 60_000;
 
 /// Outcome of one on-demand start request for an installation.
@@ -257,8 +259,16 @@ impl KernelRuntimeState {
                 continue;
             };
             let delivered = lease
-                .deliver_wake(&wake.wake, overdue, DELIVERY_TIMEOUT)
+                .deliver_wake(&wake.wake, overdue, wake.counts_as_use, DELIVERY_TIMEOUT)
                 .await;
+            // An idle stop began first: nothing reached the App.
+            if matches!(delivered, Err(DeliveryError::NotAdmitted)) {
+                records.push(AppWakeOperation::Postponed {
+                    wake,
+                    until_ms: now_ms.saturating_add(START_WAIT_MS),
+                });
+                continue;
+            }
             delivered_count += usize::from(delivered.is_ok());
             let update_pending = delivered.is_err()
                 && self
@@ -369,6 +379,7 @@ mod tests {
                 revision: String::new(),
             },
             attempts: 0,
+            counts_as_use: false,
         }
     }
 
@@ -412,6 +423,32 @@ mod tests {
             },
         );
         assert_eq!(starts.into_inner(), 1);
+        assert!(deliver.is_empty());
+        assert!(records
+            .iter()
+            .all(|(_, settle)| *settle == Settle::Postponed(100 + START_WAIT_MS)));
+    }
+
+    #[test]
+    fn after_an_idle_stop_every_due_wake_starts_its_app_on_time() {
+        // The App's own wake and a tool-armed one plan alike: each stopped
+        // worker starts on demand and its wake is delivered on the next pass,
+        // spending no attempt. Only use differs once delivered.
+        let own = due("own", "a");
+        let mut armed = due("armed", "b");
+        armed.counts_as_use = true;
+        let starts = RefCell::new(Vec::new());
+        let (deliver, records) = plan(
+            vec![own, armed],
+            100,
+            key,
+            |_| false,
+            |wake| {
+                starts.borrow_mut().push(wake.installation_id.clone());
+                Start::Pending
+            },
+        );
+        assert_eq!(starts.into_inner(), ["own", "armed"]);
         assert!(deliver.is_empty());
         assert!(records
             .iter()

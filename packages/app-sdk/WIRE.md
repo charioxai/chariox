@@ -123,6 +123,10 @@ needs no resident process or long timer to wait. A user-stopped App keeps its
 wakes until the user starts it again; a failed or revoked App's wakes back off.
 Failed deliveries back off and are dropped after eight attempts; the App
 reconstructs schedules from its state.
+A wake set while the worker has a `tools.invoke` or `events.deliver` request
+open counts as use when it is delivered and keeps the worker running; one set
+from a wake handler, lifecycle handler or timer does not. The wire is unchanged:
+the kernel attributes the request to the calls it has open.
 
 The optional context includes kernel-assigned installation, Room, operation,
 actor, agent, task and turn references. It is distinct from App tool parameters.
