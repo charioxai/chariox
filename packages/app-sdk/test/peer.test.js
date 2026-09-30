@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AppPeer } from '../src/peer.js';
-import { deferred, envelope, fakeTransport, flush, generation, request, response } from './helpers.js';
+import { encodeFrame, FrameDecoder } from '../src/protocol.js';
+import { streamTransport } from '../src/transport.js';
+import { deferred, envelope, fakeTransport, flush, generation, request, response, TestStream } from './helpers.js';
 
 test('out-of-order replies resolve only their own request without invoking App handlers', async () => {
   const transport = fakeTransport();
@@ -108,4 +110,58 @@ test('a repeated active inbound identity closes rather than invoking twice', asy
   assert.equal(called, 1);
   assert.equal(transport.closed, true);
   peer.close();
+});
+
+test('on a real stream a result refused while encoding writes nothing and fails only its call', async () => {
+  const stream = new TestStream();
+  const transport = streamTransport(stream, { maxFrameBytes: 4096, maxQueuedBytes: 8192 });
+  let reads = 0;
+  // Checked once as a string, then serialized as undefined: encodeFrame refuses it.
+  const flipping = { get value() { reads += 1; return reads > 1 ? undefined : 'first read'; } };
+  // Checked twice as a string, then serialized 70 levels deep.
+  let late = 0;
+  const deep = () => { let value = 'deep'; for (let index = 0; index < 70; index += 1) value = [value]; return value; };
+  const changing = { get value() { late += 1; return late > 2 ? deep() : 'early read'; } };
+  const reported = [];
+  const peer = new AppPeer({
+    transport, generation,
+    handleRequest: (_method, params) => ({ flip: flipping, late: changing, large: 'x'.repeat(5000) })[params.mode] ?? params,
+    onInvalidOutput: (method, params, detail) => { reported.push([method, params.mode, detail]); throw new Error('ignored'); },
+  });
+  for (const mode of ['flip', 'late', 'large', 'fine']) stream.push(encodeFrame(request(mode, 'tools.invoke', { mode })));
+  await flush();
+  await flush();
+  const replies = [];
+  const decoder = new FrameDecoder((message) => replies.push(message));
+  for (const frame of stream.frames) decoder.push(frame);
+  assert.deepEqual(replies.map((reply) => [reply.id, reply.error?.code ?? reply.result]),
+    [['flip', 'INVALID_OUTPUT'], ['late', 'INVALID_OUTPUT'], ['large', 'INVALID_OUTPUT'], ['fine', { mode: 'fine' }]]);
+  assert.equal(replies[0].error.message, "The App's result cannot be sent: result.value is undefined");
+  assert.equal(replies[1].error.message, "The App's result cannot be sent: the message changed while it was serialized");
+  assert.equal(replies[2].error.message, "The App's result cannot be sent: the message exceeds its frame size limit");
+  assert.deepEqual(reported, [['tools.invoke', 'flip', 'result.value is undefined'],
+    ['tools.invoke', 'late', 'the message changed while it was serialized'],
+    ['tools.invoke', 'large', 'the message exceeds its frame size limit']]);
+  assert.equal(stream.destroyed, false);
+  peer.close();
+});
+
+test('a transport failure while answering still closes the channel', async () => {
+  const transport = fakeTransport();
+  transport.send = () => { transport.disconnect(new Error('write failed')); throw new Error('write failed'); };
+  const peer = new AppPeer({ transport, generation, handleRequest: () => ({ fine: true }) });
+  transport.receive(request('host-1', 'tools.invoke'));
+  await flush();
+  assert.equal(transport.closed, true);
+  await assert.rejects(peer.request('state.get', {}), { code: 'DISCONNECTED' });
+});
+
+test('a transport that throws without a refusal detail closes the channel, even if it stays open', async () => {
+  const transport = fakeTransport();
+  transport.send = () => { throw new Error('write failed'); };
+  const peer = new AppPeer({ transport, generation, handleRequest: () => ({ fine: true }) });
+  transport.receive(request('host-1', 'tools.invoke'));
+  await flush();
+  assert.equal(transport.closed, true);
+  await assert.rejects(peer.request('state.get', {}), { code: 'DISCONNECTED' });
 });

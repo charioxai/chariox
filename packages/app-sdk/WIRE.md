@@ -57,6 +57,20 @@ exchange values.
 | `params`, `result`, `data` | JSON values, including explicit `null` |
 | `context` | Optional object on supervisor requests only; forbidden on worker requests even when null |
 
+The SDK checks every value App code gives it before writing any byte, so an
+App mistake fails one call and never the channel. A handler result that is not
+JSON under these rules, such as an object with an `undefined` field, a
+function, symbol, BigInt, NaN, a Date or a cycle, or a response over the frame
+limit, is answered with the error `INVALID_OUTPUT`, whose message names where
+the value is (for example `result.echoed is undefined`). Once the worker is
+ready, the SDK also writes that to the App's log with `log.write`. An `AppError`
+whose code the wire refuses becomes `HANDLER_FAILED`, logged the same way. Only
+a value refused before any byte is written fails one call; any other transport
+failure closes the channel. SDK call parameters that are not JSON
+reject that call with `INVALID_ARGUMENT` before it is sent. The SDK does not
+drop `undefined` fields as `JSON.stringify` would: Rust and JavaScript must
+see the same value. Invalid frames from the other side still close the channel.
+
 Envelopes reject unknown fields. Error objects allow only `code`, `message` and
 optional boolean `retryable`. `code` follows the identifier rule; `message` is
 at most 4096 UTF-8 bytes. A response contains exactly one of `result` and `error`.
