@@ -1,7 +1,7 @@
 // Path-safety drill (V-SDK-02): SDK atomic writes racing the App's own node:fs
-// changes inside its private data. Every tool reports what the App sees
-// afterwards; a correct kernel never tears a file, never leaves a staging
-// file behind and never writes outside the private data root.
+// changes inside its private data. After every round the tools check what the
+// App sees; a correct kernel never tears or substitutes a file, never leaves a
+// staging file behind and never writes outside the private data root.
 //   rename_race     atomicReplace while the App keeps renaming its parent
 //   unicode_names   NFC/NFD and case variants of one name
 //   deleted_parent  atomicReplace while the App keeps deleting its parent
@@ -54,9 +54,15 @@ export default function register(chariox) {
       }
     });
   };
-  // A payload is whole only if every byte is its round's marker.
-  const payload = (round) => Buffer.alloc(64 * 1024, 65 + (round % 26));
-  const whole = (bytes) => bytes.length === 64 * 1024 && bytes.every((b) => b === bytes[0]);
+  // Round r writes 64 KiB of one marker byte. A surviving file is intact only
+  // if it is exactly the payload of the round expected to be visible.
+  const marker = (round) => 65 + (round % 26);
+  const payload = (round) => Buffer.alloc(64 * 1024, marker(round));
+  const intact = (bytes, round) => bytes.length === 64 * 1024 && bytes.every((b) => b === marker(round));
+  const describe = (bytes) => ({ bytes: bytes.length, first: bytes[0] ?? null, uniform: bytes.every((b) => b === bytes[0]) });
+  // Checked after every settled round, before the next write or delete can hide it.
+  const MAX_REPORTED = 20;
+  const note = (list, entry) => { if (list.length < MAX_REPORTED) list.push(entry); };
 
   chariox.tools.register('rename_race', async ({ rounds = 200 }) => {
     rmSync(at('race'), { recursive: true, force: true });
@@ -66,6 +72,13 @@ export default function register(chariox) {
     let overlapped = 0;
     let mutations = 0;
     let fewestMutations = Infinity;
+    // Renaming the directory moves its file, so race/a/f must always hold the
+    // last round whose write succeeded.
+    let lastOk = null;
+    let integrityFailures = 0;
+    let leftoverRounds = 0;
+    const failures = [];
+    const leftovers = [];
     for (let round = 0; round < rounds; round += 1) {
       const result = await racing(chariox.files.atomicReplace('race/a/f', payload(round)), () => {
         if (existsSync(at('race/a'))) renameSync(at('race/a'), at('race/b'));
@@ -77,10 +90,22 @@ export default function register(chariox) {
       fewestMutations = Math.min(fewestMutations, result.mutations);
       if (result.mutations > 0) overlapped += 1;
       if (!existsSync(at('race/a'))) renameSync(at('race/b'), at('race/a'));
+      if (result.outcome === 'ok') lastOk = round;
+      const extra = readdirSync(at('race/a')).filter((name) => name !== 'f');
+      if (extra.length || readdirSync(at('race')).length !== 1) {
+        leftoverRounds += 1;
+        note(leftovers, { round, entries: walk(at('race')).map((file) => file.path) });
+      }
+      const file = at('race/a/f');
+      const bytes = existsSync(file) ? readFileSync(file) : null;
+      if (lastOk === null ? bytes !== null : bytes === null || !intact(bytes, lastOk)) {
+        integrityFailures += 1;
+        note(failures, { round, outcome: result.outcome, expectedRound: lastOk, found: bytes && describe(bytes) });
+      }
     }
     const files = walk(at('race'));
-    const torn = files.filter((file) => file.path.endsWith('/f') && !whole(readFileSync(at(file.path))));
-    return { rounds, overlapped, mutations, fewestMutations, outcomes: tally(outcomes), mutationErrors: tally(errors), files, torn: torn.length };
+    return { rounds, overlapped, mutations, fewestMutations, outcomes: tally(outcomes), mutationErrors: tally(errors),
+      integrityFailures, failures, leftoverRounds, leftovers, files };
   });
 
   chariox.tools.register('unicode_names', async () => {
@@ -105,6 +130,14 @@ export default function register(chariox) {
     let overlapped = 0;
     let mutations = 0;
     let fewestMutations = Infinity;
+    // A delete can remove a published file, but nothing else writes it: a
+    // surviving gone/x/f after a successful round must be that round's payload,
+    // and after a refused round an earlier round's, whole.
+    let integrityFailures = 0;
+    let leftoverRounds = 0;
+    let survived = 0;
+    const failures = [];
+    const leftovers = [];
     for (let round = 0; round < rounds; round += 1) {
       mkdirSync(at('gone/x'), { recursive: true });
       const result = await racing(chariox.files.atomicReplace('gone/x/f', payload(round)), () => {
@@ -116,10 +149,26 @@ export default function register(chariox) {
       mutations += result.mutations;
       fewestMutations = Math.min(fewestMutations, result.mutations);
       if (result.mutations > 0) overlapped += 1;
+      const entries = existsSync(at('gone')) ? walk(at('gone')) : [];
+      if (entries.some((file) => file.path !== join('gone', 'x', 'f'))) {
+        leftoverRounds += 1;
+        note(leftovers, { round, entries: entries.map((file) => file.path) });
+      }
+      const file = at('gone/x/f');
+      if (!existsSync(file)) continue;
+      survived += 1;
+      const bytes = readFileSync(file);
+      const ok = result.outcome === 'ok'
+        ? intact(bytes, round)
+        : Array.from({ length: Math.min(round, 26) }, (_, back) => round - 1 - back).some((earlier) => intact(bytes, earlier));
+      if (!ok) {
+        integrityFailures += 1;
+        note(failures, { round, outcome: result.outcome, found: describe(bytes) });
+      }
     }
     const left = existsSync(at('gone')) ? walk(at('gone')) : [];
-    const torn = left.filter((file) => file.path.endsWith('/f') && !whole(readFileSync(at(file.path))));
-    return { rounds, overlapped, mutations, fewestMutations, outcomes: tally(outcomes), mutationErrors: tally(errors), left, torn: torn.length };
+    return { rounds, overlapped, mutations, fewestMutations, outcomes: tally(outcomes), mutationErrors: tally(errors),
+      survived, integrityFailures, failures, leftoverRounds, leftovers, left };
   });
 
   chariox.tools.register('listing', async () => ({ entries: walk(root) }));
