@@ -105,11 +105,12 @@ worker's environment, `SHARE_ENV` is refused, and `module.register` fails with
 replacement `Worker` is a Proxy, so the native constructor is not reachable
 from the export, its prototype or an instance. The instance's native thread
 handle, and the same handle published on the `worker_threads` diagnostics
-channel, still expose the handle constructor, which cannot be revoked once
-captured, so the thread-start method is the choke point instead: `startThread`
-is permitted exactly once per guarded construction, which Node's own Worker
-constructor spends before it publishes the handle to any App callback, so App
-code never sees a start allowed. A handle built from a captured constructor has
-no allowance and cannot start a thread. Child processes, WASI, the
+channel, still expose the handle's own constructor, which is the one reachable
+way to build a fresh handle that can start a thread (a handle faked with
+`Object.create` has no native state and its `startThread` throws). So the guard
+neutralizes that constructor on the shared handle prototype during setup, before
+any App or migration code runs and could capture the original; a reference an
+App reads afterwards, from an instance or the channel, is the neutralized one,
+and the original is unreachable. Child processes, WASI, the
 inspector and `process.binding` stay denied by Node's permission model. Node's
 permissions remain defense in depth; the native sandbox contains the worker.

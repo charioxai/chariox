@@ -70,13 +70,14 @@ function guardWorkerPermission() {
     return safe;
   }
 
-  // A returned Worker (or the worker_threads diagnostics channel) still exposes
-  // the native thread handle, whose constructor builds a fresh handle from raw
-  // execArgv and starts an unrestricted thread. Hiding that constructor cannot
-  // revoke a saved reference, so instead the thread-start method is the choke
-  // point: startThread is permitted exactly once per controlled construction,
-  // and Node's own constructor calls it before it publishes the handle to any
-  // App callback, so App code never sees a start allowed.
+  // A returned Worker, and the worker_threads diagnostics channel, both expose
+  // the native thread handle, whose constructor is the one reachable way to
+  // build a fresh handle that can start a thread: a handle faked with
+  // Object.create has no native state and its startThread throws an
+  // illegal-invocation TypeError. So neutralize that constructor on the shared
+  // handle prototype now, before any App or migration code runs and could
+  // capture the original. A reference an App reads later, from an instance or
+  // the channel, is this neutralized function, and the original is unreachable.
   const seed = new NativeWorker('0', { eval: true, execArgv: workerFlags });
   const handlePrototype = (() => {
     const symbols = getOwnPropertySymbols(seed);
@@ -89,16 +90,6 @@ function guardWorkerPermission() {
   if (!handlePrototype || typeof handlePrototype.startThread !== 'function') {
     throw denied('App worker threads are unavailable in this runtime');
   }
-  const nativeStartThread = handlePrototype.startThread;
-  let startAllowance = 0;
-  defineProperty(handlePrototype, 'startThread', {
-    value: function startThread(...args) {
-      if (startAllowance < 1) throw denied('App worker threads start only through node:worker_threads');
-      startAllowance -= 1;
-      return apply(nativeStartThread, this, args);
-    },
-    writable: true, configurable: true,
-  });
   defineProperty(handlePrototype, 'constructor', {
     value: function Worker() { throw denied('App worker threads start only through node:worker_threads'); },
     writable: true, configurable: true,
@@ -106,11 +97,7 @@ function guardWorkerPermission() {
 
   // A Proxy never exposes the native constructor; subclasses keep new.target.
   const Worker = new Proxy(NativeWorker, {
-    construct: (target, args, newTarget) => {
-      startAllowance += 1;
-      try { return construct(target, [args[0], workerOptions(args[1])], newTarget); }
-      finally { startAllowance = 0; }
-    },
+    construct: (target, args, newTarget) => construct(target, [args[0], workerOptions(args[1])], newTarget),
   });
   defineProperty(NativeWorker.prototype, 'constructor', { value: Worker, writable: true, configurable: true });
   threads.Worker = Worker;

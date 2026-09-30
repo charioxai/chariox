@@ -410,6 +410,8 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
     childProcess: code(() => require('node:child_process').spawnSync('true')),
     binding: code(() => process.binding('spawn_sync')),
     sameWorker: require('node:worker_threads').Worker === Worker && Worker.prototype.constructor === Worker,
+    // The native handle constructor reached from a returned Worker's handle is
+    // the neutralized one; constructing it throws before any thread can start.
     handleConstructor: code(() => {
       const worker = new Worker('0', { eval: true });
       worker.terminate();
@@ -417,8 +419,9 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
       const native = new worker[handle].constructor('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
       return native.startThread();
     }),
-    // Capture the native handle constructor synchronously from the worker_threads
-    // diagnostics channel, before any guard could hide it, then try to start it.
+    // The worker_threads diagnostics channel hands App code the same handle, so
+    // App code subscribing before creating a Worker still only ever sees the
+    // neutralized constructor: the guard replaced it before any App code ran.
     diagnosticsCapture: await new Promise(resolve => {
       let native;
       const channel = require('node:diagnostics_channel');
@@ -435,6 +438,15 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
         return handle.startThread();
       }));
     }),
+    // A handle faked with Object.create has no native state, so startThread
+    // rejects it; the neutralized constructor is the only lever, and it is gone.
+    fakeHandleDenied: (() => {
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+      const proto = Object.getPrototypeOf(worker[handle]);
+      try { Object.create(proto).startThread(); return false; } catch { return true; }
+    })(),
     inherited: await run(Worker, {}),
     emptyExecArgv: await run(Worker, { execArgv: [] }),
     repeatedExecArgv: await run(Worker, { execArgv: process.execArgv }),
@@ -444,6 +456,27 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
     widerExecArgv: await run(Worker, { execArgv: ['--permission', '--allow-fs-read=*'] }),
     envNodeOptions: await run(Worker, { env: { NODE_OPTIONS: '--allow-fs-read=*' } }),
     shareEnv: await run(Worker, { env: SHARE_ENV }),
+    // A getter that synchronously creates a nested Worker during the outer
+    // construction: both are permitted threads from the parent, both stay
+    // contained, and the outer one must not fail because of the inner one.
+    reentrant: await (async () => {
+      const contained = worker => new Promise(settle => {
+        worker.once('message', message => settle(message.outside));
+        worker.once('error', error => settle('error:' + error.code));
+      });
+      let innerContained;
+      let outerWorker;
+      try {
+        outerWorker = new Worker(probe, {
+          eval: true,
+          get workerData() {
+            innerContained = contained(new Worker(probe, { eval: true, workerData: { outside, storage } }));
+            return { outside, storage };
+          },
+        });
+      } catch (error) { return 'outer:' + (error.code || error.message); }
+      return { outer: await contained(outerWorker), inner: await innerContained };
+    })(),
   };
   process.env.NODE_OPTIONS = '--allow-fs-read=*';
   outcome.processNodeOptions = await run(Worker, {});
@@ -466,10 +499,11 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
   const contained = { outside: denied, storage: 'ok', worker: denied, register: denied, childProcess: denied };
   assert.deepEqual(outcome, {
     app: denied, register: denied, childProcess: denied, binding: denied, sameWorker: true,
-    handleConstructor: denied, diagnosticsCapture: denied,
+    handleConstructor: denied, diagnosticsCapture: denied, fakeHandleDenied: true,
     inherited: contained, emptyExecArgv: contained, repeatedExecArgv: contained,
     constructorExecArgv: contained, subclassExecArgv: contained,
     customExecArgv: denied, widerExecArgv: denied, envNodeOptions: contained, shareEnv: denied,
+    reentrant: { outer: denied, inner: denied },
     processNodeOptions: contained, prototypeExecArgv: contained,
   });
   assert.equal(await readFile(path.join(prepared.roots.data, 'from-worker'), 'utf8'), 'x');
