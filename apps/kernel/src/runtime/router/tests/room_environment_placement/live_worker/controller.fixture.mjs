@@ -110,6 +110,14 @@ const chromium = {
       case "Runtime.evaluate": return { result: { value:
         state.focusedTarget === (sessionId === "worker-popup-session" ? "worker-popup" : "worker-tab")
       } };
+      case "Page.bringToFront":
+        if (sessionId !== "worker-popup-session" && sessionId !== "worker-cdp-session") {
+          throw new Error(`Unexpected CDP session for Page.bringToFront: ${sessionId}`);
+        }
+        state.activateCount = (state.activateCount ?? 0) + 1;
+        state.focusedTarget = sessionId === "worker-popup-session" ? "worker-popup" : "worker-tab";
+        persist();
+        return {};
       case "Target.activateTarget":
         state.activateCount = (state.activateCount ?? 0) + 1;
         state.focusedTarget = params.targetId;

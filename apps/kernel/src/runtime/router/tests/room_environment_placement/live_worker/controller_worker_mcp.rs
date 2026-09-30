@@ -1830,7 +1830,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     let response = send_peer_request_via_temporary_connection(
         &worker_relay_config,
         ClientTarget {
-            daemon_id: Some("environment-worker".to_string()),
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
             daemon_alias: None,
         },
         RelayPeerRequest::SubmitLeasedPrompt {
