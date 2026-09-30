@@ -829,6 +829,7 @@ mod tests {
             installation_id: "app".into(),
             entry: "index.html".into(),
             assets: Vec::new(),
+            page: None,
         };
         assert!(waits_for_slot(&reload));
         assert!(waits_for_slot(&open));
