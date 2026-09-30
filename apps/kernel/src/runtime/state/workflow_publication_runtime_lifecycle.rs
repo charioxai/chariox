@@ -162,6 +162,8 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
             if request.action == WorkflowPublicationRuntimeAction::Restart {
                 stop_publication_runtime(runtime_state, &process_key).await?;
             }
+            let publication =
+                persist_start_intent(runtime_state, &request.session_id, publication)?;
             start_publication_runtime(
                 runtime_state,
                 request,
@@ -230,6 +232,8 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
         }
     }
 
+    // A deploy is an explicit start: it clears an earlier stop.
+    let publication = persist_start_intent(runtime_state, &request.session_id, publication)?;
     if runtime_state
         .owned
         .workflow_publication_runtimes
@@ -942,20 +946,20 @@ async fn start_publication_runtime_claimed(
     if let Some(path) = caller_claims_config.as_ref() {
         let _ = fs::remove_file(path);
     }
-    runtime_state
-        .owned
-        .workflow_publication_runtimes
-        .insert(
-            process_key,
-            WorkflowPublicationRuntimeProcess {
-                child,
-                process_id,
-                host: host.clone(),
-                port,
-                local_url: local_url.clone(),
-            },
-        )
-        .await;
+    register_launched_runtime(
+        runtime_state,
+        &request.session_id,
+        publication.id(),
+        process_key,
+        WorkflowPublicationRuntimeProcess {
+            child,
+            process_id,
+            host: host.clone(),
+            port,
+            local_url: local_url.clone(),
+        },
+    )
+    .await?;
     let runtime_status = launched_publication_runtime_status(is_schedule_only);
     let mut deployment = publication_runtime_deployment_metadata(
         runtime_status,
@@ -1163,13 +1167,7 @@ fn publication_deployment_binding(
 fn publication_runtime_recovery_binding(
     publication: &WorkflowPublicationDefinition,
 ) -> Option<WorkflowPublicationDeploymentBinding> {
-    if !publication.enabled()
-        || publication
-            .deployment()
-            .and_then(|deployment| deployment.get("desired_state"))
-            .and_then(serde_json::Value::as_str)
-            == Some("stopped")
-    {
+    if !publication.enabled() || stop_intended(publication) {
         return None;
     }
     publication_deployment_binding(publication)
@@ -1531,11 +1529,7 @@ async fn remove_orphaned_deployment_copies(runtime_state: &KernelRuntimeState) {
         {
             return;
         }
-        let stopped = publication
-            .deployment()
-            .and_then(|deployment| deployment.get("desired_state"))
-            .and_then(serde_json::Value::as_str)
-            == Some("stopped");
+        let stopped = stop_intended(&publication);
         if publication.enabled() && !stopped {
             live.insert(
                 (
@@ -1653,16 +1647,81 @@ async fn remove_deployment_app_copy(
     Ok(())
 }
 
+/// A user start or a deploy makes its intent durable first, as a stop does:
+/// a start that waits for App approvals must not leave the source looking
+/// stopped (the reconcile would remove the copies it installed), and a stop
+/// that lands after this still wins when the launch registers.
+/// Registers a launched gateway, unless a stop landed while it was starting:
+/// that stop wins. It could not reach an unregistered process, and writing
+/// the running state now would drop the persisted stop (recovery would then
+/// serve it again).
+async fn register_launched_runtime(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    publication_id: &str,
+    process_key: String,
+    mut process: WorkflowPublicationRuntimeProcess,
+) -> Result<(), DaemonError> {
+    let stopped_meanwhile = runtime_state
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_publication_ref(session_id, publication_id)
+        .map(|current| stop_intended(&current))
+        .unwrap_or(false);
+    if stopped_meanwhile {
+        let _ = process.child.kill().await;
+        return Err(publication_runtime_error(
+            "start workflow publication runtime",
+            "the publication was stopped while its runtime was starting",
+        ));
+    }
+    runtime_state
+        .owned
+        .workflow_publication_runtimes
+        .insert(process_key, process)
+        .await;
+    Ok(())
+}
+
+fn persist_start_intent(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    publication: WorkflowPublicationDefinition,
+) -> Result<WorkflowPublicationDefinition, DaemonError> {
+    if !stop_intended(&publication) {
+        return Ok(publication);
+    }
+    let publication = mark_publication_runtime_status(
+        runtime_state,
+        session_id,
+        publication.id(),
+        "stopped",
+        None,
+        Some(publication_runtime_metadata_preserving_binding(
+            &publication,
+            serde_json::json!({ "kind": "local_runtime", "status": "stopped" }),
+        )),
+    )?;
+    persist_publication_deployment(runtime_state, session_id)?;
+    Ok(publication)
+}
+
+/// Whether the owner stopped the publication's deployment and has not
+/// started it again.
+fn stop_intended(publication: &WorkflowPublicationDefinition) -> bool {
+    publication
+        .deployment()
+        .and_then(|deployment| deployment.get("desired_state"))
+        .and_then(serde_json::Value::as_str)
+        == Some("stopped")
+}
+
 fn stopped_publication_runtime_metadata(
     publication: &WorkflowPublicationDefinition,
     explicitly_stopped: bool,
 ) -> serde_json::Value {
-    let preserve_stopped_intent = explicitly_stopped
-        || publication
-            .deployment()
-            .and_then(|deployment| deployment.get("desired_state"))
-            .and_then(serde_json::Value::as_str)
-            == Some("stopped");
+    let preserve_stopped_intent = explicitly_stopped || stop_intended(publication);
     let mut metadata = publication_runtime_metadata_preserving_binding(
         publication,
         serde_json::json!({
@@ -2007,6 +2066,53 @@ impl WorkflowPublicationRuntimeProcessStore {
 
     async fn keys(&self) -> Vec<String> {
         self.inner.lock().await.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+impl KernelRuntimeState {
+    /// Registers a gateway that has just launched (a long-running child) as
+    /// the publication's runtime; returns the outcome and the child's pid.
+    pub(crate) async fn fixture_register_launched_runtime(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+    ) -> (Result<(), DaemonError>, u32) {
+        let child = Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("launched gateway");
+        let process_id = child.id().expect("pid");
+        let outcome = register_launched_runtime(
+            self,
+            session_id,
+            publication_id,
+            publication_runtime_process_key(session_id, publication_id),
+            WorkflowPublicationRuntimeProcess {
+                child,
+                process_id: Some(process_id),
+                host: DEFAULT_PUBLICATION_RUNTIME_HOST.to_string(),
+                port: 0,
+                local_url: None,
+            },
+        )
+        .await;
+        (outcome, process_id)
+    }
+
+    pub(crate) async fn fixture_publication_runtime_running(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+    ) -> bool {
+        self.owned
+            .workflow_publication_runtimes
+            .running(&publication_runtime_process_key(session_id, publication_id))
+            .await
+            .ok()
+            .flatten()
+            .is_some()
     }
 }
 
