@@ -4,9 +4,10 @@ import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-c
 import { appCommandArgs, executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 import type { AppDevLoop } from "./app-dev-loop.js"
-import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
+import { AppFileInstaller, FollowLostContact, formatInstallOperation } from "./app-install-file.js"
 import { AppPublisherEnrollment, formatPublisherReview } from "./app-publisher-file.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import type { AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 
 export type AppCommandHandlerDeps = {
   appFileInstaller?: AppFileInstaller
@@ -117,14 +118,13 @@ export async function handleAppSlashCommand(
       const session = deps.currentAppSessionId?.()
       if (!session) throw new Error("Attach to a session before installing an App")
       deps.appendNotice("Reading and uploading App. Use /app cancel to stop the transfer.")
-      const value = await installer.install(args[0], session)
-      deps.appendNotice(formatInstallOperation(value))
+      reportOutcome(installer, await installer.install(args[0], session), deps)
     } else if (action === "update") {
       if (args.length !== 2 || !args[0] || !args[1]) throw new Error('usage: /app update INSTALLATION "FILE.cxapp"')
       const session = deps.currentAppSessionId?.()
       if (!session) throw new Error("Attach to a session before updating an App")
       deps.appendNotice("Reading and uploading App update. Use /app cancel to stop the transfer.")
-      deps.appendNotice(formatInstallOperation(await installer.update(args[0], args[1], session)))
+      reportOutcome(installer, await installer.update(args[0], args[1], session), deps)
     } else {
       if (args.length > 1) throw new Error(`usage: /app ${action} [request-id]`)
       const value = action === "cancel" ? await installer.cancel(args[0]) : await installer.status(args[0])
@@ -138,4 +138,17 @@ export async function handleAppSlashCommand(
     return
   }
   if (result.message) deps.appendNotice(result.message)
+}
+
+/** Shows a started install or update, then follows it in the background and
+ * shows each phase it reaches through its outcome, as the web terminal does.
+ * The prompt stays free for the approval it may wait for. */
+function reportOutcome(installer: AppFileInstaller, value: AppInstallOperationSummary, deps: AppCommandHandlerDeps): void {
+  deps.appendNotice(formatInstallOperation(value))
+  // A re-run of the same command joins the running follow, which already reports.
+  if (installer.isFollowing(value.request_id)) return
+  void installer.follow(value, next => deps.appendNotice(formatInstallOperation(next))).catch((error: unknown) =>
+    deps.appendNotice(error instanceof FollowLostContact
+      ? `${error.message} Use /app operation ${value.request_id} to check it.`
+      : `Stopped following App operation ${value.request_id}: ${error instanceof Error ? error.message : String(error)}`))
 }

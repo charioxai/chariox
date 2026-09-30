@@ -15,8 +15,14 @@ export type InstallProgress = { phase: "hashing" | "uploading"; bytes: number; t
 type Attempt = {
   path: string; session: string; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
   digest?: string; size?: number; handle?: string; beginSent: boolean; status?: AppInstallOperationSummary; closed: boolean;
+  /** The kernel took the upload's bytes into the operation and the upload was aborted: never abort it again. */
+  released?: boolean;
 }
 export class KernelFailure extends Error { constructor(readonly code: string) { super(messages[code] ?? `App request failed: ${code}`) } }
+/** A followed operation's status could not be read for ten polls in a row. */
+export class FollowLostContact extends Error {
+  constructor(request: string) { super(`Lost contact with the kernel while following App operation ${request}.`) }
+}
 class ConnectionFailure extends Error { constructor() { super("Connection interrupted. Run the same /app install or update command to resume this attempt, or /app cancel to cancel it.") } }
 /** Finished install/update operation phases. */
 export const terminalPhases = new Set(["committed", "cancelled", "failed"])
@@ -35,9 +41,11 @@ export class AppFileInstaller {
   private running: Promise<AppInstallOperationSummary> | undefined
   private cleaning: Promise<AppInstallOperationSummary | undefined> | undefined
   private disposed = false
+  private readonly closing = new AbortController()
+  private readonly following = new Map<string, Promise<AppInstallOperationSummary>>()
   private operations = new Set<Promise<unknown>>()
   constructor(private send: Send, private progress: (value: InstallProgress) => void = () => {},
-    private cwd: string = terminalCwd()) {}
+    private cwd: string = terminalCwd(), private followPollMs = 1_000) {}
 
   install(selected: string, session: string): Promise<AppInstallOperationSummary> {
     return this.start(selected, session)
@@ -121,6 +129,43 @@ export class AppFileInstaller {
     return this.own(() => this.cancelAttempt(requestId))
   }
 
+  /** Polls an operation until it ends, reporting each phase it moves to. An
+   * operation has one poller: following it again joins that one. It stops
+   * early, returning the last phase seen, when `until` passes or this terminal
+   * closes. A failed status read is retried at the next poll; a kernel refusal
+   * other than busy, or ten failures in a row, rejects. */
+  follow(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
+    { pollMs = this.followPollMs, until = Infinity }: { pollMs?: number; until?: number } = {}): Promise<AppInstallOperationSummary> {
+    const running = this.following.get(value.request_id)
+    if (running) return running
+    const job = this.poll(value, report, pollMs, until).finally(() => this.following.delete(value.request_id))
+    this.following.set(value.request_id, job)
+    return job
+  }
+
+  /** Whether `follow` is polling this operation now. */
+  isFollowing(request: string): boolean {
+    return this.following.has(request)
+  }
+
+  private async poll(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
+    pollMs: number, until: number): Promise<AppInstallOperationSummary> {
+    for (let failures = 0; !terminalPhases.has(value.phase) && Date.now() < until;) {
+      try { await delay(pollMs, undefined, { signal: this.closing.signal }) } catch { break }
+      let next: AppInstallOperationSummary
+      try { next = await this.status(value.request_id) } catch (error) {
+        if (this.disposed) break
+        if (error instanceof KernelFailure && error.code !== "busy") throw error
+        if (++failures < 10) continue
+        throw new FollowLostContact(value.request_id)
+      }
+      failures = 0
+      if (next.phase !== value.phase) report(next)
+      value = next
+    }
+    return value
+  }
+
   private async cancelAttempt(requestId?: string): Promise<AppInstallOperationSummary | undefined> {
     const attempt = this.attempt
     if (requestId && requestId !== attempt?.request) return operation(await this.request(cancelAppInstallOperationRequest(requestId), () => false), requestId)
@@ -135,6 +180,7 @@ export class AppFileInstaller {
   /** Caller owns this promise through terminal shutdown; begun installs remain kernel-owned. */
   async dispose(): Promise<void> {
     this.disposed = true
+    this.closing.abort()
     const attempt = this.attempt
     if (!attempt) { await Promise.allSettled([...this.operations]); return }
     if (!attempt.beginSent) attempt.cancelled = true
@@ -227,7 +273,7 @@ export class AppFileInstaller {
         if (typeof upload?.upload?.handle !== "string" || !/^upload_[0-9a-f]{64}$/.test(upload.upload.handle)) throw new Error("Kernel returned an invalid upload receipt")
         attempt.handle = upload.upload.handle
       }
-      if (attempt.handle) await this.request(abortAppPackageUploadRequest(attempt.handle), () => false)
+      if (attempt.handle && !attempt.released) await this.request(abortAppPackageUploadRequest(attempt.handle), () => false)
       attempt.closed = true
       if (status) attempt.status = status
       return status
@@ -239,7 +285,9 @@ export class AppFileInstaller {
 
   private async releaseUpload(attempt: Attempt, status: AppInstallOperationSummary): Promise<void> {
     if (status.phase === "preparing") return
-    if (attempt.handle) await this.request(abortAppPackageUploadRequest(attempt.handle), () => false).catch(() => {})
+    if (attempt.handle && !attempt.released) {
+      await this.request(abortAppPackageUploadRequest(attempt.handle), () => false).then(() => { attempt.released = true }, () => {})
+    }
     if (terminalPhases.has(status.phase)) attempt.closed = true
   }
 
@@ -291,7 +339,8 @@ export function formatInstallFailure(failure: string): string {
 export function formatInstallOperation(value: AppInstallOperationSummary): string {
   const label = { preparing: "Preparing App", awaiting_approval: "Awaiting approval in the operation's session", queued: "Approved; waiting for a free App worker slot to start", starting: "Starting App", committed: "App operation complete", cancelled: "App operation cancelled", failed: "App operation failed" }[value.phase]
   const detail = value.failure ? ` ${formatInstallFailure(value.failure)}` : ""
-  return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}. Use /app operation for status; /app cancel to cancel before it completes.`
+  const next = terminalPhases.has(value.phase) ? "" : " Use /app operation for status; /app cancel to cancel before it completes."
+  return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}.${next}`
 }
 
 export function formatInstallProgress(value: InstallProgress): string {
