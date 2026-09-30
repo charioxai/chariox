@@ -92,11 +92,10 @@ fn only_the_owner_grants_accepted_files_once_and_each_grant_imports_once() {
         Err("CONFLICT")
     );
     let grant = &granted.grants[0];
-    let claim = |installation: &str, generation: u64, now_ms: u64| {
+    let claim = |installation: &str, now_ms: u64| {
         fixture.1.claim_app_file_grant(FileGrantCommand::Claim {
             owner: "alice".into(),
             installation: installation.into(),
-            generation,
             grant_id: grant.clone(),
             now_ms,
         })
@@ -118,27 +117,90 @@ fn only_the_owner_grants_accepted_files_once_and_each_grant_imports_once() {
             }
         })
     };
-    // Another installation, or another generation, cannot take it.
-    assert_eq!(claim("other", 3, 12), Err("NOT_FOUND"));
-    assert_eq!(claim("docs", 4, 12), Err("NOT_FOUND"));
-    let file = claim("docs", 3, 12).unwrap();
+    // Another installation cannot take it.
+    assert_eq!(claim("other", 12), Err("NOT_FOUND"));
+    let file = claim("docs", 12).unwrap();
     assert_eq!(
         (file.name.as_str(), file.contents.as_slice()),
         ("Notes.MD", b"# Notes.MD".as_slice())
     );
     // A concurrent import cannot claim it too; a failed one gives it back.
-    assert_eq!(claim("docs", 3, 12), Err("NOT_FOUND"));
+    assert_eq!(claim("docs", 12), Err("NOT_FOUND"));
     settle(true).unwrap();
-    claim("docs", 3, 13).unwrap();
+    claim("docs", 13).unwrap();
     settle(false).unwrap();
-    assert_eq!(claim("docs", 3, 14), Err("NOT_FOUND"));
+    assert_eq!(claim("docs", 14), Err("NOT_FOUND"));
     // Released after publishing, the dropped bytes stay dropped.
     settle(true).unwrap();
-    assert_eq!(claim("docs", 3, 15), Err("NOT_FOUND"));
+    assert_eq!(claim("docs", 15), Err("NOT_FOUND"));
 }
 
 #[test]
-fn declined_expired_and_stale_picks_release_nothing() {
+fn an_update_keeps_picks_and_grants_and_an_uninstall_ends_them() {
+    let fixture = Fixture::new();
+    fixture.pick("granted", false, 1_000);
+    let grant = fixture
+        .grant("alice", "granted", &["a.md"], 10)
+        .unwrap()
+        .unwrap()
+        .grants[0]
+        .clone();
+    fixture.pick("pending", false, u64::MAX / 2);
+    let database = rusqlite::Connection::open(fixture.1.path()).unwrap();
+    // The update to generation 4 commits.
+    database
+        .execute(
+            "UPDATE app_installations SET generation=4, allocated_generation=4",
+            [],
+        )
+        .unwrap();
+    fixture
+        .1
+        .app_file_grant(FileGrantCommand::Expire { now_ms: 20 })
+        .unwrap();
+    // The unanswered pick is still shown to the owner, and the new release
+    // imports the grant chosen for the old one.
+    assert_eq!(fixture.1.pending_app_file_picks(8).unwrap().len(), 1);
+    let claim = |grant_id: &str| {
+        fixture.1.claim_app_file_grant(FileGrantCommand::Claim {
+            owner: "alice".into(),
+            installation: "docs".into(),
+            grant_id: grant_id.into(),
+            now_ms: 21,
+        })
+    };
+    assert_eq!(claim(&grant).unwrap().name, "a.md");
+    fixture
+        .1
+        .app_file_grant(FileGrantCommand::Release {
+            owner: "alice".into(),
+            installation: "docs".into(),
+            grant_id: grant.clone(),
+        })
+        .unwrap();
+    // Uninstalled: nothing more is shown, and the bytes are dropped.
+    database
+        .execute("UPDATE app_installations SET active_json=NULL", [])
+        .unwrap();
+    fixture
+        .1
+        .app_file_grant(FileGrantCommand::Expire { now_ms: 22 })
+        .unwrap();
+    assert!(fixture.1.pending_app_file_picks(8).unwrap().is_empty());
+    assert_eq!(claim(&grant), Err("NOT_FOUND"));
+    assert_eq!(
+        fixture
+            .1
+            .app_file_pick("alice", "docs", "granted")
+            .unwrap()
+            .unwrap()
+            .state,
+        PickState::Expired
+    );
+}
+
+#[test]
+fn declined_and_expired_picks_release_nothing() {
     let fixture = Fixture::new();
     fixture.pick("declined", true, 1_000);
     fixture
@@ -177,7 +239,6 @@ fn declined_expired_and_stale_picks_release_nothing() {
         fixture.1.claim_app_file_grant(FileGrantCommand::Claim {
             owner: "alice".into(),
             installation: "docs".into(),
-            generation: 3,
             grant_id: grant.clone(),
             now_ms: 10,
         }),
@@ -192,21 +253,6 @@ fn declined_expired_and_stale_picks_release_nothing() {
             .state,
         PickState::Expired
     );
-
-    // An update makes the old generation's pending pick unusable.
-    fixture.pick("stale", false, u64::MAX / 2);
-    rusqlite::Connection::open(fixture.1.path())
-        .unwrap()
-        .execute(
-            "UPDATE app_installations SET generation=4, allocated_generation=4",
-            [],
-        )
-        .unwrap();
-    fixture
-        .1
-        .app_file_grant(FileGrantCommand::Expire { now_ms: 20 })
-        .unwrap();
-    assert!(fixture.1.pending_app_file_picks(8).unwrap().is_empty());
 }
 
 #[test]

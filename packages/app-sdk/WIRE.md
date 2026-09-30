@@ -209,8 +209,11 @@ either declines or chooses files (at most 8, 512 KiB together) in their
 terminal. The chosen bytes become grants; the App never learns a host path.
 `host.pick_file_status {operationId}` returns the same shape. The state is
 `pending`, `granted` (with `grantIds`), `declined` or `expired`: unanswered
-after 10 minutes, or unimported 30 minutes after the grant, or when the App
-updates. `files.import {grantId, destination}` copies one grant into private
+after 10 minutes, or unimported 30 minutes after the grant, or when the App is
+uninstalled. Picks and grants belong to the installation: after an update, the
+new version can read the status and import the grants its earlier version asked
+for, if it still declares the capability (otherwise `CAPABILITY_REQUIRED`).
+`files.import {grantId, destination}` copies one grant into private
 data, like `files.atomic_replace`, and spends it. It replies `{bytesWritten,
 name}`, where `name` is the file name the owner chose. The SDK's
 `host.pickFile` polls the status and resolves with `{grantIds}`.
