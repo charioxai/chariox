@@ -43,3 +43,10 @@ test("slice image provides the desktop terminal command advertised by Openbox", 
   assert.match(dockerfile, /\n    xterm \\\n/)
   assert.match(dockerfile, /test -x \/usr\/bin\/x-terminal-emulator/)
 })
+
+test("slice image renders CJK text and emoji in the Room browser", async () => {
+  const dockerfile = await readFile(dockerfilePath, "utf8")
+
+  assert.match(dockerfile, /\n    fonts-noto-cjk \\\n/)
+  assert.match(dockerfile, /\n    fonts-noto-color-emoji \\\n/)
+})
