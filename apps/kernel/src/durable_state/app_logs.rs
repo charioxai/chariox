@@ -366,6 +366,7 @@ mod tests {
                 &serde_json::json!({
                     "note": format!("{{\"private_key\": \"{pem}\"}}"),
                     "escaped": r#"{\"password\":\"prefix\\\"hunter2\"}"#,
+                    "header": "Authorization: Custom+v1 abc123def456",
                 }),
             )
             .unwrap();
@@ -400,6 +401,7 @@ mod tests {
             serde_json::json!({
                 "note": "{\"private_key\": \"[redacted:private-key]\"}",
                 "escaped": r#"{\"password\":\"[redacted:password]\"}"#,
+                "header": "Authorization: [redacted:authorization]",
             })
         );
         assert!(entries[2].message.starts_with("token=[redacted:token] "));

@@ -184,6 +184,18 @@ fn secrets_named_by_their_context_are_redacted() {
             "Authorization: Custom abc123".into(),
             "Authorization: [redacted:authorization]",
         ),
+        (
+            "Authorization: Custom+v1.2 abc123def456\nnext".into(),
+            "Authorization: [redacted:authorization]\nnext",
+        ),
+        (
+            "authorization=abc123 user=bob".into(),
+            "authorization=[redacted:authorization]",
+        ),
+        (
+            r#"{"authorization":"Custom+v1 abc123", "n": 1}"#.into(),
+            r#"{"authorization":"[redacted:authorization]", "n": 1}"#,
+        ),
         // Quotes and backslashes escaped inside a value, JSON-in-a-string too.
         (
             r#"{"password":"a\"b","n":1}"#.into(),
