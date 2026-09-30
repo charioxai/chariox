@@ -103,7 +103,10 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     // current durable state. Their own owner-scoped ledgers deduplicate retries;
     // this older transport fingerprint does not carry the caller, and cached
     // results could outlive live authority. Other commands retain in-memory
-    // deduplication; disk exclusions are separate.
+    // deduplication; disk exclusions are separate. An excluded request with no
+    // ledger that a replay would run again must be on the kernel client's
+    // KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY (packages/kernel-client/src/ipc.ts),
+    // which never resends it once written; the tests hold the two lists equal.
     !matches!(
         request,
         LocalDaemonRequest::ListAppInstallations(_)

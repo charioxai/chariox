@@ -60,6 +60,15 @@ const KERNEL_RECONNECT_MAX_DELAY_MS = 5_000
 const KERNEL_RECONNECT_JITTER_MS = 250
 const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
+// The kernel runs these again when they are replayed: they carry no request id
+// its ledgers deduplicate, and it keeps them out of its command-result cache
+// (`request_is_cacheable`, whose tests check this list). Each stops an App
+// worker, which can outlast the stall window; a replay then meets the first
+// one's operation guard and answers `busy` (or, once the first has finished,
+// restarts the worker again or is refused by the uninstall's generation fence)
+// although the first one succeeds. Once written, they wait for their answer
+// and are never resent; losing the answer rejects with `outcome_unknown`.
+const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp"])
 const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES = 8 * 1024
 
 export type { KernelEvent } from "./kernel-events.js"
@@ -492,6 +501,7 @@ export class LocalIpcClient {
     const retryUntilMs = lane === "control"
       ? Date.now() + this.controlRequestRetryDeadlineMs
       : Date.now()
+    const replayAfterWrite = !runsAgainOnReplay(request)
     let retryDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
 
     for (;;) {
@@ -513,7 +523,7 @@ export class LocalIpcClient {
       const pending = this.pendingRequests.register<TResponse>(
         requestId,
         lane,
-        this.requestAttemptTimeoutMs(lane, retryUntilMs),
+        replayAfterWrite ? this.requestAttemptTimeoutMs(lane, retryUntilMs) : IPC_TIMEOUT_MS,
       )
 
       try {
@@ -535,6 +545,11 @@ export class LocalIpcClient {
         return await pending.promise
       } catch (error) {
         lifetime.throwIfAborted()
+        if (!replayAfterWrite && error instanceof LocalIpcError
+          && (error.code === "connection_closed" || error.code === "request_timeout")) {
+          const lost = error.code === "request_timeout" ? "no answer in time" : "the connection closed before the answer"
+          throw new LocalIpcError("handle kernel response", `${lost}; the kernel may have run the request`, "outcome_unknown")
+        }
         if (!this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
@@ -958,6 +973,8 @@ export class LocalIpcClient {
         socket.terminate()
         this.setWebSocket(lane, null)
         this.setRelayDaemonPublicKey(lane, null)
+        // Its close handler no longer sees this socket as the lane's.
+        this.rejectPending("kernel websocket heartbeat missed", lane)
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -977,6 +994,8 @@ export class LocalIpcClient {
         socket.terminate()
         this.setWebSocket(lane, null)
         this.setRelayDaemonPublicKey(lane, null)
+        // Its close handler no longer sees this socket as the lane's.
+        this.rejectPending("kernel websocket heartbeat missed", lane)
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1182,7 +1201,16 @@ export class LocalIpcClient {
       this.setSuppressNextCloseEvent(lane, true)
       socket.terminate()
     }
+    // The dropped socket's close handler no longer sees it as the lane's, so
+    // its other requests end here: a replayable one is resent now, and one the
+    // kernel runs again (a worker control) is not left waiting for 600 s.
+    this.rejectPending("kernel websocket dropped", lane)
   }
+}
+
+function runsAgainOnReplay(request: unknown): boolean {
+  return request !== null && typeof request === "object"
+    && Object.keys(request).some((kind) => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))
 }
 
 function kernelEventFromValue(value: unknown): KernelEvent {

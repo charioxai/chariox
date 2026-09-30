@@ -1,8 +1,40 @@
 use super::*;
 use crate::local::{
-    ListSessionsRequest, RequestCredentialEnrollmentInteractionRequest,
-    RequestNativeProviderInteractionRequest, RespondToInteractionRequest,
+    AppWorkerAction, ControlAppWorkerRequest, ListSessionsRequest,
+    RequestCredentialEnrollmentInteractionRequest, RequestNativeProviderInteractionRequest,
+    RespondToInteractionRequest, UninstallAppRequest,
 };
+
+/// A replay of these runs them again (no cache entry, no request-id ledger),
+/// so the kernel client never resends one once written. Its list and this one
+/// must name the same requests.
+#[test]
+fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
+    let control = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+        installation_id: "todo".to_string(),
+        action: AppWorkerAction::Restart,
+    });
+    let uninstall = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+        installation_id: "todo".to_string(),
+        expected_generation: "3".to_string(),
+        delete_data: false,
+    });
+    assert!(!request_is_cacheable(&control));
+    assert!(!request_is_cacheable(&uninstall));
+    let client = include_str!("../../../../../packages/kernel-client/src/ipc.ts");
+    let listed = client
+        .split_once("KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set([")
+        .and_then(|(_, rest)| rest.split_once("])"))
+        .map(|(names, _)| {
+            names
+                .split(',')
+                .map(|name| name.trim().trim_matches('"'))
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .expect("the kernel client lists the requests it never resends");
+    assert_eq!(listed, ["ControlAppWorker", "UninstallApp"]);
+}
 
 #[test]
 fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {

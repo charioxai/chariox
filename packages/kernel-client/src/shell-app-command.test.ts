@@ -1,3 +1,4 @@
+import { LocalIpcError } from "./local-ipc-error.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { appCommandArgs, executeAppCommand } from "./shell-app-command.js"
@@ -47,6 +48,30 @@ test("App worker control uses owner-free requests and shows dormant Apps", async
     assert.equal(result.ok, true)
     assert.equal(result.message, "todo · dormant")
   }
+})
+
+test("A worker control or uninstall whose answer was lost is reported as unknown, not resent", async () => {
+  for (const [args, check] of [
+    [["restart", "todo"], "app worker todo"],
+    [["stop", "todo"], "app worker todo"],
+    [["uninstall", "todo", "--generation", "3"], "app status todo"],
+  ] as const) {
+    let sends = 0
+    const result = await executeAppCommand([...args], { send: async () => {
+      sends += 1
+      throw new LocalIpcError("handle kernel response", "the connection closed before the answer", "outcome_unknown")
+    } })
+    assert.equal(result.ok, false)
+    assert.equal(sends, 1)
+    assert.match(result.message!, new RegExp(`may still happen\\. Check with ${check} before trying again`))
+  }
+  // A request that never reached the kernel keeps its transport error: retrying it is safe.
+  await assert.rejects(executeAppCommand(["restart", "todo"], { send: async () => {
+    throw new LocalIpcError("connect kernel websocket", "connect ECONNREFUSED 127.0.0.1:1", "connection_closed", true)
+  } }), /ECONNREFUSED/)
+  await assert.rejects(executeAppCommand(["restart", "todo"], { send: async () => {
+    throw new LocalIpcError("kernel websocket", "closed", "client_closed", false)
+  } }), /closed/)
 })
 
 test("App automation commands route one event to one workflow and validate arguments", async () => {
