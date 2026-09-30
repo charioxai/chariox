@@ -170,7 +170,13 @@ impl ManagedReleaseUpdateClient {
             ));
         }
         if matches!(report, Some(UpdateReport::Failed | UpdateReport::Applied)) {
-            let _ = std::fs::remove_file(&self.attempt_path);
+            // A reboot can bypass the detached shell's EXIT trap. Reclaim only
+            // this persisted, settled attempt before forgetting its ownership.
+            if let Some(attempt) = &attempt {
+                cleanup_attempt_storage(&attempt.update_id)?;
+            }
+            std::fs::remove_file(&self.attempt_path)
+                .map_err(|error| update_error(format!("clear release update attempt: {error}")))?;
         }
         let Some(update) = response.update else {
             return Ok(());
@@ -284,10 +290,12 @@ fn update_script(
     let release_key = tooling_release.join("usr/lib/chariox/release-public-key");
     let publication_root = tooling_release.parent().unwrap_or(tooling_release);
     format!(
-        "set -eu; trap \"rm -rf '{staging}' '{archive}'\" EXIT; rm -rf '{staging}'; mkdir -p '{staging_root}'; \
-         python3 '{tooling}/extract-release.py' '{archive}' '{staging}' '{publication_root}'; \
-         rm -f '{archive}'; TMPDIR='{staging}' CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
-         sh '{tooling}/upgrade-image.sh' '{staging}/rootfs' '{from}' '{target}' '{release_key}'",
+        "set -eu; trap \"python3 '{tooling}/release-update-storage.py' cleanup '{staging_root}' '{update_id}'; rm -f '{archive}'\" EXIT; \
+         python3 '{tooling}/release-update-storage.py' prepare '{staging_root}' '{update_id}'; \
+         python3 '{tooling}/extract-release.py' '{archive}' '{staging}/extracted' '{publication_root}'; \
+         rm -f '{archive}'; TMPDIR='{staging}' CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' \
+         CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
+         sh '{tooling}/upgrade-image.sh' '{staging}/extracted/rootfs' '{from}' '{target}' '{release_key}'",
         staging = staging.display(),
         archive = archive.display(),
         staging_root = staging_root.display(),
@@ -299,6 +307,38 @@ fn update_script(
         target = update.target_runtime_release_digest,
         release_key = release_key.display(),
     )
+}
+
+fn cleanup_attempt_storage(update_id: &str) -> Result<(), DaemonError> {
+    let tooling = std::fs::canonicalize(CURRENT_RELEASE)
+        .map_err(|error| update_error(format!("resolve cleanup tooling: {error}")))?
+        .join(
+            "usr/lib/chariox/slice-build-context/deploy/managed-kernel/release-update-storage.py",
+        );
+    let status = Command::new("sudo")
+        .args(["-n", "python3"])
+        .arg(tooling)
+        .args(["cleanup", STAGING_ROOT, update_id])
+        .status()
+        .map_err(|error| update_error(format!("clean settled release update: {error}")))?;
+    if !status.success() {
+        return Err(update_error(
+            "settled release update scratch could not be reclaimed",
+        ));
+    }
+    for suffix in ["tar.gz", "tar.partial"] {
+        let path = Path::new(DOWNLOAD_ROOT).join(format!("{update_id}.{suffix}"));
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(update_error(format!(
+                    "clean settled release download: {error}"
+                )))
+            }
+        }
+    }
+    Ok(())
 }
 
 fn running_release_digest(receipt_path: &Path) -> Result<String, DaemonError> {
@@ -404,11 +444,14 @@ mod tests {
 
     #[test]
     fn the_update_runs_the_installed_tooling_and_removes_its_files_however_it_ends() {
-        let root = std::env::temp_dir().join(format!(
-            "chariox-release-update-script-{}-{}",
-            std::process::id(),
-            crate::session::unix_epoch_ms()
-        ));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .expect("temporary root")
+            .join(format!(
+                "chariox-release-update-script-{}-{}",
+                std::process::id(),
+                crate::session::unix_epoch_ms()
+            ));
         let tooling =
             root.join("release/usr/lib/chariox/slice-build-context/deploy/managed-kernel");
         std::fs::create_dir_all(&tooling).expect("tooling");
@@ -417,6 +460,14 @@ mod tests {
             include_bytes!("../../../../deploy/managed-kernel/extract-release.py"),
         )
         .expect("extractor");
+        std::fs::write(
+            tooling.join("storage-implementation.py"),
+            include_bytes!("../../../../deploy/managed-kernel/release-update-storage.py"),
+        )
+        .expect("storage implementation");
+        std::fs::write(tooling.join("release-update-storage.py"),
+            "import os, runpy, sys\nfrom pathlib import Path\nm = runpy.run_path(str(Path(__file__).with_name('storage-implementation.py')))\nm[sys.argv[1]](sys.argv[2], sys.argv[3], expected_uid=os.geteuid())\n")
+            .expect("storage fixture");
         std::fs::create_dir_all(root.join("source/rootfs")).expect("rootfs");
         std::fs::write(root.join("source/rootfs/marker"), "release").expect("marker");
         // Incompressible, so a truncated archive fails after extracting the marker.
@@ -427,13 +478,13 @@ mod tests {
         std::fs::write(
             tooling.join("upgrade-image.sh"),
             format!(
-                "set -eu; test -f \"$1/marker\"; test \"$TMPDIR\" = \"$(dirname \"$1\")\"; mkdir \"$TMPDIR/child-scratch\"; echo \"$*\" > '{}'\n",
+                "set -eu; test -f \"$1/marker\"; test \"$TMPDIR\" = \"$(dirname \"$(dirname \"$1\")\")\"; mkdir \"$TMPDIR/child-scratch\"; echo \"$*\" > '{}'\n",
                 root.join("invoked").display()
             ),
         )
         .expect("upgrade script");
         let update = UpdateCommand {
-            update_id: "managed_release_update_1".into(),
+            update_id: "managed_release_update_01234567-89ab-cdef-0123-456789abcdef".into(),
             from_runtime_release_digest: digest('a'),
             target_runtime_release_digest: digest('b'),
         };
@@ -473,7 +524,7 @@ mod tests {
             invoked.trim(),
             format!(
                 "{} {} {} {}",
-                staging.join("managed_release_update_1/rootfs").display(),
+                staging.join(&update.update_id).join("extracted/rootfs").display(),
                 digest('a'),
                 digest('b'),
                 root.join("release/usr/lib/chariox/release-public-key")
