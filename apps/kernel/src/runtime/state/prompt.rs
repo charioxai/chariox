@@ -567,12 +567,6 @@ impl KernelRuntimeOwnedState {
                 let _ = self.clear_prompt_activity(&provider_run_id);
                 return Err(error);
             }
-            self.consume_delivered_turn_context(
-                session_id,
-                agent_id,
-                started_next.id(),
-                &provider_run,
-            );
             self.note_prompt_started(&provider_run_id);
             let _ = self.session_snapshot(session_id)?;
             return Ok(Some(OwnedPromptCompletion {

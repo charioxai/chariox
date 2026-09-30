@@ -331,6 +331,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             context_file,
             provider_run,
         )?;
+        self.consume_accepted_failed_request_context(session_id, &agent_id, context_file)?;
         if let Some(failure) =
             self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?
         {
@@ -421,6 +422,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             context_file,
                             &format!("accepted:{dispatch_prompt_id}"),
                         );
+                        self.consume_accepted_failed_request_context(
+                            session_id,
+                            &agent_id,
+                            context_file,
+                        )?;
                         continue;
                     }
                     if active_prompt.is_some() {
@@ -1242,6 +1248,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             format!("injected:{}", prompt.id)
         };
         if marker.as_deref() == Some(completed_marker.as_str()) {
+            self.consume_accepted_failed_request_context(session_id, &agent_id, context_file)?;
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         }
         Ok(ClaudeNativeDispatchAttempt::AwaitingInjection)
@@ -1262,6 +1269,42 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             session.workspace_id(),
             prompt,
         )
+    }
+
+    fn consume_accepted_failed_request_context(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        context_file: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(marker) = claude_native_marker(context_file) else {
+            return Ok(());
+        };
+        let Some(prompt_id) = marker.strip_prefix("accepted:") else {
+            return Ok(());
+        };
+        if self
+            .app
+            .agents
+            .get_agent(agent_id)
+            .map(|agent| agent.failed_requests().is_empty())
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+        // Ignore late acknowledgements for cancelled or superseded turns.
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .is_some_and(|active| active.id() == prompt_id)
+        {
+            self.app.agents.consume_failed_requests_durably(
+                &self.app.durable_state_store(),
+                agent_id,
+                prompt_id,
+            )?;
+        }
+        Ok(())
     }
 
     fn inject_pending_prompt(
@@ -1288,11 +1331,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             // intentionally different from the active turn's prompt id.
             return Ok(());
         }
+        let hidden_system_context = self
+            .app
+            .agents
+            .hidden_context_with_failed_requests(agent_id, prompt.hidden_system_context());
         let prompt = ClaudeNativePromptInjection {
             id: prompt.id(),
             origin_prompt_id: prompt.id(),
             prompt: prompt.prompt(),
-            hidden_system_context: prompt.hidden_system_context(),
+            hidden_system_context: &hidden_system_context,
             attachments: prompt.attachments(),
         };
         self.inject_prompt(

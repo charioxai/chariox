@@ -1997,6 +1997,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_request_note_survives_mailbox_enqueue_until_provider_acceptance() {
+        for accepted in [false, true] {
+            let (_worktree, runtime, session_id, agent_id, _, run_id, dispatch) =
+                runtime_with_admitted_prompt().await;
+            let request = LaunchProviderRequest::new(
+                &session_id,
+                if accepted { "dev-stub" } else { "codex" },
+                if accepted { "slow-structured" } else { "codex" },
+                "default",
+                "model",
+            )
+            .with_agent_id(&agent_id);
+            let mut run = crate::provider::RuntimeProviderRun::new(
+                &run_id,
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                    process_label: "failed-note-submit".to_string(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: Vec::new(),
+                    pty_env: std::collections::BTreeMap::new(),
+                    pty_env_remove: Vec::new(),
+                    working_directory: None,
+                    structured_endpoint: Some("test".to_string()),
+                },
+            );
+            run.mark_running();
+            runtime
+                .owned
+                .provider_store
+                .write()
+                .insert_run_for_test(run.clone());
+            runtime
+                .owned
+                .agent_store
+                .record_failed_request_durably(
+                    &runtime.owned.durable_state_store,
+                    &agent_id,
+                    crate::agent::FailedRequest::new(
+                        "earlier-failure",
+                        "earlier request",
+                        "rejected".to_string(),
+                    ),
+                )
+                .expect("prior failure should persist");
+            runtime
+                .enqueue_prompt_dispatch_after_liveness(&dispatch, &runtime.owned)
+                .await
+                .expect("mailbox enqueue should succeed");
+            assert_eq!(
+                failed_requests(&runtime, &agent_id).len(),
+                1,
+                "enqueue is not provider acceptance"
+            );
+            let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let jobs = runtime
+                        .owned
+                        .provider_store
+                        .drain_finished_structured_prompt_submit_jobs();
+                    if let Some(finished) = jobs.into_iter().next() {
+                        break finished;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("actor should return its provider result");
+            assert_eq!(
+                finished.result.is_ok(),
+                accepted,
+                "actual provider submit result: {:?}",
+                finished.result
+            );
+            runtime
+                .owned
+                .provider_store
+                .push_finished_structured_prompt_submit_for_test(
+                    finished.session_id,
+                    finished.provider_run_id,
+                    finished.agent_id,
+                    finished.prompt_id,
+                    finished.result,
+                );
+            runtime.owned.reap_structured_prompt_jobs();
+            let failed = failed_requests(&runtime, &agent_id);
+            if accepted {
+                assert!(
+                    failed.is_empty(),
+                    "accepted context must be consumed: {failed:?}"
+                );
+            } else {
+                assert!(
+                    failed
+                        .iter()
+                        .any(|note| note.prompt_id == "earlier-failure"),
+                    "provider rejection must preserve undelivered note: {failed:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn completed_and_cancelled_turns_add_no_failed_request_note() {
         let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
@@ -3034,14 +3138,6 @@ impl KernelRuntimeState {
                 mode,
                 dispatch.steering,
             );
-            if result.is_ok() {
-                owned.consume_delivered_turn_context(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    &provider_run,
-                );
-            }
             return result;
         }
         if !internal_recovery
@@ -3218,10 +3314,11 @@ impl KernelRuntimeState {
                     }
                 }
             }
-            owned.consume_delivered_turn_context(
+            // Claude's hook acknowledgement consumes the failure note. PTY
+            // injection alone does not prove the provider accepted its context.
+            owned.consume_pending_context_handoff(
                 &dispatch.session_id,
                 &dispatch.agent_id,
-                &dispatch.prompt_id,
                 &provider_run,
             );
             if !dispatch.steering {

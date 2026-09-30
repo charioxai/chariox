@@ -430,6 +430,7 @@ impl KernelRuntimeOwnedState {
             Some(provider_run_id.to_string()),
             run.provider_session_id().map(str::to_string),
         )?;
+        self.consume_delivered_turn_context(session_id, agent_id, prompt_id, &run);
         let session = self.session_store.get_session(session_id)?;
         if let Some(active) = self
             .prompt_state_owner

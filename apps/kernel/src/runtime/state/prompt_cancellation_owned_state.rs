@@ -265,12 +265,6 @@ impl KernelRuntimeOwnedState {
                     mode,
                     false,
                 )?;
-                self.consume_delivered_turn_context(
-                    session_id,
-                    agent_id,
-                    started_next.id(),
-                    &provider_run,
-                );
                 self.note_prompt_started(provider_run_id);
                 None
             } else {

@@ -173,7 +173,6 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 mode,
                 false,
             )?;
-            self.consume_failed_requests(&agent_id, prompt_id);
             return Ok(());
         }
 
@@ -198,7 +197,6 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 Some(provider_run_id.to_string()),
                 provider_run.provider_session_id().map(str::to_string),
             )?;
-            self.consume_failed_requests(&agent_id, prompt_id);
             return Ok(());
         }
         let input = crate::app::terminal_input::provider_prompt_input(&provider_prompt);
@@ -466,6 +464,11 @@ impl DaemonApp {
             crate::session::DurablePromptDeliveryPhase::Delivered,
             Some(provider_run_id),
             run.provider_session_id().map(str::to_string),
+        )?;
+        self.agents.consume_failed_requests_durably(
+            &self.durable_state_store(),
+            &agent_id,
+            &prompt_id,
         )?;
         let active = self.prompt_owner_active_prompt_for_agent(&session_id, &agent_id)?;
         if let Some(active) = active {
