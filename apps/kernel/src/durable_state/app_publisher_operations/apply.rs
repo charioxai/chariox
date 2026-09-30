@@ -11,8 +11,7 @@ fn commit(
     value: PublisherOperation,
 ) -> Result<Reply> {
     check(budget)?;
-    tx.commit()
-        .map_err(|_| PublisherOperationError::CommitUnknown)?;
+    tx.commit().map_err(commit_failed)?;
     Ok(Reply::Operation(value))
 }
 pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<Reply> {
@@ -63,8 +62,7 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<R
             let current = load(&tx, &owner, &request)?;
             if current.phase != PublisherOperationPhase::Pending {
                 check(&budget)?;
-                tx.commit()
-                    .map_err(|_| PublisherOperationError::CommitUnknown)?;
+                tx.commit().map_err(commit_failed)?;
                 return Ok(Reply::Review(PublisherReview::Terminal(current)));
             }
             fresh_nonce(&tx, &owner, &interaction)?;
@@ -73,8 +71,7 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<R
             if Instant::now() >= deadline {
                 return Err(PublisherOperationError::Stopped);
             }
-            tx.commit()
-                .map_err(|_| PublisherOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Review(PublisherReview::Prompt(
                 PublisherApprovalChallenge {
                     owner,

@@ -74,6 +74,10 @@ impl AttachmentServiceStore {
         self.read().list_session_attachment_ids(session_id)
     }
 
+    pub fn list_attached_session_ids(&self) -> Vec<String> {
+        self.read().list_attached_session_ids()
+    }
+
     pub fn list_session_attachment_ids_for_user(
         &self,
         session_id: &str,
@@ -220,6 +224,16 @@ impl AttachmentService {
             .filter(|attachment| attachment.session_id() == session_id)
             .map(|attachment| attachment.id().to_string())
             .collect()
+    }
+
+    /// Each session that has at least one attachment, once.
+    pub fn list_attached_session_ids(&self) -> Vec<String> {
+        let sessions = self
+            .attachments
+            .values()
+            .map(|attachment| attachment.session_id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        sessions.into_iter().collect()
     }
 
     pub fn list_session_attachment_ids_for_user(

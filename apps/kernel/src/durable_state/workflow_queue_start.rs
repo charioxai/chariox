@@ -79,6 +79,8 @@ fn apply(connection: &mut Connection, encoded: &Encoded) -> Result<()> {
     write(&tx, encoded)?;
     match tx.commit() {
         Ok(()) => Ok(()),
+        // A full disk rolled the commit back: nothing to reconcile.
+        Err(original) if super::storage_full::observe(&original) => Err(original.into()),
         Err(original) => reconcile(connection, encoded, original),
     }
 }

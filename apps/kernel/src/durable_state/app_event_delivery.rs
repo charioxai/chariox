@@ -183,6 +183,8 @@ fn apply(
             }
             Ok(receipt)
         }
+        // A full disk rolled the commit back: nothing to reconcile.
+        Err(error) if super::storage_full::observe(&error) => Err(error.into()),
         Err(error) => reconcile_commit(connection, prepared, error),
     }
 }

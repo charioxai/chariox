@@ -257,7 +257,10 @@ fn apply(
         }
         event => AppStateOutcome::Receipt(events::apply(&mut transaction, catalog, owner, event)?),
     };
-    transaction.commit().map_err(StateError::from)?;
+    transaction.commit().map_err(|error| {
+        super::storage_full::observe(&error);
+        StateError::from(error)
+    })?;
     Ok(outcome)
 }
 
