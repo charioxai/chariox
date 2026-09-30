@@ -49,6 +49,7 @@ pub(crate) use account_credential::{
 pub(crate) use claude::ensure_claude_native_hidden_context_fits;
 pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
+pub(crate) use claude_runtime::begin_claude_permission_prompt_wait;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 #[cfg(test)]
 pub(crate) use claude_runtime::{
@@ -178,6 +179,17 @@ pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool 
 pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude"
         && (!run.client_interface().is_chariox() || provider_run_is_claude_headless(run))
+}
+
+/// Claude `-p` runs in Build mode with the `Required` level route tool
+/// approvals through the runtime MCP `chariox.permission_prompt` tool, as
+/// their launch flags say; native TUI runs use the hook instead. Other runs
+/// neither list nor answer it.
+pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude"
+        && provider_run_uses_structured_prompt_io(run)
+        && run.execution_mode() == AgentExecutionMode::Build
+        && run.permission_level() == AgentPermissionLevel::Required
 }
 
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {

@@ -22,6 +22,7 @@ mod home_mcp_proxy_executor;
 mod home_room_browser_runtime;
 mod home_script_executor;
 mod meta;
+mod permission_prompt;
 mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
@@ -132,6 +133,11 @@ impl KernelRuntimeState {
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
         let mut specs = Vec::new();
+        if matches!(provider_runs.as_slice(), [run]
+            if crate::provider::provider_run_uses_claude_permission_prompt_tool(run))
+        {
+            specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
+        }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
@@ -243,6 +249,13 @@ impl KernelRuntimeState {
                 provider_runs.iter().map(|run| run.id().to_string()),
                 owned.provider_output_deadlines.clone(),
             );
+            if canonical_tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL {
+                let run =
+                    unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
+                return self
+                    .dispatch_permission_prompt_runtime_tool_call(run, arguments)
+                    .await;
+            }
             let is_metaagent_auth_token =
                 self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);
             // Apps share the current binding and operation dispatcher in every

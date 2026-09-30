@@ -34,6 +34,7 @@ where
         .expect("mcp server test thread should not panic");
 }
 
+mod permission_prompt;
 mod slice_tools;
 
 #[tokio::test]
