@@ -1868,7 +1868,8 @@ Workflow trigger and deployment direction:
   with `pending`, `delivered`, `failed` and `expired` occurrence counts.
   Removing a route stops it accepting occurrences; those it already accepted
   and has not settled are still delivered, and its settled history is
-  dropped. A route grants the App nothing else. An occurrence is validated against the
+  dropped. (Kernels built before 2026-09-30 deleted the pending ones too; the
+  wire shape did not change.) A route grants the App nothing else. An occurrence is validated against the
   active release's signed schema and recorded (deduplicated by route and
   source occurrence) before the source is acknowledged; the kernel then sends
   `events.deliver {name, occurrence_id, payload}` at least once, starting a

@@ -299,7 +299,10 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
 /// Removing a route stops it accepting occurrences. Those it already accepted
 /// and has not settled are still delivered (with the same retries and expiry),
 /// so disabling an integration never silently drops accepted work. Its settled
-/// history goes with it.
+/// history goes with it. The pending rows stay keyed by the route id: a route
+/// created again under that id, even for another event or source, counts them
+/// until they settle and answers a reused occurrence id as a duplicate or a
+/// conflict. That is intended; do not delete pending rows here.
 pub fn remove_route_in(
     tx: &Connection,
     owner_id: &str,
