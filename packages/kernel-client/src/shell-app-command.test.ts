@@ -1,6 +1,6 @@
+import { LocalIpcError } from "./local-ipc-error.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { LocalIpcError } from "./local-ipc-error.js"
 import { executeAppCommand } from "./shell-app-command.js"
 
 test("App list preserves large generations and pages without unbounded collection", async () => {
