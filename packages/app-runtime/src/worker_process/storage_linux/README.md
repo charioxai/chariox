@@ -91,7 +91,10 @@ checked before use or detach. Unmount is ordinary, never forced/lazy. Failure
 retains the pending journal and reservation; failed preparations also remain in
 the helper's owned recovery queue. cgroup-v2 immutable paths plus inode and boot
 identity prevent cleanup from signalling a replacement cgroup. On disconnect,
-the helper quiesces only the original bound domain and waits for emptiness.
+the helper quiesces only the original bound domain and waits for emptiness. A
+bound leaf removed meanwhile (reading it fails with ENODEV) counts as empty:
+cgroup v2 removes only an empty cgroup and none can join it afterwards, and
+after a kernel crash systemd trims the stopped unit's delegated subtree.
 
 The helper uses systemd Type=notify so kernel startup waits for completed
 recovery and socket readiness. It must share the host mount namespace. Its systemd unit intentionally
