@@ -40,21 +40,41 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         worktree_id: &str,
     ) -> Result<ManagedContextDevelopmentSelection, DaemonError> {
-        let project = self.owned.session_store.get_project(session.project_id())?;
+        self.slice_development_selection_for_project(
+            session.project_id(),
+            Some(session.workspace_id()),
+            Some(worktree_id),
+        )
+        .map(|(selection, _, _)| selection)
+    }
+
+    /// A slice developing `workspace_id` (default: the Project's primary
+    /// Workspace) of a Project on this kernel, with the Project's other
+    /// Workspaces as supporting repositories. Returns the selection and the
+    /// chosen workspace and worktree.
+    pub(crate) fn slice_development_selection_for_project(
+        &self,
+        project_id: &str,
+        workspace_id: Option<&str>,
+        worktree_id: Option<&str>,
+    ) -> Result<(ManagedContextDevelopmentSelection, String, String), DaemonError> {
+        let project = self.owned.session_store.get_project(project_id)?;
+        let workspace_id = workspace_id.unwrap_or(project.workspace_id()).to_string();
+        let worktree_id = worktree_id.unwrap_or(&workspace_id).to_string();
         let mut repositories = Vec::with_capacity(project.workspace_ids().len());
         repositories.push(DevelopmentSourceRepositoryBinding {
             role: DevelopmentRepositoryRole::Primary,
-            workspace_id: session.workspace_id().to_string(),
-            worktree_id: Some(worktree_id.to_string()),
+            workspace_id: workspace_id.clone(),
+            worktree_id: Some(worktree_id.clone()),
         });
         repositories.extend(
             project
                 .workspace_ids()
                 .iter()
-                .filter(|workspace_id| workspace_id.as_str() != session.workspace_id())
-                .map(|workspace_id| DevelopmentSourceRepositoryBinding {
+                .filter(|workspace| **workspace != workspace_id)
+                .map(|workspace| DevelopmentSourceRepositoryBinding {
                     role: DevelopmentRepositoryRole::Supporting,
-                    workspace_id: workspace_id.clone(),
+                    workspace_id: workspace.clone(),
                     worktree_id: None,
                 }),
         );
@@ -65,10 +85,10 @@ impl KernelRuntimeState {
         self.validate_slice_development_selection(
             Some(&selection),
             &crate::slice::SliceBackendKind::LocalDocker,
-            Some(session.workspace_id()),
-            Some(worktree_id),
+            Some(&workspace_id),
+            Some(&worktree_id),
         )?;
-        Ok(selection)
+        Ok((selection, workspace_id, worktree_id))
     }
 
     pub(crate) fn validate_slice_development_selection(
