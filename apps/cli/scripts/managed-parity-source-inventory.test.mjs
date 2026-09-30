@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { SOURCE_AUDIT_RULES } from "./lib/managed-parity-source-rules.mjs";
 import {
   collectSourceInventory,
   DEFAULT_SOURCE_REF,
@@ -141,11 +142,11 @@ function makeFixture(options = {}) {
   const files = fixtureFiles(options);
   const entries = [];
   let index = 1;
-  const addFile = (file, contents, mode = "100644") => {
+  const addFile = (file, contents, mode = "100644", blob = null) => {
     const absolute = join(root, file);
     mkdirSync(dirname(absolute), { recursive: true });
     writeFileSync(absolute, contents);
-    entries.push(`${mode} blob ${String(index).padStart(40, "0")}\t${file}`);
+    entries.push(`${mode} blob ${(blob ?? String(index).padStart(40, "0"))}\t${file}`);
     index += 1;
   };
   for (const [file, contents] of Object.entries(files)) {
@@ -781,5 +782,148 @@ test("output is deterministic and redacts selector secrets", () => {
     assert.doesNotMatch(serialized, /secret-value/);
     assert.doesNotMatch(serialized, /sourceLine/);
     assert.match(serialized, /contextHash/);
+  });
+});
+
+test("unified patches retain active and removed selectors with embedded source roles", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/openship/patches/fixture.patch", [
+      "diff --git a/apps/api/src/host.ts b/apps/api/src/host.ts",
+      "index 1111111..2222222 100644",
+      "--- a/apps/api/src/host.ts",
+      "+++ b/apps/api/src/host.ts",
+      "@@ -1,2 +1,2 @@",
+      "-const old = \"bwrap CHARIOX_MANAGED_REMOVED\";",
+      "+const next = \"CHARIOX_OPENSHIP_RUNTIME_PROFILE\";",
+      " const ordinary = true;",
+      "diff --git a/apps/api/test/host.test.ts b/apps/api/test/host.test.ts",
+      "index 1111111..2222222 100644",
+      "--- a/apps/api/test/host.test.ts",
+      "+++ b/apps/api/test/host.test.ts",
+      "@@ -0,0 +1 @@",
+      "+const fixture = \"CHARIOX_MANAGED_PATCH_TEST\";",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const removed = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_REMOVED");
+    assert.equal(removed?.patchSource.change, "removed");
+    assert.equal(removed?.patchSource.path, "apps/api/src/host.ts");
+    assert.equal(removed?.patchSource.oldLine, 1);
+    assert.equal(removed?.sourceRoleHints.positivePath1Directive, false);
+    const added = report.entries.find((entry) => entry.selector === "CHARIOX_OPENSHIP_RUNTIME_PROFILE");
+    assert.equal(added?.patchSource.change, "added");
+    assert.equal(added?.patchSource.newLine, 1);
+    assert.equal(added?.line, 7);
+    assert.equal(added?.semanticDisposition.status, "unreviewed");
+    const evidence = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_PATCH_TEST");
+    assert.equal(evidence?.sourceRoleHints.testRegion, "test_source");
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("manual release candidates retain exact ownership and resource controls without approving them", () => {
+  withFixture({}, (fixture) => {
+    const path = "deploy/managed-kernel/extract-release.py";
+    fixture.addFile(path, [
+      "def path_name(name):",
+      "    return name",
+      "def space_available(path, bytes_needed, inodes_needed, limits):",
+      "    pass",
+      "def validate(archive, limits, block_size):",
+      "    pass",
+      "def extract_release(source, destination, limits=Limits(), publication=None):",
+      "    pass",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const candidates = report.entries.filter((entry) => entry.path === path);
+    assert.equal(candidates.length, 4);
+    assert.ok(candidates.every((entry) => entry.candidateOrigin === "manual_source_rule"));
+    assert.ok(candidates.every((entry) => entry.sourceClassification.status === "source_drift"));
+    assert.ok(candidates.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    assert.equal(report.status, "fail");
+  });
+});
+
+
+test("an inspected blob gets only provisional grouping and never independent approval", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "bounded-release-archive-admission");
+    const source = readFileSync(new URL("../../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
+    assert.equal(group.status, "source_inspected");
+    assert.equal(group.classification, "signed_release_deployment_control");
+    assert.equal(group.authoritative, false);
+    assert.equal(group.independentDisposition, "pending");
+    assert.equal(group.candidateIds.length, 4);
+    assert.ok(report.entries.filter((entry) => group.candidateIds.includes(entry.candidateId))
+      .every((entry) => entry.semanticDisposition.gateEffect === "fail_closed"));
+    assert.equal(report.status, "fail");
+    assert.equal(report.summary.allowedReleaseDeployment, 0);
+    assert.equal(report.inventoryTool.modules.length, 3);
+    assert.match(report.inventoryTool.bundleSha256, /^[a-f0-9]{64}$/);
+  });
+});
+
+test("malformed patches and unknown embedded Cloud production formats fail closed", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/openship/patches/broken.patch", [
+      "diff --git a/apps/api/src/host.ts b/apps/api/src/host.ts",
+      "--- a/apps/api/src/host.ts", "+++ b/apps/api/src/host.ts",
+      "@@ -0,0 +1,2 @@", "+const selector = \"CHARIOX_MANAGED_PATCH\";",
+    ].join("\n") + "\n");
+    assert.throws(() => collect(fixture), /(?:incomplete patch hunk|invalid patch line)/);
+  });
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/openship/patches/unknown.patch", [
+      "diff --git a/apps/api/src/host.selector b/apps/api/src/host.selector",
+      "--- a/apps/api/src/host.selector", "+++ b/apps/api/src/host.selector",
+      "@@ -0,0 +1 @@", "+CHARIOX_MANAGED_PATCH",
+    ].join("\n") + "\n");
+    assert.throws(() => collect(fixture), /unclassified production file: apps\/api\/src\/host.selector/);
+  });
+});
+
+
+
+test("Cloud source fragments and deployment formats retain selectors but remove comments", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("packages/tool-display/src/index-fragments/part-001.tsfrag", [
+      '// CHARIOX_MANAGED_FRAGMENT_COMMENT',
+      'const selector = "CHARIOX_MANAGED_FRAGMENT";',
+    ].join("\n") + "\n");
+    fixture.addFile("scripts/control-drill-fragments/part-001.mjsfrag", 'const selector = "CHARIOX_MANAGED_JS_FRAGMENT";\n');
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      '# CHARIOX_MANAGED_CADDY_COMMENT',
+      'header X-Chariox "CHARIOX_MANAGED_EDGE"',
+    ].join("\n") + "\n");
+    fixture.addFile("packages/db/prisma/migrations/20260930000000_controls/migration.sql", [
+      '-- CHARIOX_MANAGED_SQL_COMMENT',
+      '/* CHARIOX_MANAGED_SQL_BLOCK */',
+      "SELECT 'CHARIOX_MANAGED_SQL_VALUE';",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const selectors = report.entries.map((entry) => entry.selector);
+    for (const selector of ["CHARIOX_MANAGED_FRAGMENT", "CHARIOX_MANAGED_JS_FRAGMENT", "CHARIOX_MANAGED_EDGE", "CHARIOX_MANAGED_SQL_VALUE"])
+      assert.ok(selectors.includes(selector), selector);
+    assert.ok(!selectors.some((selector) => selector.endsWith("_COMMENT") || selector.endsWith("_BLOCK")));
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("removed patch block comments cannot hide active added selectors", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/openship/patches/comment-transition.patch", [
+      "diff --git a/apps/api/src/control.ts b/apps/api/src/control.ts",
+      "--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts",
+      "@@ -1,2 +1 @@",
+      "-/* CHARIOX_MANAGED_REMOVED_COMMENT",
+      '+const selector = "CHARIOX_MANAGED_PATCH_ACTIVE";',
+      '-*/',
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const active = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_PATCH_ACTIVE");
+    assert.equal(active?.patchSource.change, "added");
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_REMOVED_COMMENT"));
   });
 });

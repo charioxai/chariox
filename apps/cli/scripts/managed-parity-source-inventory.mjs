@@ -6,6 +6,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { patchSourceViews } from "./lib/managed-parity-patch-source.mjs";
+import { sourceRuleCandidates, sourceClassification, groupSourceClassifications } from "./lib/managed-parity-source-rules.mjs";
+
 export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v2";
 // These approvals are bound to a historical source only. They must not be
 // rebound when the inventory runs against a newer checkout.
@@ -13,6 +16,19 @@ export const PRIOR_REVIEWED_SOURCE_COMMIT = "391b38b2be15c4f49d8ea70cc14b031385c
 export const PRIOR_REVIEWED_SOURCE_TREE = "199b565b83e9582acd38a38a76520e2ba5ac02b4";
 export const DEFAULT_SOURCE_REF = "HEAD";
 const INVENTORY_TOOL_PATH = "apps/cli/scripts/managed-parity-source-inventory.mjs";
+const INVENTORY_TOOL_MODULES = [
+  ["./managed-parity-source-inventory.mjs", INVENTORY_TOOL_PATH],
+  ["./lib/managed-parity-patch-source.mjs", "apps/cli/scripts/lib/managed-parity-patch-source.mjs"],
+  ["./lib/managed-parity-source-rules.mjs", "apps/cli/scripts/lib/managed-parity-source-rules.mjs"],
+];
+
+function inventoryToolIdentity() {
+  const modules = INVENTORY_TOOL_MODULES.map(([relative, path]) => ({
+    path, sha256: sha256(readFileSync(fileURLToPath(new URL(relative, import.meta.url)))),
+  }));
+  return { path: INVENTORY_TOOL_PATH, sha256: modules[0].sha256,
+    modules, bundleSha256: sha256(stableJson(modules)) };
+}
 
 export const REQUIRED_CATEGORIES = Object.freeze([
   "managed_only_branch",
@@ -92,6 +108,7 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".apparmor",
   ".awk",
   ".c",
+  ".caddyfile",
   ".bash",
   ".cjs",
   ".conf",
@@ -103,9 +120,11 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".jsx",
   ".json",
   ".mjs",
+  ".mjsfrag",
   ".mount",
   ".network",
   ".path",
+  ".patch",
   ".policy",
   ".profile",
   ".py",
@@ -113,6 +132,7 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".seccomp",
   ".service",
   ".sh",
+  ".sql",
   ".socket",
   ".swift",
   ".target",
@@ -120,6 +140,7 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".toml",
   ".ts",
   ".tsx",
+  ".tsfrag",
   ".yaml",
   ".yml",
   ".zsh",
@@ -155,6 +176,11 @@ const PRODUCTION_PATH_PREFIXES = [
   "adapters/",
   "apps/cli/",
   "apps/ios/",
+  "apps/api/",
+  "apps/admin/",
+  "apps/web/",
+  "apps/worker/",
+  "apps/infrastructure-manager/",
   "apps/kernel/",
   "connector-adapters/",
   "deploy/",
@@ -212,7 +238,7 @@ const CATEGORY_SPECS = Object.freeze([
     category: "managed_env_selector",
     mpIds: ["MP-01", "MP-08", "MP-11"],
     affectedBehavior: "managed environment selector or injected managed runtime marker",
-    pattern: /\b(?:CHARIOX_MANAGED[A-Z0-9_]*|CHARIOX_DISPOSABLE_WORKER_[A-Z0-9_]*|CHARIOX_PUBLICATION_CONTROL_[A-Z0-9_]*|CHARIOX_WORKER_ISOLATION_[A-Z0-9_]*)\b/g,
+    pattern: /\b(?:CHARIOX_OPENSHIP_(?:RUNTIME_PROFILE|NETWORK_MODE|CONTAINER_NAME|READ_ONLY_BINDS_JSON)|OPENSHIP_CHARIOX_(?:COLOCATION_SECRET|INSTANCE_ID)|CHARIOX_MANAGED[A-Z0-9_]*|CHARIOX_DISPOSABLE_WORKER_[A-Z0-9_]*|CHARIOX_PUBLICATION_CONTROL_[A-Z0-9_]*|CHARIOX_WORKER_ISOLATION_[A-Z0-9_]*)\b/g,
   },
   {
     category: "bubblewrap",
@@ -349,12 +375,16 @@ const SEMANTIC_DISPOSITIONS = new Set([
 export const DEFAULT_SEMANTIC_DISPOSITIONS = Object.freeze([]);
 
 const OWNED_DIRTY_PATHS = new Set([
+  "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
+  "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
   "docs/MANAGED_PATH1_PARITY_INVENTORY.md",
 ]);
 
 const SELF_EXCLUDED_PATHS = new Set([
+  "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
+  "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
 ]);
@@ -437,10 +467,12 @@ function classifyProductionPath(path) {
       || (fileName.startsWith(".") && NON_INVENTORIED_PRODUCTION_EXTENSIONS.has(fileName))) return null;
     throw new Error(`unclassified production file: ${path}`);
   }
+  if (extension === ".patch") return "patch";
   if ([".rs"].includes(extension)) return "rust";
   if (extension === ".c") return "c";
+  if (extension === ".sql") return "sql";
   if (extension === ".py") return "python";
-  if ([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"].includes(extension)) return "javascript";
+  if ([".js", ".jsx", ".mjs", ".mjsfrag", ".cjs", ".ts", ".tsx", ".tsfrag"].includes(extension)) return "javascript";
   if (extension === ".swift") return "swift";
   if ([".sh", ".bash", ".zsh", ".fish", ".awk"].includes(extension)) return "shell";
   if (extension === ".dockerfile") return "container";
@@ -453,7 +485,8 @@ function classifyProductionPath(path) {
 function stripComments(text, format) {
   const slashComments = ["c", "rust", "javascript", "swift"].includes(format);
   const hashComments = ["python", "shell", "unit", "container", "policy", "config"].includes(format);
-  if (!slashComments && !hashComments) return text;
+  const sqlComments = format === "sql";
+  if (!slashComments && !hashComments && !sqlComments) return text;
   const output = text.split("");
   let blockComment = false;
   let quote = null;
@@ -486,14 +519,14 @@ function stripComments(text, format) {
       quote = current;
       continue;
     }
-    if (slashComments && current === "/" && next === "*") {
+    if ((slashComments || sqlComments) && current === "/" && next === "*") {
       output[index] = " ";
       output[index + 1] = " ";
       index += 1;
       blockComment = true;
       continue;
     }
-    if (slashComments && current === "/" && next === "/") {
+    if ((slashComments && current === "/" && next === "/") || (sqlComments && current === "-" && next === "-")) {
       while (index < output.length && text[index] !== "\n" && text[index] !== "\r") {
         output[index] = " ";
         index += 1;
@@ -850,50 +883,56 @@ export function collectSourceInventory({
   const appliedSemanticReviewIds = new Set();
   for (const file of files) {
     const rawLines = file.text.split(/\r?\n/);
-    const lines = stripComments(file.text, file.format).split(/\r?\n/);
-    const testRanges = file.format === "rust" ? findRustTestRanges(file.text, file.path) : [];
-    const unitTopology = explicitUnitTopology(file.path, file.text);
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const sourceLine = rawLines[lineIndex].trim();
-      const scanLine = lines[lineIndex];
-      if (!scanLine.trim()) continue;
-      for (const spec of CATEGORY_SPECS) {
-        for (const match of lineMatches(spec, scanLine)) {
+    const views = file.format === "patch" ? patchSourceViews(file, classifyProductionPath)
+      : [{ path: file.path, format: file.format, text: file.text, lineOffset: 0, patchLines: [] }];
+    for (const view of views) {
+      const lines = stripComments(view.text, view.format).split(/\r?\n/);
+      const testRanges = view.format === "rust" ? findRustTestRanges(view.text, view.path) : [];
+      const unitTopology = explicitUnitTopology(view.path, view.text);
+      const embeddedPath = file.format === "patch" ? view.path : null;
+      const manuals = sourceRuleCandidates(file, lines, embeddedPath);
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const scanLine = lines[lineIndex];
+        if (!scanLine.trim() || (view.onlyRemoved && view.patchLines[lineIndex]?.change !== "removed")) continue;
+        const lexical = CATEGORY_SPECS.flatMap((spec) => lineMatches(spec, scanLine).map((match) => ({
+          category: spec.category, applicableMpIds: [...new Set(spec.mpIds)].sort(),
+          affectedBehavior: spec.affectedBehavior, selector: redact(match.value),
+          column: match.index + 1, symbol: inferSymbol(lines, lineIndex), candidateOrigin: "lexical",
+        })));
+        const findings = [...lexical, ...manuals.filter((manual) => manual.lineIndex === lineIndex)
+          .map((manual) => ({ ...manual, candidateOrigin: "manual_source_rule" }))];
+        for (const match of findings) {
+          const physicalLine = view.lineOffset + lineIndex;
+          const sourceLine = rawLines[physicalLine].trim();
           const finding = {
-            category: spec.category,
-            format: file.format,
-            path: file.path,
-            blob: file.blob,
-            line: lineIndex + 1,
-            column: match.index + 1,
-            symbol: inferSymbol(lines, lineIndex),
-            selector: redact(match.value),
-            sourceLine,
-            contextHash: sha256(sourceLine),
-            affectedBehavior: spec.affectedBehavior,
-            applicableMpIds: [...new Set(spec.mpIds)].sort(),
+            category: match.category, format: file.format, path: file.path, blob: file.blob,
+            line: physicalLine + 1, column: match.column + (file.format === "patch" ? 1 : 0),
+            symbol: match.symbol, selector: match.selector, sourceLine,
+            contextHash: sha256(sourceLine), affectedBehavior: match.affectedBehavior,
+            applicableMpIds: match.applicableMpIds,
           };
           const sourceRoleHints = inferSourceRoleHints({
-            path: file.path,
-            format: file.format,
-            lines,
-            lineIndex,
-            testRanges,
-            unitTopology,
-            category: spec.category,
+            path: view.path, format: view.format, lines, lineIndex,
+            testRanges, unitTopology, category: match.category,
           });
+          const patchSource = view.patchLines[lineIndex];
+          if (patchSource?.change === "removed") {
+            sourceRoleHints.executionRole = "removed_patch_source_candidate";
+            sourceRoleHints.positivePath1Directive = false;
+          }
           for (const predicate of reviewedPredicates) {
             if (historicalPredicateMatches(finding, predicate, source)) presentHistoricalPredicateIds.add(predicate.id);
           }
           delete finding.sourceLine;
-          const candidate = {
-            id: sha256(stableJson({ commit: source.commit, tree: source.tree, ...candidateAnchor(finding) })),
-            ...finding,
-          };
-          const disposition = resolveSemanticDisposition(candidate, source, semanticReviewIndex);
+          const candidateId = sha256(stableJson({ commit: source.commit, tree: source.tree, ...candidateAnchor(finding) }));
+          const disposition = resolveSemanticDisposition(finding, source, semanticReviewIndex);
           if (disposition.status === "reviewed") appliedSemanticReviewIds.add(disposition.reviewId);
-          const { id: candidateId, ...candidateFields } = candidate;
-          entries.push({ candidateId, ...candidateFields, sourceRoleHints, semanticDisposition: disposition });
+          entries.push({
+            candidateId, ...finding, candidateOrigin: match.candidateOrigin, sourceRoleHints,
+            ...(patchSource ? { patchSource } : {}),
+            sourceClassification: sourceClassification(file, embeddedPath),
+            semanticDisposition: disposition,
+          });
         }
       }
     }
@@ -943,10 +982,7 @@ export function collectSourceInventory({
       trackedFileCount: files.length,
       formats,
     },
-    inventoryTool: {
-      path: INVENTORY_TOOL_PATH,
-      sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
-    },
+    inventoryTool: inventoryToolIdentity(),
     reviewedPredicates: reviewedPredicateStatus,
     semanticReviews: semanticReviewStatus,
     rows: rowCoverage,
@@ -955,6 +991,7 @@ export function collectSourceInventory({
     missingCategories,
     missingRows,
     entries,
+    sourceClassifications: groupSourceClassifications(entries),
     summary: {
       candidateCount: entries.length,
       removalRequired,
