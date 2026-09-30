@@ -346,8 +346,8 @@ fn validate_owner(owner_id: &str) -> Result<(), InstallationError> {
 }
 
 /// What an active release allowed ends with it: connection grants,
-/// automations and inbox routes. Runs after an uninstall and again when a
-/// reinstall stages, so a reinstall inherits none of them. Only an uninstalled
+/// file picks and grants, automations and inbox routes. Runs after an uninstall
+/// and again when a reinstall stages, so a reinstall inherits none of them. Only an uninstalled
 /// installation (inactive, keeping the release its data belongs to) is touched.
 pub(crate) fn forget_uninstalled(
     connection: &Connection,
@@ -365,6 +365,7 @@ pub(crate) fn forget_uninstalled(
     if uninstalled != Some(true) {
         return Ok(());
     }
+    super::app_file_grants::forget_inactive(connection, owner_id, installation_id)?;
     super::app_connections::forget_inactive(connection, owner_id, installation_id)?;
     chariox_app_runtime::app_outbox::AppOutbox::disable_all_in(
         connection,
