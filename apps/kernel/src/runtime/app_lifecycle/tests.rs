@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     durable_state::{
         app_publishers::AppPublisherMutation,
-        app_state::{fixture_event_catalog, fixture_event_package},
+        app_state::{fixture_event_catalog, fixture_event_installation, fixture_event_package},
     },
     runtime::app_control::AppControlService,
 };
@@ -284,11 +284,28 @@ fn per_installation_operation_guard_and_shared_admission_prevent_duplicate_prepa
         .clone()
         .try_acquire_many_owned(8)
         .unwrap();
+    // Saturated shared admission no longer refuses: the start is accepted and
+    // its owner waits for a slot before its claim or any preparation.
     assert!(matches!(
         service.start_active_blocking("alice", "installed", runtime.handle().clone()),
-        Err(LifecycleError::Busy)
+        Ok(StartDisposition::Starting { .. })
     ));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .is_none());
     drop(permits);
+    // No verified stored archive exists. Failure must precede any worker
+    // publication; the durable row explains why the generation is not running.
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|v| v.phase == WorkerPhase::Failed)
+    });
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    wait(|| service.0.live.available_permits() == LIVE_LIMIT);
     // Only a full live-worker set reports LiveLimit, the one Busy cause that
     // stopping an idle worker can relieve.
     let live = service
@@ -302,19 +319,58 @@ fn per_installation_operation_guard_and_shared_admission_prevent_duplicate_prepa
         Err(LifecycleError::LiveLimit)
     ));
     drop(live);
-    // No verified stored archive exists. Failure must precede any worker
-    // publication; the durable row explains why the generation is not running.
-    service
-        .start_active_blocking("alice", "installed", runtime.handle().clone())
-        .unwrap();
-    wait(|| {
-        store
-            .app_worker_status("alice", "installed")
-            .unwrap()
-            .is_some_and(|v| v.phase == WorkerPhase::Failed)
-    });
-    assert!(control.active_app_lease("alice", "installed").is_none());
     service.shutdown_blocking().unwrap();
+    assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
+    assert_eq!(service.0.preparation.available_permits(), 1);
+    assert_eq!(service.0.admission.available_permits(), 8);
+}
+
+#[test]
+fn concurrent_starts_queue_for_the_preparation_slot_instead_of_refusing_busy() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    for installation in ["second", "third"] {
+        fixture_event_installation(&store, "alice", installation);
+    }
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    // Another App is preparing: it holds the single preparation slot.
+    let preparing = service.0.preparation.clone().try_acquire_owned().unwrap();
+    let installations = ["installed", "second", "third"];
+    for installation in installations {
+        assert!(matches!(
+            service.start_active_blocking("alice", installation, runtime.handle().clone()),
+            Ok(StartDisposition::Starting { .. })
+        ));
+    }
+    // Every start is claimed and queued; none prepares a worker yet.
+    wait(|| {
+        installations.iter().all(|installation| {
+            store
+                .app_worker_status("alice", installation)
+                .unwrap()
+                .is_some_and(|v| v.phase == WorkerPhase::Starting)
+        })
+    });
+    assert!(observations.lock().unwrap().is_empty());
+    // A stop ends a queued start without preparing it.
+    service.stop_blocking("alice", "third").unwrap();
+    let stopped = store.app_worker_status("alice", "third").unwrap().unwrap();
+    assert_eq!(stopped.phase, WorkerPhase::Stopped);
+    assert!(!stopped.desired_running);
+    drop(preparing);
+    wait(|| {
+        ["installed", "second"]
+            .iter()
+            .all(|installation| control.active_app_lease("alice", installation).is_some())
+    });
+    assert_eq!(observations.lock().unwrap().len(), 2);
+    assert!(control.active_app_lease("alice", "third").is_none());
+    service.shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
     assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
     assert_eq!(service.0.preparation.available_permits(), 1);
     assert_eq!(service.0.admission.available_permits(), 8);
@@ -723,4 +779,64 @@ fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
     service.stop_blocking("alice", "installed").unwrap();
     assert!(!control.is_app_dormant("alice", "installed"));
     service.shutdown_blocking().unwrap();
+}
+
+#[test]
+fn a_stop_while_queued_for_the_claim_is_recorded_under_a_slot_without_waiting_for_one() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    let permits = service
+        .0
+        .admission
+        .clone()
+        .try_acquire_many_owned(8)
+        .unwrap();
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Ok(StartDisposition::Starting { .. })
+    ));
+    // The stop cannot join a writer operation, but it ends the queued start.
+    // With no free slot the owner does not write, and does not wait for one.
+    assert!(matches!(
+        service.stop_blocking("alice", "installed"),
+        Err(LifecycleError::Busy)
+    ));
+    // A start right after the stop is Busy too, while the stopped owner may
+    // still be draining (the manual flag is set before the stop returns).
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Busy)
+    ));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .is_none_or(|v| v.phase != WorkerPhase::Stopped));
+    // Once the owner has finished, a start before the stop is recorded is
+    // still refused as Busy, not reported as running and then undone.
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Busy)
+    ));
+    drop(permits);
+    // Maintenance persists the pending stop under its own slot, once the
+    // owner has finished.
+    wait(|| {
+        service.fixture_persist_pending_manual_stops(|_| {});
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|v| v.phase == WorkerPhase::Stopped && !v.desired_running)
+    });
+    assert!(observations.lock().unwrap().is_empty());
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    service.shutdown_blocking().unwrap();
+    assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
+    assert_eq!(service.0.preparation.available_permits(), 1);
+    assert_eq!(service.0.admission.available_permits(), 8);
 }

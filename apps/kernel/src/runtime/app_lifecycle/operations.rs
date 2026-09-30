@@ -64,6 +64,12 @@ impl AppLifecycleService {
             return Err(LifecycleError::Stopped);
         }
         if let Some(entry) = entries.get(&key).cloned() {
+            // A stop that is not recorded yet (still draining, or deferred to
+            // maintenance) is a concurrent operation: this start would be
+            // reported as running and then undone. Retry after it.
+            if entry.control.pending_manual_stop() {
+                return Err(LifecycleError::Busy);
+            }
             let replacing = match &kind {
                 StartKind::First {
                     request_id,
@@ -103,24 +109,16 @@ impl AppLifecycleService {
         if entries.len() >= LIVE_LIMIT {
             return Err(LifecycleError::LiveLimit);
         }
+        // Only a full live-worker set refuses. An accepted start queues on
+        // its owner thread for the preparation slot and a shared App
+        // operation slot, so concurrent starts (recovery after a reboot) no
+        // longer fail Busy while another App prepares.
         let live = self
             .0
             .live
             .clone()
             .try_acquire_owned()
             .map_err(|_| LifecycleError::LiveLimit)?;
-        let preparation = self
-            .0
-            .preparation
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| LifecycleError::Busy)?;
-        let operation = self
-            .0
-            .admission
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| LifecycleError::Busy)?;
         let attempt = format!("{:032x}", rand::random::<u128>());
         let mut control = Control::new();
         if let StartKind::First { request_id, .. } = &kind {
@@ -138,6 +136,7 @@ impl AppLifecycleService {
             store: self.0.store.clone(),
             publisher: self.0.publisher.clone(),
             admission: self.0.admission.clone(),
+            preparation: self.0.preparation.clone(),
             owner: owner.into(),
             installation: installation.into(),
             attempt: attempt.clone(),
@@ -163,7 +162,7 @@ impl AppLifecycleService {
         // and join every child, including when an awaiting caller disappears.
         let worker = std::thread::Builder::new()
             .name("chariox-app-owner".into())
-            .spawn(move || owner::run(context, live, preparation, operation))
+            .spawn(move || owner::run(context, live))
             .map_err(|_| LifecycleError::Supervisor)?;
         *entry
             .thread

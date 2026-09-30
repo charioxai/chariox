@@ -335,6 +335,16 @@ pub(crate) fn fixture_inbox_package_version(
     tests::inbox_package_version(version, schema)
 }
 
+/// Another active installation of the event fixture package for `owner`.
+#[cfg(test)]
+pub(crate) fn fixture_event_installation(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+) {
+    tests::install_package(store, owner, installation_id, tests::package());
+}
+
 #[cfg(test)]
 pub(crate) fn fixture_inbox_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::inbox_package()

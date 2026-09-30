@@ -166,8 +166,8 @@ impl KernelRuntimeState {
                 .map_err(|_| unavailable())?
                 {
                     Ok(_) => started = true,
-                    // Transient contention (a concurrent start, preparation or
-                    // admission) clears by itself: retry without evicting.
+                    // Transient contention (a concurrent operation on this
+                    // installation) clears by itself: retry without evicting.
                     Err(crate::runtime::app_lifecycle::LifecycleError::Busy) => {}
                     // Every live slot is taken: make room once, then retry.
                     Err(crate::runtime::app_lifecycle::LifecycleError::LiveLimit) => {
