@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm, rename, symlink, open } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { AppFileInstaller, formatInstallOperation, KernelFailure } from "./app-install-file.js"
+import { AppFileInstaller, FollowLostContact, formatInstallOperation, KernelFailure } from "./app-install-file.js"
 import { AppFileSource, chunkBytes, maxArchiveBytes, InstallFileChanged } from "./app-install-file/source.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
@@ -165,6 +165,9 @@ test("/app install follows its operation and reports each phase through the outc
   assert.equal(k.requests.filter(v => v.GetAppInstallOperation).length, polls, "polling stops at the outcome")
   assert.deepEqual(notices.filter(notice => notice.startsWith("App operation")), [notices.at(-1)])
   assert.equal(notices.filter(notice => notice.startsWith("Starting App")).length, 1)
+  // Many polls, one release of the upload the kernel took into the operation.
+  assert.ok(polls > 3)
+  assert.equal(k.requests.filter(v => v.AbortAppPackageUpload).length, 1)
 })
 
 test("a followed App operation rides out busy status reads and gives up after ten in a row", async t => {
@@ -192,7 +195,7 @@ test("a followed App operation rides out busy status reads and gives up after te
   const lostInstaller = new AppFileInstaller(lostSend, () => {}, f.root)
   t.after(() => lostInstaller.dispose())
   await assert.rejects(lostInstaller.follow(await lostInstaller.install(f.path, "current-session"), () => {}, { pollMs: 1 }),
-    /^Error: Lost contact with the kernel while following App operation app-install-/)
+    (error: unknown) => error instanceof FollowLostContact && /^Lost contact with the kernel while following App operation app-install-/.test(error.message))
 })
 
 test("a followed App operation reports its failure, and closing the terminal stops following", async t => {

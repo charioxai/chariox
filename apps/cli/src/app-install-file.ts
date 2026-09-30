@@ -15,8 +15,14 @@ export type InstallProgress = { phase: "hashing" | "uploading"; bytes: number; t
 type Attempt = {
   path: string; session: string; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
   digest?: string; size?: number; handle?: string; beginSent: boolean; status?: AppInstallOperationSummary; closed: boolean;
+  /** The kernel took the upload's bytes into the operation and the upload was aborted: never abort it again. */
+  released?: boolean;
 }
 export class KernelFailure extends Error { constructor(readonly code: string) { super(messages[code] ?? `App request failed: ${code}`) } }
+/** A followed operation's status could not be read for ten polls in a row. */
+export class FollowLostContact extends Error {
+  constructor(request: string) { super(`Lost contact with the kernel while following App operation ${request}.`) }
+}
 class ConnectionFailure extends Error { constructor() { super("Connection interrupted. Run the same /app install or update command to resume this attempt, or /app cancel to cancel it.") } }
 const terminalPhases = new Set(["committed", "cancelled", "failed"])
 const messages: Record<string, string> = {
@@ -134,6 +140,11 @@ export class AppFileInstaller {
     return job
   }
 
+  /** Whether `follow` is polling this operation now. */
+  isFollowing(request: string): boolean {
+    return this.following.has(request)
+  }
+
   private async poll(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
     pollMs: number, until: number): Promise<AppInstallOperationSummary> {
     for (let failures = 0; !terminalPhases.has(value.phase) && Date.now() < until;) {
@@ -143,7 +154,7 @@ export class AppFileInstaller {
         if (this.disposed) break
         if (error instanceof KernelFailure && error.code !== "busy") throw error
         if (++failures < 10) continue
-        throw new Error(`Lost contact with the kernel while following App operation ${value.request_id}.`)
+        throw new FollowLostContact(value.request_id)
       }
       failures = 0
       if (next.phase !== value.phase) report(next)
@@ -253,13 +264,13 @@ export class AppFileInstaller {
         }
       }
       if (status?.phase === "preparing" || status?.phase === "starting" || status?.phase === "awaiting_approval") return status
-      if (!attempt.handle && attempt.digest && attempt.size) {
+      if (!attempt.released && !attempt.handle && attempt.digest && attempt.size) {
         const reply = await this.request(beginAppPackageUploadRequest({ requestId: attempt.uploadRequest, expectedSize: attempt.size, sha256: attempt.digest }), () => false)
         const upload = reply.AppPackageUploadStatus as { upload?: { handle?: unknown } } | undefined
         if (typeof upload?.upload?.handle !== "string" || !/^upload_[0-9a-f]{64}$/.test(upload.upload.handle)) throw new Error("Kernel returned an invalid upload receipt")
         attempt.handle = upload.upload.handle
       }
-      if (attempt.handle) await this.request(abortAppPackageUploadRequest(attempt.handle), () => false)
+      if (attempt.handle && !attempt.released) await this.request(abortAppPackageUploadRequest(attempt.handle), () => false)
       attempt.closed = true
       if (status) attempt.status = status
       return status
@@ -271,7 +282,9 @@ export class AppFileInstaller {
 
   private async releaseUpload(attempt: Attempt, status: AppInstallOperationSummary): Promise<void> {
     if (status.phase === "preparing") return
-    if (attempt.handle) await this.request(abortAppPackageUploadRequest(attempt.handle), () => false).catch(() => {})
+    if (attempt.handle && !attempt.released) {
+      await this.request(abortAppPackageUploadRequest(attempt.handle), () => false).then(() => { attempt.released = true }, () => {})
+    }
     if (terminalPhases.has(status.phase)) attempt.closed = true
   }
 

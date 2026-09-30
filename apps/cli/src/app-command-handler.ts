@@ -4,7 +4,7 @@ import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-c
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 import type { AppDevLoop } from "./app-dev-loop.js"
-import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
+import { AppFileInstaller, FollowLostContact, formatInstallOperation } from "./app-install-file.js"
 import { AppPublisherEnrollment, formatPublisherReview } from "./app-publisher-file.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
@@ -145,6 +145,10 @@ export async function handleAppSlashCommand(
  * The prompt stays free for the approval it may wait for. */
 function reportOutcome(installer: AppFileInstaller, value: AppInstallOperationSummary, deps: AppCommandHandlerDeps): void {
   deps.appendNotice(formatInstallOperation(value))
+  // A re-run of the same command joins the running follow, which already reports.
+  if (installer.isFollowing(value.request_id)) return
   void installer.follow(value, next => deps.appendNotice(formatInstallOperation(next))).catch((error: unknown) =>
-    deps.appendNotice(`${error instanceof Error ? error.message : String(error)} Use /app operation ${value.request_id} to check it.`))
+    deps.appendNotice(error instanceof FollowLostContact
+      ? `${error.message} Use /app operation ${value.request_id} to check it.`
+      : `Stopped following App operation ${value.request_id}: ${error instanceof Error ? error.message : String(error)}`))
 }
