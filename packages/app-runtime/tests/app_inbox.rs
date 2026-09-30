@@ -221,6 +221,22 @@ fn failures_back_off_then_poison() {
         app_inbox::failed_attempt_in(&db, sequence, now).unwrap(),
         InboxState::Failed
     );
+    // The settled occurrence still names itself for the owner's notice.
+    assert_eq!(
+        app_inbox::occurrence(&db, sequence).unwrap(),
+        app_inbox::OccurrenceSummary {
+            owner_id: "owner".into(),
+            installation_id: "installed".into(),
+            route_id: "r1".into(),
+            event_name: "received".into(),
+            occurrence_id: "occ".into(),
+            attempts: MAX_ATTEMPTS,
+        }
+    );
+    assert!(matches!(
+        app_inbox::occurrence(&db, sequence + 1),
+        Err(InboxError::NotFound)
+    ));
     assert!(app_inbox::due(&db, u64::MAX / 2, 10).unwrap().is_empty());
     assert!(matches!(
         app_inbox::delivered_in(&db, sequence, 1),

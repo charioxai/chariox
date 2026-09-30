@@ -55,9 +55,12 @@ pub(crate) enum AppInboxOperation {
         sequence: i64,
         generation: u64,
     },
+    /// One failed delivery attempt. `reason` is why, for the owner's notice
+    /// once the last attempt fails.
     Failed {
         sequence: i64,
         now_ms: u64,
+        reason: String,
     },
     Postponed {
         sequence: i64,
@@ -66,6 +69,7 @@ pub(crate) enum AppInboxOperation {
     /// The live generation no longer accepts the occurrence as it was admitted.
     Undeliverable {
         sequence: i64,
+        now_ms: u64,
     },
 }
 
@@ -202,19 +206,68 @@ fn apply(
             generation,
         } => app_inbox::delivered_in(connection, sequence, generation)
             .map(|()| AppInboxOutcome::Recorded(Some(InboxState::Delivered))),
-        AppInboxOperation::Failed { sequence, now_ms } => {
-            app_inbox::failed_attempt_in(connection, sequence, now_ms)
-                .map(|state| AppInboxOutcome::Recorded(Some(state)))
+        AppInboxOperation::Failed {
+            sequence,
+            now_ms,
+            reason,
+        } => {
+            let tx = connection.transaction()?;
+            let state = app_inbox::failed_attempt_in(&tx, sequence, now_ms)?;
+            if state == InboxState::Failed {
+                failed_notice_in(&tx, sequence, now_ms, Some(&reason))?;
+            }
+            tx.commit()?;
+            Ok(AppInboxOutcome::Recorded(Some(state)))
         }
-        AppInboxOperation::Undeliverable { sequence } => {
-            app_inbox::undeliverable_in(connection, sequence)
-                .map(|()| AppInboxOutcome::Recorded(Some(InboxState::Failed)))
+        AppInboxOperation::Undeliverable { sequence, now_ms } => {
+            let tx = connection.transaction()?;
+            app_inbox::undeliverable_in(&tx, sequence)?;
+            failed_notice_in(&tx, sequence, now_ms, None)?;
+            tx.commit()?;
+            Ok(AppInboxOutcome::Recorded(Some(InboxState::Failed)))
         }
         AppInboxOperation::Postponed { sequence, until_ms } => {
             app_inbox::postpone_in(connection, sequence, until_ms)
                 .map(|()| AppInboxOutcome::Recorded(None))
         }
     }
+}
+
+/// The owner's App log notice for an occurrence that settled as failed, in
+/// the transaction that settled it. `reason` is the last attempt's error
+/// (bounded; the handler's own error may be App text), or `None` when the
+/// live generation no longer accepts the occurrence.
+fn failed_notice_in(
+    tx: &Connection,
+    sequence: i64,
+    now_ms: u64,
+    reason: Option<&str>,
+) -> Result<(), InboxError> {
+    let occurrence = app_inbox::occurrence(tx, sequence)?;
+    let mut fields = serde_json::Map::new();
+    fields.insert("route_id".into(), occurrence.route_id.clone().into());
+    fields.insert("event_name".into(), occurrence.event_name.clone().into());
+    fields.insert("occurrence_id".into(), occurrence.occurrence_id.into());
+    fields.insert("attempts".into(), occurrence.attempts.into());
+    let why = match reason {
+        Some(reason) => {
+            fields.insert("reason".into(), reason.into());
+            format!("its last of {} delivery attempts failed", occurrence.attempts)
+        }
+        None => "the App's current version no longer accepts it (an update removed the event or changed its schema)".into(),
+    };
+    super::app_logs::append_kernel_notice_in(
+        tx,
+        &occurrence.owner_id,
+        &occurrence.installation_id,
+        now_ms,
+        &format!(
+            "An incoming {} event from route {} was not delivered and will not be retried: {why}.",
+            occurrence.event_name, occurrence.route_id
+        ),
+        fields,
+    )?;
+    Ok(())
 }
 
 impl DurableKernelStateStore {

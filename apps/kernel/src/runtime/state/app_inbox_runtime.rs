@@ -165,7 +165,9 @@ impl KernelRuntimeState {
             .await;
         let mut records: Vec<_> = planned
             .into_iter()
-            .map(|(item, settle)| record(item.sequence, settle, 0, now_ms))
+            .map(|(item, settle)| {
+                record(item.sequence, settle, 0, now_ms, "the App could not start")
+            })
             .collect();
         let control = self.app_control().clone();
         for item in deliver {
@@ -185,21 +187,28 @@ impl KernelRuntimeState {
             {
                 records.push(AppInboxOperation::Undeliverable {
                     sequence: item.sequence,
+                    now_ms,
                 });
                 continue;
             }
-            let delivered = lease.deliver_event(&item, DELIVERY_TIMEOUT).await.is_ok();
-            delivered_count += usize::from(delivered);
-            let update_pending = !delivered
+            let delivered = lease.deliver_event(&item, DELIVERY_TIMEOUT).await;
+            delivered_count += usize::from(delivered.is_ok());
+            let update_pending = delivered.is_err()
                 && self
                     .app_update_pending(&item.owner_id, &item.installation_id)
                     .await;
-            let settle = after_delivery(delivered, update_pending, now_ms);
+            let reason = delivered
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let settle = after_delivery(delivered.is_ok(), update_pending, now_ms);
             records.push(record(
                 item.sequence,
                 settle,
                 lease.catalog().generation(),
                 now_ms,
+                &reason,
             ));
         }
         let store = self.owned.durable_state_store.clone();
@@ -267,14 +276,24 @@ impl KernelRuntimeState {
     }
 }
 
-fn record(sequence: i64, settle: Settle, generation: u64, now_ms: u64) -> AppInboxOperation {
+fn record(
+    sequence: i64,
+    settle: Settle,
+    generation: u64,
+    now_ms: u64,
+    reason: &str,
+) -> AppInboxOperation {
     match settle {
         Settle::Delivered => AppInboxOperation::Delivered {
             sequence,
             generation,
         },
         Settle::Postponed(until_ms) => AppInboxOperation::Postponed { sequence, until_ms },
-        Settle::Failed => AppInboxOperation::Failed { sequence, now_ms },
+        Settle::Failed => AppInboxOperation::Failed {
+            sequence,
+            now_ms,
+            reason: reason.to_owned(),
+        },
     }
 }
 
