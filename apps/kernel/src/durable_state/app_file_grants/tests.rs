@@ -296,3 +296,107 @@ fn one_answer_stays_within_a_local_request_frame() {
         Err("INVALID_ARGUMENT")
     );
 }
+
+#[test]
+fn the_owner_revokes_unanswered_picks_and_unimported_grants() {
+    let fixture = Fixture::new();
+    let revoke = |owner: &str, installation: &str, operation: Option<&str>| {
+        fixture.1.revoke_app_file_grants(FileGrantCommand::Revoke {
+            owner: owner.into(),
+            installation: installation.into(),
+            operation_id: operation.map(Into::into),
+            now_ms: 20,
+        })
+    };
+    let claim = |grant_id: &str| {
+        fixture.1.claim_app_file_grant(FileGrantCommand::Claim {
+            owner: "alice".into(),
+            installation: "docs".into(),
+            generation: 3,
+            grant_id: grant_id.into(),
+            now_ms: 12,
+        })
+    };
+    let settle = |grant_id: &str, imported: bool| {
+        let (owner, installation, grant_id) =
+            ("alice".to_owned(), "docs".to_owned(), grant_id.to_owned());
+        fixture.1.app_file_grant(if imported {
+            FileGrantCommand::Imported {
+                owner,
+                installation,
+                grant_id,
+            }
+        } else {
+            FileGrantCommand::Release {
+                owner,
+                installation,
+                grant_id,
+            }
+        })
+    };
+    fixture.pick("granted", true, 1_000);
+    let granted = fixture
+        .grant("alice", "granted", &["a.md", "b.md"], 10)
+        .unwrap()
+        .unwrap()
+        .grants;
+    // a.md is imported before the revoke and stays imported.
+    claim(&granted[0]).unwrap();
+    settle(&granted[0], true).unwrap();
+    // c.md is being imported while the owner revokes.
+    fixture.pick("importing", false, 1_000);
+    let importing = fixture
+        .grant("alice", "importing", &["c.md"], 10)
+        .unwrap()
+        .unwrap()
+        .grants;
+    claim(&importing[0]).unwrap();
+    fixture.pick("pending", false, 1_000);
+    fixture.pick("other", false, 1_000);
+
+    // Only the owner, and only for that installation's own picks.
+    assert_eq!(revoke("mallory", "docs", Some("pending")), Err("NOT_FOUND"));
+    assert_eq!(revoke("alice", "other", Some("pending")), Err("NOT_FOUND"));
+    assert_eq!(revoke("alice", "docs", Some("missing")), Err("NOT_FOUND"));
+    // One pick.
+    assert_eq!(
+        revoke("alice", "docs", Some("other")),
+        Ok(RevokedFiles {
+            pending: vec!["other".into()],
+            requests: 1,
+            files: 0,
+        })
+    );
+    // Everything else: b.md was not imported; c.md is in flight.
+    assert_eq!(
+        revoke("alice", "docs", None),
+        Ok(RevokedFiles {
+            pending: vec!["pending".into()],
+            requests: 3,
+            files: 1,
+        })
+    );
+    assert_eq!(claim(&granted[1]), Err("NOT_FOUND"));
+    // The in-flight import failed after the revoke: nothing comes back.
+    settle(&importing[0], false).unwrap();
+    assert_eq!(claim(&importing[0]), Err("NOT_FOUND"));
+    assert!(fixture.1.pending_app_file_picks(8).unwrap().is_empty());
+    for operation in ["granted", "importing", "pending", "other"] {
+        assert_eq!(
+            fixture
+                .1
+                .app_file_pick("alice", "docs", operation)
+                .unwrap()
+                .unwrap()
+                .state,
+            PickState::Expired,
+            "{operation}"
+        );
+    }
+    // Nothing is left to revoke; an ended pick can be named again.
+    assert_eq!(revoke("alice", "docs", None), Ok(RevokedFiles::default()));
+    assert_eq!(
+        revoke("alice", "docs", Some("granted")),
+        Ok(RevokedFiles::default())
+    );
+}

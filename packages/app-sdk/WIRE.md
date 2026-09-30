@@ -217,6 +217,9 @@ for, if it still declares the capability (otherwise `CAPABILITY_REQUIRED`).
 data, like `files.atomic_replace`, and spends it. It replies `{bytesWritten,
 name}`, where `name` is the file name the owner chose. The SDK's
 `host.pickFile` polls the status and resolves with `{grantIds}`.
+The owner can revoke the App's unanswered requests and unimported grants at
+any time (kernel protocol 385, `/app file revoke`): they then read `expired`,
+and importing them fails `NOT_FOUND`. Files already imported stay.
 `files.export {path}` (same capability) copies one private regular file of at
 most 512 KiB. It follows no links. The kernel offers it to the owner in the
 same kind of trusted prompt, and the reply is `{operationId}` at once. The

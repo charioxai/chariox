@@ -408,6 +408,18 @@ pub struct GrantAppFileRequest {
     pub files: Vec<AppFileContents>,
 }
 
+/// Protocol 385: the owner ends an installation's file requests and the
+/// grants its App has not imported: all of them, or one request's
+/// (`operation_id`). The App reads them as `expired` and can no longer import
+/// them; files it already imported stay in its data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAppFileGrantsRequest {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+}
+
 /// Protocol 355: the owner takes a copy of a file an App offered with
 /// `files.export`, once; the terminal decides where it is saved.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

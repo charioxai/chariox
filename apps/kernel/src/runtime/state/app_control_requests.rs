@@ -55,6 +55,7 @@ impl KernelRuntimeState {
             LocalDaemonRequest::GrantAppConnection(request) => &request.installation_id,
             LocalDaemonRequest::RevokeAppConnection(request) => &request.installation_id,
             LocalDaemonRequest::ListAppConnections(request) => &request.installation_id,
+            LocalDaemonRequest::RevokeAppFileGrants(request) => &request.installation_id,
             _ => return None,
         };
         let owner = match crate::runtime::app_control::owner(command) {
@@ -222,6 +223,11 @@ impl KernelRuntimeState {
             | LocalDaemonRequest::ListAppConnections(_)) => {
                 return self
                     .app_connection_request(owner, installation, request)
+                    .await;
+            }
+            LocalDaemonRequest::RevokeAppFileGrants(request) => {
+                return self
+                    .revoke_app_file_grants(owner, installation, request)
                     .await;
             }
             LocalDaemonRequest::UninstallApp(request) => {

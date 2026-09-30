@@ -54,7 +54,8 @@ export async function handleAppSlashCommand(
     await loop.start(args[0], args[2] ? { key: args[2] } : {})
     return
   }
-  if (command.args[0] === "file") {
+  // `/app file revoke` reads no local file: the shared App command sends it.
+  if (command.args[0] === "file" && command.args[1] !== "revoke") {
     // Tokenization preserves quoted local paths; only each file's name and
     // bytes are sent, never its path.
     const [, action, operation, ...paths] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
@@ -84,7 +85,7 @@ export async function handleAppSlashCommand(
       return
     }
     if (action !== "grant" || !operation || paths.length === 0 || paths.length > 8) {
-      throw new Error('usage: /app file grant OPERATION "FILE" ["FILE"...] | /app file save OPERATION "PATH"')
+      throw new Error('usage: /app file grant OPERATION "FILE" ["FILE"...] | /app file save OPERATION "PATH" | /app file revoke INSTALLATION [OPERATION]')
     }
     if (!session) throw new Error("Attach to the session showing the file request")
     const files = []

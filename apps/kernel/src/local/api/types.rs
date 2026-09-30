@@ -175,4 +175,7 @@ pub use workspace::*;
 /// before, is approved by the `kernel_deployment_consent:<interaction>`
 /// policy. Copy installations are tagged with their deployment: absent from
 /// `ListAppInstallations`, marked by `AppSetInstallation.deployment_id`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 367;
+/// Version 385 adds `RevokeAppFileGrants` (`AppFileGrantsRevoked`): the owner
+/// ends an installation's file requests and the grants its App has not
+/// imported, all of them or one request's.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 385;

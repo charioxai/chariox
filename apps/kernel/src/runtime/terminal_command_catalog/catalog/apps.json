@@ -252,7 +252,7 @@
       {
         "id": "app-file",
         "label": "file",
-        "description": "Answer an App's file request or offer",
+        "description": "Answer an App's file request or offer, or revoke its requests",
         "value": "/app file ",
         "surfaces": [
           "session",
@@ -274,6 +274,16 @@
             "label": "save",
             "description": "Save a file an App offered",
             "value": "/app file save ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-file-revoke",
+            "label": "revoke",
+            "description": "End an App's file requests and the files it has not imported",
+            "value": "/app file revoke ",
             "surfaces": [
               "session",
               "waiting_room"

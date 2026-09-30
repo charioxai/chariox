@@ -9,7 +9,7 @@ import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-request
 import { prepareDeploymentAppsRequest, previewDeploymentAppsRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 367)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 385)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -64,6 +64,29 @@ test("file grants carry names and bytes for one pending request, never a path", 
   assert.deepEqual(grantAppFileRequest("s", "file-pick-1", [{ name: "notes.md", contentsBase64: "IyBO" }]), {
     GrantAppFile: { session_id: "s", operation_id: "file-pick-1", files: [{ name: "notes.md", contents_base64: "IyBO" }] },
   })
+})
+
+test("an owner revokes an installation's file requests and unused grants (protocol 385)", async () => {
+  const { revokeAppFileGrantsRequest } = await import("./ipc-app-requests.js")
+  assert.deepEqual(revokeAppFileGrantsRequest("docs"), { RevokeAppFileGrants: { installation_id: "docs" } })
+  assert.deepEqual(revokeAppFileGrantsRequest("docs", "file-pick-1"),
+    { RevokeAppFileGrants: { installation_id: "docs", operation_id: "file-pick-1" } })
+  const { executeAppCommand } = await import("./shell-app-command.js")
+  const sent: unknown[] = []
+  const none = await executeAppCommand(["file", "revoke", "docs"], {
+    send: async (request) => {
+      sent.push(request)
+      return { AppFileGrantsRevoked: { installation_id: "docs", requests: 0, files: 0 } }
+    },
+  })
+  assert.deepEqual(sent, [{ RevokeAppFileGrants: { installation_id: "docs" } }])
+  assert.equal(none.message, "No open file requests or unused grants for docs.")
+  const missing = await executeAppCommand(["file", "revoke", "docs", "file-pick-9"], {
+    send: async () => ({ AppRequestFailed: { code: "not_found" } }),
+  })
+  assert.deepEqual([missing.ok, missing.message], [false, "Not found: check the App installation and the file request id."])
+  assert.equal((await executeAppCommand(["file", "revoke"], { send: async () => ({}) })).ok, false)
+  assert.equal((await executeAppCommand(["file", "revoke", "docs", "a", "b"], { send: async () => ({}) })).ok, false)
 })
 
 test("saving an offered App file names only the session and the offer", () => {

@@ -2098,6 +2098,18 @@ Workflow trigger and deployment direction:
   (the pinned releases' are re-read from the release store and re-verified);
   `plan` is `null` when the workflow uses no App. Only the publication's owner
   may preview.
+- protocol 385: owner-side revoke of App file grants. `RevokeAppFileGrants
+  {installation_id, operation_id?}` ends the caller's open file requests
+  (`host.pick_file`, protocol 354) of that installation, or only the one named.
+  An unanswered request's prompt closes; granted files the App has not
+  imported are dropped, including one an import holds at that moment (an
+  import that is already publishing still lands). The App reads the request as
+  `expired`, and `files.import` of its grants fails `NOT_FOUND`; files it
+  already imported stay in its private data. It answers `AppFileGrantsRevoked
+  {installation_id, requests, files}`: the requests it ended and the unimported
+  files it dropped. An `operation_id` that is not this installation's is
+  `NotFound`; one that already ended ends nothing. Terminals: `/app file
+  revoke INSTALLATION [OPERATION]`.
 - App-bound local deployments (P1.20, no request or response shape change): a
   bound `local_runtime` deployment of a publication with a pinned App plan
   runs as a pinned independent copy on the owner's kernel, not in the source

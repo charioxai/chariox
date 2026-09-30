@@ -774,6 +774,7 @@ mod tests {
                 "app-file",
                 "app-file-grant",
                 "app-file-save",
+                "app-file-revoke",
             ]
         );
     }

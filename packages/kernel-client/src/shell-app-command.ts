@@ -5,6 +5,7 @@ import {
   type AppInboxConnection,
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
   grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
+  revokeAppFileGrantsRequest,
 } from "./ipc-app-requests.js"
 import type { AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import type { ShellCommandResult } from "./shell-core.js"
@@ -22,6 +23,7 @@ const usage = [
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
   "       app inbox test <installation-id> <route-id> <occurrence-id> <json-payload>",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
+  "       app file revoke <installation-id> [<operation-id>]",
 ].join("\n")
 
 export async function executeAppCommand(
@@ -80,6 +82,8 @@ export async function executeAppCommand(
       const [generatorId = "", connectionId = ""] = target.split("/")
       request = grantAppConnectionRequest(installation, generatorId, connectionId)
     } else return { ok: false, message: usage }
+  } else if (action === "file" && rest[0] === "revoke" && rest[1] && rest.length <= 3) {
+    request = revokeAppFileGrantsRequest(rest[1], rest[2])
   } else if (action === "automation") {
     const parsed = automationRequest(rest)
     if (!parsed) return { ok: false, message: usage }
@@ -87,7 +91,7 @@ export async function executeAppCommand(
   } else return { ok: false, message: usage }
 
   const response = await client.send(request)
-  if (response.AppRequestFailed) return appFailure(response, action === "connection" ? `connection ${rest[0]}` : action)
+  if (response.AppRequestFailed) return appFailure(response, action === "connection" || action === "file" ? `${action} ${rest[0]}` : action)
   if (response.AppLogs) {
     const data = expect<{ installation_id: string; entries: AppLogEntry[] }>(response, "AppLogs")
     const lines = data.entries.map(formatLogEntry)
@@ -122,6 +126,14 @@ export async function executeAppCommand(
     const lines = data.connections.map((connection) =>
       `${connection.connection_id} · ${connection.generator_id} · actions: ${connection.actions.join(", ") || "none declared"}`)
     return { ok: true, message: lines.join("\n") || "No connections granted to this App.", data }
+  }
+  if (response.AppFileGrantsRevoked) {
+    const data = expect<{ installation_id: string; requests: number; files: number }>(response, "AppFileGrantsRevoked")
+    if (data.requests === 0) return { ok: true, message: `No open file requests or unused grants for ${data.installation_id}.`, data }
+    const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+    return { ok: true, message: `Revoked ${plural(data.requests, "file request")} for ${data.installation_id}; `
+      + `${plural(data.files, "granted file")} the App had not imported ${data.files === 1 ? "was" : "were"} dropped. `
+      + "Files it already imported stay in its data.", data }
   }
   if (response.AppSet) {
     const data = expect<{ schema: string; installations: Array<{ installation_id: string; app_id: string;
@@ -272,6 +284,7 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
       ? "Not found: check the App installation, session, workflow or automation."
       : action === "inbox" ? "Not found: check the App installation and route."
       : action?.startsWith("connection") ? "Not found: check the App installation and the connection id."
+      : action === "file revoke" ? "Not found: check the App installation and the file request id."
       : "App installation not found.",
     invalid_request: action === "inbox"
       ? "Invalid App request: the event must be one the App declares as incoming, and a payload must match its schema."
