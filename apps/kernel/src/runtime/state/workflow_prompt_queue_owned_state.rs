@@ -1316,4 +1316,4 @@ fn workflow_watchdog_failure_is_terminal(error: &DaemonError) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::runtime) mod tests;
