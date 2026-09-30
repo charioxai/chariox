@@ -171,9 +171,10 @@ mod tests {
         // a backlog; the pass itself stays exclusive.
         assert!(pump.next_due().is_some());
         assert!(pump.try_begin().is_none());
+        let before = Instant::now();
         pass.finish(None, None, None, true);
         let due = pump.next_due().expect("a backlog keeps the pump due");
-        assert!(due > Instant::now() + Duration::from_millis(900));
+        assert!(due >= before + Duration::from_secs(1));
         assert!(due <= Instant::now() + Duration::from_secs(1));
 
         let pass = pump.try_begin_at(due).unwrap();

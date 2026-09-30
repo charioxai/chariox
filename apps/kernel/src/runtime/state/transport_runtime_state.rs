@@ -380,8 +380,20 @@ impl KernelRuntimeState {
     }
 
     /// App event handoff with a backlog or wake runs at its own one-second
-    /// floor, not the five-second idle tick.
+    /// floor, not the five-second idle tick. Only where the pump runs, and not
+    /// while a stopped writer keeps it from running.
     fn app_event_pump_due_at_ms(&self, now_ms: u64) -> Option<u64> {
+        if !cfg!(any(
+            target_os = "macos",
+            all(target_os = "linux", target_env = "gnu")
+        )) || self
+            .owned
+            .durable_state_store
+            .require_writer_healthy()
+            .is_err()
+        {
+            return None;
+        }
         let due = self.app_control().event_pump().next_due()?;
         let wait = due.saturating_duration_since(std::time::Instant::now());
         Some(now_ms.saturating_add(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)))
