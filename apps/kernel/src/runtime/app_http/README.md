@@ -39,9 +39,16 @@ Linux resolv.conf and macOS's global SystemConfiguration DNS entry. This does no
 reproduce NSS, hosts-file overrides, multicast DNS, or macOS per-domain scoped
 resolution. Hostnames are absolute DNS names; there is no public resolver
 fallback or App-selected configuration. Every returned address is checked,
-including mixed public/private answers. The custom runtime handle retains DNS
-drivers, aborts and joins ordinary cancellation, and retains the stream lease
-until actual I/O future destruction. Per-exchange DNS cache storage is disabled.
+including mixed public/private answers. Loopback, unspecified, IPv4-mapped,
+6to4, Teredo, local-use NAT64, NAT64 embedding a non-global IPv4 address, and
+the other special-purpose answers are destination denials, like the same IP
+literals. A host that is not a DNS name (a label starting with a hyphen, say)
+is refused at open as an invalid request. Each request resolves once and dials
+only the checked numeric addresses. The dialer receives no host name, so a name
+that later answers a private address (DNS rebinding) cannot redirect an
+admitted connection. The custom runtime handle retains DNS drivers, aborts and
+joins ordinary cancellation, and retains the stream lease until actual I/O
+future destruction. Per-exchange DNS cache storage is disabled.
 
 `HttpStreams` owns opaque handles for one actual worker, retaining its private
 preparation lease and exact verified catalog. Targets cannot transfer between
@@ -78,16 +85,17 @@ separate RPC. Encoded responses remain raw bytes. Fetch redirect/replay,
 compression, multipart and SSE acceptance still require broader validation;
 this implementation does not claim Fetch conformance. WebSocket is excluded.
 
-The 23 Rust source fixtures cover policy/actual-address enforcement, DNS joining,
-real private HTTP sockets for SSE/multipart/backpressure/limits, exact signed
-catalog ownership, generation/revocation, pending/unread capacity, failed EOF,
-interrupted uploads, and resumable cleanup. Two inherited-channel fixtures use a
+The Rust fixtures cover policy/actual-address enforcement, DNS answers from an
+in-process name server (special-purpose addresses, a rebinding name), DNS
+joining, real private HTTP sockets for SSE/multipart/backpressure/limits, exact
+signed catalog ownership, generation/revocation (also while a response
+streams), pending/unread capacity, failed EOF, interrupted uploads, and
+resumable cleanup. Two inherited-channel fixtures use a
 fixed libc worker and fixed test Echo/Paused transports: a complete exchange,
 and a full upload queue whose cleanup retains native preparation and capacity.
 Those fixtures still use the signed package and real durable writer. Two decoder
 fixtures cover strict fields and the shared SDK snapshot through actual request
-decoding and response encoding. These kernel fixtures are currently drafted,
-not compiled or executed. Separately, 19 shared peer transport tests and one
+decoding and response encoding. Separately, 19 shared peer transport tests and one
 publication unit pass, including queued expiry, capacity retention, immediate
 next reads, incomplete-frame cancellation and preservation of the physical ACK
 when cancellation wins cleanup. The SDK suite passes 44 tests,

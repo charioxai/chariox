@@ -15,7 +15,7 @@ use hyper::{
     header, Request,
 };
 use hyper_util::rt::TokioIo;
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, io, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -77,12 +77,36 @@ fn exchange((upload, body): (UploadPort, UploadBody)) -> (UploadPort, ReceivePor
     )
 }
 
+/// Opens the one TCP socket to a numeric address that DNS policy already
+/// checked. It receives no host name, so nothing below policy resolves again.
+pub(super) type Dial = Arc<dyn Fn(SocketAddr) -> Dialing + Send + Sync>;
+pub(super) type Dialing = Pin<Box<dyn Future<Output = io::Result<TcpStream>> + Send>>;
+
 pub(super) struct HttpTransport {
     dns: DnsConfig,
     tls: TlsConnector,
+    dial: Dial,
 }
 impl HttpTransport {
     pub(super) fn system() -> Result<Self> {
+        Ok(Self {
+            dns: DnsConfig::system()?,
+            tls: Self::tls()?,
+            dial: Arc::new(|address: SocketAddr| -> Dialing {
+                Box::pin(TcpStream::connect(address))
+            }),
+        })
+    }
+    /// The production policy and codec with a test resolver and dialer.
+    #[cfg(test)]
+    pub(super) fn fixture(dns: DnsConfig, dial: Dial) -> Self {
+        Self {
+            dns,
+            tls: Self::tls().unwrap(),
+            dial,
+        }
+    }
+    fn tls() -> Result<TlsConnector> {
         let roots =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -93,10 +117,7 @@ impl HttpTransport {
         .with_root_certificates(roots)
         .with_no_client_auth();
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Ok(Self {
-            dns: DnsConfig::system()?,
-            tls: TlsConnector::from(Arc::new(config)),
-        })
+        Ok(TlsConnector::from(Arc::new(config)))
     }
 
     /// The supervisor retains the task until completion and supplies the one
@@ -152,7 +173,7 @@ impl HttpTransport {
                 biased;
                 _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),
                 _ = tokio::time::sleep_until(attempt) => None,
-                result = TcpStream::connect(selected) => result.ok(),
+                result = (self.dial)(selected) => result.ok(),
             };
             if let Some(socket) = socket {
                 // This is the actual connected endpoint, before TLS/HTTP bytes.

@@ -2,6 +2,11 @@
 //! fixed target is not a production connection capability; public-IP checking
 //! is independently mandatory in HttpTransport::perform before exchange_io.
 use super::*;
+use crate::runtime::app_http::{
+    dns::test_server::TestDns, limits::HttpLimits, policy::fixture_get,
+};
+use hickory_resolver::proto::rr::RecordType;
+use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn sockets() -> (TcpStream, TcpStream) {
@@ -217,4 +222,102 @@ async fn huge_declared_body_and_fixed_lifetime_are_rejected_without_buffering() 
     })
     .await
     .unwrap();
+}
+
+/// One whole request through `HttpTransport::run`: a test name server, the
+/// production address policy and peer check, and the given dialer.
+async fn run_once(transport: &HttpTransport, url: &str) -> Result<()> {
+    let limits = HttpLimits::default();
+    let (_upload, _receive, exchange) = channels(false);
+    let (_stop, stopped) = watch::channel(false);
+    transport
+        .run(
+            fixture_get(url),
+            exchange,
+            stopped,
+            limits.acquire("alice", "app").unwrap(),
+            Instant::now(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_rebinding_name_is_resolved_once_and_only_its_checked_address_is_dialed() {
+    // Public on the first A query, loopback on every later one. A client that
+    // resolved the name again to connect would reach the loopback answer.
+    let dns = TestDns::start(|name, kind, sequence| {
+        Some(match (name, kind) {
+            ("rebind.test.", RecordType::A) if sequence == 0 => vec!["8.8.8.8".parse().unwrap()],
+            ("rebind.test.", RecordType::A) => vec!["127.0.0.1".parse().unwrap()],
+            _ => vec![],
+        })
+    })
+    .await;
+    let dialed = Arc::new(Mutex::new(Vec::new()));
+    let seen = dialed.clone();
+    let transport = HttpTransport::fixture(
+        dns.config(),
+        Arc::new(move |address: SocketAddr| -> Dialing {
+            seen.lock().unwrap().push(address);
+            Box::pin(async { Err(io::Error::from(io::ErrorKind::ConnectionRefused)) })
+        }),
+    );
+    // The checked public answer is the only address dialed, and its failed
+    // connection neither resolves the name again nor tries another address.
+    assert_eq!(
+        run_once(&transport, "https://rebind.test/").await,
+        Err(HttpError::Network)
+    );
+    assert_eq!(
+        *dialed.lock().unwrap(),
+        vec!["8.8.8.8:443".parse::<SocketAddr>().unwrap()]
+    );
+    assert_eq!(dns.queries("rebind.test.", RecordType::A), 1);
+    // The next request sees the rebound answer and is refused before any
+    // socket exists.
+    assert_eq!(
+        run_once(&transport, "https://rebind.test/").await,
+        Err(HttpError::Destination)
+    );
+    assert_eq!(dialed.lock().unwrap().len(), 1);
+    assert_eq!(dns.queries("rebind.test.", RecordType::A), 2);
+}
+
+#[tokio::test]
+async fn a_socket_whose_peer_is_not_the_checked_address_is_closed_before_tls() {
+    // The dialer lands on a local listener instead of the checked public
+    // address, as a hostile route or NAT would. The actual peer is refused
+    // before the TLS ClientHello.
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let elsewhere = local.local_addr().unwrap();
+    let dns = TestDns::start(|_, kind, _| {
+        Some(match kind {
+            RecordType::A => vec!["8.8.8.8".parse().unwrap()],
+            _ => vec![],
+        })
+    })
+    .await;
+    let transport = HttpTransport::fixture(
+        dns.config(),
+        Arc::new(move |_: SocketAddr| -> Dialing { Box::pin(TcpStream::connect(elsewhere)) }),
+    );
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = local.accept().await.unwrap();
+        let mut received = Vec::new();
+        socket.read_to_end(&mut received).await.unwrap();
+        received
+    });
+    assert_eq!(
+        run_once(&transport, "https://pinned.test/").await,
+        Err(HttpError::Destination)
+    );
+    let received = tokio::time::timeout(Duration::from_secs(3), server)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        received.is_empty(),
+        "{} bytes reached the wrong peer",
+        received.len()
+    );
 }

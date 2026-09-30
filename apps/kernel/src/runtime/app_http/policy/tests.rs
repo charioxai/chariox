@@ -117,6 +117,9 @@ fn credentials_fragments_and_control_bytes_are_rejected() {
         "https://user:secret@api.example.com/",
         "https://api.example.com/#private",
         "https://api.example.com/a\nb",
+        // A label may not start with a hyphen (RFC 1123); no resolver query
+        // or stream exists for it.
+        "https://--1.sslip.io/",
         "file:///etc/passwd",
         "data:text/plain,hello",
     ] {
