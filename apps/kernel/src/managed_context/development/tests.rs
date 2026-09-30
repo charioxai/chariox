@@ -1921,33 +1921,56 @@ fn path1_materializes_into_the_repository_root_around_its_chariox_home() {
     ];
     let previous = names.map(|name| (name, std::env::var_os(name)));
     let root = test_root("path1-repository-root");
-    let home = root.join("home");
-    let workspaces = home.join(".chariox/state/managed-context-workspaces");
+    let home = fs::canonicalize(root.clone()).unwrap().join("home");
+    let workspaces = home.join(".chariox/kernels/kernel-1/managed-context-workspaces");
+    let control = root.join("control");
     fs::create_dir_all(&workspaces).expect("create Path-1 transfer workspaces");
-    std::env::remove_var("CHARIOX_PUBLICATION_CONTROL_STATE_DIR");
+    fs::create_dir_all(control.join("managed-context-workspaces")).expect("create control root");
+    fs::create_dir_all(home.join(".chariox/work")).expect("create protected root");
+    super::register_transfer_workspaces_parent(workspaces.clone());
+    std::env::remove_var(names[3]);
     std::env::set_var(names[0], "path1");
-    std::env::set_var(names[1], fs::canonicalize(&home).unwrap());
-    std::env::set_var("CHARIOX_HOME", home.join(".chariox"));
+    std::env::set_var(names[1], &home);
+    std::env::set_var(names[2], home.join(".chariox"));
+    let resolve = || {
+        let trusted = super::import::trusted_managed_control_parent()?;
+        trusted
+            .map(|trusted| {
+                super::import::managed_materialization_root_for_control(
+                    &trusted.join("ctx_publication"),
+                    Some(&trusted),
+                )
+            })
+            .transpose()
+    };
 
-    let trusted = super::import::trusted_managed_control_parent()
-        .expect("resolve Path-1 control parent")
-        .expect("Path 1 trusts its own transfer workspaces");
-    let resolved = super::import::managed_materialization_root_for_control(
-        &trusted.join("ctx_publication"),
-        Some(&trusted),
-    );
+    let path1 = resolve();
+    std::env::set_var(names[1], home.join(".chariox/work"));
+    let protected_root = resolve();
+    std::env::set_var(names[1], &home);
+    std::env::set_var(names[3], &control);
+    let explicit_control = super::import::trusted_managed_control_parent();
+    std::env::remove_var(names[3]);
     std::env::set_var(names[0], "shared_host");
     let shared_host = super::import::trusted_managed_control_parent();
-
     for (name, value) in previous {
         match value {
             Some(value) => std::env::set_var(name, value),
             None => std::env::remove_var(name),
         }
     }
+
     assert_eq!(
-        resolved.expect("resolve Path-1 repository root"),
-        Some(fs::canonicalize(&home).unwrap())
+        path1.expect("resolve Path-1 root"),
+        Some(Some(home.clone()))
+    );
+    assert!(
+        protected_root.is_err(),
+        "a repository root inside CHARIOX_HOME stays refused"
+    );
+    assert_eq!(
+        explicit_control.expect("explicit control root"),
+        Some(fs::canonicalize(control.join("managed-context-workspaces")).unwrap())
     );
     assert_eq!(shared_host.expect("shared host without control root"), None);
     fs::remove_dir_all(root).expect("remove test root");

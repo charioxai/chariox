@@ -265,7 +265,18 @@ mod tests {
         let busy = store
             .try_begin_operation(&slice.id, "state.save")
             .expect_err("slice operations wait for Room uses");
-        assert!(busy.to_string().contains("active Room environment use"));
+        assert!(busy.to_string().contains("an active Room or agent use"));
+        let unbound = store
+            .create("kernel-1", "machine-1", create_input("unbound-uses"))
+            .expect("second slice should create");
+        let admission = store
+            .guard_environment_use(&unbound.id, Some("session-a"), "agent.admission")
+            .expect("an agent admission on an unbound slice");
+        let bind = store
+            .bind_environment("room-b", &unbound.id, 44, |_| Ok(()))
+            .expect_err("a use in flight pins the Room binding");
+        assert!(bind.to_string().contains("slice operation in progress"));
+        drop(admission);
         drop(browser);
         store
             .try_begin_operation(&slice.id, "state.save")

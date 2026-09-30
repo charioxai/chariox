@@ -1027,6 +1027,17 @@ test("managed kernel upgrade migrates legacy home state and rejects a home colli
   assert.equal(skeleton.status, 0, skeleton.stderr)
   assert.equal(await lstat(skeletonLegacy).then(() => true, () => false), false)
 
+  // One nested file makes the skeleton a real legacy home: still a collision.
+  const nestedHarness = await makeHarness(context)
+  const nestedLegacy = join(nestedHarness.installRoot, "var/lib/chariox/home")
+  await createRootPrivateDirectory(nestedLegacy)
+  await createRootPrivateDirectory(join(nestedLegacy, "managed"))
+  await writeFile(join(nestedLegacy, "managed", "state"), "keep\n")
+  const nested = nestedHarness.run()
+  assert.equal(nested.status, 1)
+  assert.match(nested.stderr, /both exist; refusing to overwrite either/)
+  assert.equal(await readFile(join(nestedLegacy, "managed", "state"), "utf8"), "keep\n")
+
   const collisionHarness = await makeHarness(context)
   const collisionLegacy = join(collisionHarness.installRoot, "var/lib/chariox/home")
   await createRootPrivateDirectory(collisionLegacy)
@@ -1779,6 +1790,12 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
     JSON.parse(await readFile(harness.receiptPath, "utf8")),
     { ...receipt, runtimeReleaseDigest: harness.target.digest },
   )
+
+  const schema2 = await makeHarness(context)
+  const schema2Receipt = { ...schema2.receipt, schemaVersion: 2, managedRepositoryRoot: "/home/chariox/work" }
+  await put(schema2.receiptPath, `${JSON.stringify(schema2Receipt)}\n`, 0o640)
+  const schema2Result = schema2.run()
+  assert.equal(schema2Result.status, 0, schema2Result.stderr)
 
   for (const [label, change] of [
     ["schema 3 without a repository root", { managedRepositoryRoot: undefined }],

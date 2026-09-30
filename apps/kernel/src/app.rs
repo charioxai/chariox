@@ -275,6 +275,12 @@ impl DaemonApp {
                 durable_state.clone(),
             )?;
         let managed_context_root = config.private_runtime_state_root();
+        // The same parent the transfer bridge publishes development copies under.
+        if let Some(state_root) = config.durable_state_path().parent() {
+            crate::managed_context::development::register_transfer_workspaces_parent(
+                state_root.join("managed-context-workspaces"),
+            );
+        }
         let managed_kernel_registration =
             crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
         let managed_context_launch_recovery =

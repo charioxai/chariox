@@ -701,8 +701,8 @@ impl CommandRouter {
             return Err(commit_error);
         }
 
-        // Imported profiles start `unknown`, which admits no new work. Refresh them as a
-        // user's Refresh would; best effort, a failure leaves them `unknown`.
+        // Imported profiles start `unknown`, which admits no new work. Refresh them
+        // as a user's Refresh would; a failure only leaves a profile `unknown`.
         if let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
             accounts,
         } = &receipt.provider_accounts
@@ -713,16 +713,32 @@ impl CommandRouter {
                 .iter()
                 .map(|account| (account.provider.clone(), account.profile_id.clone()))
                 .collect::<Vec<_>>();
-            tokio::task::spawn_blocking(move || {
-                for (provider, profile_id) in accounts {
-                    let _ =
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
-                            &registry,
-                            &owner_user_id,
-                            &provider,
-                            &profile_id,
-                        );
+            let runtime_state = self.runtime_state.clone();
+            tokio::spawn(async move {
+                let refresh = tokio::task::spawn_blocking(move || {
+                    for (provider, profile_id) in accounts {
+                        if let Err(error) =
+                            crate::local::provider_requests::refresh_provider_account_profile_response(
+                                &registry,
+                                &owner_user_id,
+                                &provider,
+                                &profile_id,
+                            )
+                        {
+                            tracing::warn!(%provider, %profile_id, %error, "refresh imported provider profile");
+                        }
+                    }
+                });
+                if tokio::time::timeout(std::time::Duration::from_secs(180), refresh)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("refresh of imported provider profiles timed out");
                 }
+                runtime_state
+                    .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                    .await;
+                runtime_state.record_waiting_room_change();
             });
         }
 

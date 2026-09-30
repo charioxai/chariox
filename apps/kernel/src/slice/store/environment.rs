@@ -91,7 +91,9 @@ impl SliceStore {
         if slice.environment_session_id.as_deref() == Some(session_id) {
             return Ok(slice.clone());
         }
-        if state.active_operations.contains_key(&slice.id) {
+        if state.active_operations.contains_key(&slice.id)
+            || state.environment_uses.contains_key(&slice.id)
+        {
             return Err(binding_error(
                 "slice operation in progress; retry after it completes",
             ));

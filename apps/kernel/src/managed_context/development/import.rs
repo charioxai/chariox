@@ -753,6 +753,17 @@ fn preflight_managed_repository_path(path: &Path) -> Result<(), DaemonError> {
     })
 }
 
+static TRANSFER_WORKSPACES_PARENT: std::sync::RwLock<Option<PathBuf>> =
+    std::sync::RwLock::new(None);
+
+/// The kernel registers where its managed-context transfers publish (the
+/// parent the transfer bridge derives from its durable state path).
+pub(crate) fn register_transfer_workspaces_parent(parent: PathBuf) {
+    *TRANSFER_WORKSPACES_PARENT
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(parent);
+}
+
 fn kernel_chariox_home() -> Option<PathBuf> {
     std::env::var_os("CHARIOX_HOME").and_then(|home| fs::canonicalize(home).ok())
 }
@@ -787,9 +798,9 @@ pub(super) fn trusted_managed_control_parent() -> Result<Option<PathBuf>, Daemon
         })
 }
 
-/// Path 1 has no publication control root: the kernel's own transfer
-/// workspaces under CHARIOX_HOME are the trusted control parent, so a copied
-/// repository lands in the managed repository root as on a shared host.
+/// Path 1 has no publication control root: the kernel's registered transfer
+/// workspaces are the trusted control parent, so a copied repository lands in
+/// the managed repository root as on a shared host.
 fn path1_control_parent() -> Result<Option<PathBuf>, DaemonError> {
     if !matches!(
         crate::managed_bootstrap::managed_provider_topology(),
@@ -797,10 +808,13 @@ fn path1_control_parent() -> Result<Option<PathBuf>, DaemonError> {
     ) {
         return Ok(None);
     }
-    let Some(home) = kernel_chariox_home() else {
+    let Some(parent) = TRANSFER_WORKSPACES_PARENT
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    else {
         return Ok(None);
     };
-    let parent = home.join("state").join("managed-context-workspaces");
     if !parent.exists() {
         return Ok(None);
     }

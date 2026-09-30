@@ -38,9 +38,10 @@ pub struct SliceAgentAttachment {
     pub agent_id: String,
 }
 
-/// An exclusive slice operation, or (`operation: None`) one shared Room
-/// environment use. Room uses run concurrently; the worker serializes actions
-/// per tab. Exclusive operations wait for no use and admit none.
+/// An exclusive slice operation, or (`operation: None`) one shared use of the
+/// slice by a Room action or an agent admission. Uses run concurrently (the
+/// worker serializes browser actions per tab, and leased agents are
+/// independent); exclusive operations and Room binding wait for every use.
 #[derive(Debug)]
 pub struct SliceOperationGuard {
     store: SliceStore,
@@ -767,7 +768,7 @@ impl SliceStore {
         let busy = match state.active_operations.get(&slice_id) {
             Some(existing) => Some(format!("an active `{existing}` operation")),
             None if !environment_use && state.environment_uses.contains_key(&slice_id) => {
-                Some("active Room environment use".to_string())
+                Some("an active Room or agent use".to_string())
             }
             None => None,
         };
