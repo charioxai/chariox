@@ -4,9 +4,9 @@ use chariox_app_runtime::{
         ReleaseMetadata,
     },
     managed_state::{
-        complete_wake, defer_wake, due_wakes, ManagedStateStore, StateChanges, StateCheck,
-        StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS, MAX_REVISION,
-        MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
+        complete_wake, defer_wake, due_wakes, postpone_wake, ManagedStateStore, StateChanges,
+        StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS,
+        MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
     },
 };
 use rusqlite::{Connection, TransactionBehavior};
@@ -501,5 +501,122 @@ fn wakes_require_an_active_installation_and_are_bounded() {
             .unwrap()
             .len(),
         MAX_WAKES
+    );
+}
+
+const DAY_MS: u64 = 86_400_000;
+const NOW_MS: u64 = 1_790_000_000_000;
+
+fn due_ids(db: &Connection, now_ms: u64) -> Vec<(String, String, u32)> {
+    due_wakes(db, now_ms, 8)
+        .unwrap()
+        .into_iter()
+        .map(|due| (due.wake.id, due.wake.revision, due.attempts))
+        .collect()
+}
+
+#[test]
+fn wake_due_times_are_absolute_epoch_ms_however_far_ahead() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    // Past a 32-bit millisecond timer (~24.8 days) and up to the JSON-safe limit.
+    let far = NOW_MS + 40 * DAY_MS;
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[wake("far", far, "r1"), wake("limit", MAX_REVISION, "r1")],
+    )
+    .unwrap();
+    assert!(matches!(
+        apply_wakes(&mut db, "todo", &[wake("over", MAX_REVISION + 1, "r1")]),
+        Err(StateError::Invalid)
+    ));
+    assert!(due_ids(&db, NOW_MS).is_empty());
+    assert!(due_ids(&db, far - 1).is_empty());
+    assert_eq!(due_ids(&db, far), [("far".into(), "r1".into(), 0)]);
+    let tx = db.transaction().unwrap();
+    let stored = ManagedStateStore::wakes_in(&tx, scope("todo")).unwrap();
+    assert!(stored
+        .iter()
+        .any(|w| w.id == "limit" && w.due_at_ms == MAX_REVISION));
+}
+
+#[test]
+fn a_clock_jump_neither_loses_nor_strands_a_due_wake() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[
+            wake("a", NOW_MS, "r1"),
+            wake("b", NOW_MS + 60_000, "r1"),
+            wake("later", NOW_MS + DAY_MS, "r1"),
+        ],
+    )
+    .unwrap();
+    // Forward: everything that fell due during the jump is due, oldest first.
+    let ahead = NOW_MS + DAY_MS / 2;
+    let due = due_wakes(&db, ahead, 8).unwrap();
+    assert_eq!(
+        due.iter().map(|w| w.wake.id.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    // Deliveries fail or wait while the clock is ahead...
+    defer_wake(&db, &due[0], ahead).unwrap();
+    postpone_wake(&db, &due[1], ahead + 60_000).unwrap();
+    // ...then it is corrected back: both are due again at once, not in half a day.
+    let corrected = NOW_MS + 120_000;
+    assert_eq!(
+        due_ids(&db, corrected),
+        [("a".into(), "r1".into(), 1), ("b".into(), "r1".into(), 0)]
+    );
+    // A wake not yet due by the corrected clock waits for its own due time.
+    assert!(due_ids(&db, corrected).iter().all(|(id, ..)| id != "later"));
+    // Backward before a due time: nothing is delivered early or lost.
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    apply_wakes(&mut db, "todo", &[wake("a", NOW_MS, "r1")]).unwrap();
+    assert!(due_ids(&db, NOW_MS - DAY_MS).is_empty());
+    assert_eq!(due_ids(&db, NOW_MS), [("a".into(), "r1".into(), 0)]);
+}
+
+#[test]
+fn outcomes_recorded_after_an_edit_or_delete_across_the_due_time_keep_the_new_schedule() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[wake("edit", NOW_MS, "r1"), wake("gone", NOW_MS, "r1")],
+    )
+    .unwrap();
+    // The pump reads both as due; the App moves one and deletes the other
+    // before the delivery outcome is recorded.
+    let due = due_wakes(&db, NOW_MS, 8).unwrap();
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[
+            wake("edit", NOW_MS + DAY_MS, "r2"),
+            WakeChange::Cancel { id: "gone".into() },
+        ],
+    )
+    .unwrap();
+    for stale in &due {
+        defer_wake(&db, stale, NOW_MS).unwrap();
+        postpone_wake(&db, stale, NOW_MS + 2_000).unwrap();
+        complete_wake(&db, stale).unwrap();
+    }
+    assert!(due_ids(&db, NOW_MS + DAY_MS - 1).is_empty());
+    // The edited wake keeps its new time and revision with no spent attempts;
+    // the deleted one never comes back.
+    assert_eq!(
+        due_ids(&db, MAX_REVISION),
+        [("edit".into(), "r2".into(), 0)]
     );
 }
