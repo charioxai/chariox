@@ -388,6 +388,11 @@ fn ended_sessions_reopen_on_attach_and_preserve_history() {
 
     assert_eq!(reopened.session_id(), session.id());
     assert_eq!(reopened_session.status(), SessionStatus::Parked);
+    assert_eq!(
+        app.agents().get_session_agents(session.id()).len(),
+        1,
+        "an ended session gets its default agent back when reopened"
+    );
     assert_eq!(reopened_session.attachment_ids().len(), 1);
     assert!(history
         .iter()

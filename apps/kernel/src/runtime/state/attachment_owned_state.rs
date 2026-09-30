@@ -34,10 +34,13 @@ impl KernelRuntimeOwnedState {
         }
 
         let mut sessions = self.session_store.write();
+        let reopens = sessions
+            .get_session(&session_id)?
+            .attach_creates_default_agent();
         let attachment = self.attachment_store.attach(&mut sessions, request)?;
         drop(sessions);
 
-        if self.agent_store.get_session_agents(&session_id).is_empty() {
+        if reopens && self.agent_store.get_session_agents(&session_id).is_empty() {
             let session = self.session_store.get_session(&session_id)?;
             let agent_request = session::agent_request_from_session_defaults(&session, None)
                 .with_worktree(session.worktree_id());
@@ -51,7 +54,7 @@ impl KernelRuntimeOwnedState {
                 "created default agent for session",
                 serde_json::json!({
                     "session_id": session_id,
-                    "reason": "session had no agents (possibly after being ended and reattached)",
+                    "reason": "a new or ended session had no agents",
                 }),
             );
         }
