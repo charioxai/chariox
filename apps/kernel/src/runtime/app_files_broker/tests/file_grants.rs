@@ -88,6 +88,22 @@ fn a_granted_file_imports_once_into_private_data_and_only_with_the_capability() 
         assert_eq!(status["state"], "granted");
         assert_eq!(status["grantIds"], serde_json::json!(granted.grants));
 
+        // A destination the App may not name is its own error; a copy that
+        // cannot be written (here its parent directory is missing, as a
+        // full data volume would refuse it) did not complete. Neither spends
+        // the grant.
+        for (destination, code) in [
+            ("../fixture-file", "INVALID_ARGUMENT"),
+            ("missing/fixture-file", "APP_FILE_UNAVAILABLE"),
+        ] {
+            peer.send(
+                "unwritten",
+                "files.import",
+                serde_json::json!({"grantId": granted.grants[0], "destination": destination}),
+            )
+            .await;
+            assert_eq!(peer.response().await.1.unwrap_err().code, code);
+        }
         let import =
             serde_json::json!({"grantId": granted.grants[0], "destination": "fixture-file"});
         peer.send("import", "files.import", import.clone()).await;

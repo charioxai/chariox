@@ -188,8 +188,12 @@ impl AppFileGrantBroker {
             .data
             .prepare_replace(&request.destination, &file.contents)
             .map_err(|failure| match failure {
+                PrivateDataError::Invalid => error("INVALID_ARGUMENT", false),
                 PrivateDataError::StorageFull => super::app_files_broker::storage_full(),
-                _ => error("INVALID_ARGUMENT", false),
+                // Any other copy that could not be written (for example, a
+                // missing parent directory), as for `atomic_replace`. The grant
+                // is released below, so a later import can succeed.
+                _ => error("APP_FILE_UNAVAILABLE", false),
             })
             .and_then(|staged| {
                 budget.check().map_err(stopped)?;
