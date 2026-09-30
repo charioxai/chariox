@@ -1532,6 +1532,17 @@ event contract hash (its fixture, crates and serde_json are unchanged). Main's
 four relay peer shape tests are updated from 56 to 57. The CLI typecheck reports
 one error in the unfinished publisher-file WIP carried into this merge.
 
+### One browser controller (2026-09-30)
+
+The exact-target controller from 2026-09-08 (`runtime/browser_controller.rs`)
+is deleted. It never gained a caller: App views (protocol 346 onward), the Room
+Tab outline and Room input were built on main's controller instead
+(`browser-controller-apps.mjs`, `browser_controller_app_view.rs`,
+`browser_controller_snapshot.rs` and the Room human actions). The hosted
+Chromium profile drill drops its controller stage and keeps the sandbox probe
+and profile restore. Runs `34171378772` and `34193432289` stay evidence for the
+launcher and profile, not for a controller the kernel ships.
+
 ## Implementation status (2026-09-26)
 
 Status of the open Apps Phase 1 PR stack. Nothing below is merged yet: the OSS stack is #433 → #434 → #435 → #436 → #438 → #439 → #441 → #442 → #443 → #444 → #445 → #446 → #447 → #455 → #456 → #457 → #458 → #459 → #460 → #461 → #462 → #463 → #464 → #470 → #471 → #473 → #474 → #477 → #478 → #479 → #480 → #481 → #482 → #484 → #485 → #486 → #487 → #488 → #489 → #490 → #491 → #492 → #493 → #494 → #495 → #497 → #498 → #499 → #500 → #501 → #504 → #505 → #507. From #507 it branches: #508 → #510, with #514, #515, #516, #517, #518 (full-suite fixes; lands with or after #430), #519, #520, #523 (protocol 368: App plans per release) → #537 (a release without Apps stays bindable after a later release records a plan, and its deploy consent is approved at once) and #527 (protocol 369: bound releases verify by their inputs digest across kernel upgrades) → #534 (protocol 370: Room browser bar for ordinary windows) and #535 (a bind verifies the release before stopping the running one), each on #527; #524 (a user App start makes room like an on-demand start) → #536 (an App install's first start at the live-worker limit stops an idle worker) and #526 (bound runtime recovery parks on a package digest mismatch until rebind) each stacked on #510, #530 (a restarted App-bound deployment keeps the copies it installs), #531 (log once when an App install's approval prompt cannot be shown) and #533 (an App-event deployment's runtime takes no requests at every layer) each stacked on #510; #529 (App command catalog and CLI/TUI parity snapshot) on #514; #532 (Slack 1.1.6: a bot's message starts no run) on #517; #509; and #511 → #512 → #513 → #521. Side fixes #467, #468, #472, #476, #503, #506, #525 (slice CJK and emoji fonts). Side PRs are #430 (merged into #518), #431 → #469 → #496, #437 → #472, #440, #448, #452, #483, #502. Web work is in chariox-cloud #218 → #220 → … → #234 → #240 → #243 → #245 → #247 → #248 → #249 (Update Apps) → #250 (local runtimes report ready; a local activation or rollback binds on the owner's kernel), with #246 on #240; #251 (Room browser bar) on main.
