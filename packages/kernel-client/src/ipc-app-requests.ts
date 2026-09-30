@@ -184,6 +184,14 @@ export function grantAppFileRequest(sessionId: string, operationId: string, file
     files: files.map(file => ({ name: file.name, contents_base64: file.contentsBase64 })) } }
 }
 
+/**
+ * Protocol 385: the owner ends an installation's file requests and the grants
+ * its App has not imported: all of them, or one request's.
+ */
+export function revokeAppFileGrantsRequest(installationId: string, operationId?: string) {
+  return { RevokeAppFileGrants: { installation_id: installationId, ...(operationId ? { operation_id: operationId } : {}) } }
+}
+
 /** Protocol 355: the owner takes a copy of a file an App offered with `files.export`. */
 export function saveAppFileExportRequest(sessionId: string, operationId: string) {
   return { SaveAppFileExport: { session_id: sessionId, operation_id: operationId } }

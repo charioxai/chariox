@@ -197,4 +197,7 @@ pub use workspace::*;
 /// transcript entry, and the agent's next turn delivered to its provider
 /// carries a one-time hidden note not to act on them unless the user asks
 /// again; the field clears once a provider accepted that turn.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 384;
+/// Version 385 adds `RevokeAppFileGrants` (`AppFileGrantsRevoked`): the owner
+/// ends an installation's file requests and the grants its App has not
+/// imported, all of them or one request's.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 385;

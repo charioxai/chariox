@@ -774,6 +774,10 @@ mod tests {
                 "app-connection-list",
                 "app-connection-grant",
                 "app-connection-revoke",
+                "app-file",
+                "app-file-grant",
+                "app-file-save",
+                "app-file-revoke",
             ]
         );
     }

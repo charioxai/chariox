@@ -2,14 +2,16 @@
 //! offer is shown to its owner as a trusted kernel prompt. The owner answers
 //! from a terminal with `GrantAppFile` (the chosen files' bytes) or
 //! `SaveAppFileExport` (taking the offered copy), or declines; App code, an
-//! App view or an agent cannot answer.
+//! App view or an agent cannot answer. Protocol 385: the owner revokes
+//! requests and grants the App has not used (`RevokeAppFileGrants`).
 use super::KernelRuntimeState;
 use crate::durable_state::app_file_exports::{FileExport, FileExportCommand, FileExportReply};
 use crate::durable_state::app_file_grants::{
     FileGrantCommand, FilePick, GrantedFile, MAX_FILES, MAX_FILE_BYTES,
 };
 use crate::local::{
-    AppRequestErrorCode, GrantAppFileRequest, LocalDaemonResponse, SaveAppFileExportRequest,
+    AppRequestErrorCode, GrantAppFileRequest, LocalDaemonResponse, RevokeAppFileGrantsRequest,
+    SaveAppFileExportRequest,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -247,6 +249,48 @@ impl KernelRuntimeState {
             operation_id: pick.operation_id,
             files: pick.grants.len() as u32,
         }
+    }
+}
+
+impl KernelRuntimeState {
+    /// The owner ends an installation's file requests and the grants its App
+    /// has not imported (all, or one request's). Their prompts close.
+    pub(super) async fn revoke_app_file_grants(
+        &self,
+        owner: String,
+        installation: String,
+        request: RevokeAppFileGrantsRequest,
+    ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
+        let store = self.owned.durable_state_store.clone();
+        let command = FileGrantCommand::Revoke {
+            owner,
+            installation: installation.clone(),
+            operation_id: request.operation_id,
+            now_ms: crate::session::unix_epoch_ms(),
+        };
+        let permit = self.app_control().try_admit()?;
+        let revoked = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            store.revoke_app_file_grants(command)
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+        .map_err(|code| match code {
+            "NOT_FOUND" => AppRequestErrorCode::NotFound,
+            _ => AppRequestErrorCode::StorageUnavailable,
+        })?;
+        for operation_id in &revoked.pending {
+            if let Some(session) = self.app_control().validation_prompt_session(operation_id) {
+                let _ = self
+                    .timeout_runtime_interaction(&session, &interaction_id(operation_id))
+                    .await;
+            }
+        }
+        Ok(LocalDaemonResponse::AppFileGrantsRevoked {
+            installation_id: installation,
+            requests: revoked.requests,
+            files: revoked.files,
+        })
     }
 }
 

@@ -29,6 +29,9 @@ pub enum LocalDaemonResponse {
     DeploymentAppsConsent { consent: DeploymentAppsConsent, },
     AppFileGranted { operation_id: String, files: u32, },
     AppFileExport { operation_id: String, name: String, contents_base64: String, },
+    /// Protocol 385: file requests ended (`requests`) and granted files the
+    /// App had not imported (`files`).
+    AppFileGrantsRevoked { installation_id: String, requests: u32, files: u32, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },

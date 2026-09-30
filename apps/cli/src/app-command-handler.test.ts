@@ -58,6 +58,27 @@ test("/app file grant sends the chosen files' names and bytes, never their paths
   }
 })
 
+test("/app file revoke ends an installation's file requests through the shared App command", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const deps = {
+    sendAppRequest: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { AppFileGrantsRevoked: { installation_id: "docs", requests: 2, files: 1 } }
+    },
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => assert.fail(message),
+  }
+  await handleAppSlashCommand(deps, { kind: "app", raw: "/app file revoke docs", args: ["file", "revoke", "docs"] })
+  await handleAppSlashCommand(deps, { kind: "app", raw: "/app file revoke docs file-pick-1", args: ["file", "revoke", "docs", "file-pick-1"] })
+  assert.deepEqual(requests, [
+    { RevokeAppFileGrants: { installation_id: "docs" } },
+    { RevokeAppFileGrants: { installation_id: "docs", operation_id: "file-pick-1" } },
+  ])
+  assert.equal(notices[0], "Revoked 2 file requests for docs; 1 granted file the App had not imported was dropped. "
+    + "Files it already imported stay in its data.")
+})
+
 test("/app file save writes an offered file to a new path and never replaces one", async () => {
   const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises")
   const { join } = await import("node:path")

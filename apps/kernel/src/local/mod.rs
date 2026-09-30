@@ -259,7 +259,7 @@ pub use api::{
     AppWorkerPhase, AppWorkerRequest, AppWorkerSummary, ConfigureAppAutomationRequest,
     ControlAppWorkerRequest, DisableAppAutomationRequest, OpenAppViewRequest, SetAppViewPanelRequest, UninstallAppRequest, GetAppLogsRequest, AppLogEntrySummary,
     AppConnectionSummary, AppInboxConnection, AppInboxRouteRequest, GrantAppConnectionRequest, GetAppSetRequest, AppSetInstallation, APP_SET_SCHEMA, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest, DeploymentAppsConsent, DeploymentAppsConsentStatus, RevokeAppConnectionRequest, AppInboxRouteSummary, CreateAppInboxRouteRequest, TestAppInboxRouteRequest,
-    AppFileContents, GrantAppFileRequest, SaveAppFileExportRequest,
+    AppFileContents, GrantAppFileRequest, RevokeAppFileGrantsRequest, SaveAppFileExportRequest,
     AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
 };
 pub use client::LocalDaemonClient;

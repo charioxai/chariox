@@ -113,11 +113,31 @@ pub(crate) enum FileGrantCommand {
         installation: String,
         grant_id: String,
     },
+    /// The owner ends the installation's unanswered picks and unimported
+    /// grants, or those of one pick. Imported files stay in the App's data.
+    Revoke {
+        owner: String,
+        installation: String,
+        operation_id: Option<String>,
+        now_ms: u64,
+    },
+}
+
+/// What a revoke ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RevokedFiles {
+    /// Picks that were still unanswered: their prompts close.
+    pub(crate) pending: Vec<String>,
+    /// Picks ended, answered or not.
+    pub(crate) requests: u32,
+    /// Granted files the App had not imported; their bytes are dropped.
+    pub(crate) files: u32,
 }
 
 enum FileGrantReply {
     Pick(Option<FilePick>),
     Claimed(GrantedFile),
+    Revoked(RevokedFiles),
 }
 
 pub(super) struct FileGrantRequest {
@@ -255,7 +275,7 @@ impl DurableKernelStateStore {
     ) -> Result<Option<FilePick>, &'static str> {
         match self.send_app_file_grant(command)? {
             FileGrantReply::Pick(pick) => Ok(pick),
-            FileGrantReply::Claimed(_) => Err("STORAGE_UNAVAILABLE"),
+            _ => Err("STORAGE_UNAVAILABLE"),
         }
     }
 
@@ -266,7 +286,18 @@ impl DurableKernelStateStore {
     ) -> Result<GrantedFile, &'static str> {
         match self.send_app_file_grant(command)? {
             FileGrantReply::Claimed(file) => Ok(file),
-            FileGrantReply::Pick(_) => Err("STORAGE_UNAVAILABLE"),
+            _ => Err("STORAGE_UNAVAILABLE"),
+        }
+    }
+
+    /// `FileGrantCommand::Revoke`: what it ended.
+    pub(crate) fn revoke_app_file_grants(
+        &self,
+        command: FileGrantCommand,
+    ) -> Result<RevokedFiles, &'static str> {
+        match self.send_app_file_grant(command)? {
+            FileGrantReply::Revoked(revoked) => Ok(revoked),
+            _ => Err("STORAGE_UNAVAILABLE"),
         }
     }
 
@@ -530,9 +561,83 @@ fn apply(
                 .map_err(storage)?;
             None
         }
+        FileGrantCommand::Revoke {
+            owner,
+            installation,
+            operation_id,
+            now_ms,
+        } => {
+            let revoked = revoke(&transaction, &owner, &installation, operation_id, now_ms)?;
+            transaction.commit().map_err(storage)?;
+            return Ok(FileGrantReply::Revoked(revoked));
+        }
     };
     transaction.commit().map_err(storage)?;
     Ok(FileGrantReply::Pick(result))
+}
+
+/// Ends the owner's open picks of one installation (or one pick): unanswered
+/// ones are no longer shown, and granted files not yet imported are dropped,
+/// including one an import holds right now, so a failed import cannot give it
+/// back (one that publishes still lands). The App reads them as `expired`.
+fn revoke(
+    transaction: &Connection,
+    owner: &str,
+    installation: &str,
+    operation_id: Option<String>,
+    now_ms: u64,
+) -> Result<RevokedFiles, &'static str> {
+    let storage = |_| "STORAGE_UNAVAILABLE";
+    if let Some(operation_id) = &operation_id {
+        load(transaction, operation_id)
+            .map_err(storage)?
+            .filter(|pick| pick.owner == owner && pick.installation == installation)
+            .ok_or("NOT_FOUND")?;
+    }
+    // `?3` is NULL for every pick of the installation.
+    const OPEN: &str = "owner_id=?1 AND installation_id=?2 AND (?3 IS NULL OR operation_id=?3)
+                        AND state IN ('pending','granted')";
+    let scope = params![owner, installation, operation_id];
+    let mut statement = transaction
+        .prepare(&format!(
+            "SELECT operation_id FROM app_file_picks WHERE {OPEN} AND state='pending'"
+        ))
+        .map_err(storage)?;
+    let pending = statement
+        .query_map(scope, |row| row.get(0))
+        .map_err(storage)?
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(storage)?;
+    let files: i64 = transaction
+        .query_row(
+            &format!(
+                "SELECT count(*) FROM app_file_grants WHERE imported=0 AND contents IS NOT NULL
+                 AND operation_id IN (SELECT operation_id FROM app_file_picks WHERE {OPEN})"
+            ),
+            scope,
+            |row| row.get(0),
+        )
+        .map_err(storage)?;
+    transaction
+        .execute(
+            &format!(
+                "UPDATE app_file_grants SET contents=NULL WHERE contents IS NOT NULL
+                 AND operation_id IN (SELECT operation_id FROM app_file_picks WHERE {OPEN})"
+            ),
+            scope,
+        )
+        .map_err(storage)?;
+    let requests = transaction
+        .execute(
+            &format!("UPDATE app_file_picks SET state='expired', updated_ms=?4 WHERE {OPEN}"),
+            params![owner, installation, operation_id, now_ms as i64],
+        )
+        .map_err(storage)?;
+    Ok(RevokedFiles {
+        pending,
+        requests: requests as u32,
+        files: files as u32,
+    })
 }
 
 #[cfg(test)]
