@@ -190,6 +190,13 @@ pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
         request.operation,
         &request.budget,
     );
+    if let Err(
+        AppStateError::State(StateError::Database(error))
+        | AppStateError::Outbox(OutboxError::Database(error)),
+    ) = &result
+    {
+        super::storage_full::observe(error);
+    }
     let _ = request.response.send(result);
 }
 
@@ -257,10 +264,7 @@ fn apply(
         }
         event => AppStateOutcome::Receipt(events::apply(&mut transaction, catalog, owner, event)?),
     };
-    transaction.commit().map_err(|error| {
-        super::storage_full::observe(&error);
-        StateError::from(error)
-    })?;
+    transaction.commit().map_err(StateError::from)?;
     Ok(outcome)
 }
 

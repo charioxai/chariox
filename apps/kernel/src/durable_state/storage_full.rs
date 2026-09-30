@@ -188,7 +188,8 @@ impl StorageProbe {
                 return receiver.recv().ok();
             };
             let wait = next.saturating_duration_since(Instant::now());
-            if wait.is_zero() {
+            // After a fence nothing commits, not even a probe.
+            if wait.is_zero() && !health.fatal.load(Ordering::Acquire) {
                 self.probe(connection, health);
                 continue;
             }
@@ -263,4 +264,4 @@ fn unix_ms() -> u64 {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

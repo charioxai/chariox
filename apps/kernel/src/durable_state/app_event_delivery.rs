@@ -39,6 +39,7 @@ pub(crate) enum AppEventDeliveryError {
 }
 impl From<rusqlite::Error> for AppEventDeliveryError {
     fn from(error: rusqlite::Error) -> Self {
+        super::storage_full::observe(&error);
         Self::Outbox(error.into())
     }
 }

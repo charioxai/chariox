@@ -460,3 +460,31 @@ fn an_event_is_queued_while_its_target_publication_serves_a_deployment() {
     let queued = store.commit_app_event_queue(prepared, budget()).unwrap();
     assert_eq!(queued.state, ReceiptState::Queued);
 }
+
+/// The typed handoff hit the bug: a full disk failed it with an unknown
+/// outcome and fenced the writer. Now it is an ordinary failure, the writer
+/// keeps serving, and the same handoff succeeds once space is back.
+#[test]
+fn a_full_disk_fails_the_handoff_without_stopping_the_writer() {
+    use crate::durable_state::storage_full::{tests as full, DurableWriterCondition};
+    let fixture = Fixture::new();
+    let (mut store, mut sessions, _session, receipt) = setup(&fixture);
+    full::limit_writer_pages(&mut store);
+    full::fill(&store);
+    let prepared = prepare(&store, &mut sessions, &fixture, &receipt);
+    let failed = store
+        .commit_app_event_queue(prepared, budget())
+        .unwrap_err();
+    assert!(
+        !matches!(failed, AppEventDeliveryError::CommitUnknown),
+        "{failed:?}"
+    );
+    store.require_writer_healthy().unwrap();
+    full::wait_for(&store, DurableWriterCondition::StorageFull);
+
+    full::free(&store);
+    full::wait_for(&store, DurableWriterCondition::Writable);
+    let prepared = prepare(&store, &mut sessions, &fixture, &receipt);
+    let queued = store.commit_app_event_queue(prepared, budget()).unwrap();
+    assert_eq!(queued.state, ReceiptState::Queued);
+}

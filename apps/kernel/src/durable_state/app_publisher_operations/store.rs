@@ -5,7 +5,10 @@ use chariox_app_runtime::publisher_trust::{
 use rusqlite::{params, OptionalExtension, Transaction};
 
 pub(super) fn sql<T>(value: rusqlite::Result<T>) -> Result<T> {
-    value.map_err(|_| PublisherOperationError::Storage)
+    value.map_err(|error| {
+        crate::durable_state::storage_full::observe(&error);
+        PublisherOperationError::Storage
+    })
 }
 /// A COMMIT that failed on a full disk did not commit: an ordinary storage
 /// failure. Any other COMMIT failure may have committed.

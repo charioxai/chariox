@@ -62,6 +62,9 @@ pub(super) fn execute(
     request: WorkflowQueueStartRequest,
 ) -> super::app_event_delivery::WriterDisposition {
     let result = apply(connection, &request.encoded);
+    if let Err(WorkflowQueueStartError::Database(error)) = &result {
+        super::storage_full::observe(error);
+    }
     let disposition = if matches!(&result, Err(WorkflowQueueStartError::CommitUnknown)) {
         super::app_event_delivery::WriterDisposition::Stop
     } else {

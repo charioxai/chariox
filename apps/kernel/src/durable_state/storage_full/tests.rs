@@ -22,6 +22,13 @@ fn scratch(name: &str) -> Scratch {
 /// full disk. Freeing rows from another connection gives it space again.
 fn store_with_page_limit(scratch: &Scratch) -> DurableKernelStateStore {
     let mut store = DurableKernelStateStore::open(scratch.0.join("kernel.db")).unwrap();
+    limit_writer_pages(&mut store);
+    store
+}
+
+/// Replaces the store's writer with one whose connection may add only 64
+/// more pages to the database.
+pub(crate) fn limit_writer_pages(store: &mut DurableKernelStateStore) {
     let (sender, receiver) = mpsc::sync_channel(16);
     let health = Arc::new(DurableWriterHealth::default());
     let observed = health.clone();
@@ -43,10 +50,33 @@ fn store_with_page_limit(scratch: &Scratch) -> DurableKernelStateStore {
         worker: Mutex::new(Some(worker)),
         health,
     });
-    store
 }
 
-fn wait_for(store: &DurableKernelStateStore, condition: DurableWriterCondition) {
+/// Fills the page-limited database until even a small row finds no page.
+pub(crate) fn fill(store: &DurableKernelStateStore) {
+    for bytes in [8 * 1024, 1024, 64] {
+        let payload = serde_json::json!({ "filler": "x".repeat(bytes) });
+        let mut accepted = 0;
+        while store.append_event("filler", None, payload.clone()).is_ok() {
+            accepted += 1;
+            assert!(
+                accepted < 10_000,
+                "the page limit never filled the database"
+            );
+        }
+    }
+}
+
+/// Frees the filler rows from another connection, as an owner frees disk space.
+pub(crate) fn free(store: &DurableKernelStateStore) {
+    let other = Connection::open(store.path()).unwrap();
+    other.busy_timeout(Duration::from_secs(5)).unwrap();
+    other
+        .execute("DELETE FROM durable_state_events WHERE kind = 'filler'", [])
+        .unwrap();
+}
+
+pub(crate) fn wait_for(store: &DurableKernelStateStore, condition: DurableWriterCondition) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while store.writer_condition() != condition && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
