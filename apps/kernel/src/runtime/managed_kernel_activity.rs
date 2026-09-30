@@ -129,12 +129,7 @@ impl ManagedKernelActivityReporter {
         runtime.ensure_managed_activity_tracking(&self.binding.kernel_id)?;
         let mut persistence_retry_delay = MIN_RETRY_DELAY;
         let Some((mut change_sequence, mut observation)) = self
-            .retry_activity_snapshot(
-                &runtime,
-                &mut shutdown,
-                &mut persistence_retry_delay,
-                None,
-            )
+            .retry_activity_snapshot(&runtime, &mut shutdown, &mut persistence_retry_delay, None)
             .await
         else {
             return Ok(());
@@ -537,12 +532,7 @@ fn activity_signature(
     running_agent_count: u8,
     activity_changed_at: &str,
 ) -> Result<String, DaemonError> {
-    let value = signed_activity_value(
-        binding,
-        sequence,
-        running_agent_count,
-        activity_changed_at,
-    )?;
+    let value = signed_activity_value(binding, sequence, running_agent_count, activity_changed_at)?;
     // Sort explicitly so the signature does not depend on serde_json's map feature flags.
     let fields: std::collections::BTreeMap<_, _> = value
         .as_object()
@@ -562,9 +552,7 @@ fn canonical_activity_timestamp(timestamp_ms: u64) -> Result<String, DaemonError
         .map_err(|_| activity_error("managed activity timestamp overflows i64"))?;
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
         .ok_or_else(|| activity_error("managed activity timestamp is invalid"))
-        .map(|timestamp| {
-            timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-        })
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 fn jittered(delay: Duration) -> Duration {
@@ -617,8 +605,7 @@ mod tests {
     fn worker_activity_uses_allocation_without_managed_environment_identity() {
         let mut worker = binding();
         worker.worker = true;
-        let payload =
-            signed_activity_value(&worker, 7, 1, "1970-01-01T00:00:01.000Z").unwrap();
+        let payload = signed_activity_value(&worker, 7, 1, "1970-01-01T00:00:01.000Z").unwrap();
         assert_eq!(payload["allocationId"], "env-1");
         assert!(payload.get("environmentId").is_none());
         assert!(payload.get("machineCredential").is_none());
@@ -1020,8 +1007,7 @@ mod tests {
                 .expect("publish initial report");
 
             let (mut recovered_stream, _) = listener.accept().expect("accept recovered report");
-            let recovered_request =
-                http_request_body(&read_http_request(&mut recovered_stream));
+            let recovered_request = http_request_body(&read_http_request(&mut recovered_stream));
             write_http_response(
                 &mut recovered_stream,
                 &serde_json::json!({
@@ -1090,11 +1076,10 @@ mod tests {
             .execute_batch("DROP TRIGGER fail_managed_activity_append;")
             .expect("activity persistence failure trigger should be removed");
 
-        let recovered_request =
-            tokio::time::timeout(Duration::from_secs(3), recovered_request_rx)
-                .await
-                .expect("recovered report should arrive")
-                .expect("activity fixture should stay available");
+        let recovered_request = tokio::time::timeout(Duration::from_secs(3), recovered_request_rx)
+            .await
+            .expect("recovered report should arrive")
+            .expect("activity fixture should stay available");
         assert_eq!(recovered_request["runningAgentCount"], 1);
         let recovered_changed_at = chrono::DateTime::parse_from_rfc3339(
             recovered_request["activityChangedAt"]
