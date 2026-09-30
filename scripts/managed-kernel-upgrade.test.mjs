@@ -581,7 +581,7 @@ if [ "$1" = "daemon-reload" ]; then
     printf 'present\n' > "$HARNESS_STATE/worker-drop-in"
   fi
 fi
-presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/kernels/active/kernel-1.json"
+presence="$CHARIOX_MANAGED_UPGRADE_ROOT/home/chariox/.chariox/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
   case "\${2:-}" in
     chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
@@ -1491,7 +1491,7 @@ test("managed kernel health rejects an unrelated listener without a fresh matchi
 
 test("managed kernel health uses the installed home presence directory for upgrade and rollback", async (context) => {
   const harness = await makeHarness(context)
-  const presenceRoot = join(harness.installRoot, "var/lib/chariox/kernels/active")
+  const presenceRoot = join(harness.installRoot, "home/chariox/.chariox/kernels/active")
   await put(join(harness.state, "skip-presence-once"), "skip\n")
   const result = harness.run()
   assert.equal(result.status, 1)

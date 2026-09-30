@@ -56,7 +56,8 @@ terminal_transaction=$chariox_root/.managed-kernel-upgrade.terminal
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
 health_port=${CHARIOX_MANAGED_UPGRADE_HEALTH_PORT:-43118}
 health_timeout_ms=${CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000}
-presence_root=$install_root/var/lib/chariox/kernels/active
+# Both topologies run with CHARIOX_HOME=$managed_state; a legacy home is migrated before any start.
+presence_root=$managed_state/kernels/active
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-managed-upgrade.XXXXXX")
 chmod 0700 "$staging_root"
 pending_release=
