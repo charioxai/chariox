@@ -18,6 +18,7 @@ class Limits:
     file_bytes: int = 8 * 1024**3
     members: int = 50000
     metadata_bytes: int = 65536
+    metadata_total_bytes: int = 16 * 1024**2
     reserve_bytes: int = 2 * 1024**3
     reserve_inodes: int = 4096
 
@@ -27,16 +28,24 @@ class UnsafeArchive(ValueError):
 
 
 class ReleaseMember(tarfile.TarInfo):
+    _limits = Limits()
+
+    def _charge_metadata(self, archive):
+        if self.size < 0 or self.size > self._limits.metadata_bytes:
+            raise UnsafeArchive("oversized archive metadata")
+        total = getattr(archive, "_release_metadata_bytes", 0) + tarfile.BLOCKSIZE + self._block(self.size)
+        if total > self._limits.metadata_total_bytes:
+            raise UnsafeArchive("aggregate archive metadata exceeds limit")
+        archive._release_metadata_bytes = total
+
     def _proc_pax(self, archive):
         if self.type == tarfile.XGLTYPE:
             raise UnsafeArchive("global archive metadata is unsupported")
-        if self.size > Limits().metadata_bytes:
-            raise UnsafeArchive("oversized archive metadata")
+        self._charge_metadata(archive)
         return super()._proc_pax(archive)
 
     def _proc_gnulong(self, archive):
-        if self.size > Limits().metadata_bytes:
-            raise UnsafeArchive("oversized archive metadata")
+        self._charge_metadata(archive)
         return super()._proc_gnulong(archive)
 
     def _proc_sparse(self, archive):
@@ -121,11 +130,22 @@ def validate(archive, limits, block_size):
     return members, allocated
 
 
-def extract_release(source, destination, limits=Limits()):
+def extract_release(source, destination, limits=Limits(), publication=None):
     destination = Path(destination)
     parent = destination.parent
     if not parent.is_dir() or destination.exists() or destination.is_symlink():
         raise UnsafeArchive("destination must be absent in an existing directory")
+    publication = Path(publication) if publication is not None else None
+    if publication is not None and not publication.is_dir():
+        raise UnsafeArchive("publication destination must be an existing directory")
+    separate_publication = publication is not None and os.stat(publication).st_dev != os.stat(parent).st_dev
+    block_size = os.statvfs(parent).f_frsize
+    if separate_publication:
+        block_size = max(block_size, os.statvfs(publication).f_frsize)
+
+    class BoundedReleaseMember(ReleaseMember):
+        _limits = limits
+
     # Owned scratch is private and never placed below a member-controlled path.
     with tempfile.TemporaryDirectory(prefix=".release-extract-", dir=parent) as scratch:
         scratch = Path(scratch)
@@ -146,11 +166,13 @@ def extract_release(source, destination, limits=Limits()):
                         raise UnsafeArchive("tar stream exceeds limit")
                     space_available(parent, len(chunk), 0, limits)
                     output.write(chunk)
-        with tarfile.open(tar_path, mode="r:", tarinfo=ReleaseMember) as archive:
-            members, allocated = validate(archive, limits, os.statvfs(parent).f_frsize)
+        with tarfile.open(tar_path, mode="r:", tarinfo=BoundedReleaseMember) as archive:
+            members, allocated = validate(archive, limits, block_size)
             # upgrade-image stages and publishes additional copies. Admit all
             # three copies while retaining recovery space and tar scratch.
             space_available(parent, allocated * 3, len(members) * 3 + 1, limits)
+            if separate_publication:
+                space_available(publication, allocated, len(members) + 1, limits)
             staging.mkdir(mode=0o700)
             for name, member in sorted(members.items(), key=lambda item: (item[0].count("/"), item[0])):
                 path = staging / name
@@ -166,6 +188,11 @@ def extract_release(source, destination, limits=Limits()):
                     os.symlink(member.linkname, staging / name)
                 elif member.islnk():
                     os.link(staging / path_name(member.linkname), staging / name)
+            # Restore signed directory modes after all children and links exist;
+            # mkdir alone applies the caller's umask to those modes.
+            for name, member in sorted(members.items(), key=lambda item: item[0].count("/"), reverse=True):
+                if member.isdir():
+                    (staging / name).chmod(member.mode & 0o777)
             if destination.exists() or destination.is_symlink():
                 raise UnsafeArchive("destination appeared during extraction")
             staging.rename(destination)
@@ -173,9 +200,9 @@ def extract_release(source, destination, limits=Limits()):
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) != 3:
-            raise UnsafeArchive("usage: extract-release.py ARCHIVE.tar.gz DESTINATION")
-        extract_release(sys.argv[1], sys.argv[2])
+        if len(sys.argv) not in (3, 4):
+            raise UnsafeArchive("usage: extract-release.py ARCHIVE.tar.gz DESTINATION [PUBLICATION_DIRECTORY]")
+        extract_release(sys.argv[1], sys.argv[2], publication=sys.argv[3] if len(sys.argv) == 4 else None)
     except (UnsafeArchive, OSError, tarfile.TarError, EOFError) as error:
         print(f"release extraction refused: {error}", file=sys.stderr)
         sys.exit(1)

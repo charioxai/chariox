@@ -131,6 +131,73 @@ class ExtractionTests(unittest.TestCase):
                            [("copy" + str(i), tarfile.LNKTYPE, "large") for i in range(4)])
         self.refused("hardlinks exceed", module.Limits(file_bytes=131072, reserve_bytes=0, reserve_inodes=0))
 
+    def test_directory_modes_preserved_under_restrictive_umask(self):
+        with tarfile.open(self.archive, "w:gz") as archive:
+            for name, mode in [("rootfs", 0o755), ("rootfs/private", 0o700)]:
+                member = tarfile.TarInfo(name)
+                member.type = tarfile.DIRTYPE
+                member.mode = mode
+                archive.addfile(member)
+            member = tarfile.TarInfo("rootfs/private/file")
+            member.mode = 0o644
+            archive.addfile(member, io.BytesIO(b""))
+        previous = os.umask(0o077)
+        try:
+            self.extract()
+        finally:
+            os.umask(previous)
+        self.assertEqual((self.destination / "rootfs").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((self.destination / "rootfs/private").stat().st_mode & 0o777, 0o700)
+        self.assertEqual((self.destination / "rootfs/private/file").stat().st_mode & 0o777, 0o644)
+
+    def test_aggregate_pax_metadata_rejected_before_publication(self):
+        with tarfile.open(self.archive, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+            for index in range(4):
+                member = tarfile.TarInfo("file" + str(index))
+                member.pax_headers = {"comment": "x" * 2000}
+                archive.addfile(member, io.BytesIO(b""))
+        self.refused("aggregate archive metadata", module.Limits(
+            metadata_total_bytes=4096, reserve_bytes=0, reserve_inodes=0,
+        ))
+
+    def test_aggregate_gnu_long_metadata_rejected_before_publication(self):
+        with tarfile.open(self.archive, "w:gz", format=tarfile.GNU_FORMAT) as archive:
+            for index in range(4):
+                archive.addfile(tarfile.TarInfo("x" * 150 + str(index)), io.BytesIO(b""))
+        self.refused("aggregate archive metadata", module.Limits(
+            metadata_total_bytes=2048, reserve_bytes=0, reserve_inodes=0,
+        ))
+
+    def test_publication_filesystem_requires_its_own_disk_and_inode_headroom(self):
+        self.write_archive([("file", tarfile.REGTYPE, b"x")])
+        publication = self.root / "publication"
+        publication.mkdir()
+        real_statvfs = module.os.statvfs
+        real_stat = module.os.stat
+        publication_stat = real_stat(publication)
+        def separate_stat(path, *args, **kwargs):
+            value = real_stat(path, *args, **kwargs)
+            if Path(path) == publication:
+                fields = list(value)
+                fields[2] = publication_stat.st_dev + 1
+                return os.stat_result(fields)
+            return value
+        for exhausted, pattern in [(4, "disk headroom"), (7, "inode headroom")]:
+            def capacity(path):
+                value = real_statvfs(path)
+                if Path(path) == publication:
+                    fields = list(value)
+                    fields[exhausted] = 0
+                    return os.statvfs_result(fields)
+                return value
+            destination = self.root / ("output-" + str(exhausted))
+            with self.subTest(resource=pattern), patch.object(module.os, "stat", side_effect=separate_stat), \
+                    patch.object(module.os, "statvfs", side_effect=capacity):
+                with self.assertRaisesRegex(module.UnsafeArchive, pattern):
+                    module.extract_release(self.archive, destination, self.limits, publication)
+                self.assertFalse(destination.exists())
+                self.assertEqual(list(self.root.glob(".release-extract-*")), [])
+
     def test_existing_destination_never_modified(self):
         self.write_archive([("file", tarfile.REGTYPE, b"x")])
         self.destination.mkdir()
