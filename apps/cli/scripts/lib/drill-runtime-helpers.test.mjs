@@ -29,75 +29,218 @@ test("child termination status covers exit codes and signals", () => {
   assert.equal(childTerminationStatus({ exitCode: null, signalCode: "SIGKILL" }), "signal SIGKILL")
 })
 
-test("hosted Cloud cleanup offlines kernels, revokes identities, and logs out without exposing the session", async () => {
+function cleanupProfile() {
+  return {
+    accountId: "account-1",
+    accountSlug: "hosted-cleanup",
+    realmId: "realm-1",
+    clientId: "own-client",
+    machineId: "own-machine",
+    cloudSessionToken: "synthetic-session",
+  }
+}
+
+function sessionRevocationPost(calls) {
+  let active = true
+  return async (url, body, headers) => {
+    calls.push({ url, body, headers })
+    assert.equal(active, true, "cleanup must not use its session after revocation")
+    if (url.endsWith("/clients/revoke") || url.endsWith("/machines/revoke")) {
+      assert.deepEqual(headers, { authorization: "Bearer synthetic-session" })
+      if (body.clientId === "own-client" || body.machineId === "own-machine") active = false
+    } else {
+      assert.equal(body.sessionToken, "synthetic-session")
+      if (url.endsWith("/auth/logout")) active = false
+    }
+  }
+}
+
+test("hosted Cloud cleanup offlines kernels, authenticates foreign revokes, then revokes its own identities atomically", async () => {
   const calls = []
   const logs = []
   await cleanupHostedCloudIdentity({
-    profile: {
-      accountId: "account-1",
-      accountSlug: "hosted-cleanup",
-      realmId: "realm-1",
-    },
-    cloudSessionToken: "session-1",
-    clientIds: ["client-1", "client-1"],
-    machineIds: ["machine-1"],
-    kernelPresences: [{ machineId: "machine-1", kernelId: "kernel-1" }],
+    profile: cleanupProfile(),
+    clientIds: ["own-client", "foreign-client", "foreign-client"],
+    machineIds: ["own-machine", "foreign-machine"],
+    kernelPresences: [
+      { machineId: "foreign-machine", kernelId: "foreign-kernel" },
+      { machineId: "own-machine", kernelId: "own-kernel" },
+    ],
     baseUrl: "https://cloud.example",
-    post: async (url, body, headers) => { calls.push({ url, body, headers }) },
+    post: sessionRevocationPost(calls),
     logger: (event, details) => { logs.push({ event, details }) },
   })
-
   assert.deepEqual(calls.map((call) => call.url), [
+    "https://cloud.example/kernels/presence",
     "https://cloud.example/kernels/presence",
     "https://cloud.example/clients/revoke",
     "https://cloud.example/machines/revoke",
     "https://cloud.example/auth/logout",
   ])
   assert.equal(calls[0].body.status, "OFFLINE")
-  assert.deepEqual(calls[2].headers, { authorization: "Bearer session-1" })
-  assert.deepEqual(calls[2].body, {
+  assert.equal(calls[2].body.clientId, "foreign-client")
+  assert.equal(calls[3].body.machineId, "foreign-machine")
+  assert.deepEqual(calls[4].body, {
+    sessionToken: "synthetic-session",
     accountId: "account-1",
-    machineId: "machine-1",
-    reason: "hosted Cloud drill cleanup",
+    clientId: "own-client",
+    machineId: "own-machine",
+    revokeClient: true,
+    revokeMachine: true,
   })
-  assert.equal(calls[3].body.sessionToken, "session-1")
   assert.deepEqual(logs, [{
     event: "cloud-identity-cleanup",
     details: {
       accountSlug: "hosted-cleanup",
-      clients: ["client-1"],
-      machines: ["machine-1"],
-      kernels: ["kernel-1"],
+      clients: ["own-client", "foreign-client"],
+      machines: ["own-machine", "foreign-machine"],
+      kernels: ["foreign-kernel", "own-kernel"],
       logout: true,
     },
   }])
-  assert.doesNotMatch(JSON.stringify(logs), /session-1/)
+  assert.doesNotMatch(JSON.stringify(logs), /synthetic-session/)
 })
 
-test("hosted Cloud cleanup attempts revocation and logout after an earlier cleanup failure", async () => {
+test("hosted Cloud cleanup attempts all foreign revocations and terminal own logout after a presence failure", async () => {
   const calls = []
+  const post = sessionRevocationPost(calls)
   await assert.rejects(
     () => cleanupHostedCloudIdentity({
-      profile: { accountId: "account-1", accountSlug: "hosted-cleanup", realmId: "realm-1" },
-      cloudSessionToken: "session-1",
-      clientIds: ["client-1"],
-      machineIds: ["machine-1"],
-      kernelPresences: [{ machineId: "machine-1", kernelId: "kernel-1" }],
+      profile: cleanupProfile(),
+      clientIds: ["own-client", "foreign-client"],
+      machineIds: ["own-machine", "foreign-machine"],
+      kernelPresences: [{ machineId: "own-machine", kernelId: "own-kernel" }],
       baseUrl: "https://cloud.example",
-      post: async (url) => {
-        calls.push(url)
-        if (url.endsWith("/kernels/presence")) throw new Error("presence rejected")
+      post: async (...args) => {
+        await post(...args)
+        if (args[0].endsWith("/kernels/presence")) throw new Error("presence rejected")
       },
       logger: () => {},
     }),
     /hosted Cloud identity cleanup failed/,
   )
-  assert.deepEqual(calls, [
+  assert.deepEqual(calls.map((call) => call.url), [
     "https://cloud.example/kernels/presence",
     "https://cloud.example/clients/revoke",
     "https://cloud.example/machines/revoke",
     "https://cloud.example/auth/logout",
   ])
+  assert.equal(calls.at(-1).body.revokeClient, true)
+  assert.equal(calls.at(-1).body.revokeMachine, true)
+})
+
+test("hosted Cloud cleanup preserves an owner session for foreign worker cleanup with logout false", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: cleanupProfile(),
+    clientIds: ["foreign-client"],
+    machineIds: ["foreign-machine"],
+    kernelPresences: [{ machineId: "foreign-machine", kernelId: "foreign-kernel" }],
+    logout: false,
+    baseUrl: "https://cloud.example",
+    post: sessionRevocationPost(calls),
+    logger: (_event, details) => { logs.push(details) },
+  })
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/clients/revoke",
+    "https://cloud.example/machines/revoke",
+  ])
+  assert.equal(logs[0].logout, false)
+})
+
+test("hosted Cloud cleanup consumes its session when own revocation is requested even with logout false", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: cleanupProfile(),
+    clientIds: ["own-client"],
+    machineIds: ["own-machine"],
+    logout: false,
+    baseUrl: "https://cloud.example",
+    post: sessionRevocationPost(calls),
+    logger: (_event, details) => { logs.push(details) },
+  })
+  assert.deepEqual(calls.map((call) => call.url), ["https://cloud.example/auth/logout"])
+  assert.equal(calls[0].body.revokeClient, true)
+  assert.equal(calls[0].body.revokeMachine, true)
+  assert.equal(logs[0].logout, true)
+})
+
+test("hosted Cloud cleanup revokes only the requested own identity and logs out last", async (t) => {
+  for (const [clientIds, machineIds, revokeClient, revokeMachine] of [
+    [["own-client"], [], true, false],
+    [[], ["own-machine"], false, true],
+    [[], [], false, false],
+  ]) {
+    await t.test(`client=${revokeClient} machine=${revokeMachine}`, async () => {
+      const calls = []
+      await cleanupHostedCloudIdentity({
+        profile: cleanupProfile(), clientIds, machineIds,
+        baseUrl: "https://cloud.example",
+        post: sessionRevocationPost(calls), logger: () => {},
+      })
+      assert.deepEqual(calls.map((call) => call.url), ["https://cloud.example/auth/logout"])
+      assert.deepEqual(calls[0].body, {
+        sessionToken: "synthetic-session", accountId: "account-1",
+        clientId: "own-client", machineId: "own-machine", revokeClient, revokeMachine,
+      })
+    })
+  }
+})
+
+test("hosted Cloud cleanup can log out a browser session with no device identities", async () => {
+  const calls = []
+  await cleanupHostedCloudIdentity({
+    profile: { accountId: "account-1", accountSlug: "browser", realmId: "realm-1" },
+    cloudSessionToken: "synthetic-session",
+    baseUrl: "https://cloud.example",
+    post: sessionRevocationPost(calls), logger: () => {},
+  })
+  assert.deepEqual(calls, [{
+    url: "https://cloud.example/auth/logout",
+    body: { sessionToken: "synthetic-session", accountId: "account-1", revokeClient: false, revokeMachine: false },
+    headers: undefined,
+  }])
+})
+
+test("hosted Cloud cleanup rejects missing authority before partial cleanup and keeps error output private", async () => {
+  const calls = []
+  const post = async (...args) => { calls.push(args) }
+  await assert.rejects(
+    cleanupHostedCloudIdentity({
+      profile: { accountId: "account-1", machineId: "own-machine" },
+      machineIds: ["own-machine"],
+      kernelPresences: [{ machineId: "own-machine", kernelId: "own-kernel" }],
+      post, logger: () => {},
+    }),
+    /requires an authenticated Cloud session/,
+  )
+  await assert.rejects(
+    cleanupHostedCloudIdentity({
+      profile: { cloudSessionToken: "synthetic-private-session", machineCredential: "synthetic-private-credential" },
+      post, logger: () => {},
+    }),
+    (error) => {
+      assert.match(error.message, /requires an account id/)
+      assert.doesNotMatch(error.message, /synthetic-private/)
+      return true
+    },
+  )
+  assert.deepEqual(calls, [])
+})
+
+test("hosted Cloud cleanup allows an unauthenticated no-op when logout false", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: { accountId: "account-1" }, logout: false,
+    post: async (...args) => { calls.push(args) },
+    logger: (_event, details) => { logs.push(details) },
+  })
+  assert.deepEqual(calls, [])
+  assert.equal(logs[0].logout, false)
 })
 
 test("dev-stub drill inventory is enabled explicitly without mutating the source environment", () => {

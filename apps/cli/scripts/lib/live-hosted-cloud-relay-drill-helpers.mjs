@@ -264,10 +264,20 @@ export async function cleanupHostedCloudIdentity({
   post = postJson,
   logger = log,
 }) {
-  assert(profile?.accountId, "hosted Cloud cleanup requires an account id", profile)
+  assert(profile?.accountId, "hosted Cloud cleanup requires an account id")
   const uniqueClientIds = [...new Set(clientIds.filter(Boolean))]
   const uniqueMachineIds = [...new Set(machineIds.filter(Boolean))]
   const presences = kernelPresences.filter((presence) => presence?.machineId && presence?.kernelId)
+  const revokeClient = Boolean(profile.clientId && uniqueClientIds.includes(profile.clientId))
+  const revokeMachine = Boolean(profile.machineId && uniqueMachineIds.includes(profile.machineId))
+  const endSession = Boolean(logout || revokeClient || revokeMachine)
+  if (endSession || presences.length || uniqueClientIds.length || uniqueMachineIds.length) {
+    assert(
+      typeof cloudSessionToken === "string" && cloudSessionToken.trim(),
+      "hosted Cloud cleanup requires an authenticated Cloud session",
+    )
+  }
+  const authorization = { authorization: `Bearer ${cloudSessionToken}` }
   const cleanupErrors = []
 
   for (const presence of presences) {
@@ -280,31 +290,38 @@ export async function cleanupHostedCloudIdentity({
       status: "OFFLINE",
     }).catch((error) => cleanupErrors.push(error))
   }
-  for (const clientId of uniqueClientIds) {
+  for (const clientId of uniqueClientIds.filter((id) => id !== profile.clientId)) {
     await post(`${baseUrl}/clients/revoke`, {
       accountId: profile.accountId,
       clientId,
       reason,
-    }).catch((error) => cleanupErrors.push(error))
+    }, authorization).catch((error) => cleanupErrors.push(error))
   }
-  for (const machineId of uniqueMachineIds) {
+  for (const machineId of uniqueMachineIds.filter((id) => id !== profile.machineId)) {
     await post(`${baseUrl}/machines/revoke`, {
       accountId: profile.accountId,
       machineId,
       reason,
-    }, cloudSessionToken ? { authorization: `Bearer ${cloudSessionToken}` } : {})
-      .catch((error) => cleanupErrors.push(error))
+    }, authorization).catch((error) => cleanupErrors.push(error))
   }
-  if (logout && cloudSessionToken) {
-    await post(`${baseUrl}/auth/logout`, { sessionToken: cloudSessionToken })
-      .catch((error) => cleanupErrors.push(error))
+  // Own revocation consumes this session, even when logout:false. Combine both
+  // requested identities in the last call so no later cleanup needs that session.
+  if (endSession) {
+    await post(`${baseUrl}/auth/logout`, {
+      sessionToken: cloudSessionToken,
+      accountId: profile.accountId,
+      ...(profile.clientId ? { clientId: profile.clientId } : {}),
+      ...(profile.machineId ? { machineId: profile.machineId } : {}),
+      revokeClient,
+      revokeMachine,
+    }).catch((error) => cleanupErrors.push(error))
   }
   logger("cloud-identity-cleanup", {
     accountSlug: profile.accountSlug,
     clients: uniqueClientIds,
     machines: uniqueMachineIds,
     kernels: presences.map((presence) => presence.kernelId),
-    logout: Boolean(logout && cloudSessionToken),
+    logout: endSession,
   })
   if (cleanupErrors.length > 0) {
     throw new AggregateError(cleanupErrors, "hosted Cloud identity cleanup failed")
