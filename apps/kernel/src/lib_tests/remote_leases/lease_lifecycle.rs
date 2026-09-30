@@ -404,15 +404,6 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
             (second, first)
         };
         assert_eq!(sibling.backing_session_id, leased_agent.backing_session_id);
-        // Lease teardown destroys leased agents in id order and stops at the
-        // first failure. Ids derive from the clock, so give the provider run and
-        // the injected failure to whichever agent is torn down first; otherwise
-        // the sibling is sometimes destroyed before the failure is reached.
-        let (leased_agent, sibling) = if leased_agent.id <= sibling.id {
-            (leased_agent, sibling)
-        } else {
-            (sibling, leased_agent)
-        };
 
         let run_id = format!("provider-cleanup-{failure_point:?}");
         let request = crate::provider::LaunchProviderRequest::new(
