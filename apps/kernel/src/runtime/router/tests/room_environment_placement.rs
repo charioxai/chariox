@@ -616,3 +616,137 @@ async fn append_failure_remains_unhealthy_and_retryable() {
     assert_eq!(repaired.status, SliceStatus::Running);
     assert_eq!(repaired.providers, vec!["codex", "opencode"]);
 }
+
+#[test]
+fn a_room_whose_slice_is_down_says_so_and_still_stops() {
+    run_test(slice_down_is_reported_and_stop_completes);
+}
+
+async fn slice_down_is_reported_and_stop_completes() {
+    let state = TestState::new();
+    let (router, rooms) = state.router();
+    create_desktop(&router, "paused").await;
+    // The slice's relay runs inside its container; a stopped container
+    // refuses the connection.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    router
+        .app
+        .lock()
+        .await
+        .slices()
+        .set_relay_endpoint(
+            "paused",
+            Some(crate::slice::SliceRelayEndpoint {
+                url: format!("ws://127.0.0.1:{port}"),
+                private: true,
+            }),
+            1,
+        )
+        .unwrap();
+    dispatch_json(&router, bind(&rooms[0], "paused"))
+        .await
+        .unwrap();
+    let start = json!({"StartRoomEnvironment": {
+        "session_id": &rooms[0], "viewport": {
+            "css_width":1280,"css_height":800,"device_scale_factor":1,
+            "desktop_pixel_width":1280,"desktop_pixel_height":800
+        }
+    }});
+    for request in [start, json!({"RetryRoomEnvironment": {"session_id": &rooms[0]}})] {
+        let error = dispatch_json(&router, request).await.unwrap_err().to_string();
+        assert!(error.contains("room_slice_unreachable"), "{error}");
+        assert!(error.contains("`paused`"), "names the slice: {error}");
+    }
+    let stopped = dispatch_json(&router, json!({"StopRoomEnvironment": {"session_id": &rooms[0]}}))
+        .await
+        .expect("a Room whose slice is gone stops without its relay");
+    assert_eq!(
+        stopped["RoomEnvironmentUpdated"]["environment"]["lifecycle"],
+        "stopped",
+        "{stopped}"
+    );
+}
+
+#[test]
+fn shared_relay_failure_and_private_relay_timeout_keep_stop_failed() {
+    run_test(relay_failure_keeps_stop_failed);
+}
+
+async fn relay_failure_keeps_stop_failed() {
+    for private in [false, true] {
+        let mut state = TestState::new();
+        state.config.relay_request_timeout_ms = 30;
+        state.config.relay_token = Some("fixture-relay-token".into());
+        let (router, rooms) = state.router();
+        create_desktop(&router, "live").await;
+        let relay = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = relay.local_addr().unwrap().port();
+        // Public/shared relay: connection refused. Private relay: accepts TCP
+        // but never completes the WebSocket handshake, so the route times out.
+        let relay = if private {
+            Some(relay)
+        } else {
+            drop(relay);
+            None
+        };
+        router
+            .app
+            .lock()
+            .await
+            .slices()
+            .set_relay_endpoint(
+                "live",
+                Some(crate::slice::SliceRelayEndpoint {
+                    url: format!("ws://127.0.0.1:{port}"),
+                    private,
+                }),
+                1,
+            )
+            .unwrap();
+        dispatch_json(&router, bind(&rooms[0], "live"))
+            .await
+            .unwrap();
+        let start_error = dispatch_json(&router, json!({"StartRoomEnvironment": {
+            "session_id": &rooms[0], "viewport": {
+                "css_width":1280,"css_height":800,"device_scale_factor":1,
+                "desktop_pixel_width":1280,"desktop_pixel_height":800
+            }
+        }})).await.expect_err("relay failed before controller readiness").to_string();
+        assert!(!start_error.contains("room_slice_unreachable"), "{start_error}");
+
+        let error = dispatch_json(
+            &router,
+            json!({"StopRoomEnvironment": {"session_id": &rooms[0]}}),
+        )
+        .await
+        .expect_err("relay failure does not prove the controller was released")
+        .to_string();
+        assert!(!error.contains("room_slice_unreachable"), "{error}");
+        assert!(!error.contains("start the slice"), "{error}");
+        assert!(
+            error.contains(if private {
+                "timed out"
+            } else {
+                "Connection refused"
+            }),
+            "{error}"
+        );
+        let environment = dispatch_json(
+            &router,
+            json!({"GetRoomEnvironmentState": {"session_id": &rooms[0]}}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            environment.to_string().contains("controller_stop_failed"),
+            "{environment}"
+        );
+        assert_eq!(
+            environment["RoomEnvironmentState"]["environment"]["lifecycle"], "failed",
+            "{environment}"
+        );
+        drop(relay);
+    }
+}

@@ -9,7 +9,7 @@ use crate::session::{
     RoomEnvironmentSnapshot,
 };
 
-use super::room_browser_controller::controller_route_error;
+use super::room_browser_controller::{controller_route_error, is_room_slice_unreachable};
 use super::KernelRuntimeState;
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult,
@@ -1116,15 +1116,26 @@ impl KernelRuntimeState {
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
         self.begin_stop_room_environment(session_id)
             .map_err(|error| environment_runtime_error("environment.stop", error))?;
-        if let Err(error) = self.stop_browser_controller_process(session_id).await {
-            let _ = self.update_room_environment_component_health(
-                session_id,
-                EnvironmentComponent::BrowserController,
-                EnvironmentComponentHealthState::Unavailable,
-                Some("controller_stop_failed"),
-            );
-            let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
-            return Err(error);
+        match self.stop_browser_controller_process(session_id).await {
+            Ok(_) => {}
+            // The controller lived in the slice, which is gone: nothing to release.
+            Err(error) if is_room_slice_unreachable(&error) => {
+                self.owned
+                    .browser_controller_generations
+                    .lock()
+                    .map_err(|_| controller_generation_error("generation lock poisoned"))?
+                    .remove(session_id);
+            }
+            Err(error) => {
+                let _ = self.update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::BrowserController,
+                    EnvironmentComponentHealthState::Unavailable,
+                    Some("controller_stop_failed"),
+                );
+                let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
+                return Err(error);
+            }
         }
         self.update_room_environment_component_health(
             session_id,

@@ -165,7 +165,13 @@ impl KernelRuntimeState {
             )?)
         };
         let config = self.owned.config_projection.snapshot();
-        let config = config.slice_relay_override(&slice).unwrap_or(config);
+        let slice_relay = config.slice_relay_override(&slice);
+        let private_slice_relay = slice_relay.is_some()
+            && slice
+                .relay_endpoint
+                .as_ref()
+                .is_none_or(|endpoint| endpoint.private);
+        let config = slice_relay.unwrap_or(config);
         let target = ClientTarget {
             daemon_id: slice.worker_kernel_id.clone(),
             daemon_alias: slice
@@ -211,7 +217,9 @@ impl KernelRuntimeState {
                 }
             }
         };
-        let first = send(target.clone(), command.clone()).await;
+        let first = send(target.clone(), command.clone())
+            .await
+            .map_err(|error| room_slice_unreachable(&slice.name, private_slice_relay, error));
         let response = match first {
             Ok(response) => response,
             Err(first_error) if recovery.is_some() => {
@@ -799,6 +807,34 @@ async fn execute_local(
         }
         result => result.map_err(|message| controller_route_error(&message)),
     }
+}
+
+const ROOM_SLICE_UNREACHABLE: &str = "room_slice_unreachable";
+
+/// Only a refused connection to the selected private slice relay can be treated
+/// as a missing slice. Shared relay outages and timeouts retain stop failures.
+fn room_slice_unreachable(
+    slice: &str,
+    private_slice_relay: bool,
+    error: DaemonError,
+) -> DaemonError {
+    match &error {
+        DaemonError::LocalTransport { operation, message }
+            if private_slice_relay
+                && (operation.starts_with("connect relay")
+                    || operation == &"connect temporary relay peer socket")
+                && message.contains("Connection refused") =>
+        {
+            controller_route_error(&format!(
+                "{ROOM_SLICE_UNREACHABLE}: the Room's slice `{slice}` is not reachable ({message}); start the slice and retry"
+            ))
+        }
+        _ => error,
+    }
+}
+
+pub(super) fn is_room_slice_unreachable(error: &DaemonError) -> bool {
+    matches!(error, DaemonError::LocalTransport { message, .. } if message.starts_with(ROOM_SLICE_UNREACHABLE))
 }
 
 pub(super) fn controller_route_error(message: &str) -> DaemonError {
