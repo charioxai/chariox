@@ -241,6 +241,9 @@ impl AppLifecycleService {
                 .stop_app_worker_intent(owner, installation, budget)
                 .map_err(Into::into)
         })();
+        // A tool listing between the first forget and the durable intent may
+        // have seeded the catalog again; the intent now keeps it out.
+        self.0.publisher.forget_dormant(owner, installation);
         let entry = self
             .0
             .entries

@@ -38,8 +38,62 @@ impl KernelRuntimeState {
             .collect())
     }
 
-    /// A cheap snapshot only decides whether current App trust needs a bounded
-    /// SQLite read. Publication and invocation still check the full catalog.
+    /// A listing served without the agent's Apps (App admission was busy):
+    /// once a slot frees, the provider re-reads its tools through the usual
+    /// refresh. It waits for the slot rather than retrying on a timer, keeps
+    /// at most one refresh pending per agent, and skips the refresh when no
+    /// bound App can be listed (stopped, failed or uninstalled).
+    pub(super) fn refresh_app_catalog_later(&self, auth_token: &str) {
+        let runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token);
+        let [run] = runs.as_slice() else {
+            return;
+        };
+        let Ok(agent) = self.app_agent_for_provider_run(run) else {
+            return;
+        };
+        let control = self.app_control().clone();
+        // Listed without any App: one that cannot start yet is refreshed
+        // when it starts.
+        control.note_listing(&agent, &BTreeSet::new());
+        if !control.begin_catalog_refresh(agent.id()) {
+            return;
+        }
+        let state = self.clone();
+        let (session, agent) = (agent.session_id().to_owned(), agent.id().to_owned());
+        tokio::spawn(async move {
+            let listable = match control.admit().await {
+                Some(permit) => {
+                    let (control, state, agent) = (control.clone(), state.clone(), agent.clone());
+                    tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
+                        state
+                            .owned
+                            .agent_store
+                            .get_agent(&agent)
+                            .is_ok_and(|agent| {
+                                control.seed_bound_dormant(&agent);
+                                control.has_active_apps_for_agent(&agent)
+                            })
+                    })
+                    .await
+                    .unwrap_or(false)
+                }
+                None => false,
+            };
+            // A listing saturated again during the refresh schedules another.
+            control.end_catalog_refresh(&agent);
+            if listable {
+                let _ = state
+                    .refresh_agent_runtime_tool_catalog(&session, &agent)
+                    .await;
+            }
+        });
+    }
+
+    /// Whether the run's agent has a running or dormant bound App.
     pub(super) fn has_active_apps_for_auth_token(&self, auth_token: &str) -> bool {
         let runs = self
             .owned
@@ -52,20 +106,36 @@ impl KernelRuntimeState {
             .is_ok_and(|agent| self.app_control().has_active_apps_for_agent(&agent))
     }
 
+    /// A cheap snapshot only decides whether current App trust needs a bounded
+    /// SQLite read. Publication and invocation still check the full catalog.
+    pub(super) fn has_app_grants_for_auth_token(&self, auth_token: &str) -> bool {
+        let runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token);
+        let [run] = runs.as_slice() else {
+            return false;
+        };
+        self.app_agent_for_provider_run(run).is_ok_and(|agent| {
+            agent
+                .extension_grants()
+                .iter()
+                .any(|grant| grant.kind == ExtensionKind::App)
+        })
+    }
+
+    /// The App tools the agent's provider lists.
     fn app_tools_for_agent(
         &self,
         agent: &crate::agent::AgentInstance,
         occupied: &[RuntimeToolSpec],
         permit: Option<&tokio::sync::OwnedSemaphorePermit>,
     ) -> Result<Vec<RemoteExtensionTool>, DaemonError> {
-        let occupied = occupied
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect::<BTreeSet<_>>();
+        let occupied = occupied_names(occupied);
         match permit {
             Some(permit) => self
                 .app_control()
-                .app_extension_tools_for_agent_admitted(agent, &occupied, permit),
+                .app_extension_listing_admitted(agent, &occupied, permit),
             None => self
                 .app_control()
                 .app_extension_tools_for_agent(agent, &occupied),
@@ -106,7 +176,9 @@ impl KernelRuntimeState {
             let agent = state.app_agent_for_provider_run(&run)?;
             let base = state.runtime_tool_specs_without_apps_for_auth_token(&auth_token);
             let tool = state
-                .app_tools_for_agent(&agent, &base, Some(&permit))?
+                .app_control()
+                .app_extension_tools_for_agent_admitted(&agent, &occupied_names(&base), &permit)
+                .map_err(app_error)?
                 .into_iter()
                 .find(|tool| tool.tool_name == tool_name);
             Ok::<_, DaemonError>((agent, tool))
@@ -170,6 +242,10 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())?
     }
+}
+
+fn occupied_names(specs: &[RuntimeToolSpec]) -> BTreeSet<String> {
+    specs.iter().map(|tool| tool.name.clone()).collect()
 }
 
 fn unavailable() -> DaemonError {

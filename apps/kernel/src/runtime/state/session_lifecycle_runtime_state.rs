@@ -451,7 +451,7 @@ impl KernelRuntimeState {
         let agent = self
             .owned
             .focus_agent(session_id, agent_id, caller_user_id)?;
-        // The session's foreground App follows the focus.
+        // The focus agent gets the App of the Room's focused App Tab.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
         Ok(agent)
@@ -517,7 +517,10 @@ impl KernelRuntimeState {
         session_id: &str,
         caller_user_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
-        self.owned.cycle_agent_focus(session_id, caller_user_id)
+        let agent = self.owned.cycle_agent_focus(session_id, caller_user_id)?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.bind_foreground_app(session_id).await;
+        Ok(agent)
     }
 
     pub(crate) async fn alias_session(

@@ -48,6 +48,7 @@ impl KernelRuntimeState {
             self.schedule_app_event_pump();
             self.schedule_app_wake_pump();
             self.schedule_app_validation_pump();
+            self.refresh_started_app_catalogs();
         }
         if !self.owned.publication_activation.is_active() {
             return;
@@ -331,6 +332,18 @@ impl KernelRuntimeState {
             .runtime_projection_changes
             .wait_for_change_after(sequence)
             .await;
+    }
+
+    /// Resolves when an App starts that an agent's tool listing left out, so
+    /// the pump refreshes that agent's catalog at once.
+    pub(crate) async fn wait_for_started_app_refreshes(&self) {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let signal = self.app_control().started_app_refreshes_signal();
+            signal.notified().await;
+        }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        std::future::pending::<()>().await;
     }
 
     pub(crate) fn pty_output_change_sequence(&self) -> u64 {

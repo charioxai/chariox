@@ -16,8 +16,6 @@ pub(crate) struct AppViewBinding {
 
 #[derive(Default)]
 struct SessionViews {
-    /// The App most recently opened in this session: (owner, installation).
-    foreground: Option<(String, String)>,
     /// Target → (binding, registration number).
     tabs: HashMap<String, (AppViewBinding, u64)>,
     registrations: u64,
@@ -32,6 +30,9 @@ struct SessionViews {
     called: std::collections::HashSet<String>,
     /// View calls still running, by call number.
     in_flight: HashMap<u64, InFlightCall>,
+    /// (agent, installation) bindings the user revoked: a focus change does
+    /// not bind them again; opening the App again does.
+    revoked: std::collections::HashSet<(String, String)>,
 }
 
 /// A running view call: dropping its sender cancels it.
@@ -157,15 +158,43 @@ impl AppViews {
         })
     }
 
-    pub(crate) fn set_foreground(&self, session: &str, owner: &str, installation: &str) {
+    /// Records (true) or forgets (false) a user revocation of this binding.
+    pub(crate) fn set_revoked(
+        &self,
+        session: &str,
+        agent: &str,
+        installation: &str,
+        revoked: bool,
+    ) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.entry(session.to_owned()).or_default().foreground =
-            Some((owner.to_owned(), installation.to_owned()));
+        let key = (agent.to_owned(), installation.to_owned());
+        match sessions.get_mut(session) {
+            Some(views) if !revoked => {
+                views.revoked.remove(&key);
+            }
+            Some(views) => {
+                views.revoked.insert(key);
+            }
+            // Recorded even before the session opens an App: a later focus
+            // change must not bind the revoked pair again.
+            None if revoked => {
+                sessions
+                    .entry(session.to_owned())
+                    .or_default()
+                    .revoked
+                    .insert(key);
+            }
+            None => {}
+        }
     }
 
-    pub(crate) fn foreground(&self, session: &str) -> Option<(String, String)> {
+    pub(crate) fn is_revoked(&self, session: &str, agent: &str, installation: &str) -> bool {
         let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.get(session)?.foreground.clone()
+        sessions.get(session).is_some_and(|views| {
+            views
+                .revoked
+                .contains(&(agent.to_owned(), installation.to_owned()))
+        })
     }
 
     pub(crate) fn binding(&self, session: &str, target: &str) -> Option<AppViewBinding> {
@@ -210,12 +239,27 @@ impl AppViews {
     /// The pump keeps running while the session has views, or App Tabs the
     /// controller still shows (their calls are answered, as unbound); the last
     /// pass removes the session atomically so a concurrent open restarts it.
+    /// The user's revocations outlive the views: a later focus change still
+    /// does not bind a revoked pair. Such an entry holds only the session's
+    /// revoked (agent, App) pairs and stays for the kernel's lifetime.
     pub(crate) fn keep_pumping(&self, session: &str) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(session) {
             Some(views) if !views.tabs.is_empty() || views.open_tabs > 0 => true,
             _ => {
-                sessions.remove(session);
+                let revoked = sessions
+                    .remove(session)
+                    .map(|views| views.revoked)
+                    .unwrap_or_default();
+                if !revoked.is_empty() {
+                    sessions.insert(
+                        session.to_owned(),
+                        SessionViews {
+                            revoked,
+                            ..Default::default()
+                        },
+                    );
+                }
                 false
             }
         }
@@ -229,13 +273,6 @@ impl AppViews {
             views.tabs.retain(|_, (binding, _)| {
                 binding.owner != owner || binding.installation != installation
             });
-            if views
-                .foreground
-                .as_ref()
-                .is_some_and(|(o, i)| o == owner && i == installation)
-            {
-                views.foreground = None;
-            }
         }
     }
 
@@ -410,6 +447,27 @@ mod tests {
         // Two Tabs in one batch are each marked.
         assert!(views.first_call("s", "t2"));
         assert!(!views.first_call("s", "t2"));
+    }
+
+    #[test]
+    fn a_revoked_binding_is_remembered_until_the_app_binds_it_again() {
+        let views = AppViews::default();
+        assert!(!views.is_revoked("s", "agent-1", "a"));
+        // Recorded even before the session has App views.
+        views.set_revoked("s", "agent-1", "a", true);
+        assert!(views.is_revoked("s", "agent-1", "a"));
+        assert!(!views.is_revoked("s", "agent-2", "a"));
+        assert!(!views.is_revoked("other", "agent-1", "a"));
+        // Kept when the session's last App view closes; a new view starts
+        // the pump again.
+        assert!(views.register("s", "t", binding("a")));
+        views.retain_open("s", &[], u64::MAX);
+        assert!(!views.keep_pumping("s"));
+        assert!(views.is_revoked("s", "agent-1", "a"));
+        assert_eq!(views.binding("s", "t"), None);
+        assert!(views.register("s", "t", binding("a")));
+        views.set_revoked("s", "agent-1", "a", false);
+        assert!(!views.is_revoked("s", "agent-1", "a"));
     }
 }
 

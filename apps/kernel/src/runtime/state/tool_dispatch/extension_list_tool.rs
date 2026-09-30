@@ -189,15 +189,38 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_list_extensions",
                     message: "App installation inventory is unavailable".into(),
                 })?;
-            let apps = page.installations.into_iter().map(|installation| serde_json::json!({
-                "kind": "app", "name": installation.installation_id,
-                "app_id": installation.app_id,
-                "granted": agent.has_extension_grant(crate::extension::ExtensionKind::App, &installation.installation_id),
-                "active_release": installation.active.is_some(),
-                "tools_available": false,
-                "ready_state": "activation_unavailable",
-                "effective_when_requested": "binding_saved"
-            })).collect::<Vec<_>>();
+            // An App whose worker runs or may start on demand is listed once
+            // bound (a call starts it); a user stop or a failed generation is
+            // not. The start gate answers that without loading the release.
+            let control = self.app_control();
+            let store = &self.owned.durable_state_store;
+            let owner = agent.owner_user_id();
+            let apps = page
+                .installations
+                .into_iter()
+                .map(|installation| {
+                    let id = installation.installation_id.as_str();
+                    let granted =
+                        agent.has_extension_grant(crate::extension::ExtensionKind::App, id);
+                    let active = installation.active.is_some();
+                    let listed = control.active_app_lease(owner, id).is_some()
+                        || control.is_app_dormant(owner, id)
+                        || matches!(
+                            store.app_worker_start_gate(owner, id),
+                            Ok(crate::durable_state::app_worker_lifecycle::StartGate::Allowed)
+                        );
+                    let (ready_state, effective) = app_readiness(active, granted, listed);
+                    serde_json::json!({
+                        "kind": "app", "name": id,
+                        "app_id": installation.app_id,
+                        "granted": granted,
+                        "active_release": active,
+                        "tools_available": granted && listed,
+                        "ready_state": ready_state,
+                        "effective_when_requested": effective
+                    })
+                })
+                .collect::<Vec<_>>();
             (apps, page.next_cursor)
         } else {
             (Vec::new(), None)
@@ -220,5 +243,44 @@ impl KernelRuntimeState {
             },
             None,
         ))
+    }
+}
+
+/// An App's readiness for this agent, and when a request for it takes effect
+/// (as `request_extension` answers it). `listed`: it runs or may start on
+/// demand, so its tools are in the agent's catalog once bound.
+fn app_readiness(active: bool, granted: bool, listed: bool) -> (&'static str, &'static str) {
+    match (active, granted, listed) {
+        (false, _, _) => ("unavailable", "unavailable"),
+        (true, true, true) => ("ready", "now"),
+        (true, true, false) => ("stopped", "binding_saved"),
+        (true, false, true) => ("available", "after_provider_reload"),
+        (true, false, false) => ("stopped", "binding_saved"),
+    }
+}
+
+#[cfg(test)]
+mod app_readiness_tests {
+    #[test]
+    fn app_readiness_matches_what_a_request_answers() {
+        use super::app_readiness;
+        assert_eq!(
+            app_readiness(false, true, true),
+            ("unavailable", "unavailable")
+        );
+        assert_eq!(app_readiness(true, true, true), ("ready", "now"));
+        assert_eq!(
+            app_readiness(true, true, false),
+            ("stopped", "binding_saved")
+        );
+        assert_eq!(
+            app_readiness(true, false, true),
+            ("available", "after_provider_reload")
+        );
+        // Unbound but stopped by the user or failed: a request only saves it.
+        assert_eq!(
+            app_readiness(true, false, false),
+            ("stopped", "binding_saved")
+        );
     }
 }

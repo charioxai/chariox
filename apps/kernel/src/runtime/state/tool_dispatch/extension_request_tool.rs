@@ -77,11 +77,14 @@ impl KernelRuntimeState {
                 let granted_agent = self
                     .grant_agent_app_for_tool(agent.id(), grant, agent.owner_user_id())
                     .await?;
+                // Listed when it runs or may start on demand (the grant seeded it).
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                let active = self
-                    .app_control()
-                    .active_app_lease(granted_agent.owner_user_id(), &args.name)
-                    .is_some();
+                let active = {
+                    let control = self.app_control();
+                    let owner = granted_agent.owner_user_id();
+                    control.active_app_lease(owner, &args.name).is_some()
+                        || control.is_app_dormant(owner, &args.name)
+                };
                 #[cfg(not(any(
                     target_os = "macos",
                     all(target_os = "linux", target_env = "gnu")
@@ -298,7 +301,7 @@ impl KernelRuntimeState {
             "effective": effective_when,
             "requires_provider_restart": requires_provider_restart,
             "note": match effective_when {
-                "binding_saved" => "The App binding is saved. Its tools become available when the installation is running and the provider catalog is refreshed.",
+                "binding_saved" => "The App binding is saved. The App is stopped or cannot start, so its tools are not listed; they appear once it can start again.",
                 "after_provider_reload" => "Chariox will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
                 "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
                 "now" => "The extension grant is persisted and available immediately in this turn.",

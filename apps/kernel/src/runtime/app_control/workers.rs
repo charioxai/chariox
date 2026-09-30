@@ -4,22 +4,111 @@ use super::AppControlService;
 use crate::runtime::app_worker::{ActivatedApp, AppWorkerError, AppWorkerLease};
 use chariox_app_runtime::app_outbox::EventCatalog;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
 const MAX_PROJECTIONS: usize = 64;
+/// Bound on remembered (agent, App) listing omissions.
+const MAX_UNLISTED: usize = 4096;
 type Key = (String, String);
 /// Live worker projections, plus the verified catalogs of Apps stopped while
 /// idle. A dormant catalog keeps tools discoverable; invoking one starts the
 /// App on demand. Current generation and signer are rechecked before use.
+/// The third part remembers which agents' tool listings left a bound App
+/// out; the fourth signals when such an App starts.
 #[derive(Clone, Default)]
 pub(super) struct ActiveWorkers(
     Arc<Mutex<BTreeMap<Key, ActivatedApp>>>,
     Arc<Mutex<BTreeMap<Key, Arc<EventCatalog>>>>,
+    Arc<Mutex<Unlisted>>,
+    Arc<tokio::sync::Notify>,
 );
 
+/// Agents whose App tool listing left out a bound App (it neither ran nor
+/// could start then). When that App starts, they are due a catalog refresh,
+/// once per omission.
+#[derive(Default)]
+struct Unlisted {
+    by_app: BTreeMap<Key, BTreeSet<String>>,
+    len: usize,
+    due: BTreeSet<String>,
+}
+
 impl ActiveWorkers {
+    pub(super) fn note_unlisted(&self, owner: &str, installation: &str, agent: &str) {
+        let Ok(mut unlisted) = self.2.lock() else {
+            return;
+        };
+        let key = (owner.to_owned(), installation.to_owned());
+        if unlisted
+            .by_app
+            .get(&key)
+            .is_some_and(|agents| agents.contains(agent))
+        {
+            return;
+        }
+        if unlisted.len >= MAX_UNLISTED {
+            tracing::debug!(
+                installation,
+                agent,
+                "listing omissions at their bound; this App's start will not refresh the agent"
+            );
+            return;
+        }
+        unlisted
+            .by_app
+            .entry(key)
+            .or_default()
+            .insert(agent.to_owned());
+        unlisted.len += 1;
+    }
+    pub(super) fn forget_unlisted(&self, owner: &str, installation: &str, agent: &str) {
+        let Ok(mut unlisted) = self.2.lock() else {
+            return;
+        };
+        let key = (owner.to_owned(), installation.to_owned());
+        let Some(agents) = unlisted.by_app.get_mut(&key) else {
+            return;
+        };
+        if agents.remove(agent) {
+            if agents.is_empty() {
+                unlisted.by_app.remove(&key);
+            }
+            unlisted.len -= 1;
+        }
+    }
+    /// The App runs now: agents whose listing left it out are due a refresh.
+    fn started(&self, key: &Key) {
+        let Ok(mut unlisted) = self.2.lock() else {
+            return;
+        };
+        let Some(agents) = unlisted.by_app.remove(key) else {
+            return;
+        };
+        unlisted.len -= agents.len();
+        unlisted.due.extend(agents);
+        drop(unlisted);
+        self.3.notify_one();
+    }
+    #[cfg(test)]
+    pub(super) fn is_unlisted(&self, owner: &str, installation: &str, agent: &str) -> bool {
+        self.2
+            .lock()
+            .unwrap()
+            .by_app
+            .get(&(owner.to_owned(), installation.to_owned()))
+            .is_some_and(|agents| agents.contains(agent))
+    }
+    pub(super) fn take_due(&self) -> Vec<String> {
+        self.2.lock().map_or_else(
+            |_| Vec::new(),
+            |mut unlisted| std::mem::take(&mut unlisted.due).into_iter().collect(),
+        )
+    }
+    pub(super) fn due_signal(&self) -> Arc<tokio::sync::Notify> {
+        self.3.clone()
+    }
     fn is_dormant(&self, owner: &str, installation: &str) -> bool {
         self.1
             .lock()
@@ -69,6 +158,7 @@ impl AppWorkerPublisher {
         if let Ok(mut dormant) = self.workers.1.lock() {
             dormant.remove(&key);
         }
+        self.workers.started(&key);
         self.event_pump.wake();
         Ok(())
     }
@@ -170,5 +260,30 @@ impl AppControlService {
             .filter_map(|((owner, _), worker)| worker.lease(owner).ok())
             .take(limit.min(16))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_start_makes_agents_whose_listing_left_the_app_out_due_once() {
+        let workers = ActiveWorkers::default();
+        let key = |app: &str| ("alice".to_owned(), app.to_owned());
+        workers.note_unlisted("alice", "todo", "agent-1");
+        workers.note_unlisted("alice", "todo", "agent-1");
+        workers.note_unlisted("alice", "docs", "agent-2");
+        workers.note_unlisted("alice", "docs", "agent-3");
+        // Listed (or revoked) since: no refresh when the App starts.
+        workers.forget_unlisted("alice", "docs", "agent-3");
+        workers.started(&key("todo"));
+        assert_eq!(workers.take_due(), vec!["agent-1".to_owned()]);
+        assert!(workers.take_due().is_empty());
+        workers.started(&key("todo"));
+        assert!(workers.take_due().is_empty());
+        workers.started(&key("docs"));
+        assert_eq!(workers.take_due(), vec!["agent-2".to_owned()]);
+        assert_eq!(workers.2.lock().unwrap().len, 0);
     }
 }

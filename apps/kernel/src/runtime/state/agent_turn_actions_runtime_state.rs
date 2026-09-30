@@ -145,10 +145,31 @@ impl KernelRuntimeState {
         }
         let mut forked_agent = self.spawn_agent(create_request).await?;
         for grant in source_agent.extension_grants() {
+            // App bindings take the checked, audited binding path.
+            if grant.kind == crate::extension::ExtensionKind::App {
+                if let Some(agent) = self
+                    .copy_agent_app_grant(forked_agent.id(), grant.clone(), &caller_user_id)
+                    .await?
+                {
+                    forked_agent = agent;
+                }
+                continue;
+            }
             forked_agent = self
                 .owned
                 .agent_store
                 .grant_extension(forked_agent.id(), grant.clone())?;
+        }
+        // The fork is the person's new focus agent: like a person's spawn, it
+        // gets the App of the Room's focused App Tab.
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if self
+            .bind_foreground_app(&request.session_id)
+            .await
+            .as_deref()
+            == Some(forked_agent.id())
+        {
+            forked_agent = self.owned.agent_store.get_agent(forked_agent.id())?;
         }
         for substitute in source_agent.substitutes() {
             forked_agent = self

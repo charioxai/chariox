@@ -37,9 +37,13 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         std::env::temp_dir().join(format!("chariox-app-mcp-{:016x}", rand::random::<u64>())),
     );
     std::fs::create_dir(&scratch.0).unwrap();
-    let (router, store, catalog, agents, tokens) = {
+    let (router, store, catalog, agents, tokens, runs) = {
         let _entered = runtime.enter();
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        // The release store refuses symlinked paths (macOS /var): resolve it.
+        let root = scratch.0.canonicalize().unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").to_string_lossy().into());
+        let mut app = DaemonApp::bootstrap(config).unwrap();
         let store = app.durable_state_store();
         let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
         let session = app
@@ -51,6 +55,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
             .unwrap();
         let mut agents = Vec::new();
         let mut tokens = Vec::new();
+        let mut runs = Vec::new();
         for meta in [false, true] {
             let mut agent = crate::app::KernelSessionService::new(&mut app)
                 .spawn_agent(
@@ -77,9 +82,10 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
             );
             agents.push(agent.id().to_owned());
             tokens.push(run.runtime_mcp_auth_token().unwrap().to_owned());
+            runs.push(run.id().to_owned());
         }
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-        (router, store, catalog, agents, tokens)
+        (router, store, catalog, agents, tokens, runs)
     };
     let name = catalog.app_catalog().tools().next().unwrap().name.clone();
     let fixture = Fixture::compile().unwrap();
@@ -89,11 +95,25 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
     )
     .unwrap();
+    // As an install does: the verified release is stored, so a stopped App's
+    // catalog can be read back without its worker.
+    chariox_app_runtime::release_store::ReleaseStore::open_or_create(store.path())
+        .unwrap()
+        .stage(
+            &package,
+            &bytes,
+            chariox_app_runtime::release_store::StageBudget {
+                max_stage_bytes: 1024 * 1024,
+                reserved_bytes: 1024 * 1024,
+                host_reserve_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
     let (process, observed) = fixture.spawn_blocking(Mode::ToolEcho, &package).unwrap();
     let (starting, _control) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
         process,
         &package,
-        catalog,
+        catalog.clone(),
         Arc::new(RejectBroker),
         PeerLimits::default(),
         runtime.handle().clone(),
@@ -115,6 +135,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         .app_control()
         .publish_app_worker("alice", handle)
         .unwrap();
+    let mut bound = Vec::new();
     for (agent, token) in agents.iter().zip(&tokens) {
         let control = router.runtime_state.app_control();
         let permits = (0..8)
@@ -137,6 +158,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
                 "alice",
             ))
             .unwrap();
+        bound.push(granted.clone());
         let collision = control
             .app_extension_tools_for_agent(
                 &granted,
@@ -195,19 +217,118 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         .is_err());
     assert_eq!(observed.tool_invocations(), 2);
     owner.shutdown_blocking();
+    let lists = |token: &String| {
+        runtime
+            .block_on(router.runtime_tool_specs_for_auth_token_async(token.clone()))
+            .unwrap()
+            .iter()
+            .any(|tool| tool.name == name)
+    };
+    // A listing while App admission is saturated leaves the cold App out; the
+    // next listing shows it, so the App's start will refresh no one.
+    let control = router.runtime_state.app_control();
     let permits = (0..8)
-        .map(|_| router.runtime_state.app_control().try_admit().unwrap())
+        .map(|_| control.try_admit().unwrap())
         .collect::<Vec<_>>();
-    assert!(!runtime
+    runtime
         .block_on(router.runtime_tool_specs_for_auth_token_async(tokens[1].clone()))
-        .expect("a saved offline binding needs no App database admission")
-        .iter()
-        .any(|tool| tool.name == name));
+        .unwrap();
+    assert!(control.app_unlisted("alice", "installed", &agents[1]));
     drop(permits);
-    assert!(!router
-        .runtime_tool_specs_for_auth_token(&tokens[1])
+    runtime.block_on(async {
+        timeout(Duration::from_secs(5), async {
+            while control.catalog_refresh_pending(&agents[1]) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the delayed refresh runs once a slot frees");
+    });
+    // No worker runs, but the App may start on demand: the bound agent still
+    // lists its tools from the verified release (a call starts it); the agent
+    // whose binding was revoked does not.
+    assert!(lists(&tokens[1]));
+    assert!(!control.app_unlisted("alice", "installed", &agents[1]));
+    assert!(!lists(&tokens[0]));
+    // The shared projection, which a leased agent's manifest uses too.
+    let control = router.runtime_state.app_control();
+    control.forget_app_dormant("alice", "installed");
+    assert!(control
+        .app_extension_tools_for_agent(&bound[1], &std::collections::BTreeSet::new())
+        .unwrap()
         .iter()
-        .any(|tool| tool.name == name));
+        .any(|tool| tool.tool_name == name));
+    // A user stop keeps them out until an explicit start.
+    store
+        .stop_app_worker_intent(
+            "alice",
+            "installed",
+            crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    router
+        .runtime_state
+        .app_control()
+        .forget_app_dormant("alice", "installed");
+    assert!(!lists(&tokens[1]));
     assert!(observed.was_reaped());
     assert!(observed.lease_was_dropped());
+    // Bound while it is stopped, the other agent lists nothing for it yet.
+    let changes = router.runtime_mcp_catalog_changes();
+    let watches = [
+        changes.subscribe(&runs[0]).unwrap(),
+        changes.subscribe(&runs[1]).unwrap(),
+    ];
+    let before = watches.each_ref().map(|watch| watch.current().desired);
+    runtime
+        .block_on(router.runtime_state.grant_agent_extension(
+            &agents[0],
+            crate::extension::ExtensionGrant::app("installed"),
+            "alice",
+        ))
+        .unwrap();
+    assert_eq!(watches[0].current().desired, before[0]);
+    // Starting it again refreshes, once, the catalogs of the bound agents
+    // whose listing left it out or that were bound while it was stopped.
+    let (process, restarted) = fixture.spawn_blocking(Mode::ToolEcho, &package).unwrap();
+    let (starting, _control) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
+        process,
+        &package,
+        catalog,
+        Arc::new(RejectBroker),
+        PeerLimits::default(),
+        runtime.handle().clone(),
+    )
+    .unwrap();
+    let mut registered = starting
+        .await_registered_blocking(std::time::Duration::from_secs(3))
+        .unwrap();
+    let proof = store
+        .confirm_app_activation(
+            "alice",
+            registered.catalog().clone(),
+            registered.take_activation_budget().unwrap(),
+        )
+        .unwrap();
+    let (owner, handle) = registered.activate_blocking(proof).unwrap();
+    let control = router.runtime_state.app_control();
+    control.publish_app_worker("alice", handle).unwrap();
+    runtime.block_on(async {
+        router.runtime_state.refresh_started_app_catalogs();
+        timeout(Duration::from_secs(5), async {
+            while watches
+                .iter()
+                .zip(before)
+                .any(|(watch, before)| watch.current().desired == before)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the started App refreshes both agents' catalogs");
+    });
+    assert!(lists(&tokens[0]) && lists(&tokens[1]));
+    assert!(control.take_started_app_refreshes().is_empty());
+    owner.shutdown_blocking();
+    assert!(restarted.was_reaped());
 }
