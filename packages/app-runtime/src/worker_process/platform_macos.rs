@@ -40,7 +40,7 @@ pub(super) fn prepare(
                 committed_generation,
             )
         })
-        .map_err(|error| WorkerError::Storage(error.code()))?;
+        .map_err(storage_error)?;
     let [data, temporary] = storage.paths();
     let [data_dir, temporary_dir] = storage
         .directories()
@@ -231,6 +231,35 @@ mod tests {
         assert!(
             descriptor_path(&held).is_err(),
             "a removed root no longer matches its identity"
+        );
+    }
+}
+
+// Only the host headroom refusal carries numeric recovery guidance.
+fn storage_error(error: storage_macos::Error) -> WorkerError {
+    match error {
+        storage_macos::Error::HostReserve(space) => WorkerError::HostDiskSpace(space),
+        other => WorkerError::Storage(other.code()),
+    }
+}
+
+#[cfg(test)]
+mod disk_space_tests {
+    use super::*;
+    #[test]
+    fn host_space_numbers_survive_macos_preparation() {
+        let space = crate::worker_process::HostDiskSpace { free: 1, needed: 2 };
+        assert_eq!(
+            storage_error(storage_macos::Error::HostReserve(space)),
+            WorkerError::HostDiskSpace(space)
+        );
+        assert_eq!(
+            storage_error(storage_macos::Error::Identity),
+            WorkerError::Storage("app_storage_identity")
+        );
+        assert_eq!(
+            storage_error(storage_macos::Error::Capacity),
+            WorkerError::Storage("app_storage_capacity")
         );
     }
 }

@@ -32,6 +32,8 @@ pub(super) enum Error {
     Busy,
     #[error("app_storage_capacity")]
     Capacity,
+    #[error("app_storage_host_reserve")]
+    HostReserve(super::HostDiskSpace),
     #[error("app_storage_metadata")]
     Metadata,
     #[error("app_storage_command")]
@@ -50,6 +52,7 @@ impl Error {
             Self::Identity => "app_storage_identity",
             Self::Busy => "app_storage_busy",
             Self::Capacity => "app_storage_capacity",
+            Self::HostReserve(_) => "app_storage_host_reserve",
             Self::Metadata => "app_storage_metadata",
             Self::Command => "app_storage_command",
             Self::CommandTimeout => "app_storage_command_timeout",
@@ -75,7 +78,6 @@ const MAX_INSTALLATIONS: usize = 64;
 /// the empty mount directories, with room for what an App left in them.
 const MAX_DELETED_ENTRIES: usize = 4096;
 const MAX_RESERVED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
-const HOST_RESERVE: u64 = 8 * 1024 * 1024 * 1024;
 /// Storage last used by `recorded` admits `generation` when it is not older,
 /// or when it is the committed generation again: an update that was staged
 /// but never committed (it failed before commit) must not fence out the
@@ -524,10 +526,10 @@ fn storage_name(owner: &str, installation: &str) -> String {
 }
 
 fn require_capacity(total: u64, unallocated: u64, available: u64) -> Result<()> {
-    if total > MAX_RESERVED_BYTES || available.saturating_sub(unallocated) < HOST_RESERVE {
+    if total > MAX_RESERVED_BYTES {
         return Err(Error::Capacity);
     }
-    Ok(())
+    super::HostDiskSpace::check(available, unallocated).map_err(Error::HostReserve)
 }
 
 fn installation_name(name: &OsStr) -> Result<&str> {
