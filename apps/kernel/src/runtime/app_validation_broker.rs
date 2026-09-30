@@ -16,6 +16,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Semaphore;
 
 const MAX_PARAMETERS_BYTES: usize = 16 * 1024;
+/// Callers recorded with one request (the worker's concurrent calls).
+const MAX_CALLERS: usize = 8;
 
 struct CriticalAction {
     schema: JSONSchema,
@@ -90,7 +92,7 @@ impl AppValidationBroker {
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             match method.as_str() {
-                "validation.request" => service.request(request.params),
+                "validation.request" => service.request(request.params, request.callers),
                 "validation.status" => service.status(request.params),
                 _ => Err(error("METHOD_UNAVAILABLE", false)),
             }
@@ -99,7 +101,7 @@ impl AppValidationBroker {
         .map_err(|_| error("STORAGE_UNAVAILABLE", true))?
     }
 
-    fn request(&self, params: Value) -> Result<Value, RemoteError> {
+    fn request(&self, params: Value, callers: Vec<Value>) -> Result<Value, RemoteError> {
         let request: Request =
             serde_json::from_value(params).map_err(|_| error("INVALID_ARGUMENT", false))?;
         if request.connection_id.is_some() {
@@ -141,6 +143,7 @@ impl AppValidationBroker {
             digest,
             state: ValidationState::Pending,
             expires_ms: crate::session::unix_epoch_ms() + app_validations::PENDING_MS,
+            callers: recorded_callers(callers),
         };
         let created = self
             .store
@@ -160,6 +163,25 @@ impl AppValidationBroker {
             .ok_or_else(|| error("NOT_FOUND", false))?;
         Ok(reply(&operation))
     }
+}
+
+/// The callers the approval names: the worker peer's `actor` values of the
+/// calls in progress (`{kind, id}`), bounded, as a JSON array.
+fn recorded_callers(callers: Vec<Value>) -> String {
+    let named: Vec<Value> = callers
+        .into_iter()
+        .filter(|actor| {
+            matches!(
+                actor["kind"].as_str(),
+                Some("human" | "agent" | "background")
+            ) && actor["id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id.len() <= 128)
+        })
+        .map(|actor| json!({"kind": actor["kind"], "id": actor["id"]}))
+        .take(MAX_CALLERS)
+        .collect();
+    Value::Array(named).to_string()
 }
 
 /// The SDK's `ValidationOperation`; a consumed approval reads as approved.
@@ -261,30 +283,53 @@ mod tests {
         .unwrap();
         let code = |result: Result<Value, RemoteError>| result.unwrap_err().code;
         assert_eq!(
-            code(broker.request(json!({"action":"refresh","parameters":{}}))),
+            code(broker.request(json!({"action":"refresh","parameters":{}}), Vec::new())),
             "UNDECLARED_ACTION",
             "not critical"
         );
         assert_eq!(
-            code(broker.request(json!({"action":"delete_all","parameters":{}}))),
+            code(broker.request(json!({"action":"delete_all","parameters":{}}), Vec::new())),
             "UNDECLARED_ACTION"
         );
         assert_eq!(
-            code(broker.request(json!({"action":"send_payment","parameters":{"to":"x"}}))),
+            code(broker.request(
+                json!({"action":"send_payment","parameters":{"to":"x"}}),
+                Vec::new()
+            )),
             "INVALID_ARGUMENT"
         );
-        assert_eq!(code(broker.request(json!({"action":"send_payment","parameters":{"to":"x","amount":5},"connectionId":"c"}))), "METHOD_UNAVAILABLE");
+        assert_eq!(code(broker.request(json!({"action":"send_payment","parameters":{"to":"x","amount":5},"connectionId":"c"}), Vec::new())), "METHOD_UNAVAILABLE");
+        // The operation names the callers the worker was handling, as the
+        // kernel gave them; anything else the peer passed is dropped.
+        let callers = vec![
+            json!({"kind":"agent","id":"agent-1"}),
+            json!({"kind":"human","id":"alice"}),
+            json!({"kind":"other","id":"x"}),
+            json!({"kind":"agent","id":""}),
+        ];
         let pending = broker
-            .request(json!({"action":"send_payment","parameters":{"amount":5,"to":"x"}}))
+            .request(
+                json!({"action":"send_payment","parameters":{"amount":5,"to":"x"}}),
+                callers,
+            )
             .unwrap();
         assert_eq!(pending["state"], "pending");
         let id = pending["operationId"].as_str().unwrap().to_owned();
+        let stored = store
+            .app_validation_status("alice", "pay", &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&stored.callers).unwrap(),
+            json!([{"kind":"agent","id":"agent-1"},{"kind":"human","id":"alice"}])
+        );
         // The same operation is found again only for the identical binding.
-        let again = broker.request(json!({"action":"send_payment","parameters":{"to":"x","amount":5},"operationId":id})).unwrap();
+        let again = broker.request(json!({"action":"send_payment","parameters":{"to":"x","amount":5},"operationId":id}), Vec::new()).unwrap();
         assert_eq!(again["operationId"], id.as_str());
         assert_eq!(
             code(broker.request(
-                json!({"action":"send_payment","parameters":{"to":"x","amount":6},"operationId":id})
+                json!({"action":"send_payment","parameters":{"to":"x","amount":6},"operationId":id}),
+                Vec::new()
             )),
             "NOT_FOUND"
         );

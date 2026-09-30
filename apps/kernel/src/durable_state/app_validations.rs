@@ -57,6 +57,10 @@ pub(crate) struct ValidationOperation {
     pub(crate) digest: String,
     pub(crate) state: ValidationState,
     pub(crate) expires_ms: u64,
+    /// Whom the App was working for when it asked: the kernel's `actor` of
+    /// each call it was handling (a JSON array), never an App-supplied value.
+    /// Empty for an operation recorded before callers were.
+    pub(crate) callers: String,
 }
 
 /// Canonical JSON with sorted object keys, and its SHA-256 digest.
@@ -161,13 +165,25 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             generation INTEGER NOT NULL, action TEXT NOT NULL, parameters_json TEXT NOT NULL,
             digest TEXT NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('pending','approved','denied','expired','consumed')),
-            expires_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL);
+            expires_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL,
+            callers_json TEXT NOT NULL DEFAULT '');
          CREATE INDEX IF NOT EXISTS app_validations_open ON app_validations(state, expires_ms);",
-    )
+    )?;
+    let named: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_validations') WHERE name='callers_json')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !named {
+        connection.execute_batch(
+            "ALTER TABLE app_validations ADD COLUMN callers_json TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
 }
 
 const COLUMNS: &str =
-    "operation_id, owner_id, installation_id, generation, action, parameters_json, digest, state, expires_ms";
+    "operation_id, owner_id, installation_id, generation, action, parameters_json, digest, state, expires_ms, callers_json";
 
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<ValidationOperation> {
     let state: String = row.get(7)?;
@@ -181,6 +197,7 @@ fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<ValidationOperation> {
         digest: row.get(6)?,
         state: ValidationState::parse(&state).ok_or(rusqlite::Error::InvalidQuery)?,
         expires_ms: row.get::<_, i64>(8)? as u64,
+        callers: row.get(9)?,
     })
 }
 
@@ -295,7 +312,9 @@ fn apply(
             }
             transaction
                 .execute(
-                    "INSERT INTO app_validations VALUES (?1,?2,?3,?4,?5,?6,?7,'pending',?8,?9)",
+                    "INSERT INTO app_validations (operation_id, owner_id, installation_id, generation,
+                       action, parameters_json, digest, state, expires_ms, updated_ms, callers_json)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,'pending',?8,?9,?10)",
                     params![
                         operation.operation_id,
                         operation.owner,
@@ -305,7 +324,8 @@ fn apply(
                         operation.parameters,
                         operation.digest,
                         operation.expires_ms as i64,
-                        crate::session::unix_epoch_ms() as i64
+                        crate::session::unix_epoch_ms() as i64,
+                        operation.callers
                     ],
                 )
                 .map_err(storage)?;

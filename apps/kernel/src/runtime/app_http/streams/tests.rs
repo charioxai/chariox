@@ -395,6 +395,7 @@ fn an_approval_is_spent_durably_only_by_an_admitted_start_and_only_once() {
             digest: digest.clone(),
             state: ValidationState::Pending,
             expires_ms: u64::MAX / 4,
+            callers: "[]".into(),
         }))
         .unwrap();
     fixture
