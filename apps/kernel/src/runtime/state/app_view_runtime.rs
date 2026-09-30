@@ -400,11 +400,13 @@ impl KernelRuntimeState {
                 },
             )
             .await;
-        views.finish_reconnect(session_id, target_id);
         if reloaded.is_none() {
+            // Unbound before the mark goes, so no call runs in between.
             views.unbind(session_id, target_id);
+            views.finish_reconnect(session_id, target_id);
             return Err(unbound());
         }
+        views.finish_reconnect(session_id, target_id);
         Err(view_reloading())
     }
 

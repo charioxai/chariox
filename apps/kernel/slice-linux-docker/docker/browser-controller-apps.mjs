@@ -154,6 +154,8 @@ export class AppTabs {
     const next = params.entry ?? "index.html";
     app.assets = assets(params.assets, next);
     app.entry = next;
+    // Calls the old page queued are not the new page's: its promises go with it.
+    this.calls = this.calls.filter((call) => call.target_id !== app.targetId);
     await this.connection.send("Page.reload", { ignoreCache: true }, sessionId);
     return { target_id: app.targetId };
   }

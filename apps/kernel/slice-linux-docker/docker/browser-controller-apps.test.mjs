@@ -246,7 +246,11 @@ test("reload serves the new generation's assets to the same Tab and reloads it",
   const { tabs, connection } = await opened();
   await assert.rejects(tabs.reload({ target_id: "other", assets: [asset("index.html", "x")] }));
   await assert.rejects(tabs.reload({ target_id: "t1", assets: [asset("app.js", "2", "text/javascript")] }));
+  // A call the old page queued just before the reload is dropped with it.
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "old", method: "list_todos" }) } });
   assert.deepEqual(await tabs.reload({ target_id: "t1", assets: [asset("index.html", "<p>v2</p>")] }), { target_id: "t1" });
+  assert.deepEqual((await tabs.takeCalls()).calls, []);
   assert.deepEqual(connection.sent.at(-1), { method: "Page.reload", params: { ignoreCache: true }, sessionId: "s1" });
   const app = [...tabs.apps.values()][0];
   assert.equal(Buffer.from(app.assets.get("index.html").body, "base64").toString(), "<p>v2</p>");
