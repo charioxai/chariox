@@ -43,6 +43,14 @@ impl WakePass {
         drop(state);
         Some(WakePass(Some(shared)))
     }
+
+    /// Asks for one more pass as soon as this one finishes: it filled its
+    /// page, so more work is likely due already.
+    pub(crate) fn again(&self) {
+        if let Some(state) = &self.0 {
+            lock(state).requested = true;
+        }
+    }
 }
 
 fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
@@ -112,6 +120,19 @@ mod tests {
         // Ticks are throttled from the last pass of either kind.
         assert!(pump.try_begin(11_500).is_none());
         assert!(pump.try_begin(11_800).is_some());
+    }
+
+    #[test]
+    fn a_pass_that_filled_its_page_is_rerun_once() {
+        let pump = AppWakePump::default();
+        let tick = pump.try_begin(10_000).unwrap();
+        tick.again();
+        // Finishing hands the pump straight to one rerun, which holds it...
+        let rerun = tick.finish(10_100).unwrap();
+        assert!(pump.try_begin(12_000).is_none());
+        // ...and asks for nothing more by itself.
+        assert!(rerun.finish(10_200).is_none());
+        assert!(pump.try_begin_requested(10_300).is_some());
     }
 
     #[test]

@@ -2,7 +2,9 @@
 //! an App's declared incoming event. Accepted occurrences are durable before
 //! the source is acknowledged, then delivered to the App's handler at least
 //! once, starting a stopped worker on demand, and waiting through updates.
-use super::app_wake_pump_runtime::{after_delivery, Settle, DELIVERY_TIMEOUT, PAGE, START_WAIT_MS};
+use super::app_wake_pump_runtime::{
+    after_delivery, page_wants_rerun, Settle, DELIVERY_TIMEOUT, PAGE, START_WAIT_MS,
+};
 use super::KernelRuntimeState;
 use crate::durable_state::app_active_release::ActiveReleaseError;
 use crate::durable_state::app_inbox::{AppInboxOperation, AppInboxOutcome};
@@ -134,8 +136,9 @@ impl KernelRuntimeState {
         ))
     }
 
-    /// One bounded delivery pass, run with the wake pass.
-    pub(super) async fn app_inbox_pass(&self, now_ms: u64) {
+    /// One bounded delivery pass, run with the wake pass; true when it filled
+    /// its page and delivered something.
+    pub(super) async fn app_inbox_pass(&self, now_ms: u64) -> bool {
         let store = self.owned.durable_state_store.clone();
         let due = tokio::task::spawn_blocking(move || {
             store.app_inbox(AppInboxOperation::Due {
@@ -145,11 +148,13 @@ impl KernelRuntimeState {
         })
         .await;
         let Ok(Ok(AppInboxOutcome::Due(due))) = due else {
-            return;
+            return false;
         };
         if due.is_empty() {
-            return;
+            return false;
         }
+        let page = due.len();
+        let mut delivered_count = 0;
         let (deliver, planned) = self
             .plan_app_delivery(due, now_ms, |item: &InboxItem| {
                 (item.owner_id.clone(), item.installation_id.clone())
@@ -181,6 +186,7 @@ impl KernelRuntimeState {
                 continue;
             }
             let delivered = lease.deliver_event(&item, DELIVERY_TIMEOUT).await.is_ok();
+            delivered_count += usize::from(delivered);
             let update_pending = !delivered
                 && self
                     .app_update_pending(&item.owner_id, &item.installation_id)
@@ -200,6 +206,7 @@ impl KernelRuntimeState {
             }
         })
         .await;
+        page_wants_rerun(page, delivered_count)
     }
 
     async fn still_accepted(&self, item: &InboxItem) -> bool {
