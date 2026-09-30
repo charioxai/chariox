@@ -140,6 +140,8 @@ export type RuntimeInteractionChoice = {
   label: string
   reply: string
   style?: "primary" | "secondary" | "danger" | null
+  /** Protocol 383: answering with this choice needs the Chariox passkey. */
+  requires_passkey?: boolean
 }
 
 export type RuntimeInteractionCustomChoice = {

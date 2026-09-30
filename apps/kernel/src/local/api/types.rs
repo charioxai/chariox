@@ -191,4 +191,4 @@ pub use workspace::*;
 /// Version 372 adds the install operation phase `queued`: approved and waiting
 /// to start (for example for a free App worker slot), which earlier kernels
 /// reported as `awaiting_approval`, then as `starting`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 372;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 383;

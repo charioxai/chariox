@@ -21,6 +21,18 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid interaction identity"));
         }
+        // Only a kernel decision may ask for the passkey; an agent's question
+        // must never prompt the human for it.
+        if interaction.agent_id().is_some()
+            && interaction
+                .choices()
+                .iter()
+                .any(crate::session::RuntimeInteractionChoice::requires_passkey)
+        {
+            return Err(interaction_error(
+                "Only kernel decisions can require the Chariox passkey",
+            ));
+        }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         if let Some(agent_id) = interaction.agent_id() {

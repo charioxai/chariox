@@ -17,12 +17,12 @@ const session = (id = "session-1", items: RuntimeInteraction[] = [approvalFixtur
 const key = (name: string, extra: Partial<KernelApprovalKey> = {}): KernelApprovalKey => ({
   name, preventDefault() { this.defaultPrevented = true }, stopPropagation() {}, ...extra,
 })
-function harness() {
-  let current = session()
+function harness(initial = session()) {
+  let current = initial
   let connected = true
   let resolve!: (value: RuntimeSession) => void
   let reject!: (error: Error) => void
-  const requests: string[][] = []
+  const requests: unknown[][] = []
   const focus: string[] = []
   const controller = createKernelApprovalController({
     getSession: () => current, connected: () => connected, onView() {},
@@ -32,7 +32,7 @@ function harness() {
   })
   controller.sync()
   return { controller, requests, focus, resolve: (value: RuntimeSession) => resolve(value),
-    reject: () => reject(new Error("untrusted detail")),
+    reject: (message = "untrusted detail") => reject(new Error(message)),
     current: () => current,
     setSession(value: RuntimeSession) { current = value; controller.sync() },
     setConnected(value: boolean) { connected = value; controller.sync() },
@@ -146,4 +146,70 @@ test("a stale rendered choice cannot authorize the next pending interaction", as
   h.setSession(session("session-1", [{ ...approvalFixture, id: "replacement" }]))
   await h.controller.choose("approval-1", "allow")
   assert.equal(h.requests.length, 0)
+})
+
+const critical = (id: string): RuntimeInteraction => ({
+  id, kernel_operation_id: `validation:${id}`, kind: "permission", level: "warning",
+  title: "Approve App action", message: "An App asks to perform a protected action.",
+  choices: [{ id: "deny", label: "Deny", reply: "deny" },
+    { id: "approve", label: "Approve", reply: "allow", requires_passkey: true }],
+  requested_at_ms: 1,
+})
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+const selectApprove = (h: ReturnType<typeof harness>) => {
+  h.controller.handleKey(key("down"))
+  h.controller.handleKey(key("down"))
+  h.controller.handleKey(key("return"))
+}
+
+test("a critical approval asks for a hidden passkey and an optional remember window", async () => {
+  const h = harness(session("session-1", [critical("c1")]))
+  h.controller.handleKey(key("f8"))
+  selectApprove(h)
+  assert.equal(h.requests.length, 0)
+  assert.deepEqual(h.controller.view().passkey, { length: 0, rememberMinutes: 0 })
+  for (const sequence of ["S", "e", "c", " ", "1"]) h.controller.handleKey(key(sequence.trim() || "space", { sequence }))
+  h.controller.handleKey(key("backspace"))
+  h.controller.handleKey(key("tab"))
+  const view = JSON.stringify(h.controller.view())
+  assert.equal(view.includes("Sec"), false)
+  assert.deepEqual(h.controller.view().passkey, { length: 4, rememberMinutes: 5 })
+  h.controller.handleKey(key("return"))
+  assert.deepEqual(h.requests, [["session-1", "c1", "approve", { passkey: "Sec ", rememberMinutes: 5 }]])
+  assert.equal(h.controller.view().passkey, null)
+  h.reject("local transport `critical approval` failed: PASSKEY_REJECTED: the passkey is not correct")
+  await settle()
+  assert.equal(h.controller.view().error, "That passkey is not correct.")
+  assert.deepEqual(h.controller.view().passkey, { length: 0, rememberMinutes: 0 })
+  h.controller.handleKey(key("escape"))
+  assert.equal(h.controller.view().passkey, null)
+  assert.equal(h.controller.view().open, true)
+})
+
+test("deny and routine approvals never ask for the passkey", async () => {
+  const h = harness(session("session-1", [critical("c1")]))
+  h.controller.handleKey(key("f8"))
+  h.controller.handleKey(key("down"))
+  h.controller.handleKey(key("return"))
+  assert.deepEqual(h.requests, [["session-1", "c1", "deny"]])
+  assert.equal(h.controller.view().passkey, null)
+})
+
+test("this terminal's remember window skips the prompt until the kernel refuses", async () => {
+  const h = harness(session("session-1", [critical("c1"), critical("c2")]))
+  h.controller.handleKey(key("f8"))
+  selectApprove(h)
+  h.controller.handleKey(key("x", { sequence: "x" }))
+  h.controller.handleKey(key("tab"))
+  h.controller.handleKey(key("return"))
+  h.resolve(session("session-1", [critical("c2")]))
+  await settle()
+  selectApprove(h)
+  assert.deepEqual(h.requests[1], ["session-1", "c2", "approve"])
+  h.reject("PASSKEY_REQUIRED: approving this critical action needs your Chariox passkey")
+  await settle()
+  assert.deepEqual(h.controller.view().passkey, { length: 0, rememberMinutes: 0 })
+  h.controller.handleKey(key("escape"))
+  selectApprove(h)
+  assert.equal(h.requests.length, 2)
 })

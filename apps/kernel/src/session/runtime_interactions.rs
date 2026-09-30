@@ -38,6 +38,11 @@ pub struct RuntimeInteractionChoice {
     reply: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     style: Option<RuntimeInteractionChoiceStyle>,
+    /// Answering with this choice needs the Chariox passkey (the vault
+    /// passphrase) or an open remember window. Only kernel-operation
+    /// decisions may set it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    requires_passkey: bool,
 }
 
 impl RuntimeInteractionChoice {
@@ -52,7 +57,19 @@ impl RuntimeInteractionChoice {
             label: label.into(),
             reply: reply.into(),
             style,
+            requires_passkey: false,
         }
+    }
+
+    /// Marks a critical approval: the kernel accepts it only with a verified
+    /// passkey or within the owner's remember window.
+    pub(crate) fn requiring_passkey(mut self) -> Self {
+        self.requires_passkey = true;
+        self
+    }
+
+    pub fn requires_passkey(&self) -> bool {
+        self.requires_passkey
     }
 
     pub fn id(&self) -> &str {

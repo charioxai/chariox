@@ -1,4 +1,22 @@
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
+import type { InteractionPasskeyProof } from "./ipc-requests.js"
+
+/** Optional remember window after a verified passkey: off, 5 or 15 minutes. */
+export const PASSKEY_REMEMBER_MINUTES = [0, 5, 15] as const
+const PASSKEY_MAX_LENGTH = 512
+
+/** Fixed text for the kernel's passkey refusals; other errors stay generic. */
+const PASSKEY_REFUSALS: Record<string, string> = {
+  PASSKEY_REJECTED: "That passkey is not correct.",
+  PASSKEY_RATE_LIMITED: "Too many wrong passkeys. Wait before trying again.",
+  PASSKEY_UNAVAILABLE: "Critical approvals need the Chariox vault and its passphrase.",
+  PASSKEY_REQUIRED: "Enter your Chariox passkey to approve.",
+}
+
+function passkeyRefusal(error: unknown): string | null {
+  const text = error instanceof Error ? error.message : String(error)
+  return Object.keys(PASSKEY_REFUSALS).find((code) => text.includes(code)) ?? null
+}
 
 export type KernelApprovalKey = {
   name: string
@@ -6,6 +24,7 @@ export type KernelApprovalKey = {
   meta?: boolean
   alt?: boolean
   shift?: boolean
+  sequence?: string
   eventType?: string
   defaultPrevented?: boolean
   preventDefault(): void
@@ -21,6 +40,8 @@ export type KernelApprovalView = {
   pending: boolean
   connected: boolean
   error: string | null
+  /** Hidden passkey entry for a critical approval: only its length is shown. */
+  passkey: { length: number; rememberMinutes: number } | null
 }
 
 export function kernelApprovals(session: RuntimeSession): RuntimeInteraction[] {
@@ -38,7 +59,7 @@ export function createKernelApprovalController(deps: {
   onOpen(): void
   onClose(): void
   scroll(direction: -1 | 1): void
-  respond(sessionId: string, interactionId: string, choiceId: string): Promise<RuntimeSession>
+  respond(sessionId: string, interactionId: string, choiceId: string, proof?: InteractionPasskeyProof): Promise<RuntimeSession>
   applySession(session: RuntimeSession): void
 }) {
   let sessionId = ""
@@ -51,17 +72,25 @@ export function createKernelApprovalController(deps: {
   let error: string | null = null
   let disposed = false
   let claimedInputTurn = false
+  // The passkey lives only here until it is sent, then it is dropped.
+  let entry: { interactionId: string; choiceId: string; value: string; remember: number } | null = null
+  // This terminal's own remember window; the kernel remains the authority.
+  let rememberedUntil = 0
   const view = (): KernelApprovalView => {
     const items = kernelApprovals(deps.getSession())
     index = Math.min(index, Math.max(0, items.length - 1))
-    return { open, count: items.length, index, interaction: items[index] ?? null,
-      selected, pending: pending !== null, connected: deps.connected(), error }
+    const interaction = items[index] ?? null
+    if (entry && entry.interactionId !== interaction?.id) entry = null
+    return { open, count: items.length, index, interaction,
+      selected, pending: pending !== null, connected: deps.connected(), error,
+      passkey: entry ? { length: entry.value.length, rememberMinutes: entry.remember } : null }
   }
   const render = () => { if (!disposed) deps.onView(view()) }
   const close = () => {
     if (!open) return
     open = false
     selected = null
+    entry = null
     deps.onClose()
     render()
   }
@@ -80,6 +109,7 @@ export function createKernelApprovalController(deps: {
       identity = nextIdentity
       selected = null
       error = null
+      entry = null
     }
     if (!view().count) close()
     render()
@@ -92,12 +122,11 @@ export function createKernelApprovalController(deps: {
     deps.onOpen()
     render()
   }
-  const choose = async (interactionId: string, choiceId: string) => {
-    sync()
-    const current = view()
-    if (!current.open || !current.connected || pending || !current.interaction
-      || current.interaction.id !== interactionId
-      || !current.interaction.choices.some((choice) => choice.id === choiceId)) return
+  const openEntry = (interactionId: string, choiceId: string) => {
+    entry = { interactionId, choiceId, value: "", remember: 0 }
+    render()
+  }
+  const send = async (interactionId: string, choiceId: string, proof?: InteractionPasskeyProof) => {
     const requestEpoch = epoch
     const requestSession = sessionId
     const token = {}
@@ -105,22 +134,69 @@ export function createKernelApprovalController(deps: {
     error = null
     render()
     try {
-      const response = await deps.respond(requestSession, current.interaction.id, choiceId)
+      const response = await (proof
+        ? deps.respond(requestSession, interactionId, choiceId, proof)
+        : deps.respond(requestSession, interactionId, choiceId))
+      if (proof?.rememberMinutes) rememberedUntil = Date.now() + proof.rememberMinutes * 60_000
       if (!disposed && requestEpoch === epoch && deps.getSession().id === requestSession) {
         if (response.id !== requestSession) throw new Error("interaction response session mismatch")
         deps.applySession(response)
       }
-    } catch {
+    } catch (failure) {
       if (!disposed && requestEpoch === epoch && deps.getSession().id === requestSession) {
-        error = "The kernel did not confirm this choice. Check the pending approval before retrying."
+        const refusal = passkeyRefusal(failure)
+        error = refusal ? PASSKEY_REFUSALS[refusal]!
+          : "The kernel did not confirm this choice. Check the pending approval before retrying."
+        if (refusal && !proof) rememberedUntil = 0
+        // A refused critical approval asks for the passkey (again).
+        if (refusal && refusal !== "PASSKEY_UNAVAILABLE") openEntry(interactionId, choiceId)
       }
     } finally {
       if (pending === token) pending = null
       if (!disposed) sync()
     }
   }
+  const choose = async (interactionId: string, choiceId: string) => {
+    sync()
+    const current = view()
+    const choice = current.interaction?.choices.find((item) => item.id === choiceId)
+    if (!current.open || !current.connected || pending || !current.interaction
+      || current.interaction.id !== interactionId || !choice) return
+    if (choice.requires_passkey && Date.now() >= rememberedUntil) {
+      error = null
+      openEntry(interactionId, choiceId)
+      return
+    }
+    await send(interactionId, choiceId)
+  }
+  const submitPasskey = async () => {
+    sync()
+    const current = view()
+    if (!entry || !entry.value || !current.connected || pending) return
+    const { interactionId, choiceId, value, remember } = entry
+    entry = null
+    await send(interactionId, choiceId, { passkey: value, rememberMinutes: remember || null })
+  }
+  const cycleRemember = () => {
+    if (!entry) return
+    const options: readonly number[] = PASSKEY_REMEMBER_MINUTES
+    entry.remember = options[(options.indexOf(entry.remember) + 1) % options.length]!
+    render()
+  }
+  const passkeyKey = (event: KernelApprovalKey) => {
+    if (!entry) return
+    if (event.name === "escape") { entry = null; error = null; render(); return }
+    if (event.name === "return" || event.name === "enter") { void submitPasskey(); return }
+    if (event.name === "tab") { cycleRemember(); return }
+    if (event.name === "backspace") { entry.value = entry.value.slice(0, -1); render(); return }
+    const typed = event.sequence && event.sequence.length === 1 && event.sequence >= " "
+      ? event.sequence
+      : event.name === "space" ? " "
+      : event.name.length === 1 ? (event.shift ? event.name.toUpperCase() : event.name) : ""
+    if (typed && entry.value.length < PASSKEY_MAX_LENGTH) { entry.value += typed; render() }
+  }
   return {
-    sync, view, show, close, choose,
+    sync, view, show, close, choose, submitPasskey, cycleRemember,
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
     dispose() { disposed = true; epoch += 1; close() },
@@ -133,7 +209,7 @@ export function createKernelApprovalController(deps: {
       claimedInputTurn = true
       queueMicrotask(() => { claimedInputTurn = false })
       if (event.eventType === "release" || event.eventType === "repeat") return true
-      if (event.name === "escape" || event.name === "f8") {
+      if (event.name === "f8" || (event.name === "escape" && !entry)) {
         if (open) close(); else show()
         return true
       }
@@ -141,6 +217,10 @@ export function createKernelApprovalController(deps: {
       sync()
       const current = view()
       if (current.pending || !current.interaction) return true
+      if (entry) {
+        passkeyKey(event)
+        return true
+      }
       if (event.name === "left" || event.name === "right") {
         index = (index + (event.name === "left" ? -1 : 1) + current.count) % current.count
         sync()

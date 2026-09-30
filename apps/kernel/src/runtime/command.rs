@@ -160,7 +160,9 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "session_id": request.session_id,
                 "interaction_id": request.interaction_id,
                 "choice_id": request.choice_id,
-                "custom_reply": request.custom_reply.as_ref().map(|_| "[redacted]")
+                "custom_reply": request.custom_reply.as_ref().map(|_| "[redacted]"),
+                "passkey": request.passkey.as_ref().map(|_| "[redacted]"),
+                "passkey_remember_minutes": request.passkey_remember_minutes
             }
         }),
         LocalDaemonRequest::RequestCredentialEnrollmentInteraction(request) => {
@@ -488,6 +490,8 @@ mod tests {
                 interaction_id: "interaction-1".to_string(),
                 choice_id: "submit_callback".to_string(),
                 custom_reply: Some(callback.to_string()),
+                passkey: Some(crate::local::ApprovalPasskey::new("passkey-secret")),
+                passkey_remember_minutes: Some(5),
             });
         let response_command =
             KernelCommand::from_local_request("credential-response", None, None, &response_request);
@@ -509,6 +513,12 @@ mod tests {
         let response_payload = serde_json::to_string(&response_command.payload).unwrap();
         let helper_payload = serde_json::to_string(&helper_command.payload).unwrap();
         assert!(!response_payload.contains(callback));
+        assert!(!response_payload.contains("passkey-secret"));
+        assert_eq!(
+            response_command.payload["RespondToInteraction"]["passkey"],
+            "[redacted]"
+        );
+        assert!(!format!("{response_request:?}").contains("passkey-secret"));
         assert!(!helper_payload.contains(authorization_url));
         assert_eq!(
             response_command.payload["RespondToInteraction"]["custom_reply"],

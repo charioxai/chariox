@@ -281,6 +281,85 @@ pub fn unlock_chariox_encrypted_vault(
     })
 }
 
+/// A commitment to the vault key, pinned by the kernel for critical approvals:
+/// the vault's KDF parameters and a hash of the derived key, never the key.
+/// Verifying a passkey against it needs no vault file, so a later change of
+/// the configured vault path or of the file itself cannot redirect it.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VaultPasskeyVerifier {
+    kdf: VaultKdfConfig,
+    key_check: String,
+}
+
+impl VaultPasskeyVerifier {
+    fn for_key(kdf: VaultKdfConfig, key: &[u8]) -> Self {
+        Self {
+            kdf,
+            key_check: passkey_key_check(key),
+        }
+    }
+
+    /// From the vault file at `path` when `passphrase` opens it.
+    pub fn from_passphrase(path: &Path, passphrase: &str) -> Result<Option<Self>, DaemonError> {
+        let file = read_vault_file(&normalize_vault_path(path.to_path_buf()))?;
+        if passphrase.is_empty() {
+            return Ok(None);
+        }
+        let key = derive_key(passphrase, &file.kdf)?;
+        Ok(decrypt_vault_payload(&file, key.as_ref())
+            .is_ok()
+            .then(|| Self::for_key(file.kdf, key.as_ref())))
+    }
+
+    /// From the kernel's unlocked key for the vault at `path`, if unlocked.
+    pub fn from_unlocked(path: &Path) -> Result<Option<Self>, DaemonError> {
+        let path = normalize_vault_path(path.to_path_buf());
+        let Ok(key) = unlocked_vault_key(&path) else {
+            return Ok(None);
+        };
+        let file = read_vault_file(&path)?;
+        Ok(decrypt_vault_payload(&file, key.as_ref())
+            .is_ok()
+            .then(|| Self::for_key(file.kdf, key.as_ref())))
+    }
+
+    /// Whether `passphrase` derives the pinned key.
+    pub fn verify(&self, passphrase: &str) -> Result<bool, DaemonError> {
+        if passphrase.is_empty() {
+            return Ok(false);
+        }
+        let key = derive_key(passphrase, &self.kdf)?;
+        let check = passkey_key_check(key.as_ref());
+        Ok(check.len() == self.key_check.len()
+            && check
+                .bytes()
+                .zip(self.key_check.bytes())
+                .fold(0_u8, |diff, (a, b)| diff | (a ^ b))
+                == 0)
+    }
+}
+
+fn passkey_key_check(key: &[u8]) -> String {
+    sha256_hex(&[b"chariox critical approval passkey v1\0".as_slice(), key].concat())
+}
+
+/// A locked vault with a light KDF, for tests that verify its passphrase.
+#[cfg(test)]
+pub(crate) fn create_chariox_encrypted_vault_for_test(
+    path: &Path,
+    passphrase: &str,
+) -> Result<(), DaemonError> {
+    let kdf = VaultKdfProfile {
+        memory_kib: 1024,
+        iterations: 1,
+        parallelism: 1,
+    }
+    .new_kdf_config();
+    let key = derive_key(passphrase, &kdf)?;
+    write_vault_file(path, key.as_ref(), &VaultPlaintext::default(), kdf)
+}
+
 pub fn lock_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     unlocked_vaults()

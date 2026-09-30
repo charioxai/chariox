@@ -57,6 +57,7 @@ impl KernelRuntimeState {
             choice_id,
             custom_reply,
             None,
+            false,
         )
     }
 
@@ -92,12 +93,48 @@ impl KernelRuntimeState {
         custom_reply: Option<&str>,
         caller_user_id: Option<&str>,
     ) -> Result<(), DaemonError> {
+        self.answer_terminal_runtime_interaction(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// A human terminal's answer; a critical approval also carries the
+    /// passkey, or falls within the owner's remember window.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::runtime) async fn answer_terminal_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey: Option<&crate::local::ApprovalPasskey>,
+        passkey_remember_minutes: Option<u32>,
+    ) -> Result<(), DaemonError> {
+        let passkey_verified = self
+            .authorize_critical_approval(
+                session_id,
+                interaction_id,
+                choice_id,
+                caller_user_id,
+                passkey,
+                passkey_remember_minutes,
+            )
+            .await?;
         self.owned.resolve_runtime_interaction(
             session_id,
             interaction_id,
             choice_id,
             custom_reply,
             caller_user_id,
+            passkey_verified,
         )
     }
 

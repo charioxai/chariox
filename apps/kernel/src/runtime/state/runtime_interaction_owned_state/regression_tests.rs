@@ -175,6 +175,7 @@ async fn shared_session_ids_cannot_cross_kernel_resolution_or_cleanup_but_cloned
             "allow",
             None,
             Some(DEFAULT_LOCAL_USER_ID),
+            false,
         )
         .is_err());
     foreign
@@ -200,6 +201,7 @@ async fn shared_session_ids_cannot_cross_kernel_resolution_or_cleanup_but_cloned
             "allow",
             None,
             Some(DEFAULT_LOCAL_USER_ID),
+            false,
         )
         .unwrap();
     assert_eq!(

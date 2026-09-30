@@ -114,6 +114,8 @@ fn approve(harness: &LocalRouterTestHarness, deployed: &Deployed, release: &str)
                 interaction_id: asked.interaction_id,
                 choice_id: "approve".into(),
                 custom_reply: None,
+                passkey: None,
+                passkey_remember_minutes: None,
             },
         ))
         .unwrap();
