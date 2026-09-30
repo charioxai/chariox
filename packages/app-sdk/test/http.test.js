@@ -152,6 +152,21 @@ test('an approved effect with no reply by its deadline is an uncertain outcome, 
     // An open that times out may already have spent the approval and sent the effect.
     const opening = createHttp(async () => { throw new AppError('DEADLINE_EXCEEDED','App request deadline exceeded'); });
     await assert.rejects(opening.request({url:FIXTURE_URL,method:'POST',operationId:'validation-2'}),{code:'APP_HTTP_OUTCOME_UNCERTAIN'});
+    // A stop by the kernel after the open is just as uncertain.
+    const stopped = createHttp(async method => {
+      if (method === 'http.cancel') return null;
+      if (method === 'http.open') return {streamId:ID};
+      throw new AppError('APP_OPERATION_STOPPED','HTTP operation was cancelled');
+    });
+    await assert.rejects(stopped.request({url:FIXTURE_URL,method:'POST',operationId:'validation-4'}),{code:'APP_HTTP_OUTCOME_UNCERTAIN'});
+    // A deadline that passes before the open is even sent spent nothing.
+    let calls = 0;
+    const late = createHttp(async () => { calls++; return {streamId:ID}; });
+    time = 5000;
+    clock.mock.mockImplementation(() => (time += 10));
+    await assert.rejects(late.request({url:FIXTURE_URL,method:'POST',operationId:'validation-5'},{timeoutMs:1}),{code:'DEADLINE_EXCEEDED'});
+    assert.equal(calls,0);
+    clock.mock.mockImplementation(() => time);
     // An open the kernel refused spent nothing: its own error stands.
     const refused = createHttp(async () => { throw new AppError('VALIDATION_REQUIRED','needs approval'); });
     await assert.rejects(refused.request({url:FIXTURE_URL,method:'POST',operationId:'validation-2'}),{code:'VALIDATION_REQUIRED'});

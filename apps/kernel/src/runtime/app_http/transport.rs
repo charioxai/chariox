@@ -244,11 +244,7 @@ async fn exchange_io<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     loop {
         tokio::select! {
             biased;
-            // A stop the App did not ask for (a drain, an update) after the
-            // effect went out leaves it just as uncertain.
-            _ = super::cancelled(stopped) => {
-                return Err(lost_reply(effect, &phase, HttpError::Cancelled))
-            }
+            _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),
             _ = tokio::time::sleep_until(lifetime) => {
                 return Err(lost_reply(effect, &phase, HttpError::Deadline))
             }
