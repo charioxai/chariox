@@ -105,22 +105,26 @@ impl AppViews {
         }
     }
 
-    pub(crate) fn is_reconnecting(&self, session: &str, target: &str) -> bool {
+    /// The Tab's binding and whether it is reconnecting, read together.
+    pub(crate) fn binding_state(
+        &self,
+        session: &str,
+        target: &str,
+    ) -> Option<(AppViewBinding, bool)> {
         let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions
-            .get(session)
-            .is_some_and(|views| views.reconnecting.contains(target))
+        let views = sessions.get(session)?;
+        let (binding, _) = views.tabs.get(target)?;
+        Some((binding.clone(), views.reconnecting.contains(target)))
     }
 
     /// True for a Tab's first call since it was (re)opened: its document has
     /// loaded, so the Room can project its real title and URL.
+    /// A call the old page makes while its Tab reconnects is not the reloaded
+    /// page's first call.
     pub(crate) fn first_call(&self, session: &str, target: &str) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions
-            .entry(session.to_owned())
-            .or_default()
-            .called
-            .insert(target.to_owned())
+        let views = sessions.entry(session.to_owned()).or_default();
+        !views.reconnecting.contains(target) && views.called.insert(target.to_owned())
     }
 
     /// The Room could not be projected again after this Tab's first call.
@@ -181,15 +185,6 @@ impl AppViews {
     pub(crate) fn foreground(&self, session: &str) -> Option<(String, String)> {
         let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(session)?.foreground.clone()
-    }
-
-    pub(crate) fn binding(&self, session: &str, target: &str) -> Option<AppViewBinding> {
-        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions
-            .get(session)?
-            .tabs
-            .get(target)
-            .map(|(binding, _)| binding.clone())
     }
 
     /// Registration count to capture before a poll is sent.
@@ -343,8 +338,16 @@ mod tests {
         let views = AppViews::default();
         assert!(views.register("s", "t1", binding("a")));
         assert!(!views.register("s", "t2", binding("b")));
-        assert_eq!(views.binding("s", "t2"), Some(binding("b")));
-        assert_eq!(views.binding("other", "t2"), None);
+        assert_eq!(
+            views.binding_state("s", "t2").map(|(binding, _)| binding),
+            Some(binding("b"))
+        );
+        assert_eq!(
+            views
+                .binding_state("other", "t2")
+                .map(|(binding, _)| binding),
+            None
+        );
         assert!(views.keep_pumping("s"));
         views.forget_session("s");
         assert!(!views.keep_pumping("s"));
@@ -353,8 +356,14 @@ mod tests {
         let before = views.registrations("s");
         assert!(!views.register("s", "t4", binding("b")));
         views.retain_open("s", &[], before);
-        assert_eq!(views.binding("s", "t4"), Some(binding("b")));
-        assert_eq!(views.binding("s", "t3"), None);
+        assert_eq!(
+            views.binding_state("s", "t4").map(|(binding, _)| binding),
+            Some(binding("b"))
+        );
+        assert_eq!(
+            views.binding_state("s", "t3").map(|(binding, _)| binding),
+            None
+        );
         // A Tab closed in the browser stops the pump on the next poll.
         views.retain_open("s", &[], views.registrations("s"));
         assert!(!views.keep_pumping("s"));
@@ -370,8 +379,14 @@ mod tests {
         views.register("s", "t5", binding("a"));
         views.register("s", "t6", binding("b"));
         views.forget_installation("user", "a");
-        assert_eq!(views.binding("s", "t5"), None);
-        assert_eq!(views.binding("s", "t6"), Some(binding("b")));
+        assert_eq!(
+            views.binding_state("s", "t5").map(|(binding, _)| binding),
+            None
+        );
+        assert_eq!(
+            views.binding_state("s", "t6").map(|(binding, _)| binding),
+            Some(binding("b"))
+        );
     }
 
     #[test]
@@ -477,10 +492,16 @@ mod reconnect_tests {
             generation: 2,
         };
         views.register("s", "t1", binding.clone());
-        assert_eq!(views.binding("s", "t1"), Some(binding));
+        assert_eq!(
+            views.binding_state("s", "t1").map(|(binding, _)| binding),
+            Some(binding)
+        );
         assert!(views.reloadable("s", "t1"));
         views.unbind("s", "t1");
-        assert_eq!(views.binding("s", "t1"), None);
+        assert_eq!(
+            views.binding_state("s", "t1").map(|(binding, _)| binding),
+            None
+        );
         assert!(!views.reloadable("s", "t1"));
         // Opening the view again ends the failed reconnection's cooldown.
         views.register("s", "t1", binding_at(2));
@@ -503,11 +524,16 @@ mod reconnect_tests {
         assert!(views.claim_reconnect("s", "t1", binding_at(2)));
         assert!(!views.claim_reconnect("s", "t1", binding_at(2)));
         assert!(!views.claim_reconnect("s", "t1", binding_at(2)));
-        assert_eq!(views.binding("s", "t1"), Some(binding_at(2)));
-        // Until the reload is sent, the old page's calls do not run.
-        assert!(views.is_reconnecting("s", "t1"));
+        assert_eq!(
+            views.binding_state("s", "t1").map(|(binding, _)| binding),
+            Some(binding_at(2))
+        );
+        // Until the reload is sent, the old page's calls do not run, and they
+        // do not count as the reloaded page's first call.
+        assert_eq!(views.binding_state("s", "t1"), Some((binding_at(2), true)));
+        assert!(!views.first_call("s", "t1"));
         views.finish_reconnect("s", "t1");
-        assert!(!views.is_reconnecting("s", "t1"));
+        assert_eq!(views.binding_state("s", "t1"), Some((binding_at(2), false)));
         // A stale call answered after the reload still finds it bound.
         assert!(!views.claim_reconnect("s", "t1", binding_at(2)));
         // The reload counts as a new document, whose first call re-projects the Room.
@@ -520,8 +546,9 @@ mod reconnect_tests {
         assert!(views.claim_reconnect("s", "t1", binding_at(3)));
         assert!(!views.claim_reconnect("s", "t1", binding_at(3)));
         assert!(views.reloadable("s", "t1"));
-        // A Tab closed mid-reconnect leaves no mark.
+        // A Tab closed mid-reconnect leaves no mark: a new Tab with its id
+        // counts its first call.
         views.retain_open("s", &[], views.registrations("s"));
-        assert!(!views.is_reconnecting("s", "t1"));
+        assert!(views.first_call("s", "t1"));
     }
 }

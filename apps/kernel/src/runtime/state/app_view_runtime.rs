@@ -289,15 +289,12 @@ impl KernelRuntimeState {
     async fn answer_app_view_call(self, session_id: String, call: BrowserAppViewCall) {
         let views = self.app_control().views().clone();
         let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
-        let outcome = match views.binding(&session_id, &call.target_id) {
+        let outcome = match views.binding_state(&session_id, &call.target_id) {
             // Bound to the new generation, but still showing the old page.
-            Some(binding)
-                if binding.installation == call.installation_id
-                    && views.is_reconnecting(&session_id, &call.target_id) =>
-            {
+            Some((binding, true)) if binding.installation == call.installation_id => {
                 Err(view_reloading())
             }
-            Some(binding) if binding.installation == call.installation_id => {
+            Some((binding, false)) if binding.installation == call.installation_id => {
                 match self
                     .invoke_app_view_tool(&session_id, &binding, &call.method, call.params)
                     .await
