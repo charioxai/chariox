@@ -96,6 +96,22 @@ fn wake_record(wake: DueWake, settle: Settle, now_ms: u64, reason: &str) -> AppW
 impl KernelRuntimeState {
     /// Coordinator wiring only: one bounded pass per reservation.
     pub(crate) fn schedule_app_wake_pump(&self) {
+        self.begin_app_wake_pump(|pump, now_ms| pump.try_begin(now_ms));
+    }
+
+    /// Newly accepted work: deliver it now rather than on the next periodic
+    /// tick, which an idle kernel runs only every five seconds.
+    pub(crate) fn request_app_wake_pump(&self) {
+        self.begin_app_wake_pump(|pump, now_ms| pump.try_begin_requested(now_ms));
+    }
+
+    fn begin_app_wake_pump(
+        &self,
+        begin: impl FnOnce(
+            &crate::runtime::app_wake_pump::AppWakePump,
+            u64,
+        ) -> Option<crate::runtime::app_wake_pump::WakePass>,
+    ) {
         let now_ms = crate::session::unix_epoch_ms();
         if self
             .owned
@@ -105,17 +121,33 @@ impl KernelRuntimeState {
         {
             return;
         }
-        let Some(pass) = self.app_control().wake_pump().try_begin(now_ms) else {
+        let Some(mut pass) = begin(self.app_control().wake_pump(), now_ms) else {
             return;
         };
         let runtime = self.clone();
         tokio::spawn(async move {
-            let _pass = pass;
-            runtime.app_wake_pass(now_ms).await;
-            runtime.app_inbox_pass(now_ms).await;
-            runtime.stop_idle_apps(now_ms).await;
-            if runtime.app_control().wake_pump().prune_due(now_ms) {
-                runtime.prune_dormant_apps().await;
+            let mut now_ms = now_ms;
+            loop {
+                runtime.app_wake_pass(now_ms).await;
+                runtime.app_inbox_pass(now_ms).await;
+                runtime.stop_idle_apps(now_ms).await;
+                if runtime.app_control().wake_pump().prune_due(now_ms) {
+                    runtime.prune_dormant_apps().await;
+                }
+                // Work accepted while this pass ran gets a pass of its own.
+                let started_ms = now_ms;
+                match pass.finish(crate::session::unix_epoch_ms()) {
+                    Some(next) => pass = next,
+                    None => break,
+                }
+                let gap = crate::runtime::app_wake_pump::REQUESTED_GAP_MS
+                    .saturating_sub(crate::session::unix_epoch_ms().saturating_sub(started_ms));
+                if gap > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(gap)).await;
+                }
+                // Read after the handoff: the rerun's clock is never earlier
+                // than an occurrence accepted before it, so that one is due.
+                now_ms = crate::session::unix_epoch_ms();
             }
         });
     }
@@ -355,7 +387,12 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|(_, settle)| *settle == Settle::Failed));
         assert!(matches!(
-            wake_record(due("a", "w"), Settle::Failed, 100, "the App could not start"),
+            wake_record(
+                due("a", "w"),
+                Settle::Failed,
+                100,
+                "the App could not start"
+            ),
             AppWakeOperation::Failed { now_ms: 100, .. }
         ));
     }
