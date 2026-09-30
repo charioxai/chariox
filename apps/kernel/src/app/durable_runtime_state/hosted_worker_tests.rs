@@ -182,3 +182,104 @@ fn hosted_slice_context_restore_does_not_use_synthetic_machine_over_conflicting_
         .agent_ids
         .is_empty());
 }
+
+fn app_with_cloud_login() -> DaemonApp {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.daemon_id = "kernel-a".into();
+    config.host_machine_id = MACHINE.into();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: "https://cloud.example.test".into(),
+        email: "user@example.test".into(),
+        account_id: "account-1".into(),
+        user_id: "user-1".into(),
+        account_slug: "account".into(),
+        realm_id: "realm-1".into(),
+        relay_url: "wss://relay.example.test".into(),
+        issuer_id: "issuer-1".into(),
+        machine_id: Some(MACHINE.into()),
+        ..Default::default()
+    });
+    DaemonApp::bootstrap(config).unwrap()
+}
+
+#[test]
+fn hosted_slice_context_restore_preserves_private_qualified_ssh_alias() {
+    let _guard = crate::env_lock::lock();
+    for (cloud_login, endpoint) in [
+        (false, None),
+        (true, Some((true, "ws://private.example.test"))),
+        (true, None),
+        (true, Some((false, "wss://selfhost.example.test"))),
+    ] {
+        let mut app = if cloud_login {
+            app_with_cloud_login()
+        } else {
+            app()
+        };
+        // Explicit private aliases are not reserved by shape alone. The store
+        // records the actual SSH worker rather than trusting its advertised alias.
+        let slice = add_slice(&app, "ssh-qualified", &canonical_worker(1), true);
+        app.slices()
+            .set_worker_presence(
+                &slice.id,
+                Some("actual-ssh-kernel".into()),
+                Some("actual-ssh-machine".into()),
+                Vec::new(),
+                2,
+            )
+            .unwrap();
+        if let Some((private, url)) = endpoint {
+            app.slices()
+                .set_relay_endpoint(
+                    &slice.id,
+                    Some(crate::slice::SliceRelayEndpoint {
+                        private,
+                        url: url.into(),
+                    }),
+                    2,
+                )
+                .unwrap();
+        }
+        let (_, agent) = bind(&mut app, "actual-ssh-kernel", "actual-ssh-machine");
+        app.reconcile_restored_slice_agent_attachments().unwrap();
+        assert_eq!(
+            app.slices().resolve(&slice.id).unwrap().agent_ids,
+            vec![agent],
+            "cloud_login={cloud_login}, endpoint={endpoint:?}"
+        );
+    }
+}
+
+#[test]
+fn hosted_slice_context_restore_refuses_foreign_qualified_alias_on_hosted_relay() {
+    let _guard = crate::env_lock::lock();
+    let mut app = app_with_cloud_login();
+    let slice = add_slice(&app, "ssh-qualified", &canonical_worker(1), true);
+    app.slices()
+        .set_worker_presence(
+            &slice.id,
+            Some("actual-ssh-kernel".into()),
+            Some("actual-ssh-machine".into()),
+            Vec::new(),
+            2,
+        )
+        .unwrap();
+    app.slices()
+        .set_relay_endpoint(
+            &slice.id,
+            Some(crate::slice::SliceRelayEndpoint {
+                private: false,
+                url: "wss://relay.example.test".into(),
+            }),
+            2,
+        )
+        .unwrap();
+    bind(&mut app, "actual-ssh-kernel", "actual-ssh-machine");
+    app.reconcile_restored_slice_agent_attachments().unwrap();
+    assert!(app
+        .slices()
+        .resolve(&slice.id)
+        .unwrap()
+        .agent_ids
+        .is_empty());
+}

@@ -50,20 +50,32 @@ pub(crate) fn slice_worker_id_for_config(config: &DaemonConfig) -> Option<String
 }
 
 pub(crate) fn recorded_slice_for_worker<'a>(
+    config: &DaemonConfig,
     slices: &'a [SliceRecord],
     worker_kernel_id: &str,
     worker_machine_id: &str,
 ) -> Option<&'a SliceRecord> {
     let mut matches = slices.iter().filter(|slice| {
-        let canonical =
+        let qualified =
             super::worker_identity::qualified_worker_ref_parts(&slice.worker_kernel_ref).is_some();
-        if canonical
-            && !super::machine_scoped_slice_worker_ref(
+        let canonical = qualified
+            && super::machine_scoped_slice_worker_ref(
                 &slice.worker_kernel_ref,
                 &slice.owner_machine_id,
-            )
-        {
-            return false;
+            );
+        if qualified && !canonical {
+            // Private explicit refs may resemble this namespace while resolving
+            // to another recorded SSH worker. Cloud login alone does not make
+            // that private or self-hosted relay a hosted placement.
+            let hosted = config.cloud_relay.as_ref().is_some_and(|profile| {
+                slice
+                    .relay_endpoint
+                    .as_ref()
+                    .is_some_and(|endpoint| !endpoint.private && endpoint.url == profile.relay_url)
+            });
+            if hosted || slice.worker_kernel_id.is_none() || slice.worker_machine_id.is_none() {
+                return false;
+            }
         }
         if canonical
             && slice

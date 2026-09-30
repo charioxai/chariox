@@ -680,7 +680,10 @@ impl DaemonApp {
             .filter_map(|agent| {
                 let remote = agent.remote_execution()?;
                 let slice = crate::slice::recorded_slice_for_worker(
-                    &slices, &remote.worker_kernel_id, &remote.worker_machine_id,
+                    self.config(),
+                    &slices,
+                    &remote.worker_kernel_id,
+                    &remote.worker_machine_id,
                 )?;
                 let session_missing = !slice
                     .session_ids
