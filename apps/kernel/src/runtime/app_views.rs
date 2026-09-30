@@ -252,6 +252,28 @@ impl AppViews {
         }
     }
 
+    /// Bound Tabs, not already reconnecting, whose installation now runs a
+    /// newer generation (`running`) than the one their page was built for.
+    pub(crate) fn outdated(
+        &self,
+        session: &str,
+        running: impl Fn(&AppViewBinding) -> Option<u64>,
+    ) -> Vec<(String, AppViewBinding)> {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(session).map_or_else(Vec::new, |views| {
+            views
+                .tabs
+                .iter()
+                .filter(|(target, (binding, _))| {
+                    !views.reconnecting.contains(*target)
+                        && running(binding)
+                            .is_some_and(|generation| generation > binding.generation)
+                })
+                .map(|(target, (binding, _))| (target.clone(), binding.clone()))
+                .collect()
+        })
+    }
+
     /// Bound Tabs: target → installation.
     pub(crate) fn installations(&self, session: &str) -> Vec<(String, String)> {
         let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -514,6 +536,50 @@ mod reconnect_tests {
             installation: "a".into(),
             generation,
         }
+    }
+
+    #[test]
+    fn an_update_outdates_its_installations_open_views_until_they_reconnect() {
+        let views = AppViews::default();
+        views.register("s", "t1", binding_at(1));
+        views.register("s", "t2", binding_at(1));
+        views.register(
+            "s",
+            "other-app",
+            AppViewBinding {
+                installation: "b".into(),
+                ..binding_at(1)
+            },
+        );
+        views.register("other-session", "t3", binding_at(1));
+        let running = |generation| {
+            move |binding: &AppViewBinding| (binding.installation == "a").then_some(generation)
+        };
+        // Not while the App still runs the generation the pages were built for
+        // (or does not run at all: its next call finds out).
+        assert!(views.outdated("s", running(1)).is_empty());
+        assert!(views.outdated("s", |_| None).is_empty());
+        let mut outdated: Vec<_> = views
+            .outdated("s", running(2))
+            .into_iter()
+            .map(|(target, binding)| (target, binding.generation))
+            .collect();
+        outdated.sort();
+        assert_eq!(outdated, [("t1".to_owned(), 1), ("t2".to_owned(), 1)]);
+        // A Tab being reconnected, or already bound to the new generation, is not.
+        assert!(views.claim_reconnect("s", "t1", binding_at(2)));
+        assert_eq!(
+            views
+                .outdated("s", running(2))
+                .into_iter()
+                .map(|(target, _)| target)
+                .collect::<Vec<_>>(),
+            ["t2"]
+        );
+        views.finish_reconnect("s", "t1");
+        assert!(views.claim_reconnect("s", "t2", binding_at(2)));
+        views.finish_reconnect("s", "t2");
+        assert!(views.outdated("s", running(2)).is_empty());
     }
 
     #[test]
