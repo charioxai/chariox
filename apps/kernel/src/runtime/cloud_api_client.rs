@@ -17,6 +17,8 @@ pub(crate) use http::{
 };
 mod pairing;
 pub(crate) use pairing::request_account_pairing_token;
+mod terminal_client;
+pub(crate) use terminal_client::{issue_cloud_terminal_client_token, CloudTerminalClientOptions};
 mod session_collaboration;
 pub(crate) use session_collaboration::{
     accept_cloud_session_invite, create_cloud_session_invite, list_cloud_collaborators,

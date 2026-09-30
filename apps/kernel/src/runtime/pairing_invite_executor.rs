@@ -9,8 +9,7 @@ use crate::local::{
     PairingInviteRecord, PairingJoinRecord, TerminalPairingLinkRecord, TerminalType,
 };
 use crate::runtime::cloud_api_client::{
-    issue_cloud_runtime_token, post_cloud_json, CloudPairingTokenResponse,
-    CloudRuntimeTokenRequestOptions,
+    issue_cloud_terminal_client_token, CloudTerminalClientOptions,
 };
 use crate::runtime::cloud_relay_connection_executor::require_cloud_relay_token_key_binding;
 use crate::runtime::cloud_relay_profile_store::clear_cloud_profile_if_stale;
@@ -144,69 +143,30 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
     let invite_id = random_hex_id();
     let pairing_code = random_pairing_code();
-    let terminal_id = format!("{}-{}", terminal_type.as_str(), random_hex_id());
+    let mut terminal_id = format!("{}-{}", terminal_type.as_str(), random_hex_id());
     let target_daemon_id = config.daemon_id.clone();
     let target_daemon_alias = config.daemon_alias.clone().or(request.alias);
     let relay_token = if let Some(profile) = config.cloud_relay.clone().filter(|profile| {
         profile.relay_url == relay_url
             && (profile.cloud_session_token.is_some() || profile.machine_credential.is_some())
     }) {
-        let pairing: CloudPairingTokenResponse = match post_cloud_json(
-            profile.api_url.clone(),
-            "/pairing-tokens",
-            serde_json::json!({
-                "accountId": profile.account_id,
-                "createdByUserId": profile.user_id,
-                "subjectKind": "client",
-            }),
-        )
-        .await
-        {
-            Ok(pairing) => pairing,
-            Err(error) => {
-                clear_cloud_profile_if_stale(runtime_state, &error).await?;
-                return Err(error);
-            }
-        };
-        if let Err(error) = post_cloud_json::<serde_json::Value>(
-            profile.api_url.clone(),
-            "/clients/pair",
-            serde_json::json!({
-                "accountId": profile.account_id,
-                "token": pairing.token,
-                "clientId": terminal_id,
-                "userId": profile.user_id,
-                "alias": format!("{} terminal", terminal_type.as_str()),
-            }),
-        )
-        .await
-        {
-            clear_cloud_profile_if_stale(runtime_state, &error).await?;
-            return Err(error);
-        }
-        let mut allowed_targets = vec![target_daemon_id.clone()];
-        if let Some(alias) = target_daemon_alias.clone() {
-            if !allowed_targets.iter().any(|target| target == &alias) {
-                allowed_targets.push(alias);
-            }
-        }
-        match issue_cloud_runtime_token(
+        match issue_cloud_terminal_client_token(
             &profile,
             &terminal_id,
-            "client",
-            CloudRuntimeTokenRequestOptions {
-                allowed_targets: Some(allowed_targets),
-                client_id: Some(terminal_id.clone()),
-                machine_id: profile
-                    .machine_credential
-                    .as_ref()
-                    .and(profile.machine_id.clone()),
-                ..CloudRuntimeTokenRequestOptions::default()
+            &target_daemon_id,
+            CloudTerminalClientOptions {
+                pair_account_client: true,
+                client_alias: Some(format!("{} terminal", terminal_type.as_str())),
+                target_alias: target_daemon_alias.clone(),
+                ..CloudTerminalClientOptions::default()
             },
         )
         .await
         {
-            Ok(issued) => issued.token,
+            Ok((qualified_id, issued)) => {
+                terminal_id = qualified_id;
+                issued.token
+            }
             Err(error) => {
                 clear_cloud_profile_if_stale(runtime_state, &error).await?;
                 return Err(error);
@@ -345,7 +305,7 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
         .terminal_type
         .or_else(|| token.terminal_type.as_deref().map(terminal_type_from_str))
         .unwrap_or(TerminalType::Cli);
-    let terminal_id = request
+    let mut terminal_id = request
         .terminal_id
         .or(token.terminal_id.clone())
         .unwrap_or_else(|| format!("{}-{}", terminal_type.as_str(), random_hex_id()));
@@ -377,30 +337,22 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
                 operation: "join terminal pairing link",
                 message: "key-bound terminal pairing requires active Cloud relay credentials for the target relay".to_string(),
             })?;
-        let mut allowed_targets = vec![token.target_daemon_id.clone()];
-        if let Some(alias) = token.target_daemon_alias.clone() {
-            if !allowed_targets.iter().any(|target| target == &alias) {
-                allowed_targets.push(alias);
-            }
-        }
-        let issued = match issue_cloud_runtime_token(
+        let issued = match issue_cloud_terminal_client_token(
             &profile,
             &terminal_id,
-            "client",
-            CloudRuntimeTokenRequestOptions {
-                allowed_targets: Some(allowed_targets),
-                client_id: Some(terminal_id.clone()),
-                machine_id: profile
-                    .machine_credential
-                    .as_ref()
-                    .and(profile.machine_id.clone()),
+            &token.target_daemon_id,
+            CloudTerminalClientOptions {
+                target_alias: token.target_daemon_alias.clone(),
                 public_key_thumbprint: Some(joined_thumbprint.clone()),
-                ..CloudRuntimeTokenRequestOptions::default()
+                ..CloudTerminalClientOptions::default()
             },
         )
         .await
         {
-            Ok(issued) => issued,
+            Ok((qualified_id, issued)) => {
+                terminal_id = qualified_id;
+                issued
+            }
             Err(error) => {
                 clear_cloud_profile_if_stale(runtime_state, &error).await?;
                 return Err(error);
