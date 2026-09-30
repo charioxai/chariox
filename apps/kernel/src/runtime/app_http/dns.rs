@@ -181,14 +181,18 @@ impl DnsConfig {
         let result = match builder.build() {
             Err(_) => Err(HttpError::Network),
             Ok(resolver) => {
+                // Each family has the whole turn: an answer that arrived is
+                // kept when the other family stays silent until `until`.
                 let result = tokio::select! {
                     biased;
                     _ = super::cancelled(cancelled) => Err(HttpError::Cancelled),
                     _ = tokio::time::sleep_until(deadline) => Err(HttpError::Deadline),
-                    _ = tokio::time::sleep_until(until) => Ok(Answer::Next),
                     answers = async {
-                        tokio::join!(resolver.ipv4_lookup(name.clone()), resolver.ipv6_lookup(name.clone()))
-                    } => Ok(settle(trusted, [answers.0, answers.1])),
+                        tokio::join!(
+                            tokio::time::timeout_at(until, resolver.ipv4_lookup(name.clone())),
+                            tokio::time::timeout_at(until, resolver.ipv6_lookup(name.clone())),
+                        )
+                    } => Ok(settle(trusted, [answers.0.ok(), answers.1.ok()])),
                 };
                 drop(resolver);
                 result
@@ -206,12 +210,12 @@ impl DnsConfig {
 }
 
 /// A and AAAA are decided per family: addresses from either, and the name
-/// missing only when both families answered so. An error code or silence for
-/// one family gives way to the next server.
-fn settle(trusted: bool, answers: [std::result::Result<Lookup, NetError>; 2]) -> Answer {
+/// missing only when both families answered so. An error code or silence
+/// (`None`) for one family gives way to the next server.
+fn settle(trusted: bool, answers: [Option<std::result::Result<Lookup, NetError>>; 2]) -> Answer {
     let mut addresses = Vec::new();
     let mut missing = 0;
-    for answer in answers {
+    for answer in answers.into_iter().flatten() {
         match answer {
             Ok(lookup) => addresses.extend(LookupIp::from(lookup).iter()),
             Err(error) if negative(&error) => missing += 1,

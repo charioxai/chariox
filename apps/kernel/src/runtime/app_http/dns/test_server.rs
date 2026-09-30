@@ -26,7 +26,9 @@ use tokio::{
 type Script = dyn Fn(&str, RecordType, usize) -> Option<Vec<IpAddr>> + Send + Sync;
 
 enum Behavior {
-    Answer(Arc<Script>),
+    /// Answers from the script, except queries of one record type, which it
+    /// counts and never replies to.
+    Answer(Arc<Script>, Option<RecordType>),
     /// Counts queries and never replies, like a blackholed server.
     Silent,
     /// Replies to queries of one record type (or all) with this error code;
@@ -45,7 +47,15 @@ impl TestDns {
     pub(in crate::runtime::app_http) async fn start(
         script: impl Fn(&str, RecordType, usize) -> Option<Vec<IpAddr>> + Send + Sync + 'static,
     ) -> Self {
-        Self::serve(Behavior::Answer(Arc::new(script))).await
+        Self::serve(Behavior::Answer(Arc::new(script), None)).await
+    }
+
+    /// Answers from the script but never replies to queries of `kind`.
+    pub(in crate::runtime::app_http) async fn dropping(
+        kind: RecordType,
+        script: impl Fn(&str, RecordType, usize) -> Option<Vec<IpAddr>> + Send + Sync + 'static,
+    ) -> Self {
+        Self::serve(Behavior::Answer(Arc::new(script), Some(kind))).await
     }
 
     /// A server that receives queries and never answers them.
@@ -164,7 +174,8 @@ fn answer(
         *count - 1
     };
     let script = match behavior {
-        Behavior::Answer(script) => script,
+        Behavior::Answer(_, Some(dropped)) if *dropped == kind => return None,
+        Behavior::Answer(script, _) => script,
         Behavior::Silent => return None,
         Behavior::Fail(code, only) => {
             if only.is_none_or(|only| only == kind) {

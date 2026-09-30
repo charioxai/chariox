@@ -193,6 +193,36 @@ async fn an_error_code_for_one_family_still_gives_way_to_the_next_server() {
 }
 
 #[tokio::test]
+async fn a_server_that_drops_one_family_still_answers_with_the_other_after_its_turn() {
+    let dropping = || {
+        TestDns::dropping(RecordType::AAAA, |_, _, _| {
+            Some(vec!["8.8.4.4".parse().unwrap()])
+        })
+    };
+    let first: Vec<SocketAddr> = vec!["8.8.4.4:443".parse().unwrap()];
+    // Alone, and ahead of a good server that is then never asked.
+    let lone = dropping().await;
+    let config = DnsConfig::fixture_servers(&[lone.address()]);
+    let start = Instant::now();
+    assert_eq!(
+        resolve(&config, "https://public.test/").await.unwrap(),
+        first
+    );
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= PER_SERVER && elapsed < PER_SERVER + SLACK,
+        "{elapsed:?}"
+    );
+    let (ahead, good) = (dropping().await, public().await);
+    let config = DnsConfig::fixture_servers(&[ahead.address(), good.address()]);
+    assert_eq!(
+        resolve(&config, "https://public.test/").await.unwrap(),
+        first
+    );
+    assert_eq!(good.total_queries(), 0);
+}
+
+#[tokio::test]
 async fn a_lone_server_is_asked_again_before_the_lookup_fails() {
     let silent = TestDns::silent().await;
     let config = DnsConfig::fixture_servers(&[silent.address()]);
