@@ -88,7 +88,14 @@ done
     });
     let cancelled = fs::read_to_string(root.join("cancel-requests")).unwrap();
     assert!(cancelled.contains(r#""method":"browser.cancel""#));
-    assert!(cancelled.contains(r#""request_id":2"#));
+    // acquire() sends health (id 1) and the import's pre-dispatch
+    // ensure_started() sends another health (id 2), so bind the cancel to the
+    // import's actual stdio id instead of a hard-coded one.
+    let imported = fs::read_to_string(root.join("import-requests")).unwrap();
+    let import: serde_json::Value = serde_json::from_str(imported.lines().next().unwrap()).unwrap();
+    let cancel: serde_json::Value =
+        serde_json::from_str(cancelled.lines().next().unwrap()).unwrap();
+    assert_eq!(cancel["params"]["request_id"], import["id"]);
     store.shutdown().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
