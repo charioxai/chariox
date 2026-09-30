@@ -5,7 +5,9 @@
 //! read through the same owner-scoped requests the clients use. It fails
 //! closed: an installation that cannot be read completely (an update in
 //! between, a revoked publisher, an unavailable archive) fails the whole set,
-//! because a copy must not install from a partial record.
+//! because a copy must not pair a release with another release's
+//! capabilities. Configuration is read as it stands; a concurrent owner edit
+//! may or may not be included.
 use super::KernelRuntimeState;
 use crate::local::{
     AppRequestErrorCode, AppSetInstallation, AppWorkerRequest, LocalDaemonRequest,

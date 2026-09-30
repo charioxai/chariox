@@ -2044,9 +2044,11 @@ Workflow trigger and deployment direction:
   and their configuration, read through the same owner-scoped requests. It is
   the versioned description a kernel copy installs from (Phase 2); App data is
   never part of it. It fails closed: an installation that cannot be read
-  completely, including one that updates while the set is read, fails the
-  whole request with its App error code, so a copy never starts from a
-  partial or mixed record.
+  completely, or whose release changes while the set is read, fails the whole
+  request with its App error code, so a copy never pairs a release with
+  another release's capabilities. Configuration (automations, inbox routes,
+  connections) is read as it stands at that moment; an owner edit made during
+  the read may or may not be included.
 - protocol 362: resource filters. An event generator resource may carry
   `filter`, the event filter that narrows an App inbox route to it when other
   resources share its `connection_scope` (Slack channels share their
