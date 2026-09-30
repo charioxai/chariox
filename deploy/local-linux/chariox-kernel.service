@@ -13,10 +13,9 @@ EnvironmentFile=-%h/.config/chariox/kernel.env
 # The kernel and its Apps own only this unit's delegated subtree.
 Delegate=cpu memory pids
 DelegateSubgroup=supervisor
-ExecStart=%h/.local/bin/chariox-kernel
-# Post, not Pre: systemd 259 fails the main process spawn (EBUSY) once
-# controllers are enabled in the unit's own cgroup.
-ExecStartPost=%h/.local/lib/chariox/prepare-app-domain.sh
+# Prepares the `apps` subtree from the supervisor subgroup, then execs the
+# kernel. No ExecStartPre/Post: see start-kernel.sh.
+ExecStart=%h/.local/lib/chariox/start-kernel.sh %h/.local/bin/chariox-kernel
 KillMode=control-group
 TimeoutStopSec=60s
 

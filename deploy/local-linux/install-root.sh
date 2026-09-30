@@ -106,7 +106,8 @@ command -v python3 >/dev/null || die "python3 is required"
 uids=() owner_specs=()
 for user in "${users[@]}"; do
   if [[ "$command" == uninstall && "$user" =~ ^[0-9]+$ ]]; then uids+=("$user"); continue; fi
-  [[ "$user" =~ ^[a-z_][a-z0-9_.-]*$ ]] || die "not a user name: $user"
+  # The POSIX portable set; id and getent below establish that the account exists.
+  [[ "$user" =~ ^[A-Za-z0-9._][A-Za-z0-9._-]*\$?$ ]] || die "not a user name: $user"
   uid=$(id -u "$user" 2>/dev/null) || die "no such user: $user"
   [[ "$uid" != 0 ]] || die "the kernel must run as an ordinary user, not root"
   uids+=("$uid")
@@ -323,12 +324,16 @@ uninstall_users() {
 }
 
 uninstall_all() {
-  local rest lease uid user dir
+  local rest lease fd uid user dir
   rest=$(find "$STORAGE" -mindepth 2 -maxdepth 2 2>/dev/null | head -1 || true)
   [[ -z "$rest" ]] || die "App storage still exists ($rest); uninstall every App with its data first"
+  # Hold every generation's exclusive runtime lease until this script exits, as
+  # the runtime installer's cleanup does: no kernel can take a shared lease on a
+  # generation while it is removed. The enrollment goes first, so none opens one.
   for lease in "$RUNTIMES"/*/.runtime-lease; do
     [[ -e "$lease" ]] || continue
-    flock -n -x "$lease" true || die "runtime $(basename "$(dirname "$lease")") is in use; stop every Chariox kernel first"
+    exec {fd}<"$lease"
+    flock -n -x "$fd" || die "runtime $(basename "$(dirname "$lease")") is in use; stop every Chariox kernel first"
   done
   if systemctl is-active --quiet "$SERVICE" || systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then
     act "stop and disable $SERVICE" systemctl disable --now --quiet "$SERVICE"
@@ -349,7 +354,7 @@ uninstall_all() {
     ! profile_loaded || act "unload AppArmor profile chariox-app-bwrap" apparmor_parser -R "$PROFILE"
     remove "$PROFILE"
   fi
-  remove "$ENROLLMENT" "$RUNTIME_ENROLLMENT" "$HELPER" "$RUNTIME_INSTALLER"
+  remove "$RUNTIME_ENROLLMENT" "$ENROLLMENT" "$HELPER" "$RUNTIME_INSTALLER"
   if [[ -d "$RUNTIMES" ]]; then act "remove $RUNTIMES" rm -rf -- "$RUNTIMES"; fi
   for dir in "$STORAGE"/u-* "$STORAGE" "$STATE" "$R/etc/chariox/apps" "$R/etc/chariox" "$R/usr/lib/chariox"; do
     if [[ -d "$dir" && -z "$(ls -A -- "$dir")" ]]; then act "remove $dir" rmdir -- "$dir"; fi

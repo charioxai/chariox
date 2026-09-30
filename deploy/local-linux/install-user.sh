@@ -14,7 +14,7 @@ umask 077
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 KERNEL=$HOME/.local/bin/chariox-kernel
-PREPARE=$HOME/.local/lib/chariox/prepare-app-domain.sh
+START=$HOME/.local/lib/chariox/start-kernel.sh
 UNIT=$HOME/.config/systemd/user/chariox-kernel.service
 SERVICE=chariox-kernel.service
 
@@ -63,7 +63,7 @@ PY
     restart=0
     install -d -m 0700 "$HOME/.chariox" "$HOME/.chariox/logs" "$HOME/.config/chariox"
     put "$kernel" "$KERNEL" 0755 && restart=1
-    put "$here/prepare-app-domain.sh" "$PREPARE" 0755 && restart=1
+    put "$here/start-kernel.sh" "$START" 0755 && restart=1
     if put "$here/chariox-kernel.service" "$UNIT" 0644; then
       restart=1
       say "reload systemd --user units"
@@ -88,7 +88,7 @@ PY
       say "stop and disable $SERVICE"
       systemctl --user disable --now --quiet "$SERVICE"
     fi
-    for path in "$UNIT" "$PREPARE" "$KERNEL"; do
+    for path in "$UNIT" "$START" "$KERNEL"; do
       if [[ -e "$path" ]]; then say "remove $path"; rm -f -- "$path"; fi
     done
     systemctl --user daemon-reload

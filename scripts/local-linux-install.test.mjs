@@ -4,7 +4,8 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { existsSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
+import { once } from "node:events"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 
@@ -15,7 +16,7 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const installer = join(repositoryRoot, "deploy/local-linux/install-root.sh")
 const linux = process.platform === "linux"
 const KEY = "a".repeat(64)
-const users = { root: 0, alice: 1000, bob: 1001 }
+const users = { root: 0, alice: 1000, bob: 1001, "Carol.Smith": 1002 }
 
 async function script(path, contents) {
   await writeFile(path, contents)
@@ -133,6 +134,9 @@ test("local Linux root install refuses a non-root caller and bad input without c
     const root = h.install(["root"])
     assert.equal(root.status, 1)
     assert.match(root.out, /must run as an ordinary user/)
+    const path = h.install(["../alice"])
+    assert.equal(path.status, 1)
+    assert.match(path.out, /not a user name: \.\.\/alice/)
     const undelegated = h.install(["alice"], [], { HARNESS_DELEGATE: "memory pids" })
     assert.equal(undelegated.status, 1)
     assert.match(undelegated.out, /does not delegate the cpu controller/)
@@ -143,6 +147,10 @@ test("local Linux root install refuses a non-root caller and bad input without c
     assert.match(dryRun.out, /would verify and install the signed App runtime/)
     assert.match(dryRun.out, /would write .*app-storage\.json with 1 owner/)
     assert.match(dryRun.out, /would enable lingering for alice/)
+    // Any existing account in the POSIX portable name set, not only lowercase names.
+    const portable = h.install(["Carol.Smith"], ["--dry-run"])
+    assert.equal(portable.status, 0, portable.out)
+    assert.match(portable.out, /would enable lingering for Carol\.Smith/)
     assert.deepEqual(created(h), [])
     // Only the refused key ever reached the runtime installer; the dry run did not.
     assert.equal(await h.log("runtime-install"), `install --source ${h.runtime} --trusted-public-key-hex ${"d".repeat(64)} --inventory-sha256 ${h.digest}\n`)
@@ -205,6 +213,16 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.match(await h.log("systemctl"), /^restart chariox-app-storage\.service$/m)
     assert.equal(existsSync(p(h, "var/lib/systemd/linger/alice")), false)
 
+    // A kernel holding a runtime generation's shared lease blocks --all before any change.
+    const holder = spawn("flock", ["-s", "-o", p(h, `usr/lib/chariox/app-runtimes/${h.digest}/.runtime-lease`), "sh", "-c", "echo held; exec sleep 30"],
+      { detached: true })
+    await once(holder.stdout, "data")
+    const inUse = h.run(["uninstall", "--all"])
+    process.kill(-holder.pid)
+    await once(holder, "exit")
+    assert.equal(inUse.status, 1)
+    assert.match(inUse.out, /runtime [0-9a-f]{64} is in use/)
+    assert.ok(existsSync(p(h, "etc/chariox/apps/runtime-enrollment.json")))
     const all = h.run(["uninstall", "--all"])
     assert.equal(all.status, 0, all.out)
     assert.match(await h.log("loginctl"), /^disable-linger bob$/m)
@@ -218,14 +236,17 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
 
 test("local Linux kernel unit owns the delegated subtree the root install enrolls", async () => {
   const unit = await readFile(join(repositoryRoot, "deploy/local-linux/chariox-kernel.service"), "utf8")
-  const prepare = await readFile(join(repositoryRoot, "deploy/local-linux/prepare-app-domain.sh"), "utf8")
+  const start = await readFile(join(repositoryRoot, "deploy/local-linux/start-kernel.sh"), "utf8")
   const root = await readFile(installer, "utf8")
   for (const line of ["Delegate=cpu memory pids", "DelegateSubgroup=supervisor", "Environment=CHARIOX_HOME=%h/.chariox",
-    "ExecStart=%h/.local/bin/chariox-kernel", "ExecStartPost=%h/.local/lib/chariox/prepare-app-domain.sh"]) {
+    "ExecStart=%h/.local/lib/chariox/start-kernel.sh %h/.local/bin/chariox-kernel"]) {
     assert.ok(unit.split("\n").includes(line), `chariox-kernel.service is missing ${line}`)
   }
-  // systemd 259 cannot spawn the main process once its own cgroup has controllers.
-  assert.doesNotMatch(unit, /^ExecStartPre=/m)
-  assert.match(prepare, /chariox-kernel\.service\/\.control/)
+  // The domain is ready before the kernel runs (it starts enabled Apps at once),
+  // prepared from the supervisor subgroup: an ExecStartPre enabling controllers
+  // makes systemd 259 fail the main process spawn, and a Post races the kernel.
+  assert.doesNotMatch(unit, /^ExecStart(Pre|Post)=/m)
+  assert.match(start, /chariox-kernel\.service\/supervisor \]\]/)
+  assert.ok(start.indexOf('mkdir "$unit/apps"') < start.indexOf('exec "$1"'))
   assert.match(root, /user@\$uid\.service\/app\.slice\/chariox-kernel\.service\/apps:\$home\/\.chariox\/state\/kernel\.db/)
 })
