@@ -5,6 +5,9 @@ use crate::error::DaemonError;
 use crate::local::CloudRelayProfile;
 use crate::runtime::cloud_relay_control::CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS;
 
+mod account_client_token;
+pub(crate) use account_client_token::issue_cloud_account_client_runtime_token;
+
 mod http;
 pub(crate) use http::{
     cloud_error_is_retryable, cloud_url_component, delete_cloud_json_authenticated, get_cloud_json,
