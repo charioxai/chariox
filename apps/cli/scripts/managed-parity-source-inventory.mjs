@@ -952,7 +952,7 @@ export function collectSourceInventory({
             candidateId, ...finding, candidateOrigin: match.candidateOrigin, sourceRoleHints,
             ...(patchSource ? { patchSource } : {}),
             ...(anchor.fragmentSource ? { fragmentSource: anchor.fragmentSource } : {}),
-            sourceClassification: sourceClassification(file, embeddedPath),
+            sourceClassification: sourceClassification(file, embeddedPath, physicalLine + 1),
             semanticDisposition: disposition,
           });
         }

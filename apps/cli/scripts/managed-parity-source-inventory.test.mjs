@@ -1056,3 +1056,64 @@ test("an expected manual declaration that disappears is an unresolved audit gap"
     assert.equal(report.status, "fail");
   });
 });
+
+test("a scoped runtime audit does not classify unrelated inline tests", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "official-provider-adapter-wiring");
+    const source = readFileSync(new URL("../../../apps/kernel/src/provider/registry.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const entries = report.entries.filter((entry) => entry.path === rule.path);
+    assert.ok(entries.some((entry) => entry.sourceClassification?.status === "source_inspected"));
+    const tests = entries.filter((entry) => entry.sourceRoleHints.testRegion === "cfg_test");
+    assert.ok(tests.length > 0);
+    assert.ok(tests.every((entry) => entry.sourceClassification === null));
+    assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
+    assert.deepEqual(group.auditedRanges, [[1, 259]]);
+  });
+});
+
+test("confirmed shared runtime defects remain separate from independent removal findings", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "local-slice-name-canonical-ref-collision");
+    const source = readFileSync(new URL("../../../apps/kernel/src/slice/store.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
+    assert.equal(group.classification, "shared_runtime_defect");
+    assert.equal(group.status, "source_inspected");
+    assert.ok(group.openFindings.some((finding) => finding.includes("same-name slices")));
+    assert.equal(group.independentDisposition, "pending");
+    assert.equal(report.summary.removalRequired, 0);
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("manual audit anchors include generic utility resource functions", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "shared-provider-utility-capture-budget");
+    const source = readFileSync(new URL("../../../apps/kernel/src/local/provider_requests/catalog/probe_capture.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
+    assert.deepEqual(entries.map((entry) => entry.symbol).sort(), ["capture", "drain"]);
+    assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+  });
+});
+
+test("machine enrollment data shapes get explicit candidates without widening source review", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "managed-bootstrap-machine-profile-shape");
+    const source = readFileSync(new URL("../../../apps/kernel/src/managed_bootstrap/cloud.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const candidate = report.entries.find((entry) => entry.path === rule.path && entry.symbol === "ManagedCloudRelayProfile");
+    assert.equal(candidate?.candidateOrigin, "manual_source_rule");
+    assert.equal(candidate?.sourceClassification.status, "source_inspected");
+    assert.equal(candidate?.sourceClassification.classification, "machine_bound_deployment_enrollment");
+    assert.equal(candidate?.semanticDisposition.status, "unreviewed");
+    assert.ok(report.entries.filter((entry) => entry.path === rule.path && entry.line > 64)
+      .every((entry) => entry.sourceClassification === null));
+  });
+});

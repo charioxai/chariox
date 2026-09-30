@@ -1,6 +1,6 @@
 # Managed Path-1 parity inventory (MP-11)
 
-Audit date: 2026-09-26 · current scoped OSS review baseline: `d3f47513bda80ea222b6cd7e4d1e6b9d106038b9` (tree `08b8cd11bd31a69c3ed0d9b7b2066b6cb07196fd`); published OSS source baseline: `4c8b979430d2dca6662de0b478a8b75b7ac3b231`; retained prior audit OSS baseline: `dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; Cloud source baseline last inspected: `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e` (stale; not refreshed in this pass).
+Historical audit ledger (2026-09-26) · scoped OSS review baseline: `d3f47513bda80ea222b6cd7e4d1e6b9d106038b9` (tree `08b8cd11bd31a69c3ed0d9b7b2066b6cb07196fd`); published OSS source baseline: `4c8b979430d2dca6662de0b478a8b75b7ac3b231`; retained prior audit OSS baseline: `dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; Cloud source baseline last inspected: `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e` (stale; not refreshed in this pass).
 
 This is a source inventory for the canonical gate in
 `docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md`; it does not change that plan.
@@ -14,6 +14,98 @@ image. Fresh-equivalent evidence must bind that rebuild to the same allocation,
 new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
+
+## Scoped source audit (2026-09-30)
+
+This pass inspected selected production rules at OSS
+`0e250d53977a49a73c3c3ee0f9251d9f9febe712` (tree
+`2eb9c83eea61354e2b138a0f915cb63021f8ca18`) and Cloud
+`a8f5ee1bc80f13f508cf950752d779399df1aa55` (tree
+`a19f0ba226f49e170d9b01e122a0eac68918ac8c`). These are pinned inspection
+inputs, not a claim that evolving integration heads or release artifacts
+remain equivalent. The retained d3 rows below describe their historical source
+only. Cloud later published `97893503c70af4997444bd1172bf46374b283f0a`
+(tree `14bfdd80b6ed543b02fdadef5c1b989e4c8be6f8`) with the namespace
+correction. Its combined OSS/Cloud semantics remain **pending revalidation**;
+the a8 rules and defect observations below are not current-aggregate approval.
+
+The scanner's named source-rule module binds every provisional observation to
+an exact Git blob. Partial-file observations also bind inspected line ranges:
+unrelated functions and inline tests receive no classification from that rule.
+Changed blobs report `source_drift`. Declaration candidates cover policy
+helpers and closed data shapes that the lexical selector patterns miss.
+These observations never grant independent semantic disposition.
+
+| Inspected semantic family | Rules / candidates | Concrete ordinary-versus-managed classification |
+| --- | --- | --- |
+| Release evidence, attempt storage and bounded extraction | 3 / 14 | Signed deployment admission: identity/digest/terminal outcome binding, exact owned attempt cleanup, bounded safe archive staging. This is the permitted deployment difference; it does not select provider runtime. |
+| OSS account pairing and terminal authority | 3 / 4 | Shared Cloud account/session or machine-qualified terminal capability. No managed-profile exception or durable profile mutation is introduced by these helpers. |
+| Cloud pairing control, explicit revoke and logout receipt | 4 / 7 | Shared Bearer/account operate admission; exact identity-bound ACTIVE session cleanup; receipt acknowledges only an already committed matching explicit revoke. Browser-only/unrelated sessions remain distinct. |
+| Cloud machine credential, token and presence authority | 4 / 12 | Shared exact account/machine/realm/canonical-target ownership. Inner-slice subject mapping has the open collision described below; this family is not cleared for acceptance. |
+| OpenShip patch0016 publication controls and co-location proof | 2 / 14 | `strict-publication-v1` selects a separate publication container's network, read-only binds and HostConfig; co-location HMAC is control-plane health proof. Neither selects the Path-1 host provider service. |
+| Official provider adapters, ordinary scrub and bounded probes | 4 / 60 | Common official harness planners and cwd preflight; ordinary/Path-1 branch returns the provider program unchanged after common control-env scrub. Utility capture has shared deadline/output/read budgets. Shared-host namespace internals remain outside this scoped observation. |
+| Directory discovery and exact control-state protection | 2 / 26 | Common canonical cwd/repository preflight protects kernel state and five slice-control children; slice root/development/siblings remain eligible. Explicit server repository root is a discovery input, not a provider allowlist. |
+| Bootstrap topology, verified kernel launch and Path-1 unit source | 5 / 72 | Explicit deployment topology; verified kernel uses ordinary process HOME/login PATH and no provider isolation roots. Private broker handoff is a kernel slice capability. Source units have no provider `Protect*`/`Private*`/namespace restrictions; installed units/drop-ins remain unverified. |
+| Waiting-room placement | 1 / 8 | Deployment-control projection of exact server machine/kernel readiness and revisions. Ready placement selects the ordinary canonical kernel; no prompt/session authority fork is added. |
+| Bootstrap machine profile and persistence | 4 / 15 | Strict exchange shape has no CloudSession/operator token. Conversion clears client identity/session token/expiries; persistence replaces the profile and clears previous direct relay token/url. Worker exchange/restart validates receipt identity binding. |
+| Selected provider/Extension context export | 5 / 8 | Official provider auth-file whitelist and closed Extension/dependency payload exclude automatic daemon Cloud-profile export. SourceKernel deliberately transfers an encrypted user vault; arbitrary user-authored secret contents were not inspected or certified. |
+| Historical shared slice canonical-identity defect at 0e/a8 | 2 / 3 | Local `slice:<name>` defaults were used as account/realm-wide Cloud subjects; separate ordinary or managed machines with the same local name contended for one immutable owner. Cloud 978 changes admission; combined identity mapping and parity evidence remain pending. |
+
+The actual scans completed: OSS enumerated 3,598 files and 5,958 candidates;
+Cloud enumerated 2,708 files and 2,848 candidates. The 39 scoped rules classify
+243 candidates provisionally; 8,563 candidates remain outside this inspection.
+All 8,806 candidates still have `semanticDisposition=unreviewed`, and both
+reports exit 1 with `status=fail`. Each report retains three historical
+predicates pending source review. Zero `removal_required` means no accepted
+independent findings were recorded; it is not acceptance.
+
+Cloud unified patches, Caddy/SQL files and assembled TypeScript/JavaScript
+fragments are now inventoried explicitly. Added/removed/context lines retain
+physical patch and embedded source identities. A patch hunk can begin inside
+a literal/comment whose opener is omitted, so partial patch source retains
+unstripped lexical candidates with `unknown_patch_fragment` context.
+Apparent comments are not silently omitted or treated as production findings.
+Exact inspected assembler/caller blobs reconstruct four Cloud fragment families
+with sorted `join("")` semantics before lexical processing, preserving physical
+path/blob/line/column and split-match segments. Unknown/changed consumers and
+missing expected declarations produce explicit unresolved source-audit gaps.
+Both actual pinned reports have zero such gaps; this does not review their
+semantic candidates.
+The tool identity binds the entrypoint, parser, fragment-assembly and source-rule module hashes;
+this scan used bundle SHA-256
+`a508912ea82d5c676d41d1ecfd6827efb155792b5b989fbe7de89e1710a9b543`.
+
+Focused scanner execution passes 49/49, including exact-range/test separation,
+generic helpers, data-shape candidates, source drift, patch gaps and unknown
+starting template context. Both added and removed patch views reproduced the
+independent inter-hunk finding RED before correction. Complete synthetic old
+and new JavaScript also proved the same-hunk template selectors were executable.
+Retained external evidence is under
+`/Users/miguel/.codex/evidence/browser-computer-use/resume-20260930/mp11-source-audit/`;
+full pinned scan reports remain under the matching Hetzner evidence directory.
+No Cargo build, Cloud image build, live host inspection or fresh-machine
+acceptance was performed by this source audit.
+
+The historical slice gap at these pinned inputs spans `SliceStore::create` in `slice/store.rs`,
+`hosted_cloud_slice_relay_token` and
+`activate_hosted_slice_relay_token` in
+`runtime/slice_command_executor/lifecycle.rs`, and
+`authorizeMachineRuntimeToken`/`claimKernelOwnership` in Cloud
+`runtime/machine-scope-repository.ts`. Cloud 978 publishes canonical machine-qualified admission and owned-parent
+tests; OSS mapping, persisted-ref compatibility and relay projection still need
+the exact combined source/test checkpoint and reviewed A/B release pair.
+This inventory does not claim the historical Cloud finding remains unfixed at
+Cloud 978 or that the full parity gap has been closed. Old e1/b375 artifacts remain historical and cannot
+automatically serve as final parity baselines.
+
+Uninspected work includes the remaining shared-host/provider namespace body,
+runtime retry/relaunch/prompt/permission/history flows, broader worktree
+operations, current Cloud managed lifecycle/shutdown, and web/native client
+behavior outside these named regions. The imported user vault is an explicit
+opaque secret boundary. Effective service/drop-in policy, provider ancestry,
+runtime resources, shutdown triggers, and fresh ordinary-versus-Path-1
+comparison remain live gates. Independent semantic disposition and MP-01
+through MP-11 remain open.
 
 ## Retained scoped OSS source audit (2026-09-26)
 
