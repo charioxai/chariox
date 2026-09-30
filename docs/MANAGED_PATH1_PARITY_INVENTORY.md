@@ -15,6 +15,47 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## Slice recovery and extension reinspection (2026-10-01)
+
+The current source pair is OSS `6c2630e550335d15e7993d948331afa75454674d`
+(tree `eae0ae1495aaac77fc3952655fb60221147b0abc`) and Cloud
+`d4bd02e72e79804f690b3058ac5212d3a711a3bc`
+(tree `b6152ba717d5ceda9351c35cc5914418799a2813`). Both Cloud pins select
+that OSS revision. This pair has not been deployed or accepted for MP-01–MP-11.
+
+Reinspection records the corrected friendly-reference admission and exact
+Kernel/Machine recovery through Room guards, agent creation and prompt retry.
+The shared worker-context classifier preserves qualified hosted identity and
+explicit private SSH compatibility. Restored and lifecycle attachments accept
+one exact observed pair, reject ambiguity and retain a stopped private binding
+only under the scoped missing-observation fallback. Caller observations cover
+provider context, MCP materialization and browser/computer tool routing; they
+do not establish correctness of every downstream tool implementation.
+
+Extension observations cover the shared per-creation image/cache identity,
+typed Docker image operands, prepared-image broker dispatch and signed helper.
+The helper pins caller/source/cwd/socket identity, drops UID/GID and current
+capabilities before restoring caller settings, and preserves the full-sudo
+caller's existing sudo/setuid authority. Protected subordinate socket groups
+are temporary child access. Namespace lifetime, output bounds and owned empty
+lease cleanup are inspected. Fresh ordinary/managed comparison remains pending.
+
+The scanner now recognizes explicitly named JSON policy keys in audited ranges,
+so the shared Docker image-reference grammar data has concrete source anchors.
+The regression failed before the correction and passes afterward, including
+exact-blob drift and independently unreviewed behavior. Generic Rust lifetime
+anchors and refreshed source fixtures are also covered. All 80 scanner tests
+pass without skips.
+
+The exact scans enumerate 6,081 OSS and 2,859 Cloud candidates. The 73 scoped
+rules provisionally classify 406 candidates; 8,534 remain outside scoped
+inspection. All 8,940 remain independently unreviewed. Both reports fail closed
+with no source drift or missing declaration/assembly anchors. The tool bundle
+SHA-256 is `6cc4f21c61b5502fb3099e262248f49d272bedb069dd999d9bfa1cfd781a03ed`.
+These corrections supersede the corresponding source defects at the historical
+65d checkpoint below; they do not close independent semantic or live gates.
+Earlier counts, findings and test results retain their original source binding.
+
 ## Shutdown deadline and activity audit (2026-10-01)
 
 MP-09 and MP-11 remain open. Two additional exact-blob observations inspect

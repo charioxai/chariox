@@ -1074,7 +1074,7 @@ test("a scoped runtime audit does not classify unrelated inline tests", () => {
   });
 });
 
-test("current slice placement defects remain separate from independent removal findings", () => {
+test("slice placement observations remain separate from independent removal findings", () => {
   withFixture({}, (fixture) => {
     const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "machine-scoped-slice-creation-and-placement");
     const source = readFileSync(new URL("../../../apps/kernel/src/slice/store.rs", import.meta.url), "utf8");
@@ -1083,7 +1083,7 @@ test("current slice placement defects remain separate from independent removal f
     const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
     assert.equal(group.classification, "shared_slice_identity_namespace");
     assert.equal(group.status, "source_inspected");
-    assert.ok(group.openFindings.some((finding) => finding.includes("friendly slice:<name>")));
+    assert.ok(group.openFindings.some((finding) => finding.includes("Fresh ordinary/Path-1 runtime comparison")));
     assert.equal(group.independentDisposition, "pending");
     assert.equal(report.summary.removalRequired, 0);
     assert.equal(report.status, "fail");
@@ -1201,21 +1201,32 @@ test("PostgreSQL dollar characters inside unquoted identifiers do not open liter
 
 
 // Pinned declaration excerpts keep scanner tests independent of PR664's runtime
-// base. Full exact-blob source observations are verified by the retained 65d/8e9
-// scans; these fixtures exercise declaration/range/disposition behavior only.
+// base. Historical 65d/8e9 reports are retained; refreshed observations require
+// exact current-source scans. These fixtures test declaration/range/disposition only.
 const CURRENT_DECLARATION_EXCERPTS = {
+  "shared-exact-slice-binding-recovery": [
+    [45, "pub(crate) async fn execute_remote_agent_binding_refresh("],
+    [651, "pub(crate) fn spawn_worker_agent("],
+    [1002, "pub(crate) fn prepare_remote_agent_binding_refresh("],
+    [1099, "pub(crate) fn refresh_remote_agent_binding("],
+    [1171, "pub(crate) fn refresh_remote_agent_binding_to_worker_kernel_with_operation("],
+    [1503, "fn select_remote_kernel_by_ref_with_config("],
+  ],
+  "guarded-friendly-slice-reference-resolution": [[6, "pub(crate) fn resolve_execution_worker_kernel_ref("]],
   "inner-slice-kernel-bootstrap-identity": [[132, "start_slice_kernel() {"]],
-  "slice-provisioner-container-identity-forwarding": [[1092, "exec_slice_with_timeout() {"]],
-  "path1-broker-extension-capability-rejection": [
-    [114, "const ALLOWED_ENVIRONMENT = new Set(["],
-    [437, "function validateProvisioner(action, environment, files) {"],
+  "slice-provisioner-container-identity-forwarding": [[1113, "exec_slice_with_timeout() {"]],
+  "path1-broker-prepared-image-admission": [
+    [115, "const ALLOWED_ENVIRONMENT = new Set(["],
+    [335, "function validateDocker(args) {"],
+    [438, "function validateProvisioner(action, environment, files) {"],
   ],
   "per-creation-machine-scoped-slice-ref": [
     [6, "pub(super) fn new_local_docker_worker_ref("],
     [23, "fn worker_ref_with_nonce("],
-    [43, "pub(crate) fn machine_scoped_slice_worker_ref(worker_ref: &str, machine_id: &str) -> bool {"],
-    [56, "pub(crate) fn require_hosted_slice_worker_ref("],
-    [66, 'const OUTSIDE_SCOPE: &str = "CHARIOX_MANAGED_CURRENT_OUTSIDE_SCOPE";'],
+    [43, "pub(super) fn qualified_worker_ref_parts(worker_ref: &str) -> Option<(&str, &str)> {"],
+    [56, "pub(crate) fn machine_scoped_slice_worker_ref(worker_ref: &str, machine_id: &str) -> bool {"],
+    [66, "pub(crate) fn require_hosted_slice_worker_ref("],
+    [78, 'const OUTSIDE_SCOPE: &str = "CHARIOX_MANAGED_CURRENT_OUTSIDE_SCOPE";'],
   ],
 };
 
@@ -1229,7 +1240,7 @@ function currentDeclarationExcerpt(ruleId) {
 for (const [ruleId, symbol] of [
   ["inner-slice-kernel-bootstrap-identity", "start_slice_kernel"],
   ["slice-provisioner-container-identity-forwarding", "exec_slice_with_timeout"],
-  ["path1-broker-extension-capability-rejection", "ALLOWED_ENVIRONMENT"],
+  ["path1-broker-prepared-image-admission", "ALLOWED_ENVIRONMENT"],
 ]) {
   test("current source audit anchors " + symbol + " at its pinned declaration", () => {
     withFixture({}, (fixture) => {
@@ -1254,7 +1265,7 @@ test("current Machine-qualified namespace observations do not approve out-of-ran
     const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
     assert.deepEqual(entries.map((entry) => entry.symbol).sort(), [
       "machine_scoped_slice_worker_ref", "new_local_docker_worker_ref",
-      "require_hosted_slice_worker_ref", "worker_ref_with_nonce",
+      "qualified_worker_ref_parts", "require_hosted_slice_worker_ref", "worker_ref_with_nonce",
     ]);
     assert.ok(entries.every((entry) => entry.sourceClassification.classification === "shared_slice_identity_namespace"));
     assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
@@ -1265,6 +1276,35 @@ test("current Machine-qualified namespace observations do not approve out-of-ran
       assert.equal(changed.status, "source_drift");
       assert.equal(changed.classification, null);
     });
+  });
+});
+
+test("slice context and attachment observations stay scoped and unreviewed", () => {
+  withFixture({}, (fixture) => {
+    const context = SOURCE_AUDIT_RULES.find((rule) => rule.id === "slice-local-worker-context");
+    const attachment = SOURCE_AUDIT_RULES.find((rule) => rule.id === "slice-recorded-attachment-identity");
+    assert.equal(context.blob, attachment.blob);
+    const lines = Array.from({ length: 173 }, () => "");
+    for (const [line, declaration] of [
+      [5, "pub(crate) fn slice_worker_id("],
+      [28, "pub(crate) fn current_slice_worker_id() -> Option<String> {"],
+      [39, "pub(crate) fn slice_worker_id_for_config(config: &DaemonConfig) -> Option<String> {"],
+      [52, "enum RecordedSliceWorker<'a> {"],
+      [58, "pub(crate) fn recorded_slice_for_worker<'a>("],
+      [73, "pub(crate) fn retained_slice_attachment_matches("],
+      [95, "fn recorded_relay_is_hosted(config: &DaemonConfig, slice: &SliceRecord) -> bool {"],
+      [105, "fn recorded_slice_worker<'a>("],
+      [173, 'const OUTSIDE: &str = "CHARIOX_MANAGED_ATTACHMENT_TEST_ONLY";'],
+    ]) lines[line - 1] = declaration;
+    fixture.addFile(context.path, lines.join("\n") + "\n", "100644", context.blob);
+    const report = collect(fixture);
+    const manual = report.entries.filter((entry) => entry.path === context.path && entry.candidateOrigin === "manual_source_rule");
+    assert.equal(manual.length, 8);
+    assert.ok(manual.every((entry) => entry.sourceClassification.status === "source_inspected"));
+    assert.ok(manual.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_ATTACHMENT_TEST_ONLY")?.sourceClassification, null);
+    assert.ok(!report.sourceAuditGaps.some((gap) => [context.id, attachment.id].includes(gap.ruleId)));
+    assert.equal(report.status, "fail");
   });
 });
 
@@ -1279,9 +1319,9 @@ test("current Cloud source anchors remain explicit missing-source gaps", () => {
   });
 });
 
-test("current alias recovery and extension findings remain provisional open defects", () => {
+test("corrected source observations still require independent disposition", () => {
   withFixture({}, (fixture) => {
-    const ids = ["slice-recovery-and-alias-runtime-gaps", "path1-broker-extension-capability-rejection"];
+    const ids = ["shared-exact-slice-binding-recovery", "guarded-friendly-slice-reference-resolution"];
     for (const id of ids) {
       const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === id);
       fixture.addFile(rule.path, CURRENT_DECLARATION_EXCERPTS[id] ? currentDeclarationExcerpt(id)
@@ -1291,7 +1331,8 @@ test("current alias recovery and extension findings remain provisional open defe
     for (const id of ids) {
       const group = report.sourceClassifications.find((entry) => entry.ruleId === id);
       assert.equal(group?.status, "source_inspected");
-      assert.ok(group.openFindings.some((finding) => finding.startsWith("Open at OSS 65d")));
+      assert.ok(group.openFindings.some((finding) => finding.includes("independent semantic disposition remain pending")));
+      assert.ok(!group.openFindings.some((finding) => finding.startsWith("Open at OSS 65d")));
       assert.equal(group.independentDisposition, "pending");
     }
     assert.equal(report.summary.removalRequired, 0);
@@ -1491,5 +1532,28 @@ test("manual shutdown declarations retain MP09 and require independent dispositi
       assert.equal(entry.semanticDisposition.status, "unreviewed");
     }
     assert.equal(report.status, "fail");
+  });
+});
+
+
+test("JSON policy declaration anchors bind exact data without granting approval", () => {
+  const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "typed-docker-image-reference-policy-data");
+  const source = JSON.stringify({ reference: "synthetic-expression", maximumRepositoryPath: 255, defaultBase: "synthetic:base" }, null, 2) + "\n";
+  withFixture({}, (fixture) => {
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const manual = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
+    assert.deepEqual(manual.map((entry) => entry.symbol).sort(), ["defaultBase", "maximumRepositoryPath", "reference"]);
+    assert.ok(manual.every((entry) => entry.sourceClassification.status === "source_inspected"));
+    assert.ok(manual.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    assert.ok(!report.sourceAuditGaps.some((gap) => gap.ruleId === rule.id));
+    assert.equal(report.status, "fail");
+  });
+  withFixture({}, (fixture) => {
+    fixture.addFile(rule.path, source.replace("255", "256"));
+    const group = collect(fixture).sourceClassifications.find((group) => group.ruleId === rule.id);
+    assert.equal(group?.status, "source_drift");
+    assert.equal(group?.classification, null);
+    assert.equal(group?.independentDisposition, "pending");
   });
 });
