@@ -538,3 +538,88 @@ async fn claude_closing_the_connection_during_a_permission_prompt_closes_it() {
     server.abort();
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Claude is silent while any runtime tool call waits for a person, not only
+/// the permission prompt: a popup here. The run's turn stall watchdog sees the
+/// wait for as long as the call runs, and no longer once it returns.
+#[tokio::test]
+async fn claude_waiting_on_a_runtime_popup_is_not_a_turn_stall() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-runtime-tool-wait-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    const RUN: &str = "provider-run-claude-print-popup-wait";
+    insert_claude_run(
+        &mut app,
+        session.id(),
+        agent.id(),
+        RUN,
+        "claude-print-popup-wait-token",
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    assert!(!crate::provider::claude_runtime_tool_wait_pending(RUN));
+
+    let call_router = router.clone();
+    let call = tokio::spawn(async move {
+        rpc(
+            &call_router,
+            "claude-print-popup-wait-token",
+            "tools/call",
+            serde_json::json!({
+                "name": "chariox.request_popup",
+                "arguments": {
+                    "message": "Which channel?",
+                    "timeout_sec": 120,
+                    "choices": [
+                        {"id": "stable", "label": "Stable", "reply": "stable"},
+                        {"id": "beta", "label": "Beta", "reply": "beta"}
+                    ]
+                }
+            }),
+        )
+        .await
+    });
+    let popup = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(interaction) = active_interactions(&router, session.id())
+                .into_iter()
+                .next()
+            {
+                break interaction;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the popup should open");
+    assert!(
+        crate::provider::claude_runtime_tool_wait_pending(RUN),
+        "the run waits on the popup, so its watchdog must see activity"
+    );
+
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), popup.id(), "beta", None)
+        .await
+        .expect("popup should resolve");
+    let response = call.await.expect("popup call should join");
+    assert!(
+        response["result"]["content"].is_array(),
+        "popup call should answer: {response:#}"
+    );
+    assert!(!crate::provider::claude_runtime_tool_wait_pending(RUN));
+    let _ = std::fs::remove_dir_all(root);
+}

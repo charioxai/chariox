@@ -1,6 +1,8 @@
-//! Claude `-p` runs ask for tool approval through the runtime MCP
-//! `chariox.permission_prompt` tool. Claude emits no stream events while the
-//! user decides, so the turn stall watchdog must treat that wait as activity.
+//! A Claude `-p` run emits no stream events while it waits on a Chariox
+//! runtime MCP tool call: the permission prompt or a popup waiting for a
+//! person, an App binding approval, a long App call. The turn stall watchdog
+//! treats that wait as activity; the call itself is bounded by the kernel's
+//! own deadlines and by Claude's per-server MCP `timeout`.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
@@ -13,26 +15,24 @@ fn pending_waits() -> MutexGuard<'static, BTreeMap<String, usize>> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-pub(crate) struct ClaudePermissionPromptWait {
+pub(crate) struct ClaudeRuntimeToolWait {
     provider_run_id: String,
 }
 
-pub(crate) fn begin_claude_permission_prompt_wait(
-    provider_run_id: &str,
-) -> ClaudePermissionPromptWait {
+pub(crate) fn begin_claude_runtime_tool_wait(provider_run_id: &str) -> ClaudeRuntimeToolWait {
     *pending_waits()
         .entry(provider_run_id.to_string())
         .or_default() += 1;
-    ClaudePermissionPromptWait {
+    ClaudeRuntimeToolWait {
         provider_run_id: provider_run_id.to_string(),
     }
 }
 
-pub(super) fn claude_permission_prompt_pending(provider_run_id: &str) -> bool {
+pub(crate) fn claude_runtime_tool_wait_pending(provider_run_id: &str) -> bool {
     pending_waits().contains_key(provider_run_id)
 }
 
-impl Drop for ClaudePermissionPromptWait {
+impl Drop for ClaudeRuntimeToolWait {
     fn drop(&mut self) {
         let mut pending = pending_waits();
         if let Some(count) = pending.get_mut(&self.provider_run_id) {
@@ -50,13 +50,13 @@ mod tests {
 
     #[test]
     fn wait_is_pending_until_every_guard_drops() {
-        let run_id = "provider-run-permission-prompt-wait-test";
-        assert!(!claude_permission_prompt_pending(run_id));
-        let first = begin_claude_permission_prompt_wait(run_id);
-        let second = begin_claude_permission_prompt_wait(run_id);
+        let run_id = "provider-run-runtime-tool-wait-test";
+        assert!(!claude_runtime_tool_wait_pending(run_id));
+        let first = begin_claude_runtime_tool_wait(run_id);
+        let second = begin_claude_runtime_tool_wait(run_id);
         drop(first);
-        assert!(claude_permission_prompt_pending(run_id));
+        assert!(claude_runtime_tool_wait_pending(run_id));
         drop(second);
-        assert!(!claude_permission_prompt_pending(run_id));
+        assert!(!claude_runtime_tool_wait_pending(run_id));
     }
 }
