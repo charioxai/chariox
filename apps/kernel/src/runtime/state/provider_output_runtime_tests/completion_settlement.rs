@@ -112,6 +112,21 @@ fn authoritative_provider_finish_survives_delayed_workflow_completion_retry() {
         "workflow.runtime.updated",
         true,
         true,
+        false,
+    ));
+}
+
+#[test]
+fn completion_retry_does_not_backdate_idle_past_another_agents_finish() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test executor should start");
+    executor.block_on(assert_workflow_completion_failure_is_retryable(
+        "workflow.runtime.updated",
+        true,
+        true,
+        true,
     ));
 }
 
@@ -121,7 +136,7 @@ fn assert_workflow_completion_failure_and_restart(event_kind: &str, codex: bool)
         .build()
         .expect("test executor should start");
     let (config, session_id, agent_id, _worktree) = executor.block_on(
-        assert_workflow_completion_failure_is_retryable(event_kind, codex, false),
+        assert_workflow_completion_failure_is_retryable(event_kind, codex, false, false),
     );
     // Drop all first-kernel async owners without a shutdown cleanup that could
     // rewrite prompt state and hide a failed composite commit.
@@ -143,6 +158,7 @@ async fn assert_workflow_completion_failure_is_retryable(
     event_kind: &str,
     codex: bool,
     verify_original_finish: bool,
+    intervening_turn: bool,
 ) -> (
     crate::config::DaemonConfig,
     String,
@@ -180,6 +196,7 @@ async fn assert_workflow_completion_failure_is_retryable(
             },
         );
         run.mark_running();
+        spawn_inert_pty_for_run(&mut app, run.id());
         app.providers_mut().insert_run_for_test(run.clone());
         app.sessions
             .set_active_provider_run(session.id(), Some(run.id().to_string()))
@@ -267,6 +284,10 @@ async fn assert_workflow_completion_failure_is_retryable(
     crate::transport::flow_control::note_prompt_started(&mut app, run.id());
 
     let app = Arc::new(Mutex::new(app));
+    let _pty_cleanup = codex.then(|| InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().to_string(),
+    });
     let runtime = owned_runtime_state(&app).await;
     if verify_original_finish {
         runtime
@@ -413,6 +434,34 @@ async fn assert_workflow_completion_failure_is_retryable(
         // This delay is part of the failure scenario, not a provider quiet-time signal.
         tokio::time::sleep(std::time::Duration::from_millis(40)).await;
     }
+    let intervening_finish = if intervening_turn {
+        // A still owns its active turn after the durable completion failed.
+        // B starts and finishes through the production activity boundaries;
+        // the aggregate stays busy, so no binary transition records B's end.
+        runtime.start_active_turn_with_trace_id(
+            session.id(),
+            "agent-b",
+            "prompt-b",
+            "provider-run-b",
+            "trace-b",
+        );
+        assert_eq!(runtime.owned.active_turns.snapshot().len(), 2);
+        let from = crate::session::unix_epoch_ms();
+        runtime.owned.clear_prompt_activity("provider-run-b");
+        let through = crate::session::unix_epoch_ms();
+        assert_eq!(runtime.owned.active_turns.snapshot().len(), 1);
+        assert_eq!(
+            runtime
+                .managed_activity_report_snapshot()
+                .unwrap()
+                .1
+                .running_agent_count,
+            1
+        );
+        Some((from, through))
+    } else {
+        None
+    };
     let settled = runtime
         .settle_owned_provider_prompt(session.id(), run.id(), !codex, false, !codex)
         .await
@@ -437,12 +486,14 @@ async fn assert_workflow_completion_failure_is_retryable(
             .managed_activity_report_snapshot()
             .expect("idle must have a durable activity observation");
         assert_eq!(idle.running_agent_count, 0);
+        let (finish_from, finish_through) =
+            intervening_finish.unwrap_or((finish_observed_from_ms, finish_observed_by_ms));
         assert!(
-            (finish_observed_from_ms..=finish_observed_by_ms).contains(&idle.changed_at_ms),
+            (finish_from..=finish_through).contains(&idle.changed_at_ms),
             "idle time {} must retain the authoritative finish observation {}..={}, not the retry commit time",
             idle.changed_at_ms,
-            finish_observed_from_ms,
-            finish_observed_by_ms,
+            finish_from,
+            finish_through,
         );
     }
     assert!(runtime
