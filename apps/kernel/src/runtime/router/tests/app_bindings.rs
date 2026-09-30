@@ -253,6 +253,49 @@ async fn yolo_app_self_grant_saves_binding_without_claiming_ready_tools() {
 }
 
 #[tokio::test]
+async fn self_grant_of_an_already_bound_app_changes_nothing_and_asks_nothing() {
+    for level in [
+        crate::provider::AgentPermissionLevel::Yolo,
+        crate::provider::AgentPermissionLevel::Required,
+    ] {
+        let fixture = Fixture::new();
+        let (app, router, session, agent, auth) = fixture.router(level);
+        router
+            .runtime_state
+            .grant_agent_extension(&agent, ExtensionGrant::app("installed"), "alice")
+            .await
+            .unwrap();
+        // Under Ask, a new binding would wait for a decision; an existing one
+        // answers at once.
+        let result = timeout(
+            Duration::from_secs(2),
+            router
+                .runtime_state
+                .dispatch_authenticated_runtime_tool_call(
+                    &auth,
+                    crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL,
+                    serde_json::json!({"kind":"app","name":"installed"}),
+                ),
+        )
+        .await
+        .expect("an already-bound App must not wait for an approval")
+        .unwrap();
+        assert!(result.ok);
+        assert_eq!(result.payload["effective"], "already_bound");
+        assert_eq!(result.payload["requires_provider_restart"], false);
+        assert!(app
+            .lock()
+            .await
+            .sessions()
+            .get_session(&session)
+            .unwrap()
+            .active_interaction_for_agent(&agent)
+            .is_none());
+        assert!(granted(&app, &agent).await);
+    }
+}
+
+#[tokio::test]
 async fn ask_app_self_grant_waits_for_the_existing_permission_interaction() {
     let fixture = Fixture::new();
     let (app, router, session, agent, auth) =
