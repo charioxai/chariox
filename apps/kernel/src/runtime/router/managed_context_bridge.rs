@@ -702,8 +702,8 @@ impl CommandRouter {
         }
 
         // Imported profiles start `unknown`, which admits no new work. Refresh each
-        // as a user's Refresh would, independently, and announce it after its write;
-        // a failure only leaves that profile `unknown`.
+        // as a user's Refresh would, independently, and announce it once settled;
+        // provider status probes are bounded, so every refresh settles.
         if let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
             accounts,
         } = &receipt.provider_accounts
@@ -724,9 +724,10 @@ impl CommandRouter {
                         .map_err(|error| (provider, profile_id, error))
                     })
                     .await;
+                    // A failed refresh may still have recorded an error state; announce
+                    // every settled refresh.
                     if let Ok(Err((provider, profile_id, error))) = refreshed {
                         tracing::warn!(%provider, %profile_id, %error, "refresh imported provider profile");
-                        return;
                     }
                     runtime_state
                         .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())

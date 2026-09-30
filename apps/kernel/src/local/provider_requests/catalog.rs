@@ -378,12 +378,7 @@ fn claude_auth_status(
     ] {
         command.env_remove(name);
     }
-    let output = command
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "get_provider_auth_status",
-            message: format!("failed to run Claude auth status: {error}"),
-        })?;
+    let output = bounded_status_output(command, "Claude auth status")?;
     // The managed launcher can fail before Claude executes. Exit 1 alone
     // therefore does not establish that the user's account is logged out.
     // Never include provider stdout/stderr in the diagnostic: it may contain
@@ -412,6 +407,79 @@ fn claude_auth_status(
     ))
 }
 
+/// A provider status probe answers in seconds. A stalled one must not hold its
+/// caller, such as the post-import refresh, forever: past the deadline the child
+/// is killed and reaped.
+const PROVIDER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn bounded_status_output(
+    command: Command,
+    label: &str,
+) -> Result<std::process::Output, DaemonError> {
+    bounded_output(command, label, PROVIDER_STATUS_PROBE_TIMEOUT)
+}
+
+fn bounded_output(
+    mut command: Command,
+    label: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, DaemonError> {
+    use std::io::Read;
+    use wait_timeout::ChildExt;
+
+    let error = |message: String| DaemonError::LocalTransport {
+        operation: "get_provider_auth_status",
+        message,
+    };
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|spawn_error| error(format!("failed to run {label}: {spawn_error}")))?;
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = read(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let stderr = read(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => Ok(std::process::Output {
+            status,
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        }),
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error(format!(
+                "{label} did not answer within {}s; authentication state is inconclusive",
+                timeout.as_secs()
+            )))
+        }
+        Err(wait_error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error(format!("failed to wait for {label}: {wait_error}")))
+        }
+    }
+}
+
 fn opencode_auth_status(
     account_profile: &str,
     environment: &BTreeMap<String, String>,
@@ -425,12 +493,7 @@ fn opencode_auth_status(
         "opencode:auth-status",
     )?;
     remove_account_auth_environment(&mut command, "opencode");
-    let output = command
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "get_provider_auth_status",
-            message: format!("failed to run OpenCode auth list: {error}"),
-        })?;
+    let output = bounded_status_output(command, "OpenCode auth list")?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -1945,5 +2008,27 @@ exit 2
             OpenCodeCredentialInspection::Malformed
         );
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod bounded_output_tests {
+    use super::*;
+
+    #[test]
+    fn a_stalled_status_probe_is_killed_at_its_deadline() {
+        let mut quick = Command::new("sh");
+        quick.args(["-c", "printf ok"]);
+        let output = bounded_output(quick, "quick probe", Duration::from_secs(10)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ok");
+
+        let mut stalled = Command::new("sleep");
+        stalled.arg("30");
+        let started = std::time::Instant::now();
+        let error = bounded_output(stalled, "stalled probe", Duration::from_millis(200))
+            .expect_err("a stalled probe fails at its deadline");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(error.to_string().contains("stalled probe did not answer"));
     }
 }
