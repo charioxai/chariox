@@ -12,6 +12,8 @@ pub(crate) use http::{
     post_cloud_acknowledged, post_cloud_json, post_cloud_json_authenticated,
     post_cloud_json_dynamic, post_cloud_to_file,
 };
+mod pairing;
+pub(crate) use pairing::request_account_pairing_token;
 mod session_collaboration;
 pub(crate) use session_collaboration::{
     accept_cloud_session_invite, create_cloud_session_invite, list_cloud_collaborators,

@@ -3,7 +3,7 @@ use crate::local::{
     LocalDaemonResponse, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
 };
 use crate::runtime::cloud_api_client::{
-    cloud_profile_from_persisted, post_cloud_json, CloudPairingTokenResponse,
+    cloud_profile_from_persisted, post_cloud_json, request_account_pairing_token,
 };
 use crate::runtime::cloud_relay_profile_store::{
     persist_cloud_profile, required_cloud_relay_profile,
@@ -19,16 +19,7 @@ pub(crate) async fn execute_pair_cloud_relay_client_request(
     request: PairCloudRelayClientRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let pairing: CloudPairingTokenResponse = post_cloud_json(
-        profile.api_url.clone(),
-        "/pairing-tokens",
-        serde_json::json!({
-            "accountId": profile.account_id,
-            "createdByUserId": profile.user_id,
-            "subjectKind": "client",
-        }),
-    )
-    .await?;
+    let pairing = request_account_pairing_token(&profile, "client").await?;
     post_cloud_json::<serde_json::Value>(
         profile.api_url.clone(),
         "/clients/pair",
@@ -58,16 +49,7 @@ pub(crate) async fn execute_pair_cloud_relay_machine_request(
     request: PairCloudRelayMachineRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let pairing: CloudPairingTokenResponse = post_cloud_json(
-        profile.api_url.clone(),
-        "/pairing-tokens",
-        serde_json::json!({
-            "accountId": profile.account_id,
-            "createdByUserId": profile.user_id,
-            "subjectKind": "machine",
-        }),
-    )
-    .await?;
+    let pairing = request_account_pairing_token(&profile, "machine").await?;
     post_cloud_json::<serde_json::Value>(
         profile.api_url.clone(),
         "/machines/pair",
