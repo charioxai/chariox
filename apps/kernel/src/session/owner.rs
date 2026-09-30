@@ -399,9 +399,11 @@ impl SessionStateStore {
     pub(crate) fn set_room_environment_app_tabs(
         &self,
         session_id: &str,
-        apps: &std::collections::BTreeMap<String, super::EnvironmentTabApp>,
+        apps: std::collections::BTreeMap<String, String>,
+        app_panels: bool,
     ) -> Result<(), EnvironmentError> {
-        self.write().set_room_environment_app_tabs(session_id, apps)
+        self.write()
+            .set_room_environment_app_tabs(session_id, apps, app_panels)
     }
 
     pub(crate) fn room_environment_controller_tab_binding(

@@ -95,8 +95,14 @@ export class BrowserCdpClient {
     this.cookieWriterFenceInUse = false;
   }
 
-  async reconcile(rawViewport, { browserBarVisible } = {}) {
+  async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth } = {}) {
     const viewport = canonicalViewport(rawViewport);
+    // A kernel before the automatic App panel sends no width: App pages then
+    // get the whole viewport and no panel is drawn beside them.
+    this.appViewport = Number.isSafeInteger(appPanelCssWidth) && appPanelCssWidth > 0
+      && appPanelCssWidth < viewport.css_width
+      ? { viewport, panelCssWidth: appPanelCssWidth }
+      : null;
     const connection = await this.ensureConnection();
     try {
       const { targetInfos = [] } = await connection.send("Target.getTargets");
@@ -116,15 +122,18 @@ export class BrowserCdpClient {
       // A Tab can close while it is inspected (App Tabs are swept when the
       // browser connection is re-established): it drops out of this
       // reconcile; a live Tab whose session went stale is attached again.
+      const appTargets = new Set([...(this.appTabs?.apps?.values() ?? [])].map((app) => app.targetId));
+      const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics())
+        || deviceMetricsFor(viewport);
       const inspected = (await Promise.all(pages.map(async (target) => {
         try {
-          return await this.inspectPage(connection, target, viewport);
+          return await this.inspectPage(connection, target, metricsFor(target));
         } catch (error) {
           if (!targetGone(error)) throw error;
           await this.forgetTarget(target.targetId);
           const { targetInfos: now = [] } = await connection.send("Target.getTargets");
           if (!now.some((candidate) => candidate.targetId === target.targetId)) return null;
-          return await this.inspectPage(connection, target, viewport);
+          return await this.inspectPage(connection, target, metricsFor(target));
         }
       }))).filter(Boolean);
       await Promise.all(
@@ -133,7 +142,6 @@ export class BrowserCdpClient {
       // A home kernel before protocol 370 sends no flag; a 370 worker behind it
       // defaults it to hidden (fullscreen), the new default.
       if (typeof browserBarVisible === "boolean") {
-        const appTargets = new Set([...(this.appTabs?.apps?.values() ?? [])].map((app) => app.targetId));
         await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
       }
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
@@ -333,13 +341,17 @@ export class BrowserCdpClient {
     await this.frameSessions.removeTarget(targetId);
   }
 
-  async inspectPage(connection, target, viewport) {
+  // App pages are narrower than the canonical viewport: the trusted
+  // conversation panel takes the right of the desktop. Null without a panel.
+  appMetrics() {
+    if (!this.appViewport) return null;
+    const { viewport, panelCssWidth } = this.appViewport;
+    return { ...deviceMetricsFor(viewport), width: viewport.css_width - panelCssWidth };
+  }
+
+  async inspectPage(connection, target, metrics) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
-    await connection.send(
-      "Emulation.setDeviceMetricsOverride",
-      deviceMetricsFor(viewport),
-      sessionId,
-    );
+    await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
     const [frameTree, focus] = await Promise.all([
       connection.send("Page.getFrameTree", {}, sessionId),
       connection.send(

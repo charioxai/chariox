@@ -55,7 +55,28 @@ impl CanonicalViewport {
             last_actor_id: None,
         })
     }
+
+    /// CSS width of the trusted conversation panel at the right of every App
+    /// view: at most a third of the page. App pages lay out in the rest.
+    pub fn app_panel_css_width(&self) -> u32 {
+        APP_PANEL_CSS_WIDTH.min(self.css_width / 3)
+    }
+
+    /// The panel in desktop pixels, beside the App page (full height).
+    pub(crate) fn app_panel(&self, agent_id: Option<String>) -> EnvironmentAppPanel {
+        let width = self.app_panel_css_width();
+        let scale = self.device_scale_factor;
+        EnvironmentAppPanel {
+            x: (self.css_width - width).saturating_mul(scale),
+            y: 0,
+            width: width.saturating_mul(scale),
+            height: self.css_height.saturating_mul(scale),
+            agent_id,
+        }
+    }
 }
+
+const APP_PANEL_CSS_WIDTH: u32 = 380;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -226,8 +247,8 @@ pub struct EnvironmentTab {
     pub app: Option<EnvironmentTabApp>,
 }
 
-/// An App view Tab: its installation and, while the App reserves one, the
-/// area where the trusted terminal draws the private conversation panel.
+/// An App view Tab: its installation and the area beside the App page where
+/// the trusted terminal draws the private conversation panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentTabApp {
     pub installation_id: String,
@@ -235,8 +256,9 @@ pub struct EnvironmentTabApp {
     pub panel: Option<EnvironmentAppPanel>,
 }
 
-/// Desktop pixels of the canonical viewport (the App's window is fullscreen).
-/// The panel shows the focus agent's conversation; the App never sees it.
+/// Desktop pixels of the canonical viewport (the App's window is fullscreen and
+/// its page is narrower). The panel shows the session's focus agent, following
+/// every focus change; the App never sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentAppPanel {
     pub x: u32,

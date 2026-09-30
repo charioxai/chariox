@@ -196,9 +196,9 @@ impl KernelRuntimeState {
                 views.retain_open(&session_id, open, polled_up_to);
                 views.set_open_tabs(&session_id, open.len());
             }
-            if let Some(panels) = &batch.panels {
-                self.publish_app_tabs(&session_id, &views, panels).await;
-            }
+            // App Tabs are always marked; an older controller, which does not
+            // lay pages out beside a panel, gets no panel.
+            self.publish_app_tabs(&session_id, &views, batch.app_panels);
             // A view's first call means its document loaded: project the
             // Room again so the Tab shows the App's title and URL, not the
             // blank page it had when it opened.
@@ -259,48 +259,16 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Marks the Room's App view Tabs and their reserved panels. A panel is in
-    /// desktop pixels (the App's window is fullscreen) and names the focus
-    /// agent whose conversation the trusted terminal draws there.
-    async fn publish_app_tabs(
+    /// Marks the Room's App view Tabs. The Room draws each one's panel beside
+    /// the App page, showing the session's focus agent.
+    fn publish_app_tabs(
         &self,
         session_id: &str,
         views: &crate::runtime::app_views::AppViews,
-        panels: &[crate::runtime::browser_controller_app_view::BrowserAppViewPanel],
+        app_panels: bool,
     ) {
-        let (agent_id, scale) = if panels.is_empty() {
-            (None, 1)
-        } else {
-            (
-                self.focused_agent_id(session_id).await.ok().flatten(),
-                self.room_environment_snapshot(session_id)
-                    .map_or(1, |environment| environment.viewport.device_scale_factor),
-            )
-        };
-        let apps = views
-            .installations(session_id)
-            .into_iter()
-            .map(|(target, installation_id)| {
-                let panel = panels
-                    .iter()
-                    .find(|panel| panel.target_id == target)
-                    .map(|panel| crate::session::EnvironmentAppPanel {
-                        x: panel.x.saturating_mul(scale),
-                        y: panel.y.saturating_mul(scale),
-                        width: panel.width.saturating_mul(scale),
-                        height: panel.height.saturating_mul(scale),
-                        agent_id: agent_id.clone(),
-                    });
-                let app = crate::session::EnvironmentTabApp {
-                    installation_id,
-                    panel,
-                };
-                (target, app)
-            })
-            .collect();
-        if views.publish(session_id, &apps) {
-            let _ = self.set_room_environment_app_tabs(session_id, &apps);
-        }
+        let apps = views.installations(session_id).into_iter().collect();
+        let _ = self.set_room_environment_app_tabs(session_id, apps, app_panels);
     }
 
     async fn answer_app_view_call(

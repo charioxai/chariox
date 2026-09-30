@@ -1873,14 +1873,18 @@ Workflow trigger and deployment direction:
   refreshes their runtime tool catalogs.
 - protocol 351: App view Tabs carry `app` in the Room snapshot
   (`{installation_id, panel?}`; absent on every other Tab). An App view opens
-  in its own fullscreen browser window, so its page covers the desktop. The
-  page reserves an area with `window.chariox.panel.reserve({x, y, width,
-  height})` (CSS pixels, at least 240x160; `release()` removes it), answered
-  by the controller with `{reserved: true}` and nothing else. While the window
-  is fullscreen the Tab's `app.panel` gives that area in desktop pixels plus
-  the session's focus `agent_id`; the trusted terminal draws that agent's
-  conversation there, over the stream and outside the App's page. A panel
-  change emits `TabsChanged`.
+  in its own fullscreen browser window. Every App view has the private
+  conversation panel: `app.panel` is a strip at the right of the desktop
+  (380 CSS px, at most a third of the canonical width, full height) in desktop
+  pixels, plus the session's focus `agent_id`. The App page lays out in the
+  rest (the controller narrows its viewport) and has no panel API; the trusted
+  terminal draws the focus agent's conversation in the strip, outside the
+  App's page. A focus change updates every App Tab's `agent_id` at once, and a
+  viewport change moves the panel; each change emits `TabsChanged`. While the
+  slice's Room browser controller does not lay App pages out beside the strip
+  (a controller that predates the automatic panel, or a viewport too narrow
+  for it), App Tabs keep `installation_id` and have no `panel`. (Before this,
+  the page reserved the area with `window.chariox.panel.reserve`.)
 - protocol 352: `CreateAgentWorkflow {session_id, agent_id, reason:
   trigger|deploy, surface: web|tui|cli, alias?}` creates a visible workflow
   for one of the caller's own agents when it gets a trigger or deployment:

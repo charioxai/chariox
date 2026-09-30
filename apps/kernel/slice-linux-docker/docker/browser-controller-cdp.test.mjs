@@ -179,6 +179,25 @@ test("failed event subscription closes the connection before a clean reconnect",
   assert.equal(result.event_cursor, 1);
 });
 
+test("App pages get a narrower viewport; the panel takes the rest", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.appTabs = { apps: new Map([["session-a", { targetId: "target-a" }]]) };
+  const widths = () => new Map(connection.calls
+    .filter((call) => call.method === "Emulation.setDeviceMetricsOverride")
+    .map((call) => [call.sessionId, call.params.width]));
+  await browser.reconcile(viewport, { appPanelCssWidth: 380 });
+  assert.equal(widths().get("session-a"), 900);
+  assert.ok([...widths()].every(([session, width]) => session === "session-a" || width === 1280));
+  assert.equal(browser.appMetrics().width, 900);
+  // An older kernel sends no width, and a width that leaves no page is refused.
+  for (const appPanelCssWidth of [undefined, 1280]) {
+    await browser.reconcile(viewport, { appPanelCssWidth });
+    assert.equal(widths().get("session-a"), 1280);
+    assert.equal(browser.appMetrics(), null);
+  }
+});
+
 test("a reconnected browser applies the bar to windows whose ids an earlier browser used", async () => {
   // Both browsers put target-a in window 1; the second starts it clipped.
   const windowed = (state) => {

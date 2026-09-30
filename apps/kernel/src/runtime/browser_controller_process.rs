@@ -672,6 +672,8 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
                     "desktop_pixel_height": viewport.desktop_pixel_height,
                 },
                 "browser_bar_visible": browser_bar_visible,
+                // App pages lay out left of the trusted conversation panel.
+                "app_panel_css_width": viewport.app_panel_css_width(),
             }),
         )?;
         let snapshot =
