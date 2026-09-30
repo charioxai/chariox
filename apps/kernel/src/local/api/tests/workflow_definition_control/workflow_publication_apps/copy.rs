@@ -919,6 +919,9 @@ fn a_release_without_apps_removes_the_copy_and_resumes_the_owner() {
         .runtime_state()
         .fixture_session(&copy_session)
         .is_err());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
 
 #[test]
 fn a_stop_that_lands_while_a_runtime_starts_wins() {
