@@ -242,9 +242,9 @@ impl SessionService {
     pub(crate) fn set_room_environment_app_tabs(
         &mut self,
         session_id: &str,
-        apps: std::collections::BTreeMap<String, String>,
+        apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
         app_panels: bool,
-    ) -> Result<(), EnvironmentError> {
+    ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
         // Read under the same lock as every focus change, so a poll never
         // puts back an agent the focus just moved away from.
         let Some(session) = self.store.get(session_id) else {

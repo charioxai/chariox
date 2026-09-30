@@ -23,7 +23,7 @@ pub use model::{
     CanonicalViewport, EnvironmentActor, EnvironmentActorColor, EnvironmentActorKind,
     EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
     EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle, EnvironmentPointer,
-    EnvironmentAppPanel, EnvironmentPointerPosition, EnvironmentTab, EnvironmentTabApp,
+    AppPanelLayout, AppPanelPlacement, EnvironmentAppPanel, EnvironmentPointerPosition, EnvironmentTab, EnvironmentTabApp,
     RoomEnvironmentSnapshot,
 };
 pub(crate) use model::{EnvironmentTabObservation, EnvironmentTabRuntimeBinding};

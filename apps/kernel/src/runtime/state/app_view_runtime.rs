@@ -11,7 +11,7 @@ use crate::{
         app_views::{AppViewBinding, ViewCall},
         browser_controller_app_view::{
             BrowserAppViewAsset, BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewError,
-            BrowserAppViewOpened, BrowserAppViewRequest,
+            AppViewPage, BrowserAppViewOpened, BrowserAppViewRequest,
         },
         command::KernelCommand,
     },
@@ -36,6 +36,8 @@ const REPROJECT_WINDOW: Duration = Duration::from_secs(5);
 /// Consecutive failed polls before the session's views are dropped (for
 /// example after the Room environment went away).
 const MAX_POLL_FAILURES: u32 = 20;
+/// The page's agent panel request; answered by the kernel, not the App.
+const PANEL_METHOD: &str = "chariox.panel";
 
 impl KernelRuntimeState {
     pub(crate) async fn execute_app_view_request(
@@ -43,18 +45,48 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<LocalDaemonResponse> {
-        let LocalDaemonRequest::OpenAppView(request) = request else {
-            return None;
+        let owner = match request {
+            LocalDaemonRequest::OpenAppView(_) | LocalDaemonRequest::SetAppViewPanel(_) => {
+                match crate::runtime::app_control::owner(command) {
+                    Ok(owner) => owner,
+                    Err(code) => return Some(failed(code)),
+                }
+            }
+            _ => return None,
         };
-        let owner = match crate::runtime::app_control::owner(command) {
-            Ok(owner) => owner,
-            Err(code) => return Some(failed(code)),
-        };
-        Some(
-            self.open_app_view(owner, &request.session_id, &request.installation_id)
+        Some(match request {
+            LocalDaemonRequest::OpenAppView(request) => self
+                .open_app_view(owner, &request.session_id, &request.installation_id)
                 .await
                 .unwrap_or_else(failed),
-        )
+            LocalDaemonRequest::SetAppViewPanel(request) => {
+                self.set_app_view_panel(request).await.unwrap_or_else(failed)
+            }
+            _ => return None,
+        })
+    }
+
+    /// The user's panel choice for an App's open views: it wins over the App.
+    async fn set_app_view_panel(
+        &self,
+        request: &crate::local::SetAppViewPanelRequest,
+    ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
+        let views = self.app_control().views().clone();
+        let user = views
+            .set_user_panel(
+                &request.session_id,
+                &request.installation_id,
+                request.placement,
+                request.minimized,
+                request.reset,
+            )
+            .ok_or(AppRequestErrorCode::NotFound)?;
+        self.publish_app_tabs(&request.session_id, &views).await;
+        Ok(LocalDaemonResponse::AppViewPanelSet {
+            installation_id: request.installation_id.clone(),
+            placement: user.placement,
+            minimized: user.minimized,
+        })
     }
 
     async fn open_app_view(
@@ -78,18 +110,31 @@ impl KernelRuntimeState {
             }
         })?;
         let generation = view.generation;
+        let panel = crate::runtime::app_views::PanelRequest::from_manifest(view.panel.as_ref());
+        let views = self.app_control().views().clone();
+        // The page's first layout already leaves its panel free.
+        let page = self
+            .room_environment_snapshot(session_id)
+            .ok()
+            .map(|environment| {
+                let layout = views.opening_layout(session_id, installation, panel);
+                environment.viewport.app_layout(layout, None).0
+            });
         let (entry, assets) = view_assets(view);
         let request = BrowserAppViewRequest::Open {
             origin_label: origin_label(&owner, installation),
             installation_id: installation.to_owned(),
             entry,
             assets,
+            page: page.map(|(width, height)| AppViewPage { width, height }),
         };
         let opened: BrowserAppViewOpened = self
             .app_view_command(session_id, request)
             .await
             .ok_or(AppRequestErrorCode::Conflict)?;
-        let views = self.app_control().views().clone();
+        if let Some(page) = page {
+            views.sent_page(session_id, &opened.target_id, page);
+        }
         if views.register(
             session_id,
             &opened.target_id,
@@ -97,6 +142,7 @@ impl KernelRuntimeState {
                 owner: owner.clone(),
                 installation: installation.to_owned(),
                 generation,
+                panel,
             },
         ) {
             let state = self.clone();
@@ -198,7 +244,8 @@ impl KernelRuntimeState {
             }
             // App Tabs are always marked; an older controller, which does not
             // lay pages out beside a panel, gets no panel.
-            self.publish_app_tabs(&session_id, &views, batch.app_panels);
+            views.set_app_panels(&session_id, batch.app_panels);
+            self.publish_app_tabs(&session_id, &views).await;
             // A view's first call means its document loaded: project the
             // Room again so the Tab shows the App's title and URL, not the
             // blank page it had when it opened.
@@ -261,14 +308,81 @@ impl KernelRuntimeState {
 
     /// Marks the Room's App view Tabs. The Room draws each one's panel beside
     /// the App page, showing the session's focus agent.
-    fn publish_app_tabs(
+    ///
+    /// Each page gets its CSS size beside its panel when that changed: a
+    /// placement request, the user's choice or a viewport change.
+    async fn publish_app_tabs(&self, session_id: &str, views: &crate::runtime::app_views::AppViews) {
+        let app_panels = views.app_panels(session_id);
+        let Ok(pages) =
+            self.set_room_environment_app_tabs(session_id, views.layouts(session_id), app_panels)
+        else {
+            return;
+        };
+        if !app_panels {
+            return;
+        }
+        for (target_id, (width, height)) in views.changed_pages(session_id, &pages) {
+            let request = BrowserAppViewRequest::Layout {
+                target_id: target_id.clone(),
+                page: AppViewPage { width, height },
+            };
+            if self.app_view_command::<Value>(session_id, request).await.is_none() {
+                views.forget_page(session_id, &target_id);
+            }
+        }
+    }
+
+    /// `chariox.panel` from an App page: where it wants its agent panel
+    /// (`{placement: "right" | "bottom" | "none", size?}`), or with no
+    /// placement just the current layout. The user's choice still wins.
+    async fn request_app_panel(
         &self,
         session_id: &str,
-        views: &crate::runtime::app_views::AppViews,
-        app_panels: bool,
-    ) {
-        let apps = views.installations(session_id).into_iter().collect();
-        let _ = self.set_room_environment_app_tabs(session_id, apps, app_panels);
+        target_id: &str,
+        params: Value,
+    ) -> Result<Value, BrowserAppViewError> {
+        let invalid = || {
+            view_error(
+                "INVALID_PANEL",
+                "A panel request is {placement: \"right\" | \"bottom\" | \"none\", size?: 120..1200}",
+            )
+        };
+        let views = self.app_control().views().clone();
+        if let Some(placement) = params.get("placement") {
+            let placement = match placement.as_str() {
+                Some("right") => Some(crate::session::AppPanelPlacement::Right),
+                Some("bottom") => Some(crate::session::AppPanelPlacement::Bottom),
+                Some("none") => None,
+                _ => return Err(invalid()),
+            };
+            let size = match params.get("size") {
+                None | Some(Value::Null) => None,
+                Some(size) => match size.as_u64() {
+                    Some(size) if placement.is_some() && (120..=1200).contains(&size) => {
+                        Some(size as u32)
+                    }
+                    _ => return Err(invalid()),
+                },
+            };
+            let request = crate::runtime::app_views::PanelRequest { placement, size };
+            if !views.request_panel(session_id, target_id, request) {
+                return Err(view_error("APP_VIEW_UNBOUND", "This view is not bound to an App"));
+            }
+            self.publish_app_tabs(session_id, &views).await;
+        }
+        let layout = views
+            .layouts(session_id)
+            .remove(target_id)
+            .map(|(_, layout)| layout)
+            .unwrap_or_default();
+        Ok(serde_json::json!({
+            "placement": match layout.placement {
+                Some(crate::session::AppPanelPlacement::Right) => "right",
+                Some(crate::session::AppPanelPlacement::Bottom) => "bottom",
+                None => "none",
+            },
+            "minimized": layout.minimized,
+        }))
     }
 
     async fn answer_app_view_call(
@@ -283,6 +397,10 @@ impl KernelRuntimeState {
         let views = self.app_control().views().clone();
         let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
         let outcome = match views.binding(&session_id, &call.target_id) {
+            Some(binding) if binding.installation == call.installation_id && call.method == PANEL_METHOD => {
+                self.request_app_panel(&session_id, &call.target_id, call.params)
+                    .await
+            }
             Some(binding) if binding.installation == call.installation_id => {
                 match self
                     .invoke_app_view_tool(
@@ -383,6 +501,7 @@ impl KernelRuntimeState {
                 owner: owner.to_owned(),
                 installation: installation.to_owned(),
                 generation: view.generation,
+                panel: crate::runtime::app_views::PanelRequest::from_manifest(view.panel.as_ref()),
             },
         );
         let (entry, assets) = view_assets(view);
@@ -564,6 +683,7 @@ mod tests {
             owner: "alice".into(),
             installation: "todo".into(),
             generation: 1,
+            panel: Default::default(),
         };
         let caller = view_caller(&binding, "session-1");
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));

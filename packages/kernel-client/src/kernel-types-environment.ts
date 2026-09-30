@@ -60,6 +60,9 @@ export type RoomEnvironmentAppPanel = {
   width: number
   height: number
   agent_id: string | null
+  /** Protocol 371: where the App placed it; minimized, it is a bar at the bottom. */
+  placement?: "right" | "bottom"
+  minimized?: boolean
 }
 
 export type RoomEnvironmentTabApp = {

@@ -184,4 +184,8 @@ pub use workspace::*;
 /// also returns that release's plan (`DeploymentAppsPreview.release_plan`).
 /// Version 370 adds the Room browser bar: `SetRoomBrowserBar` and the
 /// snapshot's `browser_bar_visible` (a change emits `TabsChanged`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 370;
+/// Version 371 lets Apps place their agent panel (`ui.agentPanel`,
+/// `chariox.panel` from the page) and the user move or minimize it
+/// (`SetAppViewPanel`); `EnvironmentAppPanel` carries `placement` and
+/// `minimized`, and an App that shows no panel has none.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 371;

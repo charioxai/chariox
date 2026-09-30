@@ -41,9 +41,10 @@ pub struct RoomEnvironment {
     /// Ordinary Tabs' windows show Chromium's tab strip and address bar
     /// (maximized) instead of covering the desktop (fullscreen).
     browser_bar_visible: bool,
-    /// App view Tabs by controller target, and the focus agent their panels
-    /// show. Kept across Tab churn so a Tab gets its marker once it appears.
-    app_installations: BTreeMap<String, String>,
+    /// App view Tabs by controller target (installation and panel layout), and
+    /// the focus agent their panels show. Kept across Tab churn so a Tab gets
+    /// its marker once it appears.
+    app_installations: BTreeMap<String, (String, super::model::AppPanelLayout)>,
     /// The browser controller lays App pages out beside the panel. An older
     /// one does not: its App Tabs are marked without a panel.
     app_panels: bool,
@@ -254,11 +255,11 @@ impl RoomEnvironment {
         self.tabs.tab_id_for_controller_target(controller_target_id)
     }
 
-    /// The open App views (installation by controller target), the session's
-    /// focus agent, and whether the controller draws App pages beside a panel.
+    /// The open App views (installation and panel layout by controller target)
+    /// and the session's focus agent.
     pub(crate) fn set_app_tabs(
         &mut self,
-        apps: BTreeMap<String, String>,
+        apps: BTreeMap<String, (String, super::model::AppPanelLayout)>,
         agent_id: Option<String>,
         app_panels: bool,
     ) {
@@ -282,17 +283,32 @@ impl RoomEnvironment {
         let apps = self
             .app_installations
             .iter()
-            .map(|(target, installation_id)| {
+            .map(|(target, (installation_id, layout))| {
                 let app = super::model::EnvironmentTabApp {
                     installation_id: installation_id.clone(),
                     panel: self
                         .app_panels
-                        .then(|| self.viewport.app_panel(self.panel_agent_id.clone())),
+                        .then(|| {
+                            self.viewport
+                                .app_layout(*layout, self.panel_agent_id.clone())
+                                .1
+                        })
+                        .flatten(),
                 };
                 (target.clone(), app)
             })
             .collect();
         self.tabs.set_apps(&apps)
+    }
+
+    /// Each App page's CSS size: the canonical viewport less its panel.
+    pub(crate) fn app_page_sizes(&self) -> BTreeMap<String, (u32, u32)> {
+        self.app_installations
+            .iter()
+            .map(|(target, (_, layout))| {
+                (target.clone(), self.viewport.app_layout(*layout, None).0)
+            })
+            .collect()
     }
 
     pub(crate) fn register_element_references(

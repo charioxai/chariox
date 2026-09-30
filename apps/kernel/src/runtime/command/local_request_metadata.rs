@@ -541,6 +541,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ConfigureAppAutomation(_) => "app.automation.configure",
         LocalDaemonRequest::DisableAppAutomation(_) => "app.automation.disable",
         LocalDaemonRequest::OpenAppView(_) => "app.view.open",
+        LocalDaemonRequest::SetAppViewPanel(_) => "app.view.panel",
         LocalDaemonRequest::UninstallApp(_) => "app.uninstall",
         LocalDaemonRequest::GetAppLogs(_) => "app.logs",
         LocalDaemonRequest::CreateAppInboxRoute(_) => "app.inbox.route.create",

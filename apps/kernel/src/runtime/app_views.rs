@@ -1,5 +1,6 @@
 //! Open App view Tabs per session. The kernel, not the page or controller,
 //! decides which owner and installation a view call runs as.
+use crate::session::{AppPanelLayout, AppPanelPlacement};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -12,6 +13,58 @@ pub(crate) struct AppViewBinding {
     /// The generation whose UI files the Tab runs; calls after an update are
     /// refused so a view never talks to a backend it was not built for.
     pub(crate) generation: u64,
+    /// The panel its manifest asks for; the page may ask for another.
+    pub(crate) panel: PanelRequest,
+}
+
+/// The App's own agent panel choice: `placement` None shows no panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PanelRequest {
+    pub(crate) placement: Option<AppPanelPlacement>,
+    pub(crate) size: Option<u32>,
+}
+
+impl Default for PanelRequest {
+    fn default() -> Self {
+        Self {
+            placement: Some(AppPanelPlacement::Right),
+            size: None,
+        }
+    }
+}
+
+impl PanelRequest {
+    pub(crate) fn from_manifest(panel: Option<&chariox_app_package::AgentPanel>) -> Self {
+        use chariox_app_package::PanelPlacement;
+        let Some(panel) = panel else {
+            return Self::default();
+        };
+        Self {
+            placement: match panel.placement {
+                PanelPlacement::Right => Some(AppPanelPlacement::Right),
+                PanelPlacement::Bottom => Some(AppPanelPlacement::Bottom),
+                PanelPlacement::None => None,
+            },
+            size: panel.size,
+        }
+    }
+}
+
+/// The user's panel choice for an App in this session; it wins over the App.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct UserPanel {
+    pub(crate) placement: Option<AppPanelPlacement>,
+    pub(crate) minimized: bool,
+}
+
+/// The user's choice, else the App's request (its page's, else its manifest's).
+pub(crate) fn resolve_panel(request: PanelRequest, user: UserPanel) -> AppPanelLayout {
+    let placement = user.placement.or(request.placement);
+    AppPanelLayout {
+        placement,
+        size: request.size.filter(|_| placement == request.placement),
+        minimized: user.minimized && placement.is_some(),
+    }
 }
 
 #[derive(Default)]
@@ -33,6 +86,15 @@ struct SessionViews {
     /// (agent, installation) bindings the user revoked: a focus change does
     /// not bind them again; opening the App again does.
     revoked: std::collections::HashSet<(String, String)>,
+    /// Panel placements a Tab's page asked for, over its manifest default.
+    panel_requests: HashMap<String, PanelRequest>,
+    /// The user's panel choices by installation.
+    user_panels: HashMap<String, UserPanel>,
+    /// The page size each Tab's controller last got, in CSS pixels.
+    sent_pages: HashMap<String, (u32, u32)>,
+    /// The session's browser controller lays App pages out beside the panel
+    /// (it reports `app_panels`); an older one gets no panel and no layout.
+    app_panels: bool,
 }
 
 /// A running view call: dropping its sender cancels it.
@@ -92,6 +154,7 @@ impl AppViews {
         let views = sessions.entry(session.to_owned()).or_default();
         views.registrations += 1;
         views.called.remove(target);
+        views.panel_requests.remove(target);
         views
             .tabs
             .insert(target.to_owned(), (binding, views.registrations));
@@ -276,16 +339,149 @@ impl AppViews {
         }
     }
 
-    /// Bound Tabs: target → installation.
-    pub(crate) fn installations(&self, session: &str) -> Vec<(String, String)> {
+    /// Bound Tabs: target → (installation, resolved panel layout).
+    pub(crate) fn layouts(
+        &self,
+        session: &str,
+    ) -> std::collections::BTreeMap<String, (String, AppPanelLayout)> {
         let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.get(session).map_or_else(Vec::new, |views| {
-            views
-                .tabs
-                .iter()
-                .map(|(target, (binding, _))| (target.clone(), binding.installation.clone()))
-                .collect()
-        })
+        let Some(views) = sessions.get(session) else {
+            return Default::default();
+        };
+        views
+            .tabs
+            .iter()
+            .map(|(target, (binding, _))| {
+                let request = views
+                    .panel_requests
+                    .get(target)
+                    .copied()
+                    .unwrap_or(binding.panel);
+                let user = views
+                    .user_panels
+                    .get(&binding.installation)
+                    .copied()
+                    .unwrap_or_default();
+                (
+                    target.clone(),
+                    (binding.installation.clone(), resolve_panel(request, user)),
+                )
+            })
+            .collect()
+    }
+
+    /// The layout a new view of `installation` opens with.
+    pub(crate) fn opening_layout(
+        &self,
+        session: &str,
+        installation: &str,
+        request: PanelRequest,
+    ) -> AppPanelLayout {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let user = sessions
+            .get(session)
+            .and_then(|views| views.user_panels.get(installation).copied())
+            .unwrap_or_default();
+        resolve_panel(request, user)
+    }
+
+    /// The page asked for another panel placement; false for an unbound Tab.
+    pub(crate) fn request_panel(&self, session: &str, target: &str, request: PanelRequest) -> bool {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(views) = sessions
+            .get_mut(session)
+            .filter(|views| views.tabs.contains_key(target))
+        else {
+            return false;
+        };
+        views.panel_requests.insert(target.to_owned(), request);
+        true
+    }
+
+    /// The user's choice for an App's panel in this session; returns the new
+    /// choice, or None when no view of it is open.
+    pub(crate) fn set_user_panel(
+        &self,
+        session: &str,
+        installation: &str,
+        placement: Option<AppPanelPlacement>,
+        minimized: Option<bool>,
+        reset: bool,
+    ) -> Option<UserPanel> {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let views = sessions.get_mut(session)?;
+        if !views
+            .tabs
+            .values()
+            .any(|(binding, _)| binding.installation == installation)
+        {
+            return None;
+        }
+        if reset {
+            views.user_panels.remove(installation);
+        }
+        let user = views
+            .user_panels
+            .entry(installation.to_owned())
+            .or_default();
+        if placement.is_some() {
+            user.placement = placement;
+        }
+        if let Some(minimized) = minimized {
+            user.minimized = minimized;
+        }
+        Some(*user)
+    }
+
+    /// The page sizes that changed since each Tab's controller last got one.
+    pub(crate) fn changed_pages(
+        &self,
+        session: &str,
+        pages: &std::collections::BTreeMap<String, (u32, u32)>,
+    ) -> Vec<(String, (u32, u32))> {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(views) = sessions.get_mut(session) else {
+            return Vec::new();
+        };
+        views
+            .sent_pages
+            .retain(|target, _| pages.contains_key(target));
+        let mut changed = Vec::new();
+        for (target, page) in pages {
+            if views.sent_pages.insert(target.clone(), *page) != Some(*page) {
+                changed.push((target.clone(), *page));
+            }
+        }
+        changed
+    }
+
+    /// Whether the session's browser controller draws App pages beside a panel.
+    pub(crate) fn set_app_panels(&self, session: &str, app_panels: bool) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.app_panels = app_panels;
+        }
+    }
+
+    pub(crate) fn app_panels(&self, session: &str) -> bool {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(session).is_some_and(|views| views.app_panels)
+    }
+
+    /// A layout that did not reach the controller is sent again next time.
+    pub(crate) fn forget_page(&self, session: &str, target: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.sent_pages.remove(target);
+        }
+    }
+
+    /// Records the page size a Tab opened with.
+    pub(crate) fn sent_page(&self, session: &str, target: &str, page: (u32, u32)) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.sent_pages.insert(target.to_owned(), page);
+        }
     }
 
     pub(crate) fn forget_session(&self, session: &str) {
@@ -388,11 +584,94 @@ where
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_users_panel_choice_wins_over_the_apps_request_and_its_manifest() {
+        let bottom = Some(AppPanelPlacement::Bottom);
+        let right = Some(AppPanelPlacement::Right);
+        let app = PanelRequest {
+            placement: bottom,
+            size: Some(300),
+        };
+        // The App's own choice (its page's request, else its manifest).
+        assert_eq!(
+            resolve_panel(app, UserPanel::default()),
+            AppPanelLayout {
+                placement: bottom,
+                size: Some(300),
+                minimized: false
+            }
+        );
+        // The user moved it: the App's size was for another placement.
+        let moved = UserPanel {
+            placement: right,
+            minimized: false,
+        };
+        assert_eq!(
+            resolve_panel(app, moved),
+            AppPanelLayout {
+                placement: right,
+                size: None,
+                minimized: false
+            }
+        );
+        // Minimized only when there is a panel; the user can bring one back
+        // to an App that asked for none.
+        let none = PanelRequest {
+            placement: None,
+            size: None,
+        };
+        let minimized = UserPanel {
+            placement: None,
+            minimized: true,
+        };
+        assert_eq!(resolve_panel(none, minimized).minimized, false);
+        assert_eq!(resolve_panel(none, moved).placement, right);
+        assert_eq!(PanelRequest::from_manifest(None), PanelRequest::default());
+    }
+
+    #[test]
+    fn panel_requests_and_user_choices_resolve_per_tab() {
+        let views = AppViews::default();
+        views.register("s", "t1", binding("a"));
+        views.register("s", "t2", binding("b"));
+        let bottom = PanelRequest {
+            placement: Some(AppPanelPlacement::Bottom),
+            size: None,
+        };
+        assert!(views.request_panel("s", "t1", bottom));
+        assert!(!views.request_panel("s", "missing", bottom));
+        assert!(views
+            .set_user_panel("s", "b", None, Some(true), false)
+            .is_some());
+        assert!(views
+            .set_user_panel("s", "closed", None, Some(true), false)
+            .is_none());
+        let layouts = views.layouts("s");
+        assert_eq!(layouts["t1"].1.placement, Some(AppPanelPlacement::Bottom));
+        assert!(layouts["t2"].1.minimized);
+        // A reset hands the panel back to the App.
+        views.set_user_panel("s", "b", None, None, true);
+        assert!(!views.layouts("s")["t2"].1.minimized);
+        // A new document (reload, reopen) starts from its manifest again.
+        views.register("s", "t1", binding("a"));
+        assert_eq!(
+            views.layouts("s")["t1"].1.placement,
+            Some(AppPanelPlacement::Right)
+        );
+        // Page sizes are sent once per change.
+        let pages = std::collections::BTreeMap::from([("t1".to_string(), (900, 800))]);
+        assert_eq!(views.changed_pages("s", &pages).len(), 1);
+        assert!(views.changed_pages("s", &pages).is_empty());
+        views.forget_page("s", "t1");
+        assert_eq!(views.changed_pages("s", &pages).len(), 1);
+    }
+
     fn binding(installation: &str) -> AppViewBinding {
         AppViewBinding {
             generation: 1,
             owner: "user".into(),
             installation: installation.into(),
+            panel: PanelRequest::default(),
         }
     }
 
@@ -689,6 +968,7 @@ mod reconnect_tests {
             owner: "user".into(),
             installation: "a".into(),
             generation: 2,
+            panel: PanelRequest::default(),
         };
         views.register("s", "t1", binding.clone());
         assert_eq!(views.binding("s", "t1"), Some(binding));

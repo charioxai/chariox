@@ -22,6 +22,7 @@ pub enum LocalDaemonRequest {
     ConfigureAppAutomation(ConfigureAppAutomationRequest),
     DisableAppAutomation(DisableAppAutomationRequest),
     OpenAppView(OpenAppViewRequest),
+    SetAppViewPanel(SetAppViewPanelRequest),
     UninstallApp(UninstallAppRequest),
     GetAppLogs(GetAppLogsRequest),
     CreateAppInboxRoute(CreateAppInboxRouteRequest),

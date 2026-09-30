@@ -27,6 +27,14 @@ pub(crate) enum BrowserAppViewRequest {
         installation_id: String,
         entry: String,
         assets: Vec<BrowserAppViewAsset>,
+        /// The page's CSS size beside its agent panel; absent: the default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<AppViewPage>,
+    },
+    /// The Tab's page size changed (its panel moved, was minimized or hidden).
+    Layout {
+        target_id: String,
+        page: AppViewPage,
     },
     Calls,
     /// Serve the current generation's assets to an open view and reload it.
@@ -51,6 +59,7 @@ impl BrowserAppViewRequest {
             Self::Open { .. } => "browser.app.open",
             Self::Calls => "browser.app.calls",
             Self::Reload { .. } => "browser.app.reload",
+            Self::Layout { .. } => "browser.app.layout",
             Self::Respond { .. } => "browser.app.respond",
         }
     }
@@ -63,6 +72,14 @@ impl BrowserAppViewRequest {
         }
         value
     }
+}
+
+/// An App page's CSS size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AppViewPage {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

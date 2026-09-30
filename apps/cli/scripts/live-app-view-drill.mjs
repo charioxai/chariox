@@ -14,6 +14,8 @@
 // Protocol 370: the Room browser bar. An ordinary Tab's window is fullscreen
 // by default and maximized while the bar is shown; the App view's window stays
 // fullscreen either way.
+// Protocol 371: the App chooses its panel placement (right, bottom or none) and
+// the user's SetAppViewPanel choice wins; `reset` hands it back to the App.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
 // installed, running App:
@@ -61,15 +63,15 @@ try {
   evidence.steps.push({ step: "unknown_tool", error: unknown })
 
   // Every App Tab gets the panel at the right of the desktop, full height, and
-  // the page lays out in the rest; the App has no panel API.
+  // the page lays out in the rest. The App's panel API only places the panel.
   const marked = await roomApps((apps) => apps.find((app) => app.panel))
   const { viewport } = (await client.send({ GetRoomEnvironmentState: { session_id: options.session } }))
     .RoomEnvironmentState.environment
   const { x, y, width, height } = marked.panel
   assert.deepEqual([x + width, y, height], [viewport.desktop_pixel_width, 0, viewport.desktop_pixel_height])
   assert.equal(marked.panel.agent_id, view.bound_agent_id ?? null)
-  const page = await evaluate(view.target_id, `({ width: innerWidth, panel: "panel" in window.chariox })`)
-  assert.deepEqual(page, { width: x / viewport.device_scale_factor, panel: false })
+  const page = await evaluate(view.target_id, `({ width: innerWidth, panel: Object.keys(window.chariox.panel) })`)
+  assert.deepEqual(page, { width: x / viewport.device_scale_factor, panel: ["set", "get"] })
   evidence.steps.push({ step: "panel", marked, page })
   if (options.otherAgent) {
     const focus = async (agentId) => {
@@ -82,6 +84,43 @@ try {
     evidence.steps.push({ step: "panel_follows_focus", agent_id: options.otherAgent, moved_ms })
     if (marked.panel.agent_id) await focus(marked.panel.agent_id)
   }
+
+  // Protocol 371: the App chooses the placement; the user's choice wins.
+  const scale = viewport.device_scale_factor
+  const setPanel = (layout) => evaluate(view.target_id, `window.chariox.panel.set(${JSON.stringify(layout)})`)
+  const pageSize = async (width, height) => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const page = await evaluate(view.target_id, "[innerWidth, innerHeight]")
+      if (page[0] === width && page[1] === height) return
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    throw new Error(`the App page never became ${width}x${height} CSS pixels`)
+  }
+  const user = (fields) => client.send({ SetAppViewPanel: { session_id: options.session, installation_id: options.installation, ...fields } })
+  // An earlier run's user choice would win over the App: start from the App's.
+  await user({ reset: true })
+  assert.deepEqual(await setPanel({ placement: "none" }), { placement: "none", minimized: false })
+  await roomApps((apps) => apps.every((app) => !app.panel))
+  await pageSize(viewport.css_width, viewport.css_height)
+  assert.deepEqual(await setPanel({ placement: "bottom", size: 250 }), { placement: "bottom", minimized: false })
+  const bottom = (await roomApps((apps) => apps.find((app) => app.panel?.placement === "bottom"))).panel
+  assert.deepEqual([bottom.x, bottom.y + bottom.height, bottom.width], [0, viewport.desktop_pixel_height, viewport.desktop_pixel_width])
+  await pageSize(viewport.css_width, bottom.y / scale)
+  const minimizedSet = await user({ minimized: true })
+  assert.equal(minimizedSet.AppViewPanelSet?.minimized, true, JSON.stringify(minimizedSet))
+  const minimized = (await roomApps((apps) => apps.find((app) => app.panel?.minimized))).panel
+  await pageSize(viewport.css_width, minimized.y / scale)
+  await user({ minimized: false, placement: "right" })
+  const right = (await roomApps((apps) => apps.find((app) => app.panel?.placement === "right" && !app.panel.minimized))).panel
+  await pageSize(right.x / scale, viewport.css_height)
+  // The user's choice wins over a later request from the App.
+  assert.deepEqual(await setPanel({ placement: "bottom" }), { placement: "right", minimized: false })
+  // Reset hands the panel back to the App (bottom, as it last asked), then
+  // the drill leaves the default placement.
+  await user({ reset: true })
+  await roomApps((apps) => apps.find((app) => app.panel?.placement === "bottom"))
+  await setPanel({ placement: "right" })
+  evidence.steps.push({ step: "panel_placement", bottom, minimized, right })
 
   const tabId = await roomAppTab()
   const read = await client.send({ GetRoomEnvironmentTabAccessibility: { session_id: options.session, tab_id: tabId } })
