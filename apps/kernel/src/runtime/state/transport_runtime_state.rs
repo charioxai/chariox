@@ -395,8 +395,11 @@ impl KernelRuntimeState {
             return None;
         }
         let due = self.app_control().event_pump().next_due()?;
+        // Round up: a tick that wakes a hair before the floor finds the pass
+        // not yet due and waits a whole minimum interval more.
         let wait = due.saturating_duration_since(std::time::Instant::now());
-        Some(now_ms.saturating_add(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)))
+        let wait_ms = wait.as_micros().div_ceil(1000);
+        Some(now_ms.saturating_add(u64::try_from(wait_ms).unwrap_or(u64::MAX)))
     }
 
     fn next_structured_output_poll_due_at_ms(&self) -> Option<u64> {
