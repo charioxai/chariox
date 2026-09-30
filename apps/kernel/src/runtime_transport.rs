@@ -679,6 +679,9 @@ where
                 .await;
     });
     let (quiescence_shutdown_tx, quiescence_shutdown_rx) = tokio::sync::watch::channel(false);
+    let release_update_task = router
+        .runtime_state()
+        .spawn_managed_release_update(quiescence_shutdown_rx.clone());
     let quiescence_task = router
         .runtime_state()
         .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
@@ -689,6 +692,9 @@ where
             _ = &mut shutdown => {
                 let _ = quiescence_shutdown_tx.send(true);
                 if let Some(task) = quiescence_task {
+                    task.abort();
+                }
+                if let Some(task) = release_update_task {
                     task.abort();
                 }
                 drop(_restart_recovery_task);

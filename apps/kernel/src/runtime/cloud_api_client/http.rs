@@ -122,6 +122,51 @@ where
     })?
 }
 
+/// Streams a Cloud response body into `destination` (via a `.partial` file),
+/// refusing bodies larger than `max_bytes`.
+pub(crate) async fn post_cloud_to_file(
+    api_url: String,
+    path: &'static str,
+    body: serde_json::Value,
+    destination: std::path::PathBuf,
+    max_bytes: u64,
+) -> Result<(), DaemonError> {
+    tokio::task::spawn_blocking(move || {
+        let io_error = |message: String| DaemonError::LocalTransport {
+            operation: "download cloud artifact",
+            message,
+        };
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(30 * 60))
+            .build();
+        let response = agent
+            .post(&format!("{api_url}{path}"))
+            .set("content-type", "application/json")
+            .send_string(&body.to_string())
+            .map_err(cloud_transport_error)?;
+        let partial = destination.with_extension("partial");
+        let mut file =
+            std::fs::File::create(&partial).map_err(|error| io_error(error.to_string()))?;
+        let copied = std::io::copy(
+            &mut std::io::Read::take(response.into_reader(), max_bytes + 1),
+            &mut file,
+        )
+        .map_err(|error| io_error(error.to_string()))?;
+        if copied > max_bytes {
+            let _ = std::fs::remove_file(&partial);
+            return Err(io_error(format!("artifact exceeds {max_bytes} bytes")));
+        }
+        file.sync_all()
+            .map_err(|error| io_error(error.to_string()))?;
+        std::fs::rename(&partial, &destination).map_err(|error| io_error(error.to_string()))
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "download cloud artifact",
+        message: error.to_string(),
+    })?
+}
+
 fn post_cloud_json_blocking<T>(
     api_url: String,
     path: &str,

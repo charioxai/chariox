@@ -556,6 +556,32 @@ impl super::KernelRuntimeState {
             .map(|client| tokio::spawn(client.run(self.clone(), shutdown)))
     }
 
+    /// Cloud-coordinated in-place release updates run only on a confirmed Path-1 kernel.
+    pub(crate) fn spawn_managed_release_update(
+        &self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let config = self.owned.config_projection.snapshot();
+        let registration =
+            crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()
+                .ok()
+                .flatten()?;
+        match crate::runtime::managed_release_update::ManagedReleaseUpdateClient::from_runtime(
+            &config,
+            Some(&registration),
+        ) {
+            Ok(client) => client.map(|client| tokio::spawn(client.run(shutdown))),
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "managed_kernel.release_update",
+                    "release updates are unavailable",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                None
+            }
+        }
+    }
+
     pub(crate) fn confirm_managed_activity_report(
         &self,
         cloud_sequence: u32,

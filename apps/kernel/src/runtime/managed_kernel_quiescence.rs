@@ -29,13 +29,13 @@ pub(crate) struct ManagedKernelQuiescenceClient {
 }
 
 #[derive(Clone)]
-struct QuiescenceBinding {
-    api_url: String,
-    account_id: String,
-    environment_id: String,
-    machine_id: String,
-    kernel_id: String,
-    machine_credential: String,
+pub(super) struct QuiescenceBinding {
+    pub(super) api_url: String,
+    pub(super) account_id: String,
+    pub(super) environment_id: String,
+    pub(super) machine_id: String,
+    pub(super) kernel_id: String,
+    pub(super) machine_credential: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,7 +348,7 @@ impl ManagedKernelQuiescenceClient {
 }
 
 impl QuiescenceBinding {
-    fn from_runtime(
+    pub(super) fn from_runtime(
         config: &DaemonConfig,
         registration: &ConfirmedManagedKernelRegistration,
         profile: &PersistedCloudRelayProfile,
@@ -400,7 +400,7 @@ fn challenge_values(challenge: &ManagedKernelQuiescenceChallenge) -> BTreeMap<&'
     values
 }
 
-fn identity_values(binding: &QuiescenceBinding) -> BTreeMap<&'static str, Value> {
+pub(super) fn identity_values(binding: &QuiescenceBinding) -> BTreeMap<&'static str, Value> {
     BTreeMap::from([
         ("accountId", json!(binding.account_id)),
         ("environmentId", json!(binding.environment_id)),
@@ -409,7 +409,7 @@ fn identity_values(binding: &QuiescenceBinding) -> BTreeMap<&'static str, Value>
     ])
 }
 
-fn hmac_signature(
+pub(super) fn hmac_signature(
     credential: &str,
     values: &BTreeMap<&'static str, Value>,
 ) -> Result<String, DaemonError> {

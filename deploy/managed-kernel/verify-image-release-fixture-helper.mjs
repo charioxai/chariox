@@ -12,6 +12,8 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
   "apps/browser-session-import",
   "apps/kernel",
   "apps/relay",
+  // Signed upgrade tooling: an installed release updates itself with its own scripts.
+  "deploy/managed-kernel",
   "examples/workflow-code",
   "packages/aegs-sdk",
   "packages/event-protocol",
