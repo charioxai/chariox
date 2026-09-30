@@ -2159,6 +2159,8 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
 
 #[cfg(test)]
 mod tests {
+    mod signed_slice;
+
     use super::*;
 
     use base64::Engine;

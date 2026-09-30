@@ -1085,7 +1085,12 @@ async fn peer_request_identity(
     let peer = guard.peers.get(&peer_addr)?;
     let mut identity = peer.identity.clone()?;
     let registration = peer.daemon_registration.as_ref()?;
+    // Slice workers must retain their kernel subject for the owner-bound
+    // activation and refresh protocol. Their Machine is the shared parent
+    // machine, not the worker identity. Ordinary home kernels still project
+    // to Machine for execution leases.
     if identity.subject_kind == RelaySubjectKind::Kernel
+        && !identity.subject.starts_with("slice:")
         && identity.token_id.is_some()
         && identity.public_key_thumbprint.is_some()
         && registration_daemon_is_exact_kernel_or_temporary_peer(

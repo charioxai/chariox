@@ -139,8 +139,8 @@ async fn same_named_slices_on_two_machines_keep_distinct_signed_routes() {
         else {
             panic!("the corresponding parent must receive its slice request")
         };
-        assert_eq!(identity.subject_kind, RelaySubjectKind::Machine);
-        assert_eq!(identity.subject, case["machineId"].as_str().unwrap());
+        assert_eq!(identity.subject_kind, RelaySubjectKind::Kernel);
+        assert_eq!(identity.subject, worker);
         assert_eq!(
             encrypted_request.sender_public_key,
             format!("public-key-{worker}")
