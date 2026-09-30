@@ -212,7 +212,9 @@ fn warn_full_outbox(
     installation: &str,
 ) -> Result<(), OutboxError> {
     const MARKER: &str = "outbox_full";
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Mostly reads that decide to write nothing; the writer's own connection
+    // takes the write lock only if it appends the notice.
+    let transaction = connection.transaction()?;
     let oldest = AppOutbox::oldest_waiting_accepted_at_in(&transaction, owner, installation)?;
     let warned =
         super::app_logs::latest_kernel_notice_at_in(&transaction, owner, installation, MARKER)?;

@@ -144,8 +144,6 @@ impl AppOutbox {
         )
     }
 
-    /// Bounded candidate discovery. Consumers must claim/recheck each candidate
-    /// in their committing transaction; this read grants no delivery authority.
     /// When the oldest event still waiting for delivery was accepted.
     pub fn oldest_waiting_accepted_at_in(
         transaction: &Transaction<'_>,
@@ -155,6 +153,8 @@ impl AppOutbox {
         store::oldest_waiting_accepted_at(transaction, trusted_owner, installation_id)
     }
 
+    /// Bounded candidate discovery. Consumers must claim/recheck each candidate
+    /// in their committing transaction; this read grants no delivery authority.
     pub fn pending_in(
         transaction: &Transaction<'_>,
         catalog: &EventCatalog,
