@@ -198,7 +198,11 @@ pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<V
 /// Remove a delivered wake. A wake replaced since delivery began keeps its
 /// newer due time and revision.
 pub fn complete_wake(connection: &Connection, delivered: &DueWake) -> Result<()> {
-    connection.execute(
+    remove_delivered_wake(connection, delivered).map(|_| ())
+}
+
+fn remove_delivered_wake(connection: &Connection, delivered: &DueWake) -> Result<usize> {
+    Ok(connection.execute(
         "DELETE FROM app_wakes WHERE installation_id=?1 AND wake_id=?2 AND revision=?3 AND due_at_ms=?4",
         params![
             delivered.installation_id,
@@ -206,8 +210,7 @@ pub fn complete_wake(connection: &Connection, delivered: &DueWake) -> Result<()>
             delivered.wake.revision,
             delivered.wake.due_at_ms as i64
         ],
-    )?;
-    Ok(())
+    )?)
 }
 
 /// Wait for an on-demand start without consuming a delivery attempt.
@@ -226,16 +229,32 @@ pub fn postpone_wake(connection: &Connection, waiting: &DueWake, until_ms: u64) 
     Ok(())
 }
 
+/// What changed when a failed delivery was settled against its original wake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeFailureOutcome {
+    Retried,
+    Dropped,
+    /// The App cancelled or replaced this delivery's wake while it ran.
+    Obsolete,
+}
+
 /// Record a failed delivery with bounded exponential backoff. After the last
-/// attempt the wake is dropped; the App reconstructs schedules from its state.
-pub fn defer_wake(connection: &Connection, delivered: &DueWake, now_ms: u64) -> Result<bool> {
+/// attempt the wake is dropped; a cancelled or replaced wake is left untouched.
+pub fn defer_wake(
+    connection: &Connection,
+    delivered: &DueWake,
+    now_ms: u64,
+) -> Result<WakeFailureOutcome> {
     let attempts = delivered.attempts + 1;
     if attempts >= MAX_ATTEMPTS {
-        complete_wake(connection, delivered)?;
-        return Ok(false);
+        return Ok(if remove_delivered_wake(connection, delivered)? == 0 {
+            WakeFailureOutcome::Obsolete
+        } else {
+            WakeFailureOutcome::Dropped
+        });
     }
     let delay = RETRY_BASE_MS.saturating_mul(1 << attempts.min(10));
-    connection.execute(
+    let changed = connection.execute(
         "UPDATE app_wakes SET attempts=?5, next_attempt_at_ms=?6
          WHERE installation_id=?1 AND wake_id=?2 AND revision=?3 AND due_at_ms=?4",
         params![
@@ -247,5 +266,9 @@ pub fn defer_wake(connection: &Connection, delivered: &DueWake, now_ms: u64) -> 
             now_ms.saturating_add(delay).min(MAX_REVISION) as i64
         ],
     )?;
-    Ok(true)
+    Ok(if changed == 0 {
+        WakeFailureOutcome::Obsolete
+    } else {
+        WakeFailureOutcome::Retried
+    })
 }
