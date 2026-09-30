@@ -109,12 +109,11 @@ The runtime denies `fsync` and `fdatasync` in every form: `fs.fsyncSync`,
   `FileHandle#createWriteStream`) fail at close, after `'finish'`. Only
   `'close'`, `'error'` and `finished()` observers see it.
 
-Each fails `ERR_ACCESS_DENIED`. The runtime's bootstrap denies them, not
-Node: Node's permission model treats descriptor fsync differently by version
-(24.20 denies the sync and callback forms and allows the `FileHandle` forms;
-25.x allows all). Denying all of them gives an App one behavior on its own
-thread across runtime updates. A worker thread (`node:worker_threads`) keeps
-Node's own behavior.
+Each fails `ERR_ACCESS_DENIED`. The runtime's bootstrap denies them: Node's
+own guard varies by release (24.20 and 25.3+ deny the sync and callback forms
+only, 25.1–25.2 deny none, 26.x denies the `FileHandle` forms too), so denying
+every form gives an App one behavior on its own thread across runtime updates.
+A worker thread (`node:worker_threads`) keeps Node's own behavior.
 (Node's own fast path for `writeFileSync` of a UTF-8 string ignores `flush`
 without an error.)
 

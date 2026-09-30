@@ -12,12 +12,12 @@ const later = setTimeout;
 const cancelTimer = clearTimeout;
 let started = false;
 
-// App durability (packages/app-sdk/README.md, "Durability"). Node's permission
-// model treats descriptor fsync differently by version: 24.20 denies the sync
-// and callback forms but lets FileHandle sync() and datasync() through, and
-// 25.x allows every form. Deny every form on the App's thread, so an App sees
-// one behavior across runtime updates and does not come to depend on a gap in
-// one Node version. This bootstrap is what denies them. Durable data goes through state
+// App durability (packages/app-sdk/README.md, "Durability"). Node's own guard
+// on descriptor fsync varies by release: 24.20 and 25.3+ deny the sync and
+// callback forms only, 25.1-25.2 deny none, and 26.x denies the FileHandle
+// forms too. Deny every form on the App's thread, so an App sees one behavior
+// across runtime updates and does not come to depend on one release's gap.
+// Durable data goes through state
 // transactions or files.atomicReplace, which the kernel syncs before answering.
 // This is policy, not containment: a worker thread keeps Node's own behavior.
 async function denyFsync() {

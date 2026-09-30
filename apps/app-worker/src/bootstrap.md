@@ -12,8 +12,10 @@ register(chariox) { ... }` and let the existing packer choose that entry.
 Before any App module loads, the bootstrap replaces every `node:fs` fsync and
 fdatasync form with one that fails `ERR_ACCESS_DENIED`: the sync and callback
 forms, which Node 24.20's permission model already denies, and the `FileHandle`
-methods, which it lets through (Node 25.x allows every form, so this bootstrap
-is the only deny that stays stable across runtime updates). It then re-syncs
+methods, which it lets through. Node's own guard varies by release (24.20 and
+25.3+ deny the sync and callback forms only, 25.1–25.2 deny none, 26.x denies
+the `FileHandle` forms too), so this bootstrap is the only deny that stays
+stable across runtime updates. It then re-syncs
 the built-in ESM exports. The
 SDK README's "Durability" section is the contract. This applies to the App's
 own thread only. A worker thread gets its own `node:fs` and keeps Node's
