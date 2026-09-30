@@ -286,6 +286,7 @@ apt-get install -y --no-install-recommends \
   psmisc \
   pkg-config \
   protobuf-compiler \
+  python3 \
   ripgrep \
   rsync \
   rootlesskit \
