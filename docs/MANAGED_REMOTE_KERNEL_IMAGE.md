@@ -266,3 +266,21 @@ The final managed-machine firewall must have no inbound rules. It must allow the
 kernel's outbound HTTPS and WSS traffic. Put that firewall's numeric ID, the
 snapshot's numeric ID, and the signed release digest into the immutable Hetzner
 profile shared by Cloud and the infrastructure manager.
+
+## In-place release update (Path 1)
+
+A Cloud-managed machine changes its kernel release in place, keeping `~/.chariox`
+(plan, locked decisions for 2026-09-30). The machine runs
+`deploy/managed-kernel/upgrade-image.sh` as root with the target signed rootfs:
+it verifies the release, journals the transaction, migrates any legacy home,
+switches `current` atomically, restarts the storage services and the kernel, and
+rolls back automatically when the new kernel does not publish healthy presence
+under `/home/chariox/.chariox/kernels/active`. A crash at any phase is recovered
+by running the same command again.
+
+The retained bootstrap envelope keeps naming the provisioned release. After
+confirmation the kernel verifies its installed release against the receipt, and
+the receipt's grant binding (schema 2) covers the machine's identity, not its
+release, so an updated machine starts normally. Cloud authorizes the target
+release and records it once the machine reports it; an update Cloud did not
+authorize leaves Cloud's release record unchanged.
