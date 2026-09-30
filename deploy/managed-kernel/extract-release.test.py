@@ -217,6 +217,10 @@ class ExtractionTests(unittest.TestCase):
         unrelated = staging_root / ".release-extract-unowned"
         unrelated.mkdir()
         (unrelated / "keep").write_text("unowned sibling")
+        # Keep the neighbor and all of its durable ownership records intact.
+        # This snapshot also detects any scratch or journal leaked by our attempt.
+        survivors = set(staging_root.iterdir())
+        survivor_records = {path: path.read_bytes() for path in survivors if path.is_file()}
         restart_cleanup = (
             "import importlib.util,os,sys; "
             "spec=importlib.util.spec_from_file_location('storage',sys.argv[1]); "
@@ -285,7 +289,9 @@ class ExtractionTests(unittest.TestCase):
                 self.assertFalse(attempt.exists())
                 self.assertEqual((other / "keep").read_text(), "other attempt")
                 self.assertEqual((unrelated / "keep").read_text(), "unowned sibling")
-                self.assertCountEqual(list(staging_root.iterdir()), [other, unrelated])
+                self.assertEqual(set(staging_root.iterdir()), survivors)
+                for path, contents in survivor_records.items():
+                    self.assertEqual(path.read_bytes(), contents)
                 # The same identity can be retried without remembering any
                 # random scratch name from the interrupted extractor process.
                 retry = storage.prepare(staging_root, UPDATE_ID, expected_uid=os.geteuid())
