@@ -414,7 +414,26 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
       const worker = new Worker('0', { eval: true });
       worker.terminate();
       const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
-      return new worker[handle].constructor();
+      const native = new worker[handle].constructor('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
+      return native.startThread();
+    }),
+    // Capture the native handle constructor synchronously from the worker_threads
+    // diagnostics channel, before any guard could hide it, then try to start it.
+    diagnosticsCapture: await new Promise(resolve => {
+      let native;
+      const channel = require('node:diagnostics_channel');
+      const onPublish = ({ worker }) => {
+        const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+        native = worker[handle].constructor;
+      };
+      channel.subscribe('worker_threads', onPublish);
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      channel.unsubscribe('worker_threads', onPublish);
+      resolve(code(() => {
+        const handle = new native('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
+        return handle.startThread();
+      }));
     }),
     inherited: await run(Worker, {}),
     emptyExecArgv: await run(Worker, { execArgv: [] }),
@@ -446,7 +465,8 @@ export default chariox => chariox.tools.register('echo', async ({ outside }) => 
   const denied = 'ERR_ACCESS_DENIED';
   const contained = { outside: denied, storage: 'ok', worker: denied, register: denied, childProcess: denied };
   assert.deepEqual(outcome, {
-    app: denied, register: denied, childProcess: denied, binding: denied, sameWorker: true, handleConstructor: denied,
+    app: denied, register: denied, childProcess: denied, binding: denied, sameWorker: true,
+    handleConstructor: denied, diagnosticsCapture: denied,
     inherited: contained, emptyExecArgv: contained, repeatedExecArgv: contained,
     constructorExecArgv: contained, subclassExecArgv: contained,
     customExecArgv: denied, widerExecArgv: denied, envNodeOptions: contained, shareEnv: denied,

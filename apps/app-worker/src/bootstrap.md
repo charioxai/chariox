@@ -103,7 +103,13 @@ without `--allow-worker` (a worker thread cannot start another one). An App's
 worker's environment, `SHARE_ENV` is refused, and `module.register` fails with
 `ERR_ACCESS_DENIED`, as Node itself does without `--allow-worker`. The
 replacement `Worker` is a Proxy, so the native constructor is not reachable
-from the export, its prototype or an instance, and the first Worker hides the
-constructor of its internal thread handle. Child processes, WASI, the
+from the export, its prototype or an instance. The instance's native thread
+handle, and the same handle published on the `worker_threads` diagnostics
+channel, still expose the handle constructor, which cannot be revoked once
+captured, so the thread-start method is the choke point instead: `startThread`
+is permitted exactly once per guarded construction, which Node's own Worker
+constructor spends before it publishes the handle to any App callback, so App
+code never sees a start allowed. A handle built from a captured constructor has
+no allowance and cannot start a thread. Child processes, WASI, the
 inspector and `process.binding` stay denied by Node's permission model. Node's
 permissions remain defense in depth; the native sandbox contains the worker.
