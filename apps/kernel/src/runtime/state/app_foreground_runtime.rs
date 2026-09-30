@@ -13,7 +13,7 @@ impl KernelRuntimeState {
     /// A direct user action, like an explicit grant: no separate approval,
     /// and it binds again a pair the user revoked.
     pub(crate) async fn foreground_app(&self, session_id: &str, target: &str) -> Option<String> {
-        let view = self.app_control().views().binding(session_id, target)?;
+        let view = self.app_control().views().binding_state(session_id, target)?.0;
         self.bind_app_to_focus_agent(session_id, &view.owner, &view.installation, true)
             .await
     }
@@ -39,7 +39,7 @@ impl KernelRuntimeState {
             .room_environment_controller_tab_binding(session_id, &focused)
             .ok()?
             .runtime_target_id;
-        let view = self.app_control().views().binding(session_id, &target)?;
+        let view = self.app_control().views().binding_state(session_id, &target)?.0;
         Some((view.owner, view.installation))
     }
 

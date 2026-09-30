@@ -856,7 +856,7 @@ mod tests {
         views.retain_open("s", &[], u64::MAX);
         assert!(!views.keep_pumping("s"));
         assert!(views.is_revoked("s", "agent-1", "a"));
-        assert_eq!(views.binding("s", "t"), None);
+        assert_eq!(views.binding_state("s", "t"), None);
         assert!(views.register("s", "t", binding("a")));
         views.set_revoked("s", "agent-1", "a", false);
         assert!(!views.is_revoked("s", "agent-1", "a"));
