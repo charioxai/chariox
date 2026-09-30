@@ -37,7 +37,8 @@ enum Operation<'a> {
         installation: &'a str,
         generation: u64,
         cgroup_leaf: &'a str,
-        committed_generation: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        committed_generation: Option<u64>,
     },
     Release {
         lease: &'a str,
@@ -52,6 +53,12 @@ enum Operation<'a> {
         owner: &'a str,
         installation: &'a str,
     },
+}
+
+/// Before its first install commits, an installation's committed generation is
+/// 0: there is no committed data to snapshot, and the helper refuses 0.
+fn committed(generation: u64) -> Option<u64> {
+    (generation != 0).then_some(generation)
 }
 
 /// The helper's authenticated per-UID socket, served by root.
@@ -106,6 +113,7 @@ pub(in crate::worker_process) fn delete(owner: &str, installation: &str) -> Resu
 impl Lease {
     /// `committed_generation` is the installation's committed generation: a
     /// newer, staged generation starts on a copy the helper can roll back to.
+    /// It is 0 until the first install commits; that start names none.
     pub fn acquire(
         owner: &str,
         installation: &str,
@@ -117,12 +125,13 @@ impl Lease {
         if uid == 0 {
             return Err(Error::Identity);
         }
+        let committed_generation = committed(committed_generation);
         let request = model::Request::Acquire {
             owner: owner.into(),
             installation: installation.into(),
             generation,
             cgroup_leaf: cgroup_leaf.into(),
-            committed_generation: Some(committed_generation),
+            committed_generation,
         };
         request.validate()?;
         let name = model::installation_name(owner, installation)?;
@@ -317,4 +326,35 @@ fn verify(dir: &Dir, root: &model::Identity, capacity: u64, uid: u32) -> Result<
         return Err(Error::Identity);
     }
     Ok(stat.stx_mnt_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_first_install_names_no_committed_generation() {
+        // Every first Linux install used to name committed generation 0, which
+        // validation refuses, so its worker preparation always failed.
+        let leaf = format!("app-{}", "a".repeat(32));
+        for (committed_generation, named) in [(0, None), (1, Some(1)), (7, Some(7))] {
+            let committed_generation = committed(committed_generation);
+            assert_eq!(committed_generation, named);
+            let bytes = serde_json::to_vec(&Operation::Acquire {
+                owner: "owner",
+                installation: "app_1",
+                generation: 8,
+                cgroup_leaf: &leaf,
+                committed_generation,
+            })
+            .unwrap();
+            // The helper parses the same bytes with its own strict model.
+            let request: model::Request = serde_json::from_slice(&bytes).unwrap();
+            request.validate().unwrap();
+            assert!(matches!(
+                request,
+                model::Request::Acquire { committed_generation: parsed, .. } if parsed == named
+            ));
+        }
+    }
 }

@@ -55,8 +55,12 @@ posix_fallocate reservation. The helper admits at most64 installation roots,
 promised byte not yet backed by actual allocation, including failed creations
 and temporary images that need recreation. These are private initial policies.
 
-A kernel acquire also names the installation's committed generation. A staged
-(uncommitted) generation must start on committed data. When the committed
+A kernel acquire also names the installation's committed generation, once one
+exists. Before the first install commits there is none (the kernel's 0): the
+acquire omits the field and nothing is snapshotted, so a failed first install's
+private data is retained (its receipt keeps `cleanup_pending`, see
+`apps/kernel/src/runtime/app_lifecycle/FIRST_INSTALL.md`) until the installation
+is deleted. A staged (uncommitted) generation must start on committed data. When the committed
 generation ran last, the data image is copied to `data-snapshot.ext4`, which
 counts as a second promised data reservation. On the managed ext4 root this is
 a full 512 MiB copy inside the acquire. The same staged generation retrying
