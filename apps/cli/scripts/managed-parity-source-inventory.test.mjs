@@ -861,7 +861,7 @@ test("an inspected blob gets only provisional grouping and never independent app
       .every((entry) => entry.semanticDisposition.gateEffect === "fail_closed"));
     assert.equal(report.status, "fail");
     assert.equal(report.summary.allowedReleaseDeployment, 0);
-    assert.equal(report.inventoryTool.modules.length, 4);
+    assert.equal(report.inventoryTool.modules.length, 5);
     assert.match(report.inventoryTool.bundleSha256, /^[a-f0-9]{64}$/);
   });
 });
@@ -1115,5 +1115,86 @@ test("machine enrollment data shapes get explicit candidates without widening so
     assert.equal(candidate?.semanticDisposition.status, "unreviewed");
     assert.ok(report.entries.filter((entry) => entry.path === rule.path && entry.line > 64)
       .every((entry) => entry.sourceClassification === null));
+  });
+});
+
+
+for (const delimiter of ["$$", "$banner$"]) {
+  test("PostgreSQL " + delimiter + " literals cannot hide following SQL selectors", () => {
+    withFixture({}, (fixture) => {
+      const path = "packages/db/prisma/migrations/20261001000000_dollar/migration.sql";
+      fixture.addFile(path, [
+        "SELECT " + delimiter + "/* banner text -- still literal" + delimiter + ";",
+        "SELECT 'CHARIOX_MANAGED_SQL_AFTER_DOLLAR';",
+      ].join("\n") + "\n");
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_DOLLAR");
+      assert.equal(entry?.path, path);
+      assert.equal(entry?.line, 2);
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+test("PostgreSQL dollar quotes close only at the matching tag", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("packages/db/prisma/migrations/20261001000001_tags/migration.sql", [
+      "SELECT $banner$other delimiters $$ $other$ /* literal",
+      "$banner$;",
+      "/* CHARIOX_MANAGED_SQL_ACTUAL_COMMENT */",
+      "SELECT 'CHARIOX_MANAGED_SQL_AFTER_MATCHED_TAG';",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_MATCHED_TAG" && entry.line === 4));
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_ACTUAL_COMMENT"));
+  });
+});
+
+test("PostgreSQL nested block comments do not leak outer comment candidates", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("packages/db/prisma/migrations/20261001000002_nested/migration.sql", [
+      "/* outer /* inner */ CHARIOX_MANAGED_SQL_NESTED_COMMENT */",
+      "SELECT 'CHARIOX_MANAGED_SQL_AFTER_NESTED';",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_NESTED" && entry.line === 2));
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_NESTED_COMMENT"));
+  });
+});
+
+test("PostgreSQL E-string escapes keep comment markers inside the literal", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("packages/db/prisma/migrations/20261001000003_escape/migration.sql",
+      "SELECT E'escaped\\'/* banner -- still literal';\nSELECT 'CHARIOX_MANAGED_SQL_AFTER_ESCAPE';\n");
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_ESCAPE" && entry.line === 2));
+  });
+});
+
+test("PostgreSQL plain-string backslash settings cannot hide executable SQL", () => {
+  withFixture({}, (fixture) => {
+    // Valid with standard_conforming_strings=on: the first string contains a
+    // literal backslash; the second contains a comment opener.
+    fixture.addFile("packages/db/prisma/migrations/20261001000004_plain/migration.sql",
+      "SELECT '\\';\nSELECT '/* banner text';\nSELECT 'CHARIOX_MANAGED_SQL_AFTER_PLAIN_BACKSLASH';\n");
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_PLAIN_BACKSLASH" && entry.line === 3));
+  });
+});
+
+
+test("PostgreSQL dollar characters inside unquoted identifiers do not open literals", () => {
+  withFixture({}, (fixture) => {
+    const path = "packages/db/prisma/migrations/20261001000005_identifier/migration.sql";
+    fixture.addFile(path, [
+      "CREATE TABLE foo$tag$(id text DEFAULT '$tag$/*');",
+      "SELECT 'CHARIOX_MANAGED_SQL_AFTER_DOLLAR_IDENTIFIER';",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_DOLLAR_IDENTIFIER");
+    assert.equal(entry?.path, path);
+    assert.equal(entry?.line, 2);
+    assert.equal(entry?.semanticDisposition.status, "unreviewed");
   });
 });

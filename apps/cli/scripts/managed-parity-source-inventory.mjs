@@ -7,6 +7,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { fileURLToPath } from "node:url";
 
 import { fragmentSourceViews, fragmentMatchAnchor } from "./lib/managed-parity-fragment-source.mjs";
+import { stripPostgresComments } from "./lib/managed-parity-sql-source.mjs";
 import { patchSourceViews } from "./lib/managed-parity-patch-source.mjs";
 import { sourceRuleCandidates, sourceClassification, groupSourceClassifications, sourceAuditGaps } from "./lib/managed-parity-source-rules.mjs";
 
@@ -22,6 +23,7 @@ const INVENTORY_TOOL_MODULES = [
   ["./lib/managed-parity-patch-source.mjs", "apps/cli/scripts/lib/managed-parity-patch-source.mjs"],
   ["./lib/managed-parity-source-rules.mjs", "apps/cli/scripts/lib/managed-parity-source-rules.mjs"],
   ["./lib/managed-parity-fragment-source.mjs", "apps/cli/scripts/lib/managed-parity-fragment-source.mjs"],
+  ["./lib/managed-parity-sql-source.mjs", "apps/cli/scripts/lib/managed-parity-sql-source.mjs"],
 ];
 
 function inventoryToolIdentity() {
@@ -380,6 +382,7 @@ const OWNED_DIRTY_PATHS = new Set([
   "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
   "apps/cli/scripts/lib/managed-parity-fragment-source.mjs",
+  "apps/cli/scripts/lib/managed-parity-sql-source.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
   "docs/MANAGED_PATH1_PARITY_INVENTORY.md",
@@ -389,6 +392,7 @@ const SELF_EXCLUDED_PATHS = new Set([
   "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
   "apps/cli/scripts/lib/managed-parity-fragment-source.mjs",
+  "apps/cli/scripts/lib/managed-parity-sql-source.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
 ]);
@@ -487,10 +491,10 @@ function classifyProductionPath(path) {
 }
 
 function stripComments(text, format) {
+  if (format === "sql") return stripPostgresComments(text);
   const slashComments = ["c", "rust", "javascript", "swift"].includes(format);
   const hashComments = ["python", "shell", "unit", "container", "policy", "config"].includes(format);
-  const sqlComments = format === "sql";
-  if (!slashComments && !hashComments && !sqlComments) return text;
+  if (!slashComments && !hashComments) return text;
   const output = text.split("");
   let blockComment = false;
   let quote = null;
@@ -523,14 +527,14 @@ function stripComments(text, format) {
       quote = current;
       continue;
     }
-    if ((slashComments || sqlComments) && current === "/" && next === "*") {
+    if (slashComments && current === "/" && next === "*") {
       output[index] = " ";
       output[index + 1] = " ";
       index += 1;
       blockComment = true;
       continue;
     }
-    if ((slashComments && current === "/" && next === "/") || (sqlComments && current === "-" && next === "-")) {
+    if (slashComments && current === "/" && next === "/") {
       while (index < output.length && text[index] !== "\n" && text[index] !== "\r") {
         output[index] = " ";
         index += 1;
