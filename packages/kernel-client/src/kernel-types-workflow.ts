@@ -727,6 +727,8 @@ export type WorkflowPublicationDefinition = {
   pre_release_app_plan?: WorkflowPublicationApps
   /** Releases whose plans were pruned; they have no App plan. */
   pruned_release_digests?: string[]
+  /** Protocol 369: each exported release's inputs digest by package digest, newest last. */
+  release_inputs?: { package_digest: string; inputs_digest: string }[]
   status?: string | null
   open_url?: string | null
   viewer_url?: string | null

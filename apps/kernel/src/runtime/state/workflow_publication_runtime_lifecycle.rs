@@ -805,14 +805,14 @@ async fn start_publication_runtime_claimed(
         return Err(error);
     }
     if let Some(expected) = launch_context.expected_package_digest.as_deref() {
-        let package_digest = match bound_release_package_digest(
+        let digests = match bound_release_package_digests(
             runtime_state,
             &request.session_id,
             &publication,
             expected,
             package_kernel_url,
         ) {
-            Ok(digest) => digest,
+            Ok(digests) => digests,
             Err(error) => {
                 let _ = mark_publication_runtime_error(
                     runtime_state,
@@ -823,7 +823,7 @@ async fn start_publication_runtime_claimed(
                 return Err(error);
             }
         };
-        if let Err(message) = validate_bound_publication_package_digest(expected, &package_digest) {
+        if let Err(message) = validate_bound_release(&publication, expected, &digests) {
             let _ = mark_publication_runtime_error(
                 runtime_state,
                 &request.session_id,
@@ -1688,15 +1688,21 @@ fn publication_runtime_kernel_url(
         })
 }
 
+/// A bound release's re-exported package digest and inputs digest.
+pub(super) struct BoundReleaseDigests {
+    package: String,
+    inputs: String,
+}
+
 /// Protocol 368: a bound release's package, re-exported with that release's
 /// own App plan and never the owner's current App set, for its digest check.
-pub(super) fn bound_release_package_digest(
+pub(super) fn bound_release_package_digests(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
     publication: &WorkflowPublicationDefinition,
     expected: &str,
     kernel_url: Option<String>,
-) -> Result<String, DaemonError> {
+) -> Result<BoundReleaseDigests, DaemonError> {
     let release_apps = publication.release_app_plan(expected).cloned();
     if publication.apps().is_some() && release_apps.is_none() {
         return Err(publication_runtime_error(
@@ -1716,9 +1722,17 @@ pub(super) fn bound_release_package_digest(
         },
         release_apps.as_ref(),
     )? {
-        LocalDaemonResponse::WorkflowPublicationPackageExported { package_digest, .. } => {
-            Ok(package_digest)
-        }
+        LocalDaemonResponse::WorkflowPublicationPackageExported {
+            package_digest,
+            package_files,
+            ..
+        } => Ok(BoundReleaseDigests {
+            package: package_digest,
+            inputs:
+                super::workflow_publication_owned_state::workflow_publication_release_inputs_digest(
+                    &package_files,
+                )?,
+        }),
         _ => Err(DaemonError::LocalTransport {
             operation: "start workflow publication runtime",
             message: "publication package export returned an unexpected response".to_string(),
@@ -1728,19 +1742,22 @@ pub(super) fn bound_release_package_digest(
 
 #[cfg(test)]
 impl KernelRuntimeState {
-    /// The digest a bind or recovery of `expected` re-exports.
-    pub(crate) fn fixture_bound_release_package_digest(
+    /// Whether a bind or recovery of `expected` verifies: the error is the
+    /// mismatch it reports.
+    pub(crate) fn fixture_verify_bound_release(
         &self,
         session_id: &str,
         publication_id: &str,
         expected: &str,
-    ) -> Result<String, DaemonError> {
+    ) -> Result<Result<(), String>, DaemonError> {
         let publication = self
             .owned
             .session_store
             .read()
             .resolve_workflow_publication_ref(session_id, publication_id)?;
-        bound_release_package_digest(self, session_id, &publication, expected, None)
+        let digests =
+            bound_release_package_digests(self, session_id, &publication, expected, None)?;
+        Ok(validate_bound_release(&publication, expected, &digests))
     }
 }
 
@@ -1751,6 +1768,24 @@ fn publication_runtime_package_kernel_url(
     expected_package_digest
         .is_none()
         .then(|| kernel_url.to_string())
+}
+
+/// Protocol 369: a release with a recorded inputs digest verifies by its
+/// workflow-owned files, so a kernel upgrade that changes the package's
+/// templates keeps it bound; an older release needs its whole package digest.
+fn validate_bound_release(
+    publication: &WorkflowPublicationDefinition,
+    expected: &str,
+    actual: &BoundReleaseDigests,
+) -> Result<(), String> {
+    match publication.release_inputs_digest(expected) {
+        Some(recorded) if recorded == actual.inputs => Ok(()),
+        Some(recorded) => Err(format!(
+            "publication package digest no longer matches the bound deployment: release {expected}'s workflow inputs were {recorded}, now {}; rebind the deployment before restarting",
+            actual.inputs
+        )),
+        None => validate_bound_publication_package_digest(expected, &actual.package),
+    }
 }
 
 fn validate_bound_publication_package_digest(expected: &str, actual: &str) -> Result<(), String> {
@@ -1943,8 +1978,9 @@ mod tests {
         publication_local_url, publication_runtime_launch_context,
         publication_runtime_metadata_preserving_binding, publication_runtime_port,
         publication_runtime_recovery_binding, stopped_publication_runtime_metadata,
-        validate_bound_publication_package_digest, validate_publication_runtime_bind_address,
-        validated_deployment_binding, write_publication_caller_claims_config,
+        validate_bound_publication_package_digest, validate_bound_release,
+        validate_publication_runtime_bind_address, validated_deployment_binding,
+        write_publication_caller_claims_config, BoundReleaseDigests,
         PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore,
         DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
@@ -2086,6 +2122,48 @@ mod tests {
             .expect_err("changed source must require a fresh deployment binding");
         assert!(error.contains("no longer matches the bound deployment"));
         assert!(error.contains("rebind the deployment before restarting"));
+    }
+
+    #[test]
+    fn a_release_with_recorded_inputs_verifies_across_kernel_template_changes() {
+        let mut publication: crate::session::WorkflowPublicationDefinition =
+            serde_json::from_value(serde_json::json!({
+                "id": "publication-1", "session_id": "session-1", "workflow_id": "workflow-1",
+                "endpoint_id": "endpoint-1", "kind": "event_based", "enabled": true,
+                "methods": [], "schedules": [], "watchdogs": [], "recent_runs": [],
+                "runtime_logs": [], "created_by_user_id": "user-1", "created_at_ms": 1,
+                "updated_at_ms": 1,
+            }))
+            .expect("publication");
+        let digests = |package: &str, inputs: &str| BoundReleaseDigests {
+            package: package.to_string(),
+            inputs: inputs.to_string(),
+        };
+        // Before protocol 369 a release verifies by its whole package digest.
+        assert!(validate_bound_release(
+            &publication,
+            "sha256:release",
+            &digests("sha256:upgraded", "sha256:inputs")
+        )
+        .is_err());
+        publication.record_release_inputs("sha256:release", "sha256:inputs");
+        // A kernel upgrade changes the templates, not the workflow's inputs.
+        assert_eq!(
+            validate_bound_release(
+                &publication,
+                "sha256:release",
+                &digests("sha256:upgraded", "sha256:inputs")
+            ),
+            Ok(())
+        );
+        let error = validate_bound_release(
+            &publication,
+            "sha256:release",
+            &digests("sha256:release", "sha256:edited"),
+        )
+        .expect_err("changed workflow inputs must require a fresh deployment binding");
+        assert!(error.contains("no longer matches the bound deployment"));
+        assert!(error.contains("sha256:edited"));
     }
 
     #[test]

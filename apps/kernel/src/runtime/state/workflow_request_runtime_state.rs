@@ -244,7 +244,8 @@ impl KernelRuntimeState {
             }
             LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => {
                 // Protocol 368: each owner export packages the owner's current
-                // App plan, recorded as that release's plan once it succeeds.
+                // App plan, recorded as that release's plan once it succeeds,
+                // with the release's inputs digest (369).
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 let apps = match self
                     .workflow_publication_apps_for_export(
@@ -264,19 +265,18 @@ impl KernelRuntimeState {
                 let apps = None;
                 let session_id = request.session_id.clone();
                 let result = owned.workflow_export_publication_package(request, apps.as_ref());
-                let recorded = match (&result, apps) {
-                    (
-                        Ok(LocalDaemonResponse::WorkflowPublicationPackageExported {
-                            publication,
-                            package_digest,
-                            ..
-                        }),
-                        Some(plan),
-                    ) => match owned.record_workflow_publication_app_plan(
+                let recorded = match &result {
+                    Ok(LocalDaemonResponse::WorkflowPublicationPackageExported {
+                        publication,
+                        package_digest,
+                        package_files,
+                        ..
+                    }) => match owned.record_workflow_publication_release(
                         &session_id,
                         publication.id(),
                         package_digest,
-                        plan,
+                        package_files,
+                        apps,
                     ) {
                         Ok(session) => Some(session),
                         Err(error) => return (Err(error), None),
