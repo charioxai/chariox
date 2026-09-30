@@ -212,6 +212,8 @@ mod tests {
     mod remote_agent_message_origin;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
+    // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
+    #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;
     mod runtime_persistence;

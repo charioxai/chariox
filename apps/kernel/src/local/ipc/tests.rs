@@ -12,8 +12,8 @@ use crate::attachment::ClientCapabilityLevel;
 use crate::config::PersistedCloudRelayProfile;
 use crate::local::api::{
     AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CancelWorkflowRunRequest,
-    CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetKernelResourceTelemetryRequest,
-    GetWorkflowRunRequest, InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
+    CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetWorkflowRunRequest,
+    InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
 };
 use crate::local::{
     AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
@@ -187,6 +187,8 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
     );
 }
 
+// Kernel resource telemetry reads /proc; other platforms report it as unsupported.
+#[cfg(target_os = "linux")]
 #[test]
 fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
     run_local_ipc_async_test("local-ipc-resource-telemetry-round-trip", 2, || async {
@@ -210,7 +212,7 @@ fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
         let client = LocalIpcClient::new(socket_path.clone());
         let response = client
             .send(&LocalDaemonRequest::GetKernelResourceTelemetry(
-                GetKernelResourceTelemetryRequest,
+                crate::local::api::GetKernelResourceTelemetryRequest,
             ))
             .expect("kernel resource telemetry should round-trip over local IPC");
         let LocalDaemonResponse::KernelResourceTelemetry { snapshot } = response else {
@@ -236,7 +238,7 @@ fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
         assert!(snapshot.logs.bytes <= snapshot.disk.total_bytes);
         let second = client
             .send(&LocalDaemonRequest::GetKernelResourceTelemetry(
-                GetKernelResourceTelemetryRequest,
+                crate::local::api::GetKernelResourceTelemetryRequest,
             ))
             .expect("second kernel resource telemetry request should succeed");
         let LocalDaemonResponse::KernelResourceTelemetry { snapshot: second } = second else {

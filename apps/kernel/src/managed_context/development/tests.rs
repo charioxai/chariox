@@ -2119,7 +2119,9 @@ fn test_root(label: &str) -> PathBuf {
         std::process::id()
     ));
     fs::create_dir_all(&path).expect("create test root");
-    path
+    // Managed roots are compared by their canonical path; on macOS temp_dir()
+    // sits behind the /var -> /private/var symlink.
+    fs::canonicalize(&path).expect("resolve test root")
 }
 
 fn assert_no_export_temporaries(root: &Path) {

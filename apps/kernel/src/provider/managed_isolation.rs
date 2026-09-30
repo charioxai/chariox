@@ -5588,6 +5588,11 @@ printf 'managed account environment probe passed\n'
             .join(".chariox-project-environment")
             .join("a".repeat(64));
         std::fs::create_dir_all(&host_home).expect("preparation home should exist");
+        // The launch binds the canonical preparation HOME; on macOS temp_dir()
+        // is behind a /var symlink.
+        let host_home = host_home
+            .canonicalize()
+            .expect("preparation home should resolve");
         let host_path = std::env::join_paths([
             host_home.join(".local/bin"),
             host_home.join(".cargo/bin"),
