@@ -4,6 +4,16 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# The Path-1 extension helper supplies only its pinned local socket. Caller
+# Docker config and credential helpers remain available after it drops UID.
+docker() {
+  if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
+    command /usr/bin/docker --host "$CHARIOX_SLICE_MANAGED_DOCKER_HOST" "$@"
+  else
+    command docker "$@"
+  fi
+}
+
 hash_stdin() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum | awk '{ print $1 }'
@@ -58,6 +68,7 @@ SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
 SLICE_RUNTIME_BUILD_PROFILE="${CHARIOX_SLICE_RUNTIME_BUILD_PROFILE:-release}"
 SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
+SLICE_EXTENSION_BUILD_CONTEXT="${CHARIOX_SLICE_EXTENSION_BUILD_CONTEXT:-}"
 SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
 SLICE_DISK_LAYER_MB="${CHARIOX_SLICE_DISK_LAYER_MB:-}"
@@ -657,10 +668,14 @@ docker_target_arch() {
 
 docker_build() {
   if docker buildx version >/dev/null 2>&1; then
-    docker buildx build --load "$@"
+    if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
+      docker buildx build --builder default --load "$@"
+    else
+      docker buildx build --load "$@"
+    fi
     return
   fi
-  if command -v docker-buildx >/dev/null 2>&1; then
+  if [[ -z "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]] && command -v docker-buildx >/dev/null 2>&1; then
     docker-buildx build --load "$@"
     return
   fi
@@ -763,6 +778,12 @@ build_image() {
     return 0
   fi
 
+  # Cache preflight deliberately precedes opening the caller's Dockerfile.
+  # Auto/never retain their existing cache behavior even if its path vanished.
+  if [[ "${CHARIOX_SLICE_IMAGE_BUILD_CHECK_ONLY:-0}" == 1 ]]; then
+    return 42
+  fi
+
   if [[ -n "$SLICE_EXTENSION_DOCKERFILE" ]]; then
     ensure_runtime_base_image
     local target_arch
@@ -776,7 +797,7 @@ build_image() {
       --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
       -f "$SLICE_EXTENSION_DOCKERFILE" \
       -t "$SLICE_IMAGE" \
-      "$(dirname "$SLICE_EXTENSION_DOCKERFILE")"
+      "${SLICE_EXTENSION_BUILD_CONTEXT:-$(dirname "$SLICE_EXTENSION_DOCKERFILE")}"
     return 0
   fi
   build_standard_runtime_image "$SLICE_IMAGE"
@@ -1609,6 +1630,10 @@ main() {
   case "$action" in
     -h|--help|help)
       usage
+      ;;
+    build-image)
+      require_docker
+      build_image
       ;;
     provision)
       require_docker

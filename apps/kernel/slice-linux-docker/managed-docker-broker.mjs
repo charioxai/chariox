@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process"
+import { isDockerImageReference } from "./docker-image-reference.mjs"
 import { createHash } from "node:crypto"
 import {
   chmodSync,
@@ -372,7 +373,7 @@ function validateDocker(args) {
   }
   if (exactArguments(args.slice(0, 4), ["image", "inspect", "--format", "{{.Id}}"])
       && args.length === 5) {
-    validateResource(args[4], "Docker image")
+    if (!isDockerImageReference(args[4])) fail("Docker image reference is invalid")
     return
   }
   if (exactArguments(args.slice(0, 2), ["container", "inspect"]) && args.length === 3) {
@@ -411,7 +412,7 @@ function validateDocker(args) {
     validateResource(volume, "Docker volume")
     if (volume !== `${args[2].slice(0, suffix.index)}-home`) fail("Docker helper volume does not match its slice")
     if (target !== "/home-src" || extra !== "ro") fail("Docker helper volume target is invalid")
-    validateResource(args[17], "Docker image")
+    if (!isDockerImageReference(args[17])) fail("Docker helper image reference is invalid")
     return
   }
   if (args[0] === "cp" && args.length === 3) {
@@ -543,7 +544,7 @@ function validateProvisioner(action, environment, files) {
     fail("CHARIOX_SLICE_LOGIN_PROVIDER is invalid")
   }
   for (const name of ["CHARIOX_SLICE_DOCKER_IMAGE", "CHARIOX_SLICE_BASE_IMAGE"]) {
-    if (environment[name]) validateResource(environment[name], name)
+    if (environment[name] && !isDockerImageReference(environment[name])) fail(`${name} image reference is invalid`)
   }
   if (environment.CHARIOX_SLICE_BUILD_IMAGE && !["auto", "always", "never"].includes(environment.CHARIOX_SLICE_BUILD_IMAGE)) {
     fail("CHARIOX_SLICE_BUILD_IMAGE is invalid")

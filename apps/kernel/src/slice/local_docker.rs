@@ -25,6 +25,8 @@ use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
 mod broker;
 mod disk_admission;
+mod extension_build;
+mod image;
 mod memory_admission;
 mod provider_inputs;
 mod snapshot_pause;
@@ -359,6 +361,7 @@ pub fn run_local_docker_slice_action(
                 log_path.display()
             ),
         })?;
+    extension_build::prepare(&mut command, record, action_name, options, &log_file, &stderr_log)?;
     let mut disk_quota_evidence = None;
     let status =
         if let Some(output) = broker::run_provisioner(&command, action_name, &broker_inputs) {
@@ -1082,7 +1085,7 @@ fn configure_local_docker_slice_command(
     }
     command
         .env("CHARIOX_SLICE_HOSTNAME", local_docker_hostname(record))
-        .env("CHARIOX_SLICE_DOCKER_IMAGE", &options.docker_image)
+        .env("CHARIOX_SLICE_DOCKER_IMAGE", image::selected_image(record, options))
         .env(
             "CHARIOX_SLICE_BUILD_IMAGE",
             options.build_image.as_env_value(),

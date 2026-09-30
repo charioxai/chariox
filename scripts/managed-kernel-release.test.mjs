@@ -86,7 +86,7 @@ test("managed prebuilt slice runtime materializes its runtime output directory",
     const result = spawnSync("/bin/sh", ["-c", command], {
       cwd: fixture,
       encoding: "utf8",
-      env: { ...process.env, CHARIOX_PREBUILT_RUNTIME: "1" },
+      env: { ...process.env, CHARIOX_PREBUILT_RUNTIME: "1", CHARIOX_CARGO_BUILD_JOBS: "1" },
     })
     assert.equal(result.status, 0, result.stderr)
     assert.equal(await readFile(join(runtimeBin, "chariox-kernel"), "utf8"), "chariox-kernel\n")
@@ -296,6 +296,10 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
       "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
       await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")),
     ],
+    ...await Promise.all(["managed-extension-build.py", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
+      const path = `apps/kernel/slice-linux-docker/${name}`
+      return [path, await readFile(join(repositoryRoot, path))]
+    })),
     ["apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh", "#!/bin/sh\nexec \"$@\"\n"],
     ...await Promise.all(["managed-rootless-service.sh", "chariox-rootless-engine.service", "chariox-rootless-user-manager.conf"].map(async (name) => {
       const path = `apps/kernel/slice-linux-docker/${name}`
@@ -469,6 +473,9 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-acl.awk",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-extension-build.py",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/docker-image-reference.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/docker-image-reference.json",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/.managed-release",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-kernel",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay",
@@ -499,6 +506,11 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
       packagedPaths.includes(`usr/lib/chariox/slice-build-context/${modulePath}`),
       `broker import dependency is absent from the signed release: ${modulePath}`,
     )
+  }
+
+  for (const name of ["managed-extension-build.py", "docker-image-reference.mjs", "docker-image-reference.json"]) {
+    const path = `apps/kernel/slice-linux-docker/${name}`
+    assert.deepEqual(await readFile(join(brokerContextRoot, path)), await readFile(join(repositoryRoot, path)))
   }
 
   const manifestBytes = await readFile(join(releaseRoot, "usr/lib/chariox/release-manifest.json"))
