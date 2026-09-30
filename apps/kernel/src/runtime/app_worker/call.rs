@@ -8,7 +8,7 @@ use chariox_app_runtime::{
     worker_peer::{CallResponse, PeerError, RequestSlot},
 };
 use rusqlite::Transaction;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, thiserror::Error)]
@@ -193,11 +193,9 @@ impl AppWorkerLease {
         self.0.available()?;
         self.touch();
         let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
-        let params = serde_json::json!({
-            "id": wake.id, "dueAtMs": wake.due_at_ms, "revision": wake.revision, "overdue": overdue,
-        });
+        let (params, context) = wake_request(self.catalog().installation_id(), wake, overdue);
         match slot
-            .request("schedule.wake", params, None)
+            .request("schedule.wake", params, Some(context))
             .await
             .map_err(peer_error)?
         {
@@ -223,11 +221,9 @@ impl AppWorkerLease {
         self.0.available()?;
         self.touch();
         let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
-        let params = serde_json::json!({
-            "name": item.event_name, "occurrence_id": item.occurrence_id, "payload": item.payload,
-        });
+        let (params, context) = event_request(item);
         match slot
-            .request("events.deliver", params, None)
+            .request("events.deliver", params, Some(context))
             .await
             .map_err(peer_error)?
         {
@@ -241,5 +237,136 @@ impl AppWorkerLease {
             } => Err(handler_error(&failure.error)),
             _ => Err(AppWorkerError::Unavailable.into()),
         }
+    }
+}
+
+/// What the kernel sends for one due wake: its parameters and its background
+/// context. The operation is one firing, so a rescheduled wake is a new one.
+fn wake_request(
+    installation: &str,
+    wake: &chariox_app_runtime::managed_state::Wake,
+    overdue: bool,
+) -> (Value, Value) {
+    (
+        json!({
+            "id": wake.id, "dueAtMs": wake.due_at_ms, "revision": wake.revision, "overdue": overdue,
+        }),
+        background_context(
+            installation,
+            "schedule".into(),
+            bounded("wake-", &format!("{}-{}", wake.id, wake.due_at_ms)),
+        ),
+    )
+}
+
+/// What the kernel sends for one accepted inbox occurrence.
+fn event_request(item: &chariox_app_runtime::app_inbox::InboxItem) -> (Value, Value) {
+    (
+        json!({
+            "name": item.event_name, "occurrence_id": item.occurrence_id, "payload": item.payload,
+        }),
+        background_context(
+            &item.installation_id,
+            bounded("inbox:", &item.route_id),
+            format!("inbox-{}", item.sequence),
+        ),
+    )
+}
+
+/// A kernel wake or an inbox delivery is background work: the handler gets the
+/// same descriptive attribution a tool call gets (`actor.kind` "background",
+/// naming the schedule or the inbox route), with no Room and no agent turn.
+fn background_context(installation: &str, source: String, operation: String) -> Value {
+    json!({
+        "installation_id": installation,
+        "operation_id": operation,
+        "actor": chariox_app_runtime::app_catalog::Actor::Background(source),
+    })
+}
+
+/// Context ids follow the tool-call bounds. A derived id that would break them
+/// keeps its kind prefix and replaces only the variable part with a digest, so
+/// `inbox:` and `wake-` ids stay recognizable.
+fn bounded(prefix: &str, variable: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let id = format!("{prefix}{variable}");
+    if chariox_app_runtime::app_catalog::is_context_id(&id) {
+        return id;
+    }
+    format!("{prefix}sha256-{:x}", Sha256::digest(variable.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{background_context, bounded, event_request, wake_request};
+    use chariox_app_runtime::{
+        app_inbox::InboxItem,
+        managed_state::Wake,
+        wire::{Message, Sender, WIRE_VERSION},
+    };
+
+    #[test]
+    fn background_deliveries_carry_background_attribution() {
+        let item = InboxItem {
+            sequence: 7,
+            owner_id: "owner".into(),
+            installation_id: "app_1".into(),
+            route_id: "requests".into(),
+            event_name: "todo_requested".into(),
+            occurrence_id: "occurrence-1".into(),
+            payload: serde_json::json!({}),
+            attempts: 0,
+            accepted_generation: 1,
+        };
+        let (params, context) = event_request(&item);
+        assert_eq!(params["occurrence_id"], "occurrence-1");
+        assert_eq!(
+            context["actor"],
+            serde_json::json!({"kind": "background", "id": "inbox:requests"})
+        );
+        assert_eq!(context["operation_id"], "inbox-7");
+        assert_eq!(context["installation_id"], "app_1");
+        // No Room or agent turn is invented for background work.
+        assert!(context.get("room_id").is_none() && context.get("agent_id").is_none());
+
+        // Each firing of a wake is its own operation, stable across retries.
+        let wake = |due_at_ms| Wake {
+            id: "todo-1".into(),
+            due_at_ms,
+            revision: "3".into(),
+        };
+        let (_, first) = wake_request("app_1", &wake(1_000), false);
+        let (_, retried) = wake_request("app_1", &wake(1_000), true);
+        let (_, rescheduled) = wake_request("app_1", &wake(2_000), false);
+        assert_eq!(
+            first["actor"],
+            serde_json::json!({"kind": "background", "id": "schedule"})
+        );
+        assert_eq!(first["operation_id"], retried["operation_id"]);
+        assert_ne!(first["operation_id"], rescheduled["operation_id"]);
+
+        // The kernel may send it; the wire rejects it only from a worker.
+        let request = Message::Request {
+            version: WIRE_VERSION,
+            generation: "generation-1".into(),
+            id: "request-1".into(),
+            method: "events.deliver".into(),
+            params,
+            deadline_ms: 1_000,
+            context: Some(context),
+        };
+        assert!(request.validate("generation-1", Sender::Supervisor).is_ok());
+        assert!(request.validate("generation-1", Sender::Worker).is_err());
+    }
+
+    #[test]
+    fn derived_context_ids_stay_within_the_tool_call_bounds() {
+        assert_eq!(bounded("inbox:", "requests"), "inbox:requests");
+        // A route with a space or a long id keeps its kind prefix.
+        let spaced = bounded("inbox:", "support requests");
+        assert!(spaced.starts_with("inbox:sha256-") && spaced.len() <= 128);
+        let long = bounded("wake-", &format!("{}-1", "x".repeat(200)));
+        assert!(long.starts_with("wake-sha256-") && long.len() <= 128);
+        assert!(chariox_app_runtime::app_catalog::is_context_id(&spaced));
     }
 }
