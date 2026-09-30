@@ -90,10 +90,12 @@ impl KernelRuntimeState {
             &request.provider,
             &request.account_profile,
         )?;
-        if !crate::provider::provider_account_credential_uses_vault(
+        if !crate::provider::launch_uses_vault_credential(
+            &self.owned.provider_account_profiles,
             &account_owner_user_id,
             &request.provider,
             &profile.profile_id,
+            request.client_interface,
         )? {
             return Ok(VaultUnlockGuard::not_required());
         }
@@ -688,7 +690,9 @@ fn apply_vault_manage_choice(
     }
 }
 
-fn vault_unlock_request_lock(path: &std::path::Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+pub(super) fn vault_unlock_request_lock(
+    path: &std::path::Path,
+) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<
             std::collections::BTreeMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>,
@@ -705,7 +709,7 @@ fn vault_unlock_request_lock(path: &std::path::Path) -> std::sync::Arc<tokio::sy
         .clone()
 }
 
-fn expand_vault_path(path: &str) -> std::path::PathBuf {
+pub(super) fn expand_vault_path(path: &str) -> std::path::PathBuf {
     if path == "~" {
         if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
             return home;
