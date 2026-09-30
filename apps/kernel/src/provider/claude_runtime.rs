@@ -32,7 +32,7 @@ use events::apply_claude_message;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use runtime_tool_wait::{
-    begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending,
+    begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending, ClaudeRuntimeToolWait,
 };
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
 use usage::apply_claude_usage_capture;

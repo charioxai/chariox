@@ -50,6 +50,20 @@ mod workspace_live_sync_remote_dispatch;
 use workspace_live_sync_managed_fanout::*;
 
 impl KernelRuntimeState {
+    /// Marks every run this token authenticates as waiting on a runtime tool
+    /// call, for as long as the returned guards live.
+    pub(crate) fn begin_claude_runtime_tool_waits(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::provider::ClaudeRuntimeToolWait> {
+        self.owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+            .iter()
+            .map(|run| crate::provider::begin_claude_runtime_tool_wait(run.id()))
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn runtime_mcp_auth_token_for_provider_run(
         &self,
@@ -242,12 +256,6 @@ impl KernelRuntimeState {
                 provider_runs.iter().map(|run| run.id().to_string()),
                 owned.provider_output_deadlines.clone(),
             );
-            // A Claude run is silent while it waits on this call (a person's
-            // decision can take minutes); its turn watchdog must not end it.
-            let _claude_waits = provider_runs
-                .iter()
-                .map(|run| crate::provider::begin_claude_runtime_tool_wait(run.id()))
-                .collect::<Vec<_>>();
             if canonical_tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL {
                 let run =
                     unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;

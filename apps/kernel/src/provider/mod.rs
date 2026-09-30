@@ -47,10 +47,10 @@ pub(crate) use account_credential::{
 pub(crate) use claude::ensure_claude_native_hidden_context_fits;
 pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
-pub(crate) use claude_runtime::begin_claude_runtime_tool_wait;
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
+pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
 #[cfg(test)]
 pub(crate) use claude_runtime::{
     drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
