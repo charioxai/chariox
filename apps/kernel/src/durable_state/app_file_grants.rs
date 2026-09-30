@@ -2,6 +2,11 @@
 //! owner answers, through a trusted kernel prompt, by handing over the file's
 //! bytes (or declining). Each grant is a copy the App may import once into its
 //! private data before it expires. No host path ever reaches the App.
+//!
+//! Picks and grants belong to the installation, not to the release that
+//! asked: an update of the same App keeps them for the new release (whose
+//! broker still requires the user-selected capability), and old-generation
+//! workers are fenced where the import publishes. Uninstalling ends them.
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -54,6 +59,8 @@ pub(crate) struct FilePick {
     pub(crate) operation_id: String,
     pub(crate) owner: String,
     pub(crate) installation: String,
+    /// The release that asked. Its picks and grants outlive it: they belong
+    /// to the installation.
     pub(crate) generation: u64,
     /// Accepted file name suffixes (for example `.md`); empty accepts any.
     pub(crate) accept: Vec<String>,
@@ -86,12 +93,11 @@ pub(crate) enum FileGrantCommand {
     Expire {
         now_ms: u64,
     },
-    /// Takes an unexpired grant of this installation's current generation for
-    /// one import: no concurrent import can take it too.
+    /// Takes an unexpired grant of this installation for one import: no
+    /// concurrent import can take it too.
     Claim {
         owner: String,
         installation: String,
-        generation: u64,
         grant_id: String,
         now_ms: u64,
     },
@@ -395,7 +401,8 @@ fn apply(
                     params![now_ms as i64],
                 )
                 .map_err(storage)?;
-            // An uninstalled or updated App cannot receive or import files.
+            // An uninstalled App cannot receive or import files. An update
+            // keeps them for the new release.
             transaction
                 .execute(
                     "UPDATE app_file_picks SET state='expired', updated_ms=?1
@@ -403,7 +410,6 @@ fn apply(
                        SELECT 1 FROM app_installations i
                        WHERE i.installation_id=app_file_picks.installation_id
                          AND i.owner_id=app_file_picks.owner_id
-                         AND i.generation=app_file_picks.generation
                          AND i.active_json IS NOT NULL)",
                     params![now_ms as i64],
                 )
@@ -436,7 +442,6 @@ fn apply(
         FileGrantCommand::Claim {
             owner,
             installation,
-            generation,
             grant_id,
             now_ms,
         } => {
@@ -446,14 +451,8 @@ fn apply(
                      JOIN app_file_picks p ON p.operation_id=g.operation_id
                      WHERE g.grant_id=?1 AND g.owner_id=?2 AND g.installation_id=?3
                        AND g.imported=0 AND g.contents IS NOT NULL AND g.expires_ms>?4
-                       AND p.state='granted' AND p.generation=?5",
-                    params![
-                        grant_id,
-                        owner,
-                        installation,
-                        now_ms as i64,
-                        generation as i64
-                    ],
+                       AND p.state='granted'",
+                    params![grant_id, owner, installation, now_ms as i64],
                     |row| {
                         Ok(GrantedFile {
                             name: row.get(0)?,

@@ -156,7 +156,6 @@ impl AppFileGrantBroker {
             .store
             .app_file_pick(&self.owner, self.installation(), &request.operation_id)
             .map_err(|code| error(code, true))?
-            .filter(|pick| pick.generation == self.catalog.generation())
             .ok_or_else(|| error("NOT_FOUND", false))?;
         Ok(reply(&pick))
     }
@@ -179,7 +178,6 @@ impl AppFileGrantBroker {
             .claim_app_file_grant(FileGrantCommand::Claim {
                 owner,
                 installation,
-                generation: self.catalog.generation(),
                 grant_id,
                 now_ms: crate::session::unix_epoch_ms(),
             })
