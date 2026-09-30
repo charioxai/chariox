@@ -1,5 +1,6 @@
-use super::{test_server::TestDns, DnsConfig};
+use super::{test_server::TestDns, DnsConfig, BUDGET, PER_SERVER};
 use crate::runtime::app_http::{limits::HttpLimits, policy::fixture_get, HttpError};
+use hickory_resolver::proto::{op::ResponseCode, rr::RecordType};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
@@ -10,16 +11,35 @@ use tokio::{
 };
 
 async fn resolve(dns: &DnsConfig, url: &str) -> Result<Vec<SocketAddr>, HttpError> {
+    resolve_within(dns, url, Duration::from_secs(30)).await
+}
+
+async fn resolve_within(
+    dns: &DnsConfig,
+    url: &str,
+    deadline: Duration,
+) -> Result<Vec<SocketAddr>, HttpError> {
     let limits = HttpLimits::default();
     let (_stop, stopped) = watch::channel(false);
     dns.resolve(
         &fixture_get(url),
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + deadline,
         stopped,
         limits.acquire("alice", "app").unwrap(),
     )
     .await
 }
+
+async fn public() -> TestDns {
+    TestDns::start(|_, _, _| Some(vec!["8.8.8.8".parse().unwrap()])).await
+}
+
+fn answered() -> Vec<SocketAddr> {
+    vec!["8.8.8.8:443".parse().unwrap()]
+}
+
+/// Timing margin for a loaded test machine.
+const SLACK: Duration = Duration::from_millis(900);
 
 /// Each name answers one special-purpose address through real DNS. The
 /// answer itself is refused as a destination; no connection is attempted.
@@ -115,4 +135,132 @@ async fn special_ip_literals_are_denied_without_a_query() {
         );
     }
     assert_eq!(dns.total_queries(), 0);
+}
+
+#[tokio::test]
+async fn a_blackholed_first_server_gives_way_to_the_next_after_its_turn() {
+    let (silent, good) = (TestDns::silent().await, public().await);
+    let config = DnsConfig::fixture_servers(&[silent.address(), good.address()]);
+    let start = Instant::now();
+    assert_eq!(
+        resolve(&config, "https://public.test/").await.unwrap(),
+        answered()
+    );
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= PER_SERVER && elapsed < PER_SERVER + SLACK,
+        "{elapsed:?}"
+    );
+    assert!(silent.queries("public.test.", RecordType::A) >= 1);
+    assert!(good.asked_between(start, PER_SERVER, PER_SERVER + SLACK));
+}
+
+#[tokio::test]
+async fn an_error_code_gives_way_to_the_next_server_at_once() {
+    for code in [
+        ResponseCode::Refused,
+        ResponseCode::NotImp,
+        ResponseCode::ServFail,
+    ] {
+        let (failing, good) = (TestDns::failing(code).await, public().await);
+        let config = DnsConfig::fixture_servers(&[failing.address(), good.address()]);
+        let start = Instant::now();
+        assert_eq!(
+            resolve(&config, "https://public.test/").await.unwrap(),
+            answered(),
+            "{code:?}"
+        );
+        assert!(start.elapsed() < SLACK, "{code:?}: {:?}", start.elapsed());
+        assert!(failing.total_queries() >= 1, "{code:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_lone_server_is_asked_again_before_the_lookup_fails() {
+    let silent = TestDns::silent().await;
+    let config = DnsConfig::fixture_servers(&[silent.address()]);
+    let start = Instant::now();
+    assert_eq!(
+        resolve(&config, "https://public.test/").await,
+        Err(HttpError::Network)
+    );
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= 2 * PER_SERVER && elapsed < 2 * PER_SERVER + SLACK,
+        "{elapsed:?}"
+    );
+    assert!(silent.asked_between(start, Duration::ZERO, PER_SERVER));
+    assert!(silent.asked_between(start, PER_SERVER, 2 * PER_SERVER));
+}
+
+#[tokio::test]
+async fn every_server_down_fails_as_network_within_the_total_budget() {
+    let (first, second) = (TestDns::silent().await, TestDns::silent().await);
+    let config = DnsConfig::fixture_servers(&[first.address(), second.address()]);
+    let start = Instant::now();
+    assert_eq!(
+        resolve(&config, "https://public.test/").await,
+        Err(HttpError::Network)
+    );
+    let elapsed = start.elapsed();
+    assert!(elapsed >= BUDGET && elapsed < BUDGET + SLACK, "{elapsed:?}");
+    // In order, one turn each, then the first again until the budget ends.
+    assert!(first.asked_between(start, Duration::ZERO, PER_SERVER));
+    assert!(second.asked_between(start, PER_SERVER, 2 * PER_SERVER));
+    assert!(first.asked_between(start, 2 * PER_SERVER, BUDGET));
+    assert!(!second.asked_between(
+        start,
+        2 * PER_SERVER + Duration::from_millis(200),
+        BUDGET + SLACK
+    ));
+}
+
+#[tokio::test]
+async fn a_missing_name_is_final_and_the_request_deadline_still_wins() {
+    let (missing, good) = (TestDns::start(|_, _, _| None).await, public().await);
+    let config = DnsConfig::fixture_servers(&[missing.address(), good.address()]);
+    let start = Instant::now();
+    assert_eq!(
+        resolve(&config, "https://public.test/").await,
+        Err(HttpError::Network)
+    );
+    assert!(start.elapsed() < SLACK);
+    assert_eq!(
+        good.total_queries(),
+        0,
+        "NXDOMAIN is an answer, not a failure"
+    );
+
+    let (silent, good) = (TestDns::silent().await, public().await);
+    let config = DnsConfig::fixture_servers(&[silent.address(), good.address()]);
+    let start = Instant::now();
+    assert_eq!(
+        resolve_within(&config, "https://public.test/", Duration::from_millis(500)).await,
+        Err(HttpError::Deadline)
+    );
+    assert!(start.elapsed() < Duration::from_millis(500) + SLACK);
+    assert_eq!(good.total_queries(), 0);
+}
+
+#[tokio::test]
+async fn cancellation_ends_a_turn_at_once() {
+    let silent = TestDns::silent().await;
+    let config = DnsConfig::fixture_servers(&[silent.address()]);
+    let limits = HttpLimits::default();
+    let (stop, stopped) = watch::channel(false);
+    let target = fixture_get("https://public.test/");
+    let start = Instant::now();
+    let lookup = config.resolve(
+        &target,
+        Instant::now() + Duration::from_secs(30),
+        stopped,
+        limits.acquire("alice", "app").unwrap(),
+    );
+    let cancel = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stop.send(true).unwrap();
+    };
+    let (result, ()) = tokio::join!(lookup, cancel);
+    assert_eq!(result, Err(HttpError::Cancelled));
+    assert!(start.elapsed() < Duration::from_millis(300) + SLACK);
 }

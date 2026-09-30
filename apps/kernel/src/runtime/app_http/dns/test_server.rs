@@ -14,16 +14,29 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
 };
-use tokio::{net::UdpSocket, task::JoinHandle};
+use tokio::{
+    net::UdpSocket,
+    task::JoinHandle,
+    time::{Duration, Instant},
+};
 
 /// Answers for one name: `(name, record type, earlier queries of that type
 /// for that name)`. `None` is NXDOMAIN; addresses of the other family are
 /// left out, so an empty answer is NOERROR without data.
 type Script = dyn Fn(&str, RecordType, usize) -> Option<Vec<IpAddr>> + Send + Sync;
 
+enum Behavior {
+    Answer(Arc<Script>),
+    /// Counts queries and never replies, like a blackholed server.
+    Silent,
+    /// Replies to every query with this error code.
+    Fail(ResponseCode),
+}
+
 pub(in crate::runtime::app_http) struct TestDns {
     address: SocketAddr,
     queries: Arc<Mutex<HashMap<(String, RecordType), usize>>>,
+    arrivals: Arc<Mutex<Vec<Instant>>>,
     task: JoinHandle<()>,
 }
 
@@ -31,29 +44,52 @@ impl TestDns {
     pub(in crate::runtime::app_http) async fn start(
         script: impl Fn(&str, RecordType, usize) -> Option<Vec<IpAddr>> + Send + Sync + 'static,
     ) -> Self {
+        Self::serve(Behavior::Answer(Arc::new(script))).await
+    }
+
+    /// A server that receives queries and never answers them.
+    pub(in crate::runtime::app_http) async fn silent() -> Self {
+        Self::serve(Behavior::Silent).await
+    }
+
+    /// A server that answers every query with an error code.
+    pub(in crate::runtime::app_http) async fn failing(code: ResponseCode) -> Self {
+        Self::serve(Behavior::Fail(code)).await
+    }
+
+    async fn serve(behavior: Behavior) -> Self {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let address = socket.local_addr().unwrap();
         let queries = Arc::new(Mutex::new(HashMap::new()));
         let seen = queries.clone();
-        let script: Arc<Script> = Arc::new(script);
+        let arrivals = Arc::new(Mutex::new(Vec::new()));
+        let arrived = arrivals.clone();
         let task = tokio::spawn(async move {
             let mut buffer = vec![0u8; 4096];
             loop {
                 let Ok((length, peer)) = socket.recv_from(&mut buffer).await else {
                     return;
                 };
+                arrived.lock().unwrap().push(Instant::now());
                 let Ok(request) = Message::from_vec(&buffer[..length]) else {
                     continue;
                 };
-                let reply = answer(&request, &seen, script.as_ref());
+                let Some(reply) = answer(&request, &seen, &behavior) else {
+                    continue;
+                };
                 let _ = socket.send_to(&reply.to_vec().unwrap(), peer).await;
             }
         });
         Self {
             address,
             queries,
+            arrivals,
             task,
         }
+    }
+
+    pub(in crate::runtime::app_http) fn address(&self) -> SocketAddr {
+        self.address
     }
 
     pub(in crate::runtime::app_http) fn config(&self) -> DnsConfig {
@@ -73,6 +109,20 @@ impl TestDns {
     pub(in crate::runtime::app_http) fn total_queries(&self) -> usize {
         self.queries.lock().unwrap().values().sum()
     }
+
+    /// Whether any query arrived in `[from, to)` after `start`.
+    pub(in crate::runtime::app_http) fn asked_between(
+        &self,
+        start: Instant,
+        from: Duration,
+        to: Duration,
+    ) -> bool {
+        self.arrivals
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|at| (from..to).contains(&at.duration_since(start)))
+    }
 }
 
 impl Drop for TestDns {
@@ -84,8 +134,8 @@ impl Drop for TestDns {
 fn answer(
     request: &Message,
     seen: &Mutex<HashMap<(String, RecordType), usize>>,
-    script: &Script,
-) -> Message {
+    behavior: &Behavior,
+) -> Option<Message> {
     let mut reply = Message::response(request.metadata.id, request.metadata.op_code);
     reply.metadata.recursion_desired = request.metadata.recursion_desired;
     reply.metadata.recursion_available = true;
@@ -93,7 +143,7 @@ fn answer(
     reply.add_queries(request.queries.clone());
     let Some(query) = request.queries.first() else {
         reply.metadata.response_code = ResponseCode::FormErr;
-        return reply;
+        return Some(reply);
     };
     let name = query.name().to_ascii().to_ascii_lowercase();
     let kind = query.query_type();
@@ -102,6 +152,14 @@ fn answer(
         let count = seen.entry((name.clone(), kind)).or_insert(0);
         *count += 1;
         *count - 1
+    };
+    let script = match behavior {
+        Behavior::Answer(script) => script,
+        Behavior::Silent => return None,
+        Behavior::Fail(code) => {
+            reply.metadata.response_code = *code;
+            return Some(reply);
+        }
     };
     match script(&name, kind, sequence) {
         None => reply.metadata.response_code = ResponseCode::NXDomain,
@@ -116,5 +174,5 @@ fn answer(
             }
         }
     }
-    reply
+    Some(reply)
 }

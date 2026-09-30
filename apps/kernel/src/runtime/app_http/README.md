@@ -30,9 +30,14 @@ no detached connection driver or pool.
 Initial limits are four streams per owner/installation and 32 per kernel, two
 64 KiB chunks queued in each direction, a 64 MiB request, a 256 MiB response,
 one-hour absolute lifetime, and 120 seconds without actual socket progress.
-Headers are limited to 64 entries/16 KiB. DNS has ten seconds, at most 32 returned
-addresses, and 16 tracked driver tasks. These are policy limits, not performance
-evidence. The existing lifecycle service owns one shared `HttpLimits` pool.
+Headers are limited to 64 entries/16 KiB. A DNS lookup asks one name server at a
+time, in the host's order, for up to two seconds each. A server that drops the
+query or answers an error code (REFUSED, NOTIMP, SERVFAIL) gives way to the next
+at once. Each server is asked at most twice, and the whole lookup has six seconds,
+so one bad server cannot fail it. An NXDOMAIN answer is final. At most 32
+addresses are returned, and 16 driver tasks are tracked per attempt. These are
+policy limits, not performance evidence. The existing lifecycle service owns
+one shared `HttpLimits` pool.
 
 Hickory 0.26.2 supports Rust 1.88. Its minimal Tokio/system-config features read
 Linux resolv.conf and macOS's global SystemConfiguration DNS entry. This does not
