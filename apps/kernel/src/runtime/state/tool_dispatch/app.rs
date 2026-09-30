@@ -188,7 +188,7 @@ impl KernelRuntimeState {
         let Some(tool) = tool else {
             return Ok(None);
         };
-        self.invoke_bound_app_tool(&agent, &tool, input, None)
+        self.invoke_bound_app_tool(&agent, provider_run.id(), &tool, input, None)
             .await
             .map(Some)
     }
@@ -201,8 +201,14 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let agent = super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
             .authorize_granted_agent(context, tool)?;
-        self.invoke_bound_app_tool(&agent, tool, input, Some(context.clone()))
-            .await
+        self.invoke_bound_app_tool(
+            &agent,
+            &context.worker_provider_run_id,
+            tool,
+            input,
+            Some(context.clone()),
+        )
+        .await
     }
 
     pub(super) async fn authorize_forwarded_app_tool(

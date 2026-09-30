@@ -112,6 +112,10 @@ reconstructs schedules from its state.
 
 The optional context includes kernel-assigned installation, Room, operation,
 actor, agent, task and turn references. It is distinct from App tool parameters.
+An agent's call carries `agent_id` and, when the agent made it during a turn,
+`turn_id`: the id of that turn's Chariox prompt, as session history records it.
+It is captured when the call is submitted, so a later turn or focus change does
+not re-attribute it.
 Background work carries one too: `events.deliver` and `schedule.wake` have
 `actor: {kind: "background", id: "inbox:<route>" | "schedule"}`, an operation per
 delivery (`inbox-<sequence>`) or per wake firing (`wake-<id>-<dueAtMs>`, the same

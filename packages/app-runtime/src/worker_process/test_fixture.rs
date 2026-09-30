@@ -89,6 +89,18 @@ impl Observation {
             .map(|m| m.len() / 2)
             .unwrap_or(0)
     }
+    /// The `tools.invoke` requests the echo fixture received, in order.
+    pub fn tool_requests(&self) -> io::Result<Vec<serde_json::Value>> {
+        let mut text = String::new();
+        match File::open(self.marker.with_file_name("tool-requests")) {
+            Ok(file) => file.take(512 * 1024).read_to_string(&mut text)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        text.lines()
+            .map(|line| serde_json::from_str(line).map_err(io::Error::other))
+            .collect()
+    }
     /// Observe only the fixed broker fixture output; no caller-selected path.
     pub fn private_file(&self) -> io::Result<Option<Vec<u8>>> {
         let file = match File::open(self.marker.with_file_name("fixture-file")) {

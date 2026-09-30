@@ -118,6 +118,13 @@ static int fixture_sdk_tool(const struct cx_launch_record* record) {
     if (file < 0) return 114;
     const int failed = send_all(file, "1\n", 2) || fsync(file);
     if (close(file) || failed) return 115;
+    // The request as received, one per line, so tests can read its context.
+    const int requests_size = snprintf(marker, sizeof(marker), "%s/tool-requests", record->roots[CX_DATA]);
+    if (requests_size < 0 || (size_t)requests_size >= sizeof(marker)) return 113;
+    const int requests = open(marker, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (requests < 0) return 114;
+    const int requests_failed = send_all(requests, request, strlen(request)) || send_all(requests, "\n", 1);
+    if (close(requests) || requests_failed) return 115;
     char response[512];
     const int count = snprintf(response, sizeof(response),
         "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"%.*s\",\"result\":{\"ok\":true}}",

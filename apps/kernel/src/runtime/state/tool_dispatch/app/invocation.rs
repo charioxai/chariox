@@ -15,9 +15,12 @@ impl Drop for CancelOnDrop {
 }
 
 impl KernelRuntimeState {
+    /// `caller_run_id` is the provider run that made the call: the local run,
+    /// or a leased agent's worker run.
     pub(super) async fn invoke_bound_app_tool(
         &self,
         agent: &crate::agent::AgentInstance,
+        caller_run_id: &str,
         tool: &RemoteExtensionTool,
         input: serde_json::Value,
         remote: Option<crate::transport::relay_peer::RemoteExtensionInvocationContext>,
@@ -25,6 +28,8 @@ impl KernelRuntimeState {
         if tool.kind != ExtensionKind::App {
             return Err(unavailable());
         }
+        // Captured at submission, before any wait for an on-demand start.
+        let turn_id = self.app_call_turn_id(agent, caller_run_id, remote.is_some());
         let cancelled = CancelOnDrop(Arc::new(AtomicBool::new(false)));
         let observe = cancelled.0.clone();
         let budget =
@@ -66,7 +71,7 @@ impl KernelRuntimeState {
                 room_id: current.session_id().into(),
                 operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
                 task_id: None,
-                turn_id: None,
+                turn_id,
             };
             let result = owned
                 .durable_state_store
@@ -279,6 +284,63 @@ fn starts_on_demand(
     })
 }
 
+impl KernelRuntimeState {
+    /// The agent's turn (its active Chariox prompt) when it makes the call. It
+    /// is captured once at submission: a later turn or focus change never
+    /// re-attributes an accepted call.
+    fn app_call_turn_id(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        caller_run_id: &str,
+        relayed: bool,
+    ) -> Option<String> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(agent.session_id())
+            .ok()?;
+        call_turn_id(
+            self.owned
+                .prompt_state_owner
+                .active_prompt_for_agent_snapshot(&session, agent.id()),
+            caller_run_id,
+            relayed,
+        )
+    }
+}
+
+/// Only a turn the calling run has received is the calling turn: no turn beats
+/// a wrong one. `relayed` is a leased agent's call from its worker run. An id
+/// the App context cannot carry is left out rather than failing the call.
+fn call_turn_id(
+    active: Option<crate::session::PromptQueueItem>,
+    caller_run_id: &str,
+    relayed: bool,
+) -> Option<String> {
+    use crate::session::DurablePromptDeliveryPhase::{Accepted, Delivered, Dispatching};
+    active
+        .filter(|prompt| match prompt.durable_delivery_phase() {
+            // Dispatched by the kernel: once delivered, to the calling run.
+            Some(Delivered) => prompt
+                .durable_delivery_provider_run_id()
+                .is_none_or(|run| run == caller_run_id),
+            // Still on its way: the provider is between turns.
+            Some(Dispatching) => false,
+            // Recorded but never dispatched: a turn the provider started itself
+            // (typed in its native TUI, always local) stays here for the whole
+            // turn. A local kernel prompt passes through it only until its
+            // dispatch starts; a leased agent's home prompt stays here until
+            // the worker has it, so a relayed call needs Delivered.
+            Some(Accepted) | None => {
+                !relayed
+                    && prompt.status() == crate::session::PromptStatus::Running
+                    && prompt.durable_delivery_provider_run_id().is_none()
+            }
+        })
+        .map(|prompt| prompt.id().to_string())
+        .filter(|id| CallerContext::valid_id(id))
+}
+
 fn require_binding(
     current: &crate::agent::AgentInstance,
     expected: &crate::agent::AgentInstance,
@@ -329,6 +391,86 @@ fn eviction_victim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_names_only_the_turn_its_own_run_is_serving() {
+        use crate::session::DurablePromptDeliveryPhase::{Accepted, Delivered, Dispatching};
+        let prompt = |id: &str,
+                      delivery: Option<(
+            crate::session::DurablePromptDeliveryPhase,
+            Option<&str>,
+        )>| {
+            let mut prompt = crate::session::PromptQueueItem::new(
+                id,
+                "attachment-1",
+                "agent-1",
+                "use the App",
+                crate::session::PromptStatus::Running,
+            );
+            if let Some((phase, run)) = delivery {
+                prompt.set_durable_delivery(phase, run.map(str::to_string), None);
+            }
+            prompt
+        };
+        // Delivered to the calling run (a local run, or a leased agent's
+        // worker run): that turn.
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt-1", Some((Delivered, Some("run-a"))))),
+                "run-a",
+                true
+            )
+            .as_deref(),
+            Some("prompt-1")
+        );
+        // A turn typed in the provider's native TUI is recorded, never
+        // dispatched: the prompt owner leaves it Accepted with no run.
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt-1", Some((Accepted, None)))),
+                "run-a",
+                false
+            )
+            .as_deref(),
+            Some("prompt-1")
+        );
+        // A leased agent's home prompt is Accepted until the worker has it.
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt-2", Some((Accepted, None)))),
+                "run-a",
+                true
+            ),
+            None
+        );
+        // Still being dispatched (even to the same run), another run's turn,
+        // no turn, or an id the context cannot carry: none.
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt-2", Some((Dispatching, Some("run-a"))))),
+                "run-a",
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt-2", Some((Delivered, Some("run-b"))))),
+                "run-a",
+                false
+            ),
+            None
+        );
+        assert_eq!(call_turn_id(None, "run-a", false), None);
+        assert_eq!(
+            call_turn_id(
+                Some(prompt("prompt 3", Some((Accepted, None)))),
+                "run-a",
+                false
+            ),
+            None
+        );
+    }
 
     #[test]
     fn eviction_picks_the_longest_idle_other_worker_past_the_threshold() {
