@@ -425,10 +425,11 @@ fn claude_assistant_block_key(
 
 /// Claude Code sends one `assistant` event per content block, so a snapshot's
 /// array index is not the block's stream index: a reply that follows a
-/// thinking block streams as block 1 but arrives here as block 0. When the
-/// snapshot's own key has not streamed a prefix of it, use the streamed block
-/// of the same message and kind whose text it continues (the longest one), so
-/// the streamed text is not emitted a second time.
+/// thinking block streams as block 1 but arrives here as block 0. Use the
+/// streamed block of the same message and kind whose text the snapshot
+/// continues. A block whose snapshot already arrived ranks after one still
+/// streaming (an earlier block's text can be a prefix of a later one's), then
+/// the longest streamed text wins, then the snapshot's own key.
 fn claude_streamed_block_for_snapshot(
     state: &ClaudeRuntimeState,
     message_id: &str,
@@ -436,16 +437,22 @@ fn claude_streamed_block_for_snapshot(
     block_kind: &str,
     text: &str,
 ) -> Option<String> {
-    let continues = |emitted: &String| !emitted.is_empty() && text.starts_with(emitted.as_str());
-    if state.emitted_text_by_block.get(key).is_some_and(continues) {
-        return None;
-    }
     let prefix = format!("message:{message_id}:{block_kind}:");
     state
         .emitted_text_by_block
         .iter()
-        .filter(|(candidate, emitted)| candidate.starts_with(&prefix) && continues(emitted))
-        .max_by_key(|(_, emitted)| emitted.len())
+        .filter(|(candidate, emitted)| {
+            candidate.starts_with(&prefix)
+                && !emitted.is_empty()
+                && text.starts_with(emitted.as_str())
+        })
+        .max_by_key(|(candidate, emitted)| {
+            (
+                !state.completed_text_blocks.contains(candidate.as_str()),
+                emitted.len(),
+                candidate.as_str() == key,
+            )
+        })
         .map(|(candidate, _)| candidate.clone())
 }
 

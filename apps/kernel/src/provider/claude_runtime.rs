@@ -1316,6 +1316,65 @@ cat >/dev/null
     }
 
     #[test]
+    fn later_text_block_extending_an_earlier_one_is_not_repeated() {
+        let (mut state, _) = parser_state();
+        let mut batch = ProviderPromptSignalBatch::default();
+        let stream = |state: &mut ClaudeRuntimeState,
+                      batch: &mut ProviderPromptSignalBatch,
+                      event: serde_json::Value| {
+            apply_claude_message(
+                "run-1",
+                state,
+                json!({ "type": "stream_event", "event": event }),
+                batch,
+            );
+        };
+        let snapshot = |state: &mut ClaudeRuntimeState,
+                        batch: &mut ProviderPromptSignalBatch,
+                        text: &str| {
+            apply_claude_message(
+                "run-1",
+                state,
+                json!({ "type": "assistant", "message": { "id": "msg-1", "content": [{ "type": "text", "text": text }] } }),
+                batch,
+            );
+        };
+        stream(
+            &mut state,
+            &mut batch,
+            json!({ "type": "message_start", "message": { "id": "msg-1" } }),
+        );
+        stream(
+            &mut state,
+            &mut batch,
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "OK" } }),
+        );
+        snapshot(&mut state, &mut batch, "OK");
+        // Block 2 (after a tool_use at 1) starts with block 0's whole text.
+        stream(
+            &mut state,
+            &mut batch,
+            json!({ "type": "content_block_delta", "index": 2, "delta": { "type": "text_delta", "text": "O" } }),
+        );
+        let text: Vec<u8> = batch
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.clone())
+            .collect();
+        assert_eq!(text, b"OKO");
+
+        let mut completed = ProviderPromptSignalBatch::default();
+        snapshot(&mut state, &mut completed, "OK, done.");
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].bytes, b"K, done.");
+
+        let mut repeated = ProviderPromptSignalBatch::default();
+        snapshot(&mut state, &mut repeated, "OK, done.");
+        snapshot(&mut state, &mut repeated, "OK");
+        assert!(repeated.chunks.is_empty());
+    }
+
+    #[test]
     fn marks_result_completion_and_usage() {
         let (mut state, mut batch) = parser_state();
 
