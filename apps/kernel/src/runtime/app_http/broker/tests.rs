@@ -5,6 +5,19 @@ use tokio::time::timeout;
 mod support;
 use support::*;
 #[test]
+fn tls_failures_have_their_own_code_in_the_same_error_shape() {
+    let tls = remote(HttpError::Tls);
+    assert_eq!(
+        (tls.code.as_str(), tls.retryable),
+        ("APP_HTTP_TLS", Some(false))
+    );
+    let network = remote(HttpError::Network);
+    assert_eq!(
+        (network.code.as_str(), network.message.as_str()),
+        ("APP_HTTP_NETWORK", "HTTP transport did not complete")
+    );
+}
+#[test]
 fn inherited_worker_channel_streams_binary_bytes_through_backend_and_writer() {
     let mut fixture = Fixture::new(false);
     fixture.event("worker.fixture.http_complete");
