@@ -97,6 +97,24 @@ test("persistent browser connection returns page identities, focus, and applied 
   );
 });
 
+test("focus is read in a controller-owned isolated world a page cannot redefine", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  await browser.reconcile(viewport);
+  const worlds = connection.calls.filter((call) => call.method === "Page.createIsolatedWorld");
+  assert.deepEqual(
+    worlds.map((call) => [call.sessionId, call.params.frameId, call.params.worldName]),
+    [["session-a", "frame-a", "chariox-controller-focus"], ["session-b", "frame-b", "chariox-controller-focus"]],
+    "one world per document, reused by later polls",
+  );
+  const focusReads = connection.calls.filter(
+    (call) => call.method === "Runtime.evaluate" && call.params.expression === "document.visibilityState === 'visible'",
+  );
+  assert.equal(focusReads.length, 4);
+  assert.ok(focusReads.every((call) => typeof call.params.contextId === "number"), "never evaluated in the page's own world");
+});
+
 test("a Tab that closes while it is inspected drops out instead of failing the reconcile", async () => {
   const connection = new FakeConnection();
   connection.vanishOnInspect = { "session-a": "target-a" };
@@ -1028,6 +1046,10 @@ class FakeConnection {
           },
         },
       };
+    }
+    if (method === "Page.createIsolatedWorld") {
+      this.isolatedWorlds = (this.isolatedWorlds ?? 0) + 1;
+      return { executionContextId: 100 + this.isolatedWorlds };
     }
     if (method === "Runtime.evaluate") {
       if (sessionId === "worker-session-a" && params.expression === "self.close()") {

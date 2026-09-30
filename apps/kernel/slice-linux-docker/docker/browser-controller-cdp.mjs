@@ -38,6 +38,9 @@ import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fen
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
+// Focus is read in a controller-owned isolated world: a page can redefine
+// document.visibilityState in its own world, but not in this one.
+const FOCUS_WORLD = "chariox-controller-focus";
 
 export class BrowserControllerError extends Error {
   constructor(code, message) {
@@ -87,6 +90,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget = new Map();
+    this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.dialogDefaults = new BrowserDialogDefaults();
     this.networkRequestsBySession = new Map();
@@ -318,6 +322,7 @@ export class BrowserCdpClient {
     this.networkRequestsBySession.delete(sessionId);
     this.sessionsByTarget.delete(targetId);
     this.documentIdsByTarget.delete(targetId);
+    this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
     this.dialogDefaults.delete(targetId);
     this.targetsByFrame.removeTarget(targetId);
@@ -331,25 +336,16 @@ export class BrowserCdpClient {
       deviceMetricsFor(viewport),
       sessionId,
     );
-    const [frameTree, focus] = await Promise.all([
-      connection.send("Page.getFrameTree", {}, sessionId),
-      connection.send(
-        "Runtime.evaluate",
-        {
-          expression: "document.visibilityState === 'visible'",
-          returnByValue: true,
-          awaitPromise: false,
-        },
-        sessionId,
-      ),
-    ]);
-    const documentId = frameTree?.frameTree?.frame?.loaderId;
+    const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
+    const frame = frameTree?.frameTree?.frame;
+    const documentId = frame?.loaderId;
     if (typeof documentId !== "string" || !documentId) {
       throw new BrowserControllerError(
         "browser_document_identity_missing",
         `browser target ${JSON.stringify(target.targetId)} has no top-level loader identity`,
       );
     }
+    const focus = await this.readFocus(connection, sessionId, target.targetId, frame);
     this.documentIdsByTarget.set(target.targetId, documentId);
     await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
     return {
@@ -359,6 +355,35 @@ export class BrowserCdpClient {
       title: typeof target.title === "string" ? target.title : "",
       focused: focus?.result?.value === true,
     };
+  }
+
+  // One isolated world per document: polls reuse it, a new document gets a new one.
+  async readFocus(connection, sessionId, targetId, frame) {
+    let world = this.focusWorldsByTarget.get(targetId);
+    if (world?.documentId !== frame.loaderId) {
+      const created = await connection.send(
+        "Page.createIsolatedWorld",
+        { frameId: frame.id, worldName: FOCUS_WORLD, grantUniveralAccess: false },
+        sessionId,
+      );
+      world = { documentId: frame.loaderId, contextId: created?.executionContextId };
+      this.focusWorldsByTarget.set(targetId, world);
+    }
+    try {
+      return await connection.send(
+        "Runtime.evaluate",
+        {
+          expression: "document.visibilityState === 'visible'",
+          contextId: world.contextId,
+          returnByValue: true,
+          awaitPromise: false,
+        },
+        sessionId,
+      );
+    } catch (error) {
+      this.focusWorldsByTarget.delete(targetId);
+      throw error;
+    }
   }
 
   async manageTab(rawRequest, { signal } = {}) {
