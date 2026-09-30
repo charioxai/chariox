@@ -110,8 +110,8 @@ impl KernelRuntimeOwnedState {
             );
             self.mark_prompt_completion_recorded(provider_run_id);
         }
-        // A delayed durable retry must retain the original completion time;
-        // ordinary cleanup still samples the current time under the activity lock.
+        // Preserve this turn's original completion time. Activity cleanup
+        // clamps the aggregate idle time against other turns' later finishes.
         let retry_observed_at_ms = self
             .active_turns
             .get(provider_run_id)

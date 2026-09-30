@@ -481,7 +481,7 @@ impl KernelRuntimeOwnedState {
         // the reporter's barrier across that window, so publish a second change only after the
         // turn has been cleared by the completed settlement path.
         if active_turn.is_some() {
-            activity_mutation.record_at(observed_at_ms);
+            activity_mutation.record_prompt_finish_at(observed_at_ms);
             self.runtime_projection_changes.record_change();
         }
         released_claim
@@ -501,7 +501,7 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let cleared_active_turns = self.active_turns.clear_session(session_id);
         if cleared_active_turns > 0 {
-            activity_mutation.record();
+            activity_mutation.record_prompt_finish_at(None);
             self.runtime_projection_changes.record_change();
         }
         let _ = self
@@ -525,7 +525,7 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let cleared_active_turns = self.active_turns.clear_agent(session_id, agent_id);
         if cleared_active_turns > 0 {
-            activity_mutation.record();
+            activity_mutation.record_prompt_finish_at(None);
             self.runtime_projection_changes.record_change();
         }
     }
