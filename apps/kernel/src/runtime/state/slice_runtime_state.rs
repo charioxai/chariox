@@ -98,6 +98,8 @@ impl KernelRuntimeState {
         slice: &crate::slice::SliceRecord,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         let mut current = slice.clone();
+        let config = self.owned.config_projection.snapshot();
+        let recorded_slices = self.owned.slice_store.list();
         let missing_attachments = self
             .owned
             .agent_store
@@ -105,9 +107,13 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|agent| {
                 let remote = agent.remote_execution()?;
-                let targets_slice = remote.worker_machine_id == format!("slice:{}", slice.id)
-                    || slice.worker_kernel_id.as_deref() == Some(remote.worker_kernel_id.as_str())
-                    || slice.worker_kernel_ref == remote.worker_kernel_id;
+                let targets_slice = crate::slice::recorded_slice_for_worker(
+                    &config,
+                    &recorded_slices,
+                    &remote.worker_kernel_id,
+                    &remote.worker_machine_id,
+                )
+                .is_some_and(|record| record.id == slice.id);
                 (targets_slice
                     && !slice
                         .agent_ids
@@ -144,14 +150,13 @@ impl KernelRuntimeState {
                     let remote = agent.remote_execution();
                     session_exists
                         && remote.is_some_and(|remote| {
-                            let live_worker_identity_available = current.worker_kernel_id.is_some()
-                                || current.worker_machine_id.is_some();
-                            (!live_worker_identity_available
-                                && current.status != crate::slice::SliceStatus::Running)
-                                || remote.worker_machine_id == format!("slice:{}", current.id)
-                                || current.worker_kernel_id.as_deref()
-                                    == Some(remote.worker_kernel_id.as_str())
-                                || current.worker_kernel_ref == remote.worker_kernel_id
+                            crate::slice::retained_slice_attachment_matches(
+                                &config,
+                                &recorded_slices,
+                                &current,
+                                &remote.worker_kernel_id,
+                                &remote.worker_machine_id,
+                            )
                         })
                 });
             if !matches_canonical_agent {
@@ -1875,7 +1880,7 @@ mod tests {
         );
     }
 
-    async fn slice_runtime() -> (
+    pub(super) async fn slice_runtime() -> (
         Arc<Mutex<DaemonApp>>,
         KernelRuntimeState,
         crate::slice::SliceRecord,
@@ -2103,3 +2108,7 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "slice_runtime_state/attachment_identity_tests.rs"]
+mod attachment_identity_tests;

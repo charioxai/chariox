@@ -49,12 +49,64 @@ pub(crate) fn slice_worker_id_for_config(config: &DaemonConfig) -> Option<String
     )
 }
 
+enum RecordedSliceWorker<'a> {
+    Missing,
+    Unique(&'a SliceRecord),
+    Ambiguous,
+}
+
 pub(crate) fn recorded_slice_for_worker<'a>(
     config: &DaemonConfig,
     slices: &'a [SliceRecord],
     worker_kernel_id: &str,
     worker_machine_id: &str,
 ) -> Option<&'a SliceRecord> {
+    match recorded_slice_worker(config, slices, worker_kernel_id, worker_machine_id) {
+        RecordedSliceWorker::Unique(slice) => Some(slice),
+        RecordedSliceWorker::Missing | RecordedSliceWorker::Ambiguous => None,
+    }
+}
+
+/// Existing stopped private attachments can outlive their observed worker.
+/// This preservation policy never admits a new attachment or ambiguity.
+pub(crate) fn retained_slice_attachment_matches(
+    config: &DaemonConfig,
+    slices: &[SliceRecord],
+    current: &SliceRecord,
+    worker_kernel_id: &str,
+    worker_machine_id: &str,
+) -> bool {
+    match recorded_slice_worker(config, slices, worker_kernel_id, worker_machine_id) {
+        RecordedSliceWorker::Unique(slice) => slice.id == current.id,
+        RecordedSliceWorker::Ambiguous => false,
+        RecordedSliceWorker::Missing => {
+            current.status == super::SliceStatus::Stopped
+                && current.worker_kernel_id.is_none()
+                && current.worker_machine_id.is_none()
+                && !super::machine_scoped_slice_worker_ref(
+                    &current.worker_kernel_ref,
+                    &current.owner_machine_id,
+                )
+                && !recorded_relay_is_hosted(config, current)
+        }
+    }
+}
+
+fn recorded_relay_is_hosted(config: &DaemonConfig, slice: &SliceRecord) -> bool {
+    config.cloud_relay.as_ref().is_some_and(|profile| {
+        slice
+            .relay_endpoint
+            .as_ref()
+            .is_some_and(|endpoint| !endpoint.private && endpoint.url == profile.relay_url)
+    })
+}
+
+fn recorded_slice_worker<'a>(
+    config: &DaemonConfig,
+    slices: &'a [SliceRecord],
+    worker_kernel_id: &str,
+    worker_machine_id: &str,
+) -> RecordedSliceWorker<'a> {
     let mut matches = slices.iter().filter(|slice| {
         let qualified =
             super::worker_identity::qualified_worker_ref_parts(&slice.worker_kernel_ref).is_some();
@@ -67,12 +119,7 @@ pub(crate) fn recorded_slice_for_worker<'a>(
             // Private explicit refs may resemble this namespace while resolving
             // to another recorded SSH worker. Cloud login alone does not make
             // that private or self-hosted relay a hosted placement.
-            let hosted = config.cloud_relay.as_ref().is_some_and(|profile| {
-                slice
-                    .relay_endpoint
-                    .as_ref()
-                    .is_some_and(|endpoint| !endpoint.private && endpoint.url == profile.relay_url)
-            });
+            let hosted = recorded_relay_is_hosted(config, slice);
             if hosted || slice.worker_kernel_id.is_none() || slice.worker_machine_id.is_none() {
                 return false;
             }
@@ -107,8 +154,14 @@ pub(crate) fn recorded_slice_for_worker<'a>(
             || worker_machine_id == slice.owner_machine_id
             || worker_machine_id == private_machine
     });
-    let found = matches.next()?;
-    matches.next().is_none().then_some(found)
+    let Some(found) = matches.next() else {
+        return RecordedSliceWorker::Missing;
+    };
+    if matches.next().is_none() {
+        RecordedSliceWorker::Unique(found)
+    } else {
+        RecordedSliceWorker::Ambiguous
+    }
 }
 
 #[cfg(test)]
