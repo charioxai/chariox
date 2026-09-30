@@ -223,6 +223,22 @@ impl LiveWorker {
                     crate::session::unix_epoch_ms(),
                 )
                 .unwrap();
+            // This worker runs in the fixture process, so its published slice
+            // workspace is the real owned temp worktree rather than /workspace.
+            let workspace = worker_state.worktree.path().display().to_string();
+            assert!(worker_state.worktree.path().is_dir());
+            slices
+                .set_development_publication(
+                    "desktop",
+                    crate::slice::SliceDevelopmentPublication {
+                        publication_id: "canonical-alias-fixture".into(),
+                        destination_root: workspace.clone(),
+                        primary_repository_path: workspace.clone(),
+                        repository_paths: vec![workspace],
+                    },
+                    crate::session::unix_epoch_ms(),
+                )
+                .unwrap();
         }
         if browser_controller {
             worker_state.config.room_environment_worker_binding =
