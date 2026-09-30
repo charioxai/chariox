@@ -11,9 +11,13 @@ use crate::local::*;
 use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
+#[cfg(test)]
+mod fixture_storage;
 mod projection;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use fixture_storage::FixtureAppStorage;
 mod uploads;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod workers;
@@ -67,6 +71,10 @@ pub(crate) struct AppControlService {
     lifecycle: super::app_lifecycle::AppLifecycleService,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     installs: super::app_install_control::AppInstallControl,
+    /// Tests only: the App storage uninstall deletes from, once a test gave
+    /// this kernel one; until then, the platform's.
+    #[cfg(test)]
+    fixture_storage: Arc<std::sync::OnceLock<FixtureAppStorage>>,
 }
 
 impl AppControlService {
@@ -117,7 +125,23 @@ impl AppControlService {
             workers,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             lifecycle,
+            #[cfg(test)]
+            fixture_storage: Default::default(),
         }
+    }
+
+    /// Tests only: from now on this kernel deletes App storage from the
+    /// returned fixture instead of the platform's. Every call returns the same
+    /// fixture.
+    #[cfg(test)]
+    pub(crate) fn fixture_app_storage(&self) -> FixtureAppStorage {
+        self.fixture_storage.get_or_init(Default::default).clone()
+    }
+
+    /// Tests only: the fixture storage, once `fixture_app_storage` gave one.
+    #[cfg(test)]
+    pub(crate) fn fixture_storage(&self) -> Option<&FixtureAppStorage> {
+        self.fixture_storage.get()
     }
 
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

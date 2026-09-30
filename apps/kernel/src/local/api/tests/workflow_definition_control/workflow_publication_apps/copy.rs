@@ -147,6 +147,15 @@ fn installation<'a>(
         .unwrap_or_else(|| panic!("installation `{id}` in {set:?}"))
 }
 
+/// The (owner, installation) App storages the kernel deleted.
+fn deleted_storage(harness: &LocalRouterTestHarness) -> Vec<(String, String)> {
+    harness
+        .runtime_state()
+        .app_control()
+        .fixture_app_storage()
+        .deleted()
+}
+
 fn ensure(
     harness: &LocalRouterTestHarness,
     deployed: &Deployed,
@@ -384,6 +393,11 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
     assert!(set
         .iter()
         .all(|installation| installation.installation_id != "copy"));
+    assert_eq!(
+        deleted_storage(&harness),
+        [(DEFAULT_LOCAL_USER_ID.to_owned(), "copy".to_owned())],
+        "the copy's data is deleted with it"
+    );
     assert!(installation(&set, "installed").inbox_routes[0].active);
     assert!(harness
         .runtime_state()
@@ -492,6 +506,7 @@ fn disabling_the_source_publication_removes_its_copy() {
     harness.pump_transport_runtime();
     assert!(harness.runtime_state().fixture_session(&session_id).is_ok());
     assert!(!installation(&app_set(&harness), "installed").inbox_routes[0].active);
+    assert!(deleted_storage(&harness).is_empty());
 
     harness
         .dispatch(LocalDaemonRequest::DisableWorkflowPublication(
@@ -506,6 +521,10 @@ fn disabling_the_source_publication_removes_its_copy() {
     assert!(set
         .iter()
         .all(|installation| installation.installation_id != "copy"));
+    assert_eq!(
+        deleted_storage(&harness),
+        [(DEFAULT_LOCAL_USER_ID.to_owned(), "copy".to_owned())]
+    );
     assert!(installation(&set, "installed").inbox_routes[0].active);
     assert!(harness
         .runtime_state()
@@ -846,6 +865,8 @@ fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
     // Rolling back applies release 1 again.
     assert_ne!(ensure(&harness, &deployed).unwrap().unwrap(), second);
     assert!(harness.runtime_state().fixture_session(&second).is_err());
+    // The same copy served both releases: its data was never deleted.
+    assert!(deleted_storage(&harness).is_empty());
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
