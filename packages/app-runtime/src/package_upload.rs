@@ -140,9 +140,10 @@ impl PackageUploadStore {
     }
 
     /// The client supplies a stable opaque request ID. Retries with the same
-    /// owner, size and digest return the existing handle and original expiry,
-    /// including an aborted receipt. Reusing the ID with different bytes fails.
-    /// The kernel assigns expiry on the first attempt; retries never extend it.
+    /// owner, size and digest return the existing handle and expiry, including
+    /// an aborted receipt (whose expiry `abort` shortened to at most a minute).
+    /// Reusing the ID with different bytes fails. The kernel assigns expiry on
+    /// the first attempt; retries never extend it.
     pub fn begin(
         &self,
         owner: &str,
