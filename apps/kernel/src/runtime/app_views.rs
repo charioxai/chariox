@@ -35,6 +35,18 @@ struct SessionViews {
     called: std::collections::HashSet<String>,
 }
 
+impl SessionViews {
+    /// A (re)opened or reconnected Tab counts as new, and a failed
+    /// reconnection's cooldown no longer applies to it.
+    fn bind(&mut self, target: &str, binding: AppViewBinding) {
+        self.registrations += 1;
+        self.called.remove(target);
+        self.unreloadable.remove(target);
+        self.tabs
+            .insert(target.to_owned(), (binding, self.registrations));
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct AppViews(
     Arc<Mutex<HashMap<String, SessionViews>>>,
@@ -51,12 +63,32 @@ impl AppViews {
     pub(crate) fn register(&self, session: &str, target: &str, binding: AppViewBinding) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.entry(session.to_owned()).or_default();
-        views.registrations += 1;
-        views.called.remove(target);
-        views
-            .tabs
-            .insert(target.to_owned(), (binding, views.registrations));
+        views.bind(target, binding);
         !std::mem::replace(&mut views.pumping, true)
+    }
+
+    /// Binds a Tab whose call found it built for an older generation, or
+    /// unbound. A view's concurrent calls all get here; only the first binds
+    /// it and reloads the page. False when the Tab is already bound to this
+    /// generation: a second reload would find the slice busy with the first,
+    /// fail, and unbind the Tab the first one reconnected.
+    pub(crate) fn claim_reconnect(
+        &self,
+        session: &str,
+        target: &str,
+        binding: AppViewBinding,
+    ) -> bool {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let views = sessions.entry(session.to_owned()).or_default();
+        if views
+            .tabs
+            .get(target)
+            .is_some_and(|(current, _)| *current == binding)
+        {
+            return false;
+        }
+        views.bind(target, binding);
+        true
     }
 
     /// True for a Tab's first call since it was (re)opened: its document has
@@ -426,5 +458,36 @@ mod reconnect_tests {
         views.unbind("s", "t1");
         assert_eq!(views.binding("s", "t1"), None);
         assert!(!views.reloadable("s", "t1"));
+        // Opening the view again ends the failed reconnection's cooldown.
+        views.register("s", "t1", binding_at(2));
+        assert!(views.reloadable("s", "t1"));
+    }
+
+    fn binding_at(generation: u64) -> AppViewBinding {
+        AppViewBinding {
+            owner: "user".into(),
+            installation: "a".into(),
+            generation,
+        }
+    }
+
+    #[test]
+    fn only_the_first_of_a_views_concurrent_reconnects_reloads_it() {
+        let views = AppViews::default();
+        views.register("s", "t1", binding_at(1));
+        // Three calls from the view built for generation 1 find generation 2.
+        assert!(views.claim_reconnect("s", "t1", binding_at(2)));
+        assert!(!views.claim_reconnect("s", "t1", binding_at(2)));
+        assert!(!views.claim_reconnect("s", "t1", binding_at(2)));
+        assert_eq!(views.binding("s", "t1"), Some(binding_at(2)));
+        // The reload counts as a new document, whose first call re-projects the Room.
+        assert!(views.first_call("s", "t1"));
+        // A later update is claimed again.
+        assert!(views.claim_reconnect("s", "t1", binding_at(3)));
+        // An unbound Tab (after a failed reload, once its cooldown passed) is claimed once.
+        views.unbind("s", "t1");
+        assert!(views.claim_reconnect("s", "t1", binding_at(3)));
+        assert!(!views.claim_reconnect("s", "t1", binding_at(3)));
+        assert!(views.reloadable("s", "t1"));
     }
 }
