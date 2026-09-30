@@ -45,13 +45,14 @@ impl AppEventPump {
             .wake = true;
     }
     /// When the next pass should run: only while a wake or backlog waits, and
-    /// never before the one-second floor.
+    /// never before the one-second floor. A pass runs on its own task, so while
+    /// one is in flight the transport keeps its short tick to see it finish.
     pub(crate) fn next_due(&self) -> Option<Instant> {
         let state = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (!state.in_flight && (state.wake || state.more)).then_some(state.next)
+        (state.in_flight || state.wake || state.more).then_some(state.next)
     }
     pub(crate) fn try_begin(&self) -> Option<AppEventPass> {
         self.try_begin_at(Instant::now())
@@ -166,7 +167,10 @@ mod tests {
         // A new pump starts with a wake: its first pass is due now.
         assert!(pump.next_due().is_some_and(|due| due <= Instant::now()));
         let pass = pump.try_begin().unwrap();
-        assert_eq!(pump.next_due(), None, "no second pass while one runs");
+        // The transport polls soon while a pass runs, to see whether it left
+        // a backlog; the pass itself stays exclusive.
+        assert!(pump.next_due().is_some());
+        assert!(pump.try_begin().is_none());
         pass.finish(None, None, None, true);
         let due = pump.next_due().expect("a backlog keeps the pump due");
         assert!(due > Instant::now() + Duration::from_millis(900));
