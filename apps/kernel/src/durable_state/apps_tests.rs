@@ -66,6 +66,128 @@ fn staged_token(outcome: AppRegistryOutcome) -> StageToken {
 }
 
 #[test]
+fn uninstall_then_reinstall_without_expiry_cannot_restore_file_grants() {
+    use super::app_file_grants::{FileGrantCommand, FilePick, GrantedFile, PickState};
+
+    let database = Database::new();
+    let store = database.open();
+    let activate = |token: StageToken, now_ms| {
+        for mutation in [
+            AppRegistryMutation::Decide {
+                token: token.clone(),
+                decision: approval(),
+                now_ms,
+            },
+            AppRegistryMutation::Quiesce {
+                token: token.clone(),
+                now_ms,
+            },
+            AppRegistryMutation::MarkPrepared {
+                token: token.clone(),
+                now_ms,
+            },
+            AppRegistryMutation::Commit { token, now_ms },
+        ] {
+            store.mutate_app_installation("owner", mutation).unwrap();
+        }
+    };
+    let token = staged_token(
+        store
+            .mutate_app_installation("owner", create("todo"))
+            .unwrap(),
+    );
+    let generation = token.generation;
+    activate(token, 5);
+    for id in ["granted", "pending"] {
+        store
+            .app_file_grant(FileGrantCommand::Create(FilePick {
+                operation_id: id.into(),
+                owner: "owner".into(),
+                installation: "todo".into(),
+                generation,
+                accept: vec![],
+                multiple: false,
+                state: PickState::Pending,
+                expires_ms: 1_000,
+                grants: vec![],
+            }))
+            .unwrap();
+    }
+    let grant = store
+        .app_file_grant(FileGrantCommand::Grant {
+            owner: "owner".into(),
+            operation_id: "granted".into(),
+            files: vec![GrantedFile {
+                name: "notes.md".into(),
+                contents: b"private notes".to_vec(),
+            }],
+            now_ms: 10,
+        })
+        .unwrap()
+        .unwrap()
+        .grants[0]
+        .clone();
+    store
+        .mutate_app_installation(
+            "owner",
+            AppRegistryMutation::Uninstall {
+                installation_id: "todo".into(),
+                expected_generation: generation,
+                now_ms: 20,
+            },
+        )
+        .unwrap();
+    let uninstalled = store.get_app_installation("owner", "todo").unwrap();
+    assert!(uninstalled.retained.is_some());
+    // Reinstall the same installation without an Expire pass in between.
+    let token = staged_token(
+        store
+            .mutate_app_installation(
+                "owner",
+                AppRegistryMutation::Stage {
+                    installation_id: "todo".into(),
+                    expected_generation: uninstalled.generation,
+                    release: release(),
+                    now_ms: 25,
+                },
+            )
+            .unwrap(),
+    );
+    activate(token, 30);
+    store
+        .app_file_grant(FileGrantCommand::Expire { now_ms: 40 })
+        .unwrap();
+    assert_eq!(
+        store.claim_app_file_grant(FileGrantCommand::Claim {
+            owner: "owner".into(),
+            installation: "todo".into(),
+            grant_id: grant,
+            now_ms: 41,
+        }),
+        Err("NOT_FOUND")
+    );
+    for id in ["granted", "pending"] {
+        assert_eq!(
+            store
+                .app_file_pick("owner", "todo", id)
+                .unwrap()
+                .unwrap()
+                .state,
+            PickState::Expired
+        );
+    }
+    let contents: Option<Vec<u8>> = rusqlite::Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT contents FROM app_file_grants WHERE operation_id='granted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(contents.is_none());
+}
+
+#[test]
 fn app_writer_uses_existing_authority_and_recovers_staged_and_active_state() {
     let database = Database::new();
     let store = database.open();

@@ -543,6 +543,91 @@ fn a_reinstall_needs_kept_data() {
     );
 }
 
+#[test]
+fn a_prepared_reinstall_ends_file_grants_without_nested_transactions() {
+    use crate::durable_state::app_file_grants::{
+        FileGrantCommand, FilePick, GrantedFile, PickState,
+    };
+
+    let f = Fixture::new();
+    f.store
+        .app_file_grant(FileGrantCommand::Create(FilePick {
+            operation_id: "old-pick".into(),
+            owner: "alice".into(),
+            installation: "installed".into(),
+            generation: 1,
+            accept: vec![],
+            multiple: false,
+            state: PickState::Pending,
+            expires_ms: 1_000,
+            grants: vec![],
+        }))
+        .unwrap();
+    let grant = f
+        .store
+        .app_file_grant(FileGrantCommand::Grant {
+            owner: "alice".into(),
+            operation_id: "old-pick".into(),
+            files: vec![GrantedFile {
+                name: "notes.md".into(),
+                contents: b"private notes".to_vec(),
+            }],
+            now_ms: 2,
+        })
+        .unwrap()
+        .unwrap()
+        .grants[0]
+        .clone();
+    f.store
+        .mutate_app_installation(
+            "alice",
+            crate::durable_state::apps::AppRegistryMutation::Uninstall {
+                installation_id: "installed".into(),
+                expected_generation: 1,
+                now_ms: 5,
+            },
+        )
+        .unwrap();
+    let next = release("1.1.0", 0, false, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    f.store
+        .reserve_app_install("alice", "reinstall", update_input(2), &digest, budget())
+        .unwrap();
+    let prepared = f
+        .store
+        .complete_app_install_preparation("alice", "reinstall", next, budget())
+        .unwrap();
+    assert_eq!(prepared.token.installation_id, "installed");
+    assert_eq!(prepared.phase, InstallPhase::AwaitingApproval);
+    // Preparation's existing transaction must commit, without reviving a grant.
+    assert_eq!(
+        f.store.claim_app_file_grant(FileGrantCommand::Claim {
+            owner: "alice".into(),
+            installation: "installed".into(),
+            grant_id: grant,
+            now_ms: 6,
+        }),
+        Err("NOT_FOUND")
+    );
+    assert_eq!(
+        f.store
+            .app_file_pick("alice", "installed", "old-pick")
+            .unwrap()
+            .unwrap()
+            .state,
+        PickState::Expired
+    );
+    let contents: Option<Vec<u8>> = Connection::open(f.store.path())
+        .unwrap()
+        .query_row(
+            "SELECT contents FROM app_file_grants WHERE operation_id='old-pick'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(contents.is_none());
+}
+
 /// Protocol 367: a deployment consent approves a copy's install only for an
 /// exactly consented release whose capabilities the owner approved before.
 mod deployment_consent {

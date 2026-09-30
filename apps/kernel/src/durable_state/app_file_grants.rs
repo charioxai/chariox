@@ -124,6 +124,36 @@ pub(super) struct FileGrantRequest {
     command: FileGrantCommand,
     response: mpsc::Sender<Result<FileGrantReply, &'static str>>,
 }
+
+/// An uninstall ends file access even if no expiry pass runs before reinstall.
+/// Called again while staging a reinstall, so failed cleanup cannot restore it.
+pub(super) fn forget_inactive(
+    connection: &Connection,
+    owner: &str,
+    installation: &str,
+) -> rusqlite::Result<()> {
+    // Prepared reinstalls already own an Immediate transaction. Join it;
+    // only standalone uninstall cleanup needs a transaction of its own.
+    let transaction = if connection.is_autocommit() {
+        Some(connection.unchecked_transaction()?)
+    } else {
+        None
+    };
+    connection.execute(
+        "UPDATE app_file_picks SET state='expired'
+         WHERE owner_id=?1 AND installation_id=?2 AND state IN ('pending','granted')",
+        params![owner, installation],
+    )?;
+    connection.execute(
+        "UPDATE app_file_grants SET contents=NULL
+         WHERE owner_id=?1 AND installation_id=?2 AND contents IS NOT NULL",
+        params![owner, installation],
+    )?;
+    if let Some(transaction) = transaction {
+        transaction.commit()?;
+    }
+    Ok(())
+}
 impl std::fmt::Debug for FileGrantRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("FileGrantRequest(..)")
