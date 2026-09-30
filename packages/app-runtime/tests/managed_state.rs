@@ -446,7 +446,10 @@ fn a_wake_keeps_its_arming_context_until_it_is_set_again() {
     );
     // Waiting for an on-demand start or a retry keeps the origin.
     let due = due_wakes(&db, 100, 8).unwrap();
-    assert!(defer_wake(&db, &due[0], 100).unwrap());
+    assert_eq!(
+        defer_wake(&db, &due[0], 100).unwrap(),
+        WakeFailureOutcome::Retried
+    );
     postpone_wake(&db, &due[1], 200).unwrap();
     assert_eq!(origins(&db, 200), [("tool".into(), true)]);
     // Re-armed from the App's own wake handler, it is the App's own wake.
