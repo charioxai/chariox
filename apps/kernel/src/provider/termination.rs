@@ -100,6 +100,9 @@ impl ProviderRunTermination {
 }
 
 pub(crate) fn sanitize_provider_diagnostic(reason: &str) -> String {
+    // The shared secret shapes first, over the whole text: a PEM block spans
+    // lines, so no single token below shows it.
+    let reason = crate::secret_redaction::redact_secrets_as(reason, REDACTED_DIAGNOSTIC_VALUE);
     let normalized = reason
         .chars()
         .map(|character| {
@@ -319,6 +322,8 @@ fn contains_json_sensitive_field(token: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
+/// Short vendor-prefixed and bare base64-JSON tokens, which App-authored
+/// text keeps: a diagnostic drops more than `secret_redaction` does.
 fn looks_like_secret_token(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
     (lower.starts_with("sk-")
@@ -400,6 +405,31 @@ mod tests {
         assert!(!explicit.reason.contains("sk-live-secret"));
         assert!(!explicit.reason.contains("private prompt"));
         assert!(!explicit.reason.contains("rm -rf"));
+    }
+
+    #[test]
+    fn shared_secret_shapes_are_dropped_from_diagnostics() {
+        let aws = format!("AKIA{}", "IOSFODNN7EXAMPLE");
+        let pem = format!(
+            "-----BEGIN {} KEY-----\n{}\n{}\n-----END {} KEY-----",
+            "PRIVATE",
+            "MIIEv".repeat(12),
+            "QwIBADANBg".repeat(4),
+            "PRIVATE",
+        );
+        let diagnostic = provider_launch_failure_diagnostic(
+            "provider-run-2",
+            &"launch failed",
+            Some(&format!(
+                "upload for {aws} via postgres://app:pa55word@db/app\nloaded {pem}\ndone"
+            )),
+        );
+        assert!(
+            diagnostic.ends_with(
+                "upload for [redacted] via postgres://app:[redacted]db/app loaded [redacted] done"
+            ),
+            "{diagnostic}"
+        );
     }
 
     #[test]

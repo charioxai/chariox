@@ -1,9 +1,11 @@
 //! Bounded per-installation App log (SDK `log.write`), read by `app logs`.
 //! Entries are App-authored text: stored and returned as data, never
-//! interpreted, and never written to the kernel's own log. The kernel adds
-//! its own notices about the App here too, marked by the `kernel` field an
-//! App cannot write.
+//! interpreted, and never written to the kernel's own log. Secret-shaped
+//! substrings are redacted before storage (`secret_redaction`), so every
+//! client shows the same redacted entry. The kernel adds its own notices
+//! about the App here too, marked by the `kernel` field an App cannot write.
 use super::{DurableKernelStateStore, DurableWriterRequest};
+use crate::secret_redaction::{redact_json_secrets, redact_secrets};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::mpsc;
 
@@ -53,12 +55,16 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// Validates an App's `log.write` request; the error is a stable code.
-pub(crate) fn validate(
+/// Validates an App's `log.write` request and returns the message and
+/// fields JSON to store, redacted; the error is a stable code. Limits apply
+/// to what the App wrote. A marker can be longer than the short secret it
+/// replaces, so the redacted message is cut back to the limit, and fields
+/// that outgrow it are replaced by a note.
+fn prepare(
     level: &str,
     message: &str,
     fields: &serde_json::Value,
-) -> Result<String, &'static str> {
+) -> Result<(String, String), &'static str> {
     if !matches!(level, "debug" | "info" | "warn" | "error") {
         return Err("INVALID_ARGUMENT");
     }
@@ -68,11 +74,25 @@ pub(crate) fn validate(
     if message.len() > MAX_MESSAGE_BYTES {
         return Err("LIMIT_EXCEEDED");
     }
-    let fields = serde_json::to_string(fields).map_err(|_| "INVALID_ARGUMENT")?;
-    if fields.len() > MAX_FIELDS_BYTES {
+    let written = serde_json::to_string(fields).map_err(|_| "INVALID_ARGUMENT")?;
+    if written.len() > MAX_FIELDS_BYTES {
         return Err("LIMIT_EXCEEDED");
     }
-    Ok(fields)
+    let mut message = redact_secrets(message).into_owned();
+    if message.len() > MAX_MESSAGE_BYTES {
+        let mut end = MAX_MESSAGE_BYTES;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+    }
+    let mut fields = fields.clone();
+    redact_json_secrets(&mut fields);
+    let mut fields = fields.to_string();
+    if fields.len() > MAX_FIELDS_BYTES {
+        fields = serde_json::json!({"redacted": "fields too large after redaction"}).to_string();
+    }
+    Ok((message, fields))
 }
 
 impl DurableKernelStateStore {
@@ -98,14 +118,14 @@ impl DurableKernelStateStore {
         fields: &serde_json::Value,
         dropped: u32,
     ) -> Result<(), &'static str> {
-        let fields = validate(level, message, fields)?;
+        let (message, fields) = prepare(level, message, fields)?;
         let (response, receiver) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AppLog(Box::new(AppLogRequest {
                 owner: owner.into(),
                 installation: installation.into(),
                 level: level.into(),
-                message: message.into(),
+                message,
                 fields,
                 dropped,
                 response,
@@ -192,24 +212,28 @@ pub(super) fn execute(connection: &mut Connection, request: AppLogRequest) {
 }
 
 /// A kernel notice about the installation, in the caller's transaction.
+/// Redacted too: a notice can quote an App's error text.
 pub(super) fn append_kernel_notice_in(
     transaction: &Connection,
     owner: &str,
     installation: &str,
     at_ms: u64,
     message: &str,
-    mut fields: serde_json::Map<String, serde_json::Value>,
+    fields: serde_json::Map<String, serde_json::Value>,
 ) -> rusqlite::Result<()> {
-    fields.insert(KERNEL_FIELD.into(), true.into());
-    let fields = serde_json::Value::Object(fields).to_string();
+    let mut fields = serde_json::Value::Object(fields);
+    redact_json_secrets(&mut fields);
+    if let Some(fields) = fields.as_object_mut() {
+        fields.insert(KERNEL_FIELD.into(), true.into());
+    }
     insert(
         transaction,
         owner,
         installation,
         at_ms,
         "warn",
-        message,
-        &fields,
+        &redact_secrets(message),
+        &fields.to_string(),
     )
 }
 
@@ -322,6 +346,91 @@ mod tests {
             .unwrap();
         assert_eq!(rest.len(), MAX_READ);
         assert_eq!(store.app_logs("bob", "todo", 0, 10).unwrap().len(), 1);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn secrets_are_redacted_before_storage_within_the_limits() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-app-logs-redaction-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let store = DurableKernelStateStore::open_owned(root.join("kernel.sqlite")).unwrap();
+        let github = format!("ghp_{}", "a1B2c3".repeat(6));
+        store
+            .append_app_log(
+                "alice",
+                "todo",
+                "error",
+                &format!("sync failed: Authorization: Bearer abc123def456 ({github})"),
+                &serde_json::json!({"password": "hunter2", "url": "https://u:pa55@h/x", "n": 1}),
+            )
+            .unwrap();
+        // A PEM under a key, and JSON with line breaks around the separator.
+        let pem = format!(
+            "-----BEGIN {} KEY-----\n{}\n-----END {} KEY-----",
+            "PRIVATE",
+            "MIIEv".repeat(12),
+            "PRIVATE"
+        );
+        store
+            .append_app_log(
+                "alice",
+                "todo",
+                "warn",
+                &format!(
+                    "private_key={pem} and {{\"password\":\n\"hunter2\"}} and \
+                     Authorization: Digest username*=UTF-8''a%C3%A4, response\t= \"0123abcd\""
+                ),
+                &serde_json::json!({
+                    "note": format!("{{\"private_key\": \"{pem}\"}}"),
+                    "escaped": r#"{\"password\":\"prefix\\\"hunter2\"}"#,
+                    "header": "Authorization: Custom+v1 abc123def456",
+                }),
+            )
+            .unwrap();
+        // A message of short secrets grows under redaction; fields too.
+        let short = "token=x ".repeat(MAX_MESSAGE_BYTES / 8);
+        let many = (0..400)
+            .map(|index| (format!("t{index}_token"), serde_json::Value::from("x")))
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+        store
+            .append_app_log("alice", "todo", "info", &short, &many.into())
+            .unwrap();
+        let entries = store.app_logs("alice", "todo", 0, 10).unwrap();
+        assert_eq!(
+            entries[0].message,
+            "sync failed: Authorization: Bearer [redacted:bearer-token] ([redacted:github-token])"
+        );
+        assert_eq!(
+            entries[0].fields,
+            serde_json::json!({
+                "password": "[redacted:password]",
+                "url": "https://u:[redacted:url-password]@h/x",
+                "n": 1,
+            })
+        );
+        assert_eq!(
+            entries[1].message,
+            "private_key=[redacted:private-key] and {\"password\":\n\"[redacted:password]\"} and \
+             Authorization: Digest [redacted:authorization]"
+        );
+        assert_eq!(
+            entries[1].fields,
+            serde_json::json!({
+                "note": "{\"private_key\": \"[redacted:private-key]\"}",
+                "escaped": r#"{\"password\":\"[redacted:password]\"}"#,
+                "header": "Authorization: [redacted:authorization]",
+            })
+        );
+        assert!(entries[2].message.starts_with("token=[redacted:token] "));
+        assert!(entries[2].message.len() <= MAX_MESSAGE_BYTES);
+        assert_eq!(
+            entries[2].fields,
+            serde_json::json!({"redacted": "fields too large after redaction"})
+        );
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
