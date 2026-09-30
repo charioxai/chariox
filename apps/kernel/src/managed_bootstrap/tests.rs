@@ -1457,26 +1457,34 @@ fn path1_grant_binding_survives_an_in_place_release_update() {
         BootstrapReceiptStatus::Confirmed,
         None,
     );
-    // A machine bound before in-place updates carries a schema 1 binding.
+    // A machine bound before in-place updates carries a schema 1 binding of its
+    // provisioned release; the upgrader installs the target receipt before the
+    // new supervisor first reads that binding.
     ManagedBootstrapGrantBinding::legacy_for_receipt(&envelope, &receipt)
         .persist_for_receipt(&config.receipt_path)
         .expect("persist legacy binding");
-    super::validate_receipt_envelope_grant_binding(&config, &envelope, &receipt)
-        .expect("a legacy binding of the same receipt is accepted");
+    let mut updated = receipt.clone();
+    updated.runtime_release_digest = format!("sha256:{}", "e".repeat(64));
+    let mut other_generation = updated.clone();
+    other_generation.generation = 3;
+    assert!(
+        super::validate_receipt_envelope_grant_binding(&config, &envelope, &other_generation)
+            .is_err(),
+        "a legacy binding still binds the receipt's identity"
+    );
+    super::validate_envelope_receipt_compatibility(&envelope, &updated)
+        .expect("a confirmed machine may run a release other than the provisioned one");
+    super::validate_receipt_envelope_grant_binding(&config, &envelope, &updated)
+        .expect("the legacy binding is accepted under the updated receipt");
     assert_eq!(
         ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)
             .expect("read binding")
             .expect("binding exists"),
-        ManagedBootstrapGrantBinding::for_receipt(&envelope, &receipt),
+        ManagedBootstrapGrantBinding::for_receipt(&envelope, &updated),
         "the legacy binding is rebound by identity"
     );
-
-    let mut updated = receipt.clone();
-    updated.runtime_release_digest = format!("sha256:{}", "e".repeat(64));
-    super::validate_envelope_receipt_compatibility(&envelope, &updated)
-        .expect("a confirmed machine may run a release other than the provisioned one");
-    super::validate_receipt_envelope_grant_binding(&config, &envelope, &updated)
-        .expect("an in-place release update keeps the grant binding");
+    super::validate_receipt_envelope_grant_binding(&config, &envelope, &receipt)
+        .expect("a later release change keeps the grant binding");
 
     let mut exchanged = updated.clone();
     exchanged.status = BootstrapReceiptStatus::Exchanged;

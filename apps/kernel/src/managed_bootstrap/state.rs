@@ -490,7 +490,8 @@ impl ManagedBootstrapGrantBinding {
     }
 
     /// A schema 1 binding, as written before in-place updates: it hashed the
-    /// receipt's installed release into both digests.
+    /// installed release into both digests. That release was the envelope's
+    /// provisioned one, which the upgrader's staged receipt no longer carries.
     pub(super) fn legacy_for_receipt(
         envelope: &ManagedBootstrapEnvelope,
         receipt: &BootstrapReceipt,
@@ -504,10 +505,13 @@ impl ManagedBootstrapGrantBinding {
                 &receipt.machine_id,
                 &receipt.kernel_id,
                 &receipt.relay_public_key,
-                &receipt.runtime_release_digest,
+                &envelope.runtime_release_digest,
             ),
             generation: Some(receipt.generation),
-            receipt_binding_digest: Some(legacy_receipt_binding_digest(receipt)),
+            receipt_binding_digest: Some(legacy_receipt_binding_digest(
+                receipt,
+                &envelope.runtime_release_digest,
+            )),
         }
     }
 
@@ -598,7 +602,10 @@ fn receipt_binding_digest(receipt: &BootstrapReceipt) -> String {
     format!("sha256:{:x}", digest.finalize())
 }
 
-fn legacy_receipt_binding_digest(receipt: &BootstrapReceipt) -> String {
+fn legacy_receipt_binding_digest(
+    receipt: &BootstrapReceipt,
+    runtime_release_digest: &str,
+) -> String {
     let mut digest = Sha256::new();
     digest.update(b"chariox/managed-bootstrap-receipt-binding/v1\0");
     update_binding_component(&mut digest, &receipt.schema_version.to_be_bytes());
@@ -607,7 +614,7 @@ fn legacy_receipt_binding_digest(receipt: &BootstrapReceipt) -> String {
     update_binding_component(&mut digest, receipt.kernel_id.as_bytes());
     update_binding_component(&mut digest, &receipt.generation.to_be_bytes());
     update_binding_component(&mut digest, receipt.relay_public_key.as_bytes());
-    update_binding_component(&mut digest, receipt.runtime_release_digest.as_bytes());
+    update_binding_component(&mut digest, runtime_release_digest.as_bytes());
     update_optional_binding_component(&mut digest, receipt.managed_repository_root.as_deref());
     format!("sha256:{:x}", digest.finalize())
 }

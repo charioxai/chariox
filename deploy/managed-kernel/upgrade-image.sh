@@ -109,6 +109,7 @@ select_receipt_path() {
     receipt_path=${selected_receipt:-$default_managed_receipt}
   fi
   release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
+  grant_binding_path=${receipt_path%/*}/bootstrap-grant-binding.json
 }
 
 select_supervisor_service() {
@@ -557,6 +558,11 @@ rollback_transaction() {
   activate_builder_pin "$transaction_root" previous || return 1
   resume_home_migration || return 1
   atomic_receipt "$transaction_root/previous-receipt.json" || return 1
+  # The new supervisor may have rebound the grant to a schema the previous one rejects.
+  if [ -f "$transaction_root/previous-grant-binding.json" ]; then
+    node "$script_root/managed-kernel-upgrade-state.mjs" atomic-sidecar \
+      "$transaction_root/previous-grant-binding.json" "$grant_binding_path" "$receipt_path" || return 1
+  fi
   previous_override_present=$(read_single_line "$transaction_root/previous-release-override-present") || return 1
   case "$previous_override_present" in
     yes) atomic_release_override "$transaction_root/previous-release-override.json" || return 1 ;;
@@ -874,6 +880,10 @@ if [ -e "$release_override_path" ] || [ -L "$release_override_path" ]; then
   printf '%s\n' yes > "$pending_transaction/previous-release-override-present"
 else
   printf '%s\n' no > "$pending_transaction/previous-release-override-present"
+fi
+if [ -e "$grant_binding_path" ] || [ -L "$grant_binding_path" ]; then
+  require_private_regular_file "$grant_binding_path" "managed bootstrap grant binding"
+  cp -P "$grant_binding_path" "$pending_transaction/previous-grant-binding.json"
 fi
 node "$script_root/managed-kernel-upgrade-state.mjs" prepare-receipt \
   "$receipt_path" "$expected_current_digest" "$expected_new_digest" \

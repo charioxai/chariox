@@ -4,8 +4,10 @@
 //! The kernel polls Cloud with its running release. For an authorized update it
 //! downloads the signed release archive and starts a detached root unit that runs
 //! the signed upgrade transaction from the currently installed release. The
-//! upgraded kernel completes the update by polling with the target as its running
-//! release; a rolled-back attempt is reported as failed.
+//! kernel stays silent while that unit runs: the upgraded kernel starts before
+//! the transaction commits. Once the unit settles, a kernel running the target
+//! completes the update and one still running the previous release reports it
+//! failed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,7 +29,9 @@ const ARTIFACT_ENDPOINT: &str = "/v1/managed-kernels/release-update/artifact";
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const UPDATE_UNIT: &str = "chariox-release-update";
 const DOWNLOAD_ROOT: &str = "/var/tmp/chariox-release-update";
+const STAGING_ROOT: &str = "/var/lib/chariox-release-update";
 const MAX_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_EXTRACTED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const CURRENT_RELEASE: &str = "/usr/lib/chariox/current";
 const TRUSTED_BUILDER_PUBLIC_KEY: &str = "/etc/chariox/trusted-builder-public-key";
 
@@ -109,9 +113,14 @@ impl ManagedReleaseUpdateClient {
     }
 
     async fn poll_once(&self) -> Result<(), DaemonError> {
+        // The upgraded kernel runs before health admission and the commit; its
+        // release is not the machine's until the unit settles.
+        if unit_is_active() {
+            return Ok(());
+        }
         let running = running_release_digest(&self.receipt_path)?;
         let attempt = read_attempt(&self.attempt_path);
-        let failed = failed_attempt(attempt.as_ref(), &running, unit_is_active());
+        let failed = failed_attempt(attempt.as_ref(), &running);
         let mut values = identity_values(&self.binding);
         values.insert("protocolVersion", json!(1));
         values.insert("action", json!("release_update_poll"));
@@ -144,7 +153,6 @@ impl ManagedReleaseUpdateClient {
         if !valid_update_id(&update.update_id)
             || update.from_runtime_release_digest != running
             || !valid_digest(&update.target_runtime_release_digest)
-            || unit_is_active()
             || attempt
                 .as_ref()
                 .is_some_and(|attempt| attempt.update_id == update.update_id && failed.is_none())
@@ -190,7 +198,12 @@ impl ManagedReleaseUpdateClient {
                 "--quiet",
             ])
             .args(["/bin/sh", "-c"])
-            .arg(update_script(&tooling, &archive, &update))
+            .arg(update_script(
+                &tooling,
+                &archive,
+                Path::new(STAGING_ROOT),
+                &update,
+            ))
             .status()
             .map_err(|error| update_error(format!("start release update unit: {error}")))?;
         if !status.success() {
@@ -225,33 +238,34 @@ impl ManagedReleaseUpdateClient {
     }
 }
 
-/// A started update that neither reached its target nor is still running was
-/// rolled back or failed.
-fn failed_attempt(
-    attempt: Option<&UpdateAttempt>,
-    running: &str,
-    unit_active: bool,
-) -> Option<String> {
+/// A settled update that did not reach its target was rolled back or failed.
+fn failed_attempt(attempt: Option<&UpdateAttempt>, running: &str) -> Option<String> {
     attempt
-        .filter(|attempt| !unit_active && attempt.target_runtime_release_digest != running)
+        .filter(|attempt| attempt.target_runtime_release_digest != running)
         .map(|attempt| attempt.update_id.clone())
 }
 
 /// The root unit extracts the archive and runs the signed upgrade transaction with
 /// the installed release's tooling, resolved to its physical directory so the
-/// activation of `current` cannot swap scripts mid-transaction.
-fn update_script(tooling_release: &Path, archive: &Path, update: &UpdateCommand) -> String {
-    let staging = format!("/var/lib/chariox-release-update/{}", update.update_id);
+/// activation of `current` cannot swap scripts mid-transaction. The archive and
+/// its bounded extraction are removed however the unit ends.
+fn update_script(
+    tooling_release: &Path,
+    archive: &Path,
+    staging_root: &Path,
+    update: &UpdateCommand,
+) -> String {
+    let staging = staging_root.join(&update.update_id);
     let tooling = tooling_release.join("usr/lib/chariox/slice-build-context/deploy/managed-kernel");
     let release_key = tooling_release.join("usr/lib/chariox/release-public-key");
     format!(
-        "set -eu; rm -rf '{staging}'; mkdir -p '{staging}'; \
-         tar -xzf '{archive}' -C '{staging}' --no-same-owner; rm -f '{archive}'; \
-         rc=0; CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
-         sh '{tooling}/upgrade-image.sh' '{staging}/rootfs' '{from}' '{target}' '{release_key}' || rc=$?; \
-         rm -rf '{staging}'; exit $rc",
-        staging = staging,
+        "set -eu; trap \"rm -rf '{staging}' '{archive}'\" EXIT; rm -rf '{staging}'; mkdir -p '{staging}'; \
+         gzip -dc '{archive}' | head -c {max_extracted} | tar -xf - -C '{staging}' --no-same-owner; \
+         rm -f '{archive}'; CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
+         sh '{tooling}/upgrade-image.sh' '{staging}/rootfs' '{from}' '{target}' '{release_key}'",
+        staging = staging.display(),
         archive = archive.display(),
+        max_extracted = MAX_EXTRACTED_BYTES,
         builder_key = TRUSTED_BUILDER_PUBLIC_KEY,
         tooling = tooling.display(),
         from = update.from_runtime_release_digest,
@@ -325,51 +339,96 @@ mod tests {
             target_runtime_release_digest: digest('b'),
         };
         assert_eq!(
-            failed_attempt(Some(&attempt), &digest('a'), false).as_deref(),
+            failed_attempt(Some(&attempt), &digest('a')).as_deref(),
             Some("managed_release_update_1"),
             "rolled back"
         );
         assert_eq!(
-            failed_attempt(Some(&attempt), &digest('a'), true),
-            None,
-            "still running"
-        );
-        assert_eq!(
-            failed_attempt(Some(&attempt), &digest('b'), false),
+            failed_attempt(Some(&attempt), &digest('b')),
             None,
             "reached its target"
         );
-        assert_eq!(failed_attempt(None, &digest('a'), false), None);
+        assert_eq!(failed_attempt(None, &digest('a')), None);
     }
 
     #[test]
-    fn the_update_runs_the_installed_release_tooling_on_the_downloaded_rootfs() {
+    fn the_update_runs_the_installed_tooling_and_removes_its_files_however_it_ends() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-release-update-script-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let tooling =
+            root.join("release/usr/lib/chariox/slice-build-context/deploy/managed-kernel");
+        std::fs::create_dir_all(&tooling).expect("tooling");
+        std::fs::create_dir_all(root.join("source/rootfs")).expect("rootfs");
+        std::fs::write(root.join("source/rootfs/marker"), "release").expect("marker");
+        // Incompressible, so a truncated archive fails after extracting the marker.
+        let noise: Vec<u8> = (0..1_000_000u32)
+            .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        std::fs::write(root.join("source/rootfs/noise"), noise).expect("noise");
+        std::fs::write(
+            tooling.join("upgrade-image.sh"),
+            format!(
+                "test -f \"$1/marker\"; echo \"$*\" > '{}'\n",
+                root.join("invoked").display()
+            ),
+        )
+        .expect("upgrade script");
         let update = UpdateCommand {
             update_id: "managed_release_update_1".into(),
             from_runtime_release_digest: digest('a'),
             target_runtime_release_digest: digest('b'),
         };
-        let script = update_script(
-            Path::new("/usr/lib/chariox/releases/aaa"),
-            Path::new("/var/tmp/chariox-release-update/managed_release_update_1.tar.gz"),
-            &update,
-        );
-        assert!(script.contains(
-            "sh '/usr/lib/chariox/releases/aaa/usr/lib/chariox/slice-build-context/deploy/managed-kernel/upgrade-image.sh' \
-             '/var/lib/chariox-release-update/managed_release_update_1/rootfs'"
-        ));
-        assert!(script.contains(&format!("'{}' '{}'", digest('a'), digest('b'))));
+        let staging = root.join("staging");
+        let archive = root.join("download.tar.gz");
+        let run = |archive_bytes: &[u8]| {
+            std::fs::write(&archive, archive_bytes).expect("archive");
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(update_script(
+                    &root.join("release"),
+                    &archive,
+                    &staging,
+                    &update,
+                ))
+                .status()
+                .expect("run update script");
+            assert!(!archive.exists() && !staging.join(&update.update_id).exists());
+            status.success()
+        };
+        let packed = Command::new("tar")
+            .args(["-czf", "-", "-C"])
+            .arg(root.join("source"))
+            .args(["rootfs/marker", "rootfs/noise"])
+            .output()
+            .expect("pack archive")
+            .stdout;
+
         assert!(
-            script.contains("'/usr/lib/chariox/releases/aaa/usr/lib/chariox/release-public-key'")
+            !run(&packed[..packed.len() / 2]),
+            "a truncated archive fails"
         );
-        assert!(script.contains(
-            "CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key"
-        ));
-        assert!(script.contains("--no-same-owner"));
+        assert!(!root.join("invoked").exists());
+        assert!(run(&packed));
+        let invoked = std::fs::read_to_string(root.join("invoked")).expect("invoked");
+        assert_eq!(
+            invoked.trim(),
+            format!(
+                "{} {} {} {}",
+                staging.join("managed_release_update_1/rootfs").display(),
+                digest('a'),
+                digest('b'),
+                root.join("release/usr/lib/chariox/release-public-key")
+                    .display()
+            )
+        );
         assert!(valid_digest(&digest('b')) && !valid_digest("sha256:../../etc"));
         assert!(valid_update_id(
             "managed_release_update_0123abcd-0000-4000-8000-0123456789ab"
         ));
         assert!(!valid_update_id("managed_release_update_1'; rm -rf / #"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

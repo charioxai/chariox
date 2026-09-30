@@ -602,6 +602,10 @@ fi
 case "\${2:-}" in
   chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
 if [ "$1" = "start" ]; then
+  if [ -f "$HARNESS_STATE/rebind-grant-once" ]; then
+    rm -f -- "$HARNESS_STATE/rebind-grant-once"
+    printf '{"schemaVersion":2}\n' > "$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/managed/bootstrap-grant-binding.json"
+  fi
   if [ -f "$HARNESS_STATE/check-builder-pin-on-start" ]; then
     cmp -s "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/chariox/trusted-builder-public-key" \
       "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/lib/chariox/builder-public-key" || exit 1
@@ -1572,6 +1576,10 @@ test("managed kernel upgrade rejects writable release authority and receipt stat
 test("managed kernel upgrade rolls the binary and receipt back together when health fails", async (context) => {
   const harness = await makeHarness(context)
   await put(join(harness.state, "fail-health-once"), "fail\n")
+  // The target supervisor rebinds the grant before health; the previous one must read its own.
+  const grantBinding = join(dirname(harness.receiptPath), "bootstrap-grant-binding.json")
+  await put(grantBinding, '{"schemaVersion":1}\n', 0o600)
+  await put(join(harness.state, "rebind-grant-once"), "rebind\n")
   const result = harness.run()
   assert.equal(result.status, 1)
   assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
@@ -1580,6 +1588,7 @@ test("managed kernel upgrade rolls the binary and receipt back together when hea
     `releases/${harness.current.digest.slice("sha256:".length)}`,
   )
   assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
+  assert.equal(await readFile(grantBinding, "utf8"), '{"schemaVersion":1}\n')
   const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
   assert.deepEqual(calls.slice(-4), [
     `stop ${serviceName}`,
@@ -1810,11 +1819,11 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
 })
 
 // This signed installer fixture is not proof of real-binary state migration.
-test("managed kernel upgrade accepts a signed protocol 343 to 367 fixture transition and rollback", async (context) => {
+test("managed kernel upgrade accepts a signed protocol 343 to 368 fixture transition and rollback", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const harness = await makeHarness(context, {
     currentProtocol: 343,
-    targetProtocol: 367,
+    targetProtocol: 368,
     targetTransitionPolicy: repositoryPolicy,
   })
   const result = harness.run()
@@ -1840,7 +1849,7 @@ test("managed kernel upgrade rejects signed ambiguous protocol 351 before stoppi
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const harness = await makeHarness(context, {
     currentProtocol: 351,
-    targetProtocol: 367,
+    targetProtocol: 368,
     targetTransitionPolicy: repositoryPolicy,
   })
   const result = harness.run()

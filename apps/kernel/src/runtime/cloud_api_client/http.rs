@@ -145,20 +145,25 @@ pub(crate) async fn post_cloud_to_file(
             .send_string(&body.to_string())
             .map_err(cloud_transport_error)?;
         let partial = destination.with_extension("partial");
-        let mut file =
-            std::fs::File::create(&partial).map_err(|error| io_error(error.to_string()))?;
-        let copied = std::io::copy(
-            &mut std::io::Read::take(response.into_reader(), max_bytes + 1),
-            &mut file,
-        )
-        .map_err(|error| io_error(error.to_string()))?;
-        if copied > max_bytes {
-            let _ = std::fs::remove_file(&partial);
-            return Err(io_error(format!("artifact exceeds {max_bytes} bytes")));
-        }
-        file.sync_all()
+        let written = (|| {
+            let mut file =
+                std::fs::File::create(&partial).map_err(|error| io_error(error.to_string()))?;
+            let copied = std::io::copy(
+                &mut std::io::Read::take(response.into_reader(), max_bytes + 1),
+                &mut file,
+            )
             .map_err(|error| io_error(error.to_string()))?;
-        std::fs::rename(&partial, &destination).map_err(|error| io_error(error.to_string()))
+            if copied > max_bytes {
+                return Err(io_error(format!("artifact exceeds {max_bytes} bytes")));
+            }
+            file.sync_all()
+                .map_err(|error| io_error(error.to_string()))?;
+            std::fs::rename(&partial, &destination).map_err(|error| io_error(error.to_string()))
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        written
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
