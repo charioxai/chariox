@@ -30,6 +30,7 @@ const outcomes = [];
 function start(kind, executable = 'chariox-app-worker', bytes = launchRecord(roots)) {
   const args = [
     '--unshare-user', '--unshare-pid', '--unshare-net', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup',
+    '--hostname', 'chariox-app',
     '--disable-userns', '--cap-drop', 'ALL', '--new-session', '--die-with-parent', '--as-pid-1',
     '--clearenv', '--setenv', 'CX_TEST_SECRET', 'fixture-only-must-be-filtered', '--json-status-fd', '5',
     '--ro-bind', path.join(mounts, 'package'), roots.package,

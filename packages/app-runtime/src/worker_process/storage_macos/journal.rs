@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{ffi::OsStr, io::Read};
 
 pub(super) const NAME: &str = "storage.json";
+pub(super) const DELETING: &str = "deleting.json";
 pub(super) const METADATA_ALLOWANCE: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,6 +35,14 @@ pub(super) struct Journal {
     /// cleared after exact-identity detachment has been observed and synced.
     pub pending_recovery: bool,
     pub images: [Image; 2],
+    /// A data snapshot about to replace the data image: set before the
+    /// rename, so recovery can finish a restore interrupted after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restoring: Option<FileIdentity>,
+    /// The generation whose data that snapshot holds; recovery records it
+    /// with a restore whose rename landed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restoring_generation: Option<u64>,
 }
 impl Journal {
     pub fn validate(&self) -> Result<()> {
@@ -98,9 +107,19 @@ pub(super) fn recover_temporaries(dir: &Dir) -> Result<()> {
 }
 
 pub(super) fn load(dir: &Dir) -> Result<Option<Journal>> {
+    load_named(dir, NAME)
+}
+
+/// The journal of storage being deleted: renamed once its volumes are
+/// detached, so a retried or recovered deletion only removes files.
+pub(super) fn load_deleting(dir: &Dir) -> Result<Option<Journal>> {
+    load_named(dir, DELETING)
+}
+
+fn load_named(dir: &Dir, name: &str) -> Result<Option<Journal>> {
     // Complete any interrupted metadata publication before observing its result.
     dir.sync()?;
-    let file = match dir.open_private_file(OsStr::new(NAME)) {
+    let file = match dir.open_private_file(OsStr::new(name)) {
         Ok(file) => file,
         Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
