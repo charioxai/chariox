@@ -79,7 +79,10 @@ settles it.
 Every image creation, formatting transition, deletion intent and mount lease is
 journaled and fsynced. Loop association is atomic via LOOP_CONFIGURE with fixed
 size/AUTOCLEAR; recovery scans by backing dev/inode rather than trusting a stale
-loop number. Ext4 UUID/block capacity and actual mount ID/flags/device/owner are
+loop number. Scans open loop devices read-only: udev watches loop devices and
+synthesizes a `change` event for every close of a descriptor opened for writing,
+so a writing scan (repeated while a detach waits) floods udevd, whose workers
+then hold the device being detached and defer its autoclear. Ext4 UUID/block capacity and actual mount ID/flags/device/owner are
 checked before use or detach. Unmount is ordinary, never forced/lazy. Failure
 retains the pending journal and reservation; failed preparations also remain in
 the helper's owned recovery queue. cgroup-v2 immutable paths plus inode and boot
