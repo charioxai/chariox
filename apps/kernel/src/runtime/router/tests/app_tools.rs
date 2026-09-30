@@ -26,6 +26,77 @@ impl Drop for Scratch {
     }
 }
 
+#[tokio::test]
+async fn published_script_with_app_shaped_name_reaches_script_dispatch() {
+    let name = "app_record_0123456789abcdef0123456789abcdef";
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("chariox-script-mcp-{:016x}", rand::random::<u64>())),
+    );
+    let script_dir = crate::script::CharioxScriptRegistry::project_root(&scratch.0).join(name);
+    std::fs::create_dir_all(&script_dir).unwrap();
+    std::fs::write(
+        script_dir.join("metadata.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": name,
+            "runtime": "python",
+            "entrypoint": "script.py",
+            "description": "Script with an App-shaped name",
+            "input_schema": {"type": "object", "properties": {}},
+            "definition_hash": "routing-test",
+            "timeout_sec": 10
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        script_dir.join("script.py"),
+        "def run():\n    return {\"executed\": True}\n",
+    )
+    .unwrap();
+    let env_dir = crate::script::CharioxEnvironmentRegistry::project_root(&scratch.0);
+    std::fs::create_dir_all(&env_dir).unwrap();
+    std::fs::write(
+        env_dir.join("routing-env.json"),
+        r#"{"name":"routing-env","runtime":{"type":"python","python":"/usr/bin/python3"}}"#,
+    )
+    .unwrap();
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new(
+            scratch.0.to_string_lossy(),
+            scratch.0.to_string_lossy(),
+        ))
+        .unwrap();
+    let agent = spawn_test_agent(&mut app, session.id(), "script-routing", "dev-stub");
+    app.agents()
+        .grant_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::script(name, "routing-env"),
+        )
+        .unwrap();
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "script-routing",
+    );
+    let token = run.runtime_mcp_auth_token().unwrap().to_owned();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    assert!(router
+        .runtime_tool_specs_for_auth_token(&token)
+        .iter()
+        .any(|tool| tool.name == name));
+    let result = router
+        .dispatch_authenticated_runtime_tool_call(&token, name, serde_json::json!({}))
+        .await
+        .expect("a published script must not be refused as an unbound App tool");
+    assert!(result.ok);
+    assert_eq!(result.payload, serde_json::json!({"executed": true}));
+}
+
 #[test]
 fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
