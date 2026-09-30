@@ -726,8 +726,9 @@ pub(super) fn managed_materialization_root_for_control(
     preflight_managed_repository_path(&canonical)?;
     // Path 1 keeps control state in the protected CHARIOX_HOME below its
     // repository root (/home/chariox/.chariox); repositories never land there.
-    let control_in_protected_home = kernel_chariox_home()
-        .is_some_and(|home| control_destination.starts_with(&home) && !canonical.starts_with(&home));
+    let control_in_protected_home = kernel_chariox_home().is_some_and(|home| {
+        control_destination.starts_with(&home) && !canonical.starts_with(&home)
+    });
     if canonical == control_destination
         || control_destination.starts_with(&canonical) && !control_in_protected_home
         || canonical.starts_with(

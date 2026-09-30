@@ -715,12 +715,13 @@ impl CommandRouter {
                 .collect::<Vec<_>>();
             tokio::task::spawn_blocking(move || {
                 for (provider, profile_id) in accounts {
-                    let _ = crate::local::provider_requests::refresh_provider_account_profile_response(
-                        &registry,
-                        &owner_user_id,
-                        &provider,
-                        &profile_id,
-                    );
+                    let _ =
+                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                            &registry,
+                            &owner_user_id,
+                            &provider,
+                            &profile_id,
+                        );
                 }
             });
         }
