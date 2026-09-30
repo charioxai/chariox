@@ -31,7 +31,6 @@ const UPDATE_UNIT: &str = "chariox-release-update";
 const DOWNLOAD_ROOT: &str = "/var/tmp/chariox-release-update";
 const STAGING_ROOT: &str = "/var/lib/chariox-release-update";
 const MAX_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_EXTRACTED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const CURRENT_RELEASE: &str = "/usr/lib/chariox/current";
 const TRUSTED_BUILDER_PUBLIC_KEY: &str = "/etc/chariox/trusted-builder-public-key";
 
@@ -259,13 +258,13 @@ fn update_script(
     let tooling = tooling_release.join("usr/lib/chariox/slice-build-context/deploy/managed-kernel");
     let release_key = tooling_release.join("usr/lib/chariox/release-public-key");
     format!(
-        "set -eu; trap \"rm -rf '{staging}' '{archive}'\" EXIT; rm -rf '{staging}'; mkdir -p '{staging}'; \
-         gzip -dc '{archive}' | head -c {max_extracted} | tar -xf - -C '{staging}' --no-same-owner; \
+        "set -eu; trap \"rm -rf '{staging}' '{archive}'\" EXIT; rm -rf '{staging}'; mkdir -p '{staging_root}'; \
+         python3 '{tooling}/extract-release.py' '{archive}' '{staging}'; \
          rm -f '{archive}'; CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
          sh '{tooling}/upgrade-image.sh' '{staging}/rootfs' '{from}' '{target}' '{release_key}'",
         staging = staging.display(),
         archive = archive.display(),
-        max_extracted = MAX_EXTRACTED_BYTES,
+        staging_root = staging_root.display(),
         builder_key = TRUSTED_BUILDER_PUBLIC_KEY,
         tooling = tooling.display(),
         from = update.from_runtime_release_digest,
@@ -361,6 +360,11 @@ mod tests {
         let tooling =
             root.join("release/usr/lib/chariox/slice-build-context/deploy/managed-kernel");
         std::fs::create_dir_all(&tooling).expect("tooling");
+        std::fs::write(
+            tooling.join("extract-release.py"),
+            include_bytes!("../../../../deploy/managed-kernel/extract-release.py"),
+        )
+        .expect("extractor");
         std::fs::create_dir_all(root.join("source/rootfs")).expect("rootfs");
         std::fs::write(root.join("source/rootfs/marker"), "release").expect("marker");
         // Incompressible, so a truncated archive fails after extracting the marker.
@@ -401,7 +405,7 @@ mod tests {
         let packed = Command::new("tar")
             .args(["-czf", "-", "-C"])
             .arg(root.join("source"))
-            .args(["rootfs/marker", "rootfs/noise"])
+            .args(["rootfs"])
             .output()
             .expect("pack archive")
             .stdout;
