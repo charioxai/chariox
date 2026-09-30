@@ -96,7 +96,8 @@ function where(path) {
       const shown = [...key].slice(0, 64).join('');
       part = IDENTIFIER.test(shown) ? `.${shown}` : `[${JSON.stringify(shown)}]`;
     }
-    if (text.length + part.length > 256) return `${text.replace(/^\./u, '')}…`;
+    const room = 256 - text.length;
+    if (part.length > room) return `${(text + [...part].slice(0, room).join('')).replace(/^\./u, '')}…`;
     text += part;
   }
   return text.replace(/^\./u, '') || 'the value';

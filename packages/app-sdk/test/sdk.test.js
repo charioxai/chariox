@@ -232,6 +232,8 @@ test('a handler result that is not JSON fails only that call, names the value an
     [{ items: new Map() }, 'result.items is not a plain object or array'],
     [cycle, 'result.list[0] refers back to an object that contains it (a cycle)'],
     [{ 'odd key': '\ud800' }, 'result["odd key"] is a string that is not well-formed Unicode'],
+    [{ ['\u0001'.repeat(64)]: undefined },
+      `result${`[${JSON.stringify('\u0001'.repeat(64))}]`.slice(0, 249)}… is undefined`],
     [nested, `result${'[0]'.repeat(63)} exceeds the nesting limit of 64`],
     ['x'.repeat(1024 * 1024), 'the message exceeds its 1 MiB size limit'],
   ];

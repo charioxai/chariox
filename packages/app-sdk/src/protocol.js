@@ -70,7 +70,11 @@ export function encodeFrame(message, limit = MAX_FRAME_BYTES) {
   let json;
   try { json = JSON.stringify(message); } catch { throw jsonError('the message could not be serialized'); }
   // Undefined fields and toJSON hooks must not silently create an invalid wire envelope.
-  try { validateMessage(parseJson(json)); } catch { throw jsonError('the message changed while it was serialized'); }
+  try { validateMessage(parseJson(json)); } catch (cause) {
+    const error = jsonError('the message changed while it was serialized');
+    error.cause = cause; // an SDK-built message failing here is an SDK bug
+    throw error;
+  }
   const length = Buffer.byteLength(json);
   if (length === 0 || length > limit) throw jsonError('the message exceeds its frame size limit');
   const frame = Buffer.allocUnsafe(length + 4);
