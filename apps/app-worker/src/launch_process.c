@@ -25,7 +25,28 @@ static bool is_prefix(const char* parent, const char* child) {
   return !strncmp(parent, child, length) && (child[length] == '/' || !child[length]);
 }
 
-static int open_root(const char* path, bool writable) {
+#if defined(__linux__)
+// Inside the worker's user namespace only the kernel's own UID is mapped: every
+// other host UID, root included, shows as the overflow UID (65534 by default; a
+// host with another /proc/sys/kernel/overflowuid fails closed). Only the runtime
+// root may be owned that way. On the host the supervisor admits it only as the
+// enrolled runtime, which EnrolledRuntime::open_installed requires to be owned by
+// UID 0 along with every ancestor, and the storage helper binds exactly that
+// verified inode; check_namespace_mounts also requires its mount to be read-only.
+#define CX_OVERFLOW_UID ((uid_t)65534)
+#endif
+
+static bool trusted_owner(uid_t owner, bool runtime) {
+  if (owner == geteuid() || owner == 0) return true;
+#if defined(__linux__)
+  return runtime && owner == CX_OVERFLOW_UID;
+#else
+  (void)runtime;
+  return false;
+#endif
+}
+
+static int open_root(const char* path, bool writable, bool runtime) {
   if (path[0] != '/' || path[1] == '\0') return -1;
   char* canonical = realpath(path, NULL);
   bool exact = canonical && !strcmp(path, canonical);
@@ -45,7 +66,7 @@ static int open_root(const char* path, bool writable) {
     current = next;
     struct stat metadata;
     if (fstat(current, &metadata) ||
-        (metadata.st_uid != geteuid() && metadata.st_uid != 0) ||
+        !trusted_owner(metadata.st_uid, runtime) ||
         (metadata.st_mode & (S_IWGRP | S_IWOTH))) { close(current); return -1; }
   }
   struct stat metadata;
@@ -131,7 +152,7 @@ int cx_prepare_process(const struct cx_launch_record* record) {
   int roots[CX_ROOT_COUNT] = {-1, -1, -1, -1};
   int status = 0;
   for (size_t i = 0; i < CX_ROOT_COUNT; ++i) {
-    roots[i] = open_root(record->roots[i], i == CX_DATA || i == CX_TMP);
+    roots[i] = open_root(record->roots[i], i == CX_DATA || i == CX_TMP, i == CX_RUNTIME);
     if (roots[i] < 0) { status = CX_LAUNCH_PATHS; break; }
     for (size_t j = 0; j < i; ++j) {
       struct stat a, b;

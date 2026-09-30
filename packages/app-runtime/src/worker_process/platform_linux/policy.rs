@@ -105,7 +105,15 @@ pub(super) fn worker_status(text: &str, pid: i32, parent: i32, uid: u32, gid: u3
             return Err(WorkerError::Identity);
         }
     }
-    if !field("Groups")?.is_empty() {
+    // A kernel started by systemd or a login keeps its primary group as a
+    // supplementary group, and an unprivileged supervisor cannot drop it. It is
+    // the worker's own gid (the one gid its user namespace maps); any other
+    // supplementary group is refused.
+    let groups = field("Groups")?
+        .split_whitespace()
+        .map(number)
+        .collect::<Result<Vec<_>>>()?;
+    if !groups.is_empty() && groups != [gid as u64] {
         return Err(WorkerError::Identity);
     }
     let nested = field("NSpid")?

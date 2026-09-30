@@ -30,7 +30,9 @@ into this entry. The supervisor does not migrate an already-forking workload.
 After the native worker returns the exact launch identity on FD4, host observation
 requires its expected executable inode, private PID1, exact parent and cgroup,
 all seven separate namespaces, zero effective/permitted/inheritable/ambient
-capabilities, no supplementary groups, no-new-privileges and seccomp. The four
+capabilities, no supplementary group other than its own gid (a service- or
+login-started kernel always carries its primary group), no-new-privileges and
+seccomp. The four
 App roots are fixed; package and runtime are read-only, package/data/tmp are
 noexec, and all four are nodev/nosuid. Only individual approved runtime system
 libraries and /dev/null enter the namespace. The native launcher independently
