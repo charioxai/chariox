@@ -59,7 +59,10 @@ impl KernelRuntimeState {
             let remaining_sec = operation.expires_ms.saturating_sub(now_ms) / 1000;
             let requested_by = requester(&operation.callers, &operation.owner, |agent_id| {
                 let agent = self.owned.agent_store.get_agent(agent_id).ok()?;
-                Some(agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+                agent
+                    .alias()
+                    .and_then(one_line_label)
+                    .or_else(|| one_line_label(agent.agent_ref()))
             });
             let interaction = validation_interaction(&operation, &requested_by)
                 .with_timeout_sec(remaining_sec.clamp(1, 300));
@@ -125,13 +128,34 @@ impl KernelRuntimeState {
     }
 }
 
-/// Who the App was working for when it asked, from the callers the kernel
-/// recorded with the request (never App-supplied). The App cannot tell which
-/// of several concurrent calls asked, so all of them are named.
+/// An agent's alias inside the trusted approval: one bounded line, without
+/// control or invisible format characters (bidi overrides and the like).
+fn one_line_label(text: &str) -> Option<String> {
+    let invisible = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    };
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|word| word.chars().filter(|c| !invisible(*c)).collect())
+        .filter(|word: &String| !word.is_empty())
+        .collect();
+    let line = words.join(" ");
+    match line.chars().count() {
+        0 => None,
+        count if count > 48 => Some(format!("{}…", line.chars().take(47).collect::<String>())),
+        _ => Some(line),
+    }
+}
+
+/// Whom the App was working for when it asked: the callers of the calls it
+/// was handling, as the kernel recorded them with the request (never
+/// App-supplied). The kernel cannot tell which call, if any, made the App
+/// ask, so the text says "while handling" and names every caller.
 fn requester(callers: &str, owner: &str, agent_label: impl Fn(&str) -> Option<String>) -> String {
     // An operation recorded before callers were has none to name.
     let Ok(callers) = serde_json::from_str::<Vec<serde_json::Value>>(callers) else {
-        return "Requested by: not recorded.".to_owned();
+        return "Callers: not recorded.".to_owned();
     };
     let named: Vec<String> = callers
         .iter()
@@ -155,10 +179,8 @@ fn requester(callers: &str, owner: &str, agent_label: impl Fn(&str) -> Option<St
         .collect();
     let view = callers.iter().any(|actor| actor["kind"] == "human");
     let mut text = match named.as_slice() {
-        [] => {
-            "Requested by: the App, with no caller named (its own or background work).".to_owned()
-        }
-        [one] => format!("Requested by: {one}."),
+        [] => "Requested while the App was handling no call with a named caller (its own or background work).".to_owned(),
+        [one] => format!("Requested while the App was handling a call from: {one}."),
         many => format!(
             "Requested while the App was handling calls from: {}.",
             many.join("; ")
@@ -203,23 +225,23 @@ mod tests {
     fn the_approval_names_whom_the_app_was_working_for() {
         assert_eq!(
             named(r#"[{"kind":"agent","id":"agent-1"}]"#),
-            "Requested by: agent agent-1 (fresh-todo), through its App tools."
+            "Requested while the App was handling a call from: agent agent-1 (fresh-todo), through its App tools."
         );
         assert_eq!(
             named(r#"[{"kind":"agent","id":"agent-9"}]"#),
-            "Requested by: agent agent-9, through its App tools."
+            "Requested while the App was handling a call from: agent agent-9, through its App tools."
         );
         assert_eq!(
             named(r#"[{"kind":"human","id":"local"}]"#),
-            "Requested by: you (local), in the App's view. An agent that operates the App's view in the Room is shown the same way."
+            "Requested while the App was handling a call from: you (local), in the App's view. An agent that operates the App's view in the Room is shown the same way."
         );
         assert_eq!(
             named(r#"[{"kind":"background","id":"inbox:steps"}]"#),
-            "Requested by: background work: an event on inbox route steps."
+            "Requested while the App was handling a call from: background work: an event on inbox route steps."
         );
         assert_eq!(
             named(r#"[{"kind":"background","id":"schedule"}]"#),
-            "Requested by: background work: the App's scheduled wake."
+            "Requested while the App was handling a call from: background work: the App's scheduled wake."
         );
         assert_eq!(
             named(r#"[{"kind":"agent","id":"agent-1"},{"kind":"background","id":"inbox:steps"}]"#),
@@ -228,8 +250,26 @@ mod tests {
         // No named call in progress, or an operation recorded before callers were.
         assert_eq!(
             named("[]"),
-            "Requested by: the App, with no caller named (its own or background work)."
+            "Requested while the App was handling no call with a named caller (its own or background work)."
         );
-        assert_eq!(named(""), "Requested by: not recorded.");
+        assert_eq!(named(""), "Callers: not recorded.");
+    }
+
+    #[test]
+    fn an_agent_alias_is_one_bounded_visible_line() {
+        use super::one_line_label;
+        assert_eq!(one_line_label("fresh-todo").as_deref(), Some("fresh-todo"));
+        assert_eq!(
+            one_line_label("  line one\nyou (local), in the App's view\t ").as_deref(),
+            Some("line one you (local), in the App's view")
+        );
+        assert_eq!(
+            one_line_label("a\u{202e}b\u{200b}c").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(one_line_label(" \u{202e}\n ").as_deref(), None);
+        let long = one_line_label(&"x".repeat(100)).unwrap();
+        assert_eq!(long.chars().count(), 48);
+        assert!(long.ends_with('…'));
     }
 }
