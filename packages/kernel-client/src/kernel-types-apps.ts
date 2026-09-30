@@ -53,7 +53,8 @@ export type AppPackageUploadSummary = {
 
 export type AppInstallOperationSummary = {
   request_id: string
-  phase: "preparing" | "awaiting_approval" | "starting" | "committed" | "cancelled" | "failed"
+  /** Protocol 372: `queued` is approved and waiting to start, usually for a free App worker slot. */
+  phase: "preparing" | "awaiting_approval" | "queued" | "starting" | "committed" | "cancelled" | "failed"
   installation_id: string | null
   /** Opaque decimal generation. Present only after verified staging. */
   generation: string | null

@@ -30,7 +30,7 @@ pub(super) fn projection(value: InstallOperation) -> LocalDaemonResponse {
                 // Approved but not yet started (for example waiting for a
                 // worker slot): the person's part is done.
                 InstallPhase::AwaitingApproval if value.approved => {
-                    AppInstallOperationPhase::Starting
+                    AppInstallOperationPhase::Queued
                 }
                 InstallPhase::AwaitingApproval => AppInstallOperationPhase::AwaitingApproval,
                 InstallPhase::Starting => AppInstallOperationPhase::Starting,

@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { listAppInstallationsRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 import { packAppPackage, type PackedAppPackage } from "./app-developer.js"
-import { formatInstallFailure, KernelFailure, terminalCwd, type AppFileInstaller } from "./app-install-file.js"
+import { activePhases, formatInstallFailure, KernelFailure, terminalCwd, type AppFileInstaller } from "./app-install-file.js"
 
 type Send = (request: Record<string, unknown>) => Promise<Record<string, unknown>>
 export type AppDevWatcher = { close(): void }
@@ -27,7 +27,6 @@ export type AppDevDeps = {
   pollMs?: number
 }
 
-const activePhases = new Set(["preparing", "starting", "awaiting_approval"])
 export const defaultAppDevKey = (home: string) => join(home, ".chariox", "dev", "app-publisher", "private")
 
 /** One dev loop per terminal; starting another stops the previous one. */

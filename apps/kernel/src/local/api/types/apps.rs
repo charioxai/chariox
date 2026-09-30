@@ -68,6 +68,9 @@ pub struct AppInstallOperationRequest {
 pub enum AppInstallOperationPhase {
     Preparing,
     AwaitingApproval,
+    /// Protocol 372: approved and waiting to start, usually for a free App
+    /// worker slot (at most four Apps run at once).
+    Queued,
     Starting,
     Committed,
     Cancelled,

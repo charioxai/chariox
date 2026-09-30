@@ -7,6 +7,7 @@ import test from "node:test"
 import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
 import { AppFileSource, chunkBytes, maxArchiveBytes, InstallFileChanged } from "./app-install-file/source.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
+import { runAppCommand } from "./app-command.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 
 type Message = Record<string, any>
@@ -129,6 +130,9 @@ test("normal quoted /app install uses current session and only bytes cross the s
   k.status!.phase = "awaiting_approval"
   assert.equal((await installer.status()).phase, "awaiting_approval")
   assert.equal(k.upload!.phase, "aborted")
+  // Approved, waiting for a worker slot: a known, still active phase.
+  k.status!.phase = "queued"
+  assert.equal((await installer.status()).phase, "queued")
   assert.ok(!k.requests.some(v => v.RespondToInteraction))
 })
 
@@ -156,6 +160,7 @@ test("/app update fences the shared upload on the generation it read first", asy
   await assert.rejects(installer.install(f.path, "current-session"), /Another App installation or update is retained/)
   assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
   assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_schema_downgrade" } as never), /^App operation failed\. This release's data schema is older than the installed App's/)
+  assert.match(formatInstallOperation({ ...k.status!, phase: "queued" } as never), /^Approved; waiting for a free App worker slot to start/)
   assert.deepEqual(installer.retained(), { path: f.path, request: request_id, digest: digest(f.bytes), installation: "todo", begun: true })
   assert.equal(installer.discardRetained(), false)
   k.status!.phase = "committed"
@@ -365,4 +370,30 @@ test("cancelling a lost upload Begin reply recovers its original handle before A
   assert.equal(k.upload!.phase, "aborted")
   assert.ok(!k.requests.some(v => v.PutAppPackageUploadChunk || v.BeginAppInstall))
   await installer.dispose()
+})
+
+test("chariox app install that outlasts its wait says only an approval needs the owner", async t => {
+  for (const [phase, next] of [
+    ["queued", /Still queued after waiting; .* It starts once an App worker slot is free/],
+    ["awaiting_approval", /Still awaiting_approval after waiting; .* Finish it in session s1's terminal/],
+    ["starting", /Still starting after waiting; .* It continues on its own/],
+  ] as const) {
+    const f = await sourceFixture(t)
+    const k = kernel()
+    const send = async (request: Message) => {
+      const reply = await k.send(request)
+      if (request.BeginAppInstall) k.status!.phase = phase
+      return reply
+    }
+    await assert.rejects(runAppCommand(["app", "install", f.path, "--session", "s1"], {
+      createClient: () => ({ send, close: async () => {} }),
+      write: () => {},
+      installWaitMs: 20,
+      installPollMs: 1,
+    }), (error: Error) => {
+      assert.match(error.message, next)
+      if (phase !== "awaiting_approval") assert.doesNotMatch(error.message, /Finish it in session/)
+      return true
+    })
+  }
 })

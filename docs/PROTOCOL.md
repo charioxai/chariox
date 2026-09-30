@@ -2242,6 +2242,12 @@ Workflow trigger and deployment direction:
   bound; any change to the workflow's own files still fails the bind. A release
   without a record (exported before 369, or pruned) is verified by its whole
   package digest, as before.
+- protocol 372: `AppInstallOperationStatus` phase `queued`. An install or
+  update the owner (or kernel policy) approved stays `queued` until the kernel
+  claims its start, usually while it waits for a free App worker slot (at most
+  four Apps run at once); it is `starting` from the claim until it commits.
+  Earlier kernels reported this wait as `awaiting_approval`, then as
+  `starting`. Clients treat `queued` like any unfinished phase.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

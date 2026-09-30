@@ -18,7 +18,10 @@ type Attempt = {
 }
 export class KernelFailure extends Error { constructor(readonly code: string) { super(messages[code] ?? `App request failed: ${code}`) } }
 class ConnectionFailure extends Error { constructor() { super("Connection interrupted. Run the same /app install or update command to resume this attempt, or /app cancel to cancel it.") } }
-const terminalPhases = new Set(["committed", "cancelled", "failed"])
+/** Finished install/update operation phases. */
+export const terminalPhases = new Set(["committed", "cancelled", "failed"])
+/** Unfinished install/update operation phases. */
+export const activePhases = new Set(["preparing", "awaiting_approval", "queued", "starting"])
 const messages: Record<string, string> = {
   unauthorized: "This connection is not authorized to install Apps.", busy: "App requests are busy. Try again shortly.",
   conflict: "The App operation or installation changed; check /app operation, or /app cancel and try again.", not_found: "App operation or upload was not found.",
@@ -217,7 +220,7 @@ export class AppFileInstaller {
           else if (!(error instanceof KernelFailure) || error.code !== "not_found") throw error
         }
       }
-      if (status?.phase === "preparing" || status?.phase === "starting" || status?.phase === "awaiting_approval") return status
+      if (status && activePhases.has(status.phase)) return status
       if (!attempt.handle && attempt.digest && attempt.size) {
         const reply = await this.request(beginAppPackageUploadRequest({ requestId: attempt.uploadRequest, expectedSize: attempt.size, sha256: attempt.digest }), () => false)
         const upload = reply.AppPackageUploadStatus as { upload?: { handle?: unknown } } | undefined
@@ -266,7 +269,7 @@ function uploadStatus(reply: Record<string, unknown>, source: AppFileSource): Ap
 }
 function operation(reply: Record<string, unknown>, request: string): AppInstallOperationSummary {
   const value = (reply.AppInstallOperationStatus as { operation?: AppInstallOperationSummary } | undefined)?.operation
-  if (!value || value.request_id !== request || !["preparing", "awaiting_approval", "starting", "committed", "cancelled", "failed"].includes(value.phase)) throw new Error("Kernel returned an invalid App installation receipt")
+  if (!value || value.request_id !== request || !(activePhases.has(value.phase) || terminalPhases.has(value.phase))) throw new Error("Kernel returned an invalid App installation receipt")
   return value
 }
 
@@ -286,7 +289,7 @@ export function formatInstallFailure(failure: string): string {
 }
 
 export function formatInstallOperation(value: AppInstallOperationSummary): string {
-  const label = { preparing: "Preparing App", awaiting_approval: "Awaiting approval in the operation's session", starting: "Starting App", committed: "App operation complete", cancelled: "App operation cancelled", failed: "App operation failed" }[value.phase]
+  const label = { preparing: "Preparing App", awaiting_approval: "Awaiting approval in the operation's session", queued: "Approved; waiting for a free App worker slot to start", starting: "Starting App", committed: "App operation complete", cancelled: "App operation cancelled", failed: "App operation failed" }[value.phase]
   const detail = value.failure ? ` ${formatInstallFailure(value.failure)}` : ""
   return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}. Use /app operation for status; /app cancel to cancel before it completes.`
 }
