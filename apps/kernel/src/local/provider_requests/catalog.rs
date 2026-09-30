@@ -17,6 +17,8 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
+mod probe_capture;
+
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
 pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse, DaemonError> {
@@ -409,7 +411,7 @@ fn claude_auth_status(
 
 /// A provider status, version or usage probe answers in seconds. A stalled one
 /// must not hold its caller, such as the post-import refresh, forever: past the
-/// deadline its process group is killed and reaped.
+/// deadline the owned process and inherited pipe writers are stopped.
 const PROVIDER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn bounded_status_output(
@@ -420,80 +422,23 @@ fn bounded_status_output(
 }
 
 fn bounded_output(
-    mut command: Command,
+    command: Command,
     label: &str,
     timeout: Duration,
 ) -> Result<std::process::Output, DaemonError> {
-    use std::io::Read;
-    use std::os::unix::process::CommandExt;
-    use std::sync::mpsc;
-    use wait_timeout::ChildExt;
-
-    let error = |message: String| DaemonError::LocalTransport {
+    probe_capture::capture(command, timeout).map_err(|error| DaemonError::LocalTransport {
         operation: "get_provider_auth_status",
-        message,
-    };
-    let deadline = std::time::Instant::now() + timeout;
-    // Its own process group: settling the probe also ends descendants that
-    // inherited its pipes.
-    let mut child = command
-        .process_group(0)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|spawn_error| error(format!("failed to run {label}: {spawn_error}")))?;
-    let process_group = child.id() as i32;
-    let read = |pipe: Option<Box<dyn Read + Send>>| {
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
-            }
-            let _ = sender.send(bytes);
-        });
-        receiver
-    };
-    let stdout = read(
-        child
-            .stdout
-            .take()
-            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-    );
-    let stderr = read(
-        child
-            .stderr
-            .take()
-            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-    );
-    let waited = child.wait_timeout(timeout);
-    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
-    let status = match waited {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            let _ = child.wait();
-            return Err(error(format!(
+        message: match error {
+            probe_capture::CaptureError::TimedOut => format!(
                 "{label} did not answer within {}s; authentication state is inconclusive",
                 timeout.as_secs()
-            )));
-        }
-        Err(wait_error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error(format!("failed to wait for {label}: {wait_error}")));
-        }
-    };
-    let collect = |receiver: mpsc::Receiver<Vec<u8>>| {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        receiver
-            .recv_timeout(remaining.max(Duration::from_secs(1)))
-            .map_err(|_| error(format!("{label} output did not settle")))
-    };
-    Ok(std::process::Output {
-        status,
-        stdout: collect(stdout)?,
-        stderr: collect(stderr)?,
+            ),
+            probe_capture::CaptureError::OutputLimit => format!(
+                "{label} exceeded the {} byte output limit; authentication state is inconclusive",
+                probe_capture::OUTPUT_LIMIT
+            ),
+            probe_capture::CaptureError::Io(error) => format!("failed to capture {label}: {error}"),
+        },
     })
 }
 
@@ -2025,7 +1970,7 @@ exit 2
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod bounded_output_tests {
     use super::*;
 
