@@ -2152,8 +2152,11 @@ Workflow trigger and deployment direction:
   `RespondToInteraction` gains optional `passkey` (a string, redacted in
   command projections, never logged or stored) and `passkey_remember_minutes`
   (1 to 15). Answering such a choice needs a passkey the kernel verifies
-  against the vault file (the vault's unlock state is unchanged), or an open
-  remember window: a verified passkey with `passkey_remember_minutes` accepts
+  against a pinned commitment to the vault key (the KDF parameters and a hash
+  of the derived key, kept durably and taken from the vault the boot
+  configuration names when the kernel first unlocks it or first sees a
+  passkey that opens it; a later vault path or file change never moves it;
+  the vault's unlock state is unchanged), or an open remember window: a verified passkey with `passkey_remember_minutes` accepts
   the owner's critical approvals without it for that long, in kernel memory
   only, independent of the vault's own unlock window. Otherwise the answer is
   refused with `PASSKEY_REQUIRED`; a wrong passkey with `PASSKEY_REJECTED`;
