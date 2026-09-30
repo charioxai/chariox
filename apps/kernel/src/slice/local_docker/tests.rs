@@ -2364,6 +2364,47 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
 }
 
 #[test]
+fn slice_worker_identity_launch_separates_display_alias_and_hosted_machine() {
+    let record = test_record();
+    for hosted_machine in [None, Some(record.owner_machine_id.clone())] {
+        let relay = LocalDockerSliceRelay {
+            relay_url: "wss://relay.example.test".into(),
+            container_relay_url: Some("wss://relay.example.test".into()),
+            relay_token: "synthetic-bootstrap-token".into(),
+            owner_public_key: Some("public-fixture".into()),
+            cloud_relay_config_json: None,
+            worker_machine_id: hosted_machine.clone(),
+        };
+        let mut command = Command::new("synthetic-provisioner");
+        configure_local_docker_slice_command(
+            &mut command,
+            &record,
+            Some(relay),
+            &test_options(),
+            true,
+        )
+        .unwrap();
+        let envs: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+            .collect();
+        assert_eq!(
+            envs.get("CHARIOX_SLICE_DAEMON_ID"),
+            Some(&record.worker_kernel_ref.as_str())
+        );
+        assert_eq!(
+            envs.get("CHARIOX_SLICE_DAEMON_ALIAS"),
+            Some(&format!("slice:{}", record.name).as_str())
+        );
+        let expected_machine = hosted_machine.unwrap_or_else(|| format!("slice:{}", record.id));
+        assert_eq!(
+            envs.get("CHARIOX_SLICE_MACHINE_ID"),
+            Some(&expected_machine.as_str())
+        );
+    }
+}
+
+#[test]
 fn local_docker_slice_runtime_projects_shared_relay_env() {
     let record = test_record();
     let options = test_options();
@@ -2373,6 +2414,7 @@ fn local_docker_slice_runtime_projects_shared_relay_env() {
         relay_token: "shared-token".to_string(),
         owner_public_key: Some("owner-public".to_string()),
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     };
     let mut command = Command::new("slice-provisioner");
 
@@ -2417,6 +2459,7 @@ fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
         relay_token: "slice-local-token".to_string(),
         owner_public_key: None,
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     };
     let mut command = Command::new("slice-provisioner");
 
@@ -2442,6 +2485,7 @@ fn hosted_relay_discovery_uses_owner_metadata_credential() {
         relay_token: "worker-bootstrap-token".to_string(),
         owner_public_key: Some("owner-public".to_string()),
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     };
     let mut owner_config = DaemonConfig::for_tests();
     owner_config.relay_token = Some("owner-metadata-token".to_string());
@@ -2464,6 +2508,7 @@ fn private_relay_discovery_uses_private_relay_credential() {
         relay_token: "slice-private-token".to_string(),
         owner_public_key: None,
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     };
     let mut owner_config = DaemonConfig::for_tests();
     owner_config.relay_token = Some("owner-token".to_string());

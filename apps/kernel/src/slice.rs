@@ -4,6 +4,11 @@ mod local_docker;
 mod model;
 mod ports;
 mod store;
+mod worker_identity;
+
+pub(crate) use worker_identity::{
+    machine_scoped_slice_worker_ref, require_hosted_slice_worker_ref,
+};
 
 pub(crate) use local_docker::managed_docker_broker_configured;
 pub(crate) use local_docker::{
@@ -85,6 +90,135 @@ mod tests {
             last_operation_status: Some(SliceOperationStatus::Completed),
             last_error: None,
         }
+    }
+
+    #[test]
+    fn slice_worker_identity_is_scoped_unique_and_preserved_on_restore() {
+        let first_store = SliceStore::default();
+        let first = first_store
+            .create("kernel-a", "machine-a", create_input("drill"))
+            .unwrap();
+        let second = SliceStore::default()
+            .create("kernel-b", "machine-b", create_input("drill"))
+            .unwrap();
+        assert_eq!(first.name, "drill");
+        assert_eq!(second.name, "drill");
+        assert_eq!(first.worker_kernel_ref.len(), 135);
+        assert_ne!(first.worker_kernel_ref, second.worker_kernel_ref);
+        let recreated = SliceStore::default()
+            .create("kernel-a", "machine-a", create_input("drill"))
+            .unwrap();
+        assert_ne!(first.worker_kernel_ref, recreated.worker_kernel_ref);
+        let restored = SliceStore::default();
+        restored.restore_records(vec![first.clone()]);
+        assert_eq!(
+            restored.resolve(&first.id).unwrap().worker_kernel_ref,
+            first.worker_kernel_ref
+        );
+    }
+
+    #[test]
+    fn slice_worker_identity_allows_distinct_hosted_workers_on_one_machine() {
+        let store = SliceStore::default();
+        let mut first = store
+            .create("kernel-a", "machine-a", create_input("first"))
+            .unwrap();
+        let mut second = store
+            .create("kernel-a", "machine-a", create_input("second"))
+            .unwrap();
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/slice-worker-identity.json"
+        )))
+        .unwrap();
+        first.worker_kernel_ref = vectors["cases"][0]["workerKernelRef"]
+            .as_str()
+            .unwrap()
+            .into();
+        second.worker_kernel_ref = vectors["cases"][2]["workerKernelRef"]
+            .as_str()
+            .unwrap()
+            .into();
+        for record in [&mut first, &mut second] {
+            record.worker_kernel_id = Some(record.worker_kernel_ref.clone());
+            record.worker_machine_id = Some("machine-a".into());
+        }
+        store.restore_records(vec![first.clone(), second.clone()]);
+        store
+            .bind_environment("room-a", &first.id, 43, |_| Ok(()))
+            .expect("the parent Machine is not a shared worker");
+        store
+            .bind_environment("room-b", &second.id, 43, |_| Ok(()))
+            .expect("the second worker has its own Room");
+        assert!(store
+            .guard_environment_use(&second.id, Some("room-a"), "test")
+            .is_err());
+        assert!(store
+            .guard_environment_use(&second.id, Some("room-b"), "test")
+            .is_ok());
+        assert!(store.resolve_by_worker_kernel_ref("machine-a").is_none());
+        assert_eq!(
+            store
+                .resolve_by_worker_kernel_ref(&first.worker_kernel_ref)
+                .unwrap()
+                .id,
+            first.id
+        );
+    }
+
+    #[test]
+    fn slice_worker_identity_bootstrap_claim_uses_exact_kernel_and_parent_machine() {
+        let store = SliceStore::default();
+        let record = store
+            .create("kernel-a", "machine-a", create_input("claim"))
+            .unwrap();
+        store
+            .set_status(&record.id, SliceStatus::Starting, 43)
+            .unwrap();
+        assert!(store
+            .claim_starting_worker_identity(&record.id, "slice:claim", "machine-a", 44)
+            .is_err());
+        assert!(store
+            .resolve(&record.id)
+            .unwrap()
+            .worker_kernel_id
+            .is_none());
+        let bound = store
+            .claim_starting_worker_identity(&record.id, &record.worker_kernel_ref, "machine-a", 44)
+            .unwrap();
+        assert_eq!(bound.worker_machine_id.as_deref(), Some("machine-a"));
+        assert_eq!(
+            bound.worker_kernel_id.as_deref(),
+            Some(record.worker_kernel_ref.as_str())
+        );
+    }
+
+    #[test]
+    fn slice_worker_identity_preserves_explicit_and_ssh_refs() {
+        let mut explicit = create_input("explicit");
+        explicit.worker_kernel_ref = Some("self-hosted-worker".into());
+        let record = SliceStore::default()
+            .create("kernel-a", "machine-a", explicit)
+            .unwrap();
+        assert_eq!(record.worker_kernel_ref, "self-hosted-worker");
+        let mut ssh = create_input("ssh-worker");
+        ssh.backend = SliceBackendKind::SshDocker;
+        let record = SliceStore::default()
+            .create("kernel-a", "machine-a", ssh)
+            .unwrap();
+        assert_eq!(record.worker_kernel_ref, "slice:ssh-worker");
+    }
+
+    #[test]
+    fn slice_worker_identity_does_not_rewrite_legacy_replay() {
+        let mut legacy = SliceStore::default()
+            .create("kernel-a", "machine-a", create_input("legacy"))
+            .unwrap();
+        legacy.worker_kernel_ref = "slice:legacy".into();
+        legacy.worker_kernel_id = Some("legacy-worker-id".into());
+        let restored = SliceStore::default();
+        restored.restore_records(vec![legacy.clone()]);
+        assert_eq!(restored.resolve(&legacy.id).unwrap(), legacy);
     }
 
     #[test]
@@ -370,7 +504,10 @@ mod tests {
             .expect("slice should create");
 
         assert_eq!(slice.id, "slice-1");
-        assert_eq!(slice.worker_kernel_ref, "slice:dev");
+        assert!(machine_scoped_slice_worker_ref(
+            &slice.worker_kernel_ref,
+            "machine-1"
+        ));
         assert_eq!(slice.last_operation.as_deref(), Some("create"));
         assert_eq!(
             slice.last_operation_status,
@@ -586,7 +723,7 @@ mod tests {
         restored.restore_records(vec![slice.clone()]);
         assert_eq!(
             restored
-                .resolve_by_worker_kernel_ref("slice:dev")
+                .resolve_by_worker_kernel_ref(&slice.worker_kernel_ref)
                 .expect("worker ref should resolve")
                 .relay_endpoint,
             slice.relay_endpoint

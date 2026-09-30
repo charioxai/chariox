@@ -112,7 +112,16 @@ impl SliceStore {
         let worker_kernel_ref = input
             .worker_kernel_ref
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| format!("slice:{}", input.name));
+            .unwrap_or_else(|| match input.backend {
+                SliceBackendKind::LocalDocker => {
+                    super::worker_identity::new_local_docker_worker_ref(
+                        owner_machine_id,
+                        owner_kernel_id,
+                        &input.name,
+                    )
+                }
+                SliceBackendKind::SshDocker => format!("slice:{}", input.name),
+            });
         let local_docker_ports = if input.backend == SliceBackendKind::LocalDocker {
             Some(ports::allocate_local_docker_ports_for_slice(
                 &state.records,
@@ -978,6 +987,7 @@ impl SliceStore {
         &self,
         slice_ref: &str,
         worker_kernel_id: &str,
+        worker_machine_id: &str,
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
@@ -1008,8 +1018,18 @@ impl SliceStore {
             }
             return Ok(record.clone());
         }
+        let hosted_identity = super::machine_scoped_slice_worker_ref(
+            &record.worker_kernel_ref,
+            &record.owner_machine_id,
+        );
+        if hosted_identity && worker_kernel_id != record.worker_kernel_ref {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.worker_identity",
+                message: "slice worker kernel id does not match its canonical reference".into(),
+            });
+        }
         record.worker_kernel_id = Some(worker_kernel_id.to_string());
-        record.worker_machine_id = Some(format!("slice:{}", record.id));
+        record.worker_machine_id = Some(worker_machine_id.to_string());
         record.updated_at_ms = now_ms;
         Ok(record.clone())
     }
@@ -1351,7 +1371,9 @@ impl SliceStore {
             .find(|record| {
                 record.worker_kernel_ref == kernel_ref
                     || record.worker_kernel_id.as_deref() == Some(kernel_ref)
-                    || record.worker_machine_id.as_deref() == Some(kernel_ref)
+                    || (record.worker_machine_id.as_deref() == Some(kernel_ref)
+                        && record.worker_machine_id.as_deref()
+                            != Some(record.owner_machine_id.as_str()))
             })
             .cloned()
     }

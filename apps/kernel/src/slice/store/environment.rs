@@ -143,13 +143,17 @@ fn binding_error(message: &str) -> DaemonError {
 }
 
 fn worker_refs(slice: &SliceRecord) -> impl Iterator<Item = &str> {
-    // These are worker routing identities, not the Docker host identity.
-    // Local Docker assigns worker machine_id = "slice:<slice.id>"; co-located
-    // containers share owner_machine_id instead. A duplicate worker machine ID
-    // is ambiguous because agent placement also accepts it as a target.
+    // Hosted workers share their authenticated parent Machine. Only kernel
+    // identities distinguish those workers; retain synthetic legacy Machine
+    // references for private/self-hosted placement compatibility.
     std::iter::once(slice.worker_kernel_ref.as_str())
         .chain(slice.worker_kernel_id.as_deref())
-        .chain(slice.worker_machine_id.as_deref())
+        .chain(
+            slice
+                .worker_machine_id
+                .as_deref()
+                .filter(|machine| *machine != slice.owner_machine_id),
+        )
         .map(str::trim)
         .filter(|value| !value.is_empty())
 }

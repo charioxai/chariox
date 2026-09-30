@@ -3171,7 +3171,7 @@ mod tests {
                 worktree_id: None,
                 workspace_mount: None,
                 development: None,
-                worker_kernel_ref: Some("slice:bootstrap-exchange".to_string()),
+                worker_kernel_ref: None,
                 display_url: None,
                 provider_auth: Vec::new(),
                 from_saved_state: None,
@@ -3196,7 +3196,7 @@ mod tests {
             state: &state,
             outgoing_tx: &outgoing_tx,
         };
-        let worker_kernel_id = "kernel-bootstrap-worker";
+        let worker_kernel_id = slice.worker_kernel_ref.as_str();
         let worker_private_key = relay_crypto::generate_private_key_base64();
         let worker_public_key =
             relay_crypto::public_key_from_private_key_base64(&worker_private_key)

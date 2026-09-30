@@ -10,7 +10,9 @@ const runtime = await readFile(new URL("apps/kernel/slice-linux-docker/docker/st
 const start = runtime.match(/start_slice_kernel\(\) \{[\s\S]*?\n\}/)?.[0]
 assert.ok(start, "slice runtime has one kernel launch function")
 
-async function launch(sliceRef, extraArguments = []) {
+const vectors = JSON.parse(await readFile(new URL("fixtures/slice-worker-identity.json", root), "utf8")).cases
+
+async function launch(identity, extraArguments = []) {
   const scratch = await mkdtemp(join(tmpdir(), "chariox-slice-identity-"))
   try {
     await mkdir(join(scratch, "private"))
@@ -30,7 +32,7 @@ async function launch(sliceRef, extraArguments = []) {
     ].map(name => [name, "synthetic-fixture"]))
     const result = spawnSync("bash", ["-c", script], {
       encoding: "utf8", timeout: 5_000,
-      env: { PATH: process.env.PATH, ...variables, ROOT: scratch, DAEMON_ALIAS: sliceRef, MACHINE_ID: "home-machine" },
+      env: { PATH: process.env.PATH, ...variables, ROOT: scratch, DAEMON_ID: identity.workerKernelRef, DAEMON_ALIAS: `slice:${identity.localName}`, MACHINE_ID: identity.machineId, SLICE_OWNER_KERNEL_ID: identity.ownerKernelId, SLICE_OWNER_MACHINE_ID: identity.machineId },
     })
     assert.equal(result.status, 0, result.stderr)
     return result.stdout.trim().split("\n")
@@ -38,16 +40,17 @@ async function launch(sliceRef, extraArguments = []) {
 }
 
 test("hosted slice launch registers the exact signed worker subject as canonical daemon ID", async () => {
-  for (const subject of ["slice:worker-one", "slice:worker-two"]) {
-    assert.deepEqual(await launch(subject), [
-      `CHARIOX_DAEMON_ID=${subject}`, `CHARIOX_DAEMON_ALIAS=${subject}`, "CHARIOX_MACHINE_ID=home-machine",
+  for (const identity of vectors) {
+    assert.deepEqual(await launch(identity), [
+      `CHARIOX_DAEMON_ID=${identity.workerKernelRef}`, `CHARIOX_DAEMON_ALIAS=slice:${identity.localName}`, `CHARIOX_MACHINE_ID=${identity.machineId}`,
     ])
   }
 })
 
 test("provider isolation probe uses the same canonical slice identity as the persistent kernel", async () => {
-  assert.deepEqual(await launch("slice:probe-worker", ["CHARIOX_ACCEPT_REMOTE_LEASES=0"]), [
-    "CHARIOX_DAEMON_ID=slice:probe-worker", "CHARIOX_DAEMON_ALIAS=slice:probe-worker", "CHARIOX_MACHINE_ID=home-machine",
+  const identity = vectors[0]
+  assert.deepEqual(await launch(identity, ["CHARIOX_ACCEPT_REMOTE_LEASES=0"]), [
+    `CHARIOX_DAEMON_ID=${identity.workerKernelRef}`, `CHARIOX_DAEMON_ALIAS=slice:${identity.localName}`, `CHARIOX_MACHINE_ID=${identity.machineId}`,
   ])
 })
 

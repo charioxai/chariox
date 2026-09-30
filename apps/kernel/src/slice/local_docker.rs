@@ -62,6 +62,7 @@ pub struct LocalDockerSliceRelay {
     pub relay_token: String,
     pub owner_public_key: Option<String>,
     pub cloud_relay_config_json: Option<String>,
+    pub worker_machine_id: Option<String>,
 }
 
 impl LocalDockerSliceRelay {
@@ -1127,11 +1128,18 @@ fn configure_local_docker_slice_command(
             },
         )
         .env("CHARIOX_SLICE_PROVIDER_BIND_HOST", "127.0.0.1")
+        .env("CHARIOX_SLICE_DAEMON_ID", record.worker_kernel_ref.clone())
         .env(
             "CHARIOX_SLICE_DAEMON_ALIAS",
-            record.worker_kernel_ref.clone(),
+            format!("slice:{}", record.name),
         )
-        .env("CHARIOX_SLICE_MACHINE_ID", format!("slice:{}", record.id))
+        .env(
+            "CHARIOX_SLICE_MACHINE_ID",
+            relay
+                .as_ref()
+                .and_then(|value| value.worker_machine_id.clone())
+                .unwrap_or_else(|| format!("slice:{}", record.id)),
+        )
         .env("CHARIOX_SLICE_MACHINE_ALIAS", record.name.clone());
     if let Some(profile) =
         std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE").filter(|value| !value.is_empty())
@@ -1351,6 +1359,7 @@ pub fn local_docker_private_relay(record: &SliceRecord) -> LocalDockerSliceRelay
         relay_token: local_docker_private_relay_token(record),
         owner_public_key: None,
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     }
 }
 

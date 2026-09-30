@@ -762,10 +762,12 @@ impl KernelRuntimeState {
         &self,
         slice_ref: &str,
         worker_kernel_id: &str,
+        worker_machine_id: &str,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         let slice = self.owned.slice_store.claim_starting_worker_identity(
             slice_ref,
             worker_kernel_id,
+            worker_machine_id,
             crate::session::unix_epoch_ms(),
         )?;
         self.append_slice_durable_event("slice.updated", &slice)?;

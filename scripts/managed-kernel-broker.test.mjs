@@ -41,6 +41,27 @@ function validate(request, shareRoot) {
   })
 }
 
+test("canonical slice worker IDs cross managed provision and recovery without widening other actions", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-worker-identity-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = JSON.parse(await readFile(join(repositoryRoot, "fixtures/slice-worker-identity.json"), "utf8")).cases[0]
+  const environment = {
+    CHARIOX_SLICE_NAME: "chariox-slice-dev", CHARIOX_SLICE_ID: "slice-dev",
+    CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+    CHARIOX_SLICE_OWNER_KERNEL_ID: fixture.ownerKernelId,
+    CHARIOX_SLICE_OWNER_MACHINE_ID: fixture.machineId,
+    CHARIOX_SLICE_DAEMON_ID: fixture.workerKernelRef,
+    CHARIOX_SLICE_DAEMON_ALIAS: `slice:${fixture.localName}`,
+    CHARIOX_SLICE_MACHINE_ID: fixture.machineId,
+  }
+  for (const action of ["provision", "recover"]) {
+    const result = validate({ kind: "provisioner", action, environment, files: [] }, root)
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stdout.trim(), "ok")
+  }
+  assert.notEqual(validate({ kind: "provisioner", action: "stop", environment, files: [] }, root).status, 0)
+})
+
 test("broker start and unpause route Docker mutation through quota admission", async () => {
   const source = await readFile(broker, "utf8")
   const executeStart = source.indexOf("async function execute(request)")
@@ -49,10 +70,10 @@ test("broker start and unpause route Docker mutation through quota admission", a
   assert.notEqual(executeEnd, -1)
   const executeSource = source.slice(executeStart, executeEnd)
 
-  assert.match(source, /import \{ runWithSliceDiskQuotaAdmission \} from "\.\/slice-disk-quota-admission\.mjs"/)
-  assert.match(executeSource, /const runPrepared = \(\) => \{[\s\S]*?prepareDocker\(request\.args\)[\s\S]*?return spawnBounded\(command, args/)
+  assert.match(source, /import\s*\{[^}]*\brunWithSliceDiskQuotaAdmission\b[^}]*\}\s*from "\.\/slice-disk-quota-admission\.mjs"/)
+  assert.match(executeSource, /const runPrepared = \(admission\) => \{[\s\S]*?prepareDocker\(request\.args\)[\s\S]*?return spawnBounded\(command, args/)
   assert.match(executeSource, /const isDockerStartOrUnpause = request\.kind === "docker" && \["start", "unpause"\]/)
-  assert.match(executeSource, /const result = isDockerStartOrUnpause\s*\? await runWithSliceDiskQuotaAdmission\(\{[\s\S]*?quotaMarkerPresent: diskQuotaMarkerPresent\(containerName\),[\s\S]*?run: runPrepared,[\s\S]*?\}\)\s*:\s*runPrepared\(\)/)
+  assert.match(executeSource, /const result = isDockerStartOrUnpause\s*\? await sliceDiskQuotaCoordinator\.withContainerLock\(containerName, async \(lock\) => runWithSliceDiskQuotaAdmission\(\{[\s\S]*?quotaMarkerPresent: diskQuotaMarkerPresent\(containerName\),[\s\S]*?run: async \(quotaResult, admission\) => \{[\s\S]*?assertLockHeld\(lock\)[\s\S]*?const started = runPrepared\(admission\)/)
 })
 
 test("snapshot helpers require bounded isolated resources and matching ownership", async (context) => {
@@ -639,7 +660,7 @@ test("managed slice broker rejects symlink escapes from the shared root", async 
   assert.match(result.stderr, /resolves outside|symbolic link/)
 })
 
-test("managed slice broker pins lazy builds to the signed context digest", async (context) => {
+test("managed slice broker projects the signed context digest to its provisioner", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-digest-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
@@ -658,7 +679,9 @@ test("managed slice broker pins lazy builds to the signed context digest", async
   await chmod(provisioner, 0o755)
   const request = {
     kind: "provisioner",
-    action: "provision",
+    // This owned fake only prints its environment. Quota provisioning is
+    // exercised separately; this fixture must not invoke real Docker.
+    action: "stop",
     environment: {
       CHARIOX_SLICE_NAME: "chariox-slice-dev",
       CHARIOX_SLICE_ID: "slice-dev",

@@ -278,6 +278,7 @@ pub(crate) async fn issue_cloud_slice_runtime_token(
             message: "hosted slice relay requires a machine credential".to_string(),
         });
     }
+    crate::slice::require_hosted_slice_worker_ref(slice_kernel_ref, &machine_id)?;
     let options = cloud_slice_runtime_token_options(machine_id, owner_kernel_id, worker_public_key);
     issue_cloud_runtime_token(profile, slice_kernel_ref, "kernel", options).await
 }
@@ -301,6 +302,7 @@ pub(crate) async fn issue_cloud_slice_recovery_token(
             message: "hosted slice recovery requires a machine credential".to_string(),
         });
     }
+    crate::slice::require_hosted_slice_worker_ref(slice_kernel_ref, &machine_id)?;
     issue_cloud_runtime_token(
         profile,
         slice_kernel_ref,
@@ -611,3 +613,6 @@ mod tests {
         assert!(options.public_key_thumbprint.is_some());
     }
 }
+
+#[cfg(test)]
+mod slice_tokens_test;

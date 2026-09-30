@@ -45,7 +45,7 @@ fn registration(
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
     let claims = serde_json::json!({
         "iss": "issuer-1", "sub": id, "subject_kind": "kernel",
-        "realm_id": "realm-1", "allowed_actions": ["daemon.register", "peer.request"],
+        "realm_id": "realm-1", "allowed_actions": ["daemon.register", "daemon.heartbeat", "packet.route", "peer.request", "peer.event"],
         "allowed_targets": parent.map(|id| vec![id]), "iat": now, "exp": now + 3600,
         "jti": format!("synthetic-{id}"), "account_id": "account-1", "user_id": "user-1",
         "machine_id": machine, "public_key_thumbprint": public_key_thumbprint(public_key)

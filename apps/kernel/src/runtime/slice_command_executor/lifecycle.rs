@@ -1109,10 +1109,32 @@ fn local_docker_slice_relay_for_config(
                 // The home kernel's Cloud profile contains machine credentials and
                 // session tokens. It must never be copied into a provider-visible slice.
                 cloud_relay_config_json: None,
+                worker_machine_id: config
+                    .cloud_relay
+                    .as_ref()
+                    .and_then(|profile| profile.machine_id.clone()),
             };
         }
     }
     crate::slice::local_docker_private_relay(slice)
+}
+
+fn validate_hosted_slice_identity(
+    config: &crate::config::DaemonConfig,
+    slice: &crate::slice::SliceRecord,
+    profile: &crate::config::PersistedCloudRelayProfile,
+) -> Result<(), DaemonError> {
+    if slice.owner_kernel_id != config.daemon_id
+        || slice.owner_machine_id != config.host_machine_id
+        || profile.machine_id.as_deref() != Some(slice.owner_machine_id.as_str())
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.relay_identity",
+            message: "hosted slice owner does not match the authenticated home Kernel and Machine"
+                .into(),
+        });
+    }
+    crate::slice::require_hosted_slice_worker_ref(&slice.worker_kernel_ref, &slice.owner_machine_id)
 }
 
 async fn hosted_cloud_slice_relay_token(
@@ -1123,6 +1145,7 @@ async fn hosted_cloud_slice_relay_token(
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(fallback_relay_token);
     };
+    validate_hosted_slice_identity(&config, slice, &profile)?;
     let issued = issue_cloud_slice_runtime_token(
         &profile,
         &slice.worker_kernel_ref,
@@ -1144,6 +1167,7 @@ async fn activate_hosted_slice_relay_token(
     let Some(profile) = config.cloud_relay.as_ref() else {
         return Ok(());
     };
+    validate_hosted_slice_identity(&config, slice, profile)?;
     let issued = issue_cloud_slice_runtime_token(
         profile,
         &slice.worker_kernel_ref,
