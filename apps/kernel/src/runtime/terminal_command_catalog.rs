@@ -774,9 +774,6 @@ mod tests {
                 "app-connection-list",
                 "app-connection-grant",
                 "app-connection-revoke",
-                "app-file",
-                "app-file-grant",
-                "app-file-save",
             ]
         );
     }
@@ -878,7 +875,12 @@ mod tests {
             ),
             ("app-operation", "/app operation ", Kernel, vec![Session]),
             ("app-cancel", "/app cancel ", Kernel, vec![Session]),
-            ("app-publisher", "/app publisher ", Kernel, vec![Session]),
+            (
+                "app-publisher",
+                "/app publisher ",
+                TerminalLocal,
+                vec![Session],
+            ),
             (
                 "app-publisher-enroll",
                 "/app publisher enroll ",
@@ -888,13 +890,13 @@ mod tests {
             (
                 "app-publisher-status",
                 "/app publisher status",
-                Kernel,
+                TerminalLocal,
                 vec![Session],
             ),
             (
                 "app-publisher-cancel",
                 "/app publisher cancel",
-                Kernel,
+                TerminalLocal,
                 vec![Session],
             ),
             (
@@ -935,6 +937,10 @@ mod tests {
         // The dev entry no longer describes its stop form, so a typed
         // `/app dev stop` matches only its own entry.
         assert!(!node("app-dev").description.contains("stop"));
+        // A file request or offer is answered in the session that shows it.
+        for id in ["app-file", "app-file-grant", "app-file-save"] {
+            assert_eq!(node(id).surfaces, vec![Session], "{id}");
+        }
         // `/app inbox move` ran MoveEventBindingToApp, retired in protocol 365.
         assert!(nodes.iter().all(|node| node.id != "app-inbox-move"));
     }
