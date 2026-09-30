@@ -110,7 +110,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V1-INT-16 | Transport conformance and SSRF | Measured source adaptations; bounded trusted-side memory and actual connected-address checks | Partial (see verification) |
 | V1-INT-17 | Slack contract cutover | Live third-party-style App parity before old code removal; final artifact has no privileged Slack fallback | Partial (see verification) |
 | V1-INT-18 | Schedule correctness | Persisted occurrence revision controls enqueue; overdue work recovers within declared budget | Partial [user step: sleep/wake] (see verification) |
-| V1-INT-19 | Rooms and kernels | Update/uninstall/backup isolation matches documented ownership; no credential or handle inheritance | Implemented (see verification) |
+| V1-INT-19 | Rooms and kernels | Update/uninstall/backup isolation matches documented ownership; no credential or handle inheritance | Partial (see verification) |
 | V1-INT-20 | Package and review independence | Code remains contained regardless of review; exact signed bytes and extraction rules are verified | Partial (see verification) |
 | V1-INT-21 | Fresh installation and upgrade | No hidden manual sandbox setup, no Cloud requirement for local Apps, actionable version failures | Partial [user step: signed macOS installer; reboot] (see verification) |
 | V1-INT-22 | Runtime lifecycle and throughput | Declared startup/idle/event/input budgets; relay and kernel authority remain responsive | Partial (see verification) |
