@@ -5,8 +5,8 @@ use chariox_app_runtime::{
     },
     managed_state::{
         complete_wake, defer_wake, due_wakes, ManagedStateStore, StateChanges, StateCheck,
-        StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS, MAX_REVISION,
-        MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
+        StateError, StateScope, StateWrite, Wake, WakeChange, WakeFailureOutcome, MAX_CHANGES,
+        MAX_KEYS, MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
     },
 };
 use rusqlite::{Connection, TransactionBehavior};
@@ -463,7 +463,16 @@ fn failed_wake_delivery_backs_off_and_is_dropped_after_bounded_attempts() {
     while kept {
         let due = due_wakes(&db, now, 8).unwrap();
         assert_eq!(due.len(), 1);
-        kept = defer_wake(&db, &due[0], now).unwrap();
+        let outcome = defer_wake(&db, &due[0], now).unwrap();
+        assert_eq!(
+            outcome,
+            if attempts < 7 {
+                WakeFailureOutcome::Retried
+            } else {
+                WakeFailureOutcome::Dropped
+            }
+        );
+        kept = outcome == WakeFailureOutcome::Retried;
         if kept {
             // A deferred wake is not redelivered before its backoff delay.
             assert!(due_wakes(&db, now, 8).unwrap().is_empty());
