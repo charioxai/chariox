@@ -1792,8 +1792,9 @@ Workflow trigger and deployment direction:
   defense per document; a browser-level WebRTC policy is future work). Every new
   controller CDP connection (whatever command caused it) drops the previous
   connection's App Tabs and closes App-origin Tabs it does not own, before that
-  command sees any Tab (a slice restart's restored App windows never reach the
-  Room start's reconcile). Each poll
+  command lists any Tab (a slice restart's restored App windows are closed
+  before the Room start's reconcile, and one still closing drops out of it
+  instead of failing it). Each poll
   reports the controller's open App targets; the kernel drops bindings for
   closed Tabs registered before that poll and stops polling when none remain. UI files are limited to
   2 MiB per view.

@@ -562,6 +562,13 @@ struct BrowserControllerRpcRequest<'a, P> {
     params: &'a P,
 }
 
+/// How a controller error names its code in the error text, which reaches
+/// the home kernel unchanged through the relay; a caller that classifies
+/// controller errors (a Room start's retry) matches this marker.
+pub(crate) fn controller_error_marker(code: &str) -> String {
+    format!("failed with {code}:")
+}
+
 impl BrowserControllerRpcResponse {
     fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
         if !self.ok {
@@ -570,8 +577,9 @@ impl BrowserControllerRpcResponse {
                 message: "browser controller returned an unspecified error".to_string(),
             });
             return Err(format!(
-                "browser controller `{method}` failed with {}: {}",
-                error.code, error.message
+                "browser controller `{method}` {} {}",
+                controller_error_marker(&error.code),
+                error.message
             ));
         }
         let result = self

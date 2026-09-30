@@ -144,7 +144,10 @@ impl KernelRuntimeState {
     /// A browser that a slice (re)start just launched can still be settling:
     /// not listening yet, or slow while it restores the previous session's
     /// windows. The start's reconcile retries those transient controller
-    /// failures with backoff, for a bounded time, before the Room fails.
+    /// failures with backoff before the Room fails: a retry starts only within
+    /// the budget, and the last one still runs its own command timeout (5 s
+    /// CDP locally, up to the 15 s relay timeout for a slice). Room commands on
+    /// the session's lane, a Stop included, wait behind it meanwhile.
     async fn reconcile_started_browser(
         &self,
         session_id: &str,
@@ -1220,7 +1223,7 @@ const START_RECONCILE_FIRST_DELAY: std::time::Duration = std::time::Duration::fr
 const START_RECONCILE_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Controller failures of a browser that is still starting, as the controller
-/// reports them (`... failed with <code>: ...`), locally or through the relay.
+/// reports them, locally or through the relay.
 fn transient_started_browser_error(error: &DaemonError) -> bool {
     let message = error.to_string();
     [
@@ -1230,7 +1233,9 @@ fn transient_started_browser_error(error: &DaemonError) -> bool {
         "browser_cdp_socket_error",
     ]
     .iter()
-    .any(|code| message.contains(&format!("failed with {code}:")))
+    .any(|code| {
+        message.contains(&crate::runtime::browser_controller_process::controller_error_marker(code))
+    })
 }
 
 fn controller_generation_error(message: &str) -> DaemonError {
