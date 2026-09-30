@@ -1953,7 +1953,28 @@ mod explicit_completion_tests {
         let before_output = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
             .expect("completion-only projection should succeed");
-        assert!(before_output.is_none());
+        let (_, projection) =
+            before_output.expect("ACK should project the provider run before completion");
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run,
+            prompts,
+            output_chunks,
+            notices,
+            completions,
+            ..
+        } = projection;
+        assert_eq!(
+            provider_run.as_ref().map(|run| run.id()),
+            Some(provider_run_id.as_str())
+        );
+        assert!(prompts.is_empty());
+        assert!(output_chunks.is_empty());
+        assert!(notices.is_empty());
+        assert!(completions.is_empty());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("unchanged provider state should not bypass completion guards")
+            .is_none());
         assert!(app
             .prompt_owner_active_prompt_for_agent_snapshot(
                 &leased_agent.backing_session_id,

@@ -618,8 +618,8 @@ async fn a_persons_spawn_gets_the_foreground_app_and_a_meta_agents_spawn_does_no
         panic!("unexpected spawn response");
     };
     assert!(granted(&app, spawned.id()).await);
-    // A Meta agent's new agent also becomes the focus, but its binding must
-    // be authorized: the spawn does not bind the foreground App.
+    // A Meta agent's new agent keeps the person's focus and does not bind
+    // the foreground App.
     app.lock()
         .await
         .agents_mut()
@@ -634,11 +634,20 @@ async fn a_persons_spawn_gets_the_foreground_app_and_a_meta_agents_spawn_does_no
         .await
         .unwrap();
     assert!(result.ok, "{result:?}");
-    let worker = state
-        .focused_agent_id(&session)
+    assert_eq!(
+        state.focused_agent_id(&session).await.unwrap().as_deref(),
+        Some(spawned.id())
+    );
+    let worker = app
+        .lock()
         .await
-        .unwrap()
-        .expect("the new agent is the focus");
+        .agents()
+        .get_session_agents(&session)
+        .into_iter()
+        .find(|agent| agent.alias() == Some("meta-worker"))
+        .expect("the meta agent's worker should exist")
+        .id()
+        .to_string();
     assert_ne!(worker, spawned.id());
     assert_ne!(worker, first);
     assert!(!granted(&app, &worker).await);

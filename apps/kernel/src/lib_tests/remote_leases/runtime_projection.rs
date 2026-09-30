@@ -328,11 +328,15 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
 
 #[test]
 fn remote_runtime_projection_records_output_and_completion_on_home_session() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "remote_runtime_projection_records_output_and_completion_on_home_session",
+    );
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
-            CreateSessionRequest::new("workspace-1", "worktree-1")
+            worktree
+                .session_request()
                 .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
         )
         .expect("session should be created");
@@ -569,11 +573,15 @@ fn remote_runtime_projection_preserves_authoritative_provider_termination() {
 
 #[test]
 fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "stale_remote_completion_replay_does_not_complete_the_next_prompt",
+    );
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
-            CreateSessionRequest::new("workspace-1", "worktree-1")
+            worktree
+                .session_request()
                 .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
         )
         .expect("session should be created");

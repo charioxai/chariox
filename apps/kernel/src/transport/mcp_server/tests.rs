@@ -207,12 +207,15 @@ async fn mcp_resource_and_prompt_discovery_return_empty_lists() {
 
 #[tokio::test]
 async fn mcp_http_workflow_token_lists_tools_and_acknowledges_active_turn() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "mcp_http_workflow_token_lists_tools_and_acknowledges_active_turn",
+    );
     let mut config = DaemonConfig::for_tests();
     config.user_config.providers.workspace_live_sync.mode =
         crate::config::WorkspaceLiveSyncMode::Tracked;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should exist");
     crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -226,7 +229,7 @@ async fn mcp_http_workflow_token_lists_tools_and_acknowledges_active_turn() {
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-a")
                 .with_model("test-model")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("agent should spawn")
         .id()

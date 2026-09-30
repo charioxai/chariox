@@ -80,7 +80,16 @@ impl TestState {
 impl Drop for TestState {
     fn drop(&mut self) {
         if self.root.exists() {
-            std::fs::remove_dir_all(&self.root).expect("remove drill-owned kernel state");
+            if let Err(error) = std::fs::remove_dir_all(&self.root) {
+                if std::thread::panicking() {
+                    // Aborted background tasks can still hold the state briefly.
+                    // Preserve the original test failure instead of aborting the
+                    // entire suite with a second panic during unwinding.
+                    eprintln!("drill cleanup failed at {}: {error}", self.root.display());
+                } else {
+                    panic!("remove drill-owned kernel state: {error}");
+                }
+            }
         }
     }
 }

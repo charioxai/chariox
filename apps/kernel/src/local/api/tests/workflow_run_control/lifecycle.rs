@@ -97,10 +97,13 @@ fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: impl FnOnce() +
 }
 
 fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider: &str) {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner",
+    );
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
