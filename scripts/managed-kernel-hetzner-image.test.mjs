@@ -402,6 +402,21 @@ test("managed slices use builder-attested runtime binaries instead of compiling 
   assert.match(provisioner, /--build-arg "CHARIOX_PREBUILT_RUNTIME=1"/)
 })
 
+test("managed App domain is prepared after the delegated main process is spawned", async () => {
+  // systemd 259 (Ubuntu 26.04) spawns the main process through the unit's own
+  // cgroup; controllers enabled there by an ExecStartPre make that spawn fail
+  // with EBUSY, so the root domain preparation must be an ExecStartPost.
+  const prepare = "+/usr/libexec/chariox-app-storage --prepare-managed-domain"
+  const managed = await readFile(managedServiceUrl, "utf8")
+  const fixture = await readFile(new URL("./app-storage-linux-fixture.sh", import.meta.url), "utf8")
+  assert.match(managed, /^Delegate=cpu memory pids$/m)
+  assert.match(managed, /^DelegateSubgroup=supervisor$/m)
+  for (const unit of [managed, fixture]) {
+    assert.ok(unit.split("\n").includes(`ExecStartPost=${prepare}`))
+    assert.doesNotMatch(unit, /^ExecStartPre=.*--prepare-managed-domain/m)
+  }
+})
+
 test("managed Docker authority and publication access remain narrowly separated", async () => {
   const bootstrapEntrypoint = await readFile(bootstrapEntrypointUrl, "utf8")
   const managed = await readFile(managedServiceUrl, "utf8")
