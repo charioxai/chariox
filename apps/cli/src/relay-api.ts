@@ -235,10 +235,12 @@ export async function issueKernelCloudRelayClientToken(
   if (publicKeyThumbprint) {
     requireRelayTokenKeyBinding(payload.token.relay_token, publicKeyThumbprint, "CLI key-bound relay token")
   }
+  const targetDaemonId = relayTokenCanonicalTarget(payload.token.relay_token, targetDaemonAlias)
   return {
     relayUrl: payload.token.relay_url,
     relayToken: payload.token.relay_token,
     tokenExpiresAtMs: parseAbsoluteInstantMs(payload.token.token_expires_at),
+    ...(targetDaemonId ? { targetDaemonId } : {}),
     profile: relayCloudProfileFromKernel(payload.profile),
   }
 }
@@ -277,22 +279,34 @@ export async function joinKernelTerminalPairingLink(
 }
 
 function requireRelayTokenKeyBinding(token: string, expectedThumbprint: string, capability: string): void {
-  if (token.length > 16_384) {
+  const payload = relayTokenPayload(token)
+  if (!payload) {
     throw new Error(`${capability} requires a relay token bound to this CLI's public key`)
   }
-  const segments = token.trim().split(".")
-  if (segments.length !== 3 || !segments[0] || !segments[1] || !segments[2]) {
-    throw new Error(`${capability} requires a relay token bound to this CLI's public key`)
-  }
-  let thumbprint: unknown
-  try {
-    const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8")) as Record<string, unknown>
-    thumbprint = payload.public_key_thumbprint
-  } catch {
-    throw new Error(`${capability} requires a relay token bound to this CLI's public key`)
-  }
-  if (thumbprint !== expectedThumbprint) {
+  if (payload.public_key_thumbprint !== expectedThumbprint) {
     throw new Error(`${capability} was denied because Cloud relay did not bind the token to this CLI's public key`)
+  }
+}
+
+function relayTokenCanonicalTarget(token: string, requestedAlias: string): string | undefined {
+  // Project launch metadata from the kernel-issued token. This is not an
+  // authorization check: the relay verifies the signed token and target scope.
+  const targets = relayTokenPayload(token)?.allowed_targets
+  if (!Array.isArray(targets) || targets.length !== 1) return undefined
+  const target = targets[0]
+  return typeof target === "string" && target.trim() && target !== requestedAlias ? target : undefined
+}
+
+function relayTokenPayload(token: string): Record<string, unknown> | undefined {
+  if (token.length > 16_384) return undefined
+  const segments = token.trim().split(".")
+  if (segments.length !== 3 || !segments[0] || !segments[1] || !segments[2]) return undefined
+  try {
+    const payload: unknown = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"))
+    return payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload as Record<string, unknown> : undefined
+  } catch {
+    return undefined
   }
 }
 

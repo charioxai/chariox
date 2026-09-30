@@ -10,12 +10,12 @@ function fakeClient(send: (request: unknown) => Promise<unknown>): LocalIpcClien
   return { send } as unknown as LocalIpcClient
 }
 
-function relayToken(thumbprint: string) {
-  const payload = Buffer.from(JSON.stringify({ public_key_thumbprint: thumbprint })).toString("base64url")
+function relayToken(thumbprint: string, allowedTargets?: unknown) {
+  const payload = Buffer.from(JSON.stringify({ public_key_thumbprint: thumbprint, ...(allowedTargets !== undefined ? { allowed_targets: allowedTargets } : {}) })).toString("base64url")
   return `eyJhbGciOiJub25lIn0.${payload}.signature`
 }
 
-function tokenResponse(thumbprint = "bootstrap-thumbprint") {
+function tokenResponse(thumbprint = "bootstrap-thumbprint", allowedTargets?: unknown) {
   return {
     CloudRelayClientTokenIssued: {
       profile: {
@@ -30,7 +30,7 @@ function tokenResponse(thumbprint = "bootstrap-thumbprint") {
       },
       token: {
         relay_url: "wss://relay.example",
-        relay_token: relayToken(thumbprint),
+        relay_token: relayToken(thumbprint, allowedTargets),
         token_expires_at: "2099-01-01T00:00:00Z",
       },
     },
@@ -94,4 +94,24 @@ test("key-bound issuance rejects an unbound relay token instead of returning it"
     issueKernelCloudRelayClientToken(client, "home", "cli-1", null, "bootstrap-thumbprint"),
     /did not bind the token to this CLI's public key/,
   )
+})
+
+
+test("client token projects a singleton canonical target without changing its scope", async () => {
+  const response = tokenResponse("bootstrap-thumbprint", ["kernel-canonical-1"])
+  const issued = await issueKernelCloudRelayClientToken(
+    fakeClient(async () => response), "home-alias", "cli-1", null, "bootstrap-thumbprint",
+  )
+  assert.equal(issued.targetDaemonId, "kernel-canonical-1")
+  assert.equal(issued.relayToken, response.CloudRelayClientTokenIssued.token.relay_token)
+})
+
+test("alias-scoped and ambiguous client tokens preserve the requested alias", async () => {
+  for (const targets of [undefined, null, [], ["home-alias"], ["kernel-1", "kernel-2"], [""], ["   "], [7], "kernel-1"]) {
+    const issued = await issueKernelCloudRelayClientToken(
+      fakeClient(async () => tokenResponse("bootstrap-thumbprint", targets)),
+      "home-alias", "cli-1", null, "bootstrap-thumbprint",
+    )
+    assert.equal(issued.targetDaemonId, undefined)
+  }
 })

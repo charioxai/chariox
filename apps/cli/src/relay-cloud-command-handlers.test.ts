@@ -1,8 +1,12 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import type { RuntimeSession } from "./cli-types.js"
 import { handleRelayCloudCommand } from "./relay-cloud-command-handlers.js"
+import { issueKernelCloudRelayClientToken } from "./relay-api.js"
+import { parseArgs } from "./cli-options.js"
+import type { LocalIpcClient } from "./ipc.js"
 import type { RelayCloudProfile } from "./preferences.js"
 
 test("relay cloud status reports missing cloud link", async () => {
@@ -19,7 +23,7 @@ test("relay cloud status reports missing cloud link", async () => {
   assert.equal(notice, "cloud is not linked. Run /cloud first.")
 })
 
-test("relay cloud client-token pairs a client and emits the relay command", async () => {
+test("relay cloud client-token lets kernel issuance pair the client and preserves alias commands", async () => {
   const unpaired = profile()
   const paired = profile({ clientId: "client-1" })
   const notices: string[] = []
@@ -34,7 +38,7 @@ test("relay cloud client-token pairs a client and emits the relay command", asyn
     sessionState: () => session(),
     getCloudRelayProfile: () => unpaired,
     saveCloudRelayProfile: async (nextProfile) => { savedClientId = nextProfile?.clientId },
-    pairCloudRelayClient: async (_profile, clientId) => profile({ clientId }),
+    pairCloudRelayClient: async () => { throw new Error("client-token must not pre-pair an account client") },
     issueCloudClientRelayToken: async (_profile, _targetDaemonAlias, options) => {
       issuedSessionId = options?.sessionId
       return {
@@ -50,6 +54,65 @@ test("relay cloud client-token pairs a client and emits the relay command", asyn
   assert.equal(issuedSessionId, "session-1")
   assert.match(notices[0] ?? "", /command=chariox --relay-url wss:\/\/relay\.example --relay-token relay-token --target-daemon-alias builder-kernel/)
   assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
+})
+
+test("machine-only client-token uses shared kernel issuance and launches its canonical scoped target", async () => {
+  const machineOnly = profile({ machineId: "machine-1", machineCredential: "synthetic-machine-credential" })
+  const fixture = JSON.parse(await readFile(new URL("../../../fixtures/machine-client-cli-relay-target.json", import.meta.url), "utf8")) as {
+    requestedAlias: string; claims: { public_key_thumbprint: string; allowed_targets: string[] };
+    syntheticToken: string; tokenExpiresAt: string; generatedCommand: string;
+    parsedTarget: { daemonId: string; daemonAlias: null };
+  }
+  const canonicalTarget = fixture.parsedTarget.daemonId
+  const requestedAlias = fixture.requestedAlias
+  const claims = fixture.claims
+  const token = fixture.syntheticToken
+  assert.equal(token, `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.synthetic-signature`)
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const saved: RelayCloudProfile[] = []
+  const client = { send: async (request: unknown) => {
+    requests.push(request)
+    assert.deepEqual(request, { IssueCloudRelayClientToken: {
+      target_daemon_alias: requestedAlias, client_id: "cli-1", session_id: "session-1",
+      public_key_thumbprint: "fixture-thumbprint",
+    } })
+    return { CloudRelayClientTokenIssued: {
+      profile: {
+        api_url: machineOnly.apiUrl, email: machineOnly.email,
+        account_id: machineOnly.accountId, user_id: machineOnly.userId,
+        account_slug: machineOnly.accountSlug, realm_id: machineOnly.realmId,
+        relay_url: machineOnly.relayUrl, issuer_id: machineOnly.issuerId,
+        machine_id: machineOnly.machineId, machine_credential: machineOnly.machineCredential,
+        client_id: "machine-scoped-client-1",
+      },
+      token: { relay_url: machineOnly.relayUrl, relay_token: token, token_expires_at: fixture.tokenExpiresAt },
+    } }
+  } } as unknown as LocalIpcClient
+  await handleRelayCloudCommand({
+    appendNotice: (message) => { notices.push(message) }, flashFooter: () => {},
+    formatError: (error) => String(error), clientId: "cli-1", sessionState: () => session(),
+    getCloudRelayProfile: () => machineOnly,
+    saveCloudRelayProfile: async (next) => { if (next) saved.push(next) },
+    pairCloudRelayClient: async () => { throw new Error("machine-only profile cannot account-pair a client") },
+    // This is the production composition's shared IPC adapter.
+    issueCloudClientRelayToken: (_profile, target, options) => issueKernelCloudRelayClientToken(
+      client, target, "cli-1", options?.sessionId, "fixture-thumbprint",
+    ),
+  }, ["client-token", requestedAlias])
+  assert.equal(requests.length, 1)
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0]?.clientId, "machine-scoped-client-1")
+  assert.equal(machineOnly.clientId, undefined)
+  const command = notices[0]?.split("\n").find((line) => line.startsWith("command="))
+  assert.ok(command)
+  assert.equal(command, `command=${fixture.generatedCommand}`)
+  const options = parseArgs(command.slice("command=chariox ".length).split(" "))
+  assert.equal(options.targetDaemonId, canonicalTarget)
+  assert.equal(options.targetDaemonAlias ?? null, fixture.parsedTarget.daemonAlias)
+  assert.equal(options.relayToken, token)
+  assert.deepEqual(claims.allowed_targets, [options.targetDaemonId])
+  assert.equal(notices.at(-1), `cloud client token minted for ${requestedAlias}`)
 })
 
 test("explicit Cloud revocation preserves the link when acknowledgement fails", async () => {
