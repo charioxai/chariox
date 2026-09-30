@@ -12,8 +12,10 @@ use crate::durable_state::{
 };
 use chariox_app_package::{ExternalFileAccess, VerifiedPackage};
 use chariox_app_runtime::{
-    app_outbox::EventCatalog, wire::RemoteError, worker_peer::BrokerRequest,
-    worker_process::PrivateData,
+    app_outbox::EventCatalog,
+    wire::RemoteError,
+    worker_peer::BrokerRequest,
+    worker_process::{PrivateData, PrivateDataError},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -185,7 +187,10 @@ impl AppFileGrantBroker {
         let published = self
             .data
             .prepare_replace(&request.destination, &file.contents)
-            .map_err(|_| error("INVALID_ARGUMENT", false))
+            .map_err(|failure| match failure {
+                PrivateDataError::StorageFull => super::app_files_broker::storage_full(),
+                _ => error("INVALID_ARGUMENT", false),
+            })
             .and_then(|staged| {
                 budget.check().map_err(stopped)?;
                 self.store

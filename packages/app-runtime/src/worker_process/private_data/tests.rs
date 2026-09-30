@@ -262,3 +262,28 @@ fn raw_app_writes_racing_an_sdk_replacement_never_tear_it() {
     assert!(last.iter().all(|b| *b == b'a') || last.iter().all(|b| *b == b'b'));
     assert_eq!(fs::read_dir(&f.path).unwrap().count(), 1);
 }
+
+#[test]
+fn space_refusals_are_storage_full_and_other_failures_keep_their_kind() {
+    // ENOSPC is a full fixed-size volume (Linux ext4, macOS APFS); EDQUOT a
+    // filesystem quota. Both are the App's quota, never a generic I/O failure.
+    for errno in [libc::ENOSPC, libc::EDQUOT] {
+        let error = || std::io::Error::from_raw_os_error(errno);
+        assert_eq!(io(error()), PrivateDataError::StorageFull);
+        assert_eq!(
+            fs(private_fs::FsError::Io(error())),
+            PrivateDataError::StorageFull
+        );
+    }
+    for errno in [libc::EIO, libc::EROFS, libc::EFBIG, libc::ENOENT] {
+        assert_eq!(
+            io(std::io::Error::from_raw_os_error(errno)),
+            PrivateDataError::Io
+        );
+    }
+    assert_eq!(io(std::io::Error::other("no errno")), PrivateDataError::Io);
+    assert_eq!(
+        fs(private_fs::FsError::UnsafeEntry),
+        PrivateDataError::Identity
+    );
+}

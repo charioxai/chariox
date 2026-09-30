@@ -118,7 +118,7 @@ fn snapshot_step(previous: u64, generation: u64, committed: u64, kept: bool) -> 
     }
 }
 
-const CAPACITIES: [u64; 2] = [512 * 1024 * 1024, 64 * 1024 * 1024];
+const CAPACITIES: [u64; 2] = [super::DATA_QUOTA_BYTES, 64 * 1024 * 1024];
 
 pub(super) struct StorageRoot {
     dir: Dir,

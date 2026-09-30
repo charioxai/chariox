@@ -54,6 +54,8 @@ Wire control events never dispatch App event handlers.
 - `tools.register`, `events.register`, `lifecycle.on`: local handler registration.
 - `state.get`, `state.transaction`: structured state and atomic outgoing occurrences.
 - `files.atomicReplace`, `snapshot`, `import`, `export`: managed private-file operations.
+  A write to a full private data volume (512 MiB per installation) fails
+  `APP_STORAGE_FULL`; see [WIRE.md](WIRE.md).
 - `events.emit`, `status`, `retry`: durable occurrence operations. The kernel alone
   decides whether a receipt can be retried.
 - `http.request`: bounded HTTP broker request with optional opaque connection and
