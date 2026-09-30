@@ -1774,8 +1774,13 @@ Workflow trigger and deployment direction:
   `AppViewOpened {installation_id, target_id, origin}`. The view is a managed
   Tab in the session's Room browser, so people and agents share one DOM and
   profile. The kernel re-verifies the active release and serves only its signed
-  `ui/` files on a per-owner, per-installation `https://<label>.app.chariox.internal`
-  origin through browser request interception. All other requests from the Tab
+  `ui/` files on a per-owner, per-installation `https://app.<label>.invalid`
+  origin through browser request interception. Each installation has a distinct
+  registrable domain beneath the reserved `.invalid` suffix: parent-domain
+  cookies and `document.domain` cannot cross installation boundaries. Upgrading
+  from the former shared parent origin closes legacy App Tabs; browser-local
+  storage from those origins is not migrated (kernel-owned App data is retained).
+  All other requests from the Tab
   are blocked, a strict CSP applies, and popups are closed. The room-controller
   relay command `app_view` (`open`, `calls`, `respond`) carries this between
   the home and worker kernels. `window.chariox.call(tool, input)` runs the App's
