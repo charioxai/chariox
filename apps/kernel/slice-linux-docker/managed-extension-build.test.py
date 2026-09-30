@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import pwd
 import select
 import signal
 import socket
@@ -133,6 +134,50 @@ class DescriptorTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0 and os.environ.get("CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS") == "1",
                      "explicitly enabled root namespace fixture")
 class NamespaceTests(unittest.TestCase):
+    def test_credential_helper_retains_existing_sudo_authority_after_uid_drop(self):
+        user = pwd.getpwnam("nobody")
+        with tempfile.TemporaryDirectory(prefix="chariox-extension-sudo-", dir="/run") as scratch:
+            root = pathlib.Path(scratch)
+            root.chmod(0o711)
+            policy = root / "sudoers"
+            timestamps = root / "timestamps"
+            timestamps.mkdir(mode=0o700)
+            policy.write_text("Defaults !requiretty\nDefaults !use_pty\nDefaults !syslog\n"
+                              "Defaults !pam_session\nDefaults !pam_setcred\nDefaults timestamp_timeout=0\n" +
+                              'Defaults timestampdir="' + str(timestamps) + '"\n' +
+                              'Defaults logfile="' + str(root / "sudo.log") + '"\n' +
+                              user.pw_name + " ALL=(root) NOPASSWD: /usr/bin/id -u\n")
+            policy.chmod(0o440)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            os.chown(home, user.pw_uid, user.pw_gid)
+            credential = root / "docker-credential-synthetic"
+            credential.write_text("#!/bin/sh\nexec /usr/bin/sudo -n -- /usr/bin/id -u\n")
+            credential.chmod(0o755)
+            script = root / "probe.py"
+            script.write_text("""
+import importlib.util,json,os,pathlib,subprocess,sys
+sys.dont_write_bytecode=True
+source,root,uid,gid,mode=sys.argv[1:];root=pathlib.Path(root);uid=int(uid);gid=int(gid)
+spec=importlib.util.spec_from_file_location("extension",source);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+m.mount("--make-rprivate","/");m.mount("--bind",root/"sudoers","/etc/sudoers")
+if mode=="helper":m.drop_user(uid,gid,[])
+else:os.setgroups([]);os.setgid(gid);os.setuid(uid)
+status=dict(line.split(":",1) for line in pathlib.Path("/proc/self/status").read_text().splitlines() if ":" in line)
+p=subprocess.run([str(root/"docker-credential-synthetic")],env={"HOME":str(root/"home"),"PATH":"/usr/bin:/bin"},capture_output=True,text=True,timeout=5)
+print(json.dumps({"exit":p.returncode,"rootId":p.stdout.strip()=="0","noNewPrivileges":int(status["NoNewPrivs"]),
+                 "effectiveCapabilities":int(status["CapEff"],16),"permittedCapabilities":int(status["CapPrm"],16)}))
+""")
+            for mode in ("ordinary", "helper"):
+                result = subprocess.run(["/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--kill-child=KILL",
+                                         sys.executable, "-I", "-S", "-B", str(script), str(SOURCE), str(root),
+                                         str(user.pw_uid), str(user.pw_gid), mode],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                observed = json.loads(result.stdout)
+                self.assertEqual(observed, dict(exit=0, rootId=True, noNewPrivileges=0,
+                                               effectiveCapabilities=0, permittedCapabilities=0), mode)
+
     def test_socket_group_requires_protected_unambiguous_daemon_allocation(self):
         user = types.SimpleNamespace(pw_name="chariox-docker", pw_uid=23457, pw_gid=23457)
         with tempfile.TemporaryDirectory(prefix="chariox-extension-subgid-", dir="/run") as scratch:

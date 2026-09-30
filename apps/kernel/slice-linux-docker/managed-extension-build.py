@@ -340,7 +340,8 @@ def drop_user(uid, gid, groups):
     header = Header(0x20080522, 0)
     data = (Data * 2)()
     require(LIBC.capset(ctypes.byref(header), ctypes.byref(data)) == 0, "could not clear build capabilities")
-    require(LIBC.prctl(38, 1, 0, 0, 0) == 0, "could not set no_new_privileges")
+    # Full-sudo Path-1 credential helpers retain their existing setuid/sudo
+    # authority. Setting no_new_privileges here would narrow that caller policy.
 
 
 def capture_build(argv, environment, uid, gid, groups, timeout=None, max_output=MAX_OUTPUT, caller_cwd_fd=None):
