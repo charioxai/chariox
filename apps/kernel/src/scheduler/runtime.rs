@@ -152,15 +152,13 @@ pub fn schedule_workflow_node_prompt(
         session_id,
         workflow_run_id,
         workflow_node_run_id,
-        false,
     )? == crate::app::workflow_runtime::WorkflowSchedulerOwner::Owned
     {
         return Ok(());
     }
 
-    let _ = app
-        .sessions_mut()
-        .set_focused_agent(session_id, Some(target_agent_id.to_string()));
+    // A workflow turn never moves the session's focus agent: only a person
+    // changes focus. The turn runs beside the owner's conversation.
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
     let mailbox_content = workflow_node_control_contents(
         app,
@@ -188,7 +186,6 @@ pub fn schedule_workflow_node_prompt(
         target_agent_id,
         node_id,
         prompt,
-        false,
     )
 }
 
@@ -200,14 +197,12 @@ fn dispatch_prepared_workflow_node_prompt(
     target_agent_id: &str,
     node_id: &str,
     prompt: &str,
-    allow_submitted_resume: bool,
 ) -> Result<(), DaemonError> {
     if crate::app::workflow_runtime::workflow_entry_scheduler_owner(
         app,
         session_id,
         workflow_run_id,
         workflow_node_run_id,
-        allow_submitted_resume,
     )? == crate::app::workflow_runtime::WorkflowSchedulerOwner::Owned
     {
         // The retained entry intent wakes the owned timer. Returning success
@@ -355,7 +350,6 @@ fn retry_prepared_workflow_node_prompt(
         session_id,
         workflow_run_id,
         workflow_node_run_id,
-        false,
     )? == crate::app::workflow_runtime::WorkflowSchedulerOwner::Owned
     {
         return Ok(());
@@ -409,91 +403,6 @@ fn retry_prepared_workflow_node_prompt(
         target_agent_id,
         node_id,
         outcome,
-    )
-}
-
-pub fn resume_workflow_run(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_run_ref: &str,
-) -> Result<WorkflowRun, DaemonError> {
-    // Capture resume intent before exposing the stopped run as runnable.
-    let allow_submitted_resume = {
-        let sessions = app.sessions();
-        let original = sessions.resolve_workflow_run_ref(session_id, workflow_run_ref)?;
-        app.durable_state_store()
-            .workflow_dispatch_intent(&app.config().daemon_id, session_id, original.id())?
-            .is_some_and(|intent| intent.submitted)
-    };
-    let workflow_run = app
-        .sessions_mut()
-        .resume_workflow_run(session_id, workflow_run_ref)?;
-    app.durable_state_store()
-        .persist_workflow_runtime_transition(
-            &app.sessions().get_session(session_id)?,
-            "workflow_resumed",
-        )?;
-    let resumable_node_runs = workflow_run
-        .node_runs()
-        .iter()
-        .filter(|node_run| {
-            node_run.status() == WorkflowNodeRunStatus::Ready
-                && node_run
-                    .turn_envelope()
-                    .and_then(|envelope| envelope.rendered_prompt())
-                    .is_some()
-        })
-        .map(|node_run| {
-            (
-                node_run.id().to_string(),
-                node_run.node_id().to_string(),
-                node_run.agent_id().to_string(),
-                node_run
-                    .turn_envelope()
-                    .and_then(|envelope| envelope.rendered_prompt())
-                    .unwrap_or_default()
-                    .to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-    for (workflow_node_run_id, node_id, agent_id, prompt) in resumable_node_runs {
-        resume_existing_workflow_node_prompt(
-            app,
-            session_id,
-            workflow_run.id(),
-            &workflow_node_run_id,
-            &node_id,
-            &agent_id,
-            &prompt,
-            allow_submitted_resume,
-        )?;
-    }
-    app.sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run.id())
-}
-
-fn resume_existing_workflow_node_prompt(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_run_id: &str,
-    workflow_node_run_id: &str,
-    node_id: &str,
-    target_agent_id: &str,
-    prompt: &str,
-    allow_submitted_resume: bool,
-) -> Result<(), DaemonError> {
-    let _ = app
-        .sessions_mut()
-        .set_focused_agent(session_id, Some(target_agent_id.to_string()));
-    dispatch_prepared_workflow_node_prompt(
-        app,
-        session_id,
-        workflow_run_id,
-        workflow_node_run_id,
-        target_agent_id,
-        node_id,
-        prompt,
-        allow_submitted_resume,
     )
 }
 

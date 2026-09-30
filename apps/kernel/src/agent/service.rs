@@ -136,7 +136,9 @@ impl AgentService {
             created_agents.push(agent);
         }
 
-        let focused_agent_id = created_agents.last().map(|agent| agent.id().to_string());
+        let focused_agent_id = new_agent_focus_target(&created_agents)
+            .map(|agent| agent.id().to_string())
+            .or_else(|| session.focused_agent_id().map(str::to_string));
         let created_agents = self.store.insert_session_batch_and_apply_layout(
             session.id(),
             created_agents,
@@ -1176,6 +1178,16 @@ impl Default for AgentService {
     }
 }
 
+/// The new agent that takes the session focus: a person's last new agent.
+/// Only a person moves the focus, so an agent created on a metaagent's behalf
+/// (a meta-mode spawn, or workflow code for a metaagent) never takes it.
+pub(crate) fn new_agent_focus_target(agents: &[AgentInstance]) -> Option<&AgentInstance> {
+    agents
+        .iter()
+        .rev()
+        .find(|agent| agent.controlled_by_metaagent_id().is_none())
+}
+
 #[cfg(test)]
 mod workflow_copy_alias_tests {
     use super::*;
@@ -1345,6 +1357,75 @@ mod workflow_copy_alias_tests {
                 .id(),
             source.id()
         );
+    }
+
+    #[test]
+    fn an_agent_a_metaagent_spawns_does_not_take_the_session_focus() {
+        let mut service = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let focused = |sessions: &SessionService| {
+            sessions
+                .get_session(session.id())
+                .expect("session should remain")
+                .focused_agent_id()
+                .map(str::to_string)
+        };
+        let person_agent = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            )
+            .expect("a person's agent should be created");
+        assert_eq!(focused(&sessions), Some(person_agent.id().to_string()));
+
+        // A meta-mode agent spawns a helper: the person's focus stays.
+        let helper = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex")
+                    .with_controlled_by_metaagent_id(person_agent.id()),
+                &mut sessions,
+            )
+            .expect("the metaagent's agent should be created");
+        assert_eq!(focused(&sessions), Some(person_agent.id().to_string()));
+        assert_ne!(
+            service
+                .get_agent(helper.id())
+                .expect("helper should exist")
+                .state(),
+            AgentState::Focused
+        );
+
+        // A batch mixing both focuses the person's agent, whatever its order.
+        let batch = service
+            .create_agents(
+                vec![
+                    CreateAgentRequest::new(session.id(), "codex"),
+                    CreateAgentRequest::new(session.id(), "codex")
+                        .with_controlled_by_metaagent_id(person_agent.id()),
+                ],
+                &mut sessions,
+            )
+            .expect("a mixed batch should be created");
+        assert_eq!(
+            new_agent_focus_target(&batch).map(|agent| agent.id()),
+            Some(batch[0].id())
+        );
+        assert_eq!(focused(&sessions), Some(batch[0].id().to_string()));
+        // A metaagent-only batch (as a worker-backed spawn returns it) has no
+        // focus target: the session keeps its focus.
+        assert!(new_agent_focus_target(&batch[1..]).is_none());
+
+        // A person's spawn still takes the focus.
+        let next = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            )
+            .expect("a person's second agent should be created");
+        assert_eq!(focused(&sessions), Some(next.id().to_string()));
     }
 
     #[test]
