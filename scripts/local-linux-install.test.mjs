@@ -16,7 +16,8 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const installer = join(repositoryRoot, "deploy/local-linux/install-root.sh")
 const linux = process.platform === "linux"
 const KEY = "a".repeat(64)
-const users = { root: 0, alice: 1000, bob: 1001, "Carol.Smith": 1002 }
+const users = { root: 0, alice: 1000, bob: 1001, "Carol.Smith": 1002, rootgroup: 1003 }
+const groups = { ...users, rootgroup: 0 }
 
 async function script(path, contents) {
   await writeFile(path, contents)
@@ -37,11 +38,11 @@ async function harness() {
   await writeFile(join(root, "sys/fs/cgroup/cgroup.controllers"), "cpu memory pids\n")
   await writeFile(join(root, "sys/module/apparmor/parameters/enabled"), "Y\n")
   await writeFile(join(root, "sys/kernel/security/apparmor/profiles"), "")
-  const passwd = Object.entries(users).map(([name, uid]) => `${name}:x:${uid}:${uid}::/home/${name}:/bin/bash`)
+  const passwd = Object.entries(users).map(([name, uid]) => `${name}:x:${uid}:${groups[name]}::/home/${name}:/bin/bash`)
   await script(join(bin, "id"), `#!/bin/sh
 case "$*" in
   -u) echo "\${HARNESS_UID:-0}" ;;
-${Object.entries(users).map(([name, uid]) => `  "-u ${name}"|"-g ${name}") echo ${uid} ;;`).join("\n")}
+${Object.entries(users).map(([name, uid]) => `  "-u ${name}") echo ${uid} ;;\n  "-g ${name}") echo ${groups[name]} ;;`).join("\n")}
   *) exit 1 ;;
 esac
 `)
@@ -259,4 +260,24 @@ test("local Linux kernel unit owns the delegated subtree the root install enroll
   assert.match(start, /chariox-kernel\.service\/supervisor \]\]/)
   assert.ok(start.indexOf('mkdir "$unit/apps"') < start.indexOf('exec "$1"'))
   assert.match(root, /user@\$uid\.service\/app\.slice\/chariox-kernel\.service\/apps:\$home\/\.chariox\/state\/kernel\.db/)
+})
+
+test("local Linux root install refuses GID zero before changing shared enrollment", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    assert.equal(h.install(["alice"]).status, 0)
+    const enrollment = await readFile(p(h, "etc/chariox/app-storage.json"), "utf8")
+    const logs = Object.fromEntries(await Promise.all(
+      ["runtime-install", "systemctl", "loginctl", "apparmor"].map(async (name) => [name, await h.log(name)]),
+    ))
+    const result = h.install(["bob", "rootgroup"])
+    assert.equal(result.status, 1)
+    assert.match(result.out, /rootgroup must have a non-root primary group/)
+    assert.equal(await readFile(p(h, "etc/chariox/app-storage.json"), "utf8"), enrollment)
+    for (const [name, contents] of Object.entries(logs)) assert.equal(await h.log(name), contents)
+    assert.equal(existsSync(p(h, "var/lib/systemd/linger/1001")), false)
+    assert.equal(existsSync(p(h, "var/lib/systemd/linger/1003")), false)
+  } finally {
+    await rm(h.base, { recursive: true, force: true })
+  }
 })

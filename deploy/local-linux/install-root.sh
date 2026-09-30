@@ -113,9 +113,11 @@ for user in "${users[@]}"; do
   [[ "$uid" != 0 ]] || die "the kernel must run as an ordinary user, not root"
   uids+=("$uid")
   [[ "$command" == install ]] || continue
+  gid=$(id -g "$user" 2>/dev/null) || die "cannot determine primary group: $user"
+  [[ "$gid" != 0 ]] || die "$user must have a non-root primary group"
   home=$(getent passwd "$user" | cut -d: -f6)
   [[ "$home" == /?* ]] || die "$user has no home directory"
-  owner_specs+=("$uid:$(id -g "$user"):/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice/chariox-kernel.service/apps:$home/.chariox/state/kernel.db")
+  owner_specs+=("$uid:$gid:/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice/chariox-kernel.service/apps:$home/.chariox/state/kernel.db")
 done
 
 # enrollment install SPEC... | enrollment remove UID...: merge into or remove from
