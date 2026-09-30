@@ -803,11 +803,14 @@ fn failed_wake_settlement_after_change(replaced: bool) {
             .execute_app_state(
                 "alice",
                 Arc::clone(&catalog),
-                AppStateOperation::Schedule(vec![WakeChange::Set(Wake {
-                    id: "scheduled".into(),
-                    due_at_ms: 1_000,
-                    revision: "old".into(),
-                })]),
+                AppStateOperation::Schedule {
+                    wakes: vec![WakeChange::Set(Wake {
+                        id: "scheduled".into(),
+                        due_at_ms: 1_000,
+                        revision: "old".into(),
+                    })],
+                    wakes_count_as_use: false,
+                },
                 budget(),
             )
             .unwrap();
@@ -838,7 +841,10 @@ fn failed_wake_settlement_after_change(replaced: bool) {
             .execute_app_state(
                 "alice",
                 Arc::clone(&catalog),
-                AppStateOperation::Schedule(vec![change]),
+                AppStateOperation::Schedule {
+                    wakes: vec![change],
+                    wakes_count_as_use: false,
+                },
                 budget(),
             )
             .unwrap();
