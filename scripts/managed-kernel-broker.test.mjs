@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { access, chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -769,7 +769,18 @@ process.stdout.write(readFileSync(credential))
   assert.equal(injected.status, 1)
 })
 
-test("managed slice broker pins a provisioner path inode across caller replacement", async (context) => {
+async function processesInMountNamespace(namespace) {
+  const entries = await readdir("/proc")
+  const matches = await Promise.all(entries.filter((entry) => /^\d+$/.test(entry)).map(async (pid) => {
+    const current = await readlink(`/proc/${pid}/ns/mnt`).catch(() => null)
+    return current === namespace ? pid : null
+  }))
+  return matches.filter((pid) => pid !== null)
+}
+
+for (const abortBeforeRelease of [false, true]) test(abortBeforeRelease
+  ? "managed slice broker fixture settles timeout descendants after abort before release"
+  : "managed slice broker pins a provisioner path inode across caller replacement", async (context) => {
   if (process.platform !== "linux" || process.env.CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS !== "1") {
     context.skip("requires an explicitly enabled Linux mount namespace")
     return
@@ -786,12 +797,19 @@ test("managed slice broker pins a provisioner path inode across caller replaceme
   const handle = createHash("sha256").update("chariox-slice-dev\0workspace").digest("hex")
   const target = join(root, "handles", handle)
   let child
+  let namespace
   context.after(async () => {
-    if (child?.exitCode === null) {
-      const exited = once(child, "exit")
-      process.kill(-child.pid, "SIGTERM")
-      await exited
+    if (child?.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM")
+      const settled = () => Promise.resolve(child.exitCode !== null || child.signalCode !== null)
+      try {
+        await waitFor(settled, 1000)
+      } catch {
+        child.kill("SIGKILL")
+        await waitFor(settled)
+      }
     }
+    if (namespace) await waitFor(async () => (await processesInMountNamespace(namespace)).length === 0)
     // The child namespace owns the bind mount; exiting it must leave no host mount.
     assert.notEqual(spawnSync("/usr/bin/mountpoint", ["-q", "--", target]).status, 0)
     await rm(root, { recursive: true, force: true })
@@ -837,7 +855,9 @@ cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
 `)
   await chmod(provisioner, 0o755)
   child = spawn("/usr/bin/unshare", [
-    "--mount", "--propagation", "private", namespaceEntrypoint,
+    // Killing unshare kills the namespace init, so separate timeout process
+    // groups cannot outlive fixture teardown or retain privileged mounts.
+    "--mount", "--propagation", "private", "--pid", "--fork", "--kill-child=SIGKILL", "--mount-proc", namespaceEntrypoint,
     fakeDocker, quotaRoot, isolatedRun, process.execPath, broker,
   ], {
     detached: true,
@@ -870,6 +890,12 @@ cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
   await waitFor(async () => await access(started).then(() => true, () => false) || stdout.includes("\n"))
   const failure = stdout.includes("\n") ? Buffer.from(JSON.parse(stdout).stderrBase64, "base64").toString() : stderr
   assert.equal(await access(started).then(() => true, () => false), true, failure)
+  namespace = await readlink(`/proc/${child.pid}/ns/mnt`)
+  assert.notEqual(namespace, await readlink("/proc/self/ns/mnt"))
+  const owned = await processesInMountNamespace(namespace)
+  const commands = await Promise.all(owned.map((pid) => readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")))
+  assert.ok(commands.some((command) => command.includes("/usr/bin/timeout")), "fixture reached the real timeout child")
+  if (abortBeforeRelease) return // Exercise teardown while the provisioner waits in its separate process group.
   await rename(workspace, moved)
   await symlink(outside, workspace)
   assert.equal(await readFile(join(workspace, "value"), "utf8"), "outside-fixture")
