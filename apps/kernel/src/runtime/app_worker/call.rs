@@ -184,6 +184,7 @@ impl AppWorkerLease {
         counts_as_use: bool,
         timeout: Duration,
     ) -> Result<(), DeliveryError> {
+        let _delivering = self.0.residency.delivering();
         self.0.available()?;
         if counts_as_use {
             self.touch();
@@ -194,7 +195,8 @@ impl AppWorkerLease {
         });
         let response = slot.request("schedule.wake", params, None).await;
         if !counts_as_use {
-            // Marked after the handler, so no idle stop interrupts it.
+            // Marked after the handler; until then `_delivering` holds off
+            // an idle stop or eviction.
             self.0.residency.self_woken();
         }
         match response.map_err(peer_error)? {

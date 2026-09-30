@@ -143,6 +143,18 @@ struct Residency {
     last_used_ms: std::sync::atomic::AtomicU64,
     used: std::sync::atomic::AtomicBool,
     self_woken: std::sync::atomic::AtomicBool,
+    /// Wake deliveries in flight. They are not use, but no idle stop or
+    /// eviction may interrupt one.
+    delivering: std::sync::atomic::AtomicUsize,
+}
+/// Held for one wake delivery; see `Residency::delivering`.
+struct Delivering<'a>(&'a Residency);
+impl Drop for Delivering<'_> {
+    fn drop(&mut self) {
+        self.0
+            .delivering
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 impl Residency {
     fn new(started_ms: u64) -> Self {
@@ -150,7 +162,13 @@ impl Residency {
             last_used_ms: started_ms.into(),
             used: false.into(),
             self_woken: false.into(),
+            delivering: 0.into(),
         }
+    }
+    fn delivering(&self) -> Delivering<'_> {
+        self.delivering
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Delivering(self)
     }
     fn touch(&self, now_ms: u64) {
         use std::sync::atomic::Ordering;
@@ -163,9 +181,14 @@ impl Residency {
     }
     /// Idle time counts from the last use, or from the start. A worker that
     /// has served only the App's own wakes since it started has no use to
-    /// wait for: it stops once its due work is delivered.
+    /// wait for: it stops once its due work is delivered. While a wake is
+    /// being delivered the worker is not idle; that does not move its
+    /// deadline.
     fn idle_ms(&self, now_ms: u64) -> u64 {
         use std::sync::atomic::Ordering;
+        if self.delivering.load(Ordering::Acquire) > 0 {
+            return 0;
+        }
         if self.self_woken.load(Ordering::Acquire) && !self.used.load(Ordering::Acquire) {
             return u64::MAX;
         }
