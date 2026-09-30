@@ -312,7 +312,6 @@ fn the_owner_revokes_unanswered_picks_and_unimported_grants() {
         fixture.1.claim_app_file_grant(FileGrantCommand::Claim {
             owner: "alice".into(),
             installation: "docs".into(),
-            generation: 3,
             grant_id: grant_id.into(),
             now_ms: 12,
         })
