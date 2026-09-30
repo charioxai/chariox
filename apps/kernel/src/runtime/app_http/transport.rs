@@ -183,13 +183,24 @@ impl HttpTransport {
                 biased;
                 _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),
                 _ = tokio::time::sleep_until(initial_deadline) => return Err(HttpError::Deadline),
-                result = self.tls.connect(name, socket) => result.map_err(|_| HttpError::Tls)?,
+                result = tls_handshake(&self.tls, name, socket) => result?,
             };
             exchange_io(tls, target, exchange, stopped, progress, lifetime).await
         } else {
             exchange_io(socket, target, exchange, stopped, progress, lifetime).await
         }
     }
+}
+
+/// The handshake with the checked peer, verified against the URL's host. Any
+/// failure (certificate, name, protocol version, or a peer that does not
+/// speak TLS) is `Tls`, so the App can tell it from a network failure.
+async fn tls_handshake<I: AsyncRead + AsyncWrite + Unpin>(
+    tls: &TlsConnector,
+    name: ServerName<'static>,
+    io: I,
+) -> Result<tokio_rustls::client::TlsStream<I>> {
+    tls.connect(name, io).await.map_err(|_| HttpError::Tls)
 }
 
 async fn exchange_io<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(

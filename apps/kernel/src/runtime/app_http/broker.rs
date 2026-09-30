@@ -219,9 +219,11 @@ fn remote(failure: HttpError) -> RemoteError {
             "APP_BUSY",
             "HTTP operation is already in progress or capacity is occupied",
         ),
-        HttpError::Network | HttpError::Tls => {
-            ("APP_HTTP_NETWORK", "HTTP transport did not complete")
-        }
+        HttpError::Network => ("APP_HTTP_NETWORK", "HTTP transport did not complete"),
+        HttpError::Tls => (
+            "APP_HTTP_TLS",
+            "HTTPS handshake failed: the destination's certificate or TLS settings were not accepted",
+        ),
     };
     error(code, message)
 }

@@ -200,6 +200,16 @@ path) with `hasBody: false` and no header but `accept`. The kernel sends the
 approved canonical parameters as the whole JSON body. Any other request to a protected origin fails
 `VALIDATION_REQUIRED` or is denied.
 
+HTTP failures keep the ordinary error shape `{code, message, retryable}`; the
+code says what failed. `APP_HTTP_DESTINATION_DENIED`: the origin, method or
+resolved address is not permitted. `APP_HTTP_TLS`: the HTTPS handshake failed,
+for example an expired, self-signed or wrong-host certificate, an incomplete
+chain, or a server that offers only TLS 1.0 or 1.1 (the kernel requires TLS 1.2
+or later; certificate revocation is not checked). `APP_HTTP_NETWORK`: DNS, the
+connection or the HTTP exchange did not complete. `APP_DEADLINE`: a kernel time
+limit expired. `APP_HTTP_LIMIT`: a stream or size limit was reached. Earlier
+kernels report a failed handshake as `APP_HTTP_NETWORK`.
+
 `host.pick_file {multiple?, accept?}` (Apps whose signed manifest declares
 `capabilities.externalFiles: ["user_selected"]`; others get
 `CAPABILITY_REQUIRED`) replies `{operationId, state: "pending", grantIds: [],

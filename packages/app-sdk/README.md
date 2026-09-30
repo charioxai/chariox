@@ -187,6 +187,12 @@ finished or abandoning it. `http.request` is a 512 KiB buffered convenience usin
 one original deadline, at most 30 seconds, across its component operations.
 This subset does not claim Fetch conformance.
 
+A failed HTTPS handshake (a bad, expired or wrong-host certificate, or a server
+limited to TLS 1.0/1.1) fails with `APP_HTTP_TLS`; DNS, connection and exchange
+failures use `APP_HTTP_NETWORK`. Through Fetch, the rejection is a `TypeError`
+whose `cause.code` carries the code. Earlier kernels report both as
+`APP_HTTP_NETWORK`. The codes are listed in [WIRE.md](WIRE.md).
+
 SDK 0.7 supplies `chariox.http.fetch` and the worker-global Fetch adapter above
 these operations. See [the supported Fetch contract](FETCH.md) for streaming,
 redirect/decompression behavior, pinned client tests and remaining exclusions.

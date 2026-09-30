@@ -38,6 +38,38 @@ async fn drive(
 }
 
 #[tokio::test]
+async fn a_failed_tls_handshake_is_a_tls_failure_not_a_network_one() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, mut server) = sockets().await;
+        let server_task = tokio::spawn(async move {
+            // The ClientHello arrives; the peer answers in plain HTTP.
+            let mut record = [0u8; 5];
+            server.read_exact(&mut record).await.unwrap();
+            assert_eq!(record[0], 0x16);
+            server
+                .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let roots =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let name = ServerName::try_from("api.example.com").unwrap();
+        let result = tls_handshake(&TlsConnector::from(Arc::new(config)), name, client).await;
+        assert!(matches!(result, Err(HttpError::Tls)));
+        server_task.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn sse_first_chunk_arrives_before_response_completion() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let (client, mut server) = sockets().await;
