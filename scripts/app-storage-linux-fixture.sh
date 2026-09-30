@@ -92,6 +92,14 @@ run_test() {
 }
 run_test chariox-storage-actual hosted_private_capacity_persistence_tmp_reset_and_noexec
 run_test chariox-storage-actual hosted_failed_update_restores_the_committed_data_snapshot
+# A snapshot copies the whole data image; the helper must stay far below MemoryMax.
+check_helper_peak() {
+  local peak
+  peak=$(systemctl show -p MemoryPeak --value chariox-app-storage.service)
+  printf 'Helper memory peak after %s: %s\n' "$1" "$peak"
+  [[ "$peak" =~ ^[0-9]+$ && "$peak" -lt $((128 * 1024 * 1024)) ]]
+}
+check_helper_peak "the snapshot test"
 run_test chariox-storage-actual hosted_deleting_an_installation_removes_its_storage
 # The committed start dropped the snapshot; no copy outlives the update.
 if find /var/lib/chariox-app-storage -name data-snapshot.ext4 | grep . ; then exit 1; fi
@@ -122,6 +130,8 @@ for storage_attempt in $(seq 1 300); do
   sleep 0.1
 done
 [[ -f /var/lib/chariox/home/storage-crash-ready ]]
+# The staged update took its own snapshot in this (restarted) helper.
+check_helper_peak "the staged update's snapshot"
 systemctl kill --kill-whom=all --signal=SIGKILL chariox-app-storage.service
 systemctl stop chariox-storage-crash.service
 wait "$storage_waiter" || true
