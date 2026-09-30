@@ -186,7 +186,7 @@ A token is revoked, and its hash dropped, on any of:
 | Passkey change | Section 4.4. |
 | Expiry | `expires_at` reached. |
 
-Revocation also closes any connection that authenticated with the token (options (a) and (c) in section 6 make this exact; with (b) the next request is refused).
+Revocation and expiry act immediately, not at the caller's next request. Under every option in section 6 the kernel records which connections and subscriptions each token authorized; on revocation or expiry it cancels those subscriptions (the subscription loop in `runtime_transport/subscriptions.rs` runs independently of inbound requests, so an idle subscriber would otherwise keep receiving transcripts and snapshots) and closes the connections. As a second line, each delivery and replay snapshot rechecks that its token is still live. A focused test revokes and expires a token while its client stays idle and checks that no later event or replay snapshot is delivered.
 
 ### 5.6 Storage and delivery
 
@@ -253,7 +253,7 @@ The kernel identifies the connecting process and checks that it belongs to the p
 
 ### 6.5 Tentative recommendation (needs the owner's decision)
 
-Use **(b) as the base in every topology**, since it is the only option that enforces scope, and make it deny by default for requests with no mapped scope. Add **(c) as hardening for agent tokens on local kernels** once a Unix socket endpoint exists, starting with macOS and Linux and accepting any process in the agent's launched process group or session. Use **(a) only for long-lived human-surface connections**, such as the TUI, where it costs nothing. This is a proposal, not a decision (open question 1).
+Use **(b) as the base in every topology**, since it is the only option that enforces scope, and make it deny by default for requests with no mapped scope. Add **(c) as hardening for agent tokens on local kernels** once a Unix socket endpoint exists, starting with macOS and Linux. Process-group or shared OS-session membership alone is not an identity: on Linux any process in the same session can `setpgid` into another group. (c) therefore needs a dedicated OS session created at each provider launch (`setsid`) plus kernel-tracked descendant identity with PID-reuse protection (for example the pid with its start time, or a pidfd on Linux), and a negative test where a sibling agent's process joins the target's group and presents the stolen token. Use **(a) only for long-lived human-surface connections**, such as the TUI, where it costs nothing. This is a proposal, not a decision (open question 1).
 
 ## 7. The sudoagent
 
