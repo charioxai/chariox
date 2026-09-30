@@ -15,7 +15,90 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
-## Scoped source audit (2026-09-30)
+## Current namespace and adjacent-control audit (2026-09-30)
+
+Inspection input OSS `65d381d3184bd1e8e3630e6de081d9b62be0646f`
+(tree `ab7ca6c5843217472b92c53fae4867b19021bf6a`) is paired with Cloud
+`8e9c24e4be0e87062343f60cda66f4c153539f91`
+(tree `99ac389af57b26025562712f24d6580bc73ff519`). Cloud's runtime source
+is unchanged from its namespace publication `97893503`; the later changes
+bind the OSS pin and nonce wording. These are source snapshots, not a deployed
+or accepted A/B release pair. Later fixes must be re-inspected at their exact
+blobs and do not inherit these classifications.
+
+This continuation inspects 17 current rules / 56 candidates. The other 36
+rules / 233 candidates carry older scoped observations only where their exact
+inspected blobs remain unchanged. All observations are provisional and their
+independent dispositions remain pending.
+
+| Current inspected family | Rules / candidates | Concrete shared policy and limits |
+| --- | --- | --- |
+| Per-creation worker namespace, persisted records and physical worker references | 3 / 10 | New LocalDocker refs hash the authenticated Machine plus an owner/name/fresh-nonce tuple. Replay retains refs; starting hosted workers must match their canonical Kernel. Shared parent Machine IDs are excluded from worker lookup/collision aliases. Friendly execution alias admission remains defective. |
+| Hosted owner/profile checks, token request and installation/refresh | 3 / 13 | Canonical worker subject, recorded owner Kernel/Machine, profile Machine, key thumbprint, one owner target, exact actions and expiry are checked through shared token and peer paths. Hosted slices receive no home Cloud profile. Parent-Machine registration does not clear downstream recovery placement. |
+| Signed relay caller projection | 1 / 2 | Signed slice workers retain Kernel authority for owner confirmation/refresh; ordinary signed home Kernels retain the existing Machine projection for execution leases. Relay remains transport. |
+| Rust/provisioner/inner-kernel identity projection | 3 / 11 | Canonical daemon ID is separate from display alias. Hosted workers use the signed parent Machine; private workers keep their synthetic Machine. Docker-slice isolation is distinct from Path-1 host placement. The routable alias and broker capability defects below remain open. |
+| Cloud reserved namespace and recovery shape | 2 / 10 | Reserved subjects must have the exact 135-character Machine/creation hash form and belong to the authenticated Machine. Bootstrap/runtime/recovery shapes require one owned parent target; first-claim ownership is immutable. Client/discovery and account/session policy remain shared. This does not approve the paired OSS runtime. |
+| Binding refresh, Room preflight, agent admission and prompt retry | 4 / 7 | The inspected producers/consumers expose the two confirmed shared runtime defects below. They are inventoried as defects, not allowed deployment differences. |
+| Path-1 broker extension admission | 1 / 3 | The normal live user capability reaches the Path-1 broker and is rejected before provisioning. This is a confirmed host-placement capability difference, outside the locked deployment/shutdown exceptions. |
+
+Three concrete defects remain at these inputs:
+
+| Defect | Exact production evidence | Current disposition |
+| --- | --- | --- |
+| Stale slice recovery can change physical Room | `app/remote_agent_binding.rs:78-105,1106-1140` chooses an eligible Kernel by the shared parent Machine; `runtime/state/remote_prompt_worker_submission_runtime.rs:580-611` replaces pending dispatch after refresh. | Open at OSS 65d; two sibling hosted slices can select the lower-load foreign Room. A canonical namespace alone does not pin recovery. |
+| Friendly execution alias bypasses slice admission | `slice/local_docker.rs:1132-1134` registers `slice:<name>`; `slice/store.rs:1359-1379` and `runtime/state/room_environment_placement.rs:12-47` do not resolve it; `runtime/session_actor/store/agent.rs:175-203,262-327` skips physical guards when lookup returns None; `app/remote_agent_binding.rs:661-699,1462-1500` still routes the alias. | Open at OSS 65d; public alias targets can bypass Room/worktree/attachment protections. |
+| Ordinary extension Dockerfile rejected on Path 1 | Path-1 unit `chariox-path1-managed-bootstrap.service:24` selects the broker, supervisor `spawn_with_broker_lease:462-497` hands it to the kernel, `local_docker.rs:131-134,1190-1192,364-391` forwards the live configuration and chooses broker versus direct execution; broker `validateProvisioner:437-513` rejects it. Direct provisioner `build_image:766-779` accepts the same extension and context. | Open at OSS 65d. Synthetic actual broker validation returns 0 without the extension and 1 with it; the production build function with Docker dependencies stubbed forwards the extension successfully. No Docker/service/live operation was used. |
+
+The recovery/alias findings are recorded in independent
+[PR475 review 5371351709](https://github.com/charioxai/chariox/pull/475#pullrequestreview-5371351709).
+The extension rejection was found by this scoped source audit and traced through
+the actual Path-1 selection path. Implementation work elsewhere is not credited
+as closure here. Reviewed fixed source, aggregate compatibility, live Room
+placement and ordinary-versus-Path-1 evidence are still required.
+
+New identity generation prevents the historical same-local-name collision by
+inspection. Existing hosted legacy/foreign refs are rejected before token or
+container work; they are not silently migrated. Private/SshDocker explicit refs
+remain compatible. That source contract does not prove recovery of every
+persisted legacy slice, and explicit replacement is not a release-upgrade or
+reimage acceptance substitute.
+
+Actual scans enumerate OSS 3,605 files / 5,995 candidates and Cloud 2,708 files /
+2,851 candidates. The 53 rules provisionally classify 289 candidates; 8,557
+remain outside scoped inspection. All 8,846 candidates are independently
+`unreviewed`, both reports exit 1 / `status=fail`, and each retains three
+historical predicates pending review. Zero accepted `removal_required`
+dispositions does not negate the three concrete source defects above.
+
+Both reports have zero known missing declaration/assembly gaps; Cloud retains
+four verified sorted `join("")` fragment families. This is a scanner
+completeness check for those known anchors, not a complete semantic audit.
+Named shell functions and the broker allowlist now receive manual declaration
+candidates where lexical patterns were blind. The declaration forms were first
+reproduced against actual 65d source (RED 59/62). Pinned declaration excerpts
+retain base-independent scanner regressions (GREEN 62/62); exact-blob semantic
+observations remain bound to the separate source scans.
+
+The independent SQL finding in
+[PR664 review 5371276413](https://github.com/charioxai/chariox/pull/664#pullrequestreview-5371276413)
+was also reproduced and corrected: matching dollar delimiters, nested comments,
+E strings and doubled quotes preserve physical anchors. Plain-string backslash
+settings are treated conservatively. Dollar quotes cannot open inside unquoted
+identifiers; that adjacent regression was validated with in-memory PostgreSQL
+and remains an unreviewed inventory candidate. The tool now binds five modules,
+including its named SQL lexical module, with bundle SHA-256
+`5ff4ff0c35abc2f0f02c1dc23dea9bc301f68feb11e19f031d4717179c53e2c3`.
+
+Public RED/GREEN, exact scan summaries and the extension reproducer are retained
+under
+`/Users/miguel/.codex/evidence/browser-computer-use/resume-20260930/mp11-source-audit/`;
+full reports remain in the matching Hetzner evidence directory. This continuation
+performed no Cargo/Cloud builds, live host or credential inspection, deployment
+or independent-reviewer communication. Remaining provider/path/service/client
+branches, mandatory shutdown execution, effective host policy and fresh
+ordinary-versus-Path-1 matrix evidence remain open; no MP gate is closed.
+
+## Retained 0e/a8 scoped source audit (2026-09-30)
 
 This pass inspected selected production rules at OSS
 `0e250d53977a49a73c3c3ee0f9251d9f9febe712` (tree

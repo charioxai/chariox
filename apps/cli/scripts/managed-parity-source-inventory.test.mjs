@@ -1074,16 +1074,16 @@ test("a scoped runtime audit does not classify unrelated inline tests", () => {
   });
 });
 
-test("confirmed shared runtime defects remain separate from independent removal findings", () => {
+test("current slice placement defects remain separate from independent removal findings", () => {
   withFixture({}, (fixture) => {
-    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "local-slice-name-canonical-ref-collision");
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "machine-scoped-slice-creation-and-placement");
     const source = readFileSync(new URL("../../../apps/kernel/src/slice/store.rs", import.meta.url), "utf8");
     fixture.addFile(rule.path, source, "100644", rule.blob);
     const report = collect(fixture);
     const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
-    assert.equal(group.classification, "shared_runtime_defect");
+    assert.equal(group.classification, "shared_slice_identity_namespace");
     assert.equal(group.status, "source_inspected");
-    assert.ok(group.openFindings.some((finding) => finding.includes("same-name slices")));
+    assert.ok(group.openFindings.some((finding) => finding.includes("friendly slice:<name>")));
     assert.equal(group.independentDisposition, "pending");
     assert.equal(report.summary.removalRequired, 0);
     assert.equal(report.status, "fail");
@@ -1196,5 +1196,105 @@ test("PostgreSQL dollar characters inside unquoted identifiers do not open liter
     assert.equal(entry?.path, path);
     assert.equal(entry?.line, 2);
     assert.equal(entry?.semanticDisposition.status, "unreviewed");
+  });
+});
+
+
+// Pinned declaration excerpts keep scanner tests independent of PR664's runtime
+// base. Full exact-blob source observations are verified by the retained 65d/8e9
+// scans; these fixtures exercise declaration/range/disposition behavior only.
+const CURRENT_DECLARATION_EXCERPTS = {
+  "inner-slice-kernel-bootstrap-identity": [[132, "start_slice_kernel() {"]],
+  "slice-provisioner-container-identity-forwarding": [[1092, "exec_slice_with_timeout() {"]],
+  "path1-broker-extension-capability-rejection": [
+    [114, "const ALLOWED_ENVIRONMENT = new Set(["],
+    [437, "function validateProvisioner(action, environment, files) {"],
+  ],
+  "per-creation-machine-scoped-slice-ref": [
+    [6, "pub(super) fn new_local_docker_worker_ref("],
+    [23, "fn worker_ref_with_nonce("],
+    [43, "pub(crate) fn machine_scoped_slice_worker_ref(worker_ref: &str, machine_id: &str) -> bool {"],
+    [56, "pub(crate) fn require_hosted_slice_worker_ref("],
+    [66, 'const OUTSIDE_SCOPE: &str = "CHARIOX_MANAGED_CURRENT_OUTSIDE_SCOPE";'],
+  ],
+};
+
+function currentDeclarationExcerpt(ruleId) {
+  const excerpt = CURRENT_DECLARATION_EXCERPTS[ruleId];
+  const lines = Array.from({ length: Math.max(...excerpt.map(([line]) => line)) }, () => "");
+  for (const [line, text] of excerpt) lines[line - 1] = text;
+  return lines.join("\n") + "\n";
+}
+
+for (const [ruleId, symbol] of [
+  ["inner-slice-kernel-bootstrap-identity", "start_slice_kernel"],
+  ["slice-provisioner-container-identity-forwarding", "exec_slice_with_timeout"],
+  ["path1-broker-extension-capability-rejection", "ALLOWED_ENVIRONMENT"],
+]) {
+  test("current source audit anchors " + symbol + " at its pinned declaration", () => {
+    withFixture({}, (fixture) => {
+      const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === ruleId);
+      fixture.addFile(rule.path, currentDeclarationExcerpt(ruleId), "100644", rule.blob);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.path === rule.path && entry.symbol === symbol && entry.candidateOrigin === "manual_source_rule");
+      assert.ok(entry, "an inspected declaration cannot silently lose its manual candidate");
+      assert.equal(entry.sourceClassification.status, "source_inspected");
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+      assert.ok(!report.sourceAuditGaps.some((gap) => gap.ruleId === ruleId && gap.symbol === symbol));
+    });
+  });
+}
+
+test("current Machine-qualified namespace observations do not approve out-of-range source or drift", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "per-creation-machine-scoped-slice-ref");
+    const source = currentDeclarationExcerpt(rule.id);
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
+    assert.deepEqual(entries.map((entry) => entry.symbol).sort(), [
+      "machine_scoped_slice_worker_ref", "new_local_docker_worker_ref",
+      "require_hosted_slice_worker_ref", "worker_ref_with_nonce",
+    ]);
+    assert.ok(entries.every((entry) => entry.sourceClassification.classification === "shared_slice_identity_namespace"));
+    assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CURRENT_OUTSIDE_SCOPE")?.sourceClassification, null);
+    withFixture({}, (changedFixture) => {
+      changedFixture.addFile(rule.path, source + "\n// changed source identity\n");
+      const changed = collect(changedFixture).sourceClassifications.find((group) => group.ruleId === rule.id);
+      assert.equal(changed.status, "source_drift");
+      assert.equal(changed.classification, null);
+    });
+  });
+});
+
+test("current Cloud source anchors remain explicit missing-source gaps", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/api/src/current-cloud.ts", "export const ready = true;\n");
+    const report = collect(fixture);
+    const gap = report.sourceAuditGaps.find((entry) => entry.ruleId === "canonical-slice-cloud-recovery-shape");
+    assert.equal(gap?.kind, "expected_source_missing");
+    assert.equal(gap?.auditSourceCommit, "8e9c24e4be0e87062343f60cda66f4c153539f91");
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("current alias recovery and extension findings remain provisional open defects", () => {
+  withFixture({}, (fixture) => {
+    const ids = ["slice-recovery-and-alias-runtime-gaps", "path1-broker-extension-capability-rejection"];
+    for (const id of ids) {
+      const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === id);
+      fixture.addFile(rule.path, CURRENT_DECLARATION_EXCERPTS[id] ? currentDeclarationExcerpt(id)
+        : readFileSync(new URL("../../../" + rule.path, import.meta.url), "utf8"), "100644", rule.blob);
+    }
+    const report = collect(fixture);
+    for (const id of ids) {
+      const group = report.sourceClassifications.find((entry) => entry.ruleId === id);
+      assert.equal(group?.status, "source_inspected");
+      assert.ok(group.openFindings.some((finding) => finding.startsWith("Open at OSS 65d")));
+      assert.equal(group.independentDisposition, "pending");
+    }
+    assert.equal(report.summary.removalRequired, 0);
+    assert.equal(report.status, "fail");
   });
 });

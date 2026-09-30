@@ -4,6 +4,7 @@
 const OSS = "b375eb6eec1a6700c329830fd3bfba581eb818dc";
 const OSS_RUNTIME = "0e250d53977a49a73c3c3ee0f9251d9f9febe712";
 const CLOUD = "a8f5ee1bc80f13f508cf950752d779399df1aa55";
+const CLOUD_CURRENT = "8e9c24e4be0e87062343f60cda66f4c153539f91";
 export const SOURCE_AUDIT_RULES = Object.freeze([
   {
     id: "release-update-outcome-evidence", sourceCommit: OSS,
@@ -94,15 +95,49 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     anchors: [["managed_only_branch", "requireRuntimeCredential"], ["managed_only_branch", "requireActiveRuntimeMachine"]],
   },
   {
-    id: "machine-credential-subject-and-target-authority", sourceCommit: CLOUD,
-    openFindings: ["Historical MP-08/MP-11 at OSS 0e / Cloud a8: local-name slice refs collide under immutable kernel ownership. Cloud 978 publishes new admission; exact combined OSS mapping/relay/compatibility evidence remains pending."],
-    path: "apps/api/src/runtime/machine-scope-repository.ts",
-    blob: "80e8a354502369d0f398c2758be96d10c0717206",
-    classification: "shared_cloud_machine_authority",
-    rationale: "Machine credentials authorize only their own active account/machine, realm and canonical targets. Kernel first-claim ownership is immutable; terminal clients use a machine-qualified namespace without paired-client collisions. Read-only discovery and inner-slice token shapes are separately bounded; no Path-1 provider launch selector is introduced.",
-    anchors: [["managed_only_branch", "authorizeMachineRuntimeToken"], ["managed_only_branch", "authorizeMachineKernelManagement"], ["managed_only_branch", "claimMachineKernelOwnership"], ["managed_only_branch", "claimKernelOwnership"], ["client_projection", "readOnlyDiscovery"], ["managed_only_branch", "machineOwnedSliceKernelToken"]],
-  },
-  {
+    "id": "machine-credential-subject-and-target-authority",
+    "sourceCommit": "8e9c24e4be0e87062343f60cda66f4c153539f91",
+    "path": "apps/api/src/runtime/machine-scope-repository.ts",
+    "blob": "9fa05a8ecb89da757ac230b183ec9cb9d126f244",
+    "ranges": [
+      [
+        1,
+        159
+      ]
+    ],
+    "classification": "shared_cloud_machine_authority",
+    "rationale": "Machine credentials admit only their active account/Machine, owned realm and exact target. Reserved slice subjects must carry that Machine hash and exact bootstrap/runtime/recovery shapes; target claims remain immutable. Account/session policy, transient-client collision refusal and bounded discovery are shared. This inspection does not clear the paired OSS recovery/alias defects.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "authorizeMachineRuntimeToken"
+      ],
+      [
+        "managed_only_branch",
+        "authorizeMachineKernelManagement"
+      ],
+      [
+        "managed_only_branch",
+        "claimMachineKernelOwnership"
+      ],
+      [
+        "managed_only_branch",
+        "claimKernelOwnership"
+      ],
+      [
+        "client_projection",
+        "readOnlyDiscovery"
+      ],
+      [
+        "managed_only_branch",
+        "machineOwnedSliceKernelToken"
+      ],
+      [
+        "managed_only_branch",
+        "machineOwnsSliceWorkerRef"
+      ]
+    ]
+  },  {
     id: "shared-runtime-token-authority-wiring", sourceCommit: CLOUD,
     path: "apps/api/src/runtime/token-repository.ts",
     blob: "1b7dda73c1aa5e3fb8cbde6ab06bacae0b2fbd63",
@@ -223,26 +258,86 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     anchors: [["cleanup_selector", "bounded_status_output"], ["cleanup_selector", "bounded_output"], ["managed_only_branch", "claude_version"]],
   },
   {
-    id: "local-slice-name-canonical-ref-collision", sourceCommit: OSS_RUNTIME,
-    path: "apps/kernel/src/slice/store.rs",
-    blob: "363eff5a0536779ecf5e8025b6c75ead4fd84f88",
-    ranges: [[89, 121]],
-    classification: "shared_runtime_defect",
-    rationale: "Local slice names are unique only inside one SliceStore, but the default worker ref slice:<name> is later used as an account/realm-wide canonical Cloud identity. Equal local names on different ordinary or managed machines collide.",
-    openFindings: ["Historical MP-08/MP-11 at OSS 0e / Cloud a8: same-name slices contend for immutable Cloud ownership. Cloud 978 admission is published; combined canonical mapping/migration evidence remains pending."],
-    anchors: [["client_projection", "create"]],
-  },
-  {
-    id: "hosted-slice-ref-identity-use", sourceCommit: OSS_RUNTIME,
-    path: "apps/kernel/src/runtime/slice_command_executor/lifecycle.rs",
-    blob: "bf303266acbc2c12d9fcdedf6eaf68c3c9d97bd9",
-    ranges: [[1118, 1169]],
-    classification: "shared_runtime_defect",
-    rationale: "Hosted bootstrap/runtime/recovery token requests reuse worker_kernel_ref as a KERNEL subject. At this blob local-name defaults can collide across machines; credential confinement must retain the owned parent while the canonical mapping is corrected.",
-    openFindings: ["Historical MP-08/MP-11 at OSS 0e / Cloud a8: slice:<local name> is not machine-qualified. Cloud 978 admission is published; combined OSS ref/relay compatibility and exact-source tests remain pending."],
-    anchors: [["managed_only_branch", "hosted_cloud_slice_relay_token"], ["managed_only_branch", "activate_hosted_slice_relay_token"]],
-  },
-  {
+    "id": "machine-scoped-slice-creation-and-placement",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/slice/store.rs",
+    "blob": "a8636a5528abbc263554ec6e859e7d14c0e344d8",
+    "ranges": [
+      [
+        89,
+        216
+      ],
+      [
+        986,
+        1035
+      ],
+      [
+        1351,
+        1379
+      ]
+    ],
+    "classification": "shared_slice_identity_namespace",
+    "rationale": "New LocalDocker records receive a per-creation Machine-qualified reference; explicit references and SshDocker defaults retain compatibility. Replay retains persisted refs. Starting hosted workers must match that canonical Kernel; shared parent Machine IDs are excluded from worker aliases. The exact lookup still omits the separately registered friendly execution alias.",
+    "anchors": [
+      [
+        "client_projection",
+        "create"
+      ],
+      [
+        "client_projection",
+        "restore_records"
+      ],
+      [
+        "managed_only_branch",
+        "claim_starting_worker_identity"
+      ],
+      [
+        "client_projection",
+        "resolve_by_worker_kernel_ref"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d (PR475 review5371351709): friendly slice:<name> remains an execution route but exact slice admission does not recognize it, so Room reservation/worktree/attachment guards can be bypassed. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },  {
+    "id": "hosted-slice-owner-and-token-scope",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/runtime/slice_command_executor/lifecycle.rs",
+    "blob": "3844c58ccabaaf2a29f086983282d7e92b565fa6",
+    "ranges": [
+      [
+        1063,
+        1194
+      ]
+    ],
+    "classification": "shared_slice_owner_authority",
+    "rationale": "Hosted bootstrap/runtime/recovery subjects use the canonical persisted worker ref after matching owner Kernel, host Machine and authenticated profile Machine. Provider-visible slices receive no home Cloud profile. Hosted registrations share the authenticated parent Machine; downstream stale recovery remains defective at this snapshot.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "local_docker_slice_relay"
+      ],
+      [
+        "client_projection",
+        "local_docker_slice_relay_for_config"
+      ],
+      [
+        "managed_only_branch",
+        "validate_hosted_slice_identity"
+      ],
+      [
+        "managed_only_branch",
+        "hosted_cloud_slice_relay_token"
+      ],
+      [
+        "managed_only_branch",
+        "activate_hosted_slice_relay_token"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d (PR475 review5371351709): stale binding recovery selects a lower-load Kernel by shared parent Machine instead of the recorded canonical slice, so a pending prompt can enter another Room. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },  {
     id: "managed-bootstrap-machine-profile-shape", sourceCommit: OSS_RUNTIME,
     path: "apps/kernel/src/managed_bootstrap/cloud.rs",
     blob: "746bdf16a934fa34f30795d52e0f9e7f3896145e",
@@ -341,6 +436,409 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     rationale: "A configured instance identity and nonce-bound HMAC prove co-location to the server-side deployment caller. This is control-plane health proof, not provider execution or a kernel session authority.",
     anchors: [["managed_only_branch", "createCharioxColocationAttestation"]],
   },
+  {
+    "id": "per-creation-machine-scoped-slice-ref",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/slice/worker_identity.rs",
+    "blob": "a2fc6812f972a60aa4a99c5833feee0b1a86b6fc",
+    "ranges": [
+      [
+        1,
+        65
+      ]
+    ],
+    "classification": "shared_slice_identity_namespace",
+    "rationale": "The shared LocalDocker factory hashes Machine ID separately from a domain-separated JSON tuple of owner/local name/fresh 256-bit creation nonce. Hosted admission requires the exact 135-character lowercase shape for that Machine; legacy/foreign refs fail before Cloud requests. This is common slice identity, not a managed provider fork.",
+    "anchors": [
+      [
+        "client_projection",
+        "new_local_docker_worker_ref"
+      ],
+      [
+        "client_projection",
+        "worker_ref_with_nonce"
+      ],
+      [
+        "managed_only_branch",
+        "machine_scoped_slice_worker_ref"
+      ],
+      [
+        "managed_only_branch",
+        "require_hosted_slice_worker_ref"
+      ]
+    ]
+  },
+  {
+    "id": "hosted-slice-credential-subject-admission",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/runtime/cloud_api_client.rs",
+    "blob": "0dc754ceeb32dc2996b1cbbcd796db9e55cee368",
+    "ranges": [
+      [
+        262,
+        313
+      ]
+    ],
+    "classification": "shared_slice_owner_authority",
+    "rationale": "Both runtime and recovery issuance require an existing Machine credential and reject a legacy/foreign canonical subject before network I/O, then use the shared runtime token transport and owner-target shape. No account session or Machine credential is materialized in the slice.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "issue_cloud_slice_runtime_token"
+      ],
+      [
+        "managed_only_branch",
+        "issue_cloud_slice_recovery_token"
+      ]
+    ]
+  },
+  {
+    "id": "slice-owner-token-install-and-refresh",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/runtime/router/slice_relay_token_bridge.rs",
+    "blob": "abc41c8799e68d1396e500b13ff7f9f0dea2b44f",
+    "ranges": [
+      [
+        1,
+        427
+      ]
+    ],
+    "classification": "shared_slice_owner_authority",
+    "rationale": "Worker identity uses canonical daemon_id and authenticated parent Machine. Install/refresh bind recorded slice, owner, sender public key, exact subject/target/action/thumbprint and expiry before persisted token installation; recovery is scoped to the owner connection. The peer boundary verifies signed sender authority; no alternate provider/session path is introduced.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "managed_slice_relay_identity"
+      ],
+      [
+        "managed_only_branch",
+        "install_managed_slice_relay_token"
+      ],
+      [
+        "managed_only_branch",
+        "refresh_managed_slice_relay_token"
+      ],
+      [
+        "client_projection",
+        "managed_slice_relay_identity_for_config"
+      ],
+      [
+        "managed_only_branch",
+        "validate_managed_slice_relay_token"
+      ],
+      [
+        "managed_only_branch",
+        "validate_managed_slice_recovery_token"
+      ]
+    ]
+  },
+  {
+    "id": "signed-slice-kernel-caller-projection",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/relay/src/server/connection/support.rs",
+    "blob": "65c1a34200d0f8496bdcf8c2bea718bb63ac68d7",
+    "ranges": [
+      [
+        1080,
+        1113
+      ]
+    ],
+    "classification": "shared_slice_owner_authority",
+    "rationale": "Signed slice Kernel subjects remain Kernel callers for owner activation/refresh despite registering their parent Machine. Ordinary home kernels still project signed exact registrations to Machine for execution leases. Relay remains scoped transport and does not inspect encrypted runtime payloads.",
+    "anchors": [
+      [
+        "client_projection",
+        "peer_request_identity"
+      ],
+      [
+        "client_projection",
+        "registration_daemon_is_exact_kernel_or_temporary_peer"
+      ]
+    ]
+  },
+  {
+    "id": "slice-environment-parent-machine-exclusion",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/slice/store/environment.rs",
+    "blob": "c8cf6e3f39f8ac3f80346770fdee76950ae31972",
+    "ranges": [
+      [
+        124,
+        129
+      ],
+      [
+        145,
+        159
+      ]
+    ],
+    "classification": "shared_slice_identity_namespace",
+    "rationale": "Physical Room collision checks compare canonical worker Kernel references and only synthetic legacy Machine references. The shared parent Machine is excluded, so distinct canonical workers on one Machine do not become one physical Environment. Friendly-alias admission remains separately defective.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "has_shared_worker"
+      ],
+      [
+        "client_projection",
+        "worker_refs"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d (PR475 review5371351709): friendly slice:<name> remains an execution route but exact slice admission does not recognize it, so Room reservation/worktree/attachment guards can be bypassed. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },
+  {
+    "id": "slice-provisioned-canonical-and-display-identity",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/slice/local_docker.rs",
+    "blob": "e69abbcc00cb2217a7f6067c508a7022739cdf35",
+    "ranges": [
+      [
+        1063,
+        1143
+      ],
+      [
+        1190,
+        1192
+      ]
+    ],
+    "classification": "shared_slice_identity_projection",
+    "rationale": "Provisioning assigns canonical worker ref to daemon ID and slice:<localName> to display alias. Hosted workers use their authenticated parent Machine; private workers retain synthetic IDs. The caller still exposes the routable friendly alias and forwards an extension capability that the Path-1 broker rejects.",
+    "anchors": [
+      [
+        "client_projection",
+        "configure_local_docker_slice_command"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d (PR475 review5371351709): friendly slice:<name> remains an execution route but exact slice admission does not recognize it, so Room reservation/worktree/attachment guards can be bypassed. Reviewed fixed source and live parity evidence are pending.",
+      "Open at OSS 65d: Path-1 broker placement rejects the ordinary slices.linux.extension_dockerfile capability before provisioning. This is a reachable host-placement restriction, distinct from inner-container isolation, and is outside the two locked exceptions. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },
+  {
+    "id": "inner-slice-kernel-bootstrap-identity",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh",
+    "blob": "195ce5230578b6ed93068918d0d7f9ce9227c73e",
+    "ranges": [
+      [
+        22,
+        28
+      ],
+      [
+        132,
+        169
+      ]
+    ],
+    "classification": "shared_inner_slice_bootstrap_projection",
+    "rationale": "The inner Docker kernel receives separate canonical ID and friendly alias plus parent/owner binding. Its provider isolation controls belong to the explicit Docker slice, used by ordinary and managed hosts, and are not selected for Path-1 host provider children. This does not clear host broker capability differences.",
+    "anchors": [
+      [
+        "client_projection",
+        "start_slice_kernel"
+      ]
+    ]
+  },
+  {
+    "id": "slice-provisioner-container-identity-forwarding",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
+    "blob": "90771e99f04ec799e0d567d05ab586e88f6f3abb",
+    "ranges": [
+      [
+        98,
+        101
+      ],
+      [
+        1092,
+        1174
+      ]
+    ],
+    "classification": "shared_inner_slice_bootstrap_projection",
+    "rationale": "The common provisioner forwards canonical daemon ID separately from alias and Machine into docker exec, along with explicit Room bindings. It carries a private relay token file; hosted callers omit the home Cloud profile. Direct build_image extension support is outside these identity ranges and differs from broker admission.",
+    "anchors": [
+      [
+        "client_projection",
+        "exec_slice_with_timeout"
+      ]
+    ]
+  },
+  {
+    "id": "path1-broker-extension-capability-rejection",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "blob": "c703689d433536489efdd123882290e2aaa9e656",
+    "ranges": [
+      [
+        114,
+        163
+      ],
+      [
+        437,
+        513
+      ]
+    ],
+    "classification": "confirmed_host_placement_capability_defect",
+    "rationale": "The broker allows the new canonical ID only for provision/recover container actions, but its input allowlist and explicit extension-Dockerfile prohibition reject an ordinary live user configuration. Source callpath proves Path-1 user-created slices select this broker; root-equivalent host placement cannot treat this as a signed-release exception.",
+    "anchors": [
+      [
+        "client_projection",
+        "ALLOWED_ENVIRONMENT"
+      ],
+      [
+        "managed_only_branch",
+        "validateProvisioner"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d: Path-1 broker placement rejects the ordinary slices.linux.extension_dockerfile capability before provisioning. This is a reachable host-placement restriction, distinct from inner-container isolation, and is outside the two locked exceptions. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },
+  {
+    "id": "canonical-slice-cloud-recovery-shape",
+    "sourceCommit": "8e9c24e4be0e87062343f60cda66f4c153539f91",
+    "path": "apps/api/src/runtime/token-policy.ts",
+    "blob": "deb05fd4441c34fc2ef892e187839f9e67e623f2",
+    "ranges": [
+      [
+        132,
+        155
+      ]
+    ],
+    "classification": "shared_cloud_machine_authority",
+    "rationale": "Canonical slice refs have exact Machine/creation hash shape. Recovery requires a key thumbprint, one owner target and exact register/heartbeat/peer-request actions; repository admission separately checks Machine hash and owned parent target. The restriction is shared token authority, not a Path-1 runtime selector.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "isCanonicalSliceWorkerRef"
+      ],
+      [
+        "managed_only_branch",
+        "managedSliceRecoveryTokenShape"
+      ]
+    ]
+  },
+  {
+    "id": "slice-recovery-and-alias-runtime-gaps",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/app/remote_agent_binding.rs",
+    "blob": "fd98b956ed4706659161b2ed190fc76604d5ea7b",
+    "ranges": [
+      [
+        41,
+        125
+      ],
+      [
+        661,
+        699
+      ],
+      [
+        1106,
+        1140
+      ],
+      [
+        1462,
+        1500
+      ]
+    ],
+    "classification": "shared_runtime_defect",
+    "rationale": "Both binding-refresh implementations select eligible workers using the recorded parent Machine rather than the canonical slice; alias dispatch accepts the friendly registration after exact slice preflight misses it. These are confirmed cross-slice/Room behavior defects in shared ordinary/managed runtime.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "execute_remote_agent_binding_refresh"
+      ],
+      [
+        "client_projection",
+        "spawn_worker_agent"
+      ],
+      [
+        "managed_only_branch",
+        "refresh_remote_agent_binding"
+      ],
+      [
+        "client_projection",
+        "select_remote_kernel_by_ref_with_config"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d (PR475 review5371351709): stale binding recovery selects a lower-load Kernel by shared parent Machine instead of the recorded canonical slice, so a pending prompt can enter another Room. Reviewed fixed source and live parity evidence are pending.",
+      "Open at OSS 65d (PR475 review5371351709): friendly slice:<name> remains an execution route but exact slice admission does not recognize it, so Room reservation/worktree/attachment guards can be bypassed. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },
+  {
+    "id": "room-execution-alias-admission-gap",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/runtime/state/room_environment_placement.rs",
+    "blob": "8ad3ed13c64ddf88665b439f77dcc5d14402b08c",
+    "ranges": [
+      [
+        12,
+        47
+      ]
+    ],
+    "classification": "shared_runtime_defect",
+    "rationale": "Room admission resolves explicit slice refs and exact worker refs, acquires unique physical guards, and preserves target ordering. The new friendly slice registration alias is absent from that lookup, so it is treated as a non-slice target before later remote dispatch accepts it.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "guard_slice_execution"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d (PR475 review5371351709): friendly slice:<name> remains an execution route but exact slice admission does not recognize it, so Room reservation/worktree/attachment guards can be bypassed. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },
+  {
+    "id": "agent-spawn-alias-placement-gap",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/runtime/session_actor/store/agent.rs",
+    "blob": "20de20fc035947b669caf612eede1eb52b8123b5",
+    "ranges": [
+      [
+        175,
+        203
+      ],
+      [
+        262,
+        327
+      ]
+    ],
+    "classification": "shared_runtime_defect",
+    "rationale": "Agent spawn holds admission for recognized slice targets, checks worktree scope and attaches the resulting slice. An unrecognized friendly slice alias yields None, keeps the requested Kernel ref and skips those physical Room protections before shared dispatch.",
+    "anchors": [
+      [
+        "client_projection",
+        "spawn_agent"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d (PR475 review5371351709): friendly slice:<name> remains an execution route but exact slice admission does not recognize it, so Room reservation/worktree/attachment guards can be bypassed. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },
+  {
+    "id": "stale-prompt-recovery-placement-gap",
+    "sourceCommit": "65d381d3184bd1e8e3630e6de081d9b62be0646f",
+    "path": "apps/kernel/src/runtime/state/remote_prompt_worker_submission_runtime.rs",
+    "blob": "f1c35560cced01aa63bbf53cd0d7435eb5c08ac8",
+    "ranges": [
+      [
+        580,
+        611
+      ]
+    ],
+    "classification": "shared_runtime_defect",
+    "rationale": "Automatic stale-prompt refresh calls the Machine-based binding selector and rewrites dispatch worker/lease after it succeeds. With sibling hosted slices sharing one Machine, that can send the pending prompt to another Room's lower-load worker.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "refresh_remote_prompt_binding"
+      ]
+    ],
+    "openFindings": [
+      "Open at OSS 65d (PR475 review5371351709): stale binding recovery selects a lower-load Kernel by shared parent Machine instead of the recorded canonical slice, so a pending prompt can enter another Room. Reviewed fixed source and live parity evidence are pending."
+    ]
+  },
 ]);
 
 function rulesFor(file, embeddedPath, lineNumber = null) {
@@ -353,7 +851,7 @@ export function sourceRuleCandidates(file, lines, embeddedPath = null) {
   const candidates = [];
   for (const rule of rulesFor(file, embeddedPath)) {
     for (const [category, symbol] of rule.anchors) {
-      const declaration = new RegExp("\\b(?:fn|function|def)\\s+" + symbol + "(?:<[^\\n]*>)?\\s*\\(|\\b(?:struct|enum|interface|type)\\s+" + symbol + "\\b");
+      const declaration = new RegExp("\\b(?:fn|function|def)\\s+" + symbol + "(?:<[^\\n]*>)?\\s*\\(|\\b(?:struct|enum|interface|type|const)\\s+" + symbol + "\\b|(?:^|\\s)" + symbol + "\\s*\\(\\s*\\)\\s*\\{");
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const match = declaration.exec(lines[lineIndex]);
         if (match && (!rule.ranges || rule.ranges.some(([start, end]) => lineIndex + 1 >= start && lineIndex + 1 <= end))) candidates.push({
@@ -409,7 +907,7 @@ export function sourceAuditGaps(files, locatedAnchors) {
   const gaps = [];
   for (const rule of SOURCE_AUDIT_RULES) {
     const file = byPath.get(rule.path);
-    const applies = rule.sourceCommit === CLOUD ? cloud : oss;
+    const applies = (rule.sourceCommit === CLOUD || rule.sourceCommit === CLOUD_CURRENT) ? cloud : oss;
     if (!file) {
       if (applies) gaps.push({ kind: "expected_source_missing", ruleId: rule.id, path: rule.path,
         auditedBlob: rule.blob, auditSourceCommit: rule.sourceCommit, authoritative: false });
