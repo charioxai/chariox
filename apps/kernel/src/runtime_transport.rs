@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore, TryAcquireError}
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
-    accept_async, accept_hdr_async,
+    accept_hdr_async,
     tungstenite::{
         handshake::server::ErrorResponse,
         http::StatusCode,
@@ -777,29 +777,36 @@ async fn handle_kernel_connection(
     local_auth_token: Option<Arc<str>>,
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
-    let socket = if let Some(expected_token) = local_auth_token {
-        accept_hdr_async(
-            stream,
-            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                  response| {
-                if kernel_local_authorization_matches(
-                    request
-                        .headers()
-                        .get("authorization")
-                        .and_then(|value| value.to_str().ok()),
-                    &expected_token,
-                ) {
-                    return Ok(response);
-                }
-                let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
-                *error.status_mut() = StatusCode::UNAUTHORIZED;
-                Err(error)
-            },
-        )
-        .await
-    } else {
-        accept_async(stream).await
-    }
+    let socket = accept_hdr_async(
+        stream,
+        move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            // Browsers always send Origin; no kernel client does (the browser
+            // reaches the kernel through the relay). Refusing it keeps web
+            // pages on this machine from driving the kernel over loopback,
+            // including answering the owner's decisions.
+            if request.headers().contains_key("origin") {
+                let mut error = ErrorResponse::new(Some("Forbidden".to_string()));
+                *error.status_mut() = StatusCode::FORBIDDEN;
+                return Err(error);
+            }
+            let Some(expected_token) = local_auth_token.as_deref() else {
+                return Ok(response);
+            };
+            if kernel_local_authorization_matches(
+                request
+                    .headers()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                expected_token,
+            ) {
+                return Ok(response);
+            }
+            let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
+            *error.status_mut() = StatusCode::UNAUTHORIZED;
+            Err(error)
+        },
+    )
+    .await
     .map_err(|error| DaemonError::LocalTransport {
         operation: "accept kernel websocket handshake",
         message: error.to_string(),

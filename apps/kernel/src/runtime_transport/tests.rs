@@ -271,6 +271,76 @@ async fn kernel_websocket_replies_to_ping_frames() {
 }
 
 #[tokio::test]
+async fn kernel_websocket_refuses_browser_origins_with_or_without_local_auth() {
+    for token in [None, Some("kernel-origin-auth-sentinel")] {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let mcp_listener =
+            StdTcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp_listener))
+                .expect("daemon should boot"),
+        ));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            run_kernel_websocket_server_on_listeners_with_auth(
+                app,
+                listener,
+                mcp_listener,
+                token.map(Arc::<str>::from),
+                async {
+                    let _ = shutdown_rx.await;
+                },
+            )
+            .await
+        });
+        let request = |origin: Option<&'static str>| {
+            let mut request = format!("ws://{addr}")
+                .into_client_request()
+                .expect("request should build");
+            if let Some(token) = token {
+                request.headers_mut().insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}")).expect("header"),
+                );
+            }
+            if let Some(origin) = origin {
+                request
+                    .headers_mut()
+                    .insert("origin", HeaderValue::from_static(origin));
+            }
+            request
+        };
+
+        // A page in the owner's browser (any origin, even loopback) is refused.
+        for origin in ["https://example.test", "http://127.0.0.1:4351", "null"] {
+            match connect_async(request(Some(origin)))
+                .await
+                .expect_err("a browser origin should be refused")
+            {
+                WebSocketError::Http(response) => {
+                    assert_eq!(response.status(), StatusCode::FORBIDDEN, "{origin}")
+                }
+                other => panic!("expected HTTP forbidden handshake, got {other}"),
+            }
+        }
+        // Kernel clients send no Origin and still connect.
+        let (mut socket, _) = connect_async(request(None))
+            .await
+            .expect("a client without Origin should connect");
+        socket.close(None).await.expect("close should send");
+
+        shutdown_tx
+            .send(())
+            .expect("server should still be running");
+        server
+            .await
+            .expect("server task should join")
+            .expect("server should exit cleanly");
+    }
+}
+
+#[tokio::test]
 async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_requests() {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
