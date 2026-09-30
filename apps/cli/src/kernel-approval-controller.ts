@@ -196,7 +196,7 @@ export function createKernelApprovalController(deps: {
     if (event.name === "escape") { entry = null; error = null; render(); return }
     if (event.name === "return" || event.name === "enter") { void submitPasskey(); return }
     if (event.name === "tab") { cycleRemember(); return }
-    if (event.name === "backspace") { entry.value = entry.value.slice(0, -1); render(); return }
+    if (event.name === "backspace") { entry.value = Array.from(entry.value).slice(0, -1).join(""); render(); return }
     const typed = event.sequence && !/[\u0000-\u001f\u007f-\u009f]/.test(event.sequence)
       ? event.sequence
       : event.name === "space" ? " "

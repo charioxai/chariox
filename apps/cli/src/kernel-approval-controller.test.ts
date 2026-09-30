@@ -245,3 +245,14 @@ test("pasted passkeys stop at 512 units without splitting Unicode characters", a
   assert.deepEqual(h.requests, [["session-1", "limit", "approve", { passkey: "x".repeat(501) + "🔑".repeat(5) + "z", rememberMinutes: null }]])
   h.resolve(session("session-1", [])); await submission
 })
+
+test("Backspace removes a complete pasted Unicode code point before typing and submission", async () => {
+  const h = harness(session("session-1", [critical("unicode-delete")]))
+  h.controller.show(); await h.controller.choose("unicode-delete", "approve")
+  h.controller.handlePaste({ text: "a🔑", preventDefault() {}, stopPropagation() {} })
+  h.controller.handleKey(key("backspace"))
+  h.controller.handleKey(key("x", { sequence: "x" }))
+  const submission = h.controller.submitPasskey()
+  assert.deepEqual(h.requests, [["session-1", "unicode-delete", "approve", { passkey: "ax", rememberMinutes: null }]])
+  h.resolve(session("session-1", [])); await submission
+})
