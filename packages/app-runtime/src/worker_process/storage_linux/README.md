@@ -19,8 +19,11 @@ local kernel is enrolled by the installer, never by a socket request. The helper
 uses the same `ReleaseStore::root_for_database` mapping as the kernel and rejects
 a digest found in more than one enrolled store. The managed path is
 `/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps`.
-The root-only `--prepare-managed-domain` mode runs as that unit's ExecStartPre,
+The root-only `--prepare-managed-domain` mode runs as that unit's ExecStartPost,
 verifies its own `.control` cgroup, and configures only the fixed App subtree.
+It cannot be an ExecStartPre: systemd 259 (Ubuntu 26.04) spawns the main process
+through the unit's own cgroup, and that fails with EBUSY once controllers are
+enabled there. After the fork the main process is already in `supervisor`.
 It never accepts paths or service names over the socket.
 
 `/usr/libexec/chariox-app-storage` uses the signed versioned release and the
