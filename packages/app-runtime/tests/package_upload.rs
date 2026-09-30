@@ -607,6 +607,41 @@ fn aborted_begin_receipt_prevents_resurrection_and_expires_without_unbounded_met
 }
 
 #[test]
+fn an_aborted_receipt_frees_its_upload_slot_after_a_minute() {
+    let root = Root::new();
+    let limits = UploadLimits {
+        max_uploads: 1,
+        max_uploads_per_owner: 1,
+        ..UploadLimits::default()
+    };
+    let store = PackageUploadStore::open(&root.path, limits, 1).unwrap();
+    // An install consumed this upload; the kernel and the terminal abort it.
+    let installed = store
+        .begin("owner", "installed", 4, &digest(b"test"), 1_800_000, 1)
+        .unwrap();
+    let receipt = store.abort("owner", &installed.handle, 10).unwrap();
+    assert_eq!(receipt.phase, UploadPhase::Aborted);
+    assert_eq!(receipt.expires_at_ms, 60_010);
+    // A late retry of the aborted request still gets its receipt.
+    let retried = store
+        .begin("owner", "installed", 4, &digest(b"test"), 1_800_000, 30_000)
+        .unwrap();
+    assert_eq!(
+        (retried.handle.as_str(), retried.phase),
+        (installed.handle.as_str(), UploadPhase::Aborted)
+    );
+    assert!(matches!(
+        store.begin("owner", "next", 4, &digest(b"next"), 1_800_000, 30_000),
+        Err(UploadError::Limit)
+    ));
+    // A minute later the next install is admitted, not after the full TTL.
+    let next = store
+        .begin("owner", "next", 4, &digest(b"next"), 1_800_000, 60_010)
+        .unwrap();
+    assert_eq!(next.phase, UploadPhase::Receiving);
+}
+
+#[test]
 fn abort_receipt_keeps_metadata_bound_but_releases_disk_reservation() {
     let root = Root::new();
     let limits = UploadLimits {

@@ -16,7 +16,7 @@ pub use model::{
 use crate::private_fs::Dir;
 use model::{
     valid_digest, valid_handle, validate_owner, validate_request_id, DurableState, Entry, Result,
-    StoreState, MAX_READERS,
+    StoreState, ABORTED_RECEIPT_MS, MAX_READERS,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -342,10 +342,17 @@ impl PackageUploadStore {
             return Err(UploadError::Busy);
         }
         let mut next = state.durable.clone();
-        next.uploads
+        let entry = next
+            .uploads
             .get_mut(handle)
-            .ok_or(UploadError::CorruptState)?
-            .phase = UploadPhase::Aborted;
+            .ok_or(UploadError::CorruptState)?;
+        entry.phase = UploadPhase::Aborted;
+        // The kernel and the terminal abort every upload an install consumed.
+        // Kept until the upload's own expiry, those receipts would hold the
+        // owner's upload slots for up to the full TTL after each install.
+        entry.expires_at_ms = entry
+            .expires_at_ms
+            .min(now_ms.saturating_add(ABORTED_RECEIPT_MS));
         self.commit(&mut state, next, &mut |_| Ok(()))?;
         storage::cleanup(&self.inner.root, &state.durable)?;
         Ok(self.entry(&state, owner, handle, now_ms)?.status(handle))

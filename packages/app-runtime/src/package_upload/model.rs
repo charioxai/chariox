@@ -6,6 +6,9 @@ pub const MAX_UPLOAD_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 pub(super) const MAX_UPLOADS: usize = 32;
 pub(super) const MAX_RESERVED_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const MAX_TTL_MS: u64 = 30 * 60 * 1_000;
+/// How long an aborted receipt answers a late retry of its request. It
+/// reserves no bytes but still counts toward the upload limits.
+pub(super) const ABORTED_RECEIPT_MS: u64 = 60 * 1_000;
 pub(super) const MAX_READERS: usize = 4;
 pub(super) const STATE_VERSION: u32 = 2;
 
