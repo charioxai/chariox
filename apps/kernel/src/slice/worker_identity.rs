@@ -40,17 +40,27 @@ fn worker_ref_with_nonce(
     )
 }
 
+pub(super) fn qualified_worker_ref_parts(worker_ref: &str) -> Option<(&str, &str)> {
+    let (machine, creation) = worker_ref.strip_prefix("slice:")?.split_once(':')?;
+    [machine, creation]
+        .into_iter()
+        .all(|part| {
+            part.len() == 64
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .then_some((machine, creation))
+}
+
 pub(crate) fn machine_scoped_slice_worker_ref(worker_ref: &str, machine_id: &str) -> bool {
     if machine_id.trim().is_empty() {
         return false;
     }
-    let prefix = format!("slice:{:x}:", Sha256::digest(machine_id.as_bytes()));
-    worker_ref.strip_prefix(&prefix).is_some_and(|suffix| {
-        suffix.len() == 64
-            && suffix
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    })
+    let Some((machine_hash, _)) = qualified_worker_ref_parts(worker_ref) else {
+        return false;
+    };
+    machine_hash == format!("{:x}", Sha256::digest(machine_id.as_bytes()))
 }
 
 pub(crate) fn require_hosted_slice_worker_ref(

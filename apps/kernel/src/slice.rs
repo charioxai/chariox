@@ -5,6 +5,8 @@ mod model;
 mod ports;
 mod store;
 mod worker_identity;
+mod worker_context;
+pub(crate) use worker_context::{current_slice_worker_id, recorded_slice_for_worker, slice_worker_id_for_config};
 
 pub(crate) use worker_identity::{
     machine_scoped_slice_worker_ref, require_hosted_slice_worker_ref,
@@ -1278,3 +1280,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+pub(crate) mod hosted_worker_test_support;

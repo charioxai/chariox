@@ -986,12 +986,7 @@ pub(crate) fn bundled_prompt_template(template_id: &str) -> Option<&'static str>
 }
 
 fn current_kernel_is_slice() -> bool {
-    std::env::var("CHARIOX_MACHINE_ID")
-        .ok()
-        .is_some_and(|machine_id| machine_id.starts_with("slice:"))
-        || std::env::var("CHARIOX_SLICE_MACHINE_ID")
-            .ok()
-            .is_some_and(|machine_id| machine_id.starts_with("slice:"))
+    crate::slice::current_slice_worker_id().is_some()
 }
 
 fn bundled_templates() -> Vec<BundledPromptTemplate> {
@@ -2167,3 +2162,7 @@ mod tests {
         assert!(setting.protected);
     }
 }
+
+#[cfg(test)]
+#[path = "prompt_assembly/hosted_worker_tests.rs"]
+mod hosted_worker_tests;

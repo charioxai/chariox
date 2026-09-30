@@ -513,12 +513,7 @@ impl KernelRuntimeState {
     }
 
     fn slice_kernel_id(&self) -> Option<String> {
-        self.owned
-            .config_projection
-            .snapshot()
-            .host_machine_id
-            .strip_prefix("slice:")
-            .map(str::to_string)
+        crate::slice::slice_worker_id_for_config(&self.owned.config_projection.snapshot())
     }
 }
 
@@ -759,3 +754,7 @@ mod tests {
         assert!(super::ensure_leased_room_browser_context(true, false).is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "tool_dispatch/hosted_worker_tests.rs"]
+mod hosted_worker_tests;
