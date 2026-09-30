@@ -116,6 +116,11 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 agent_id: "provider run has no agent".to_string(),
             })?
             .to_string();
+        let hidden_with_failed_requests = self
+            .app
+            .agents
+            .hidden_context_with_failed_requests(&agent_id, hidden_system_context);
+        let hidden_system_context = hidden_with_failed_requests.as_str();
         self.app.mark_active_prompt_delivery(
             session_id,
             &agent_id,
@@ -158,7 +163,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
             self.app.providers.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.to_string(),
-                agent_id,
+                agent_id.clone(),
                 prompt_id.to_string(),
                 prompt_id,
                 &provider_run,
@@ -168,6 +173,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 mode,
                 false,
             )?;
+            self.consume_failed_requests(&agent_id, prompt_id);
             return Ok(());
         }
 
@@ -192,6 +198,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 Some(provider_run_id.to_string()),
                 provider_run.provider_session_id().map(str::to_string),
             )?;
+            self.consume_failed_requests(&agent_id, prompt_id);
             return Ok(());
         }
         let input = crate::app::terminal_input::provider_prompt_input(&provider_prompt);
@@ -230,7 +237,27 @@ impl<'a> ProviderPromptDispatcher<'a> {
             Some(provider_run_id.to_string()),
             provider_run.provider_session_id().map(str::to_string),
         )?;
+        self.consume_failed_requests(&agent_id, prompt_id);
         Ok(())
+    }
+
+    /// The provider accepted the turn that carried the failed-request note.
+    fn consume_failed_requests(&self, agent_id: &str, prompt_id: &str) {
+        if let Err(error) = self.app.agents.consume_failed_requests_durably(
+            &self.app.durable_state_store(),
+            agent_id,
+            prompt_id,
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.prompt_delivery",
+                "failed to clear the delivered failed request note",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "prompt_id": prompt_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 }
 

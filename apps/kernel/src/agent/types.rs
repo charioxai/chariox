@@ -236,6 +236,8 @@ pub struct AgentInstance {
     remote_execution: Option<RemoteAgentBinding>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     provider_resume_state: ProviderResumeState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    failed_requests: Vec<super::FailedRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     external_provider_import: Option<ExternalProviderImportMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -306,6 +308,7 @@ impl AgentInstance {
             worktree_id,
             remote_execution: None,
             provider_resume_state: ProviderResumeState::default(),
+            failed_requests: Vec::new(),
             external_provider_import: None,
             extension_grants: Vec::new(),
             remote_extension_manifest_sync: None,
@@ -442,6 +445,10 @@ impl AgentInstance {
         &self.provider_resume_state
     }
 
+    pub fn failed_requests(&self) -> &[super::FailedRequest] {
+        &self.failed_requests
+    }
+
     pub fn external_provider_import(&self) -> Option<&ExternalProviderImportMetadata> {
         self.external_provider_import.as_ref()
     }
@@ -562,6 +569,7 @@ impl AgentInstance {
         self.worktree_id = None;
         self.remote_execution = None;
         self.provider_resume_state = ProviderResumeState::default();
+        self.failed_requests.clear();
         self.external_provider_import = None;
         self.extension_grants.clear();
         self.substitutes.clear();
@@ -740,6 +748,7 @@ impl AgentInstance {
     fn clear_publication_runtime_state(&mut self) {
         self.remote_execution = None;
         self.provider_resume_state = ProviderResumeState::default();
+        self.failed_requests.clear();
         self.external_provider_import = None;
         self.remote_extension_manifest_sync = None;
         self.state = AgentState::Idle;
@@ -749,6 +758,10 @@ impl AgentInstance {
 
     pub fn set_provider_resume_state(&mut self, resume_state: ProviderResumeState) {
         self.provider_resume_state = resume_state;
+    }
+
+    pub fn set_failed_requests(&mut self, failed_requests: Vec<super::FailedRequest>) {
+        self.failed_requests = failed_requests;
     }
 
     pub fn set_external_provider_import(&mut self, import: Option<ExternalProviderImportMetadata>) {

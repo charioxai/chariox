@@ -1,8 +1,11 @@
+mod failed_requests;
 mod service;
 mod service_store;
 mod store;
 mod types;
 
+pub use failed_requests::FailedRequest;
+pub(crate) use failed_requests::{failed_request_notice, failed_request_reason};
 pub use service::AgentService;
 pub use service_store::AgentServiceStore;
 pub(crate) use service_store::ProviderResumeClearOutcome;

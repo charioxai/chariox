@@ -230,7 +230,10 @@ impl KernelRuntimeOwnedState {
                 let granted_skill_context =
                     self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
                 let hidden_system_context = join_hidden_context(
-                    started_next.hidden_system_context(),
+                    &self.hidden_context_with_failed_requests(
+                        agent_id,
+                        started_next.hidden_system_context(),
+                    ),
                     &granted_skill_context,
                 );
                 let (source_client_id, _source_user_id) =
@@ -262,7 +265,12 @@ impl KernelRuntimeOwnedState {
                     mode,
                     false,
                 )?;
-                self.consume_pending_context_handoff(session_id, agent_id, &provider_run);
+                self.consume_delivered_turn_context(
+                    session_id,
+                    agent_id,
+                    started_next.id(),
+                    &provider_run,
+                );
                 self.note_prompt_started(provider_run_id);
                 None
             } else {

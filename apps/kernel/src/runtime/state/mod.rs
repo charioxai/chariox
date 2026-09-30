@@ -35,6 +35,7 @@ use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
+mod failed_request_owned_state;
 use context_handoff::*;
 mod app_automation_owned_state;
 mod app_event_delivery_owned_state;

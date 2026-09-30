@@ -7,7 +7,8 @@ use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition, RemoteAgentBinding,
+    AgentStore, AgentSubstituteProfile, CreateAgentRequest, FailedRequest, GridPosition,
+    RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -613,6 +614,21 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
         agent.set_provider_resume_state(resume_state);
+        Ok(agent.clone())
+    }
+
+    pub(crate) fn set_agent_failed_requests(
+        &mut self,
+        agent_id: &str,
+        failed_requests: Vec<FailedRequest>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_failed_requests(failed_requests);
         Ok(agent.clone())
     }
 

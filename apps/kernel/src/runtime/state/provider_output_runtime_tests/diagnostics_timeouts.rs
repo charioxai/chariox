@@ -195,10 +195,15 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
         .iter()
         .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
         .collect::<Vec<_>>();
-    assert_eq!(provider_errors.len(), 1);
+    // The provider error once, then the failed turn's "not carried out" entry.
+    assert_eq!(provider_errors.len(), 2);
     assert_eq!(
         String::from_utf8_lossy(&provider_errors[0].bytes),
         "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&provider_errors[1].bytes),
+        "Request not carried out: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. It was dropped; send it again to retry."
     );
     let durable_errors = runtime
         .owned

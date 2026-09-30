@@ -175,4 +175,10 @@ pub use workspace::*;
 /// before, is approved by the `kernel_deployment_consent:<interaction>`
 /// policy. Copy installations are tagged with their deployment: absent from
 /// `ListAppInstallations`, marked by `AppSetInstallation.deployment_id`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 367;
+/// Version 384 adds `AgentInstance.failed_requests` (`{prompt_id, excerpt,
+/// reason}`, omitted when empty): requests whose turn failed before completing
+/// are dropped. The failed turn gets a "Request not carried out" provider-error
+/// transcript entry, and the agent's next turn delivered to its provider
+/// carries a one-time hidden note not to act on them unless the user asks
+/// again; the field clears once a provider accepted that turn.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 384;
