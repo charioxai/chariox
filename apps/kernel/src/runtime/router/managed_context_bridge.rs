@@ -701,6 +701,30 @@ impl CommandRouter {
             return Err(commit_error);
         }
 
+        // Imported profiles start `unknown`, which admits no new work. Refresh them as a
+        // user's Refresh would; best effort, a failure leaves them `unknown`.
+        if let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
+            accounts,
+        } = &receipt.provider_accounts
+        {
+            let registry = provider_account_target.registry.clone();
+            let owner_user_id = provider_account_target.owner_user_id.clone();
+            let accounts = accounts
+                .iter()
+                .map(|account| (account.provider.clone(), account.profile_id.clone()))
+                .collect::<Vec<_>>();
+            tokio::task::spawn_blocking(move || {
+                for (provider, profile_id) in accounts {
+                    let _ = crate::local::provider_requests::refresh_provider_account_profile_response(
+                        &registry,
+                        &owner_user_id,
+                        &provider,
+                        &profile_id,
+                    );
+                }
+            });
+        }
+
         let final_store = store;
         let final_status = run_blocking(move || {
             final_store.get_status(

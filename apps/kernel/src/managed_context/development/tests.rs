@@ -1911,6 +1911,49 @@ fn managed_materialization_requires_the_explicit_trusted_control_parent() {
 }
 
 #[test]
+fn path1_materializes_into_the_repository_root_around_its_chariox_home() {
+    let _lock = crate::env_lock::lock();
+    let names = [
+        crate::managed_bootstrap::MANAGED_PROVIDER_TOPOLOGY_ENV,
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        "CHARIOX_HOME",
+        "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
+    ];
+    let previous = names.map(|name| (name, std::env::var_os(name)));
+    let root = test_root("path1-repository-root");
+    let home = root.join("home");
+    let workspaces = home.join(".chariox/state/managed-context-workspaces");
+    fs::create_dir_all(&workspaces).expect("create Path-1 transfer workspaces");
+    std::env::remove_var("CHARIOX_PUBLICATION_CONTROL_STATE_DIR");
+    std::env::set_var(names[0], "path1");
+    std::env::set_var(names[1], fs::canonicalize(&home).unwrap());
+    std::env::set_var("CHARIOX_HOME", home.join(".chariox"));
+
+    let trusted = super::import::trusted_managed_control_parent()
+        .expect("resolve Path-1 control parent")
+        .expect("Path 1 trusts its own transfer workspaces");
+    let resolved = super::import::managed_materialization_root_for_control(
+        &trusted.join("ctx_publication"),
+        Some(&trusted),
+    );
+    std::env::set_var(names[0], "shared_host");
+    let shared_host = super::import::trusted_managed_control_parent();
+
+    for (name, value) in previous {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+    assert_eq!(
+        resolved.expect("resolve Path-1 repository root"),
+        Some(fs::canonicalize(&home).unwrap())
+    );
+    assert_eq!(shared_host.expect("shared host without control root"), None);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
 fn managed_materialization_uses_the_bootstrap_repository_root() {
     let _lock = crate::env_lock::lock();
     let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);

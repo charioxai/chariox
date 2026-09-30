@@ -724,8 +724,12 @@ pub(super) fn managed_materialization_root_for_control(
     let canonical = fs::canonicalize(&root)
         .map_err(|error| context_io_error("resolve managed repository root", error))?;
     preflight_managed_repository_path(&canonical)?;
+    // Path 1 keeps control state in the protected CHARIOX_HOME below its
+    // repository root (/home/chariox/.chariox); repositories never land there.
+    let control_in_protected_home = kernel_chariox_home()
+        .is_some_and(|home| control_destination.starts_with(&home) && !canonical.starts_with(&home));
     if canonical == control_destination
-        || control_destination.starts_with(&canonical)
+        || control_destination.starts_with(&canonical) && !control_in_protected_home
         || canonical.starts_with(
             control_destination
                 .parent()
@@ -748,9 +752,13 @@ fn preflight_managed_repository_path(path: &Path) -> Result<(), DaemonError> {
     })
 }
 
-fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
+fn kernel_chariox_home() -> Option<PathBuf> {
+    std::env::var_os("CHARIOX_HOME").and_then(|home| fs::canonicalize(home).ok())
+}
+
+pub(super) fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
     let Some(raw) = std::env::var_os("CHARIOX_PUBLICATION_CONTROL_STATE_DIR") else {
-        return Ok(None);
+        return path1_control_parent();
     };
     if raw.is_empty() {
         return Err(context_error(
@@ -776,6 +784,29 @@ fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
         .map_err(|error| {
             context_io_error("resolve managed publication control workspace root", error)
         })
+}
+
+/// Path 1 has no publication control root: the kernel's own transfer
+/// workspaces under CHARIOX_HOME are the trusted control parent, so a copied
+/// repository lands in the managed repository root as on a shared host.
+fn path1_control_parent() -> Result<Option<PathBuf>, DaemonError> {
+    if !matches!(
+        crate::managed_bootstrap::managed_provider_topology(),
+        Ok(crate::managed_bootstrap::ManagedProviderTopology::Path1)
+    ) {
+        return Ok(None);
+    }
+    let Some(home) = kernel_chariox_home() else {
+        return Ok(None);
+    };
+    let parent = home.join("state").join("managed-context-workspaces");
+    if !parent.exists() {
+        return Ok(None);
+    }
+    validate_real_directory(&parent, "managed context workspace root")?;
+    fs::canonicalize(&parent)
+        .map(Some)
+        .map_err(|error| context_io_error("resolve managed context workspace root", error))
 }
 
 fn validate_real_directory(path: &Path, label: &str) -> Result<(), DaemonError> {
