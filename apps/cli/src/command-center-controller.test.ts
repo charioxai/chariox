@@ -245,7 +245,8 @@ test("command center controller runs every typed /app subcommand the TUI impleme
   // Each must be offered as itself, not completed to /app or to a sibling.
   for (const command of [
     "/app list", "/app set", "/app status", "/app journal", "/app logs", "/app worker", "/app start",
-    "/app stop", "/app restart", "/app open", "/app uninstall", "/app update", "/app dev", "/app dev stop",
+    "/app stop", "/app restart", "/app open", "/app install", "/app uninstall", "/app update", "/app dev",
+    "/app dev stop",
     "/app operation", "/app cancel", "/app publisher enroll", "/app publisher status", "/app publisher cancel",
     "/app automation list", "/app automation add", "/app automation disable", "/app inbox list",
     "/app inbox add", "/app inbox remove", "/app inbox test", "/app connection list", "/app connection grant",
