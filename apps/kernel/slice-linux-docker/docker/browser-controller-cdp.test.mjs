@@ -1025,9 +1025,42 @@ test("any command's new controller connection sweeps leftover App Tabs", async (
     browser, resourceInventory: async () => ({ browser_ids: ["browser-pid-fixture"], profile_ids: ["profile-sha256-fixture"] }),
   });
   assert.equal(response.ok, true, JSON.stringify(response.error));
-  await new Promise((resolve) => setImmediate(resolve));
   assert.ok(connection.closedTargetIds.has("app-left"), "the non-App command's connection ran the App sweep");
   assert.ok(!connection.closedTargetIds.has("target-a"));
+  // The sweep finishes before the command lists Tabs: a restored App window
+  // is never inspected while it closes (a slice restart's first reconcile).
+  assert.deepEqual(response.result.tabs.map((tab) => tab.target_id), ["target-a", "target-b"]);
+  assert.ok(!connection.calls.some((call) => call.method === "Target.attachToTarget" && call.params.targetId === "app-left"));
+});
+
+test("a command on a session that detaches fails at once, not at its timeout", async () => {
+  const socket = new FakeSocket();
+  const connection = new CdpConnection(socket, 60_000);
+  const closing = connection.send("Page.enable", {}, "session-a");
+  const other = connection.send("Page.enable", {}, "session-b");
+  socket.message({ method: "Target.detachedFromTarget", params: { sessionId: "session-a", targetId: "target-a" } });
+  await assert.rejects(closing, (error) => error.code === "browser_cdp_command_failed" && /Page\.enable: Target closed/.test(error.message));
+  socket.message({ id: JSON.parse(socket.sent[1]).id, result: {} });
+  assert.deepEqual(await other, {});
+  await connection.close();
+});
+
+test("a Tab that closes while its session starts drops out of the reconcile at once", async () => {
+  // Chromium does not answer the commands of a session whose target closed.
+  const socket = new ClosingTabSocket("target-a", "session-a");
+  const browser = new BrowserCdpClient({ connectionFactory: async () => new CdpConnection(socket, 60_000) });
+  const reconciled = await browser.reconcile(viewport);
+  assert.deepEqual(reconciled.tabs.map((tab) => tab.target_id), ["target-b"]);
+  await browser.close();
+});
+
+test("a Tab still listed after its session went away twice is left for the next reconcile", async () => {
+  const connection = new StillClosingConnection("session-a");
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const reconciled = await browser.reconcile(viewport);
+  assert.deepEqual(reconciled.tabs.map((tab) => tab.target_id), ["target-b"]);
+  connection.closingSessionId = null;
+  assert.deepEqual((await browser.reconcile(viewport)).tabs.map((tab) => tab.target_id), ["target-a", "target-b"]);
 });
 
 class FakeConnection {
@@ -1115,6 +1148,21 @@ class FakeConnection {
     if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
     if (method === "Runtime.callFunctionOn") return { result: { value: "file" } };
     return {};
+  }
+}
+
+class StillClosingConnection extends FakeConnection {
+  constructor(closingSessionId) {
+    super();
+    this.closingSessionId = closingSessionId;
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Emulation.setDeviceMetricsOverride" && sessionId === this.closingSessionId) {
+      this.calls.push({ method, params, sessionId });
+      throw new Error(`${method}: Session with given id not found.`);
+    }
+    return super.send(method, params, sessionId);
   }
 }
 
@@ -1326,6 +1374,27 @@ class FakeSocket extends EventTarget {
 
   message(payload) {
     this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(payload) }));
+  }
+}
+
+class ClosingTabSocket extends FakeSocket {
+  constructor(targetId, sessionId) {
+    super();
+    this.remote = new FakeConnection();
+    this.targetId = targetId;
+    this.sessionId = sessionId;
+  }
+
+  send(payload) {
+    super.send(payload);
+    const request = JSON.parse(payload);
+    if (request.method === "Page.enable" && request.sessionId === this.sessionId) {
+      this.remote.closedTargetIds.add(this.targetId);
+      this.message({ method: "Target.detachedFromTarget", params: { sessionId: this.sessionId, targetId: this.targetId } });
+      return;
+    }
+    void this.remote.send(request.method, request.params, request.sessionId)
+      .then((result) => this.message({ id: request.id, result }));
   }
 }
 

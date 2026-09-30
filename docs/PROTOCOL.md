@@ -1818,7 +1818,10 @@ Workflow trigger and deployment direction:
   off`, and WebRTC constructors are removed before App code runs (an in-page
   defense per document; a browser-level WebRTC policy is future work). Every new
   controller CDP connection (whatever command caused it) drops the previous
-  connection's App Tabs and closes App-origin Tabs it does not own. Each poll
+  connection's App Tabs and closes App-origin Tabs it does not own, before that
+  command lists any Tab (a slice restart's restored App windows are closed
+  before the Room start's reconcile, and one still closing drops out of it
+  instead of failing it). Each poll
   reports the controller's open App targets; the kernel drops bindings for
   closed Tabs registered before that poll and stops polling when none remain.
   Each call also names the Tab's document (its top-level CDP loader) and each

@@ -137,7 +137,14 @@ export class BrowserCdpClient {
           await this.forgetTarget(target.targetId);
           const { targetInfos: now = [] } = await connection.send("Target.getTargets");
           if (!now.some((candidate) => candidate.targetId === target.targetId)) return null;
-          return await this.inspectPage(connection, target, metricsFor(target));
+          try {
+            return await this.inspectPage(connection, target, metricsFor(target));
+          } catch (again) {
+            // Gone twice: it is closing. The next reconcile sees it if not.
+            if (!targetGone(again)) throw again;
+            await this.forgetTarget(target.targetId);
+            return null;
+          }
         }
       }))).filter(Boolean);
       await Promise.all(
@@ -321,8 +328,10 @@ export class BrowserCdpClient {
         { method: "Chariox.browserConnected", params: {} },
         this.eventContext(),
       );
-      // Connection-scoped state owners (App Tabs) re-establish their fences.
-      if (this.onConnected) queueMicrotask(() => this.onConnected(connection));
+      // Connection-scoped state owners (App Tabs) re-establish their fences
+      // before the command that opened the connection sees any Tab, so it never
+      // inspects a Tab they are closing.
+      if (this.onConnected) await this.onConnected(connection);
       return connection;
     } catch (error) {
       this.unsubscribeFromConnection?.();
@@ -1049,7 +1058,7 @@ export class CdpConnection {
           ),
         );
       }, this.requestTimeoutMs);
-      this.pending.set(id, { method, resolve, reject, timeout });
+      this.pending.set(id, { method, sessionId, resolve, reject, timeout });
       try {
         this.socket.send(JSON.stringify(payload));
       } catch (error) {
@@ -1109,6 +1118,7 @@ export class CdpConnection {
     }
     if (typeof message?.method === "string") {
       this.dispatchEvent(message);
+      if (message.method === "Target.detachedFromTarget") this.failSession(message.params?.sessionId);
     }
     if (!Number.isSafeInteger(message?.id)) {
       return;
@@ -1129,6 +1139,18 @@ export class CdpConnection {
       return;
     }
     pending.resolve(message.result ?? {});
+  }
+
+  // Chromium never answers a command whose session detached (its target
+  // closed): fail those at once instead of at their timeout.
+  failSession(sessionId) {
+    if (typeof sessionId !== "string") return;
+    for (const [id, pending] of this.pending) {
+      if (pending.sessionId !== sessionId) continue;
+      this.pending.delete(id);
+      clearTimeout(pending.timeout);
+      pending.reject(new BrowserControllerError("browser_cdp_command_failed", `${pending.method}: Target closed`));
+    }
   }
 
   failPending(code) {

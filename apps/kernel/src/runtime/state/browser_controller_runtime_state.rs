@@ -116,10 +116,7 @@ impl KernelRuntimeState {
             None,
         )
         .map_err(|error| environment_runtime_error(operation, error))?;
-        match self
-            .reconcile_browser_controller_environment(session_id)
-            .await
-        {
+        match self.reconcile_started_browser(session_id).await {
             Ok(_) => {
                 let environment = self
                     .update_room_environment_component_health(
@@ -140,6 +137,37 @@ impl KernelRuntimeState {
                 );
                 let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
                 Err(error)
+            }
+        }
+    }
+
+    /// A browser that a slice (re)start just launched can still be settling:
+    /// not listening yet, or slow while it restores the previous session's
+    /// windows. The start's reconcile retries those transient controller
+    /// failures with backoff before the Room fails: a retry starts only within
+    /// the budget, and the last one still runs its own command timeout (5 s
+    /// CDP locally, up to the 15 s relay timeout for a slice). Room commands on
+    /// the session's lane, a Stop included, wait behind it meanwhile.
+    async fn reconcile_started_browser(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        let deadline = tokio::time::Instant::now() + START_RECONCILE_BUDGET;
+        let mut delay = START_RECONCILE_FIRST_DELAY;
+        loop {
+            match self
+                .reconcile_browser_controller_environment(session_id)
+                .await
+            {
+                Err(error)
+                    if transient_started_browser_error(&error)
+                        && tokio::time::Instant::now() + delay < deadline =>
+                {
+                    tracing::warn!(%error, ?delay, "Room browser not ready; retrying its reconcile");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(START_RECONCILE_MAX_DELAY);
+                }
+                result => return result,
             }
         }
     }
@@ -1191,6 +1219,26 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+}
+
+const START_RECONCILE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+const START_RECONCILE_FIRST_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+const START_RECONCILE_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Controller failures of a browser that is still starting, as the controller
+/// reports them, locally or through the relay.
+fn transient_started_browser_error(error: &DaemonError) -> bool {
+    let message = error.to_string();
+    [
+        "browser_cdp_timeout",
+        "browser_debugger_unavailable",
+        "browser_cdp_disconnected",
+        "browser_cdp_socket_error",
+    ]
+    .iter()
+    .any(|code| {
+        message.contains(&crate::runtime::browser_controller_process::controller_error_marker(code))
+    })
 }
 
 fn controller_generation_error(message: &str) -> DaemonError {
