@@ -383,6 +383,7 @@ impl KernelRuntimeState {
             self.next_structured_output_poll_due_at_ms(),
             self.owned.provider_output_deadlines.next_due_at_ms(),
             self.owned.provider_launch_failure_retries.next_due_at_ms(),
+            self.app_event_pump_due_at_ms(now_ms),
         ]
         .into_iter()
         .flatten()
@@ -397,6 +398,29 @@ impl KernelRuntimeState {
             active_interval_ms,
             idle_interval_ms,
         )
+    }
+
+    /// App event handoff with a backlog or wake runs at its own one-second
+    /// floor, not the five-second idle tick. Only where the pump runs, and not
+    /// while a stopped writer keeps it from running.
+    fn app_event_pump_due_at_ms(&self, now_ms: u64) -> Option<u64> {
+        if !cfg!(any(
+            target_os = "macos",
+            all(target_os = "linux", target_env = "gnu")
+        )) || self
+            .owned
+            .durable_state_store
+            .require_writer_healthy()
+            .is_err()
+        {
+            return None;
+        }
+        let due = self.app_control().event_pump().next_due()?;
+        // Round up: a tick that wakes a hair before the floor finds the pass
+        // not yet due and waits a whole minimum interval more.
+        let wait = due.saturating_duration_since(std::time::Instant::now());
+        let wait_ms = wait.as_micros().div_ceil(1000);
+        Some(now_ms.saturating_add(u64::try_from(wait_ms).unwrap_or(u64::MAX)))
     }
 
     fn next_structured_output_poll_due_at_ms(&self) -> Option<u64> {
