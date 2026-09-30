@@ -205,6 +205,12 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.match(busy.out, /alice still has App storage/)
     assert.deepEqual((await owners(h)).map((owner) => owner.uid), [1000, 1001])
     await rm(p(h, "var/lib/chariox-app-storage/u-1000/i-0"), { recursive: true })
+    const kernel = p(h, "sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/chariox-kernel.service")
+    await mkdir(kernel, { recursive: true })
+    const running = h.run(["uninstall", "--user", "alice"])
+    assert.equal(running.status, 1)
+    assert.match(running.out, /alice's kernel is running; run install-user\.sh uninstall as alice first/)
+    await rm(join(h.root, "sys/fs/cgroup/user.slice"), { recursive: true })
     await h.reset("systemctl")
     const alice = h.run(["uninstall", "--user", "alice"])
     assert.equal(alice.status, 0, alice.out)
@@ -214,7 +220,8 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.equal(existsSync(p(h, "var/lib/systemd/linger/alice")), false)
     // The helper refuses to start with a storage directory of an unenrolled owner.
     assert.equal(existsSync(p(h, "var/lib/chariox-app-storage/u-1000")), false)
-    assert.ok(alice.out.indexOf("remove " + p(h, "var/lib/chariox-app-storage/u-1000")) < alice.out.indexOf("write "))
+    const removed = alice.out.indexOf(`remove ${p(h, "var/lib/chariox-app-storage/u-1000")} (empty)`)
+    assert.ok(removed >= 0 && removed < alice.out.indexOf("write "), alice.out)
 
     // A kernel holding a runtime generation's shared lease blocks --all before any change.
     const holder = spawn("flock", ["-s", "-o", p(h, `usr/lib/chariox/app-runtimes/${h.digest}/.runtime-lease`), "sh", "-c", "echo held; exec sleep 30"],

@@ -31,8 +31,8 @@
 #
 # uninstall --user removes each user's enrollment, their empty App storage
 # directory and the lingering this script enabled (a deleted account can be named
-# by uid). It refuses while the user still has App storage: uninstall their Apps
-# with their data first. uninstall --all
+# by uid). It refuses while the user's kernel runs or still has App storage:
+# uninstall their Apps with their data and run install-user.sh uninstall first. uninstall --all
 # also removes the helper, its unit, the runtime generations and their enrollment,
 # and the AppArmor profile. It refuses while any App storage exists or a runtime
 # generation is in use.
@@ -297,6 +297,9 @@ uninstall_users() {
   local index uid status=0
   for index in "${!uids[@]}"; do
     uid=${uids[$index]}
+    # A running kernel could acquire storage again before the helper restarts.
+    [[ ! -d "$R/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice/chariox-kernel.service" ]] \
+      || die "${users[$index]}'s kernel is running; run install-user.sh uninstall as ${users[$index]} first"
     [[ -z "$(find "$STORAGE/u-$uid" -mindepth 1 -maxdepth 1 2>/dev/null)" ]] \
       || die "${users[$index]} still has App storage in $STORAGE/u-$uid; uninstall their Apps with their data first"
   done
