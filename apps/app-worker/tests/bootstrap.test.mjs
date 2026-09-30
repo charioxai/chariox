@@ -49,8 +49,8 @@ async function fixture(source, { entry = 'runtime/main.mjs', config = {}, enviro
   } };
 }
 
-function start(prepared) {
-  const child = spawn(process.execPath, ['--no-warnings', '-e', prepared.script], {
+function start(prepared, nodeArguments = []) {
+  const child = spawn(process.execPath, ['--no-warnings', ...nodeArguments, '-e', prepared.script], {
     cwd: prepared.roots.data, env: prepared.environment, stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
   });
   active.add(child);
@@ -583,6 +583,152 @@ export default chariox => chariox.tools.register('echo', async () => {
     promisesWriteFileFlush: denied, written: 'x',
     worker: { fsyncSync: 'ok', fileHandleSync: 'ok' },
   });
+  running.child.kill('SIGKILL');
+  await running.completed;
+});
+
+test('App worker threads keep the permission model, whatever their options', async () => {
+  const source = `import { register } from 'node:module';
+import { SHARE_ENV, Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+const probe = \`
+  const fs = require('node:fs');
+  const { Worker, parentPort, workerData } = require('node:worker_threads');
+  const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+  parentPort.postMessage({
+    outside: code(() => fs.readFileSync(workerData.outside)),
+    storage: code(() => fs.writeFileSync(workerData.storage, 'x')),
+    worker: code(() => new Worker('0', { eval: true, execArgv: [] }).terminate()),
+    register: code(() => require('node:module').register('data:text/javascript,')),
+    childProcess: code(() => require('node:child_process').spawnSync('true')),
+  });\`;
+export default chariox => chariox.tools.register('echo', async ({ outside }) => {
+  const storage = chariox.paths.data + '/from-worker';
+  const run = (Constructor, options) => new Promise(resolve => {
+    let worker;
+    try { worker = new Constructor(probe, { eval: true, workerData: { outside, storage }, ...options }); }
+    catch (error) { resolve(error.code); return; }
+    worker.once('message', resolve);
+    worker.once('error', error => resolve('error:' + error.code));
+  });
+  class Subclass extends Worker {}
+  const outcome = {
+    app: code(() => require('node:fs').readFileSync(outside)),
+    register: code(() => register('data:text/javascript,')),
+    childProcess: code(() => require('node:child_process').spawnSync('true')),
+    binding: code(() => process.binding('spawn_sync')),
+    sameWorker: require('node:worker_threads').Worker === Worker && Worker.prototype.constructor === Worker,
+    // The native handle constructor reached from a returned Worker's handle is
+    // the neutralized one; constructing it throws before any thread can start.
+    handleConstructor: code(() => {
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+      const native = new worker[handle].constructor('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
+      return native.startThread();
+    }),
+    // The worker_threads diagnostics channel hands App code the same handle, so
+    // App code subscribing before creating a Worker still only ever sees the
+    // neutralized constructor: the guard replaced it before any App code ran.
+    diagnosticsCapture: await new Promise(resolve => {
+      let native;
+      const channel = require('node:diagnostics_channel');
+      const onPublish = ({ worker }) => {
+        const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+        native = worker[handle].constructor;
+      };
+      channel.subscribe('worker_threads', onPublish);
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      channel.unsubscribe('worker_threads', onPublish);
+      resolve(code(() => {
+        const handle = new native('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
+        return handle.startThread();
+      }));
+    }),
+    // util.inspect({ showProxy: true }) must not hand back an unguarded native
+    // constructor: the wrapper is not a Proxy, so the recovered value is itself.
+    inspectCapture: await (async () => {
+      const { inspect } = require('node:util');
+      let recovered;
+      Worker[inspect.custom] = function () { recovered = this; return 'worker'; };
+      inspect(Worker, { showProxy: true });
+      delete Worker[inspect.custom];
+      if (recovered !== Worker) return 'leaked-native-constructor';
+      return run(recovered, { execArgv: [] });
+    })(),
+    // A handle faked with Object.create has no native state, so startThread
+    // rejects it; the neutralized constructor is the only lever, and it is gone.
+    fakeHandleDenied: (() => {
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+      const proto = Object.getPrototypeOf(worker[handle]);
+      try { Object.create(proto).startThread(); return false; } catch { return true; }
+    })(),
+    inherited: await run(Worker, {}),
+    emptyExecArgv: await run(Worker, { execArgv: [] }),
+    repeatedExecArgv: await run(Worker, { execArgv: process.execArgv }),
+    constructorExecArgv: await run(Worker.prototype.constructor, { execArgv: [] }),
+    subclassExecArgv: await run(Subclass, { execArgv: [] }),
+    customExecArgv: await run(Worker, { execArgv: ['--stack-trace-limit=5'] }),
+    widerExecArgv: await run(Worker, { execArgv: ['--permission', '--allow-fs-read=*'] }),
+    envNodeOptions: await run(Worker, { env: { NODE_OPTIONS: '--allow-fs-read=*' } }),
+    shareEnv: await run(Worker, { env: SHARE_ENV }),
+    // A getter that synchronously creates a nested Worker during the outer
+    // construction: both are permitted threads from the parent, both stay
+    // contained, and the outer one must not fail because of the inner one.
+    reentrant: await (async () => {
+      const contained = worker => new Promise(settle => {
+        worker.once('message', message => settle(message.outside));
+        worker.once('error', error => settle('error:' + error.code));
+      });
+      let innerContained;
+      let outerWorker;
+      try {
+        outerWorker = new Worker(probe, {
+          eval: true,
+          get workerData() {
+            innerContained = contained(new Worker(probe, { eval: true, workerData: { outside, storage } }));
+            return { outside, storage };
+          },
+        });
+      } catch (error) { return 'outer:' + (error.code || error.message); }
+      return { outer: await contained(outerWorker), inner: await innerContained };
+    })(),
+  };
+  process.env.NODE_OPTIONS = '--allow-fs-read=*';
+  outcome.processNodeOptions = await run(Worker, {});
+  Object.prototype.execArgv = [];
+  outcome.prototypeExecArgv = await run(Worker, {});
+  delete Object.prototype.execArgv;
+  return outcome;
+});`;
+  const prepared = await fixture(source);
+  const outside = path.join(path.dirname(prepared.roots.data), 'outside.txt');
+  await writeFile(outside, 'secret');
+  const roots = Object.values(prepared.roots);
+  const running = start(prepared, ['--permission', '--no-addons', '--allow-worker', '--max-old-space-size=128',
+    ...roots.map(root => `--allow-fs-read=${root}`),
+    `--allow-fs-write=${prepared.roots.data}`, `--allow-fs-write=${prepared.roots.temporary}`]);
+  await running.ready();
+  running.request('call-1', 'tools.invoke', { name: 'echo', input: { outside } });
+  const outcome = (await running.receive(message => message.id === 'call-1')).result;
+  const denied = 'ERR_ACCESS_DENIED';
+  const contained = { outside: denied, storage: 'ok', worker: denied, register: denied, childProcess: denied };
+  assert.deepEqual(outcome, {
+    app: denied, register: denied, childProcess: denied, binding: denied, sameWorker: true,
+    handleConstructor: denied, diagnosticsCapture: denied, fakeHandleDenied: true,
+    inspectCapture: contained,
+    inherited: contained, emptyExecArgv: contained, repeatedExecArgv: contained,
+    constructorExecArgv: contained, subclassExecArgv: contained,
+    customExecArgv: denied, widerExecArgv: denied, envNodeOptions: contained, shareEnv: denied,
+    reentrant: { outer: denied, inner: denied },
+    processNodeOptions: contained, prototypeExecArgv: contained,
+  });
+  assert.equal(await readFile(path.join(prepared.roots.data, 'from-worker'), 'utf8'), 'x');
   running.child.kill('SIGKILL');
   await running.completed;
 });

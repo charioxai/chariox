@@ -117,3 +117,27 @@ reports `rename`/`change` from inode, size and time stamps; more than 4096
 entries fail with `ENOSPC`. Non-directories keep Node's own watch (kqueue on
 macOS), and Linux keeps inotify. This is compatibility, not containment: the
 listing uses the same permission-checked `node:fs` calls as the App.
+
+Before the SDK or any App module loads, the bootstrap also keeps worker threads
+inside Node's permission model. On Node 24.20 a `Worker` given its own
+`execArgv` (even `[]`) is parsed afresh, so it starts without `--permission` or
+with wider allow-lists; a `NODE_OPTIONS` in its environment is parsed too; and
+`module.register` starts a hooks thread that inherits `--allow-worker`. So every
+`Worker` gets the launcher's `--permission`, `--no-addons` and file allow-lists,
+without `--allow-worker` (a worker thread cannot start another one). An App's
+`execArgv` may only repeat launcher flags, `NODE_OPTIONS` is dropped from the
+worker's environment, `SHARE_ENV` is refused, and `module.register` fails with
+`ERR_ACCESS_DENIED`, as Node itself does without `--allow-worker`. The
+replacement `Worker` is a plain wrapper function (not a Proxy, which
+`util.inspect` could unwrap), so the native constructor is not reachable
+from the export, its prototype or an instance. The instance's native thread
+handle, and the same handle published on the `worker_threads` diagnostics
+channel, still expose the handle's own constructor, which is the one reachable
+way to build a fresh handle that can start a thread (a handle faked with
+`Object.create` has no native state and its `startThread` throws). So the guard
+neutralizes that constructor on the shared handle prototype during setup, before
+any App or migration code runs and could capture the original; a reference an
+App reads afterwards, from an instance or the channel, is the neutralized one,
+and the original is unreachable. Child processes, WASI, the
+inspector and `process.binding` stay denied by Node's permission model. Node's
+permissions remain defense in depth; the native sandbox contains the worker.
