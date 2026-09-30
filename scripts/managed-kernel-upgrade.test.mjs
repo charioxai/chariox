@@ -368,6 +368,7 @@ async function makeHarness(context, {
   rotateBuilder = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
+  await mkdir(join(root, "tmp"), { mode: 0o700 })
   context.after(() => rm(root, { recursive: true, force: true }))
   const { privateKey, publicKey } = generateKeyPairSync("ed25519")
   const trustedKey = join(root, "trusted-release-public-key")
@@ -653,6 +654,16 @@ if [ "$1" = "start" ]; then
 fi
     ;;
 esac
+if [ "$1" = "start" ] \
+  && [ -f "$HARNESS_STATE/crash-after-supervisor-start" ]; then
+  case "\${2:-}" in
+    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
+      rm -f -- "$HARNESS_STATE/crash-after-supervisor-start"
+      kill -KILL "$PPID"
+      exit 1
+      ;;
+  esac
+fi
 if [ "$1" = "is-active" ]; then
   case "\${3:-}" in
     chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
@@ -783,6 +794,7 @@ exec /usr/bin/stat "$@"
     PATH: `${bin}:${process.env.PATH}`,
     MANAGED_UPGRADE_TEST_ROOTLESS: rootlessHarness ? "1" : "0",
     HARNESS_STATE: state,
+    TMPDIR: join(root, "tmp"),
     MANAGED_TRUSTED_KEY: trustedKey,
     MANAGED_RECEIPT_DIRECTORY: dirname(receiptPath),
     CHARIOX_MANAGED_UPGRADE_ROOT: installRoot,
@@ -1933,6 +1945,68 @@ test("a signed transition policy permits post-success rollback to its declared p
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`,
   )
+})
+
+const cloudUpdateId = "managed_release_update_0123abcd-0000-4000-8000-0123456789ab"
+
+function expectedUpdateResult(harness, phase) {
+  return [
+    "1", cloudUpdateId, harness.current.digest, harness.target.digest,
+    harness.receipt.environmentId, harness.receipt.machineId, harness.receipt.kernelId, phase,
+  ].join("\n") + "\n"
+}
+
+test("Cloud update terminal evidence survives committed journal cleanup", async (context) => {
+  const harness = await makeHarness(context)
+  const result = harness.run({ CHARIOX_MANAGED_RELEASE_UPDATE_ID: cloudUpdateId })
+  assert.equal(result.status, 0, result.stderr)
+  const evidence = join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade-result")
+  assert.equal(await readFile(evidence, "utf8"), expectedUpdateResult(harness, "committed"))
+  assert.equal((await stat(evidence)).mode & 0o777, 0o644)
+  assert.equal(await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade"))
+    .then(() => true, () => false), false)
+  const nextUpdateId = "managed_release_update_0123abcd-0000-4000-8000-0123456789ac"
+  const reverse = harness.run({ CHARIOX_MANAGED_RELEASE_UPDATE_ID: nextUpdateId }, [
+    harness.current.rootfs, harness.target.digest, harness.current.digest, harness.trustedKey,
+  ])
+  assert.equal(reverse.status, 0, reverse.stderr)
+  assert.equal(await readFile(evidence, "utf8"), [
+    "1", nextUpdateId, harness.target.digest, harness.current.digest,
+    harness.receipt.environmentId, harness.receipt.machineId, harness.receipt.kernelId, "committed",
+  ].join("\n") + "\n")
+})
+
+test("Cloud update recovers committed evidence after result or cleanup interruption", async (context) => {
+  for (const marker of ["crash-after-phase-committed", "crash-after-committed-tombstone"]) {
+    const harness = await makeHarness(context)
+    const evidence = join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade-result")
+    await put(join(harness.state, marker), "crash\n")
+    const interrupted = harness.run({ CHARIOX_MANAGED_RELEASE_UPDATE_ID: cloudUpdateId })
+    assert.equal(interrupted.signal, "SIGKILL", marker)
+    assert.equal(await lstat(evidence).then(() => true, () => false), marker.includes("tombstone"))
+    const recovered = harness.run({}, [harness.target.rootfs, `sha256:${"f".repeat(64)}`, harness.current.digest, harness.trustedKey])
+    assert.equal(recovered.status, 1, marker)
+    assert.match(recovered.stderr, /installed release does not match/)
+    assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.target.digest)
+    assert.equal(await readFile(evidence, "utf8"), expectedUpdateResult(harness, "committed"))
+  }
+})
+
+test("Cloud update evidence stays pending between supervisor start and rollback", async (context) => {
+  const harness = await makeHarness(context)
+  const evidence = join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade-result")
+  await put(join(harness.state, "crash-after-supervisor-start"), "crash\n")
+  const interrupted = harness.run({ CHARIOX_MANAGED_RELEASE_UPDATE_ID: cloudUpdateId })
+  assert.equal(interrupted.signal, "SIGKILL")
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.target.digest)
+  assert.equal(await readFile(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade/phase"), "utf8"), "activated\n")
+  assert.equal(await lstat(evidence).then(() => true, () => false), false)
+  // Recover the old transaction, then reject this request before starting a new one.
+  const recovered = harness.run({}, [harness.target.rootfs, `sha256:${"f".repeat(64)}`, harness.target.digest, harness.trustedKey])
+  assert.equal(recovered.status, 1)
+  assert.match(recovered.stderr, /installed release does not match/)
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
+  assert.equal(await readFile(evidence, "utf8"), expectedUpdateResult(harness, "rolled_back"))
 })
 
 test("managed kernel upgrade recovers interruption after every persisted nonterminal phase", async (context) => {
