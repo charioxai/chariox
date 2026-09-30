@@ -302,6 +302,10 @@ fn input_schema_and_typed_context_precede_worker_dispatch() {
             Err(CatalogError::Input)
         ));
     }
+    assert_eq!(
+        CatalogError::Input.to_string(),
+        "The input does not match the tool's declared input schema"
+    );
     assert!(matches!(
         catalog.prepare(
             &transaction,

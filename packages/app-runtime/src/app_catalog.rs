@@ -40,7 +40,9 @@ pub enum CatalogError {
     NameCollision,
     #[error("app_catalog_unknown_tool")]
     UnknownTool,
-    #[error("app_catalog_input")]
+    /// Its text is what a caller (an agent or a view) reads after
+    /// `INVALID_INPUT`, so it is a sentence, not an internal context name.
+    #[error("The input does not match the tool's declared input schema")]
     Input,
     #[error("app_catalog_output")]
     Output,
