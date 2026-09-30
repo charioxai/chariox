@@ -1085,10 +1085,13 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
                 workspace.join("setup-started").exists(),
                 "a reusable definition must be applied by the worker before validation"
             );
-            assert_eq!(
-                provider_fixture.diagnostics(),
-                "<no requests observed>",
-                "a passing reusable definition must not invoke the utility agent"
+            // Every setup attempt restarts the provider into discovery mode and
+            // back, which the fixture records; only a prompt means the utility
+            // agent was invoked.
+            assert!(
+                utility_prompt_requests(&provider_fixture.trace_entries()).is_empty(),
+                "a passing reusable definition must not invoke the utility agent: {}",
+                provider_fixture.diagnostics()
             );
         }
         DefinitionScenario::SuppliedSetupFailure
@@ -1096,10 +1099,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         | DefinitionScenario::SuppliedStaleInputs
         | DefinitionScenario::SuppliedMissingInputs
         | DefinitionScenario::SuppliedLegacyUnattested => {
-            assert_ne!(
-                provider_fixture.diagnostics(),
-                "<no requests observed>",
-                "missing or failed setup must invoke the existing utility agent"
+            assert!(
+                !utility_prompt_requests(&provider_fixture.trace_entries()).is_empty(),
+                "missing or failed setup must invoke the existing utility agent: {}",
+                provider_fixture.diagnostics()
             );
         }
     }
@@ -1157,7 +1160,7 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             );
         }
 
-        let utility_trace = provider_fixture.diagnostics();
+        let utility_trace = utility_prompt_requests(&provider_fixture.trace_entries());
         let materialized_inputs: Vec<(&str, &[u8])> = if input_scenario {
             vec![
                 (recipe_path, recipe_contents),
@@ -1213,9 +1216,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             );
         }
         assert_eq!(
-            provider_fixture.diagnostics(),
+            utility_prompt_requests(&provider_fixture.trace_entries()),
             utility_trace,
-            "the follow-up worker must reuse the repaired definition without utility"
+            "the follow-up worker must reuse the repaired definition without utility: {}",
+            provider_fixture.diagnostics()
         );
     }
     assert_eq!(
@@ -4485,6 +4489,21 @@ struct UtilityProviderState {
     session_id: Option<String>,
     prompt_id: Option<String>,
     trace: Vec<String>,
+}
+
+/// Utility prompts recorded by the provider fixture, without the health,
+/// config, session and event requests of each provider restart.
+#[cfg(unix)]
+fn utility_prompt_requests(trace: &[String]) -> Vec<String> {
+    trace
+        .iter()
+        .filter(|entry| {
+            entry.strip_prefix("POST ").is_some_and(|path| {
+                path.starts_with("/session/") && path.ends_with("/prompt_async")
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(unix)]

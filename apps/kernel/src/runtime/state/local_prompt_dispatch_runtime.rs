@@ -1391,13 +1391,47 @@ mod tests {
             .expect("source attachment should attach");
         let resume_state =
             crate::provider::ProviderResumeState::from_claude_session_id("claude-session-poisoned");
+        // Unattended Claude launches (the queued-prompt replacement) need a vault setup
+        // token or, on Linux, a portable login in the account's config dir. Use an isolated
+        // account with a fixture login instead of the host's default ~/.claude.
+        let registry = app.provider_account_profile_registry();
+        let claude_profile = registry
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                "Headless ack fixture",
+            )
+            .expect("isolated Claude account should create");
+        crate::test_support::authenticate_provider_account(
+            &registry,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &claude_profile.profile_id,
+        )
+        .expect("isolated Claude account should authenticate");
+        let claude_config_dir = std::path::PathBuf::from(
+            registry
+                .resolve_environment(
+                    crate::session::DEFAULT_LOCAL_USER_ID,
+                    "claude",
+                    &claude_profile.profile_id,
+                )
+                .expect("Claude environment should resolve")["CLAUDE_CONFIG_DIR"]
+                .clone(),
+        );
+        std::fs::write(
+            claude_config_dir.join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"fixture-refresh"}}"#,
+        )
+        .expect("portable Claude login fixture should write");
         let configured_agent = app
             .agents_mut()
-            .set_agent_runtime_profile(
+            .set_agent_runtime_profile_with_account_profile(
                 agent.id(),
                 "claude-headless",
                 Some("claude-opus-5".to_string()),
                 None,
+                Some(claude_profile.profile_id.clone()),
                 resume_state.clone(),
             )
             .expect("Claude resume state should be configured");
@@ -1418,7 +1452,7 @@ mod tests {
                     session.id(),
                     "claude",
                     "claude-headless",
-                    "default",
+                    &claude_profile.profile_id,
                     "claude-opus-5",
                 )
                 .with_agent_id(agent.id())
@@ -1849,6 +1883,12 @@ mod tests {
         );
     }
 
+    // The replacement is an unattended Claude launch. Without a vault setup token it
+    // needs a portable login file, which the credential gate reads only on Linux.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "unattended Claude launch needs a vault token or a Linux portable login"
+    )]
     #[tokio::test]
     async fn claude_headless_ack_failure_retires_poisoned_provider_run() {
         let (_worktree, runtime, session_id, agent_id, source_id, provider_run, dispatch) =
