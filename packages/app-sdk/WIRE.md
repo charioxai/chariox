@@ -188,7 +188,9 @@ keys) with the installation, generation and action into a durable operation.
 The reply `{operationId, state}` is `pending` at once; the kernel shows a
 trusted approval outside App content (in the owner's most recent session, preferring one they host; one
 operation per installation at a time; collaborators in a shared session see it,
-but only the owner can answer), and only the owner's answer
+but only the owner can answer; it names whom the App was working for: the
+kernel's caller of each call the worker was handling when it asked, such as an
+agent, the owner's view or a background delivery), and only the owner's answer
 there moves it to `approved` or `denied` (undecided operations expire after 10
 minutes, approvals must be used within 10 minutes and are single-use). Passing
 an existing `operationId` returns it only for the identical binding.
