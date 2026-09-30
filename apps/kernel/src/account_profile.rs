@@ -811,11 +811,24 @@ impl ProviderAccountLocator {
     }
 }
 
+/// Kernel-internal: whether the kernel chose a profile's label. An automatic
+/// label follows the account's email once known; an explicit one (a user
+/// rename, or a replica's source label) is never replaced. Not projected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProviderAccountLabelSource {
+    Automatic,
+    Explicit,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct StoredProviderAccountProfile {
     #[serde(flatten)]
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
+    /// `None` only on records written before label tracking; `open` infers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label_source: Option<ProviderAccountLabelSource>,
     #[serde(default)]
     materialized_replica: bool,
     #[serde(default)]
@@ -845,6 +858,8 @@ struct ManagedContextReplicaBinding {
 struct ReplacedProviderAccountProfile {
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label_source: Option<ProviderAccountLabelSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -958,7 +973,8 @@ impl ProviderAccountProfileRegistry {
         let changed = migrated_legacy_replicas
             | migrate_legacy_default_profile_ids(&mut document)
             | migrate_legacy_default_profile_labels(&mut document)
-            | migrate_legacy_managed_claude_scope(&mut document);
+            | migrate_legacy_managed_claude_scope(&mut document)
+            | migrate_automatic_labels(&mut document);
         let registry = Self {
             path,
             document: Arc::new(RwLock::new(document)),
@@ -1047,6 +1063,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles.push(StoredProviderAccountProfile {
                 public: profile,
                 locator,
+                label_source: Some(ProviderAccountLabelSource::Automatic),
                 materialized_replica: false,
                 pending_native_validation: false,
                 legacy_unpinned_replica: false,
@@ -1285,7 +1302,8 @@ impl ProviderAccountProfileRegistry {
         if let Some(usage) = usage {
             profile.public.usage = usage;
         }
-        let result = profile.public.clone();
+        refresh_automatic_label(&mut document, profile_index);
+        let result = document.profiles[profile_index].public.clone();
         self.persist_locked(&document)?;
         Ok(result)
     }
@@ -1520,7 +1538,8 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
-        let label = resolved_new_profile_label(&document, owner_user_id, provider, label)?;
+        let (label, label_source) =
+            resolved_new_profile_label(&document, owner_user_id, provider, label)?;
         ensure_unique_label(&document, owner_user_id, provider, &label)?;
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let managed_root = self
@@ -1547,6 +1566,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
+            label_source: Some(label_source),
             materialized_replica: false,
             pending_native_validation: false,
             legacy_unpinned_replica: false,
@@ -1574,7 +1594,8 @@ impl ProviderAccountProfileRegistry {
         }
         let canonical = validate_linked_root(path)?;
         let mut document = self.write_document()?;
-        let label = resolved_new_profile_label(&document, owner_user_id, provider, label)?;
+        let (label, label_source) =
+            resolved_new_profile_label(&document, owner_user_id, provider, label)?;
         ensure_unique_label(&document, owner_user_id, provider, &label)?;
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let profile = new_public_profile(
@@ -1592,6 +1613,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
+            label_source: Some(label_source),
             materialized_replica: false,
             pending_native_validation: false,
             legacy_unpinned_replica: false,
@@ -1649,6 +1671,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
+            label_source: Some(ProviderAccountLabelSource::Automatic),
             materialized_replica: false,
             pending_native_validation: false,
             legacy_unpinned_replica: false,
@@ -1674,6 +1697,7 @@ impl ProviderAccountProfileRegistry {
         let profile =
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
         profile.public.label = label.to_string();
+        profile.label_source = Some(ProviderAccountLabelSource::Explicit);
         let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(project_usage_freshness(result))
@@ -3043,6 +3067,7 @@ impl ProviderAccountProfileRegistry {
                 .map(|stored| ReplacedProviderAccountProfile {
                     public: stored.public.clone(),
                     locator: stored.locator.clone(),
+                    label_source: stored.label_source,
                 })
         });
         let previous_default_profile_id = if materialization.profile.is_default {
@@ -3081,6 +3106,7 @@ impl ProviderAccountProfileRegistry {
                 && stored.public.profile_id == profile_id
         }) {
             existing.public.label = materialization.profile.label.clone();
+            existing.label_source = Some(ProviderAccountLabelSource::Explicit);
             existing.public.origin = materialization.profile.origin;
             existing.public.is_default = materialization.profile.is_default;
             existing.public.auth_state = ProviderAccountAuthState::Unknown;
@@ -3109,6 +3135,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles.push(StoredProviderAccountProfile {
                 public: public.clone(),
                 locator,
+                label_source: Some(ProviderAccountLabelSource::Explicit),
                 materialized_replica: true,
                 pending_native_validation,
                 legacy_unpinned_replica: false,
@@ -3229,6 +3256,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles[index] = StoredProviderAccountProfile {
                 public: replaced.public,
                 locator: replaced.locator,
+                label_source: replaced.label_source,
                 materialized_replica: false,
                 legacy_unpinned_replica: false,
                 pending_native_validation: false,
@@ -3720,13 +3748,72 @@ fn resolved_new_profile_label(
     owner_user_id: &str,
     provider: &str,
     requested: &str,
-) -> Result<String, DaemonError> {
+) -> Result<(String, ProviderAccountLabelSource), DaemonError> {
     let requested = requested.trim();
     if requested.is_empty() {
-        Ok(next_automatic_label(document, owner_user_id, provider))
+        Ok((
+            next_automatic_label(document, owner_user_id, provider),
+            ProviderAccountLabelSource::Automatic,
+        ))
     } else {
-        Ok(validate_label(requested)?.to_string())
+        Ok((
+            validate_label(requested)?.to_string(),
+            ProviderAccountLabelSource::Explicit,
+        ))
     }
+}
+
+/// The local part of an email identity, when it is usable as a label.
+fn identity_label_base(identity: Option<&str>) -> Option<&str> {
+    let (local, domain) = normalized_account_identity(identity)?.rsplit_once('@')?;
+    (!domain.is_empty()
+        && local.chars().count() <= 64
+        && !local
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control()))
+    .then_some(local)
+    .filter(|local| validate_label(local).is_ok())
+}
+
+/// Give an automatic label the account's email local part, suffixed `-2`,
+/// `-3`, ... on a collision. A label already derived from that local part is
+/// kept, so labels do not churn when an earlier collision disappears.
+fn refresh_automatic_label(document: &mut RegistryDocument, index: usize) -> bool {
+    let profile = &document.profiles[index];
+    if profile.label_source != Some(ProviderAccountLabelSource::Automatic) {
+        return false;
+    }
+    let Some(base) = identity_label_base(profile.public.identity_summary.as_deref()) else {
+        return false;
+    };
+    let current = profile.public.label.as_str();
+    let derived = current.eq_ignore_ascii_case(base)
+        || current
+            .get(..base.len())
+            .filter(|prefix| prefix.eq_ignore_ascii_case(base))
+            .and_then(|_| current[base.len()..].strip_prefix('-'))
+            .and_then(|suffix| suffix.parse::<u64>().ok())
+            .is_some_and(|suffix| suffix >= 2);
+    if derived {
+        return false;
+    }
+    let (owner_user_id, provider) = (&profile.public.owner_user_id, &profile.public.provider);
+    let label_taken = |candidate: &str| {
+        document.profiles.iter().enumerate().any(|(other, stored)| {
+            other != index
+                && stored.public.owner_user_id == *owner_user_id
+                && stored.public.provider == *provider
+                && stored.public.label.eq_ignore_ascii_case(candidate)
+        })
+    };
+    let mut label = base.to_string();
+    let mut suffix = 2_u64;
+    while label_taken(&label) {
+        label = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    document.profiles[index].public.label = label;
+    true
 }
 
 fn next_automatic_label(
@@ -3868,8 +3955,38 @@ fn migrate_legacy_default_profile_labels(document: &mut RegistryDocument) -> boo
     for (index, owner_user_id, provider) in &legacy_profiles {
         let label = next_automatic_label(document, owner_user_id, provider);
         document.profiles[*index].public.label = label;
+        document.profiles[*index].label_source = Some(ProviderAccountLabelSource::Automatic);
     }
     !legacy_profiles.is_empty()
+}
+
+/// Records written before label tracking count as automatic only when they
+/// still carry the `<provider>-<n>` alias; a replica's label is its source's.
+/// Every automatic label then follows a known account email.
+fn migrate_automatic_labels(document: &mut RegistryDocument) -> bool {
+    let mut changed = false;
+    for index in 0..document.profiles.len() {
+        let profile = &mut document.profiles[index];
+        if profile.label_source.is_none() {
+            let automatic = !profile.materialized_replica
+                && profile
+                    .public
+                    .label
+                    .strip_prefix(profile.public.provider.as_str())
+                    .and_then(|rest| rest.strip_prefix('-'))
+                    .is_some_and(|number| {
+                        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                    });
+            profile.label_source = Some(if automatic {
+                ProviderAccountLabelSource::Automatic
+            } else {
+                ProviderAccountLabelSource::Explicit
+            });
+            changed = true;
+        }
+        changed |= refresh_automatic_label(document, index);
+    }
+    changed
 }
 
 fn migrate_legacy_managed_claude_scope(document: &mut RegistryDocument) -> bool {
@@ -6516,6 +6633,223 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    fn observe_identity(
+        registry: &ProviderAccountProfileRegistry,
+        provider: &str,
+        profile_id: &str,
+        identity: Option<&str>,
+    ) -> ProviderAccountProfile {
+        registry
+            .update_observation(
+                "owner-a",
+                provider,
+                profile_id,
+                ProviderAccountAuthState::Authenticated,
+                identity.map(str::to_string),
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn automatic_labels_take_the_account_email_local_part() {
+        let (root, registry) = fixture();
+        let native = registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.provider == "codex")
+            .unwrap();
+        let created = registry.create_managed("owner-a", "codex", "").unwrap();
+        let unnamed = registry.create_managed("owner-a", "codex", "").unwrap();
+        assert_eq!(native.label, "codex-1");
+        assert_eq!(
+            (created.label.as_str(), unnamed.label.as_str()),
+            ("codex-2", "codex-3")
+        );
+
+        let native = observe_identity(
+            &registry,
+            "codex",
+            "default",
+            Some("kaissandra.ai@gmail.com"),
+        );
+        let created = observe_identity(
+            &registry,
+            "codex",
+            &created.profile_id,
+            Some("work@corp.test"),
+        );
+        let unnamed = observe_identity(&registry, "codex", &unnamed.profile_id, None);
+        let not_an_email =
+            observe_identity(&registry, "codex", &unnamed.profile_id, Some("API key"));
+
+        assert_eq!(native.label, "kaissandra.ai");
+        assert_eq!(created.label, "work");
+        assert_eq!(unnamed.label, "codex-3");
+        assert_eq!(not_an_email.label, "codex-3");
+        let stored = fs::read_to_string(root.join("accounts.json")).unwrap();
+        assert!(stored.contains("\"label_source\": \"automatic\""));
+        let reopened = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        assert_eq!(
+            reopened.get("owner-a", "codex", "default").unwrap().label,
+            "kaissandra.ai"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn user_chosen_labels_are_never_replaced_by_the_account_email() {
+        let (root, registry) = fixture();
+        let named = registry
+            .create_managed("owner-a", "codex", "Client")
+            .unwrap();
+        let renamed = registry.create_managed("owner-a", "codex", "").unwrap();
+        registry
+            .rename("owner-a", "codex", &renamed.profile_id, "Personal")
+            .unwrap();
+
+        let named = observe_identity(
+            &registry,
+            "codex",
+            &named.profile_id,
+            Some("client@corp.test"),
+        );
+        let renamed = observe_identity(
+            &registry,
+            "codex",
+            &renamed.profile_id,
+            Some("me@home.test"),
+        );
+        drop(registry);
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+
+        assert_eq!(named.label, "Client");
+        assert_eq!(renamed.label, "Personal");
+        let labels = registry
+            .list("owner-a", Some("codex"))
+            .unwrap()
+            .into_iter()
+            .map(|profile| profile.label)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            labels,
+            BTreeSet::from(["Client".to_string(), "Personal".to_string()])
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn automatic_label_collisions_are_suffixed() {
+        let (root, registry) = fixture();
+        registry.create_managed("owner-a", "codex", "dev").unwrap();
+        let first = registry.create_managed("owner-a", "codex", "").unwrap();
+        let second = registry.create_managed("owner-a", "codex", "").unwrap();
+        let other_provider = registry.create_managed("owner-a", "claude", "").unwrap();
+
+        let first = observe_identity(
+            &registry,
+            "codex",
+            &first.profile_id,
+            Some("dev@example.test"),
+        );
+        let second = observe_identity(
+            &registry,
+            "codex",
+            &second.profile_id,
+            Some("DEV@other.test"),
+        );
+        let other_provider = observe_identity(
+            &registry,
+            "claude",
+            &other_provider.profile_id,
+            Some("dev@example.test"),
+        );
+        // A later observation keeps a suffixed label stable.
+        let first_again = observe_identity(
+            &registry,
+            "codex",
+            &first.profile_id,
+            Some("dev@example.test"),
+        );
+
+        assert_eq!(first.label, "dev-2");
+        assert_eq!(second.label, "DEV-3");
+        assert_eq!(other_provider.label, "dev");
+        assert_eq!(first_again.label, "dev-2");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_same_email_in_two_profiles_gets_a_suffixed_label() {
+        let (root, registry) = fixture();
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+        let secondary = registry.create_managed("owner-a", "codex", "").unwrap();
+        let secondary = observe_identity(
+            &registry,
+            "codex",
+            &secondary.profile_id,
+            Some("dev@example.test"),
+        );
+        // The selected default wins the identity and takes a suffixed label.
+        let native = observe_identity(&registry, "codex", "default", Some("dev@example.test"));
+
+        assert_eq!(secondary.label, "dev");
+        assert_eq!(native.label, "dev-2");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_automatic_labels_migrate_once_the_identity_is_known() {
+        let (root, registry) = fixture();
+        let known = registry.create_managed("owner-a", "codex", "").unwrap();
+        let unknown = registry.create_managed("owner-a", "codex", "").unwrap();
+        let chosen = registry
+            .create_managed("owner-a", "codex", "Personal")
+            .unwrap();
+        observe_identity(&registry, "codex", &known.profile_id, None);
+        {
+            let mut document = registry.write_document().unwrap();
+            for profile in &mut document.profiles {
+                if profile.public.profile_id == known.profile_id {
+                    profile.public.identity_summary = Some("known@example.test".to_string());
+                }
+                if profile.public.profile_id == chosen.profile_id {
+                    profile.public.identity_summary = Some("chosen@example.test".to_string());
+                }
+            }
+            registry.persist_locked(&document).unwrap();
+        }
+        drop(registry);
+        let path = root.join("accounts.json");
+        let mut raw: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for profile in raw["profiles"].as_array_mut().unwrap() {
+            profile.as_object_mut().unwrap().remove("label_source");
+        }
+        fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        let label = |profile_id: &str| registry.get("owner-a", "codex", profile_id).unwrap().label;
+        assert_eq!(label(&known.profile_id), "known");
+        assert_eq!(label(&unknown.profile_id), "codex-2");
+        assert_eq!(label(&chosen.profile_id), "Personal");
+        let unknown = observe_identity(
+            &registry,
+            "codex",
+            &unknown.profile_id,
+            Some("later@example.test"),
+        );
+        assert_eq!(unknown.label, "later");
+        let stored = fs::read_to_string(&path).unwrap();
+        assert_eq!(stored.matches("\"label_source\": \"automatic\"").count(), 2);
+        assert_eq!(stored.matches("\"label_source\": \"explicit\"").count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn reserves_default_for_the_provider_pointer() {
         let (root, registry) = fixture();
@@ -7714,9 +8048,7 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("already authenticated as `codex-1`"));
+        assert!(error.to_string().contains("already authenticated as `dev`"));
         assert_eq!(
             registry
                 .get("owner-a", "codex", &secondary.profile_id)
