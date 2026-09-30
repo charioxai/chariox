@@ -22,6 +22,20 @@ pub(crate) struct AppLogBroker {
     dropped: Arc<std::sync::atomic::AtomicU32>,
 }
 
+/// Hold extracted drops until their notice commits. Failed storage or a
+/// panicking blocking task returns them to the shared counter.
+struct PendingDrops {
+    count: u32,
+    counter: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl Drop for PendingDrops {
+    fn drop(&mut self) {
+        self.counter
+            .fetch_add(self.count, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Write {
@@ -69,9 +83,14 @@ impl AppLogBroker {
         if request.method != "log.write" {
             return Err(error("METHOD_UNAVAILABLE", false));
         }
+        self.write(request.params, crate::session::unix_epoch_ms())
+            .await
+    }
+
+    async fn write(&self, params: Value, now_ms: u64) -> Result<Value, RemoteError> {
         let write: Write =
-            serde_json::from_value(request.params).map_err(|_| error("INVALID_ARGUMENT", false))?;
-        let (admitted, first) = self.admit(crate::session::unix_epoch_ms());
+            serde_json::from_value(params).map_err(|_| error("INVALID_ARGUMENT", false))?;
+        let (admitted, first) = self.admit(now_ms);
         if !admitted {
             return Err(self.drop_write("RATE_LIMITED"));
         }
@@ -86,20 +105,28 @@ impl AppLogBroker {
         } else {
             0
         };
+        let mut pending_drops = PendingDrops {
+            count: dropped,
+            counter: self.dropped.clone(),
+        };
         let service = self.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let fields = write
                 .fields
                 .unwrap_or_else(|| Value::Object(Default::default()));
-            service.store.append_app_log_after_drops(
+            let result = service.store.append_app_log_after_drops(
                 &service.owner,
                 &service.installation,
                 &write.level,
                 &write.message,
                 &fields,
-                dropped,
-            )
+                pending_drops.count,
+            );
+            if result.is_ok() {
+                pending_drops.count = 0;
+            }
+            result
         })
         .await
         .map_err(|_| error("STORAGE_UNAVAILABLE", true))?
@@ -126,6 +153,43 @@ fn error(code: &str, retryable: bool) -> RemoteError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rejected_notice_write_retains_drops_for_the_next_successful_second() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-log-drops-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir(&root).unwrap();
+        let store = DurableKernelStateStore::open_owned(root.join("kernel.sqlite")).unwrap();
+        let admission = Arc::new(Semaphore::new(1));
+        let broker = AppLogBroker::new(store, "alice".into(), "todo".into(), admission.clone());
+        let valid = serde_json::json!({"level":"info", "message":"after", "fields":{}});
+        for _ in 0..PER_SECOND {
+            broker.write(valid.clone(), 10_000).await.unwrap();
+        }
+        assert_eq!(
+            broker.write(valid.clone(), 10_000).await.unwrap_err().code,
+            "RATE_LIMITED"
+        );
+        let permit = admission.clone().acquire_owned().await.unwrap();
+        assert_eq!(
+            broker.write(valid.clone(), 11_000).await.unwrap_err().code,
+            "APP_BUSY"
+        );
+        drop(permit);
+        let oversized = serde_json::json!({"level":"info", "message":"rejected", "fields":{"big":"x".repeat(9000)}});
+        assert_eq!(
+            broker.write(oversized, 12_000).await.unwrap_err().code,
+            "LIMIT_EXCEEDED"
+        );
+        // A later successful first write must recover both refused writes.
+        broker.write(valid, 13_000).await.unwrap();
+        let entries = broker.store.app_logs("alice", "todo", 0, 100).unwrap();
+        assert_eq!(entries.len(), PER_SECOND as usize + 2);
+        assert_eq!(entries[PER_SECOND as usize].fields["dropped"], 2);
+        assert_eq!(entries[PER_SECOND as usize + 1].message, "after");
+        drop(broker);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn a_worker_is_limited_per_second() {
