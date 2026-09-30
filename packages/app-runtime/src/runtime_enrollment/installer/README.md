@@ -43,7 +43,10 @@ than an acknowledgment of completed cleanup. Staging and retirement recovery
 never deletes unknown entries or follows links.
 
 The root installer/OS package must deliver this binary and supply the trusted
-key and expected digest from its release authority. Automatic OS packaging and
+key and expected digest from its release authority. For a local Linux kernel,
+`deploy/local-linux/install-root.sh` is that one root step: it runs this
+installer, then enrolls the App storage helper's owners, the bubblewrap
+AppArmor profile and lingering. Automatic OS packaging and
 signed macOS installation remain separate integration work. Unit fixtures use
 tiny signed files in a private external test directory, inject publication and
 cleanup interruptions, and run no privileged tools or native App code.

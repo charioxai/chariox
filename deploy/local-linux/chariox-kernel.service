@@ -1,0 +1,24 @@
+# The local Chariox kernel, a systemd --user unit of its ordinary owner.
+# install-user.sh installs it; install-root.sh enrolled this unit's `apps`
+# child as the owner's App cgroup root.
+[Unit]
+Description=Chariox kernel
+
+[Service]
+Type=simple
+Environment=CHARIOX_HOME=%h/.chariox
+Environment=CHARIOX_LOG_DIR=%h/.chariox/logs
+Environment=CHARIOX_KERNEL_HOST=127.0.0.1
+EnvironmentFile=-%h/.config/chariox/kernel.env
+# The kernel and its Apps own only this unit's delegated subtree.
+Delegate=cpu memory pids
+DelegateSubgroup=supervisor
+ExecStart=%h/.local/bin/chariox-kernel
+# Post, not Pre: systemd 259 fails the main process spawn (EBUSY) once
+# controllers are enabled in the unit's own cgroup.
+ExecStartPost=%h/.local/lib/chariox/prepare-app-domain.sh
+KillMode=control-group
+TimeoutStopSec=60s
+
+[Install]
+WantedBy=default.target
