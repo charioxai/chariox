@@ -18,7 +18,7 @@ test("explicit client and machine pairing forward the Cloud session bearer to to
   for (const kind of ["client", "machine"] as const) {
     const linked = Object.freeze(profile())
     const requests: { url: string; headers: Headers; body: Record<string, unknown> }[] = []
-    const fetch = t.mock.method(globalThis, "fetch", async (input, init) => {
+    const fetch = t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof globalThis.fetch>) => {
       const url = String(input)
       requests.push({ url, headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) })
       return Response.json(url.endsWith("/pairing-tokens") ? { token: "synthetic-pairing-token" } : {})
@@ -49,7 +49,9 @@ test("explicit pairing with a missing or blank session makes no request and pres
     return Response.json({ token: "synthetic-pairing-token" })
   })
   for (const cloudSessionToken of [undefined, "", " ", "\n\t"]) {
-    const linked = { ...profile(), cloudSessionToken }
+    const linked = profile()
+    if (cloudSessionToken === undefined) delete linked.cloudSessionToken
+    else linked.cloudSessionToken = cloudSessionToken
     const before = structuredClone(linked)
     await assert.rejects(pairCloudRelayClient(linked, "new-client"), /cloud session.*login/i)
     await assert.rejects(pairCloudRelayMachine(linked, "new-machine"), /cloud session.*login/i)

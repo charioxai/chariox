@@ -34,7 +34,7 @@ test("command composition starts with the mutable local client used by the app",
     client,
     options: {},
     preferencesState: () => ({}),
-  } as Parameters<typeof createCliCommandActionComposition>[0])
+  } as unknown as Parameters<typeof createCliCommandActionComposition>[0])
 
   assert.equal(typeof handlers.handleRelayCommand, "function")
   assert.equal(client.getRelayClientIdentity(), null)

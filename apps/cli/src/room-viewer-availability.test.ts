@@ -42,10 +42,10 @@ for (const { viewer, initialRelay } of (["room", "slice"] as const)
       isAttached: () => true, sessionState: () => ({ id: "session-1" }),
       attachmentState: () => ({ id: "attachment-1" }), focusedAgentId: () => "agent-1",
       flashFooter: (message: string) => footers.push(message), appendNotice: () => {},
-    } as Parameters<typeof createCliCommandActionComposition>[0])
+    } as unknown as Parameters<typeof createCliCommandActionComposition>[0])
     const view = () => viewer === "room"
-      ? handlers.handleRoomCommand({ kind: "room", args: ["view"] })
-      : handlers.handleSliceCommand({ kind: "slice", args: ["screen", "slice-1"] })
+      ? handlers.handleRoomCommand({ kind: "room", raw: "/room view", args: ["view"] })
+      : handlers.handleSliceCommand({ kind: "slice", raw: "/slice screen slice-1", args: ["screen", "slice-1"] })
     await view()
     assert.equal(requestedKeys.length, 1)
     assert.ok(requestedKeys[0])
