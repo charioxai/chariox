@@ -1,4 +1,5 @@
 use crate::support::kernel_websocket::*;
+use crate::support::test_worktree::TestWorktree;
 use chariox_kernel::attachment::ClientCapabilityLevel;
 use chariox_kernel::local::{AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest};
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
@@ -10,6 +11,7 @@ use tokio::sync::oneshot;
 #[test]
 fn kernel_websocket_reports_async_provider_launch_failure() {
     crate::run_kernel_websocket_runtime_test(async {
+        let worktree = TestWorktree::new("provider-launch-failure");
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -35,7 +37,7 @@ fn kernel_websocket_reports_async_provider_launch_failure() {
             "create-session",
             LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
                 "workspace-provider-launch-failure",
-                "worktree-provider-launch-failure",
+                worktree.path_string(),
             )),
         )
         .await;
@@ -125,6 +127,7 @@ fn kernel_websocket_reports_async_provider_launch_failure() {
 #[test]
 fn kernel_websocket_replaces_starting_provider_launch() {
     crate::run_kernel_websocket_runtime_test(async {
+        let worktree = TestWorktree::new("provider-launch-replace");
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -151,7 +154,7 @@ fn kernel_websocket_replaces_starting_provider_launch() {
             "create-session",
             LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
                 "workspace-provider-launch-replace",
-                "worktree-provider-launch-replace",
+                worktree.path_string(),
             )),
         )
         .await;

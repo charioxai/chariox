@@ -31,6 +31,7 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn incoming_peer_events_project_runtime_to_the_home_session() {
+    let worktree = crate::test_support::TestWorktree::new("home");
     let _relay_test_guard = relay_client_test_guard().await;
     let _env_guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
@@ -49,7 +50,8 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         let mut app = app.lock().await;
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(
-                CreateSessionRequest::new("workspace-home", "worktree-home")
+                worktree
+                    .session_request()
                     .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
             )
             .expect("session should be created");

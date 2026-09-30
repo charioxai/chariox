@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::support::kernel_websocket::*;
+use crate::support::test_worktree::TestWorktree;
 use chariox_kernel::local::{
     LaunchProviderRunRequest, ListProviderProcessesRequest, LocalDaemonRequest,
 };
@@ -13,6 +14,7 @@ use tokio::time::sleep;
 #[test]
 fn kernel_websocket_provider_process_gc_reaps_idle_managed_process() {
     crate::run_kernel_websocket_runtime_test(async {
+        let worktree = TestWorktree::new("provider-gc");
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -40,7 +42,7 @@ fn kernel_websocket_provider_process_gc_reaps_idle_managed_process() {
             "gc-create-session",
             LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
                 "workspace-provider-gc",
-                "worktree-provider-gc",
+                worktree.path_string(),
             )),
         )
         .await;

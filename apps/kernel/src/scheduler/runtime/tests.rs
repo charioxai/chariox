@@ -12,14 +12,27 @@ use crate::{DaemonApp, DaemonConfig};
 
 use super::prepare_workflow_turn_prompt;
 
+/// The returned worktree must outlive the test: provider launches require the
+/// session and agent working directory to exist.
 fn create_scheduler_session_and_agent(
     app: &mut DaemonApp,
     client_id: &str,
+) -> (RuntimeSession, String, crate::test_support::TestWorktree) {
+    let worktree = crate::test_support::TestWorktree::new("scheduler");
+    let (session, agent_id) = create_scheduler_session_and_agent_in(app, client_id, &worktree);
+    (session, agent_id, worktree)
+}
+
+/// Sessions created on one worktree contend for its workflow write claim.
+fn create_scheduler_session_and_agent_in(
+    app: &mut DaemonApp,
+    client_id: &str,
+    worktree: &crate::test_support::TestWorktree,
 ) -> (RuntimeSession, String) {
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut *app)
         .create_session(CreateSessionRequest::new(
             "workspace-scheduler",
-            "worktree-scheduler",
+            worktree.path().display().to_string(),
         ))
         .expect("session should exist");
     crate::app::KernelSessionService::new(app)
@@ -34,7 +47,7 @@ fn create_scheduler_session_and_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-scheduler")
                 .with_model("test-model")
-                .with_worktree("worktree-scheduler"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("agent should spawn")
         .id()
@@ -186,7 +199,7 @@ fn workflow_turn_leaves_the_session_focus_where_the_person_put_it() {
 #[test]
 fn direct_user_prompt_starts_before_active_workflow_reaches_idle_agent() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent_id) =
+    let (session, agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-user-first-idle");
     let attachment_id = app.attachments().list_session_attachment_ids(session.id())[0].clone();
     let (workflow_id, node_id) =
@@ -238,7 +251,7 @@ fn direct_user_prompt_starts_before_active_workflow_reaches_idle_agent() {
 #[test]
 fn busy_agent_preserves_user_fifo_before_workflow_turn() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent_id) =
+    let (session, agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-user-first-busy");
     let attachment_id = app.attachments().list_session_attachment_ids(session.id())[0].clone();
     let (workflow_id, node_id) =
@@ -312,7 +325,7 @@ fn busy_agent_preserves_user_fifo_before_workflow_turn() {
 #[test]
 fn user_prompts_from_every_pane_jump_ahead_of_queued_workflow_follow_up() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent_id) =
+    let (session, agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-freeform-priority");
     let freeform_attachment =
         app.attachments().list_session_attachment_ids(session.id())[0].clone();
@@ -438,14 +451,14 @@ fn user_prompts_from_every_pane_jump_ahead_of_queued_workflow_follow_up() {
 #[test]
 fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, first_agent_id) =
+    let (session, first_agent_id, worktree) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-preflight");
     let second_agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("second-scheduler-agent")
                 .with_model("test-model")
-                .with_worktree("worktree-scheduler"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("second agent should spawn")
         .id()
@@ -541,7 +554,7 @@ fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
 #[test]
 fn workflow_notice_uses_current_run_after_dispatch_failure() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent_id) =
+    let (session, agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-failed-notice");
     let (workflow_id, node_id) =
         create_workflow_node(&mut app, session.id(), "wf-failed-notice", &agent_id);
@@ -568,7 +581,7 @@ fn workflow_notice_uses_current_run_after_dispatch_failure() {
 #[test]
 fn downstream_schedule_failure_releases_its_workspace_claim() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (failed_session, failed_agent_id) =
+    let (failed_session, failed_agent_id, worktree) =
         create_scheduler_session_and_agent(&mut app, "client-downstream-schedule-failure");
     let (failed_workflow_id, failed_node_id) = create_workflow_node(
         &mut app,
@@ -606,8 +619,12 @@ fn downstream_schedule_failure_releases_its_workspace_claim() {
         },
     );
 
-    let (next_session, next_agent_id) =
-        create_scheduler_session_and_agent(&mut app, "client-after-downstream-failure");
+    // Same worktree: the second claim succeeds only if the failure released the first.
+    let (next_session, next_agent_id) = create_scheduler_session_and_agent_in(
+        &mut app,
+        "client-after-downstream-failure",
+        &worktree,
+    );
     let (next_workflow_id, next_node_id) = create_workflow_node(
         &mut app,
         next_session.id(),
@@ -637,7 +654,7 @@ fn downstream_schedule_failure_releases_its_workspace_claim() {
 #[test]
 fn provider_completion_without_structured_output_fails_without_automatic_retry() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent_id) =
+    let (session, agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-missing-output");
     let (workflow_id, node_id) = create_workflow_node(
         &mut app,
@@ -701,7 +718,7 @@ fn provider_completion_without_structured_output_fails_without_automatic_retry()
 #[test]
 fn terminal_provider_completion_releases_claim_and_retries_blocked_workflow() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (failed_session, failed_agent_id) =
+    let (failed_session, failed_agent_id, worktree) =
         create_scheduler_session_and_agent(&mut app, "client-terminal-provider-failure");
     let (failed_workflow_id, failed_node_id) = create_workflow_node(
         &mut app,
@@ -722,8 +739,12 @@ fn terminal_provider_completion_releases_claim_and_retries_blocked_workflow() {
         .id()
         .to_string();
 
-    let (blocked_session, blocked_agent_id) =
-        create_scheduler_session_and_agent(&mut app, "client-blocked-after-provider-failure");
+    // Same worktree: the second workflow must block on the first one's write claim.
+    let (blocked_session, blocked_agent_id) = create_scheduler_session_and_agent_in(
+        &mut app,
+        "client-blocked-after-provider-failure",
+        &worktree,
+    );
     let (blocked_workflow_id, blocked_node_id) = create_workflow_node(
         &mut app,
         blocked_session.id(),
@@ -777,7 +798,7 @@ fn terminal_provider_completion_releases_claim_and_retries_blocked_workflow() {
 #[test]
 fn workflow_completion_ignores_provider_output_recorded_before_prompt_dispatch() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent_id) =
+    let (session, agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-dispatch-boundary");
     let (workflow_id, node_id) = create_workflow_node(
         &mut app,
@@ -843,7 +864,8 @@ fn workflow_instruction_reference_is_written_under_kernel_state_root() {
         .expect("test runtime root should have a parent")
         .join("prompt-home");
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
-    let (session, agent_id) = create_scheduler_session_and_agent(&mut app, "client-scheduler");
+    let (session, agent_id, _worktree) =
+        create_scheduler_session_and_agent(&mut app, "client-scheduler");
 
     let workdir = std::env::temp_dir().join(format!(
         "chariox-workflow-runtime-test-{}",
@@ -977,7 +999,7 @@ fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
     let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
     std::env::set_var("CHARIOX_HOME", &home);
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, router_agent_id) =
+    let (session, router_agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-routing");
     let analyst_agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
@@ -1148,7 +1170,7 @@ fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
 #[test]
 fn terminating_nodes_receive_completion_and_last_turn_prompt_blocks() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent_id) =
+    let (session, agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-terminating");
 
     let (workflow_id, node_id) = create_workflow_node(
@@ -1192,7 +1214,7 @@ fn terminating_nodes_receive_completion_and_last_turn_prompt_blocks() {
 #[test]
 fn non_last_turn_nodes_still_receive_turn_index_prompt_block() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent_id) =
+    let (session, agent_id, _worktree) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-turn-index");
 
     let (workflow_id, node_id) =
