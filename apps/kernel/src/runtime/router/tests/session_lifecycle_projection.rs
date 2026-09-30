@@ -977,13 +977,7 @@ async fn a_page_load_never_brings_back_an_agent_a_person_deleted() {
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
         .expect("session should be created");
     let session_id = session.id().to_string();
-    // The session has been live: its provider ran, then stopped (Parked).
-    app.sessions_mut()
-        .set_active_provider_run(&session_id, Some("provider-run-1".to_string()))
-        .expect("the provider run should start");
-    app.sessions_mut()
-        .set_active_provider_run(&session_id, None)
-        .expect("the provider run should stop");
+    // No provider has run yet: the session is still `Created`.
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
     let attach = |client_id: &str| {
         let request = attach_request(&session_id, client_id);
@@ -1020,6 +1014,7 @@ async fn a_page_load_never_brings_back_an_agent_a_person_deleted() {
         .expect("state should resolve")
     {
         LocalDaemonResponse::SessionState { session, .. } => {
+            assert_eq!(session.status(), crate::session::SessionStatus::Created);
             assert!(
                 session.agents().is_empty(),
                 "attaching must not spawn an agent"

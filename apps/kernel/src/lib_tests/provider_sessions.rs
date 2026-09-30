@@ -33,8 +33,8 @@ fn detaching_last_attachment_parks_and_reattaching_resumes_same_provider_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let worktree = crate::test_support::TestWorktree::new("session-provider-reattach");
-    let session = app
-        .sessions_mut()
+    // A session is created with its default agent: attaching creates none.
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
 

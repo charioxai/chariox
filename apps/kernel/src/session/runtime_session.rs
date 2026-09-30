@@ -459,11 +459,13 @@ impl RuntimeSession {
         self.status
     }
 
-    /// A new or ended session gets its default agent when a client attaches.
-    /// A live session whose agents a person deleted keeps none: attaching (a
-    /// page load, a reconnect) never creates, and so never focuses, an agent.
+    /// An ended session (its agents were removed when it ended) gets a default
+    /// agent back when a client reopens it. Any other session with no agents
+    /// is empty because a person deleted them (a new session is created with
+    /// its default agent): attaching (a page load, a reconnect) never creates,
+    /// and so never focuses, an agent there.
     pub fn attach_creates_default_agent(&self) -> bool {
-        matches!(self.status, SessionStatus::Created | SessionStatus::Ended)
+        self.status == SessionStatus::Ended
     }
 
     pub fn is_hidden(&self) -> bool {

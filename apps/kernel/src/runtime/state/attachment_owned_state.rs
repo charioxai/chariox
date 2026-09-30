@@ -54,7 +54,7 @@ impl KernelRuntimeOwnedState {
                 "created default agent for session",
                 serde_json::json!({
                     "session_id": session_id,
-                    "reason": "a new or ended session had no agents",
+                    "reason": "an ended session reopened with no agents",
                 }),
             );
         }
