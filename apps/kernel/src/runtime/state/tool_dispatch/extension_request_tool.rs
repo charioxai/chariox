@@ -59,6 +59,32 @@ impl KernelRuntimeState {
                     max_safety: args.allow.clone(),
                 };
                 grant.validate_app_binding()?;
+                // Nothing to change for an App already bound to this agent: no
+                // grant, no provider reload and no resumed request. Arming the
+                // reload again replayed the request after each reload, so an
+                // agent asked to bind the App asked again, in a loop.
+                if self
+                    .owned
+                    .agent_store
+                    .get_agent(agent.id())?
+                    .has_extension_grant(crate::extension::ExtensionKind::App, &args.name)
+                {
+                    return Ok((
+                        crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "granted": true,
+                                "kind": "app",
+                                "name": args.name,
+                                "agent_ref": agent.agent_ref(),
+                                "effective": "already_bound",
+                                "requires_provider_restart": false,
+                                "note": "This App is already bound to you. Nothing changed and no reload follows. Its tools are listed while the App can start; a catalog refresh from an earlier binding change applies after the current turn.",
+                            }),
+                        },
+                        None,
+                    ));
+                }
                 if !self
                     .authorize_agent_app_binding(session_id, agent.id(), agent.id(), &args.name)
                     .await?
