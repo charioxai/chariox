@@ -87,6 +87,7 @@ impl AppWorkerOwner {
             broker: Arc::downgrade(&delegate),
             broker_draining: std::sync::atomic::AtomicBool::new(false),
             migrating: std::sync::atomic::AtomicBool::new(migrating),
+            updating: std::sync::atomic::AtomicBool::new(false),
         });
         let (sender, registration) = oneshot::channel();
         let broker = Arc::new(StartupBroker {

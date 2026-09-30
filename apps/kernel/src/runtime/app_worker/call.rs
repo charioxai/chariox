@@ -120,7 +120,7 @@ impl PreparedAppToolCall {
             .lock()
             .map_err(|_| AppWorkerError::Unavailable)?;
         if *phase != Phase::Active || self.live.peer.is_closed() {
-            return Err(AppWorkerError::Unavailable);
+            return Err(self.live.admission.closed_error());
         }
         let response = self
             .slot

@@ -238,6 +238,16 @@ impl AppCatalog {
     }
 }
 
+/// Whether `name` is the runtime name of one of `installation`'s tools, so a
+/// caller can recognize a tool while its catalog is withdrawn (an update is
+/// replacing the App). A local name longer than the kept prefix is not
+/// recognized.
+pub fn is_installation_tool_name(name: &str, installation: &str) -> bool {
+    name.strip_prefix("app_")
+        .and_then(|rest| rest.rsplit_once('_'))
+        .is_some_and(|(local, _)| !local.is_empty() && tool_name(installation, local) == name)
+}
+
 fn tool_name(installation: &str, local: &str) -> String {
     // Names are transport identifiers, not an encoded authority or an App
     // ontology. Verified local names are ASCII; the full identity is hashed.

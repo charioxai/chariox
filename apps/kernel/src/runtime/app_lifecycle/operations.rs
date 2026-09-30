@@ -87,7 +87,7 @@ impl AppLifecycleService {
             // It is not a user stop: a failed update restarts the old
             // generation on demand.
             drop(entries);
-            entry.control.cancel(false);
+            entry.control.cancel_for_update();
             entry.join();
             entries = self
                 .0

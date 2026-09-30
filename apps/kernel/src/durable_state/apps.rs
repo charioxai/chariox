@@ -217,6 +217,28 @@ impl DurableKernelStateStore {
         owned_installation(&registry, owner_id, installation_id)?;
         Ok(registry.journal(installation_id)?)
     }
+
+    /// Whether an approved update of the installation is under way: from the
+    /// owner's approval until it commits or aborts, the old generation drains
+    /// and the new one starts, so calls meet no running worker.
+    pub(crate) fn app_update_underway(
+        &self,
+        owner_id: &str,
+        installation_id: &str,
+    ) -> Result<bool, AppRegistryError> {
+        validate_owner(owner_id)?;
+        let mut connection = self.lock_connection("durable_state.read_app_update")?;
+        let registry = InstallationRegistry::new(&mut connection);
+        let Some(pending) =
+            owned_installation(&registry, owner_id, installation_id)?.pending_generation
+        else {
+            return Ok(false);
+        };
+        Ok(registry.journal(installation_id)?.iter().any(|record| {
+            record.token.generation == pending
+                && matches!(record.decision, CapabilityDecision::Approved { .. })
+        }))
+    }
 }
 
 pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError> {

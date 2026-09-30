@@ -18,6 +18,17 @@ impl AppWorkerDrain {
         };
         let _ = admission.begin_draining();
     }
+    /// A local update drains this generation: calls it refuses or loses from
+    /// now on say the App is updating.
+    pub(crate) fn begin_update(&self) {
+        let Some(admission) = self.0.upgrade() else {
+            return;
+        };
+        admission
+            .updating
+            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = admission.begin_draining();
+    }
 }
 
 impl AppWorkerOwner {

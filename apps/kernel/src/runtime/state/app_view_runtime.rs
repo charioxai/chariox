@@ -555,18 +555,21 @@ impl KernelRuntimeState {
         tracked: &mut ViewCall,
     ) -> Result<Value, BrowserAppViewError> {
         let unavailable = || view_error("APP_UNAVAILABLE", "The App is not running");
-        let lease = self
+        let lease = match self
             .app_lease_on_demand(&binding.owner, &binding.installation)
             .await
-            .map_err(|_| unavailable())?;
-        if lease.catalog().generation() != binding.generation {
-            return Err(view_error(
-                "APP_VIEW_STALE",
-                "The App was updated; reopen its view",
-            ));
-        }
-        let tool = view_tool(lease.catalog().app_catalog(), tool)
-            .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))?;
+        {
+            Ok(lease) => lease,
+            Err(_)
+                if self
+                    .app_updating(&binding.owner, &binding.installation)
+                    .await =>
+            {
+                return Err(coded(app_call_errors::updating()));
+            }
+            Err(_) => return Err(unavailable()),
+        };
+        let tool = view_call_tool(lease.catalog(), binding.generation, tool)?;
         let slot = lease
             .reserve_call(Duration::from_secs(30))
             .map_err(|error| coded(app_call_errors::busy_error(&error)))?;
@@ -653,6 +656,24 @@ fn view_error(code: &str, message: &str) -> BrowserAppViewError {
     }
 }
 
+/// The tool a view's call runs. A view built for an older generation is stale
+/// before its tool is looked up: a tool the update removed or changed (an API
+/// mismatch) reloads the view instead of running on the new release.
+fn view_call_tool(
+    catalog: &chariox_app_runtime::app_outbox::EventCatalog,
+    view_generation: u64,
+    local: &str,
+) -> Result<String, BrowserAppViewError> {
+    if catalog.generation() != view_generation {
+        return Err(view_error(
+            "APP_VIEW_STALE",
+            "The App was updated; reopen its view",
+        ));
+    }
+    view_tool(catalog.app_catalog(), local)
+        .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))
+}
+
 /// A view calls the App's own tools by their local names; the catalog keys
 /// them by the installation-namespaced runtime MCP name.
 fn view_tool(
@@ -707,6 +728,37 @@ mod tests {
         assert_eq!(view_tool(catalog, "missing"), None);
         // A namespaced name is not a local name.
         assert_eq!(view_tool(catalog, &namespaced), None);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_view_of_an_older_generation_is_stale_before_its_tool_is_looked_up() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-view-stale-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir(&root).unwrap();
+        let store =
+            crate::durable_state::DurableKernelStateStore::open_owned(root.join("kernel.sqlite"))
+                .unwrap();
+        let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+        let current = catalog.generation();
+        assert!(view_call_tool(&catalog, current, "echo").is_ok());
+        assert_eq!(
+            view_call_tool(&catalog, current, "missing")
+                .unwrap_err()
+                .code,
+            "UNKNOWN_TOOL"
+        );
+        // A view built for another generation, calling a tool this release
+        // lacks or has, never runs it here: it is stale and gets reloaded.
+        for tool in ["echo", "missing"] {
+            assert_eq!(
+                view_call_tool(&catalog, current + 1, tool)
+                    .unwrap_err()
+                    .code,
+                "APP_VIEW_STALE"
+            );
+        }
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }

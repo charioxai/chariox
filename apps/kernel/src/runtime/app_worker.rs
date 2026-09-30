@@ -37,6 +37,9 @@ pub(crate) enum AppWorkerError {
     /// The worker was stopped for using more memory than its limit.
     #[error("app_worker_memory_limit")]
     MemoryLimit,
+    /// A local update is replacing this worker's generation.
+    #[error("app_worker_updating")]
+    Updating,
 }
 
 /// How long a call that lost its worker waits for the monitor to name why.
@@ -70,8 +73,18 @@ struct Admission {
     broker_draining: std::sync::atomic::AtomicBool,
     /// Set for a staged worker that migrates its data before it registers.
     migrating: std::sync::atomic::AtomicBool,
+    /// Set when a local update drains this generation.
+    updating: std::sync::atomic::AtomicBool,
 }
 impl Admission {
+    /// Why this worker no longer admits calls.
+    fn closed_error(&self) -> AppWorkerError {
+        if self.updating.load(std::sync::atomic::Ordering::Acquire) {
+            AppWorkerError::Updating
+        } else {
+            AppWorkerError::Unavailable
+        }
+    }
     fn stop(&self) {
         // Poison must never skip cleanup. Queue admission uses the same guard.
         match self.phase.lock() {
@@ -213,15 +226,18 @@ impl Drop for AppWorkerOwner {
 impl LiveWorker {
     fn available(&self) -> Result<(), AppWorkerError> {
         if !self.admission.active() || self.peer.is_closed() {
-            return Err(AppWorkerError::Unavailable);
+            return Err(self.admission.closed_error());
         }
         Ok(())
     }
-    /// A call that lost this worker names a stop at its memory limit; any
-    /// other loss keeps the call's own error.
+    /// A call that lost this worker names an update that drained it or a stop
+    /// at its memory limit; any other loss keeps the call's own error.
     async fn lost(&self, error: AppWorkerError) -> AppWorkerError {
         if error != AppWorkerError::Unavailable {
             return error;
+        }
+        if self.admission.closed_error() == AppWorkerError::Updating {
+            return AppWorkerError::Updating;
         }
         match self.admission.ending.failure(ENDING_WAIT).await {
             Some(chariox_app_runtime::worker_process::WorkerError::MemoryLimit) => {
