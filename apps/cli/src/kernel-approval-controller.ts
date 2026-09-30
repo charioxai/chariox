@@ -183,23 +183,42 @@ export function createKernelApprovalController(deps: {
     entry.remember = options[(options.indexOf(entry.remember) + 1) % options.length]!
     render()
   }
+  const appendPasskey = (text: string) => {
+    if (!entry || /[\u0000-\u001f\u007f-\u009f]/.test(text)) return
+    for (const character of text) {
+      if (entry.value.length + character.length > PASSKEY_MAX_LENGTH) break
+      entry.value += character
+    }
+    render()
+  }
   const passkeyKey = (event: KernelApprovalKey) => {
     if (!entry) return
     if (event.name === "escape") { entry = null; error = null; render(); return }
     if (event.name === "return" || event.name === "enter") { void submitPasskey(); return }
     if (event.name === "tab") { cycleRemember(); return }
-    if (event.name === "backspace") { entry.value = entry.value.slice(0, -1); render(); return }
-    const typed = event.sequence && event.sequence.length === 1 && event.sequence >= " "
+    if (event.name === "backspace") { entry.value = Array.from(entry.value).slice(0, -1).join(""); render(); return }
+    const typed = event.sequence && !/[\u0000-\u001f\u007f-\u009f]/.test(event.sequence)
       ? event.sequence
       : event.name === "space" ? " "
       : event.name.length === 1 ? (event.shift ? event.name.toUpperCase() : event.name) : ""
-    if (typed && entry.value.length < PASSKEY_MAX_LENGTH) { entry.value += typed; render() }
+    if (typed) appendPasskey(typed)
   }
   return {
     sync, view, show, close, choose, submitPasskey, cycleRemember,
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
     dispose() { disposed = true; epoch += 1; close() },
+    handlePaste(event: { text: string; defaultPrevented?: boolean; preventDefault(): void; stopPropagation(): void }): boolean {
+      if (event.defaultPrevented) return true
+      if (!open) return false
+      event.preventDefault()
+      event.stopPropagation()
+      claimedInputTurn = true
+      queueMicrotask(() => { claimedInputTurn = false })
+      sync()
+      if (!pending && entry) appendPasskey(event.text)
+      return true
+    },
     handleKey(event: KernelApprovalKey): boolean {
       if (event.defaultPrevented) return true
       if (!open && event.name !== "f8") return false
