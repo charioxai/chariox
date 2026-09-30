@@ -1009,3 +1009,46 @@ fn a_stop_that_lands_while_a_runtime_starts_wins() {
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Rolling back to a release exported before the publication used any App
+/// removes the later release's copy and resumes the owner.
+#[test]
+fn a_rollback_to_a_release_without_apps_removes_the_copy() {
+    let root = temp_root("copy-rollback-no-apps");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-rollback-no-apps", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    let copy_session = ensure(&harness, &deployed).unwrap().expect("a copy");
+    assert!(!installation(&app_set(&harness), "installed").inbox_routes[0].active);
+    // A release with no recorded plan while later releases record theirs.
+    let earlier = Deployed {
+        graph: deployed.graph,
+        publication: deployed.publication,
+        digest: format!("sha256:{}", "d".repeat(64)),
+    };
+    assert_eq!(
+        ensure_release(&harness, &earlier, "release-0").unwrap(),
+        None
+    );
+    let set = app_set(&harness);
+    assert!(
+        set.iter()
+            .all(|installation| installation.deployment_id.as_deref() != Some(DEPLOYMENT)),
+        "the copy's installations are gone: {set:?}"
+    );
+    assert!(installation(&set, "installed").inbox_routes[0].active);
+    assert!(harness
+        .runtime_state()
+        .fixture_session(&copy_session)
+        .is_err());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}

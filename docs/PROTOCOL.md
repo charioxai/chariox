@@ -2209,7 +2209,7 @@ Workflow trigger and deployment direction:
   now (its last grant or feeding automation removed) packages and records an
   explicit empty plan (`apps: []`) for its next release, never the previous
   release's; a release whose plan names no App binds and runs from the source,
-  with no copy and no Apps consent.
+  with no copy and no Apps consent: `PrepareDeploymentApps` answers it `approved` at once, without a prompt or a stored consent. A release exported before the publication used any App (no plan recorded while later releases record theirs) is treated the same way.
 - protocol 369: every successful owner `ExportWorkflowPublicationPackage`
   also records the release's inputs digest in
   `WorkflowPublicationDefinition.release_inputs` (`{package_digest,
