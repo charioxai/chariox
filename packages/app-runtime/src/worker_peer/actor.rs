@@ -20,6 +20,7 @@ use tokio::{
 };
 
 struct Pending {
+    method: String,
     reply: oneshot::Sender<Result<Message>>,
     deadline: Instant,
     live: Arc<FrameState>,
@@ -198,10 +199,10 @@ impl Actor {
             let _ = call.reply.send(Err(PeerError::Deadline));
             return Ok(());
         }
-        let Message::Request { id, .. } = &call.message else {
+        let Message::Request { id, method, .. } = &call.message else {
             return Err(PeerError::Invalid);
         };
-        let id = id.clone();
+        let (id, method) = (id.clone(), method.clone());
         if self.pending.contains_key(&id) || self.pending.len() >= self.limits.pending_calls {
             return Err(PeerError::Protocol);
         }
@@ -210,6 +211,7 @@ impl Actor {
         self.pending.insert(
             id,
             Pending {
+                method,
                 reply: call.reply,
                 deadline: call.deadline,
                 live,
@@ -272,12 +274,21 @@ impl Actor {
                     },
                 );
                 let broker = self.broker.clone();
+                // Frames arrive in order, so a request the worker sent before
+                // answering a call is attributed to that call.
+                let open_calls: std::collections::BTreeSet<_> = self
+                    .pending
+                    .values()
+                    .filter(|pending| pending.live.sent())
+                    .map(|pending| pending.method.clone())
+                    .collect();
                 let request = BrokerRequest {
                     id: id.clone(),
                     method,
                     params,
                     deadline,
                     cancellation: BrokerCancellation(cancellation),
+                    open_calls: open_calls.into_iter().collect(),
                 };
                 self.handlers.spawn(async move {
                     if request.cancellation.is_cancelled() || Instant::now() >= request.deadline {

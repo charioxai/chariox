@@ -4,9 +4,9 @@ use chariox_app_runtime::{
         ReleaseMetadata,
     },
     managed_state::{
-        complete_wake, defer_wake, due_wakes, ManagedStateStore, StateChanges, StateCheck,
-        StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS, MAX_REVISION,
-        MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
+        complete_wake, defer_wake, due_wakes, postpone_wake, ManagedStateStore, StateChanges,
+        StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS,
+        MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
     },
 };
 use rusqlite::{Connection, TransactionBehavior};
@@ -412,10 +412,67 @@ fn wake(id: &str, due_at_ms: u64, revision: &str) -> WakeChange {
     })
 }
 fn apply_wakes(db: &mut Connection, id: &str, changes: &[WakeChange]) -> Result<(), StateError> {
+    arm(db, id, changes, false)
+}
+fn arm(
+    db: &mut Connection,
+    id: &str,
+    changes: &[WakeChange],
+    counts_as_use: bool,
+) -> Result<(), StateError> {
     let mut tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    ManagedStateStore::apply_wakes_in(&mut tx, scope(id), changes)?;
+    ManagedStateStore::apply_wakes_in(&mut tx, scope(id), changes, counts_as_use)?;
     tx.commit()?;
     Ok(())
+}
+fn origins(db: &Connection, now_ms: u64) -> Vec<(String, bool)> {
+    due_wakes(db, now_ms, 8)
+        .unwrap()
+        .into_iter()
+        .map(|due| (due.wake.id, due.counts_as_use))
+        .collect()
+}
+
+#[test]
+fn a_wake_keeps_its_arming_context_until_it_is_set_again() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    arm(&mut db, "todo", &[wake("tool", 100, "")], true).unwrap();
+    arm(&mut db, "todo", &[wake("self", 100, "")], false).unwrap();
+    assert_eq!(
+        origins(&db, 100),
+        [("self".into(), false), ("tool".into(), true)]
+    );
+    // Waiting for an on-demand start or a retry keeps the origin.
+    let due = due_wakes(&db, 100, 8).unwrap();
+    assert!(defer_wake(&db, &due[0], 100).unwrap());
+    postpone_wake(&db, &due[1], 200).unwrap();
+    assert_eq!(origins(&db, 200), [("tool".into(), true)]);
+    // Re-armed from the App's own wake handler, it is the App's own wake.
+    arm(&mut db, "todo", &[wake("tool", 300, "")], false).unwrap();
+    assert_eq!(origins(&db, 300), [("tool".into(), false)]);
+    arm(&mut db, "todo", &[wake("tool", 400, "")], true).unwrap();
+    assert_eq!(origins(&db, 400), [("tool".into(), true)]);
+}
+
+#[test]
+fn wakes_armed_before_their_origin_was_recorded_do_not_count_as_use() {
+    let fixture = Database::new();
+    let mut db = Connection::open(fixture.0.join("kernel.sqlite")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE app_wakes (
+           owner_id TEXT NOT NULL, installation_id TEXT NOT NULL, wake_id TEXT NOT NULL,
+           due_at_ms INTEGER NOT NULL CHECK(due_at_ms >= 0), revision TEXT NOT NULL,
+           attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+           next_attempt_at_ms INTEGER NOT NULL CHECK(next_attempt_at_ms >= 0),
+           PRIMARY KEY(installation_id, wake_id));
+         INSERT INTO app_wakes VALUES('alice','todo','old',100,'',0,100);",
+    )
+    .unwrap();
+    ManagedStateStore::new(&mut db).initialize().unwrap();
+    ManagedStateStore::new(&mut db).initialize().unwrap();
+    assert_eq!(origins(&db, 100), [("old".into(), false)]);
 }
 
 #[test]

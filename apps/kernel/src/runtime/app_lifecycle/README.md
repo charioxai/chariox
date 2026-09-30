@@ -37,12 +37,18 @@ supervision finishes cleanup. `Busy` from a saturated stop means durable/join
 confirmation is pending; it does not restore a withdrawn worker. A completed
 stop returns only after the actual owner is joined and the stop row commits.
 
-Apps run on demand. A worker with no tool call or wake for ten minutes stops
-while keeping its restart intent; its verified catalog stays **dormant** so its
-tools remain discoverable. The next tool call starts it and waits up to 20
-seconds for registration; a due wake starts it through the wake pump. Recovery
-skips dormant installations. An App's own timers or broker calls do not count
-as use. A kernel restart starts enabled Apps once, then they idle-stop again.
+Apps run on demand. A worker with no use for ten minutes stops while keeping
+its restart intent; its verified catalog stays **dormant** so its tools remain
+discoverable. Use is a tool call (an agent, runtime MCP or an App view action),
+an inbound event, or the delivery of a wake armed during one of them. The next
+tool call starts it and waits up to 20 seconds for registration; a due wake
+starts it through the wake pump. Recovery skips dormant installations. An App's
+own timers and broker calls do not count as use, and neither does a wake it
+armed from its own wake handler, lifecycle handler or timer (owner decision 6):
+such a wake is still delivered on time, and a worker that has served only such
+wakes since it started stops once they are delivered. The kernel attributes a
+wake to the calls the worker had open when its arming request arrived. A kernel
+restart starts enabled Apps once, then they idle-stop again.
 
 A user stop persists `desired_running = false` and ends dormant on-demand use. Graceful kernel shutdown retains
 the previous restart intent. Restart recovery scans eight installations per

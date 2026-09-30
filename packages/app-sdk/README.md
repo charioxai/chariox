@@ -63,7 +63,9 @@ Wire control events never dispatch App event handlers.
 - `schedule.set`, `cancel`, `list`, `onWake`: kernel-owned wakes. The kernel
   starts the App when a wake falls due and delivers it at least once, so the App
   does not stay running to wait. A user stop holds wakes until the App starts.
-  State transactions may commit wake changes.
+  State transactions may commit wake changes. A wake set while a tool call or
+  an incoming event is being handled keeps the App running when it is
+  delivered; one set from the wake handler or a timer does not.
 - `validation.request`, `status`: a pending operation reference returns promptly;
   an App cannot approve it or claim that an App-view click was human validation.
 - `outputs.request`, `cancel`: requests for declared information sets; the kernel

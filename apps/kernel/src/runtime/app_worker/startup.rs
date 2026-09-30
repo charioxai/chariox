@@ -189,7 +189,7 @@ impl RegisteredAppWorker {
             catalog: self.owner.catalog.clone(),
             peer: self.owner.peer.clone(),
             admission: self.owner.admission.clone(),
-            last_used_ms: crate::session::unix_epoch_ms().into(),
+            residency: super::Residency::new(crate::session::unix_epoch_ms()),
         });
         let handle = ActivatedApp(Arc::downgrade(&live));
         {

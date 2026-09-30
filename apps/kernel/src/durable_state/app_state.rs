@@ -37,10 +37,14 @@ pub(crate) enum AppStateOperation {
         changes: StateChanges,
         occurrences: Vec<Occurrence>,
         wakes: Vec<WakeChange>,
+        wakes_count_as_use: bool,
     },
     Emit(Occurrence),
     /// Kernel-owned wakes; see `managed_state::wakes`.
-    Schedule(Vec<WakeChange>),
+    Schedule {
+        wakes: Vec<WakeChange>,
+        wakes_count_as_use: bool,
+    },
     ScheduleList,
     Status {
         receipt_id: String,
@@ -56,12 +60,27 @@ pub(crate) enum AppStateOperation {
     MigrationRewind,
 }
 impl AppStateOperation {
+    /// Records where the operation's wakes were armed: only a wake armed while
+    /// the App served a tool call or an inbound event counts as use when it
+    /// is delivered (owner decision 6). Other operations are unchanged.
+    pub(crate) fn armed_during_use(mut self, during_use: bool) -> Self {
+        if let Self::Transaction {
+            wakes_count_as_use, ..
+        }
+        | Self::Schedule {
+            wakes_count_as_use, ..
+        } = &mut self
+        {
+            *wakes_count_as_use = during_use;
+        }
+        self
+    }
     fn name(&self) -> &'static str {
         match self {
             Self::Get { .. } => "get",
             Self::Transaction { .. } => "transaction",
             Self::Emit(_) => "emit",
-            Self::Schedule(_) => "schedule",
+            Self::Schedule { .. } => "schedule",
             Self::ScheduleList => "schedule_list",
             Self::Status { .. } => "status",
             Self::Retry { .. } => "retry",
@@ -235,14 +254,18 @@ fn apply(
             changes,
             occurrences,
             wakes,
+            wakes_count_as_use,
         } => {
             let revision = ManagedStateStore::apply_in(&mut transaction, scope, &changes)?;
             let receipts = events::accept(&mut transaction, catalog, owner, &occurrences)?;
-            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes)?;
+            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes, wakes_count_as_use)?;
             AppStateOutcome::Transaction { revision, receipts }
         }
-        AppStateOperation::Schedule(wakes) => {
-            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes)?;
+        AppStateOperation::Schedule {
+            wakes,
+            wakes_count_as_use,
+        } => {
+            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes, wakes_count_as_use)?;
             AppStateOutcome::Wakes(ManagedStateStore::wakes_in(&transaction, scope)?)
         }
         AppStateOperation::ScheduleList => {

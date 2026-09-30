@@ -60,7 +60,9 @@ impl AppStorageBroker {
             None => budget,
         };
         budget.check().map_err(errors::stopped)?;
-        let operation = decode::operation(&request.method, request.params)?;
+        let during_use = armed_during_use(&request.open_calls);
+        let operation =
+            decode::operation(&request.method, request.params)?.armed_during_use(during_use);
         let permit = self
             .admission
             .clone()
@@ -93,4 +95,14 @@ impl AppStorageBroker {
             AppStateOutcome::Wakes(wakes) => json!({ "wakes": wakes }),
         })
     }
+}
+
+/// Whether a wake armed now is work a person or an agent started: the worker
+/// was serving a tool call (an agent, runtime MCP or an App view action) or an
+/// inbound event. A wake armed from the App's own wake handler, lifecycle
+/// handler or timer does not keep it running (owner decision 6).
+fn armed_during_use(open_calls: &[String]) -> bool {
+    open_calls
+        .iter()
+        .any(|method| matches!(method.as_str(), "tools.invoke" | "events.deliver"))
 }

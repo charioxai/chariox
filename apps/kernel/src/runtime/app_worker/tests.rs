@@ -26,6 +26,7 @@ use tokio::{
 const WAIT: Duration = Duration::from_secs(3);
 mod drain;
 mod identity;
+mod residency;
 mod tools;
 struct Scratch(PathBuf);
 impl Scratch {

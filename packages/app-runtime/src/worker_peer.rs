@@ -110,6 +110,10 @@ pub struct BrokerRequest {
     pub params: serde_json::Value,
     pub deadline: Instant,
     pub cancellation: BrokerCancellation,
+    /// Methods of the supervisor calls the worker had received and not yet
+    /// answered when this request arrived, distinct and sorted. This is the
+    /// invocation context the host observes; the worker cannot name it.
+    pub open_calls: Vec<String>,
 }
 
 pub type BrokerFuture =

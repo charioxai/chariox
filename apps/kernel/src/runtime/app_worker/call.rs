@@ -175,23 +175,29 @@ fn handler_error(error: &chariox_app_runtime::wire::RemoteError) -> DeliveryErro
 impl AppWorkerLease {
     /// Deliver one kernel-owned wake. Success means the App's wake handler
     /// returned; delivery is at least once and never implies an external effect.
+    /// Only a wake armed during a tool call or an inbound event is use; after
+    /// one the App armed itself, a worker with no other use may stop.
     pub(crate) async fn deliver_wake(
         &self,
         wake: &chariox_app_runtime::managed_state::Wake,
         overdue: bool,
+        counts_as_use: bool,
         timeout: Duration,
     ) -> Result<(), DeliveryError> {
         self.0.available()?;
-        self.touch();
+        if counts_as_use {
+            self.touch();
+        }
         let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
         let params = serde_json::json!({
             "id": wake.id, "dueAtMs": wake.due_at_ms, "revision": wake.revision, "overdue": overdue,
         });
-        match slot
-            .request("schedule.wake", params, None)
-            .await
-            .map_err(peer_error)?
-        {
+        let response = slot.request("schedule.wake", params, None).await;
+        if !counts_as_use {
+            // Marked after the handler, so no idle stop interrupts it.
+            self.0.residency.self_woken();
+        }
+        match response.map_err(peer_error)? {
             Message::Response {
                 outcome: chariox_app_runtime::wire::Outcome::Success(_),
                 ..

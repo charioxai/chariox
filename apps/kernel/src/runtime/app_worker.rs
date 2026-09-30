@@ -133,9 +133,44 @@ struct LiveWorker {
     catalog: Arc<EventCatalog>,
     peer: WorkerPeer,
     admission: Arc<Admission>,
-    /// Last kernel-initiated use (tool call or wake). An App's own timers or
-    /// broker calls do not keep it running.
+    residency: Residency,
+}
+
+/// Kernel-initiated use of one live worker, for the idle stop: a tool call, an
+/// inbound event, or a wake armed during either. The App's own timers, broker
+/// calls and self-armed wakes do not keep it running (owner decision 6).
+struct Residency {
     last_used_ms: std::sync::atomic::AtomicU64,
+    used: std::sync::atomic::AtomicBool,
+    self_woken: std::sync::atomic::AtomicBool,
+}
+impl Residency {
+    fn new(started_ms: u64) -> Self {
+        Self {
+            last_used_ms: started_ms.into(),
+            used: false.into(),
+            self_woken: false.into(),
+        }
+    }
+    fn touch(&self, now_ms: u64) {
+        use std::sync::atomic::Ordering;
+        self.last_used_ms.store(now_ms, Ordering::Release);
+        self.used.store(true, Ordering::Release);
+    }
+    fn self_woken(&self) {
+        self.self_woken
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    /// Idle time counts from the last use, or from the start. A worker that
+    /// has served only the App's own wakes since it started has no use to
+    /// wait for: it stops once its due work is delivered.
+    fn idle_ms(&self, now_ms: u64) -> u64 {
+        use std::sync::atomic::Ordering;
+        if self.self_woken.load(Ordering::Acquire) && !self.used.load(Ordering::Acquire) {
+            return u64::MAX;
+        }
+        now_ms.saturating_sub(self.last_used_ms.load(Ordering::Acquire))
+    }
 }
 
 /// Cloning a projection does not retain the native owner or revive authority.
@@ -224,13 +259,10 @@ impl AppWorkerLease {
         &self.0.owner
     }
     pub(crate) fn touch(&self) {
-        self.0.last_used_ms.store(
-            crate::session::unix_epoch_ms(),
-            std::sync::atomic::Ordering::Release,
-        );
+        self.0.residency.touch(crate::session::unix_epoch_ms());
     }
     pub(crate) fn idle_ms(&self, now_ms: u64) -> u64 {
-        now_ms.saturating_sub(self.0.last_used_ms.load(std::sync::atomic::Ordering::Acquire))
+        self.0.residency.idle_ms(now_ms)
     }
     pub(crate) fn catalog(&self) -> &Arc<EventCatalog> {
         &self.0.catalog
