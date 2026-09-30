@@ -135,3 +135,44 @@ test("actual mouse clicks require the primary button and a connected, nonpending
     assert.match(harness.captureCharFrame(), /Selected: Allow/)
   } finally { harness.renderer.destroy() }
 })
+
+for (const input of ["burst", "paste", "unicode-paste"] as const) {
+  test(`actual OpenTUI ${input} delivers the complete hidden passkey without changing the prompt`, async () => {
+    const harness = await createTestRenderer({ width: 80, height: 24, useThread: false })
+    const prompt = new TextareaRenderable(harness.renderer, { initialValue: "draft kept" })
+    const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+    harness.renderer.root.add(prompt); harness.renderer.root.add(box)
+    const requests: unknown[] = []
+    const critical = { ...view.interaction!, choices: [{ id: "approve", label: "Approve", reply: "allow", requires_passkey: true }] }
+    const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {}, cycleRemember() {}, submitPasskey() {} })
+    surface.assign(box)
+    const controller = createKernelApprovalController({
+      getSession: () => ({ id: "session-1", agents: [], active_interactions: [critical] }) as unknown as RuntimeSession,
+      connected: () => true, onView: next => surface.render(next, { width: 80, height: 24 }),
+      onOpen: () => prompt.blur(), onClose: () => prompt.focus(), scroll() {},
+      respond: async (_session, _interaction, _choice, proof) => { requests.push(proof); return new Promise(() => {}) }, applySession() {},
+    })
+    harness.renderer.keyInput.on("keypress", controller.handleKey)
+    const paste = controller.handlePaste
+    harness.renderer.keyInput.on("paste", paste)
+    try {
+      controller.sync(); prompt.focus(); controller.show(); await controller.choose(critical.id, "approve")
+      const synthetic = input === "unicode-paste" ? "  café 🔑 密碼  " : "synthetic-Passkey-123"
+      if (input === "burst") await harness.mockInput.pressKeys([synthetic])
+      else await harness.mockInput.pasteBracketedText(synthetic)
+      assert.equal(controller.view().passkey?.length, synthetic.length)
+      await harness.renderOnce()
+      const frame = harness.captureCharFrame()
+      assert.ok(frame.includes("•".repeat(synthetic.length)))
+      assert.ok(!frame.includes(synthetic))
+      assert.equal(prompt.plainText, "draft kept")
+      assert.equal(requests.length, 0)
+      await harness.mockInput.pressKeys(["RETURN"])
+      assert.deepEqual(requests, [{ passkey: synthetic, rememberMinutes: null }])
+      assert.equal(controller.view().passkey, null)
+    } finally {
+      harness.renderer.keyInput.off("keypress", controller.handleKey); harness.renderer.keyInput.off("paste", paste)
+      controller.dispose(); harness.renderer.destroy()
+    }
+  })
+}

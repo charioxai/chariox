@@ -213,3 +213,35 @@ test("this terminal's remember window skips the prompt until the kernel refuses"
   selectApprove(h)
   assert.equal(h.requests.length, 2)
 })
+
+test("passkey text chunks preserve Unicode and spaces, reject controls and obey the existing bound", async () => {
+  const criticalFixture = critical("burst-critical")
+  const h = harness(session("session-1", [criticalFixture]))
+  h.controller.show(); await h.controller.choose(criticalFixture.id, "approve")
+  h.controller.handleKey(key("s", { sequence: "synthetic-input-check" }))
+  assert.equal(h.controller.view().passkey?.length, 21)
+  h.controller.handleKey(key("escape"))
+  await h.controller.choose(criticalFixture.id, "approve")
+  const pasted = "  café 🔑 密碼  "
+  h.controller.handlePaste({ text: pasted, preventDefault() {}, stopPropagation() {} })
+  assert.equal(h.controller.view().passkey?.length, pasted.length)
+  h.controller.handlePaste({ text: "\r\n", preventDefault() {}, stopPropagation() {} })
+  assert.equal(h.requests.length, 0)
+  assert.equal(h.controller.view().passkey?.length, pasted.length)
+  const submission = h.controller.submitPasskey()
+  assert.deepEqual(h.requests, [["session-1", criticalFixture.id, "approve", { passkey: pasted, rememberMinutes: null }]])
+  h.resolve(session("session-1", [])); await submission
+})
+
+test("pasted passkeys stop at 512 units without splitting Unicode characters", async () => {
+  const h = harness(session("session-1", [critical("limit")]))
+  h.controller.show(); await h.controller.choose("limit", "approve")
+  const paste = (text: string) => h.controller.handlePaste({ text, preventDefault() {}, stopPropagation() {} })
+  paste("x".repeat(501) + "🔑".repeat(10))
+  assert.equal(h.controller.view().passkey?.length, 511)
+  paste("zmore")
+  assert.equal(h.controller.view().passkey?.length, 512)
+  const submission = h.controller.submitPasskey()
+  assert.deepEqual(h.requests, [["session-1", "limit", "approve", { passkey: "x".repeat(501) + "🔑".repeat(5) + "z", rememberMinutes: null }]])
+  h.resolve(session("session-1", [])); await submission
+})

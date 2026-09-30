@@ -41,7 +41,8 @@ export function createCliKernelApprovalComposition(deps: {
     applySession: deps.applySession,
   })
   createEffect(() => { deps.themeRevision(); deps.dimensions(); controller.sync() })
-  onCleanup(() => controller.dispose())
+  deps.renderer.keyInput.on("paste", controller.handlePaste)
+  onCleanup(() => { deps.renderer.keyInput.off("paste", controller.handlePaste); controller.dispose() })
   return {
     ...controller,
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
