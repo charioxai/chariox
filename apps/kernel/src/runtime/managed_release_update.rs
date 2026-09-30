@@ -286,7 +286,7 @@ fn update_script(
     format!(
         "set -eu; trap \"rm -rf '{staging}' '{archive}'\" EXIT; rm -rf '{staging}'; mkdir -p '{staging_root}'; \
          python3 '{tooling}/extract-release.py' '{archive}' '{staging}' '{publication_root}'; \
-         rm -f '{archive}'; TMPDIR='{staging_root}' CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
+         rm -f '{archive}'; TMPDIR='{staging}' CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
          sh '{tooling}/upgrade-image.sh' '{staging}/rootfs' '{from}' '{target}' '{release_key}'",
         staging = staging.display(),
         archive = archive.display(),
@@ -427,7 +427,7 @@ mod tests {
         std::fs::write(
             tooling.join("upgrade-image.sh"),
             format!(
-                "test -f \"$1/marker\"; echo \"$*\" > '{}'\n",
+                "set -eu; test -f \"$1/marker\"; test \"$TMPDIR\" = \"$(dirname \"$1\")\"; mkdir \"$TMPDIR/child-scratch\"; echo \"$*\" > '{}'\n",
                 root.join("invoked").display()
             ),
         )
