@@ -13,11 +13,11 @@ const cancelTimer = clearTimeout;
 let started = false;
 
 // App durability (packages/app-sdk/README.md, "Durability"). Node's permission
-// model denies fsync and fdatasync on a descriptor, since a descriptor cannot
-// be tied to a path grant. Node 24.20 denies the sync and callback forms but
-// still lets FileHandle sync() and datasync() through; later Node releases deny
-// those too. Deny every form on the App's thread, so an App sees one behavior
-// and does not come to depend on that gap. Durable data goes through state
+// model treats descriptor fsync differently by version: 24.20 denies the sync
+// and callback forms but lets FileHandle sync() and datasync() through, and
+// 25.x allows every form. Deny every form on the App's thread, so an App sees
+// one behavior across runtime updates and does not come to depend on a gap in
+// one Node version. This bootstrap is what denies them. Durable data goes through state
 // transactions or files.atomicReplace, which the kernel syncs before answering.
 // This is policy, not containment: a worker thread keeps Node's own behavior.
 async function denyFsync() {
