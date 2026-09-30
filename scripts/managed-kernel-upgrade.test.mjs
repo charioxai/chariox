@@ -113,7 +113,7 @@ esac
   }
 })
 
-test("repository release policy permits only the 343 fixture, protocol 367 and protocol 368 itself", async (context) => {
+test("repository release policy permits only the 343 fixture, protocols 367/368 and protocol 369 itself", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -124,17 +124,17 @@ test("repository release policy permits only the 343 fixture, protocol 367 and p
   const policy = JSON.parse(policyBytes)
   assert.deepEqual(policy, {
     schemaVersion: 1,
-    protocol: 368,
-    upgradeFrom: [343, 367, 368],
-    rollbackTo: [343, 367, 368],
+    protocol: 369,
+    upgradeFrom: [343, 367, 368, 369],
+    rollbackTo: [343, 367, 368, 369],
   })
   await put(join(current, policyPath), policyBytes)
   await put(join(target, policyPath), policyBytes)
 
-  for (const olderProtocol of [343, 367]) {
+  for (const olderProtocol of [343, 367, 368]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
-      [current, olderProtocol, target, 368],
-      [target, 368, current, olderProtocol],
+      [current, olderProtocol, target, 369],
+      [target, 369, current, olderProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
         currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
@@ -144,8 +144,8 @@ test("repository release policy permits only the 343 fixture, protocol 367 and p
 
   for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index)]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
-      [current, unsupportedProtocol, target, 368],
-      [target, 368, current, unsupportedProtocol],
+      [current, unsupportedProtocol, target, 369],
+      [target, 369, current, unsupportedProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
         currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })

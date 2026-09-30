@@ -115,4 +115,5 @@ pub use workspace::*;
 /// Version 366 adds explicit kernel control capabilities to RelayStatus.
 /// Version 367 adds bounded, explicitly negotiated Unix guarded-control sessions.
 /// Version 368 adds Cloud-coordinated managed release update requests.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 368;
+/// Version 369 coordinates canonical signed relay daemon identity admission.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 369;
