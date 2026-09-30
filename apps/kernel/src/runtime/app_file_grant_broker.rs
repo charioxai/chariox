@@ -12,8 +12,10 @@ use crate::durable_state::{
 };
 use chariox_app_package::{ExternalFileAccess, VerifiedPackage};
 use chariox_app_runtime::{
-    app_outbox::EventCatalog, wire::RemoteError, worker_peer::BrokerRequest,
-    worker_process::PrivateData,
+    app_outbox::EventCatalog,
+    wire::RemoteError,
+    worker_peer::BrokerRequest,
+    worker_process::{PrivateData, PrivateDataError},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -185,7 +187,13 @@ impl AppFileGrantBroker {
         let published = self
             .data
             .prepare_replace(&request.destination, &file.contents)
-            .map_err(|_| error("INVALID_ARGUMENT", false))
+            .map_err(|failure| match failure {
+                PrivateDataError::Invalid => error("INVALID_ARGUMENT", false),
+                // The copy could not be written (for example, a full data
+                // volume or a missing parent directory), as for `atomic_replace`.
+                // The grant is released below, so a later import can succeed.
+                _ => error("APP_FILE_UNAVAILABLE", false),
+            })
             .and_then(|staged| {
                 budget.check().map_err(stopped)?;
                 self.store
