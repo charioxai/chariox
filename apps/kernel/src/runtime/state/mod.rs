@@ -99,7 +99,7 @@ mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
 mod runtime_tool_call_activity;
-use runtime_tool_call_activity::RuntimeToolCallActivity;
+pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
@@ -538,6 +538,7 @@ impl KernelRuntimeState {
             agent_runtime_projection,
             app_control,
             has_managed_kernel_registration,
+            runtime_tool_call_activity,
         ) = {
             let started = Instant::now();
             loop {
@@ -551,6 +552,7 @@ impl KernelRuntimeState {
                         app.agent_runtime_projection_store(),
                         app.app_control_service(),
                         app.managed_kernel_registration().is_some(),
+                        app.runtime_tool_call_activity.clone(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -693,7 +695,7 @@ impl KernelRuntimeState {
                 agent_message_idempotency: Arc::new(Mutex::new(
                     AgentMessageIdempotencyStore::default(),
                 )),
-                runtime_tool_call_activity: RuntimeToolCallActivity::default(),
+                runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 relay_state,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
