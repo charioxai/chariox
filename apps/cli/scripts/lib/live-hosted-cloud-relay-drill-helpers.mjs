@@ -304,9 +304,10 @@ export async function cleanupHostedCloudIdentity({
       reason,
     }, authorization).catch((error) => cleanupErrors.push(error))
   }
-  // Own revocation consumes this session, even when logout:false. Combine both
-  // requested identities in the last call so no later cleanup needs that session.
-  if (endSession) {
+  // Retain authority to retry earlier cleanup failures. Own revocation consumes
+  // this session even with logout:false, so combine both identities only at the end.
+  const logoutAttempted = endSession && cleanupErrors.length === 0
+  if (logoutAttempted) {
     await post(`${baseUrl}/auth/logout`, {
       sessionToken: cloudSessionToken,
       accountId: profile.accountId,
@@ -321,7 +322,7 @@ export async function cleanupHostedCloudIdentity({
     clients: uniqueClientIds,
     machines: uniqueMachineIds,
     kernels: presences.map((presence) => presence.kernelId),
-    logout: endSession,
+    logout: logoutAttempted,
   })
   if (cleanupErrors.length > 0) {
     throw new AggregateError(cleanupErrors, "hosted Cloud identity cleanup failed")

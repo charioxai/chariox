@@ -101,7 +101,7 @@ test("hosted Cloud cleanup offlines kernels, authenticates foreign revokes, then
   assert.doesNotMatch(JSON.stringify(logs), /synthetic-session/)
 })
 
-test("hosted Cloud cleanup attempts all foreign revocations and terminal own logout after a presence failure", async () => {
+test("hosted Cloud cleanup attempts all foreign revocations but preserves its own session after a presence failure", async () => {
   const calls = []
   const post = sessionRevocationPost(calls)
   await assert.rejects(
@@ -123,10 +123,46 @@ test("hosted Cloud cleanup attempts all foreign revocations and terminal own log
     "https://cloud.example/kernels/presence",
     "https://cloud.example/clients/revoke",
     "https://cloud.example/machines/revoke",
-    "https://cloud.example/auth/logout",
   ])
-  assert.equal(calls.at(-1).body.revokeClient, true)
-  assert.equal(calls.at(-1).body.revokeMachine, true)
+})
+
+test("hosted Cloud cleanup retains authority to retry partial presence or foreign revocation failures", async (t) => {
+  for (const failedPath of ["/kernels/presence", "/clients/revoke", "/machines/revoke"]) {
+    await t.test(failedPath, async () => {
+      const calls = []
+      const logs = []
+      const post = sessionRevocationPost(calls)
+      let failOnce = true
+      const cleanup = () => cleanupHostedCloudIdentity({
+        profile: cleanupProfile(),
+        clientIds: ["own-client", "foreign-client"],
+        machineIds: ["own-machine", "foreign-machine"],
+        kernelPresences: [{ machineId: "foreign-machine", kernelId: "foreign-kernel" }],
+        baseUrl: "https://cloud.example",
+        post: async (...args) => {
+          await post(...args)
+          if (failOnce && args[0].endsWith(failedPath)) {
+            failOnce = false
+            throw new Error("temporary cleanup failure")
+          }
+        },
+        logger: (_event, details) => { logs.push(details) },
+      })
+      await assert.rejects(cleanup(), /hosted Cloud identity cleanup failed/)
+      assert.deepEqual(calls.map((call) => call.url), [
+        "https://cloud.example/kernels/presence",
+        "https://cloud.example/clients/revoke",
+        "https://cloud.example/machines/revoke",
+      ])
+      assert.equal(logs[0].logout, false)
+      await cleanup()
+      assert.equal(calls.at(-1).url, "https://cloud.example/auth/logout")
+      assert.equal(calls.at(-1).body.revokeClient, true)
+      assert.equal(calls.at(-1).body.revokeMachine, true)
+      assert.equal(logs.at(-1).logout, true)
+      assert.doesNotMatch(JSON.stringify(logs), /synthetic-session/)
+    })
+  }
 })
 
 test("hosted Cloud cleanup preserves an owner session for foreign worker cleanup with logout false", async () => {
