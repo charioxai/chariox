@@ -485,7 +485,10 @@ impl KernelRuntimeState {
             .map_err(|error| coded(app_call_errors::busy_error(&error)))?;
         slot.validate_input(&tool, &input)
             .map_err(|error| coded(app_call_errors::input_error(&error)))?;
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+        let permit = self
+            .app_control()
+            .try_admit()
+            .map_err(|_| coded(app_call_errors::admission_busy()))?;
         let store = self.owned.durable_state_store.clone();
         let caller = view_caller(binding, session_id);
         let tool_name = tool;
@@ -504,7 +507,11 @@ impl KernelRuntimeState {
                 return Err(view_error("CANCELLED", "The calling view went away"));
             }
         };
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+        let permit = self
+            .app_control()
+            .admit_reply(reply.remaining(crate::session::unix_epoch_ms()))
+            .await
+            .map_err(|_| coded(app_call_errors::reply_unrecorded()))?;
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;

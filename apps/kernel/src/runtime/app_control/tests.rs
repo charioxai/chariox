@@ -228,3 +228,48 @@ fn a_shown_prompt_remembers_its_session_until_it_ends() {
     assert_eq!(control.validation_prompt_session("op"), None);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[tokio::test]
+async fn a_reply_waits_briefly_for_full_admission_but_never_past_its_deadline() {
+    use std::time::{Duration, Instant};
+    assert_eq!(reply_wait(Duration::from_secs(30)), REPLY_ADMISSION_WAIT);
+    assert_eq!(
+        reply_wait(Duration::from_millis(200)),
+        Duration::from_millis(200)
+    );
+    assert_eq!(reply_wait(Duration::ZERO), Duration::ZERO);
+    let root = std::env::temp_dir().join(format!(
+        "chariox-app-admission-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let store = DurableKernelStateStore::open_owned(root.join("kernel.db")).unwrap();
+    let service = AppControlService::new(store);
+    let mut held: Vec<_> = (0..8).map(|_| service.try_admit().unwrap()).collect();
+    // Full before a call: refused at once, as busy (the call sites map it to
+    // APP_BUSY, never "The App is not running").
+    assert!(matches!(
+        service.try_admit(),
+        Err(AppRequestErrorCode::Busy)
+    ));
+    // Full after the App answered: the reply waits, and records once a
+    // permit frees within the wait.
+    let freed = held.pop().unwrap();
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(freed);
+    });
+    held.push(service.admit_reply(Duration::from_secs(30)).await.unwrap());
+    release.await.unwrap();
+    // Still full: busy by the call's deadline, never a hang.
+    let started = Instant::now();
+    assert!(service
+        .admit_reply(Duration::from_millis(100))
+        .await
+        .is_err());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    drop(held);
+    drop(service);
+    let _ = std::fs::remove_dir_all(root);
+}
