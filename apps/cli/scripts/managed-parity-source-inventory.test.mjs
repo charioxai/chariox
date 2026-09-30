@@ -861,7 +861,7 @@ test("an inspected blob gets only provisional grouping and never independent app
       .every((entry) => entry.semanticDisposition.gateEffect === "fail_closed"));
     assert.equal(report.status, "fail");
     assert.equal(report.summary.allowedReleaseDeployment, 0);
-    assert.equal(report.inventoryTool.modules.length, 5);
+    assert.equal(report.inventoryTool.modules.length, 6);
     assert.match(report.inventoryTool.bundleSha256, /^[a-f0-9]{64}$/);
   });
 });
@@ -1295,6 +1295,124 @@ test("current alias recovery and extension findings remain provisional open defe
       assert.equal(group.independentDisposition, "pending");
     }
     assert.equal(report.summary.removalRequired, 0);
+    assert.equal(report.status, "fail");
+  });
+});
+
+
+for (const [name, argument] of [
+  ["backtick-quoted", '`#{$CHARIOX_MANAGED_CADDY_CONTROL}`'],
+  ["within an unquoted token", "prefix#{$CHARIOX_MANAGED_CADDY_CONTROL}"],
+]) {
+  test("Caddy keeps active selector " + name, () => {
+    withFixture({}, (fixture) => {
+      fixture.addFile("deploy/production/control-edge.Caddyfile", [
+        ":8080 {", "    header X-Selector " + argument, "}", "",
+      ].join("\n"));
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_CONTROL");
+      assert.ok(entry, "valid Caddy token contents cannot disappear as comments");
+      assert.equal(entry.line, 2);
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+test("Caddy token-boundary comments remain absent after quoted and unquoted tokens", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      '# CHARIOX_MANAGED_CADDY_STANDALONE_COMMENT',
+      'header X-Value "literal"# CHARIOX_MANAGED_CADDY_AFTER_QUOTE_COMMENT',
+      'header X-Value prefix"literal # CHARIOX_MANAGED_CADDY_INSIDE_TOKEN_QUOTE_COMMENT',
+      'header X-Value ordinary # CHARIOX_MANAGED_CADDY_AFTER_TOKEN_COMMENT',
+      'header X-Value `backtick`# CHARIOX_MANAGED_CADDY_AFTER_BACKTICK_COMMENT',
+      'header X-Value "CHARIOX_MANAGED_CADDY_DOUBLE_QUOTED"',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    const selectors = report.entries.map((entry) => entry.selector);
+    assert.ok(selectors.includes("CHARIOX_MANAGED_CADDY_DOUBLE_QUOTED"));
+    assert.ok(!selectors.some((selector) => selector.endsWith("_COMMENT") && selector.includes("_CADDY_")));
+  });
+});
+
+test("Caddy multiline quotes and heredocs keep literal hash content and physical anchors", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      'header X-Value `first line',
+      '# CHARIOX_MANAGED_CADDY_MULTILINE_BACKTICK',
+      'last line`',
+      'header X-Value "first line',
+      '# CHARIOX_MANAGED_CADDY_MULTILINE_DOUBLE',
+      'last line"',
+      'respond <<BODY',
+      '# CHARIOX_MANAGED_CADDY_HEREDOC',
+      'literal `quote" text',
+      'BODY',
+      '# CHARIOX_MANAGED_CADDY_AFTER_HEREDOC_COMMENT',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    for (const [selector, line] of [
+      ["CHARIOX_MANAGED_CADDY_MULTILINE_BACKTICK", 2],
+      ["CHARIOX_MANAGED_CADDY_MULTILINE_DOUBLE", 5],
+      ["CHARIOX_MANAGED_CADDY_HEREDOC", 8],
+    ]) {
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.equal(entry?.line, line);
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    }
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_AFTER_HEREDOC_COMMENT"));
+  });
+});
+
+test("Caddy backtick escapes stay literal while double-quoted escaped quotes remain quoted", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      'header X-Value `literal\\`# CHARIOX_MANAGED_CADDY_BACKTICK_COMMENT',
+      'header X-Value "literal\\" # CHARIOX_MANAGED_CADDY_ESCAPED_DOUBLE"',
+      'header X-Value prefix\\#{$CHARIOX_MANAGED_CADDY_ESCAPED_PREFIX}',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_BACKTICK_COMMENT"));
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_ESCAPED_DOUBLE")?.line, 2);
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_ESCAPED_PREFIX")?.line, 3);
+  });
+});
+
+
+test("Caddy CR and Unicode token boundaries follow the lexer rather than generic config rules", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      '\ufeffheader X-Value prefix\r#{$CHARIOX_MANAGED_CADDY_CR_TOKEN}',
+      'header X-Value prefix\ufeff#{$CHARIOX_MANAGED_CADDY_INTERIOR_BOM}',
+      'header X-Value prefix\u00a0# CHARIOX_MANAGED_CADDY_UNICODE_COMMENT',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_CR_TOKEN")?.line, 1);
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_INTERIOR_BOM")?.line, 2);
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_UNICODE_COMMENT"));
+  });
+});
+
+test("Caddy escaped heredoc openers keep true comments while uncertain heredocs stay conservative", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      'respond \\<<BODY',
+      '# CHARIOX_MANAGED_CADDY_ESCAPED_HEREDOC_COMMENT',
+      'BODY',
+      'respond <<UNCLOSED',
+      '# CHARIOX_MANAGED_CADDY_UNCERTAIN_HEREDOC',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_ESCAPED_HEREDOC_COMMENT"));
+    const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_UNCERTAIN_HEREDOC");
+    assert.equal(entry?.line, 5);
+    assert.equal(entry?.semanticDisposition.status, "unreviewed");
     assert.equal(report.status, "fail");
   });
 });

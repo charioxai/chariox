@@ -7,6 +7,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { fileURLToPath } from "node:url";
 
 import { fragmentSourceViews, fragmentMatchAnchor } from "./lib/managed-parity-fragment-source.mjs";
+import { stripCaddyComments } from "./lib/managed-parity-caddy-source.mjs";
 import { stripPostgresComments } from "./lib/managed-parity-sql-source.mjs";
 import { patchSourceViews } from "./lib/managed-parity-patch-source.mjs";
 import { sourceRuleCandidates, sourceClassification, groupSourceClassifications, sourceAuditGaps } from "./lib/managed-parity-source-rules.mjs";
@@ -24,6 +25,7 @@ const INVENTORY_TOOL_MODULES = [
   ["./lib/managed-parity-source-rules.mjs", "apps/cli/scripts/lib/managed-parity-source-rules.mjs"],
   ["./lib/managed-parity-fragment-source.mjs", "apps/cli/scripts/lib/managed-parity-fragment-source.mjs"],
   ["./lib/managed-parity-sql-source.mjs", "apps/cli/scripts/lib/managed-parity-sql-source.mjs"],
+  ["./lib/managed-parity-caddy-source.mjs", "apps/cli/scripts/lib/managed-parity-caddy-source.mjs"],
 ];
 
 function inventoryToolIdentity() {
@@ -383,6 +385,7 @@ const OWNED_DIRTY_PATHS = new Set([
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
   "apps/cli/scripts/lib/managed-parity-fragment-source.mjs",
   "apps/cli/scripts/lib/managed-parity-sql-source.mjs",
+  "apps/cli/scripts/lib/managed-parity-caddy-source.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
   "docs/MANAGED_PATH1_PARITY_INVENTORY.md",
@@ -393,6 +396,7 @@ const SELF_EXCLUDED_PATHS = new Set([
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
   "apps/cli/scripts/lib/managed-parity-fragment-source.mjs",
   "apps/cli/scripts/lib/managed-parity-sql-source.mjs",
+  "apps/cli/scripts/lib/managed-parity-caddy-source.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
 ]);
@@ -479,6 +483,7 @@ function classifyProductionPath(path) {
   if ([".rs"].includes(extension)) return "rust";
   if (extension === ".c") return "c";
   if (extension === ".sql") return "sql";
+  if (extension === ".caddyfile") return "caddy";
   if (extension === ".py") return "python";
   if ([".js", ".jsx", ".mjs", ".mjsfrag", ".cjs", ".ts", ".tsx", ".tsfrag"].includes(extension)) return "javascript";
   if (extension === ".swift") return "swift";
@@ -492,6 +497,7 @@ function classifyProductionPath(path) {
 
 function stripComments(text, format) {
   if (format === "sql") return stripPostgresComments(text);
+  if (format === "caddy") return stripCaddyComments(text);
   const slashComments = ["c", "rust", "javascript", "swift"].includes(format);
   const hashComments = ["python", "shell", "unit", "container", "policy", "config"].includes(format);
   if (!slashComments && !hashComments) return text;
