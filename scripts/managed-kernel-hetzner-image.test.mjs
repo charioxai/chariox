@@ -106,8 +106,10 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   const bypassCleanupEnd = script.indexOf("\nbypass_path1_data_volume_dropins() {", bypassCleanupStart)
   assert.ok(bypassCleanupStart >= 0 && bypassCleanupEnd > bypassCleanupStart)
   const bypassCleanup = script.slice(bypassCleanupStart, bypassCleanupEnd)
-  assert.match(bypassCleanup, /systemctl stop chariox-data-volume-admission\.service/)
-  assert.match(bypassCleanup, /chariox-data-volume-admission\.service; do/)
+  assert.match(bypassCleanup, /builder_storage_units="\$builder_storage_units chariox-data-volume-admission\.service"/)
+  assert.match(bypassCleanup, /for builder_unit in \$builder_storage_units; do\s+systemctl stop "\$builder_unit" \|\| builder_services_stopped=0/)
+  assert.match(bypassCleanup, /systemctl show --property=ActiveState --value "\$builder_unit"/)
+  assert.match(bypassCleanup, /if \[ "\$builder_active_state" != inactive \]; then\s+builder_services_stopped=0/)
   assert.match(bypassCleanup, /if \[ "\$builder_services_stopped" -eq 1 \]; then[\s\S]*clear_owned_probe_root[\s\S]*restore_path1_data_volume_dropins/)
   const builderBypass = script.indexOf(
     "bypass_path1_data_volume_dropins\nassert_path1_builder_storage_pristine\n",
