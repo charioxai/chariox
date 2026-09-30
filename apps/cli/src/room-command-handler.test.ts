@@ -91,10 +91,16 @@ test("/room bar shows or hides the Room browser bar and says which", async () =>
     appendNotice: (notice: string) => notices.push(notice),
     flashFooter: (message: string) => errors.push(message),
   })
-  await handleRoomSlashCommand(deps(true), parseSlashCommand("/room bar show")!)
-  await handleRoomSlashCommand(deps(false), parseSlashCommand("/room bar hide")!)
-  await handleRoomSlashCommand(deps(false), parseSlashCommand("/room bar")!)
-  await handleRoomSlashCommand(deps(false), parseSlashCommand("/room bar maybe")!)
+  for (const [visible, raw] of [
+    [true, "/room bar show"],
+    [false, "/room bar hide"],
+    [false, "/room bar"],
+    [false, "/room bar maybe"],
+  ] as const) {
+    const command = parseSlashCommand(raw)
+    assert(command?.kind === "room")
+    await handleRoomSlashCommand(deps(visible), command)
+  }
   assert.deepEqual(requests, [
     { SetRoomBrowserBar: { session_id: "session-1", visible: true } },
     { SetRoomBrowserBar: { session_id: "session-1", visible: false } },

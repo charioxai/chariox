@@ -84,7 +84,7 @@ test("a command of one surface names the other surface's command", async () => {
     for (const connected of [true, false]) {
       const flashes: string[] = []
       await handleAppSlashCommand({
-        sendAppRequest: connected ? async () => assert.fail("no kernel request") : undefined,
+        ...(connected ? { sendAppRequest: async () => assert.fail("no kernel request") } : {}),
         appendNotice: () => {},
         flashFooter: (message) => { flashes.push(message) },
       }, command)
