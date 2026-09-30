@@ -98,6 +98,16 @@ impl KernelRuntimeOwnedState {
                     }
                 }
                 Err(error) => {
+                    let Ok(session) = self.session_store.get_session(&finished.session_id) else {
+                        continue;
+                    };
+                    let Some(failed_prompt) = self
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, &finished.agent_id)
+                        .filter(|prompt| prompt.id() == finished.prompt_id)
+                    else {
+                        continue;
+                    };
                     let provider_run = self.provider_store.get_run(&finished.provider_run_id).ok();
                     let mut _settlement_claim = None;
                     if let Some(provider_run) = provider_run.as_ref() {
@@ -155,6 +165,22 @@ impl KernelRuntimeOwnedState {
                                 continue;
                             }
                         }
+                    }
+                    if _settlement_claim.is_none() {
+                        let Some(claim) = self
+                            .prompt_state_owner
+                            .try_claim_active_prompt_delivery_settlement(
+                                &session,
+                                &finished.agent_id,
+                                &finished.prompt_id,
+                                &finished.provider_run_id,
+                            )
+                        else {
+                            continue;
+                        };
+                        _settlement_claim = Some(claim);
+                    }
+                    if provider_run.is_some() {
                         if let Ok(outcome) = self.provider_store.terminate_run_provider_only(
                             &finished.session_id,
                             &finished.provider_run_id,
@@ -186,7 +212,19 @@ impl KernelRuntimeOwnedState {
                         &finished.provider_run_id,
                         &diagnostic,
                     ) {
-                        Ok(Some(_)) => {}
+                        Ok(Some(_)) => {
+                            self.record_failed_request(
+                                &finished.session_id,
+                                &finished.provider_run_id,
+                                provider_run
+                                    .as_ref()
+                                    .map(|run| run.adapter_key())
+                                    .unwrap_or_default(),
+                                &finished.agent_id,
+                                &failed_prompt,
+                                &diagnostic,
+                            );
+                        }
                         Ok(None) => {}
                         Err(settlement_error) => {
                             crate::logging::warn_with_fields(

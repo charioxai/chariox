@@ -2030,93 +2030,133 @@ mod tests {
         );
     }
 
+    async fn runtime_with_finished_structured_submit(
+        accepted: bool,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        crate::app::KernelPromptDispatch,
+        crate::provider::FinishedProviderPromptSubmitJob,
+    ) {
+        let (worktree, runtime, session_id, agent_id, observer_id, run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let request = LaunchProviderRequest::new(
+            &session_id,
+            if accepted { "dev-stub" } else { "codex" },
+            if accepted { "slow-structured" } else { "codex" },
+            "default",
+            "model",
+        )
+        .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "failed-note-submit".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test".to_string()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .agent_store
+            .record_failed_request_durably(
+                &runtime.owned.durable_state_store,
+                &agent_id,
+                crate::agent::FailedRequest::new(
+                    "earlier-failure",
+                    "earlier request",
+                    "rejected".to_string(),
+                ),
+            )
+            .expect("prior failure should persist");
+        runtime
+            .enqueue_prompt_dispatch_after_liveness(&dispatch, &runtime.owned)
+            .await
+            .expect("mailbox enqueue should succeed");
+        assert_eq!(
+            failed_requests(&runtime, &agent_id).len(),
+            1,
+            "enqueue is not provider acceptance"
+        );
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let jobs = runtime
+                    .owned
+                    .provider_store
+                    .drain_finished_structured_prompt_submit_jobs();
+                if let Some(finished) = jobs.into_iter().next() {
+                    break finished;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("actor should return its provider result");
+        assert_eq!(
+            finished.result.is_ok(),
+            accepted,
+            "actual provider submit result: {:?}",
+            finished.result
+        );
+        (
+            worktree,
+            runtime,
+            session_id,
+            agent_id,
+            observer_id,
+            run_id,
+            dispatch,
+            finished,
+        )
+    }
+
+    async fn reap_finished_submit(
+        runtime: &KernelRuntimeState,
+        app_reaper: bool,
+        finished: crate::provider::FinishedProviderPromptSubmitJob,
+    ) {
+        runtime
+            .owned
+            .provider_store
+            .push_finished_structured_prompt_submit_for_test(
+                finished.session_id,
+                finished.provider_run_id,
+                finished.agent_id,
+                finished.prompt_id,
+                finished.result,
+            );
+        if app_reaper {
+            runtime
+                .with_app_side_effect(|app| app.reap_structured_prompt_jobs())
+                .await;
+        } else {
+            runtime.owned.reap_structured_prompt_jobs();
+        }
+    }
+
     #[tokio::test]
     async fn failed_request_note_survives_mailbox_enqueue_until_provider_acceptance() {
         for accepted in [false, true] {
-            let (_worktree, runtime, session_id, agent_id, _, run_id, dispatch) =
-                runtime_with_admitted_prompt().await;
-            let request = LaunchProviderRequest::new(
-                &session_id,
-                if accepted { "dev-stub" } else { "codex" },
-                if accepted { "slow-structured" } else { "codex" },
-                "default",
-                "model",
-            )
-            .with_agent_id(&agent_id);
-            let mut run = crate::provider::RuntimeProviderRun::new(
-                &run_id,
-                &request,
-                crate::provider::ProviderLaunchResult {
-                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-                    process_label: "failed-note-submit".to_string(),
-                    pty_target: None,
-                    pty_program: None,
-                    pty_args: Vec::new(),
-                    pty_env: std::collections::BTreeMap::new(),
-                    pty_env_remove: Vec::new(),
-                    working_directory: None,
-                    structured_endpoint: Some("test".to_string()),
-                },
-            );
-            run.mark_running();
-            runtime
-                .owned
-                .provider_store
-                .write()
-                .insert_run_for_test(run.clone());
-            runtime
-                .owned
-                .agent_store
-                .record_failed_request_durably(
-                    &runtime.owned.durable_state_store,
-                    &agent_id,
-                    crate::agent::FailedRequest::new(
-                        "earlier-failure",
-                        "earlier request",
-                        "rejected".to_string(),
-                    ),
-                )
-                .expect("prior failure should persist");
-            runtime
-                .enqueue_prompt_dispatch_after_liveness(&dispatch, &runtime.owned)
-                .await
-                .expect("mailbox enqueue should succeed");
-            assert_eq!(
-                failed_requests(&runtime, &agent_id).len(),
-                1,
-                "enqueue is not provider acceptance"
-            );
-            let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                loop {
-                    let jobs = runtime
-                        .owned
-                        .provider_store
-                        .drain_finished_structured_prompt_submit_jobs();
-                    if let Some(finished) = jobs.into_iter().next() {
-                        break finished;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect("actor should return its provider result");
-            assert_eq!(
-                finished.result.is_ok(),
-                accepted,
-                "actual provider submit result: {:?}",
-                finished.result
-            );
-            runtime
-                .owned
-                .provider_store
-                .push_finished_structured_prompt_submit_for_test(
-                    finished.session_id,
-                    finished.provider_run_id,
-                    finished.agent_id,
-                    finished.prompt_id,
-                    finished.result,
-                );
-            runtime.owned.reap_structured_prompt_jobs();
+            let (_worktree, runtime, _, agent_id, _, _, _, finished) =
+                runtime_with_finished_structured_submit(accepted).await;
+            reap_finished_submit(&runtime, false, finished).await;
             let failed = failed_requests(&runtime, &agent_id);
             if accepted {
                 assert!(
@@ -2132,6 +2172,152 @@ mod tests {
                 );
             }
         }
+    }
+
+    async fn assert_async_rejection_settlement(app_reaper: bool, stale: bool) {
+        let (_worktree, runtime, session_id, agent_id, observer_id, run_id, dispatch, finished) =
+            runtime_with_finished_structured_submit(false).await;
+        let mut successor = None;
+        if stale {
+            runtime
+                .owned
+                .complete_local_prompt_without_advance(&session_id, &agent_id, Some(&run_id))
+                .expect("B should settle before its late result");
+            let run = runtime
+                .owned
+                .provider_store
+                .get_run(&run_id)
+                .expect("successor reuses the live provider");
+            runtime
+                .owned
+                .session_store
+                .set_active_provider_run(&session_id, Some(run.id().to_string()))
+                .expect("successor provider should attach");
+            let admitted = runtime
+                .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt: PromptQueueItem::new(
+                        "successor-prompt",
+                        &dispatch.source_attachment_id,
+                        &agent_id,
+                        "current successor request",
+                        PromptStatus::Queued,
+                    ),
+                    force_queue: false,
+                    refresh_projection: true,
+                })
+                .await
+                .expect("successor prompt should admit");
+            let PromptSubmissionOutcome::Started { prompt } = admitted.outcome else {
+                panic!("successor should start");
+            };
+            runtime
+                .owned
+                .mark_active_prompt_delivery(
+                    &session_id,
+                    &agent_id,
+                    prompt.id(),
+                    crate::session::DurablePromptDeliveryPhase::Dispatching,
+                    Some(run.id().to_string()),
+                    None,
+                )
+                .expect("successor should own delivery");
+            let agent_state = runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .unwrap()
+                .state();
+            successor = Some((prompt, run, agent_state));
+        }
+        reap_finished_submit(&runtime, app_reaper, finished).await;
+        let failed = failed_requests(&runtime, &agent_id);
+        assert!(
+            failed
+                .iter()
+                .any(|note| note.prompt_id == "earlier-failure"),
+            "earlier undelivered warning must survive"
+        );
+        if let Some((prompt, run, agent_state)) = successor {
+            assert_eq!(
+                failed.len(),
+                1,
+                "late B cannot mark successor request failed"
+            );
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .unwrap()
+                    .id(),
+                prompt.id()
+            );
+            assert_eq!(session.active_provider_run_id(), Some(run.id()));
+            assert_eq!(
+                runtime
+                    .owned
+                    .provider_store
+                    .get_run(run.id())
+                    .unwrap()
+                    .state(),
+                crate::provider::ProviderRunState::Running
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .agent_store
+                    .get_agent(&agent_id)
+                    .unwrap()
+                    .state(),
+                agent_state
+            );
+            assert!(not_carried_out_entries(&runtime, &session_id, &observer_id).is_empty());
+        } else {
+            assert_eq!(
+                failed.len(),
+                2,
+                "rejected B must also be remembered: {failed:?}"
+            );
+            assert_eq!(failed[1].prompt_id, dispatch.prompt_id);
+            assert_eq!(failed[1].excerpt, dispatch.prompt);
+            assert_eq!(
+                last_durable_failed_requests(&runtime)
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            assert_eq!(
+                not_carried_out_entries(&runtime, &session_id, &observer_id).len(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_async_rejection_records_current_failed_request() {
+        assert_async_rejection_settlement(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn owned_async_rejection_preserves_successor_prompt() {
+        assert_async_rejection_settlement(false, true).await;
+    }
+
+    #[tokio::test]
+    async fn app_async_rejection_records_current_failed_request() {
+        assert_async_rejection_settlement(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn app_async_rejection_preserves_successor_prompt() {
+        assert_async_rejection_settlement(true, true).await;
     }
 
     #[tokio::test]

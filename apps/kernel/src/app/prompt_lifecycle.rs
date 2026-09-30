@@ -413,6 +413,58 @@ impl DaemonApp {
         let acknowledgement = match result {
             Ok(acknowledgement) => acknowledgement,
             Err(error) => {
+                let session = self.sessions.get_session(&session_id)?;
+                let Some(_settlement_claim) = self
+                    .prompt_state_owner
+                    .try_claim_active_prompt_delivery_settlement(
+                        &session,
+                        &agent_id,
+                        &prompt_id,
+                        &provider_run_id,
+                    )
+                else {
+                    return Err(error);
+                };
+                if let Some(failed_prompt) = self
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                {
+                    let adapter = self
+                        .providers
+                        .get_run(&provider_run_id)
+                        .map(|run| run.adapter_key().to_string())
+                        .unwrap_or_default();
+                    let reason = crate::agent::failed_request_reason(
+                        &adapter,
+                        &format!("Provider prompt dispatch failed: {error}"),
+                    );
+                    if let Err(record_error) = self.agents.record_failed_request_durably(
+                        &self.durable_state_store(),
+                        &agent_id,
+                        crate::agent::FailedRequest::new(
+                            failed_prompt.id(),
+                            failed_prompt.prompt(),
+                            reason.clone(),
+                        ),
+                    ) {
+                        crate::logging::warn_with_fields(
+                            "daemon.prompt_delivery",
+                            "failed to record the failed request note",
+                            serde_json::json!({
+                                "session_id": session_id, "agent_id": agent_id, "prompt_id": prompt_id, "error": record_error.to_string(),
+                            }),
+                        );
+                    }
+                    self.fan_out_output_for_agent(
+                        &session_id,
+                        &provider_run_id,
+                        Some(&agent_id),
+                        crate::terminal::TerminalOutputKind::ProviderError,
+                        None,
+                        self.attachments.list_session_attachment_ids(&session_id),
+                        crate::agent::failed_request_notice(&reason).as_bytes(),
+                    );
+                }
                 crate::app::KernelAgentService::new(self).cancel_active_after_prompt_start_failure(
                     &session_id,
                     &agent_id,
