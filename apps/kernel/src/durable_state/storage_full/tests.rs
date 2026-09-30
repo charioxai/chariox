@@ -77,7 +77,8 @@ pub(crate) fn free(store: &DurableKernelStateStore) {
 }
 
 pub(crate) fn wait_for(store: &DurableKernelStateStore, condition: DurableWriterCondition) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Probes back off while a slow fill keeps failing; wait out the cap.
+    let deadline = Instant::now() + PROBE_MAX_DELAY * 2;
     while store.writer_condition() != condition && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }

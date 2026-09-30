@@ -26,9 +26,11 @@ const PROBE_BASE_DELAY: Duration = Duration::from_millis(500);
 const PROBE_MAX_DELAY: Duration = Duration::from_secs(15);
 
 thread_local! {
-    /// Set on the writer thread when a write there failed because the disk is
-    /// full. The writer owns its connection, so modules report it here rather
-    /// than threading writer health through every request type.
+    /// Set when a write failed because the disk is full. The writer owns its
+    /// connection, so modules report it here rather than threading writer
+    /// health through every request type; only the writer thread reads it.
+    /// Shared error mapping may also set it on a query thread, where it is
+    /// never read.
     static OBSERVED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -184,12 +186,13 @@ impl StorageProbe {
     ) -> Option<DurableWriterRequest> {
         loop {
             self.after_request(health);
-            let Some(next) = self.next else {
+            // After a fence nothing commits, not even a probe: just wait for
+            // the sender to go away.
+            let Some(next) = self.next.filter(|_| !health.fatal.load(Ordering::Acquire)) else {
                 return receiver.recv().ok();
             };
             let wait = next.saturating_duration_since(Instant::now());
-            // After a fence nothing commits, not even a probe.
-            if wait.is_zero() && !health.fatal.load(Ordering::Acquire) {
+            if wait.is_zero() {
                 self.probe(connection, health);
                 continue;
             }
