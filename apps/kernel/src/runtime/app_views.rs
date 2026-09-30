@@ -98,6 +98,9 @@ struct SessionViews {
     /// Tabs being reloaded onto a new generation: until the reload is sent,
     /// the old page's calls are not run against the new backend.
     reconnecting: std::collections::HashSet<String>,
+    /// Tabs handed out for reloading after their App updated, until that
+    /// reconnect ends: the next polls do not hand them out again.
+    refreshing: std::collections::HashSet<String>,
 }
 
 impl SessionViews {
@@ -340,6 +343,9 @@ impl AppViews {
             views
                 .reconnecting
                 .retain(|target| open_targets.contains(target));
+            views
+                .refreshing
+                .retain(|target| open_targets.contains(target));
         }
     }
 
@@ -387,6 +393,42 @@ impl AppViews {
             views.tabs.retain(|_, (binding, _)| {
                 binding.owner != owner || binding.installation != installation
             });
+        }
+    }
+
+    /// Bound Tabs whose installation now runs a newer generation (`running`)
+    /// than the one their page was built for. Each is handed out once, and
+    /// not while it reconnects, until `finish_refresh`.
+    pub(crate) fn take_outdated(
+        &self,
+        session: &str,
+        running: impl Fn(&AppViewBinding) -> Option<u64>,
+    ) -> Vec<(String, AppViewBinding)> {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(views) = sessions.get_mut(session) else {
+            return Vec::new();
+        };
+        let outdated: Vec<(String, AppViewBinding)> = views
+            .tabs
+            .iter()
+            .filter(|(target, (binding, _))| {
+                !views.reconnecting.contains(*target)
+                    && !views.refreshing.contains(*target)
+                    && running(binding).is_some_and(|generation| generation > binding.generation)
+            })
+            .map(|(target, (binding, _))| (target.clone(), binding.clone()))
+            .collect();
+        views
+            .refreshing
+            .extend(outdated.iter().map(|(target, _)| target.clone()));
+        outdated
+    }
+
+    /// The reload an update asked for ended (sent, failed or not needed).
+    pub(crate) fn finish_refresh(&self, session: &str, target: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.refreshing.remove(target);
         }
     }
 
@@ -1064,6 +1106,62 @@ mod reconnect_tests {
             installation: "a".into(),
             generation,
         }
+    }
+
+    #[test]
+    fn an_update_outdates_its_installations_open_views_until_they_reconnect() {
+        let views = AppViews::default();
+        views.register("s", "t1", binding_at(1));
+        views.register("s", "t2", binding_at(1));
+        views.register(
+            "s",
+            "other-app",
+            AppViewBinding {
+                installation: "b".into(),
+                ..binding_at(1)
+            },
+        );
+        views.register("other-session", "t3", binding_at(1));
+        let running = |generation| {
+            move |binding: &AppViewBinding| (binding.installation == "a").then_some(generation)
+        };
+        let targets = |taken: Vec<(String, AppViewBinding)>| {
+            let mut targets: Vec<_> = taken
+                .into_iter()
+                .map(|(target, binding)| (target, binding.generation))
+                .collect();
+            targets.sort();
+            targets
+        };
+        // Not while the App still runs the generation the pages were built for
+        // (or does not run at all: its next call finds out).
+        assert!(views.take_outdated("s", running(1)).is_empty());
+        assert!(views.take_outdated("s", |_| None).is_empty());
+        assert_eq!(
+            targets(views.take_outdated("s", running(2))),
+            [("t1".to_owned(), 1), ("t2".to_owned(), 1)]
+        );
+        // Handed out once: the next polls wait for those reloads to end.
+        assert!(views.take_outdated("s", running(2)).is_empty());
+        views.finish_refresh("s", "t2");
+        assert_eq!(
+            targets(views.take_outdated("s", running(2))),
+            [("t2".to_owned(), 1)]
+        );
+        // A Tab being reconnected, or already bound to the new generation, is not.
+        views.finish_refresh("s", "t1");
+        views.finish_refresh("s", "t2");
+        assert!(views.claim_reconnect("s", "t1", binding_at(2)));
+        assert_eq!(
+            targets(views.take_outdated("s", running(2))),
+            [("t2".to_owned(), 1)]
+        );
+        views.finish_refresh("s", "t2");
+        views.finish_reconnect("s", "t1");
+        assert!(views.claim_reconnect("s", "t2", binding_at(2)));
+        views.finish_reconnect("s", "t2");
+        assert!(views.take_outdated("s", running(2)).is_empty());
+        assert!(views.take_outdated("other-session", running(1)).is_empty());
     }
 
     #[test]

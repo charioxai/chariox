@@ -243,6 +243,7 @@ impl KernelRuntimeState {
                 views.retain_open(&session_id, open, polled_up_to);
                 views.set_open_tabs(&session_id, open.len());
             }
+            self.reload_updated_app_views(&session_id, &views);
             // App Tabs are always marked; an older controller, which does not
             // lay pages out beside a panel, gets no panel.
             views.set_app_panels(&session_id, batch.app_panels);
@@ -474,6 +475,35 @@ impl KernelRuntimeState {
                 },
             )
             .await;
+    }
+
+    /// An update that committed while a view is open reloads the view onto
+    /// the new generation now. Until then the controller keeps serving the old
+    /// generation's files, so reloading the page would show the old release
+    /// again; only a call from the page would find it stale.
+    fn reload_updated_app_views(
+        &self,
+        session_id: &str,
+        views: &crate::runtime::app_views::AppViews,
+    ) {
+        let control = self.app_control();
+        let outdated = views.take_outdated(session_id, |binding| {
+            control
+                .active_app_lease(&binding.owner, &binding.installation)
+                .map(|lease| lease.catalog().generation())
+        });
+        for (target, binding) in outdated {
+            let state = self.clone();
+            let session = session_id.to_owned();
+            let views = views.clone();
+            tokio::spawn(async move {
+                // Its outcome is for a call; the reload is the point here.
+                let _ = state
+                    .reconnect_app_view(&session, &target, &binding.owner, &binding.installation)
+                    .await;
+                views.finish_refresh(&session, &target);
+            });
+        }
     }
 
     /// Binds the Tab to the installation's current generation, then reloads it
