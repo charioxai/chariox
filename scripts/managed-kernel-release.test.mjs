@@ -505,7 +505,8 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   const manifest = JSON.parse(manifestBytes)
   const digest = (contents) => `sha256:${createHash("sha256").update(contents).digest("hex")}`
   assert.deepEqual(manifest, {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    managedUpdateEvidenceVersion: 1,
     sourceCommit: fixture.sourceCommit,
     sourceTree: fixture.sourceTree,
     artifacts: [

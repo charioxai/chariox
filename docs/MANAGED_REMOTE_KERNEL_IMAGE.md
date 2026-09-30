@@ -278,6 +278,24 @@ rolls back automatically when the new kernel does not publish healthy presence
 under `/home/chariox/.chariox/kernels/active`. A crash at any phase is recovered
 by running the same command again.
 
+Newly packaged releases use signed manifest schema 3 and declare
+`managedUpdateEvidenceVersion: 1`. Cloud automatic updates require this target
+capability. Their updater retains identity-bound, durable committed or rolled-back
+results after recovery journal cleanup, so a restarted kernel can settle the exact
+Cloud attempt. The newer verifier still accepts schema 2 for current-release
+verification and explicit legacy rollback; Cloud automatic updates cannot select a
+schema 2 target.
+
+Legacy source runtimes are unsupported for an automatic transition to schema 3.
+Their installed verifier rejects the new signed manifest before activation. Merely
+replacing the updater script is insufficient: the legacy kernel does not durably
+bind its attempt to the source release and Cloud identity or pass the update ID.
+An operator transition that preserves `~/.chariox` and establishes an independently
+verified evidence-capable runtime would be a separate prerequisite. That bridge
+has not been implemented or validated. Reimaging is not the upgrade path. A fresh
+schema 3 installation is only a starting point for disposable validation of the
+automatic schema 3 A-to-B path.
+
 The retained bootstrap envelope keeps naming the provisioned release. After
 confirmation the kernel verifies its installed release against the receipt, and
 the receipt's grant binding (schema 2) covers the machine's identity, not its

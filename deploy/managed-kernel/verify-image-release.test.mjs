@@ -86,6 +86,7 @@ async function sha256Tree(root) {
 
 async function createReleaseFixture(context, {
   mutateAttestation = () => {},
+  mutateManifest = () => {},
   malformedAttestation = false,
   invalidBuilderSignature = false,
   wrongTrustedBuilderKey = false,
@@ -181,12 +182,14 @@ async function createReleaseFixture(context, {
     artifacts.push({ name, path, sha256: digest })
   }
 
-  const manifestBytes = Buffer.from(JSON.stringify({
+  const manifest = {
     schemaVersion: 2,
     sourceCommit: SOURCE_COMMIT,
     sourceTree: SOURCE_TREE,
     artifacts,
-  }))
+  }
+  mutateManifest(manifest)
+  const manifestBytes = Buffer.from(JSON.stringify(manifest))
   await put(rootfs, "/usr/lib/chariox/release-public-key", Buffer.from(rawPublicKey(releaseKeys.publicKey)))
   await put(rootfs, "/usr/lib/chariox/release-manifest.json", manifestBytes)
   await put(
@@ -208,6 +211,26 @@ function runVerifier(fixture, topology, trustedBuilderKeyPath) {
   if (trustedBuilderKeyPath) args.push(trustedBuilderKeyPath)
   return spawnSync(process.execPath, args, { encoding: "utf8", timeout: 10_000 })
 }
+
+test("signed release manifests retain legacy schema 2 and require schema 3 capability 1", async (context) => {
+  for (const schemaVersion of [2, 3]) {
+    const fixture = await createReleaseFixture(context, { mutateManifest(manifest) {
+      manifest.schemaVersion = schemaVersion
+      if (schemaVersion === 3) manifest.managedUpdateEvidenceVersion = 1
+    } })
+    const result = runVerifier(fixture)
+    assert.equal(result.status, 0, result.stderr)
+  }
+  for (const [schemaVersion, capability] of [[3, undefined], [3, 2], [3, null], [2, 1]]) {
+    const fixture = await createReleaseFixture(context, { mutateManifest(manifest) {
+      manifest.schemaVersion = schemaVersion
+      if (capability !== undefined) manifest.managedUpdateEvidenceVersion = capability
+    } })
+    const result = runVerifier(fixture)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /release manifest schema is unsupported|release manifest contains unsupported fields/)
+  }
+})
 
 test("Path-1 image preparation rejects inherited systemd drop-ins", async (context) => {
   const source = await readFile(imagePreparation, "utf8")

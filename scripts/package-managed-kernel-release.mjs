@@ -563,7 +563,8 @@ async function packageRelease(options) {
 
   const manifestBytes = Buffer.from(
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
+      managedUpdateEvidenceVersion: 1,
       sourceCommit: sourceIdentity.commit,
       sourceTree: sourceIdentity.tree,
       artifacts: [

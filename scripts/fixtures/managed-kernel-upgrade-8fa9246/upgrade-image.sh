@@ -53,8 +53,6 @@ if [ -n "${CHARIOX_MANAGED_UPGRADE_RECEIPT:-}" ]; then
 fi
 transaction_root=$chariox_root/.managed-kernel-upgrade
 terminal_transaction=$chariox_root/.managed-kernel-upgrade.terminal
-update_result_path=$chariox_root/.managed-kernel-upgrade-result
-managed_release_update_id=${CHARIOX_MANAGED_RELEASE_UPDATE_ID:-}
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
 health_port=${CHARIOX_MANAGED_UPGRADE_HEALTH_PORT:-43118}
 health_timeout_ms=${CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000}
@@ -204,19 +202,6 @@ require_root_owned_directory() {
     echo "managed kernel upgrade authority permissions are unsafe" >&2
     exit 1
   fi
-}
-
-# Schema 2 remains verifiable for current-release checks and legacy rollback.
-require_cloud_update_target() {
-  [ -n "$managed_release_update_id" ] || return 0
-  node --input-type=module - "$1/usr/lib/chariox/release-manifest.json" <<'NODE'
-import { readFile } from "node:fs/promises"
-const manifest = JSON.parse(await readFile(process.argv[2], "utf8"))
-if (manifest.schemaVersion !== 3 || manifest.managedUpdateEvidenceVersion !== 1) {
-  console.error("Cloud managed release update target requires signed update evidence capability 1 (manifest schema 3)")
-  process.exit(1)
-}
-NODE
 }
 
 require_private_regular_file() {
@@ -474,41 +459,6 @@ verify_signed_slice_build_context_facade() {
   fi
 }
 
-# Keep public terminal evidence after the private recovery journal is removed.
-# The journal owns the update identity, including during restart recovery.
-publish_update_result() {
-  result_journal=$1
-  [ -f "$result_journal/update-result-identity" ] || return 0
-  node --input-type=module - "$result_journal" "$update_result_path" <<'NODE'
-import { open, readFile, rename, unlink } from "node:fs/promises"
-import { dirname } from "node:path"
-const [journal, destination] = process.argv.slice(2)
-const identity = await readFile(`${journal}/update-result-identity`, "utf8")
-const fields = identity.trimEnd().split("\n")
-const phase = (await readFile(`${journal}/phase`, "utf8")).trimEnd()
-if (fields.length !== 7 || fields[0] !== "1"
-  || !/^managed_release_update_[a-f0-9-]{36}$/.test(fields[1])
-  || fields.slice(2, 4).some((value) => !/^sha256:[a-f0-9]{64}$/.test(value))
-  || fields.slice(4).some((value) => !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value))
-  || !["committed", "rolled_back"].includes(phase)) {
-  throw new Error("managed release update result identity is invalid")
-}
-const temporary = `${destination}.new`
-await unlink(temporary).catch((error) => { if (error.code !== "ENOENT") throw error })
-const handle = await open(temporary, "wx", 0o644)
-try {
-  await handle.chmod(0o644)
-  await handle.writeFile(`${fields.join("\n")}\n${phase}\n`)
-  await handle.sync()
-} finally {
-  await handle.close()
-}
-await rename(temporary, destination)
-const parent = await open(dirname(destination), "r")
-try { await parent.sync() } finally { await parent.close() }
-NODE
-}
-
 discard_terminal_transaction() {
   rm -rf -- "$terminal_transaction" || return 1
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root"
@@ -566,10 +516,6 @@ rollback_transaction() {
   if [ ! -d "$transaction_root" ]; then
     transaction_active=0
     return 0
-  fi
-  if [ "$(read_single_line "$transaction_root/phase")" = committed ]; then
-    echo "refusing to roll back a committed managed release update" >&2
-    return 1
   fi
   rolling_back=1
   validate_builder_pin_journal "$transaction_root" || return 1
@@ -640,7 +586,6 @@ rollback_transaction() {
     "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" \
     "$release_override_path" "$transaction_root/previous-release-override.json" || return 1
   write_phase rolled_back || return 1
-  publish_update_result "$transaction_root" || return 1
   tombstone_transaction || return 1
   transaction_active=0
   rolling_back=0
@@ -687,7 +632,6 @@ recover_terminal_transaction() {
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
     "$receipt_path" "$terminal_receipt" "$terminal_digest" \
     "$release_override_path" "$terminal_override" || return 1
-  publish_update_result "$terminal_transaction" || return 1
   discard_terminal_transaction
 }
 
@@ -713,9 +657,8 @@ recover_transaction() {
     validate_active_builder_pin "$transaction_root" target "$target_current" || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
       "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest" \
-      "$release_override_path" "$transaction_root/target-release-override.json" || return 1
-    publish_update_result "$transaction_root" || return 1
-    tombstone_transaction || return 1
+      "$release_override_path" "$transaction_root/target-release-override.json"
+    tombstone_transaction
     return 0
   fi
   if [ "$phase" = rolled_back ]; then
@@ -730,7 +673,6 @@ recover_transaction() {
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
       "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" \
       "$release_override_path" "$transaction_root/previous-release-override.json" || return 1
-    publish_update_result "$transaction_root" || return 1
     tombstone_transaction || return 1
     return 0
   fi
@@ -744,11 +686,7 @@ terminate() {
   trap - EXIT HUP INT TERM
   set +e
   if [ "$transaction_active" -eq 1 ] && [ "$rolling_back" -eq 0 ]; then
-    # A committed journal admits the target permanently. Recovery can still
-    # publish its result and remove the journal after this process exits.
-    if [ "$(read_single_line "$transaction_root/phase")" != committed ]; then
-      rollback_transaction
-    fi
+    rollback_transaction
   fi
   cleanup
   kill -s "$signal" "$$"
@@ -822,9 +760,6 @@ select_receipt_path
 require_root_owned_directory "$chariox_root"
 require_root_owned_ancestor_chain "$chariox_root" "managed kernel upgrade authority"
 require_root_owned_directory "$releases_root"
-if path_exists "$update_result_path"; then
-  require_root_owned_private_regular_file "$update_result_path" "managed release update result"
-fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
@@ -858,7 +793,6 @@ require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
 verify_selected_release \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
 verify_selected_release "$image_root" "$expected_new_digest" "$next_trusted_public_key" "${next_trusted_builder_public_key:-}"
-require_cloud_update_target "$image_root"
 if [ "$managed_provider_topology" = path1 ]; then
   require_root_owned_directory "$install_root/etc"
   if path_exists "$install_root/etc/chariox"; then
@@ -964,21 +898,6 @@ printf '%s\n' "$expected_new_digest" > "$pending_transaction/target-digest"
 printf '%s\n' "$target_protocol" > "$pending_transaction/target-protocol"
 printf '%s\n' "$signed_slice_build_context_target" > "$pending_transaction/target-slice-build-context"
 printf '%s\n' prepared > "$pending_transaction/phase"
-if [ -n "$managed_release_update_id" ]; then
-  node --input-type=module - "$managed_release_update_id" "$expected_current_digest" \
-    "$expected_new_digest" "$pending_transaction/previous-receipt.json" \
-    > "$pending_transaction/update-result-identity" <<'NODE'
-import { readFile } from "node:fs/promises"
-const [id, from, target, receiptPath] = process.argv.slice(2)
-const receipt = JSON.parse(await readFile(receiptPath, "utf8"))
-const identity = [receipt.environmentId, receipt.machineId, receipt.kernelId]
-if (!/^managed_release_update_[a-f0-9-]{36}$/.test(id)
-  || identity.some((value) => typeof value !== "string" || !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value))) {
-  throw new Error("managed release update identity is invalid")
-}
-process.stdout.write(["1", id, from, target, ...identity].join("\n") + "\n")
-NODE
-fi
 plan_home_migration
 chmod 0600 "$pending_transaction"/*
 node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_transaction"
@@ -1072,7 +991,6 @@ if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match
   fi
   exit 1
 fi
-publish_update_result "$transaction_root"
 tombstone_transaction
 transaction_active=0
 printf 'managed kernel upgraded to %s\n' "$expected_new_digest"

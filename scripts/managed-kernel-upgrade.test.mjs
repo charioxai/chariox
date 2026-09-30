@@ -222,7 +222,7 @@ async function effectiveCharioxIdentity() {
   return { uid: 0, gid: 0 }
 }
 
-async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null) {
+async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3) {
   const rootfs = join(root, `image-${label}`)
   const kernel = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisor = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
@@ -319,7 +319,8 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
     artifacts.push({ name, path, sha256: type === "tree" ? await sha256Tree(source) : await sha256File(source) })
   }
   const manifestBytes = Buffer.from(JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: manifestSchema,
+    ...(manifestSchema === 3 ? { managedUpdateEvidenceVersion: 1 } : {}),
     sourceCommit,
     sourceTree,
     artifacts,
@@ -366,6 +367,9 @@ async function makeHarness(context, {
   workerCapableCurrent = false,
   path1Release = false,
   rotateBuilder = false,
+  currentManifestSchema = 3,
+  targetManifestSchema = 3,
+  updaterPath = upgrade,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
   await mkdir(join(root, "tmp"), { mode: 0o700 })
@@ -381,10 +385,10 @@ async function makeHarness(context, {
   if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64"), 0o600)
   const current = await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
-    path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys,
+    path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
   )
   const target = await makeRelease(
-    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys,
+    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema,
   )
   const installRoot = join(root, "host")
   if (path1Release) {
@@ -805,7 +809,7 @@ exec /usr/bin/stat "$@"
     CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS: "1000",
   }
   const run = (extraEnv = {}, args = [target.rootfs, current.digest, target.digest, trustedKey]) =>
-    spawnSync(upgrade, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
+    spawnSync(updaterPath, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
     root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
     current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, run,
@@ -1947,6 +1951,39 @@ test("a signed transition policy permits post-success rollback to its declared p
   )
 })
 
+const legacyUpdaterCommit = "8fa9246ea60b52a988da17a28652e61475ff52cd"
+
+async function legacyUpdater() {
+  const root = join(repositoryRoot, "scripts/fixtures/managed-kernel-upgrade-8fa9246")
+  const provenance = JSON.parse(await readFile(join(root, "provenance.json"), "utf8"))
+  assert.equal(provenance.sourceCommit, legacyUpdaterCommit)
+  for (const [name, source] of Object.entries(provenance.files)) {
+    assert.equal(source.sourcePath, `deploy/managed-kernel/${name}`)
+    assert.equal(createHash("sha256").update(await readFile(join(root, name))).digest("hex"), source.sha256,
+      `historical updater fixture must retain exact ${legacyUpdaterCommit} bytes: ${name}`)
+  }
+  return join(root, "upgrade-image.sh")
+}
+
+test("the exact legacy installed updater rejects the current signed target before commit or interruption", async (context) => {
+  const updaterPath = await legacyUpdater()
+  for (const mode of ["commit", "interruption"]) {
+    const harness = await makeHarness(context, { currentManifestSchema: 2, targetManifestSchema: 3, updaterPath })
+    const attemptPath = join(harness.installRoot, "home/chariox/.chariox/release-update-attempt.json")
+    const legacyAttempt = { updateId: cloudUpdateId, targetRuntimeReleaseDigest: harness.target.digest }
+    await put(attemptPath, `${JSON.stringify(legacyAttempt)}\n`, 0o600)
+    if (mode === "interruption") await put(join(harness.state, "crash-after-supervisor-start"), "crash\n")
+    const result = harness.run()
+    assert.equal(result.status, 1, `${mode}: old installed tooling must reject before starting target B`)
+    assert.match(result.stderr, /release manifest contains unsupported fields|release manifest schema is unsupported/)
+    assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
+    assert.deepEqual(JSON.parse(await readFile(attemptPath, "utf8")), legacyAttempt)
+    assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+    assert.equal(await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade-result"))
+      .then(() => true, () => false), false)
+  }
+})
+
 const cloudUpdateId = "managed_release_update_0123abcd-0000-4000-8000-0123456789ab"
 
 function expectedUpdateResult(harness, phase) {
@@ -1955,6 +1992,30 @@ function expectedUpdateResult(harness, phase) {
     harness.receipt.environmentId, harness.receipt.machineId, harness.receipt.kernelId, phase,
   ].join("\n") + "\n"
 }
+
+test("Cloud updates reject legacy targets before release or service mutation", async (context) => {
+  const harness = await makeHarness(context, { targetManifestSchema: 2 })
+  const result = harness.run({ CHARIOX_MANAGED_RELEASE_UPDATE_ID: cloudUpdateId })
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /target requires signed update evidence capability 1/)
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+  assert.equal(await lstat(join(harness.installRoot, "usr/lib/chariox/releases", harness.target.digest.slice(7)))
+    .then(() => true, () => false), false)
+  assert.equal(await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade"))
+    .then(() => true, () => false), false)
+})
+
+test("schema 3 tooling retains verified legacy schema 2 rollback", async (context) => {
+  const harness = await makeHarness(context, { currentManifestSchema: 2, targetManifestSchema: 3 })
+  const upgraded = harness.run()
+  assert.equal(upgraded.status, 0, upgraded.stderr)
+  const rolledBack = harness.run({}, [
+    harness.current.rootfs, harness.target.digest, harness.current.digest, harness.trustedKey,
+  ])
+  assert.equal(rolledBack.status, 0, rolledBack.stderr)
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
+})
 
 test("Cloud update terminal evidence survives committed journal cleanup", async (context) => {
   const harness = await makeHarness(context)

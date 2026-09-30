@@ -324,14 +324,11 @@ async function verifyImageRelease(
   }
   validateObjectKeys(
     manifest,
-    manifest.schemaVersion === 3
-      ? ["artifacts", "managedUpdateEvidenceVersion", "schemaVersion", "sourceCommit", "sourceTree"]
-      : ["artifacts", "schemaVersion", "sourceCommit", "sourceTree"],
+    ["artifacts", "schemaVersion", "sourceCommit", "sourceTree"],
     "release manifest",
   )
   if (
-    !(manifest.schemaVersion === 2 ||
-      (manifest.schemaVersion === 3 && manifest.managedUpdateEvidenceVersion === 1)) ||
+    manifest.schemaVersion !== 2 ||
     !/^[a-f0-9]{40}$/.test(manifest.sourceCommit) ||
     !/^[a-f0-9]{40}$/.test(manifest.sourceTree) ||
     !Array.isArray(manifest.artifacts)
