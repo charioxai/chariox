@@ -303,3 +303,24 @@ duplicate JSON keys, protected routes, hostile header
 types, traversal, case/Unicode handling, limits, truncation, padding, compressed
 input, and canonical control encoding. These tests do not establish installer
 or App runtime conformance.
+
+`fuzz/` holds two cargo-fuzz targets (nightly only; not part of the workspace
+build). `archive` feeds arbitrary bytes to `inspect_untrusted()` and `verify()`.
+`signed` replaces the manifest or one declaration document of a valid package
+with the input and signs the result, so manifest, declaration and JSON Schema
+checks see arbitrary content behind a valid signature. Both must reject without
+panicking. `signed` panics on its first input if its unmodified package does not
+verify, so a harness that only reaches the rejection path cannot pass silently.
+`fuzz/seeds/archive/0` is that package, signed with the fuzz key that `archive`
+trusts, so `archive` can mutate its way into the manifest and declaration
+checks; a real `.cxapp` stops at the signature check. `archive` panics on its
+first input if the seed no longer verifies; regenerate it with
+`CHARIOX_FUZZ_WRITE_ARCHIVE_SEED=$PWD/fuzz/seeds/archive/0 cargo +nightly fuzz run -O signed fuzz/corpus/signed fuzz/seeds/signed -- -runs=1`
+(after the `mkdir` below). Run, for example (libFuzzer writes new inputs to the
+first, ignored, corpus directory and only reads the committed seeds):
+
+    mkdir -p fuzz/corpus/signed fuzz/corpus/archive
+    cargo +nightly fuzz run -O signed fuzz/corpus/signed fuzz/seeds/signed -- -max_total_time=120 -rss_limit_mb=2048
+    cargo +nightly fuzz run -O archive fuzz/corpus/archive fuzz/seeds/archive -- -max_total_time=120 -rss_limit_mb=2048
+
+(With a Homebrew `cargo`, put the nightly toolchain's `bin` first in `PATH`.)
