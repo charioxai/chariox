@@ -1,5 +1,5 @@
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
-import { tuiOnlyAppVerbs } from "./app-command-catalog.js"
+import { isTuiOnlyAppCommand } from "./app-command-catalog.js"
 import { defaultKernelEndpoint, parseArgs } from "./cli-options.js"
 import { isAppDeveloperCommand, runAppDeveloperCommand, type AppDeveloperDeps } from "./app-developer.js"
 import { LocalIpcClient } from "./ipc.js"
@@ -39,7 +39,7 @@ export async function runAppCommand(
 ): Promise<boolean> {
   if (argv[0] !== "app") return false
   if (isAppDeveloperCommand(argv[1])) return runAppDeveloperCommand(argv.slice(1), deps.developer)
-  if (tuiOnlyAppVerbs.has(argv[1]!)) throw new Error(`app ${argv[1]} runs in a Chariox terminal: use /app ${argv[1]} there`)
+  if (isTuiOnlyAppCommand(argv[1]!, argv[2])) throw new Error(`app ${argv[1]} runs in a Chariox terminal: use /app ${argv[1]} there`)
   const args: string[] = []
   const connectionArgs: string[] = []
   const seen = new Set<string>()
