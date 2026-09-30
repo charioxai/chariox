@@ -34,7 +34,8 @@
 //!   secret-named.
 //! - An unquoted value ends at whitespace or one of `& , ; ) ] } < > " '`. A
 //!   flag and its value separated only by a space (`--password hunter2`) is
-//!   not recognized.
+//!   not recognized. Unquoted `Authorization` parameters (Digest, SigV4) are
+//!   redacted to the end of their line.
 use std::borrow::Cow;
 
 /// Replaces every secret-shaped substring of `text` with `[redacted:<kind>]`.
@@ -499,13 +500,19 @@ fn assigned_value(bytes: &[u8], key_end: usize, kind: &'static str) -> Option<Hi
         let word = &bytes[at..word_end];
         let start = skip_blanks(bytes, word_end);
         if !word.is_empty() && start > word_end && !keeps_value(word) {
-            let end = match quote {
-                Some(quote) => quoted_end(bytes, start, quote),
-                None => credentials_end(bytes, start),
-            };
             let known = is_auth_scheme(word);
-            if end > start {
-                if !keeps_value(&bytes[start..end]) {
+            // Already done (`Bearer [redacted:…]`). Checked before scanning, so
+            // a scan to the line end always ends in a hit.
+            if bytes[start..].starts_with(b"[redacted:") {
+                if known {
+                    return None;
+                }
+            } else {
+                let end = match quote {
+                    Some(quote) => quoted_end(bytes, start, quote),
+                    None => credentials_end(bytes, start),
+                };
+                if end > start && !keeps_value(&bytes[start..end]) {
                     return Some(Hit {
                         start: if known { start } else { at },
                         end,
@@ -515,10 +522,6 @@ fn assigned_value(bytes: &[u8], key_end: usize, kind: &'static str) -> Option<Hi
                             kind
                         },
                     });
-                }
-                // `Bearer [redacted:…]`: already done.
-                if known {
-                    return None;
                 }
             }
         }
@@ -561,45 +564,28 @@ fn is_auth_scheme(word: &[u8]) -> bool {
         .any(|scheme| word.eq_ignore_ascii_case(scheme))
 }
 
-/// The end of unquoted credentials after a scheme: one token (`token68`), or
-/// an auth-param list, `name=value, name = "value", …` (RFC 9110, blanks
-/// allowed around `=` and `,`), whose values end at a comma or whitespace
-/// unless quoted.
+/// The end of unquoted credentials after a scheme. One token (`token68`:
+/// Bearer, Basic) ends like any value. An auth-param list (`name=value, …`:
+/// Digest, SigV4) runs to the end of its line: its grammar (quoted strings,
+/// `name*`, blanks around `=`) is not worth parsing to keep the rest of a
+/// header line.
 fn credentials_end(bytes: &[u8], start: usize) -> usize {
-    let mut end = unquoted_end(bytes, start);
-    let mut at = start;
-    loop {
-        let name_end = run_end(bytes, at);
-        let equals = skip_blanks(bytes, name_end);
-        if name_end == at || bytes.get(equals) != Some(&b'=') {
-            return end;
-        }
-        let value = skip_blanks(bytes, equals + 1);
-        // `token68` padding (`abc==`), or no value.
-        if matches!(bytes.get(value), None | Some(b'=' | b',' | b'\n' | b'\r')) {
-            return end;
-        }
-        let value_end = if bytes[value] == b'"' {
-            let quote = Quote {
-                byte: b'"',
-                escaped: false,
-            };
-            let close = quoted_end(bytes, value + 1, quote);
-            (close + 1).min(bytes.len())
-        } else {
-            value
-                + bytes[value..]
-                    .iter()
-                    .position(|byte| *byte == b',' || byte.is_ascii_whitespace())
-                    .unwrap_or(bytes.len() - value)
-        };
-        end = end.max(value_end);
-        at = skip_blanks(bytes, value_end);
-        if bytes.get(at) != Some(&b',') {
-            return end;
-        }
-        at = skip_blanks(bytes, at + 1);
+    let word_end = bytes[start..]
+        .iter()
+        .position(|byte| byte.is_ascii_whitespace() || *byte == b',')
+        .map_or(bytes.len(), |offset| start + offset);
+    // `=` other than trailing padding, or a separator after the first name.
+    let params = bytes[start..word_end]
+        .windows(2)
+        .any(|pair| pair[0] == b'=' && pair[1] != b'=')
+        || matches!(bytes.get(skip_blanks(bytes, word_end)), Some(b'=' | b','));
+    if !params {
+        return unquoted_end(bytes, start);
     }
+    bytes[start..]
+        .iter()
+        .position(|byte| matches!(byte, b'\n' | b'\r'))
+        .map_or(bytes.len(), |offset| start + offset)
 }
 
 /// `Bearer <token>` outside an Authorization header. The token needs a digit

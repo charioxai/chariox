@@ -152,12 +152,23 @@ fn secrets_named_by_their_context_are_redacted() {
             "{\"token\"\r\n:\r\n\"abc\"}".into(),
             "{\"token\"\r\n:\r\n\"[redacted:token]\"}",
         ),
-        // Authorization parameters and unknown schemes go whole.
+        // Authorization parameters go to the end of their line; unknown
+        // schemes go whole.
         (
             "Authorization: Digest username=\"alice\", realm=\"example\", nonce=\"abc\", \
-             uri=\"/\", response=\"0123456789abcdef\" done"
+             uri=\"/\", response=\"0123456789abcdef\"\nnext line"
                 .into(),
-            "Authorization: Digest [redacted:authorization] done",
+            "Authorization: Digest [redacted:authorization]\nnext line",
+        ),
+        (
+            "Authorization: Digest username*=UTF-8''J%C3%A4s%C3%B8n, realm=\"example\", \
+             response=\"0123456789abcdef\""
+                .into(),
+            "Authorization: Digest [redacted:authorization]",
+        ),
+        (
+            "Authorization: Digest username = \"alice\",\tresponse\t=\t\"0123abcd\"\r\nok".into(),
+            "Authorization: Digest [redacted:authorization]\r\nok",
         ),
         (
             "Authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260930/us-east-1/s3/\
@@ -166,10 +177,8 @@ fn secrets_named_by_their_context_are_redacted() {
             "Authorization: AWS4-HMAC-SHA256 [redacted:authorization]",
         ),
         (
-            "Authorization: Digest username = \"alice\",\tresponse\t=\t\"0123abcd\", \
-             nc= 00000001, qop =auth done"
-                .into(),
-            "Authorization: Digest [redacted:authorization] done",
+            "Authorization: Basic dXNlcjpwYXNz== sent".into(),
+            "Authorization: Basic [redacted:authorization] sent",
         ),
         (
             "Authorization: Custom abc123".into(),
@@ -314,6 +323,9 @@ fn hostile_input_is_scanned_in_linear_time() {
         "password:\"".repeat(size / 10),
         "password ".repeat(size / 9),
         "Authorization: Bearer ".repeat(size / 22),
+        "Authorization: Digest [redacted:a]=b ".repeat(size / 37),
+        "Authorization: Custom missing ".repeat(size / 30),
+        "Authorization: Custom [redacted:a]=b ".repeat(size / 37),
         "Bearer ".repeat(size / 7),
         "://a:".repeat(size / 5),
         "\\\"token\\\":\\\"".repeat(size / 12),
