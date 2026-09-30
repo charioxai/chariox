@@ -335,7 +335,8 @@ async function captureActivatedRelease(fileSystem) {
     fail("release_manifest_invalid", "active release manifest is not valid JSON")
   }
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)
-    || manifest.schemaVersion !== 2
+    || !(manifest.schemaVersion === 2 && !Object.hasOwn(manifest, "managedUpdateEvidenceVersion")
+      || manifest.schemaVersion === 3 && manifest.managedUpdateEvidenceVersion === 1)
     || !/^[a-f0-9]{40}$/.test(manifest.sourceCommit ?? "")
     || !/^[a-f0-9]{40}$/.test(manifest.sourceTree ?? "")) {
     fail("release_manifest_invalid", "active release manifest has no supported source identity")

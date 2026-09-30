@@ -42,6 +42,11 @@ const ARTIFACTS = [
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file", 0o644],
   ["chariox-builder-public-key", "/usr/lib/chariox/builder-public-key", "file", 0o644],
 ]
+const DATA_VOLUME_ARTIFACTS = [
+  ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", "file", 0o644],
+  ["chariox-rootless-docker.path1-data-volume.conf", "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", "file", 0o644],
+  ["chariox-slice-disk-quota-allocator.path1-data-volume.conf", "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", "file", 0o644],
+]
 const EXECUTABLES = {
   "chariox-kernel": {
     path: "/usr/local/bin/chariox-kernel",
@@ -536,9 +541,40 @@ async function verifyAtRoot(options, root) {
   }
 
   const manifest = parseStrictJson(manifestBytes, "release manifest")
-  assertObjectKeys(manifest, ["schemaVersion", "sourceCommit", "sourceTree", "artifacts"], "release manifest")
-  if (manifest.schemaVersion !== 2 || !Array.isArray(manifest.artifacts) || manifest.artifacts.length !== ARTIFACTS.length) {
+  assertObjectKeys(
+    manifest,
+    ["schemaVersion", "sourceCommit", "sourceTree", "artifacts", ...(manifest?.schemaVersion === 3 ? ["managedUpdateEvidenceVersion"] : [])],
+    "release manifest",
+  )
+  if (!(manifest.schemaVersion === 2
+    || manifest.schemaVersion === 3 && manifest.managedUpdateEvidenceVersion === 1)
+    || !Array.isArray(manifest.artifacts)) {
     fail("release manifest schema is not the installed format")
+  }
+  const dataVolumeArtifactCount = manifest.artifacts.filter((artifact) =>
+    DATA_VOLUME_ARTIFACTS.some(([name]) => artifact?.name === name),
+  ).length
+  if (dataVolumeArtifactCount !== 0 && dataVolumeArtifactCount !== DATA_VOLUME_ARTIFACTS.length) {
+    fail("release contains an incomplete Path-1 data-volume admission artifact set")
+  }
+  const hasDataVolumeAdmission = dataVolumeArtifactCount === DATA_VOLUME_ARTIFACTS.length
+  if (manifest.schemaVersion === 3 && !hasDataVolumeAdmission) {
+    fail("schema-3 Path-1 releases must include data-volume admission and both ordering drop-ins")
+  }
+  if (!hasDataVolumeAdmission) {
+    for (const [name, path] of DATA_VOLUME_ARTIFACTS) {
+      const exists = await lstat(join(root, path.slice(1))).then(() => true, (error) => {
+        if (error.code !== "ENOENT") throw error
+        return false
+      })
+      if (exists) fail("release contains an undeclared data-volume artifact: " + name)
+    }
+  }
+  const releaseArtifacts = hasDataVolumeAdmission
+    ? [...ARTIFACTS.slice(0, 6), ...DATA_VOLUME_ARTIFACTS, ...ARTIFACTS.slice(6)]
+    : ARTIFACTS
+  if (manifest.artifacts.length !== releaseArtifacts.length) {
+    fail("release manifest does not contain the exact installed artifacts")
   }
   assertGitId(manifest.sourceCommit, "release manifest source commit")
   assertGitId(manifest.sourceTree, "release manifest source tree")
@@ -550,8 +586,8 @@ async function verifyAtRoot(options, root) {
   }
 
   const manifestArtifacts = new Map()
-  for (let index = 0; index < ARTIFACTS.length; index++) {
-    const [expectedName, expectedPath] = ARTIFACTS[index]
+  for (let index = 0; index < releaseArtifacts.length; index++) {
+    const [expectedName, expectedPath] = releaseArtifacts[index]
     const artifact = manifest.artifacts[index]
     assertObjectKeys(artifact, ["name", "path", "sha256"], "release artifact")
     if (artifact.name !== expectedName || artifact.path !== expectedPath) {
@@ -565,9 +601,9 @@ async function verifyAtRoot(options, root) {
   }
 
   const actualDigests = new Map()
-  for (const [name, path, kind, mode] of ARTIFACTS) {
+  for (const [name, path, kind, mode] of releaseArtifacts) {
     if (kind === "tree") continue
-    const maxBytes = name.endsWith(".service")
+    const maxBytes = name.endsWith(".service") || name.endsWith(".conf")
       ? MAX_SERVICE_UNIT_BYTES
       : name === "chariox-build-attestation"
         ? MAX_ATTESTATION_BYTES
@@ -687,7 +723,7 @@ async function verifyAtRoot(options, root) {
   if (selectedActualDigest !== selectedDigest) fail("selected executable is not bound to the signed release")
 
   const artifactBindings = []
-  for (const [name, path] of ARTIFACTS) {
+  for (const [name, path] of releaseArtifacts) {
     const digest = name === "chariox-slice-build-context"
       ? context.digest
       : actualDigests.get(name)

@@ -25,6 +25,11 @@ const RELEASE_ARTIFACTS = [
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file", 0o644],
   ["chariox-builder-public-key", "/usr/lib/chariox/builder-public-key", "file", 0o644],
 ]
+const DATA_VOLUME_ARTIFACTS = [
+  ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", "file", 0o644],
+  ["chariox-rootless-docker.path1-data-volume.conf", "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", "file", 0o644],
+  ["chariox-slice-disk-quota-allocator.path1-data-volume.conf", "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", "file", 0o644],
+]
 const CONTEXT_EXECUTABLES = [
   "/slice-linux-docker/prebuilt/chariox-kernel",
   "/slice-linux-docker/prebuilt/chariox-relay",
@@ -178,26 +183,37 @@ async function createFixture(options = {}) {
     0o644,
   )
 
+  const dataVolumeArtifacts = DATA_VOLUME_ARTIFACTS.slice(0, options.dataVolumeArtifactCount ?? (options.dataVolumeArtifacts ? 3 : 0))
+  for (const [name, path, , mode] of dataVolumeArtifacts) {
+    await writeInstalledFile(draftRoot, path, Buffer.from(name + "\n"), mode)
+  }
+  if (options.undeclaredDataVolumeArtifact) {
+    const [name, path, , mode] = DATA_VOLUME_ARTIFACTS[0]
+    await writeInstalledFile(draftRoot, path, Buffer.from(name + "\n"), mode)
+  }
+  const releaseArtifacts = [...RELEASE_ARTIFACTS.slice(0, 6), ...dataVolumeArtifacts, ...RELEASE_ARTIFACTS.slice(6)]
   const artifactDigests = new Map()
-  for (const [name, path, kind] of RELEASE_ARTIFACTS) {
+  for (const [name, path, kind] of releaseArtifacts) {
     if (kind === "tree") {
       artifactDigests.set(name, await contextDigest(contextRoot))
     } else {
       artifactDigests.set(name, sha256(await readFile(join(draftRoot, path.slice(1)))))
     }
   }
-  const manifestArtifacts = RELEASE_ARTIFACTS.map(([name, path]) => ({
+  const manifestArtifacts = releaseArtifacts.map(([name, path]) => ({
     name,
     path,
     sha256: artifactDigests.get(name),
   }))
   if (options.duplicateArtifact) manifestArtifacts.push({ ...manifestArtifacts[0] })
+  if (options.extraArtifact) manifestArtifacts.push({ name: "unexpected", path: "/usr/lib/chariox/unexpected", sha256: sha256(Buffer.alloc(0)) })
 
   let manifestText = JSON.stringify({
       schemaVersion: 2,
       sourceCommit,
       sourceTree,
       artifacts: manifestArtifacts,
+      ...options.manifestPatch,
     })
   if (options.duplicateField) manifestText = manifestText.replace('"schemaVersion":2,', '"schemaVersion":2,"schemaVersion":2,')
   const manifestBytes = Buffer.from(manifestText)
@@ -408,7 +424,7 @@ test("rejects symlinked artifacts, duplicate manifest entries, and unknown execu
     await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /symlinked/)
   })
   await withFixture({ duplicateArtifact: true }, async (fixture) => {
-    await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /installed format/)
+    await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /exact installed artifacts/)
   })
   await withFixture({ duplicateField: true }, async (fixture) => {
     await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /duplicate field/)
@@ -416,5 +432,68 @@ test("rejects symlinked artifacts, duplicate manifest entries, and unknown execu
   await withFixture({}, async (fixture) => {
     fixture.options.executable = "/usr/local/bin/unknown"
     await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /unknown executable selection/)
+  })
+})
+
+test("captures schema-3 releases with the current 14-artifact Path-1 inventory", async () => {
+  await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async (fixture) => {
+    const evidence = await capturePath1ReviewedRelease(fixture.options)
+    assert.equal(evidence.artifactBindings.length, 14)
+    const manifest = JSON.parse(Buffer.from(evidence.releaseManifestBase64, "base64"))
+    assert.equal(manifest.schemaVersion, 3)
+    assert.equal(manifest.managedUpdateEvidenceVersion, 1)
+    assert.deepEqual(evidence.artifactBindings.slice(6, 9).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
+    for (const artifact of evidence.artifactBindings) assert.equal(artifact.sha256, artifact.actualSha256)
+  })
+})
+
+test("captures legacy schema-2 releases with a complete optional data-volume inventory", async () => {
+  await withFixture({ dataVolumeArtifacts: true }, async (fixture) => {
+    const evidence = await capturePath1ReviewedRelease(fixture.options)
+    assert.equal(evidence.artifactBindings.length, 14)
+    assert.equal(JSON.parse(Buffer.from(evidence.releaseManifestBase64, "base64")).schemaVersion, 2)
+  })
+})
+
+test("rejects unsupported schema-3 capabilities and exact manifest field mismatches", async (t) => {
+  for (const [name, manifestPatch] of [
+    ["missing capability", { schemaVersion: 3 }],
+    ["capability zero", { schemaVersion: 3, managedUpdateEvidenceVersion: 0 }],
+    ["future capability", { schemaVersion: 3, managedUpdateEvidenceVersion: 2 }],
+    ["string capability", { schemaVersion: 3, managedUpdateEvidenceVersion: "1" }],
+    ["null capability", { schemaVersion: 3, managedUpdateEvidenceVersion: null }],
+    ["legacy capability claim", { schemaVersion: 2, managedUpdateEvidenceVersion: 1 }],
+    ["extra schema-3 field", { schemaVersion: 3, managedUpdateEvidenceVersion: 1, unexpected: true }],
+    ["future schema", { schemaVersion: 4, managedUpdateEvidenceVersion: 1 }],
+  ]) {
+    await t.test(name, async () => {
+      await withFixture({ dataVolumeArtifacts: true, manifestPatch }, async (fixture) => {
+        await assert.rejects(capturePath1ReviewedRelease(fixture.options), /release manifest/)
+      })
+    })
+  }
+})
+
+test("rejects incomplete, extraneous, and undeclared Path-1 data-volume artifacts", async (t) => {
+  for (const [name, options] of [
+    ["schema-3 set missing", { manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }],
+    ["one artifact", { dataVolumeArtifactCount: 1 }],
+    ["two artifacts", { dataVolumeArtifactCount: 2 }],
+    ["extraneous artifact", { dataVolumeArtifacts: true, extraArtifact: true }],
+    ["undeclared file", { undeclaredDataVolumeArtifact: true }],
+  ]) {
+    await t.test(name, async () => {
+      await withFixture(options, async (fixture) => {
+        await assert.rejects(capturePath1ReviewedRelease(fixture.options), /artifact|data-volume/)
+      })
+    })
+  }
+})
+
+test("verifies signed data-volume drop-in bytes before capturing schema-3 release evidence", async () => {
+  await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async (fixture) => {
+    const path = join(fixture.releaseRoot, DATA_VOLUME_ARTIFACTS[1][1].slice(1))
+    await writeFile(path, "tampered drop-in", { mode: 0o644 })
+    await assert.rejects(capturePath1ReviewedRelease(fixture.options), /artifact digest does not match/)
   })
 })

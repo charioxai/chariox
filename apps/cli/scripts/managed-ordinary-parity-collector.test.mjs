@@ -341,6 +341,7 @@ function makeHarness(topology, overrides = {}) {
     sourceCommit: REVIEWED_COMMIT,
     sourceTree: SOURCE_TREE,
     artifacts: [{ name: "chariox-kernel", path: "/usr/local/bin/chariox-kernel", sha256: KERNEL_DIGEST }],
+    ...overrides.releaseManifest,
   }))
   filesystem.files.set(KERNEL_BINARY, KERNEL_BYTES)
   const calls = []
@@ -547,6 +548,35 @@ test("collector rejects injected or legacy Project setup assertions", async (con
         assert.equal(error.checkId, "project_setup")
         return true
       })
+    })
+  }
+})
+
+test("collects schema-3 native release identities for ordinary and Path-1 parity", async () => {
+  const releaseManifest = { schemaVersion: 3, managedUpdateEvidenceVersion: 1 }
+  const ordinary = await collect("ordinary", { releaseManifest })
+  const path1 = await collect("path1", { releaseManifest })
+  const report = compareManifests(ordinary.manifest, path1.manifest, {
+    expectedReviewedCommit: REVIEWED_COMMIT,
+    expectedBuildId: BUILD_ID,
+    signingKey: SIGNING_KEY,
+  })
+  assert.equal(report.status, "pass", JSON.stringify(report, null, 2))
+})
+
+test("rejects unsupported schema-3 capabilities and mixed legacy parity identities", async (t) => {
+  for (const [name, releaseManifest] of [
+    ["missing capability", { schemaVersion: 3 }],
+    ["capability zero", { schemaVersion: 3, managedUpdateEvidenceVersion: 0 }],
+    ["future capability", { schemaVersion: 3, managedUpdateEvidenceVersion: 2 }],
+    ["string capability", { schemaVersion: 3, managedUpdateEvidenceVersion: "1" }],
+    ["null capability", { schemaVersion: 3, managedUpdateEvidenceVersion: null }],
+    ["legacy capability claim", { schemaVersion: 2, managedUpdateEvidenceVersion: 1 }],
+    ["future schema", { schemaVersion: 4, managedUpdateEvidenceVersion: 1 }],
+  ]) {
+    await t.test(name, async () => {
+      const harness = makeHarness("ordinary", { releaseManifest })
+      await assert.rejects(harness.collector.collect(harness.options), (error) => error.code === "kernel_release_identity_mismatch")
     })
   }
 })

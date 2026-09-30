@@ -24,14 +24,14 @@ function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`
 }
 
-function makeFixture() {
+function makeFixture(manifestPatch = {}) {
   const nodes = new Map()
   const systemdCalls = []
   const unitProperties = new Map()
   let nextInode = 100
   const sourceCommit = "1".repeat(40)
   const sourceTree = "2".repeat(40)
-  const manifestBytes = Buffer.from(JSON.stringify({ schemaVersion: 2, sourceCommit, sourceTree, artifacts: [] }))
+  const manifestBytes = Buffer.from(JSON.stringify({ schemaVersion: 2, sourceCommit, sourceTree, artifacts: [], ...manifestPatch }))
   const digest = sha256(manifestBytes)
   const releaseHex = digest.slice("sha256:".length)
   const releaseRoot = `${RELEASES}/${releaseHex}`
@@ -194,6 +194,30 @@ test("captures raw host identities and rechecks one coherent identity generation
   assert.deepEqual(fixture.systemdCalls, [UNIT, UNIT])
   assert.equal("signatureVerified" in captureResult.identity.release, false)
   assert.equal("trustedBuilderPublicKey" in captureResult.observations.release, false)
+})
+
+test("captures schema-3 release identity with managed update evidence capability 1", async () => {
+  const fixture = makeFixture({ schemaVersion: 3, managedUpdateEvidenceVersion: 1 })
+  const result = await capture(fixture)
+  assert.equal(result.identity.release.digest, fixture.digest)
+  assert.equal(result.identity.release.sourceCommit, "1".repeat(40))
+  assert.equal(JSON.parse(result.observations.release.manifest.text).managedUpdateEvidenceVersion, 1)
+})
+
+test("rejects unsupported schema-3 capabilities and mixed legacy release identities", async (t) => {
+  for (const [name, manifestPatch] of [
+    ["missing capability", { schemaVersion: 3 }],
+    ["capability zero", { schemaVersion: 3, managedUpdateEvidenceVersion: 0 }],
+    ["future capability", { schemaVersion: 3, managedUpdateEvidenceVersion: 2 }],
+    ["string capability", { schemaVersion: 3, managedUpdateEvidenceVersion: "1" }],
+    ["null capability", { schemaVersion: 3, managedUpdateEvidenceVersion: null }],
+    ["legacy capability claim", { schemaVersion: 2, managedUpdateEvidenceVersion: 1 }],
+    ["future schema", { schemaVersion: 4, managedUpdateEvidenceVersion: 1 }],
+  ]) {
+    await t.test(name, async () => {
+      await assert.rejects(capture(makeFixture(manifestPatch)), (error) => error.code === "release_manifest_invalid")
+    })
+  }
 })
 
 test("fails closed when a requested service is inactive", async () => {

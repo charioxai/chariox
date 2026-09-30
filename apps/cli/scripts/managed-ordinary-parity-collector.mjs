@@ -474,7 +474,8 @@ function parseReleaseManifest(bytes, expected) {
     throw new CollectorError("kernel_release_invalid", "signed kernel release manifest is invalid JSON", { cause: error })
   }
   if (!isPlainObject(manifest)
-    || manifest.schemaVersion !== 2
+    || !(manifest.schemaVersion === 2 && !Object.hasOwn(manifest, "managedUpdateEvidenceVersion")
+      || manifest.schemaVersion === 3 && manifest.managedUpdateEvidenceVersion === 1)
     || manifest.sourceCommit !== expected.reviewedCommit
     || manifest.sourceTree !== expected.sourceTree
     || !Array.isArray(manifest.artifacts)) {
