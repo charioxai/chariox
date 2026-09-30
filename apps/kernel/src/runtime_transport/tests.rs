@@ -1397,3 +1397,72 @@ fn write_private_test_file(path: &Path, value: &str) {
     file.write_all(value.as_bytes())
         .expect("private test file should be written");
 }
+
+fn decode_error_reply(payload: serde_json::Value) -> (String, KernelTransportError) {
+    let payload = serde_json::to_vec(&payload).expect("payload should serialize");
+    let error = serde_json::from_slice::<KernelIncomingFrame>(&payload)
+        .expect_err("payload should fail typed decoding");
+    match incoming_frame_decode_error(&payload, &error) {
+        KernelOutgoingFrame::Response {
+            request_id,
+            response,
+            error,
+        } => {
+            assert!(response.is_none());
+            (
+                request_id,
+                error.expect("decode failure should carry an error"),
+            )
+        }
+        other => panic!("expected response frame, got {other:?}"),
+    }
+}
+
+#[test]
+fn malformed_local_request_replies_with_its_request_id() {
+    let (request_id, error) = decode_error_reply(serde_json::json!({
+        "type": "request",
+        "request_id": "req-missing-fields",
+        "request": {
+            "StartRoomEnvironment": {
+                "session_id": "session-1",
+                "viewport": {
+                    "css_width": 1280,
+                    "css_height": 800,
+                    "device_scale_factor": 1
+                }
+            }
+        }
+    }));
+    assert_eq!(request_id, "req-missing-fields");
+    assert_eq!(error.code, "invalid_request");
+    assert!(
+        error.message.starts_with("invalid request: "),
+        "{}",
+        error.message
+    );
+    assert!(!error.retryable);
+
+    let (request_id, error) = decode_error_reply(serde_json::json!({
+        "type": "request",
+        "request_id": "req-unknown-variant",
+        "request": { "SetKernelConfigValue": { "key": "k", "value": "v" } }
+    }));
+    assert_eq!(request_id, "req-unknown-variant");
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
+fn undecodable_frame_without_request_id_replies_as_invalid_frame() {
+    let payload = b"not json";
+    let error = serde_json::from_slice::<KernelIncomingFrame>(payload).expect_err("not json");
+    match incoming_frame_decode_error(payload, &error) {
+        KernelOutgoingFrame::Response {
+            request_id, error, ..
+        } => {
+            assert_eq!(request_id, "unknown");
+            assert_eq!(error.expect("error").code, "invalid_frame");
+        }
+        other => panic!("expected response frame, got {other:?}"),
+    }
+}
