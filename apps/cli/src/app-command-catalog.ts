@@ -37,11 +37,15 @@ export const appCommandCatalog: readonly AppCommandEntry[] = [
   both("automation", "list|add|disable INSTALLATION …", "manage an App's automations"),
   both("inbox", "list|add|remove|test INSTALLATION …", "manage an App's inbox routes"),
   both("connection", "list|grant|revoke INSTALLATION …", "manage an App's connections"),
-  { verb: "file", tui: 'file grant OPERATION "FILE"… | file save OPERATION "PATH"', summary: "answer an App's file request or offer" },
+  { verb: "file", cli: "file revoke INSTALLATION [OPERATION]", tui: 'file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]', summary: "answer or revoke an App's file request" },
 ]
 
 export const cliOnlyAppVerbs = new Set(appCommandCatalog.filter((entry) => !entry.tui).map((entry) => entry.verb))
-export const tuiOnlyAppVerbs = new Set(appCommandCatalog.filter((entry) => !entry.cli).map((entry) => entry.verb))
+const tuiOnlyAppVerbs = new Set(appCommandCatalog.filter((entry) => !entry.cli).map((entry) => entry.verb))
+
+export function isTuiOnlyAppCommand(verb: string, subcommand?: string): boolean {
+  return tuiOnlyAppVerbs.has(verb) || (verb === "file" && subcommand !== "revoke")
+}
 
 /** The `chariox app` line of the CLI usage. */
 export function cliAppUsage(): string {

@@ -34,6 +34,7 @@ const shared: Record<string, string[][]> = {
     ["connection", "grant", "install-1", "slack/team-1"],
     ["connection", "revoke", "install-1", "team-1"],
   ],
+  file: [["file", "revoke", "install-1"], ["file", "revoke", "install-1", "operation-1"]],
 }
 
 async function cliRequests(args: string[]): Promise<unknown[]> {
@@ -123,10 +124,22 @@ test("App command parity snapshot", () => {
     "automation: cli=automation list|add|disable INSTALLATION … | tui=automation list|add|disable INSTALLATION …",
     "inbox: cli=inbox list|add|remove|test INSTALLATION … | tui=inbox list|add|remove|test INSTALLATION …",
     "connection: cli=connection list|grant|revoke INSTALLATION … | tui=connection list|grant|revoke INSTALLATION …",
-    'file: cli=- | tui=file grant OPERATION "FILE"… | file save OPERATION "PATH"',
+    'file: cli=file revoke INSTALLATION [OPERATION] | tui=file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]',
   ])
   assert.match(cliAppUsage(), /chariox app create\|keygen\|manifest\|validate\|pack\|inspect\|install\|update\|list\|set\|/)
   assert.equal(tuiAppHelp().length, appCommandCatalog.filter((entry) => entry.tui).length)
+})
+
+test("file revoke reaches the kernel from the standalone CLI and TUI", async () => {
+  for (const operation of [undefined, "operation-1"]) {
+    const args = ["file", "revoke", "install-1", ...(operation ? [operation] : [])]
+    const request = { RevokeAppFileGrants: { installation_id: "install-1",
+      ...(operation ? { operation_id: operation } : {}) } }
+    assert.deepEqual(await cliRequests(args), [request])
+    assert.deepEqual(await tuiRequests(args), [request])
+    assert.equal(sharedShellCommandForSlashCommand(`/app ${args.join(" ")}`), `app ${args.join(" ")}`)
+  }
+  assert.match(tuiAppHelp().join("\n"), /file revoke INSTALLATION \[OPERATION\]/)
 })
 
 
@@ -134,6 +147,15 @@ test("publisher and file commands reach the local controller through slash routi
   for (const raw of ['/app publisher enroll "publisher.json"', '/app file grant operation-1 "file.txt"', '/app file save operation-1 "output.txt"']) {
     assert.equal(sharedShellCommandForSlashCommand(raw), null, raw)
     assert.equal(parseSlashCommand(raw)?.kind, "app")
+  }
+})
+
+test("file grant and save still direct standalone CLI users to the TUI", async () => {
+  for (const action of ["grant", "save"]) {
+    await assert.rejects(runAppCommand(["app", "file", action, "operation-1", "file.txt"], {
+      createClient: () => assert.fail("local file commands must not connect"),
+      write: () => {},
+    }), /app file runs in a Chariox terminal/)
   }
 })
 
