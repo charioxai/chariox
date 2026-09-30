@@ -1291,7 +1291,7 @@ fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_claude_setup_token_login_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 363);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
 
     let request = LocalDaemonRequest::StartProviderLogin(StartProviderLoginRequest {
         provider: "claude".to_string(),
