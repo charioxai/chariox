@@ -365,7 +365,7 @@ impl KernelRuntimeState {
         views: &crate::runtime::app_views::AppViews,
     ) {
         let control = self.app_control();
-        let outdated = views.outdated(session_id, |binding| {
+        let outdated = views.take_outdated(session_id, |binding| {
             control
                 .active_app_lease(&binding.owner, &binding.installation)
                 .map(|lease| lease.catalog().generation())
@@ -373,11 +373,13 @@ impl KernelRuntimeState {
         for (target, binding) in outdated {
             let state = self.clone();
             let session = session_id.to_owned();
+            let views = views.clone();
             tokio::spawn(async move {
                 // Its outcome is for a call; the reload is the point here.
                 let _ = state
                     .reconnect_app_view(&session, &target, &binding.owner, &binding.installation)
                     .await;
+                views.finish_refresh(&session, &target);
             });
         }
     }
