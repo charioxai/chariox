@@ -27,8 +27,8 @@ use std::time::Duration;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const COMMAND_RETRY: Duration = Duration::from_millis(100);
-/// An Open waits for a running Room command (bounded by the controller's
-/// 15 s command timeout); an answer is retried a few times.
+/// An Open or a Reload waits for a running Room command (bounded by the
+/// controller's 15 s command timeout); an answer is retried a few times.
 const OPEN_WAIT: Duration = Duration::from_secs(16);
 const RESPOND_ATTEMPTS: u32 = 5;
 /// A view's first call re-projects the Room, waiting this long for a busy slice.
@@ -178,15 +178,16 @@ impl KernelRuntimeState {
     }
 
     /// A view command either runs or is final, with two exceptions. An Open
-    /// takes the slice's operation slot, so it waits while another Room
-    /// command holds it (that rejection means it never ran; an Open is not
-    /// idempotent). An answer is idempotent, so any failure is retried.
+    /// or a Reload takes the slice's operation slot, so it waits while another
+    /// Room command holds it (that rejection means it never ran; an Open is
+    /// not idempotent, and a Reload refused this way would unbind a working
+    /// view). An answer is idempotent, so any failure is retried.
     async fn app_view_command<T: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,
     ) -> Option<T> {
-        let open = matches!(request, BrowserAppViewRequest::Open { .. });
+        let open = waits_for_slot(&request);
         let respond = matches!(request, BrowserAppViewRequest::Respond { .. });
         let deadline = tokio::time::Instant::now() + OPEN_WAIT;
         let mut attempt = 0;
@@ -396,12 +397,16 @@ impl KernelRuntimeState {
         }
         let views = self.app_control().views().clone();
         let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
-        let outcome = match views.binding(&session_id, &call.target_id) {
-            Some(binding) if binding.installation == call.installation_id && call.method == PANEL_METHOD => {
+        let outcome = match views.binding_state(&session_id, &call.target_id) {
+            // Bound to the new generation, but still showing the old page.
+            Some((binding, true)) if binding.installation == call.installation_id => {
+                Err(view_reloading())
+            }
+            Some((binding, false)) if binding.installation == call.installation_id && call.method == PANEL_METHOD => {
                 self.request_app_panel(&session_id, &call.target_id, call.params)
                     .await
             }
-            Some(binding) if binding.installation == call.installation_id => {
+            Some((binding, false)) if binding.installation == call.installation_id => {
                 match self
                     .invoke_app_view_tool(
                         &session_id,
@@ -494,7 +499,8 @@ impl KernelRuntimeState {
             views.unbind(session_id, target_id);
             return Err(unbound());
         };
-        views.register(
+        // A view's concurrent calls each land here; one reload is enough.
+        if !views.claim_reconnect(
             session_id,
             target_id,
             AppViewBinding {
@@ -503,7 +509,9 @@ impl KernelRuntimeState {
                 generation: view.generation,
                 panel: crate::runtime::app_views::PanelRequest::from_manifest(view.panel.as_ref()),
             },
-        );
+        ) {
+            return Err(view_reloading());
+        }
         let (entry, assets) = view_assets(view);
         let reloaded: Option<Value> = self
             .app_view_command(
@@ -516,13 +524,13 @@ impl KernelRuntimeState {
             )
             .await;
         if reloaded.is_none() {
+            // Unbound before the mark goes, so no call runs in between.
             views.unbind(session_id, target_id);
+            views.finish_reconnect(session_id, target_id);
             return Err(unbound());
         }
-        Err(view_error(
-            "APP_VIEW_RELOADING",
-            "The App changed; its view is reloading",
-        ))
+        views.finish_reconnect(session_id, target_id);
+        Err(view_reloading())
     }
 
     /// The session's host, who owns the Room's reconnected views.
@@ -694,6 +702,22 @@ fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
     crate::runtime::app_control::failed(code)
 }
 
+fn view_reloading() -> BrowserAppViewError {
+    view_error(
+        "APP_VIEW_RELOADING",
+        "The App changed; its view is reloading",
+    )
+}
+
+/// Commands that take the slice's operation slot and, refused because another
+/// Room command held it, never ran: they wait for the slot.
+fn waits_for_slot(request: &BrowserAppViewRequest) -> bool {
+    matches!(
+        request,
+        BrowserAppViewRequest::Open { .. } | BrowserAppViewRequest::Reload { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -761,6 +785,24 @@ mod tests {
         }
         drop(store);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_open_or_a_reload_waits_for_a_busy_slice() {
+        let reload = BrowserAppViewRequest::Reload {
+            target_id: "t1".into(),
+            entry: "index.html".into(),
+            assets: Vec::new(),
+        };
+        let open = BrowserAppViewRequest::Open {
+            origin_label: "a".into(),
+            installation_id: "app".into(),
+            entry: "index.html".into(),
+            assets: Vec::new(),
+        };
+        assert!(waits_for_slot(&reload));
+        assert!(waits_for_slot(&open));
+        assert!(!waits_for_slot(&BrowserAppViewRequest::Calls));
     }
 
     #[test]
