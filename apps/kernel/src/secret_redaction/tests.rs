@@ -152,6 +152,36 @@ fn secrets_named_by_their_context_are_redacted() {
             "{\"token\"\r\n:\r\n\"abc\"}".into(),
             "{\"token\"\r\n:\r\n\"[redacted:token]\"}",
         ),
+        // Authorization parameters and unknown schemes go whole.
+        (
+            "Authorization: Digest username=\"alice\", realm=\"example\", nonce=\"abc\", \
+             uri=\"/\", response=\"0123456789abcdef\" done"
+                .into(),
+            "Authorization: Digest [redacted:authorization] done",
+        ),
+        (
+            "Authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260930/us-east-1/s3/\
+             aws4_request, SignedHeaders=host;x-amz-date, Signature=abcdef0123"
+                .into(),
+            "Authorization: AWS4-HMAC-SHA256 [redacted:authorization]",
+        ),
+        (
+            "Authorization: Custom abc123".into(),
+            "Authorization: [redacted:authorization]",
+        ),
+        // Quotes and backslashes escaped inside a value, JSON-in-a-string too.
+        (
+            r#"{"password":"a\"b","n":1}"#.into(),
+            r#"{"password":"[redacted:password]","n":1}"#,
+        ),
+        (
+            r#"{\"password\":\"prefix\\\"hunter2\"}"#.into(),
+            r#"{\"password\":\"[redacted:password]\"}"#,
+        ),
+        (
+            r#"{\"token\":\"a\\\\b\",\"n\":1}"#.into(),
+            r#"{\"token\":\"[redacted:token]\",\"n\":1}"#,
+        ),
         // A PEM block under a secret-named key, however it is delimited.
         (
             format!("private_key={} next", pem("PRIVATE KEY")),

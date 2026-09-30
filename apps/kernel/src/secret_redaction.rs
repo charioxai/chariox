@@ -382,17 +382,30 @@ fn skip_whitespace(bytes: &[u8], mut at: usize) -> usize {
     at
 }
 
-/// The end of a quoted value: its closing quote, a line end, or the end.
+/// The end of a quoted value: its closing quote, a line end, or the end. A
+/// backslash escapes the next character. In escaped quoting every character
+/// of the value is escaped once more for the enclosing string (`\\\"` is
+/// an escaped quote inside the value), and a bare quote ends that string.
 fn quoted_end(bytes: &[u8], mut at: usize, quote: Quote) -> usize {
+    let mut escaping = false;
     while at < bytes.len() {
-        match bytes[at] {
+        let (character, width) = match bytes[at] {
             b'\n' | b'\r' => return at,
-            b'\\' if quote.escaped && bytes.get(at + 1) == Some(&quote.byte) => return at,
-            b'\\' => at += 2,
-            // Escaped quoting: a bare quote ends the enclosing string.
-            byte if byte == quote.byte => return at,
-            _ => at += 1,
+            b'\\' if quote.escaped => match bytes.get(at + 1) {
+                Some(next) => (*next, 2),
+                None => return bytes.len(),
+            },
+            byte if quote.escaped && byte == quote.byte => return at,
+            byte => (byte, 1),
+        };
+        if escaping {
+            escaping = false;
+        } else if character == b'\\' {
+            escaping = true;
+        } else if character == quote.byte {
+            return at;
         }
+        at += width;
     }
     bytes.len()
 }
@@ -480,25 +493,34 @@ fn assigned_value(bytes: &[u8], key_end: usize, kind: &'static str) -> Option<Hi
         None => unquoted_end(bytes, from),
     };
     if kind == "authorization" {
-        // `Authorization: Bearer <token>` keeps its scheme.
-        let scheme_len = bytes[at..]
-            .iter()
-            .take_while(|byte| byte.is_ascii_alphabetic())
-            .take(17)
-            .count();
-        let scheme_end = at + scheme_len;
-        if (1..=16).contains(&scheme_len) && bytes.get(scheme_end) == Some(&b' ') {
-            let start = skip_whitespace(bytes, scheme_end);
-            let end = value_end(start);
-            if end == start || keeps_value(&bytes[start..end]) {
-                return None;
+        // `<scheme> <credentials>`: a known scheme stays; an unknown first
+        // word may itself be a secret, so it goes with the rest.
+        let word_end = run_end(bytes, at);
+        let word = &bytes[at..word_end];
+        let start = skip_blanks(bytes, word_end);
+        if !word.is_empty() && start > word_end && !keeps_value(word) {
+            let end = match quote {
+                Some(quote) => quoted_end(bytes, start, quote),
+                None => credentials_end(bytes, start),
+            };
+            let known = is_auth_scheme(word);
+            if end > start {
+                if !keeps_value(&bytes[start..end]) {
+                    return Some(Hit {
+                        start: if known { start } else { at },
+                        end,
+                        kind: if word.eq_ignore_ascii_case(b"bearer") {
+                            "bearer-token"
+                        } else {
+                            kind
+                        },
+                    });
+                }
+                // `Bearer [redacted:…]`: already done.
+                if known {
+                    return None;
+                }
             }
-            let bearer = bytes[at..scheme_end].eq_ignore_ascii_case(b"bearer");
-            return Some(Hit {
-                start,
-                end,
-                kind: if bearer { "bearer-token" } else { kind },
-            });
         }
     }
     let end = value_end(at);
@@ -507,6 +529,74 @@ fn assigned_value(bytes: &[u8], key_end: usize, kind: &'static str) -> Option<Hi
         end,
         kind,
     })
+}
+
+fn skip_blanks(bytes: &[u8], mut at: usize) -> usize {
+    while matches!(bytes.get(at), Some(b' ' | b'\t')) {
+        at += 1;
+    }
+    at
+}
+
+fn is_auth_scheme(word: &[u8]) -> bool {
+    const SCHEMES: &[&[u8]] = &[
+        b"basic",
+        b"bearer",
+        b"digest",
+        b"dpop",
+        b"gnap",
+        b"hoba",
+        b"mutual",
+        b"negotiate",
+        b"ntlm",
+        b"oauth",
+        b"token",
+        b"vapid",
+        b"aws4-hmac-sha256",
+        b"scram-sha-1",
+        b"scram-sha-256",
+    ];
+    SCHEMES
+        .iter()
+        .any(|scheme| word.eq_ignore_ascii_case(scheme))
+}
+
+/// The end of unquoted credentials after a scheme: one token (`token68`), or
+/// an auth-param list, `name=value, name="value", …` (RFC 9110), whose values
+/// end at a comma or whitespace unless quoted.
+fn credentials_end(bytes: &[u8], start: usize) -> usize {
+    let mut end = unquoted_end(bytes, start);
+    let mut at = start;
+    loop {
+        let name_end = run_end(bytes, at);
+        let value = name_end + 1;
+        if name_end == at
+            || bytes.get(name_end) != Some(&b'=')
+            || matches!(bytes.get(value), None | Some(b'='))
+        {
+            return end;
+        }
+        let value_end = if bytes[value] == b'"' {
+            let quote = Quote {
+                byte: b'"',
+                escaped: false,
+            };
+            let close = quoted_end(bytes, value + 1, quote);
+            (close + 1).min(bytes.len())
+        } else {
+            value
+                + bytes[value..]
+                    .iter()
+                    .position(|byte| *byte == b',' || byte.is_ascii_whitespace())
+                    .unwrap_or(bytes.len() - value)
+        };
+        end = end.max(value_end);
+        at = skip_blanks(bytes, value_end);
+        if bytes.get(at) != Some(&b',') {
+            return end;
+        }
+        at = skip_blanks(bytes, at + 1);
+    }
 }
 
 /// `Bearer <token>` outside an Authorization header. The token needs a digit

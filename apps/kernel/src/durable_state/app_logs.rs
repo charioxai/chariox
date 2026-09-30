@@ -359,8 +359,14 @@ mod tests {
                 "alice",
                 "todo",
                 "warn",
-                &format!("private_key={pem} and {{\"password\":\n\"hunter2\"}}"),
-                &serde_json::json!({"note": format!("{{\"private_key\": \"{pem}\"}}")}),
+                &format!(
+                    "private_key={pem} and {{\"password\":\n\"hunter2\"}} and \
+                     Authorization: Digest username=\"a\", response=\"0123abcd\""
+                ),
+                &serde_json::json!({
+                    "note": format!("{{\"private_key\": \"{pem}\"}}"),
+                    "escaped": r#"{\"password\":\"prefix\\\"hunter2\"}"#,
+                }),
             )
             .unwrap();
         // A message of short secrets grows under redaction; fields too.
@@ -386,11 +392,15 @@ mod tests {
         );
         assert_eq!(
             entries[1].message,
-            "private_key=[redacted:private-key] and {\"password\":\n\"[redacted:password]\"}"
+            "private_key=[redacted:private-key] and {\"password\":\n\"[redacted:password]\"} and \
+             Authorization: Digest [redacted:authorization]"
         );
         assert_eq!(
             entries[1].fields,
-            serde_json::json!({"note": "{\"private_key\": \"[redacted:private-key]\"}"})
+            serde_json::json!({
+                "note": "{\"private_key\": \"[redacted:private-key]\"}",
+                "escaped": r#"{\"password\":\"[redacted:password]\"}"#,
+            })
         );
         assert!(entries[2].message.starts_with("token=[redacted:token] "));
         assert!(entries[2].message.len() <= MAX_MESSAGE_BYTES);
