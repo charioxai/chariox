@@ -30,7 +30,7 @@ impl AutomationStatus {
             _ => Err(OutboxError::Corrupt),
         }
     }
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Active => "active",
             Self::Paused => "paused",

@@ -1,12 +1,12 @@
 # SDK storage delegate
 
 `AppStorageBroker` accepts `state.get`, `state.transaction`, `events.emit`,
-`events.status` and `events.retry` from the kernel's common worker broker. It
-retains the admitted worker's trusted owner, one verified `EventCatalog` (which
-owns the exact underlying `AppCatalog`), the existing durable store and
-AppControl's shared eight-operation admission semaphore. Request fields cannot
-replace those identities. The delegate creates no listener, acknowledges no
-worker readiness and enrolls no publisher.
+`events.status`, `events.retry` and `events.automations` from the kernel's
+common worker broker. It retains the admitted worker's trusted owner, one
+verified `EventCatalog` (which owns the exact underlying `AppCatalog`), the
+existing durable store and AppControl's shared eight-operation admission
+semaphore. Request fields cannot replace those identities. The delegate creates
+no listener, acknowledges no worker readiness and enrolls no publisher.
 
 The decoder follows SDK0.3/protocol291 shapes. Checks and writes are required;
 a check version may be null to assert absence. A write is a value (including
@@ -24,6 +24,9 @@ schema fences. A later event conflict or SQL failure rolls back earlier events
 and the state mutation. All acknowledgement follows the outer commit. State
 transactions return `{revision, receipts}`; receipts contain only `{receiptId,
 state}`. Status never reveals another owner's receipt or the stored invocation.
+`events.automations` lists the App's own automations from the same
+`app_automations` projection the TUI and web read, each with its event, state
+and latest retained receipt; it never names the workflow target.
 
 Retry only reconciles a due, unexpired, kernel-classified retryable receipt whose
 automation revision and signed schema are still current. It preserves receipt

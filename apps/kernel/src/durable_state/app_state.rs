@@ -7,7 +7,9 @@ use crate::error::DaemonError;
 use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopped};
 use chariox_app_runtime::{
     app_catalog::CatalogError,
-    app_outbox::{AppOutbox, EventCatalog, Occurrence, OutboxError, Receipt},
+    app_outbox::{
+        AppOutbox, AutomationConfiguration, EventCatalog, Occurrence, OutboxError, Receipt,
+    },
     managed_state::{
         ManagedStateStore, StateChanges, StateError, StateRecord, StateScope, Wake, WakeChange,
     },
@@ -42,6 +44,8 @@ pub(crate) enum AppStateOperation {
     /// Kernel-owned wakes; see `managed_state::wakes`.
     Schedule(Vec<WakeChange>),
     ScheduleList,
+    /// The App's own automations and their latest receipts (read-only).
+    Automations,
     Status {
         receipt_id: String,
     },
@@ -63,6 +67,7 @@ impl AppStateOperation {
             Self::Emit(_) => "emit",
             Self::Schedule(_) => "schedule",
             Self::ScheduleList => "schedule_list",
+            Self::Automations => "automations",
             Self::Status { .. } => "status",
             Self::Retry { .. } => "retry",
             Self::MigrationStep { .. } => "migration_step",
@@ -85,6 +90,7 @@ pub(crate) enum AppStateOutcome {
     },
     Receipt(Receipt),
     Wakes(Vec<Wake>),
+    Automations(Vec<(AutomationConfiguration, Option<Receipt>)>),
     /// The schema a rewound migration restarts from.
     Rewound(Option<u32>),
 }
@@ -247,6 +253,9 @@ fn apply(
         }
         AppStateOperation::ScheduleList => {
             AppStateOutcome::Wakes(ManagedStateStore::wakes_in(&transaction, scope)?)
+        }
+        AppStateOperation::Automations => {
+            AppStateOutcome::Automations(AppOutbox::automations_in(&transaction, catalog, owner)?)
         }
         AppStateOperation::MigrationStep { to } => {
             ManagedStateStore::migration_step_in(&transaction, scope, to)?;

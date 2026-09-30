@@ -238,6 +238,16 @@ pub(super) fn receipt(
     tx.query_row(&format!("SELECT {COLUMNS} FROM app_outbox WHERE owner_id=?1 AND installation_id=?2 AND receipt_id=?3"),
         params![owner,installation,id],decode).optional()?.ok_or(OutboxError::NotFound)
 }
+/// The automation's most recent receipt still retained, if any.
+pub(super) fn latest_receipt(
+    tx: &Connection,
+    owner: &str,
+    installation: &str,
+    automation: &str,
+) -> Result<Option<Receipt>> {
+    Ok(tx.query_row(&format!("SELECT {COLUMNS} FROM app_outbox WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3 ORDER BY sequence DESC LIMIT 1"),
+        params![owner,installation,automation],decode).optional()?)
+}
 pub(super) fn pending(
     tx: &Connection,
     owner: &str,
