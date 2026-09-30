@@ -141,6 +141,8 @@ enum Command {
         installation: String,
         budget: AppOperationBudget,
     },
+    /// See `store::reset_after_kernel_start`.
+    ResetAfterKernelStart,
 }
 enum Reply {
     Admitted(ActiveStartAdmission),
@@ -260,6 +262,11 @@ impl DurableKernelStateStore {
             .lock_connection("durable_state.app_worker_start_gate")
             .map_err(|_| LifecycleStoreError::Storage)?;
         store::start_gate(&mut connection, owner, installation)
+    }
+    /// See `store::reset_after_kernel_start`; `open_owned` calls it once.
+    pub(super) fn reset_app_workers_after_kernel_start(&self) -> Result<()> {
+        self.worker_lifecycle(Command::ResetAfterKernelStart)
+            .map(|_| ())
     }
     /// Kernel recovery scans a bounded page of its own authoritative records;
     /// owner IDs are selected from the database, never supplied by an App.
