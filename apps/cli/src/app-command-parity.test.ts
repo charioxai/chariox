@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { appCommandCatalog, cliAppUsage, tuiAppHelp } from "./app-command-catalog.js"
+import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 import { runAppCommand } from "./app-command.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 
@@ -58,7 +59,7 @@ async function tuiRequests(args: string[]): Promise<unknown[]> {
 }
 
 test("every command both surfaces share sends the same kernel request from the CLI and the TUI", async () => {
-  const sharedVerbs = appCommandCatalog.filter((entry) => entry.cli === entry.tui).map((entry) => entry.verb)
+  const sharedVerbs = appCommandCatalog.filter((entry) => entry.cli && entry.tui && !["install", "update"].includes(entry.verb)).map((entry) => entry.verb)
   assert.deepEqual(Object.keys(shared).sort(), [...sharedVerbs].sort())
   for (const invocations of Object.values(shared)) {
     for (const args of invocations) {
@@ -74,13 +75,22 @@ test("a command of one surface names the other surface's command", async () => {
     createClient: () => assert.fail("no kernel connection"),
     write: () => {},
   }), /app dev runs in a Chariox terminal: use \/app dev there/)
-  const flashes: string[] = []
-  await handleAppSlashCommand({
-    sendAppRequest: async () => assert.fail("no kernel request"),
-    appendNotice: () => {},
-    flashFooter: (message) => { flashes.push(message) },
-  }, { kind: "app", raw: "/app pack --output notes.cxapp", args: ["pack", "--output", "notes.cxapp"] })
-  assert.deepEqual(flashes, ["app pack runs in a shell: use chariox app pack"])
+  for (const verb of ["create", "keygen", "manifest", "validate", "pack", "inspect"]) {
+    const raw = `/app ${verb} --output notes.cxapp`
+    assert.equal(sharedShellCommandForSlashCommand(raw), null, "must reach the local handler")
+    const command = parseSlashCommand(raw)!
+    assert.equal(command.kind, "app")
+    if (command.kind !== "app") assert.fail("expected App command")
+    for (const connected of [true, false]) {
+      const flashes: string[] = []
+      await handleAppSlashCommand({
+        sendAppRequest: connected ? async () => assert.fail("no kernel request") : undefined,
+        appendNotice: () => {},
+        flashFooter: (message) => { flashes.push(message) },
+      }, command)
+      assert.deepEqual(flashes, [`app ${verb} runs in a shell: use chariox app ${verb}`])
+    }
+  }
 })
 
 // The command-parity snapshot: a change to either surface's commands shows up here.
@@ -108,7 +118,7 @@ test("App command parity snapshot", () => {
     "start: cli=start INSTALLATION | tui=start INSTALLATION",
     "stop: cli=stop INSTALLATION | tui=stop INSTALLATION",
     "restart: cli=restart INSTALLATION | tui=restart INSTALLATION",
-    "open: cli=open INSTALLATION [--session SESSION] | tui=open INSTALLATION [--session SESSION]",
+    "open: cli=open INSTALLATION --session SESSION | tui=open INSTALLATION [--session SESSION]",
     "uninstall: cli=uninstall INSTALLATION [--generation N] [--delete-data] | tui=uninstall INSTALLATION [--generation N] [--delete-data]",
     "automation: cli=automation list|add|disable INSTALLATION … | tui=automation list|add|disable INSTALLATION …",
     "inbox: cli=inbox list|add|remove|test INSTALLATION … | tui=inbox list|add|remove|test INSTALLATION …",
@@ -117,4 +127,28 @@ test("App command parity snapshot", () => {
   ])
   assert.match(cliAppUsage(), /chariox app create\|keygen\|manifest\|validate\|pack\|inspect\|install\|update\|list\|set\|/)
   assert.equal(tuiAppHelp().length, appCommandCatalog.filter((entry) => entry.tui).length)
+})
+
+
+test("publisher and file commands reach the local controller through slash routing", () => {
+  for (const raw of ['/app publisher enroll "publisher.json"', '/app file grant operation-1 "file.txt"', '/app file save operation-1 "output.txt"']) {
+    assert.equal(sharedShellCommandForSlashCommand(raw), null, raw)
+    assert.equal(parseSlashCommand(raw)?.kind, "app")
+  }
+})
+
+
+test("CLI open requires an explicit session while TUI open uses its attached session", async () => {
+  await assert.rejects(runAppCommand(["app", "open", "install-1"], {
+    createClient: () => assert.fail("missing session must not connect"),
+    write: () => {},
+  }), /pass --session/)
+  const requests: unknown[] = []
+  await handleAppSlashCommand({
+    currentAppSessionId: () => "session-1",
+    sendAppRequest: async (request) => { requests.push(request); return {} },
+    appendNotice: () => {},
+    flashFooter: () => {},
+  }, { kind: "app", raw: "/app open install-1", args: ["open", "install-1"] }).catch(() => {})
+  assert.deepEqual(requests, await cliRequests(["open", "install-1", "--session", "session-1"]))
 })

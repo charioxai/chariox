@@ -32,7 +32,7 @@ export const appCommandCatalog: readonly AppCommandEntry[] = [
   both("start", "INSTALLATION", "start an App's worker"),
   both("stop", "INSTALLATION", "stop an App's worker"),
   both("restart", "INSTALLATION", "restart an App's worker"),
-  both("open", "INSTALLATION [--session SESSION]", "open an App's view"),
+  { verb: "open", cli: "open INSTALLATION --session SESSION", tui: "open INSTALLATION [--session SESSION]", summary: "open an App's view" },
   both("uninstall", "INSTALLATION [--generation N] [--delete-data]", "uninstall an App"),
   both("automation", "list|add|disable INSTALLATION …", "manage an App's automations"),
   both("inbox", "list|add|remove|test INSTALLATION …", "manage an App's inbox routes"),

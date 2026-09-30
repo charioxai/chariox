@@ -23,12 +23,12 @@ export async function handleAppSlashCommand(
   deps: AppCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "app" }>,
 ): Promise<void> {
-  if (!deps.sendAppRequest) {
-    deps.flashFooter("Apps are unavailable in this kernel", "error")
-    return
-  }
   if (cliOnlyAppVerbs.has(command.args[0] ?? "")) {
     deps.flashFooter(`app ${command.args[0]} runs in a shell: use chariox app ${command.args[0]}`, "error")
+    return
+  }
+  if (!deps.sendAppRequest) {
+    deps.flashFooter("Apps are unavailable in this kernel", "error")
     return
   }
   if (command.args[0] === "publisher") {

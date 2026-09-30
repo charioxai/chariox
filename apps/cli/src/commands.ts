@@ -1,3 +1,5 @@
+import { cliOnlyAppVerbs, tuiOnlyAppVerbs } from "./app-command-catalog.js"
+
 export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "status" | "info" | "inspect" | "delete"
 
 export type ParsedSlashCommand =
@@ -363,7 +365,8 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
 export function sharedShellCommandForSlashCommand(input: string): string | null {
   const command = input.trim()
   // Local file bytes and retained transfer IDs belong to this terminal controller.
-  if (/^\/app\s+(?:install|update|operation|cancel|dev)(?:\s|$)/.test(command)) return null
+  const appVerb = /^\/app\s+(\S+)/.exec(command)?.[1]
+  if (appVerb && (cliOnlyAppVerbs.has(appVerb) || tuiOnlyAppVerbs.has(appVerb) || appVerb === "install" || appVerb === "update")) return null
   if (/^\/app(?:\s|$)/.test(command)) return command.slice(1)
   if (command === "/settings prompts" || command.startsWith("/settings prompts ")) {
     return command.slice(1)
