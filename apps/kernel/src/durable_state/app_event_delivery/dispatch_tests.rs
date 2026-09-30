@@ -21,7 +21,7 @@ fn ready_fixture(
         .unwrap();
     sessions.restore_session(queued.session().clone());
     sessions
-        .ensure_primary_workflow_runtime_instance(&session, &|_, _| true)
+        .ensure_primary_workflow_runtime_instance(&session)
         .unwrap()
         .unwrap();
     store

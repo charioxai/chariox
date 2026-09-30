@@ -3,8 +3,6 @@ use std::sync::{Arc, Barrier};
 use tokio::sync::Mutex;
 #[path = "dispatch_recovery_tests.rs"]
 mod dispatch_recovery_tests;
-#[path = "freeform_trigger_tests.rs"]
-mod freeform_trigger_tests;
 #[path = "pump_integration_tests.rs"]
 mod pump_integration_tests;
 

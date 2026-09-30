@@ -14,18 +14,10 @@ impl KernelRuntimeOwnedState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.workflow_cleanup_runtime_instances(session_id)?;
-        let agents = self.agent_store.clone();
-        let may_use_source_agents =
-            |session: &crate::session::RuntimeSession,
-             workflow: &crate::session::WorkflowDefinition| {
-                crate::app::workflow_runtime::workflow_may_use_source_agents(
-                    &agents, session, workflow,
-                )
-            };
         let Some(candidate) = self
             .session_store
             .write()
-            .workflow_runtime_instance_provision_candidate(session_id, &may_use_source_agents)?
+            .workflow_runtime_instance_provision_candidate(session_id)?
         else {
             return Ok(false);
         };
@@ -34,7 +26,7 @@ impl KernelRuntimeOwnedState {
             let instance = self
                 .session_store
                 .write()
-                .ensure_primary_workflow_runtime_instance(session_id, &may_use_source_agents)?;
+                .ensure_primary_workflow_runtime_instance(session_id)?;
             let Some(instance) = instance else {
                 return Ok(true);
             };
@@ -216,7 +208,6 @@ impl KernelRuntimeOwnedState {
                 referenced_instance_worktrees,
             )
         };
-        self.workflow_retire_disallowed_primary_lanes(session_id)?;
         let removed_orphaned_agents = self
             .workflow_cleanup_orphaned_runtime_agents(session_id, &referenced_instance_worktrees)?;
         self.workflow_cleanup_orphaned_runtime_worktrees(session_id, &source_worktree_id);
@@ -292,43 +283,6 @@ impl KernelRuntimeOwnedState {
             .join("instances")
             .join(session_id);
         let _ = std::fs::remove_dir(&instance_root);
-        Ok(())
-    }
-
-    /// An idle primary lane its workflow may no longer use (one left on a
-    /// Freeform trigger from before triggers ran on copies) retires, so the
-    /// next run provisions a copy.
-    fn workflow_retire_disallowed_primary_lanes(
-        &self,
-        session_id: &str,
-    ) -> Result<(), DaemonError> {
-        let session = self.session_store.read().get_session(session_id)?;
-        let retired = session
-            .workflow_runtime_instances()
-            .iter()
-            .filter(|instance| {
-                instance.primary()
-                    && instance.status()
-                        == crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
-            })
-            .filter(|instance| {
-                session
-                    .workflow(instance.workflow_id())
-                    .is_some_and(|workflow| {
-                        !crate::app::workflow_runtime::workflow_may_use_source_agents(
-                            &self.agent_store,
-                            &session,
-                            workflow,
-                        )
-                    })
-            })
-            .map(|instance| instance.id().to_string())
-            .collect::<Vec<_>>();
-        for instance_id in retired {
-            self.session_store
-                .write()
-                .mark_workflow_runtime_instance_stale(session_id, &instance_id)?;
-        }
         Ok(())
     }
 

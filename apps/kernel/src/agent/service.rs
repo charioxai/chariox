@@ -136,7 +136,14 @@ impl AgentService {
             created_agents.push(agent);
         }
 
-        let focused_agent_id = created_agents.last().map(|agent| agent.id().to_string());
+        // Only a person moves the session focus: a person's new agent takes it,
+        // an agent a metaagent spawns does not.
+        let focused_agent_id = created_agents
+            .iter()
+            .rev()
+            .find(|agent| agent.controlled_by_metaagent_id().is_none())
+            .map(|agent| agent.id().to_string())
+            .or_else(|| session.focused_agent_id().map(str::to_string));
         let created_agents = self.store.insert_session_batch_and_apply_layout(
             session.id(),
             created_agents,
@@ -1345,6 +1352,55 @@ mod workflow_copy_alias_tests {
                 .id(),
             source.id()
         );
+    }
+
+    #[test]
+    fn an_agent_a_metaagent_spawns_does_not_take_the_session_focus() {
+        let mut service = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let focused = |sessions: &SessionService| {
+            sessions
+                .get_session(session.id())
+                .expect("session should remain")
+                .focused_agent_id()
+                .map(str::to_string)
+        };
+        let person_agent = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            )
+            .expect("a person's agent should be created");
+        assert_eq!(focused(&sessions), Some(person_agent.id().to_string()));
+
+        // A meta-mode agent spawns a helper: the person's focus stays.
+        let helper = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex")
+                    .with_controlled_by_metaagent_id(person_agent.id()),
+                &mut sessions,
+            )
+            .expect("the metaagent's agent should be created");
+        assert_eq!(focused(&sessions), Some(person_agent.id().to_string()));
+        assert_ne!(
+            service
+                .get_agent(helper.id())
+                .expect("helper should exist")
+                .state(),
+            AgentState::Focused
+        );
+
+        // A person's spawn still takes the focus.
+        let next = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            )
+            .expect("a person's second agent should be created");
+        assert_eq!(focused(&sessions), Some(next.id().to_string()));
     }
 
     #[test]

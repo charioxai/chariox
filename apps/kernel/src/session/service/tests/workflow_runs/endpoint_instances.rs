@@ -337,7 +337,7 @@ fn missing_clone_worktree_never_dispatches_as_healthy_idle_and_sweeps_clean() {
         "after ghost",
     );
     let candidate = service
-        .workflow_runtime_instance_provision_candidate(session.id(), &|_, _| true)
+        .workflow_runtime_instance_provision_candidate(session.id())
         .expect("candidate lookup should succeed")
         .expect("a replacement clone should be provisionable");
     assert!(!candidate.primary);
@@ -416,7 +416,7 @@ fn provision_candidate_respects_endpoint_cap_and_ordinal() {
         "first",
     );
     let primary = service
-        .workflow_runtime_instance_provision_candidate(session.id(), &|_, _| true)
+        .workflow_runtime_instance_provision_candidate(session.id())
         .expect("candidate lookup should succeed")
         .expect("primary candidate should exist");
     assert!(primary.primary);
@@ -440,7 +440,7 @@ fn provision_candidate_respects_endpoint_cap_and_ordinal() {
         "second",
     );
     let clone = service
-        .workflow_runtime_instance_provision_candidate(session.id(), &|_, _| true)
+        .workflow_runtime_instance_provision_candidate(session.id())
         .expect("candidate lookup should succeed")
         .expect("clone candidate should exist");
     assert!(!clone.primary);
@@ -1027,7 +1027,7 @@ fn pool_prefers_idle_clone_reuse_and_queues_when_full() {
         "first",
     );
     assert!(service
-        .workflow_runtime_instance_provision_candidate(session.id(), &|_, _| true)
+        .workflow_runtime_instance_provision_candidate(session.id())
         .expect("candidate lookup should succeed")
         .is_none());
     let (_, first_run, _, _) = service
@@ -1046,7 +1046,7 @@ fn pool_prefers_idle_clone_reuse_and_queues_when_full() {
         "second",
     );
     assert!(service
-        .workflow_runtime_instance_provision_candidate(session.id(), &|_, _| true)
+        .workflow_runtime_instance_provision_candidate(session.id())
         .expect("candidate lookup should succeed")
         .is_none());
     let (_, second_run, _, _) = service
@@ -1065,7 +1065,7 @@ fn pool_prefers_idle_clone_reuse_and_queues_when_full() {
         "third",
     );
     assert!(service
-        .workflow_runtime_instance_provision_candidate(session.id(), &|_, _| true)
+        .workflow_runtime_instance_provision_candidate(session.id())
         .expect("candidate lookup should succeed")
         .is_none());
     assert!(service
@@ -1090,7 +1090,7 @@ fn pool_prefers_idle_clone_reuse_and_queues_when_full() {
         .expect("session should exist")
         .reconcile_workflow_runtime_instances();
     assert!(service
-        .workflow_runtime_instance_provision_candidate(session.id(), &|_, _| true)
+        .workflow_runtime_instance_provision_candidate(session.id())
         .expect("candidate lookup should succeed")
         .is_none());
     let (_, third_run, _, _) = service
