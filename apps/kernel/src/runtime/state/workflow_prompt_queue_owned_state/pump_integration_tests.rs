@@ -1,12 +1,17 @@
-//! One real AppControl pass through the writer and ordinary workflow prompt path.
-//! The fixed libc worker supplies readiness only; no Node/provider/App view runs.
+//! App event queue admission through the writer and ordinary workflow prompt path.
+//! The pass test's fixed libc worker supplies readiness only; no Node/provider/App
+//! view runs.
 use super::*;
 use crate::durable_state::{
     app_automations::{AppAutomationMutation, WorkflowAutomationTarget},
     app_state::{fixture_event_catalog, fixture_event_package, AppStateOperation, AppStateOutcome},
     DurableKernelStateStore,
 };
-use crate::runtime::{app_operation_budget::AppOperationBudget, app_worker::AppWorkerOwner};
+use crate::local::{ListQueuedWorkflowPromptsRequest, LocalDaemonRequest, LocalDaemonResponse};
+use crate::runtime::{
+    app_operation_budget::AppOperationBudget, app_worker::AppWorkerOwner,
+    session_read_control::projected_session_inspection_response,
+};
 use chariox_app_package::{verify, VerificationPolicy};
 use chariox_app_runtime::{
     app_outbox::{
@@ -47,63 +52,142 @@ fn receipt(store: &DurableKernelStateStore, catalog: &Arc<EventCatalog>, id: &st
     receipt
 }
 
+/// Alice's active `automation` for `changed` events, targeting an
+/// `event_based` publication of the workflow's default queue.
+fn configure_automation(
+    runtime: &KernelRuntimeState,
+    session: &str,
+    workflow: &str,
+    endpoint: &str,
+    catalog: &Arc<EventCatalog>,
+) {
+    let store = &runtime.owned.durable_state_store;
+    let mut sessions = runtime.owned.session_store.write();
+    sessions
+        .set_workflow_endpoint_owner(session, workflow, endpoint, "alice".into())
+        .unwrap();
+    let publication = sessions
+        .create_workflow_publication_idempotent(
+            session,
+            workflow,
+            endpoint,
+            None,
+            None,
+            Some("default".into()),
+            Some("app-pump".into()),
+            Some("event_based".into()),
+            None,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            runtime.owned.agent_store.get_session_agents(session),
+            "alice".into(),
+        )
+        .unwrap();
+    store
+        .persist_workflow_runtime_transition(
+            &sessions.get_session(session).unwrap(),
+            "pump_fixture",
+        )
+        .unwrap();
+    let target =
+        WorkflowAutomationTarget::resolve(&sessions, "alice", session, publication.id(), None)
+            .unwrap();
+    store
+        .mutate_app_automation(
+            "alice",
+            catalog.clone(),
+            AppAutomationMutation::Configure {
+                automation_id: "automation".into(),
+                expected_revision: 0,
+                event_name: "changed".into(),
+                target,
+                scheduled: false,
+            },
+            budget(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_queued_event_is_published_to_the_session_read_projection() {
+    let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
+    let store = runtime.owned.durable_state_store.clone();
+    let catalog = fixture_event_catalog(&store);
+    configure_automation(&runtime, &session, &workflow, &endpoint, &catalog);
+    // Clients list queued prompts from the projection, warm before the event.
+    runtime.owned.session_snapshot(&session).unwrap();
+    let listed = || match projected_session_inspection_response(
+        &runtime.owned.session_projection,
+        &LocalDaemonRequest::ListQueuedWorkflowPrompts(ListQueuedWorkflowPromptsRequest {
+            session_id: session.clone(),
+        }),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        None,
+    ) {
+        Some(Ok(LocalDaemonResponse::QueuedWorkflowPromptsListed { queued_prompts })) => {
+            queued_prompts
+                .iter()
+                .map(|queued| queued.id().to_owned())
+                .collect::<Vec<_>>()
+        }
+        _ => panic!("projected queued prompt list"),
+    };
+    assert!(listed().is_empty());
+    let now = crate::session::unix_epoch_ms();
+    let AppStateOutcome::Receipt(accepted) = store
+        .execute_app_state(
+            "alice",
+            catalog.clone(),
+            AppStateOperation::Emit(Occurrence {
+                automation_id: "automation".into(),
+                occurrence_id: occurrence_id("queued-event", now).unwrap(),
+                event_version: 1,
+                occurred_at_ms: now,
+                schedule_revision: None,
+                payload: serde_json::json!({"text":"queued"}),
+                invocation: Invocation {
+                    prompt: "Stay queued".into(),
+                    artifacts: vec![],
+                },
+            }),
+            budget(),
+        )
+        .unwrap()
+    else {
+        panic!("accepted receipt")
+    };
+
+    // Queue admission alone: as with a paused queue, no dispatch follows that
+    // would publish the session.
+    let queued = runtime
+        .owned
+        .queue_app_event("alice", catalog, &accepted.receipt_id, budget())
+        .unwrap();
+    assert_eq!(queued.state, ReceiptState::Queued);
+    let prompt_id = queued.queued_prompt_id.unwrap();
+    let live = runtime.owned.session_store.get_session(&session).unwrap();
+    assert_eq!(
+        live.workflow_queued_prompts()
+            .iter()
+            .map(|queued| queued.id())
+            .collect::<Vec<_>>(),
+        [prompt_id.as_str()]
+    );
+    assert_eq!(listed(), [prompt_id]);
+}
+
 #[test]
 fn one_pass_without_a_view_queues_the_original_event_and_recovers_its_prompt_receipt() {
     let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
     let store = runtime.owned.durable_state_store.clone();
     let catalog = fixture_event_catalog(&store);
-    {
-        let mut sessions = runtime.owned.session_store.write();
-        sessions
-            .set_workflow_endpoint_owner(&session, &workflow, &endpoint, "alice".into())
-            .unwrap();
-        let publication = sessions
-            .create_workflow_publication_idempotent(
-                &session,
-                &workflow,
-                &endpoint,
-                None,
-                None,
-                Some("default".into()),
-                Some("app-pump".into()),
-                Some("event_based".into()),
-                None,
-                vec![],
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                runtime.owned.agent_store.get_session_agents(&session),
-                "alice".into(),
-            )
-            .unwrap();
-        store
-            .persist_workflow_runtime_transition(
-                &sessions.get_session(&session).unwrap(),
-                "pump_fixture",
-            )
-            .unwrap();
-        let target =
-            WorkflowAutomationTarget::resolve(&sessions, "alice", &session, publication.id(), None)
-                .unwrap();
-        store
-            .mutate_app_automation(
-                "alice",
-                catalog.clone(),
-                AppAutomationMutation::Configure {
-                    automation_id: "automation".into(),
-                    expected_revision: 0,
-                    event_name: "changed".into(),
-                    target,
-                    scheduled: false,
-                },
-                budget(),
-            )
-            .unwrap();
-    }
+    configure_automation(&runtime, &session, &workflow, &endpoint, &catalog);
     let original_time = crate::session::unix_epoch_ms();
     let occurrence = Occurrence {
         automation_id: "automation".into(),
