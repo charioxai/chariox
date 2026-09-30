@@ -212,6 +212,9 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.match(await h.log("loginctl"), /^disable-linger alice$/m)
     assert.match(await h.log("systemctl"), /^restart chariox-app-storage\.service$/m)
     assert.equal(existsSync(p(h, "var/lib/systemd/linger/alice")), false)
+    // The helper refuses to start with a storage directory of an unenrolled owner.
+    assert.equal(existsSync(p(h, "var/lib/chariox-app-storage/u-1000")), false)
+    assert.ok(alice.out.indexOf("remove " + p(h, "var/lib/chariox-app-storage/u-1000")) < alice.out.indexOf("write "))
 
     // A kernel holding a runtime generation's shared lease blocks --all before any change.
     const holder = spawn("flock", ["-s", "-o", p(h, `usr/lib/chariox/app-runtimes/${h.digest}/.runtime-lease`), "sh", "-c", "echo held; exec sleep 30"],

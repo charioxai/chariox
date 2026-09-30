@@ -29,9 +29,10 @@
 # "unchanged": a repeated install with the same inputs changes nothing and leaves
 # the helper running. --dry-run prints the changes without making them.
 #
-# uninstall --user removes each user's enrollment and the lingering this script
-# enabled (a deleted account can be named by uid). It refuses while the user still
-# has App storage: uninstall their Apps with their data first. uninstall --all
+# uninstall --user removes each user's enrollment, their empty App storage
+# directory and the lingering this script enabled (a deleted account can be named
+# by uid). It refuses while the user still has App storage: uninstall their Apps
+# with their data first. uninstall --all
 # also removes the helper, its unit, the runtime generations and their enrollment,
 # and the AppArmor profile. It refuses while any App storage exists or a runtime
 # generation is in use.
@@ -298,6 +299,11 @@ uninstall_users() {
     uid=${uids[$index]}
     [[ -z "$(find "$STORAGE/u-$uid" -mindepth 1 -maxdepth 1 2>/dev/null)" ]] \
       || die "${users[$index]} still has App storage in $STORAGE/u-$uid; uninstall their Apps with their data first"
+  done
+  # The helper refuses to start while a storage directory has no enrolled
+  # owner, so each (empty) one goes before its owner does.
+  for uid in "${uids[@]}"; do
+    if [[ -d "$STORAGE/u-$uid" ]]; then act "remove $STORAGE/u-$uid (empty)" rmdir -- "$STORAGE/u-$uid"; fi
   done
   if [[ -f "$ENROLLMENT" ]]; then
     enrollment remove "${uids[@]}" || status=$?
