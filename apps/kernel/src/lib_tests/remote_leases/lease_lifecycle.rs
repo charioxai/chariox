@@ -366,7 +366,7 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
             rand::random::<u64>()
         ));
         std::fs::create_dir_all(&worktree).expect("worktree creates");
-        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        let first = RemoteLeaseRuntime::new(&mut app)
             .create_leased_agent_for_caller(
                 &lease.id,
                 &caller,
@@ -381,7 +381,7 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
                 None,
             )
             .expect("leased agent creates");
-        let sibling = RemoteLeaseRuntime::new(&mut app)
+        let second = RemoteLeaseRuntime::new(&mut app)
             .create_leased_agent_for_caller(
                 &lease.id,
                 &caller,
@@ -396,6 +396,13 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
                 None,
             )
             .expect("sibling leased agent creates");
+        // Lease destruction walks leased agents in id order and ids are
+        // random: fail the one that sorts first so the sibling always remains.
+        let (leased_agent, sibling) = if first.id < second.id {
+            (first, second)
+        } else {
+            (second, first)
+        };
         assert_eq!(sibling.backing_session_id, leased_agent.backing_session_id);
         // Lease teardown destroys leased agents in id order and stops at the
         // first failure. Ids derive from the clock, so give the provider run and
@@ -461,11 +468,7 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
             .expect_err("partial provider cleanup must stop lease destruction");
         assert!(matches!(error, DaemonError::AgentWorkerCleanup { .. }));
         assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
-        // Leased-agent ids are random, so the sibling may be destroyed before
-        // the failing agent stops the loop; the failing agent always remains
-        // (the retry below destroys it).
-        let remaining = RemoteLeaseRuntime::new(&mut app).leased_agent_count();
-        assert!((1..=2).contains(&remaining), "remaining leased agents: {remaining}");
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 2);
         assert!(!app.relay_registration().accepting_remote_leases);
 
         RemoteLeaseRuntime::new(&mut app)
@@ -474,19 +477,13 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
         let tracking = app.provider_process_tracking.snapshot();
         assert!(!tracking.run_processes.contains_key(&run_id));
         assert!(!tracking.processes.contains_key("process-key"));
-        let backing_session = app.sessions().get_session(&sibling.backing_session_id);
-        if remaining == 2 {
-            // The sibling still uses the shared backing session.
-            assert_eq!(
-                backing_session
-                    .expect("shared backing session remains")
-                    .active_provider_run_id(),
-                None
-            );
-        } else {
-            // The sibling went first; the retry removed the last user.
-            assert!(backing_session.is_err(), "unused backing session is deleted");
-        }
+        assert_eq!(
+            app.sessions()
+                .get_session(&sibling.backing_session_id)
+                .expect("shared backing session remains")
+                .active_provider_run_id(),
+            None
+        );
         RemoteLeaseRuntime::new(&mut app)
             .destroy_execution_lease_for_caller(&lease.id, &caller)
             .expect("remaining agent and lease cleanup succeeds");
