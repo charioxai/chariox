@@ -465,6 +465,73 @@ test("agent focus command does not launch a local provider run for remote-backed
   assert.equal(providerRunCleared, true)
 })
 
+test("agent focus command moves the session focus to the agent named by alias or ref, also from no focus", async () => {
+  const codex = agent({ id: "agent-1", agent_ref: "codex-1", alias: "focusdrill" })
+  const claude = agent({ id: "agent-2", agent_ref: "claude-1", alias: "claude-apps", remote_execution: {
+    worker_kernel_id: "worker-kernel",
+    worker_machine_id: "worker-machine",
+    execution_lease_id: "lease-1",
+    leased_agent_id: "leased-agent-1",
+  } })
+  // No focus agent: every visible agent was deleted or none was focused yet.
+  let current = session({ focused_agent_id: null, agents: [codex, claude] })
+  const focused: string[] = []
+  const flashes: Array<{ message: string; tone: string }> = []
+  const deps = {
+    isAttached: () => true,
+    sessionState: () => current,
+    currentModelId: () => "opencode/gpt-5.4",
+    currentVariantId: () => "high",
+    providerRunState: () => null,
+    multiAgentResponseLayout: () => "individual" as const,
+    maxAgentsPerScreen: () => 4,
+    flashFooter: (message: string, tone: "info" | "error") => { flashes.push({ message, tone }) },
+    appendNotice: () => {},
+    formatError: (error: unknown) => String(error),
+    applySessionState: (next: RuntimeSession) => { current = next },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: current }),
+    launchAgentProviderRun: async () => providerRun(),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => current,
+    destroyAgent: async () => current,
+    // The kernel's FocusAgent takes an agent id and moves the session focus.
+    focusAgent: async (agentId: string) => {
+      focused.push(agentId)
+      const target = current.agents.find((entry) => entry.id === agentId)
+      assert.ok(target, `kernel got unknown agent id ${agentId}`)
+      return { agent: target, session: { ...current, focused_agent_id: agentId } }
+    },
+    resolveSessionAgent: (reference?: string | null) => {
+      const matches = current.agents.filter((entry) =>
+        entry.id === reference || entry.agent_ref === reference || entry.alias === reference)
+      return matches.length === 1
+        ? { agent: matches[0]!, error: null }
+        : { agent: null, error: `agent '${reference}' not found` }
+    },
+    formatAgentLabel: (entry: AgentInstance | null | undefined) => entry?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+  }
+
+  await handleAgentFocusCommand(deps, ["focus", "claude-apps"])
+  assert.equal(current.focused_agent_id, "agent-2")
+  await handleAgentFocusCommand(deps, ["focus", "codex-1"])
+  assert.equal(current.focused_agent_id, "agent-1")
+  await handleAgentFocusCommand(deps, ["focus", "agent-2"])
+  assert.equal(current.focused_agent_id, "agent-2")
+  assert.deepEqual(focused, ["agent-2", "agent-1", "agent-2"])
+
+  await handleAgentFocusCommand(deps, ["focus", "nobody"])
+  await handleAgentFocusCommand(deps, ["focus"])
+  assert.deepEqual(focused, ["agent-2", "agent-1", "agent-2"], "no kernel call without a resolved agent")
+  assert.equal(current.focused_agent_id, "agent-2")
+  assert.deepEqual(flashes.slice(-2), [
+    { message: "agent 'nobody' not found", tone: "error" },
+    { message: "usage: /agent focus <agent-ref>", tone: "error" },
+  ])
+})
+
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
     id: "agent-1",

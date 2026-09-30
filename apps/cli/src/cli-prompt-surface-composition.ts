@@ -2,6 +2,7 @@ import { createEffect, untrack } from "solid-js"
 
 import {
   ATTACHED_PROMPT_PLACEHOLDER,
+  NO_FOCUS_PROMPT_PLACEHOLDER,
 } from "./cli-runtime-tuning.js"
 import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
 import {
@@ -70,6 +71,7 @@ export type CliPromptSurfaceCompositionDeps = {
   isAttached: AnyFn
   workflowScreenShowing: AnyFn
   workflowPromptState: AnyFn
+  focusedAgentId: AnyFn
   themeRevision: AnyFn
   preferencesState: AnyFn
   setPreferencesState: AnyFn
@@ -119,7 +121,9 @@ export function createCliPromptSurfaceComposition(deps: CliPromptSurfaceComposit
     isAttached: deps.isAttached,
     workflowScreenActive: deps.workflowScreenShowing,
     workflowPromptState: deps.workflowPromptState,
+    hasFocusAgent: () => deps.focusedAgentId() !== null,
     attachedPlaceholder: ATTACHED_PROMPT_PLACEHOLDER,
+    noFocusPlaceholder: NO_FOCUS_PROMPT_PLACEHOLDER,
     detachedPlaceholder: SESSION_NEW_PLACEHOLDER,
     trackThemeRevision: () => deps.themeRevision(),
     attachedBackground: () => theme.backgroundPanel,

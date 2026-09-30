@@ -256,11 +256,14 @@ export async function executeAgentCommand(
       )
     }
     case "focus": {
-      const agentRef = args[0]
-      if (!agentRef) {
-        return { ok: false, message: "usage: agent focus <agent-id>" }
+      if (!args[0]) {
+        return { ok: false, message: "usage: agent focus <agent-ref>" }
       }
-      const response = await deps.client.send(focusAgentRequest(sessionId, agentRef))
+      const resolved = await resolveShellAgent(context, deps, args[0])
+      if (!resolved.ok) {
+        return { ok: false, message: resolved.message }
+      }
+      const response = await deps.client.send(focusAgentRequest(sessionId, resolved.agent.id))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentFocused").agent
       return resourceResult(
         `current agent = ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`,

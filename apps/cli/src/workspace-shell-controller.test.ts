@@ -44,7 +44,7 @@ test("deriveWorkspaceShellContextForSession syncs attached session context witho
     id: "s2",
     workspace_id: "",
     worktree_id: "next-worktree",
-    focused_agent_id: null,
+    focused_agent_id: "agent-1",
     agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
   }), "attachment-2")
 
@@ -68,6 +68,18 @@ test("deriveWorkspaceShellContextForSession ignores stale focused agent ids", ()
   const next = deriveWorkspaceShellContextForSession(previous, session({
     id: "s2",
     focused_agent_id: "stale-agent",
+    agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
+  }), "attachment-2")
+
+  assert.equal(next.agentId, undefined)
+})
+
+test("deriveWorkspaceShellContextForSession has no current agent while the session has no focus", () => {
+  const previous = createDefaultShellContext({ sessionId: "s2", agentId: "agent-1" })
+
+  const next = deriveWorkspaceShellContextForSession(previous, session({
+    id: "s2",
+    focused_agent_id: null,
     agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
   }), "attachment-2")
 

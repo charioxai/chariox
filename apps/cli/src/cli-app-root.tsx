@@ -507,7 +507,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     clearTimer: clearTimeout,
     daemonDisconnected, working, anyPromptWork, anyTurnWork,
     submitting, focusedQueueDepth, fatalError, focusedActivePrompt,
-    statusLine, isAttached, workflowScreenShowing, workflowPromptState,
+    statusLine, isAttached, workflowScreenShowing, workflowPromptState, focusedAgentId,
     themeRevision, preferencesState, setPreferencesState, setPromptHistoryEntries,
     setPromptHistoryIndex, setPromptHistoryDraft, promptTextController, attachmentState,
     promptHistoryEntries, promptHistoryIndex, promptHistoryDraft, promptInputRefController,
