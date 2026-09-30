@@ -123,8 +123,8 @@ fn failed_kernel_prompt_abort_finalizes_cancelling_prompt() {
 fn shutdown_cleanup_preserves_sessions_and_clears_runtime_state() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // A session is created with its default agent: attaching creates none.
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)

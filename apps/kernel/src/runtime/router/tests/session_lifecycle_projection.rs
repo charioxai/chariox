@@ -969,3 +969,58 @@ fn create_router_test_slice(
         )
         .expect("slice should be created")
 }
+
+#[tokio::test]
+async fn a_page_load_never_brings_back_an_agent_a_person_deleted() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, only_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    // No provider has run yet: the session is still `Created`.
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let attach = |client_id: &str| {
+        let request = attach_request(&session_id, client_id);
+        let command = KernelCommand::from_local_request(client_id, None, None, &request);
+        (command, request)
+    };
+
+    let (command, request) = attach("cli-zero-focus-tui");
+    router
+        .dispatch(command, request)
+        .await
+        .expect("the TUI should attach");
+    router
+        .runtime_state
+        .destroy_agent(only_agent.id(), DEFAULT_LOCAL_USER_ID)
+        .await
+        .expect("the person deletes the session's only agent");
+
+    // A web page loads the session: it attaches as a new client.
+    let (command, request) = attach("web-zero-focus-load");
+    router
+        .dispatch(command, request)
+        .await
+        .expect("the web client should attach");
+
+    let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+        session_id: session_id.clone(),
+    });
+    let state_command =
+        KernelCommand::from_local_request("zero-focus-state", None, None, &state_request);
+    match router
+        .dispatch(state_command, state_request)
+        .await
+        .expect("state should resolve")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => {
+            assert_eq!(session.status(), crate::session::SessionStatus::Created);
+            assert!(
+                session.agents().is_empty(),
+                "attaching must not spawn an agent"
+            );
+            assert_eq!(session.focused_agent_id(), None);
+        }
+        _ => panic!("unexpected session state response"),
+    }
+}

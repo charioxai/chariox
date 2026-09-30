@@ -167,13 +167,11 @@ impl<'a> KernelSessionService<'a> {
         }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
+        let reopens = sessions.get_session(&session_id)?.attach_creates_default_agent();
         let attachment = self.app.attachments.attach(&mut sessions, request)?;
         drop(sessions);
 
-        // Create default agent if session has no agents (e.g., after session was ended and reattached).
-        // Parked/active sessions that were never ended will retain their existing agents.
-        let session_agents = self.app.agents.get_session_agents(&session_id);
-        if session_agents.is_empty() {
+        if reopens && self.app.agents.get_session_agents(&session_id).is_empty() {
             // The session's own defaults, with a real provider for the
             // placeholder, as for a new session's first agent.
             let session = self.app.sessions().get_session(&session_id)?.clone();
@@ -205,7 +203,7 @@ impl<'a> KernelSessionService<'a> {
                 "created default agent for session",
                 serde_json::json!({
                     "session_id": session_id,
-                    "reason": "session had no agents (possibly after being ended and reattached)",
+                    "reason": "an ended session reopened with no agents",
                 }),
             );
         }
