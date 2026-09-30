@@ -57,10 +57,17 @@ impl Inventory {
         Ok(())
     }
 }
+/// Installed mode 0555. The bundled loader is the ELF interpreter of every
+/// worker executable, and Linux opens an interpreter for execution: at 0444
+/// each worker `execve` fails with EACCES inside the sandbox.
 pub(super) fn executable(path: &str) -> bool {
     matches!(
         path,
-        "chariox-app-worker" | "chariox-app-domain-entry" | "chariox-bwrap"
+        "chariox-app-worker"
+            | "chariox-app-domain-entry"
+            | "chariox-bwrap"
+            | "platform/ld-linux-x86-64.so.2"
+            | "platform/ld-linux-aarch64.so.1"
     )
 }
 pub(super) fn expected_paths(target: &str) -> Result<BTreeSet<String>> {
