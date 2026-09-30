@@ -2241,19 +2241,6 @@ impl KernelRuntimeState {
         (outcome, process_id)
     }
 
-    pub(crate) async fn fixture_publication_runtime_running(
-        &self,
-        session_id: &str,
-        publication_id: &str,
-    ) -> bool {
-        self.owned
-            .workflow_publication_runtimes
-            .running(&publication_runtime_process_key(session_id, publication_id))
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    }
 }
 
 #[cfg(test)]
