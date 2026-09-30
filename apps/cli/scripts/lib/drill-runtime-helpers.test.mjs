@@ -43,7 +43,7 @@ test("hosted Cloud cleanup offlines kernels, revokes identities, and logs out wi
     machineIds: ["machine-1"],
     kernelPresences: [{ machineId: "machine-1", kernelId: "kernel-1" }],
     baseUrl: "https://cloud.example",
-    post: async (url, body) => { calls.push({ url, body }) },
+    post: async (url, body, headers) => { calls.push({ url, body, headers }) },
     logger: (event, details) => { logs.push({ event, details }) },
   })
 
@@ -54,6 +54,12 @@ test("hosted Cloud cleanup offlines kernels, revokes identities, and logs out wi
     "https://cloud.example/auth/logout",
   ])
   assert.equal(calls[0].body.status, "OFFLINE")
+  assert.deepEqual(calls[2].headers, { authorization: "Bearer session-1" })
+  assert.deepEqual(calls[2].body, {
+    accountId: "account-1",
+    machineId: "machine-1",
+    reason: "hosted Cloud drill cleanup",
+  })
   assert.equal(calls[3].body.sessionToken, "session-1")
   assert.deepEqual(logs, [{
     event: "cloud-identity-cleanup",

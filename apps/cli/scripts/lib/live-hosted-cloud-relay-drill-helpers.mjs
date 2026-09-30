@@ -292,7 +292,8 @@ export async function cleanupHostedCloudIdentity({
       accountId: profile.accountId,
       machineId,
       reason,
-    }).catch((error) => cleanupErrors.push(error))
+    }, cloudSessionToken ? { authorization: `Bearer ${cloudSessionToken}` } : {})
+      .catch((error) => cleanupErrors.push(error))
   }
   if (logout && cloudSessionToken) {
     await post(`${baseUrl}/auth/logout`, { sessionToken: cloudSessionToken })
