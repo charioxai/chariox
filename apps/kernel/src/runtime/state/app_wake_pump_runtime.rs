@@ -4,6 +4,7 @@ use super::KernelRuntimeState;
 use crate::durable_state::app_wakes::{AppWakeOperation, AppWakeOutcome};
 use crate::durable_state::app_worker_lifecycle::StartGate;
 use crate::runtime::app_lifecycle::LifecycleError;
+use crate::runtime::app_worker::DeliveryError;
 use chariox_app_runtime::managed_state::DueWake;
 use std::{collections::BTreeMap, time::Duration};
 
@@ -206,6 +207,14 @@ impl KernelRuntimeState {
             let delivered = lease
                 .deliver_wake(&wake.wake, overdue, wake.counts_as_use, DELIVERY_TIMEOUT)
                 .await;
+            // An idle stop began first: nothing reached the App.
+            if matches!(delivered, Err(DeliveryError::NotAdmitted)) {
+                records.push(AppWakeOperation::Postponed {
+                    wake,
+                    until_ms: now_ms.saturating_add(START_WAIT_MS),
+                });
+                continue;
+            }
             let update_pending = delivered.is_err()
                 && self
                     .app_update_pending(&wake.owner_id, &wake.installation_id)

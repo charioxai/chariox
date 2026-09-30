@@ -314,6 +314,12 @@ impl AppLifecycleService {
         {
             return Ok(());
         }
+        // A wake admitted since `still_idle` keeps the worker; one arriving
+        // after this point is refused and waits for the on-demand start.
+        if !entry.control.begin_idle_drain() {
+            self.0.publisher.forget_dormant(&key.0, &key.1);
+            return Ok(());
+        }
         entry.control.cancel(false);
         entry.join();
         let mut entries = self

@@ -44,6 +44,10 @@ pub(crate) enum DeliveryError {
     /// The App's handler answered with an error: its code and message.
     #[error("app_handler_failed: {0}")]
     Handler(String),
+    /// Nothing was sent: the worker began stopping first. The item waits for
+    /// the next worker without spending an attempt.
+    #[error("app_worker_stopping")]
+    NotAdmitted,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -62,8 +66,55 @@ struct Admission {
     broker_draining: std::sync::atomic::AtomicBool,
     /// Set for a staged worker that migrates its data before it registers.
     migrating: std::sync::atomic::AtomicBool,
+    /// Wake deliveries in flight. They are not use, but no idle stop or
+    /// eviction may interrupt one; see `begin_idle_draining`.
+    deliveries: std::sync::atomic::AtomicUsize,
+}
+/// Held for one wake delivery. Admitted under the phase lock, so an idle stop
+/// either sees it and keeps the worker or has already refused it.
+pub(crate) struct DeliveryHold(Arc<Admission>);
+impl Drop for DeliveryHold {
+    fn drop(&mut self) {
+        self.0
+            .deliveries
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 impl Admission {
+    fn admit_delivery(self: &Arc<Self>) -> Result<DeliveryHold, AppWorkerError> {
+        let phase = self.phase.lock().map_err(|_| AppWorkerError::Unavailable)?;
+        if *phase != Phase::Active {
+            return Err(AppWorkerError::Unavailable);
+        }
+        self.deliveries
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        drop(phase);
+        Ok(DeliveryHold(self.clone()))
+    }
+    fn delivering(&self) -> bool {
+        self.deliveries.load(std::sync::atomic::Ordering::Acquire) > 0
+    }
+    /// The idle stop's final step: begin draining unless a wake delivery is in
+    /// flight, atomically with `admit_delivery`. A worker that is no longer
+    /// active admits none, so its stop proceeds.
+    fn begin_idle_draining(&self) -> bool {
+        {
+            let mut phase = self
+                .phase
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *phase != Phase::Active {
+                return true;
+            }
+            if self.delivering() {
+                return false;
+            }
+            *phase = Phase::Draining;
+            self.changed.send_replace(Phase::Draining);
+        }
+        self.notify_broker_draining();
+        true
+    }
     fn stop(&self) {
         // Poison must never skip cleanup. Queue admission uses the same guard.
         match self.phase.lock() {
@@ -143,18 +194,6 @@ struct Residency {
     last_used_ms: std::sync::atomic::AtomicU64,
     used: std::sync::atomic::AtomicBool,
     self_woken: std::sync::atomic::AtomicBool,
-    /// Wake deliveries in flight. They are not use, but no idle stop or
-    /// eviction may interrupt one.
-    delivering: std::sync::atomic::AtomicUsize,
-}
-/// Held for one wake delivery; see `Residency::delivering`.
-struct Delivering<'a>(&'a Residency);
-impl Drop for Delivering<'_> {
-    fn drop(&mut self) {
-        self.0
-            .delivering
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-    }
 }
 impl Residency {
     fn new(started_ms: u64) -> Self {
@@ -162,13 +201,7 @@ impl Residency {
             last_used_ms: started_ms.into(),
             used: false.into(),
             self_woken: false.into(),
-            delivering: 0.into(),
         }
-    }
-    fn delivering(&self) -> Delivering<'_> {
-        self.delivering
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        Delivering(self)
     }
     fn touch(&self, now_ms: u64) {
         use std::sync::atomic::Ordering;
@@ -181,14 +214,9 @@ impl Residency {
     }
     /// Idle time counts from the last use, or from the start. A worker that
     /// has served only the App's own wakes since it started has no use to
-    /// wait for: it stops once its due work is delivered. While a wake is
-    /// being delivered the worker is not idle; that does not move its
-    /// deadline.
+    /// wait for: it stops once its due work is delivered.
     fn idle_ms(&self, now_ms: u64) -> u64 {
         use std::sync::atomic::Ordering;
-        if self.delivering.load(Ordering::Acquire) > 0 {
-            return 0;
-        }
         if self.self_woken.load(Ordering::Acquire) && !self.used.load(Ordering::Acquire) {
             return u64::MAX;
         }
@@ -284,8 +312,17 @@ impl AppWorkerLease {
     pub(crate) fn touch(&self) {
         self.0.residency.touch(crate::session::unix_epoch_ms());
     }
+    /// While a wake is being delivered the worker is not idle; that does not
+    /// move its deadline.
     pub(crate) fn idle_ms(&self, now_ms: u64) -> u64 {
+        if self.0.admission.delivering() {
+            return 0;
+        }
         self.0.residency.idle_ms(now_ms)
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_hold_delivery(&self) -> DeliveryHold {
+        self.0.admission.admit_delivery().unwrap()
     }
     pub(crate) fn catalog(&self) -> &Arc<EventCatalog> {
         &self.0.catalog

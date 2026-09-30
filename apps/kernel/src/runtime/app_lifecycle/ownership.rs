@@ -36,6 +36,15 @@ impl Control {
         }
         self.wake.notify_all();
     }
+    /// An idle stop's point of no return: false while a wake is being
+    /// delivered. A worker without a drain handle has no live lease yet.
+    pub(super) fn begin_idle_drain(&self) -> bool {
+        self.drain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(|drain| drain.begin_idle())
+    }
     pub(super) fn retain_drain(&self, drain: crate::runtime::app_worker::AppWorkerDrain) {
         let mut retained = self
             .drain

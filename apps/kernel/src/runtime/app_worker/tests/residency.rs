@@ -54,28 +54,3 @@ fn a_tool_armed_wake_still_counts_as_use() {
     restarted.touch(30 * MINUTE + 2_000);
     assert!(restarted.idle_ms(35 * MINUTE) < IDLE);
 }
-
-#[test]
-fn no_idle_stop_or_eviction_interrupts_a_wake_being_delivered() {
-    // Eviction takes a worker idle for a minute; the idle stop one idle for IDLE.
-    const EVICTABLE: u64 = 60_000;
-    let started = 20 * MINUTE;
-    let worker = Residency::new(started);
-    // A first wake of its own was delivered: the worker may stop.
-    worker.self_woken();
-    assert!(worker.idle_ms(started + 2_000) >= IDLE);
-    // A second one is blocked in its handler while another App needs a slot.
-    let second = worker.delivering();
-    assert!(worker.idle_ms(started + 30_000) < EVICTABLE);
-    drop(second);
-    worker.self_woken();
-    assert!(worker.idle_ms(started + 31_000) >= IDLE);
-
-    // Holding off does not move the deadline of a worker in use.
-    let used = Residency::new(0);
-    used.touch(0);
-    let late = used.delivering();
-    assert_eq!(used.idle_ms(IDLE - 1_000), 0);
-    drop(late);
-    assert_eq!(used.idle_ms(IDLE), IDLE);
-}

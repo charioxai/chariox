@@ -724,3 +724,52 @@ fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
     assert!(!control.is_app_dormant("alice", "installed"));
     service.shutdown_blocking().unwrap();
 }
+
+#[test]
+fn an_idle_stop_keeps_a_worker_whose_wake_was_admitted_after_its_idle_check() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let native = Arc::new(NativeFixture::compile().unwrap());
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, native.clone());
+    let service = control.lifecycle();
+    service.schedule_recovery(runtime.handle().clone());
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    let lease = control.active_app_lease("alice", "installed").unwrap();
+    let catalog = lease.catalog().clone();
+    // An eviction or idle stop reads the worker as idle, then the wake pump
+    // admits a wake before the stop drains it: the worker keeps running.
+    let delivery = std::cell::RefCell::new(None);
+    service
+        .idle_stop_blocking("alice", catalog.clone(), || {
+            *delivery.borrow_mut() = Some(lease.fixture_hold_delivery());
+            true
+        })
+        .unwrap();
+    assert!(control.active_app_lease("alice", "installed").is_some());
+    assert!(!control.is_app_dormant("alice", "installed"));
+    // While the wake is in its handler, nothing reads the worker as idle.
+    assert_eq!(lease.idle_ms(u64::MAX), 0);
+    drop(delivery.into_inner());
+    // Once it settles, the stop proceeds; a wake arriving now is refused
+    // before anything reaches the App, so it waits without an attempt.
+    service
+        .idle_stop_blocking("alice", catalog, || true)
+        .unwrap();
+    let wake = chariox_app_runtime::managed_state::Wake {
+        id: "late".into(),
+        due_at_ms: 1,
+        revision: String::new(),
+    };
+    assert!(matches!(
+        runtime.block_on(lease.deliver_wake(&wake, false, false, Duration::from_secs(1))),
+        Err(crate::runtime::app_worker::DeliveryError::NotAdmitted)
+    ));
+    drop(lease);
+    wait(|| all_reaped(&observations));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert!(control.is_app_dormant("alice", "installed"));
+    service.shutdown_blocking().unwrap();
+}

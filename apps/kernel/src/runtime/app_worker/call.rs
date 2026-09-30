@@ -184,8 +184,14 @@ impl AppWorkerLease {
         counts_as_use: bool,
         timeout: Duration,
     ) -> Result<(), DeliveryError> {
-        let _delivering = self.0.residency.delivering();
-        self.0.available()?;
+        let _delivering = self
+            .0
+            .admission
+            .admit_delivery()
+            .map_err(|_| DeliveryError::NotAdmitted)?;
+        if self.0.peer.is_closed() {
+            return Err(DeliveryError::NotAdmitted);
+        }
         if counts_as_use {
             self.touch();
         }
