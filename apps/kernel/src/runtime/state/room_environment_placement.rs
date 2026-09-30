@@ -27,7 +27,9 @@ impl KernelRuntimeState {
                     });
                 }
                 (Some(reference), None) => Some(slices.resolve(reference)?),
-                (None, Some(reference)) => slices.resolve_by_worker_kernel_ref(reference),
+                (None, Some(reference)) => {
+                    slices.resolve_execution_worker_kernel_ref(reference, operation)?
+                }
                 (None, None) => None,
             };
             let slice_id = slice.map(|slice| slice.id);

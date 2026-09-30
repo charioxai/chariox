@@ -7,6 +7,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
+mod alias_execution;
 mod batch;
 mod cleanup;
 mod computer_input;
@@ -81,6 +82,7 @@ impl LiveWorker {
             managed_slice_worker,
             "environment-worker".to_string(),
             true,
+            false,
         )
         .await
     }
@@ -98,6 +100,7 @@ impl LiveWorker {
             false,
             worker_kernel_id,
             true,
+            false,
         )
         .await
     }
@@ -107,8 +110,9 @@ impl LiveWorker {
         browser_controller: bool,
         home_vault_backend: Option<crate::config::CredentialVaultBackend>,
         managed_slice_worker: bool,
-        worker_kernel_id: String,
+        mut worker_kernel_id: String,
         isolate_home_persistence: bool,
+        canonical_slice: bool,
     ) -> Self {
         const HOME_TOKEN: &str = "environment-worker-fixture";
         // This isolated fixture's first slice is slice-1, owned by environment-home.
@@ -192,6 +196,34 @@ impl LiveWorker {
         });
         let (home, rooms) = home_state.router();
         let home = Arc::new(home);
+        if canonical_slice {
+            create_desktop(&home, "desktop").await;
+            let slices = home.app.lock().await.slices().clone();
+            let slice = slices.resolve("desktop").unwrap();
+            worker_kernel_id = slice.worker_kernel_ref;
+            worker_state.config.daemon_id = worker_kernel_id.clone();
+            worker_state.config.daemon_alias = Some("slice:desktop".to_string());
+            worker_state.config.host_machine_id = slice.owner_machine_id;
+            slices
+                .set_relay_endpoint(
+                    "desktop",
+                    Some(crate::slice::SliceRelayEndpoint {
+                        url: format!("ws://{address}"),
+                        private: false,
+                    }),
+                    1,
+                )
+                .unwrap();
+            slices
+                .set_worker_presence(
+                    "desktop",
+                    Some(worker_kernel_id.clone()),
+                    Some(worker_state.config.host_machine_id.clone()),
+                    vec!["managed-dev-stub".to_string()],
+                    crate::session::unix_epoch_ms(),
+                )
+                .unwrap();
+        }
         if browser_controller {
             worker_state.config.room_environment_worker_binding =
                 Some(crate::config::RoomEnvironmentWorkerBinding {

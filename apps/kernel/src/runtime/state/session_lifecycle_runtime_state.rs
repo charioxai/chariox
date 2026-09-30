@@ -647,11 +647,22 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
-        let _slice_guards = self.guard_slice_execution(
+        let slice_admission = self.guard_slice_execution(
             Some(session_id),
             [(None, Some(machine_ref))],
             "agent.move_remote",
         )?;
+        let [target_slice_id] = slice_admission.slice_ids.as_slice() else {
+            return Err(DaemonError::InternalInvariant {
+                operation: "agent.move_remote",
+                message: "slice admission target count mismatch".to_string(),
+            });
+        };
+        let target_slice_id = target_slice_id.clone();
+        let worker_ref = match target_slice_id.as_deref() {
+            Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
+            None => machine_ref.to_string(),
+        };
         let terminated_run_ids = self
             .owned
             .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
@@ -665,14 +676,9 @@ impl KernelRuntimeState {
             self.owned
                 .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        let target_slice_id = self
-            .owned
-            .slice_store
-            .resolve_by_worker_kernel_ref(machine_ref)
-            .map(|slice| slice.id);
         let agent = self
             .with_app_side_effect(|app| {
-                app.move_agent_to_remote(session_id, agent_ref, machine_ref)
+                app.move_agent_to_remote(session_id, agent_ref, &worker_ref)
             })
             .await?;
         if let Some(slice_ref) = target_slice_id {

@@ -12,6 +12,7 @@ use super::model::{
 use super::ports::{self, LocalDockerSlicePorts};
 
 mod environment;
+mod execution_reference;
 mod invariants;
 
 use invariants::{
