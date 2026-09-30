@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -924,7 +925,9 @@ test("removed patch block comments cannot hide active added selectors", () => {
     const report = collect(fixture);
     const active = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_PATCH_ACTIVE");
     assert.equal(active?.patchSource.change, "added");
-    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_REMOVED_COMMENT"));
+    const uncertain = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_REMOVED_COMMENT");
+    assert.equal(uncertain?.sourceRoleHints.lexicalContext, "unknown_patch_fragment");
+    assert.equal(uncertain?.semanticDisposition.status, "unreviewed");
   });
 });
 
@@ -944,6 +947,33 @@ for (const [side, selector] of [["added", "CHARIOX_MANAGED_ADDED_GAP"], ["remove
       assert.ok(entry, "unknown omitted lexical context must retain a candidate");
       assert.equal(entry.patchSource.change, side);
       assert.equal(entry.patchSource[side === "added" ? "newLine" : "oldLine"], 20);
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+
+for (const [side, selector] of [["added", "CHARIOX_MANAGED_ADDED_TEMPLATE"], ["removed", "CHARIOX_MANAGED_REMOVED_TEMPLATE"]]) {
+  test("unknown starting template context preserves " + side + " patch selectors", () => {
+    withFixture({}, (fixture) => {
+      const oldLines = ["/* old banner", "  `;", 'const selector = "' + (side === "removed" ? selector : "ordinary") + '";'];
+      const newLines = ["/* new banner", "    `;", 'const selector = "' + (side === "added" ? selector : "ordinary") + '";'];
+      for (const lines of [oldLines, newLines]) {
+        const complete = [...Array(18).fill(""), "const banner = `", ...lines, "selector;"].join("\n");
+        assert.equal(runInNewContext(complete), lines === oldLines && side === "removed" || lines === newLines && side === "added" ? selector : "ordinary");
+      }
+      fixture.addFile("deploy/openship/patches/template-gap.patch", [
+        "diff --git a/apps/api/src/control.ts b/apps/api/src/control.ts",
+        "--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts",
+        "@@ -20,3 +20,3 @@",
+        ...oldLines.flatMap((line, index) => ["-" + line, "+" + newLines[index]]),
+      ].join("\n") + "\n");
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.ok(entry, "a valid source template beginning outside the hunk cannot hide executable source");
+      assert.equal(entry.patchSource.change, side);
+      assert.equal(entry.sourceRoleHints.lexicalContext, "unknown_patch_fragment");
       assert.equal(entry.semanticDisposition.status, "unreviewed");
       assert.equal(report.status, "fail");
     });

@@ -886,7 +886,9 @@ export function collectSourceInventory({
     const views = file.format === "patch" ? patchSourceViews(file, classifyProductionPath)
       : [{ path: file.path, format: file.format, text: file.text, lineOffset: 0, patchLines: [] }];
     for (const view of views) {
-      const lines = stripComments(view.text, view.format).split(/\r?\n/);
+      // A patch hunk can begin inside a literal/comment opened in omitted
+      // source. Incomplete lexical context must never suppress a candidate.
+      const lines = (file.format === "patch" ? view.text : stripComments(view.text, view.format)).split(/\r?\n/);
       const testRanges = view.format === "rust" ? findRustTestRanges(view.text, view.path) : [];
       const unitTopology = explicitUnitTopology(view.path, view.text);
       const embeddedPath = file.format === "patch" ? view.path : null;
@@ -916,6 +918,10 @@ export function collectSourceInventory({
             testRanges, unitTopology, category: match.category,
           });
           const patchSource = view.patchLines[lineIndex];
+          if (patchSource) {
+            sourceRoleHints.lexicalContext = "unknown_patch_fragment";
+            sourceRoleHints.executionRole = "patch_fragment_candidate";
+          }
           if (patchSource?.change === "removed") {
             sourceRoleHints.executionRole = "removed_patch_source_candidate";
             sourceRoleHints.positivePath1Directive = false;
