@@ -73,11 +73,9 @@ pub(crate) fn unit_settled(status: Option<i32>, output: &str) -> Result<bool, &'
     match (status, load, active) {
         (Some(0 | 1), Some("not-found"), Some("inactive")) => Ok(true),
         (Some(0), Some("loaded"), Some("inactive" | "failed")) => Ok(true),
-        (
-            Some(0),
-            Some("loaded"),
-            Some("active" | "activating" | "deactivating" | "reloading"),
-        ) => Ok(false),
+        (Some(0), Some("loaded"), Some("active" | "activating" | "deactivating" | "reloading")) => {
+            Ok(false)
+        }
         _ => Err("could not verify release update unit state"),
     }
 }
@@ -153,14 +151,37 @@ mod tests {
     }
 
     fn evidence(phase: &str) -> String {
-        format!("1\n{}\nrelease-a\nrelease-b\nenvironment-1\nmachine-1\nkernel-1\n{phase}\n", identity().update_id)
+        format!(
+            "1\n{}\nrelease-a\nrelease-b\nenvironment-1\nmachine-1\nkernel-1\n{phase}\n",
+            identity().update_id
+        )
     }
 
     #[test]
     fn a_clean_commit_and_completed_rollback_are_reportable() {
-        assert_eq!(settled_report("release-b", &identity(), Some(&evidence("committed")), false), UpdateReport::Applied);
-        assert_eq!(settled_report("release-a", &identity(), Some(&evidence("rolled_back")), false), UpdateReport::Failed);
-        assert_eq!(settled_report("release-a", &identity(), None, false), UpdateReport::Failed, "preflight failure has no recovery journal");
+        assert_eq!(
+            settled_report(
+                "release-b",
+                &identity(),
+                Some(&evidence("committed")),
+                false
+            ),
+            UpdateReport::Applied
+        );
+        assert_eq!(
+            settled_report(
+                "release-a",
+                &identity(),
+                Some(&evidence("rolled_back")),
+                false
+            ),
+            UpdateReport::Failed
+        );
+        assert_eq!(
+            settled_report("release-a", &identity(), None, false),
+            UpdateReport::Failed,
+            "preflight failure has no recovery journal"
+        );
     }
 
     #[test]
@@ -175,11 +196,35 @@ mod tests {
             ("kernel-1", "another-kernel"),
             ("committed", "activated"),
         ] {
-            assert_eq!(settled_report("release-b", &identity(), Some(&committed.replace(old, new)), false), UpdateReport::Pending, "{old}");
+            assert_eq!(
+                settled_report(
+                    "release-b",
+                    &identity(),
+                    Some(&committed.replace(old, new)),
+                    false
+                ),
+                UpdateReport::Pending,
+                "{old}"
+            );
         }
-        assert_eq!(settled_report("release-b", &identity(), None, false), UpdateReport::Pending);
-        assert_eq!(settled_report("release-b", &identity(), Some(&committed), true), UpdateReport::Pending, "recovery journal from a repeated attempt");
-        assert_eq!(settled_report("release-b", &identity(), Some(&evidence("rolled_back")), false), UpdateReport::Pending);
+        assert_eq!(
+            settled_report("release-b", &identity(), None, false),
+            UpdateReport::Pending
+        );
+        assert_eq!(
+            settled_report("release-b", &identity(), Some(&committed), true),
+            UpdateReport::Pending,
+            "recovery journal from a repeated attempt"
+        );
+        assert_eq!(
+            settled_report(
+                "release-b",
+                &identity(),
+                Some(&evidence("rolled_back")),
+                false
+            ),
+            UpdateReport::Pending
+        );
     }
 
     #[test]
@@ -190,27 +235,43 @@ mod tests {
             (Some(0), "LoadState=loaded\nActiveState=unknown\n"),
             (Some(0), "LoadState=not-found\nActiveState=active\n"),
             (None, "LoadState=loaded\nActiveState=inactive\n"),
-            (Some(0), "LoadState=loaded\nActiveState=inactive\nextra=field\n"),
+            (
+                Some(0),
+                "LoadState=loaded\nActiveState=inactive\nextra=field\n",
+            ),
         ] {
             assert!(unit_settled(status, output).is_err(), "{output}");
         }
-        assert_eq!(unit_settled(Some(0), "ActiveState=failed\nLoadState=loaded\n"), Ok(true));
-        assert_eq!(unit_settled(Some(0), "LoadState=loaded\nActiveState=active\n"), Ok(false));
-        assert_eq!(unit_settled(Some(1), "LoadState=not-found\nActiveState=inactive\n"), Ok(true));
+        assert_eq!(
+            unit_settled(Some(0), "ActiveState=failed\nLoadState=loaded\n"),
+            Ok(true)
+        );
+        assert_eq!(
+            unit_settled(Some(0), "LoadState=loaded\nActiveState=active\n"),
+            Ok(false)
+        );
+        assert_eq!(
+            unit_settled(Some(1), "LoadState=not-found\nActiveState=inactive\n"),
+            Ok(true)
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn evidence_files_must_be_bounded_root_owned_regular_files() {
         use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
-        let root = std::env::temp_dir().join(format!("chariox-update-evidence-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("chariox-update-evidence-{}", std::process::id()));
         std::fs::create_dir(&root).expect("scratch");
         let path = root.join("result");
         assert_eq!(read_evidence(&path).expect("missing"), None);
         std::fs::write(&path, evidence("committed")).expect("write");
         let is_root = std::fs::metadata(&path).expect("metadata").uid() == 0;
         if is_root {
-            assert_eq!(read_evidence(&path).expect("evidence"), Some(evidence("committed")));
+            assert_eq!(
+                read_evidence(&path).expect("evidence"),
+                Some(evidence("committed"))
+            );
         } else {
             assert!(read_evidence(&path).is_err());
         }

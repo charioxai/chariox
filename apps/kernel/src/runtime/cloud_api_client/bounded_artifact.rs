@@ -11,15 +11,21 @@ pub(super) fn copy(
 ) -> io::Result<()> {
     let admit = |free: u64, next: u64| {
         if free.saturating_sub(RESERVE_BYTES) < next || free < RESERVE_BYTES {
-            Err(io::Error::other("insufficient artifact download disk headroom"))
-        } else { Ok(()) }
+            Err(io::Error::other(
+                "insufficient artifact download disk headroom",
+            ))
+        } else {
+            Ok(())
+        }
     };
     admit(available()?, max_bytes)?;
     let mut copied = 0_u64;
     let mut buffer = [0_u8; 65536];
     loop {
         let count = source.read(&mut buffer)?;
-        if count == 0 { return Ok(()); }
+        if count == 0 {
+            return Ok(());
+        }
         if count as u64 > max_bytes.saturating_sub(copied) {
             return Err(io::Error::other("artifact exceeds download byte limit"));
         }
@@ -46,7 +52,10 @@ mod tests {
         let input = vec![7; 131072];
         let mut output = Vec::new();
         let mut free = [RESERVE_BYTES + 131072, RESERVE_BYTES + 65536, RESERVE_BYTES].into_iter();
-        let error = copy(&input[..], &mut output, input.len() as u64, || Ok(free.next().unwrap())).unwrap_err();
+        let error = copy(&input[..], &mut output, input.len() as u64, || {
+            Ok(free.next().unwrap())
+        })
+        .unwrap_err();
         assert!(error.to_string().contains("headroom"));
         assert_eq!(output.len(), 65536);
     }

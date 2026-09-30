@@ -151,11 +151,13 @@ pub(crate) async fn post_cloud_to_file(
         let written = (|| {
             let mut file =
                 std::fs::File::create(&partial).map_err(|error| io_error(error.to_string()))?;
-            let parent = destination.parent().ok_or_else(|| io_error("artifact has no parent directory".into()))?;
-            bounded_artifact::copy(
-                response.into_reader(), &mut file, max_bytes,
-                || fs2::available_space(parent),
-            ).map_err(|error| io_error(error.to_string()))?;
+            let parent = destination
+                .parent()
+                .ok_or_else(|| io_error("artifact has no parent directory".into()))?;
+            bounded_artifact::copy(response.into_reader(), &mut file, max_bytes, || {
+                fs2::available_space(parent)
+            })
+            .map_err(|error| io_error(error.to_string()))?;
             file.sync_all()
                 .map_err(|error| io_error(error.to_string()))?;
             std::fs::rename(&partial, &destination).map_err(|error| io_error(error.to_string()))

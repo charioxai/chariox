@@ -282,14 +282,16 @@ fn update_script(
     let staging = staging_root.join(&update.update_id);
     let tooling = tooling_release.join("usr/lib/chariox/slice-build-context/deploy/managed-kernel");
     let release_key = tooling_release.join("usr/lib/chariox/release-public-key");
+    let publication_root = tooling_release.parent().unwrap_or(tooling_release);
     format!(
         "set -eu; trap \"rm -rf '{staging}' '{archive}'\" EXIT; rm -rf '{staging}'; mkdir -p '{staging_root}'; \
-         python3 '{tooling}/extract-release.py' '{archive}' '{staging}'; \
-         rm -f '{archive}'; CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
+         python3 '{tooling}/extract-release.py' '{archive}' '{staging}' '{publication_root}'; \
+         rm -f '{archive}'; TMPDIR='{staging_root}' CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
          sh '{tooling}/upgrade-image.sh' '{staging}/rootfs' '{from}' '{target}' '{release_key}'",
         staging = staging.display(),
         archive = archive.display(),
         staging_root = staging_root.display(),
+        publication_root = publication_root.display(),
         update_id = update.update_id,
         builder_key = TRUSTED_BUILDER_PUBLIC_KEY,
         tooling = tooling.display(),
@@ -316,7 +318,11 @@ fn read_attempt(path: &Path) -> Result<Option<UpdateAttempt>, DaemonError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(update_error(format!("read release update attempt: {error}"))),
+        Err(error) => {
+            return Err(update_error(format!(
+                "read release update attempt: {error}"
+            )))
+        }
     };
     let attempt: UpdateAttempt = serde_json::from_slice(&bytes)
         .map_err(|error| update_error(format!("decode release update attempt: {error}")))?;
