@@ -329,12 +329,16 @@ export async function cleanupHostedCloudIdentity({
   }
 }
 
-export async function createPairingToken({ accountId, userId, subjectKind }) {
+export async function createPairingToken({ accountId, userId, subjectKind, cloudSessionToken }) {
+  assert(
+    typeof cloudSessionToken === "string" && cloudSessionToken.trim(),
+    "hosted Cloud pairing requires an authenticated Cloud session",
+  )
   const response = await postJson(`${apiUrl}/pairing-tokens`, {
     accountId,
     createdByUserId: userId,
     subjectKind,
-  })
+  }, { authorization: `Bearer ${cloudSessionToken}` })
   assert(response?.token, "cloud pairing token should be returned", response)
   return response.token
 }
@@ -344,6 +348,7 @@ export async function pairCloudMachineDirect({ profile, machineId, alias }) {
     accountId: profile.accountId,
     userId: profile.userId,
     subjectKind: "machine",
+    cloudSessionToken: profile.cloudSessionToken,
   })
   const response = await postJson(`${apiUrl}/machines/pair`, {
     accountId: profile.accountId,
