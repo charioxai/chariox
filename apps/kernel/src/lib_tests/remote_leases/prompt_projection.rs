@@ -854,6 +854,64 @@ fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
 }
 
 #[test]
+fn first_drain_after_a_leased_submit_carries_a_quiet_provider_run() {
+    // The home binds the worker run only when it processes the submit ACK, and
+    // it drops earlier snapshots. A run that never changes state or prints must
+    // still reach the home through its first drain after the ACK.
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-quiet-run",
+            "agent-home-quiet-run",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "quiet remote prompt\n", Vec::new())
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+
+    let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("first drain should succeed")
+        .expect("the first drain after the submission should carry the provider run");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        provider_run,
+        completions,
+        ..
+    } = event;
+    assert_eq!(
+        provider_run
+            .expect("the projection should carry the provider run")
+            .id(),
+        provider_run_id
+    );
+    assert!(completions.is_empty());
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("second drain should succeed")
+        .is_none());
+}
+
+#[test]
 fn leased_projection_drops_completion_records_older_than_the_active_home_prompt() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
@@ -920,10 +978,19 @@ fn leased_projection_drops_completion_records_older_than_the_active_home_prompt(
         "assistant-msg-stale",
         started_at_ms.saturating_sub(1),
     );
+    // The first drain after the submission carries the provider run, but not
+    // the stale completion.
     let stale = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
-        .expect("stale completion drain should succeed");
-    assert!(stale.is_none());
+        .expect("stale completion drain should succeed")
+        .expect("the first drain after the submission should carry the provider run");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        provider_run,
+        completions,
+        ..
+    } = stale.1;
+    assert!(provider_run.is_some());
+    assert!(completions.is_empty());
     assert!(app
         .prompt_owner_active_prompt_for_agent_snapshot(
             &leased_agent.backing_session_id,
