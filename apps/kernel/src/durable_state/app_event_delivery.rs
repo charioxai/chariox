@@ -207,7 +207,7 @@ fn write(tx: &Transaction<'_>, prepared: &PreparedAppEvent, recovery: bool) -> R
             hot_entities: &prepared.encoded.hot_entities,
             workflow_runs: &prepared.encoded.workflow_runs,
             delivery_receipts: &prepared.encoded.delivery_receipts,
-            prompt_state_json: None,
+            prompt_state_jsons: &[],
         },
     )?;
     Ok(())
