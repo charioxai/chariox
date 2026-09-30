@@ -57,7 +57,7 @@ type Result<T> = std::result::Result<T, Error>;
 const MAX_INSTALLATIONS: usize = 64;
 const MAX_RESERVED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const HOST_RESERVE: u64 = 8 * 1024 * 1024 * 1024;
-const CAPACITIES: [u64; 2] = [512 * 1024 * 1024, 64 * 1024 * 1024];
+const CAPACITIES: [u64; 2] = [super::DATA_QUOTA_BYTES, 64 * 1024 * 1024];
 
 pub(super) struct StorageRoot {
     dir: Dir,
