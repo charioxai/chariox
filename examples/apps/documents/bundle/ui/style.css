@@ -7,7 +7,7 @@ nav { border-right: 1px solid var(--line); padding: 16px 12px; overflow: auto; }
 .nav-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 h1 { font-size: 20px; margin: 0; }
 .nav-actions { margin: 6px 0 10px; }
-ul { list-style: none; margin: 0; padding: 0; }
+#docs { list-style: none; margin: 0; padding: 0; }
 li button { width: 100%; text-align: left; background: none; color: inherit; padding: 8px; border-radius: 6px; }
 li button[aria-current="true"] { background: color-mix(in srgb, var(--accent) 15%, transparent); }
 li .folder { color: var(--muted); font-size: 12px; display: block; }
