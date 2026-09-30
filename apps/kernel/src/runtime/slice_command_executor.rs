@@ -52,17 +52,24 @@ pub(crate) async fn execute_slice_request(
             execute_list_slices_request(runtime_state, request).await
         }
         LocalDaemonRequest::CreateSlice(request) => {
-            let request = managed_slice_create_request(
-                request,
-                managed_kernel_registration,
-                |project_id, workspace_id, worktree_id| {
-                    runtime_state.slice_development_selection_for_project(
-                        project_id,
-                        workspace_id,
-                        worktree_id,
-                    )
-                },
-            )?;
+            let mut request = request;
+            match inherited_slice_development(&request, managed_kernel_registration) {
+                InheritedSliceDevelopment::None => {}
+                InheritedSliceDevelopment::Plan(development) => {
+                    request.development = Some(development)
+                }
+                InheritedSliceDevelopment::ImportedProject(project_id) => {
+                    let (development, workspace_id, worktree_id) = runtime_state
+                        .slice_development_selection_for_project(
+                            &project_id,
+                            request.workspace_id.as_deref(),
+                            request.worktree_id.as_deref(),
+                        )?;
+                    request.workspace_id = Some(workspace_id);
+                    request.worktree_id = Some(worktree_id);
+                    request.development = Some(development);
+                }
+            }
             execute_create_slice_request(runtime_state, request).await
         }
         LocalDaemonRequest::GetSlice(request) => {
@@ -162,42 +169,34 @@ pub(crate) async fn execute_slice_request(
     }
 }
 
-type ProjectDevelopmentSelection = (ManagedContextDevelopmentSelection, String, String);
+/// The development a managed kernel's client slice inherits from its context
+/// plan. A source-project plan names the source kernel's Workspaces, so the
+/// slice instead develops this kernel's imported copy of that Project.
+enum InheritedSliceDevelopment {
+    None,
+    Plan(ManagedContextDevelopmentSelection),
+    ImportedProject(String),
+}
 
-fn managed_slice_create_request(
-    mut request: crate::local::CreateSliceRequest,
+fn inherited_slice_development(
+    request: &crate::local::CreateSliceRequest,
     registration: Option<&crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
-    project_selection: impl FnOnce(
-        &str,
-        Option<&str>,
-        Option<&str>,
-    ) -> Result<ProjectDevelopmentSelection, DaemonError>,
-) -> Result<crate::local::CreateSliceRequest, DaemonError> {
+) -> InheritedSliceDevelopment {
     if request.backend != crate::slice::SliceBackendKind::LocalDocker
         || request.development.is_some()
     {
-        return Ok(request);
+        return InheritedSliceDevelopment::None;
     }
-    let Some(plan) = registration.and_then(|registration| registration.context_plan.as_ref())
-    else {
-        return Ok(request);
-    };
-    match plan.package_binding().development {
-        // The plan names the source kernel's Workspaces; a slice here develops
-        // this kernel's imported copy of that Project.
-        ManagedContextDevelopmentSelection::SourceProject { project_id, .. } => {
-            let (selection, workspace_id, worktree_id) = project_selection(
-                &project_id,
-                request.workspace_id.as_deref(),
-                request.worktree_id.as_deref(),
-            )?;
-            request.workspace_id = Some(workspace_id);
-            request.worktree_id = Some(worktree_id);
-            request.development = Some(selection);
+    match registration
+        .and_then(|registration| registration.context_plan.as_ref())
+        .map(|plan| plan.package_binding().development)
+    {
+        None => InheritedSliceDevelopment::None,
+        Some(ManagedContextDevelopmentSelection::SourceProject { project_id, .. }) => {
+            InheritedSliceDevelopment::ImportedProject(project_id)
         }
-        development => request.development = Some(development),
+        Some(development) => InheritedSliceDevelopment::Plan(development),
     }
-    Ok(request)
 }
 
 fn managed_slice_should_inherit_git_credentials(
@@ -570,16 +569,8 @@ mod tests {
         }
     }
 
-    fn no_project(
-        _: &str,
-        _: Option<&str>,
-        _: Option<&str>,
-    ) -> Result<ProjectDevelopmentSelection, DaemonError> {
-        panic!("an empty plan needs no Project")
-    }
-
     #[test]
-    fn client_slice_create_develops_the_imported_copy_of_a_source_project() {
+    fn a_source_project_plan_defers_to_the_imported_project() {
         let registration = ConfirmedManagedKernelRegistration {
             context_plan: Some(ManagedKernelContextPlan::source_project_for_tests(
                 "context-1",
@@ -590,56 +581,32 @@ mod tests {
             )),
             ..empty_registration()
         };
-        let mut request = create_request();
-        request.workspace_id = None;
-        request.worktree_id = None;
-        let request = managed_slice_create_request(
-            request,
-            Some(&registration),
-            |project, workspace, worktree| {
-                assert_eq!((project, workspace, worktree), ("project-1", None, None));
-                Ok((
-                    ManagedContextDevelopmentSelection::Empty,
-                    "/home/chariox/repo".to_string(),
-                    "/home/chariox/repo".to_string(),
-                ))
-            },
-        )
-        .unwrap();
-        assert_eq!(request.workspace_id.as_deref(), Some("/home/chariox/repo"));
-        assert_eq!(request.worktree_id.as_deref(), Some("/home/chariox/repo"));
-        assert_eq!(
-            request.development,
-            Some(ManagedContextDevelopmentSelection::Empty)
-        );
+        assert!(matches!(
+            inherited_slice_development(&create_request(), Some(&registration)),
+            InheritedSliceDevelopment::ImportedProject(project) if project == "project-1"
+        ));
     }
 
     #[test]
     fn client_slice_create_inherits_the_managed_development_plan() {
-        let request =
-            managed_slice_create_request(create_request(), Some(&empty_registration()), no_project)
-                .unwrap();
-
-        assert_eq!(
-            request.development,
-            Some(ManagedContextDevelopmentSelection::Empty)
-        );
+        assert!(matches!(
+            inherited_slice_development(&create_request(), Some(&empty_registration())),
+            InheritedSliceDevelopment::Plan(ManagedContextDevelopmentSelection::Empty)
+        ));
     }
 
     #[test]
     fn ordinary_and_explicit_slice_development_are_not_rewritten() {
-        let ordinary = managed_slice_create_request(create_request(), None, no_project).unwrap();
-        assert_eq!(ordinary.development, None);
-
+        assert!(matches!(
+            inherited_slice_development(&create_request(), None),
+            InheritedSliceDevelopment::None
+        ));
         let mut explicit = create_request();
         explicit.development = Some(ManagedContextDevelopmentSelection::Empty);
-        let explicit =
-            managed_slice_create_request(explicit, Some(&empty_registration()), no_project)
-                .unwrap();
-        assert_eq!(
-            explicit.development,
-            Some(ManagedContextDevelopmentSelection::Empty)
-        );
+        assert!(matches!(
+            inherited_slice_development(&explicit, Some(&empty_registration())),
+            InheritedSliceDevelopment::None
+        ));
     }
 
     #[test]

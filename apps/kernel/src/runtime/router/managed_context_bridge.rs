@@ -701,45 +701,39 @@ impl CommandRouter {
             return Err(commit_error);
         }
 
-        // Imported profiles start `unknown`, which admits no new work. Refresh them
-        // as a user's Refresh would; a failure only leaves a profile `unknown`.
+        // Imported profiles start `unknown`, which admits no new work. Refresh each
+        // as a user's Refresh would, independently, and announce it after its write;
+        // a failure only leaves that profile `unknown`.
         if let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
             accounts,
         } = &receipt.provider_accounts
         {
-            let registry = provider_account_target.registry.clone();
-            let owner_user_id = provider_account_target.owner_user_id.clone();
-            let accounts = accounts
-                .iter()
-                .map(|account| (account.provider.clone(), account.profile_id.clone()))
-                .collect::<Vec<_>>();
-            let runtime_state = self.runtime_state.clone();
-            tokio::spawn(async move {
-                let refresh = tokio::task::spawn_blocking(move || {
-                    for (provider, profile_id) in accounts {
-                        if let Err(error) =
-                            crate::local::provider_requests::refresh_provider_account_profile_response(
-                                &registry,
-                                &owner_user_id,
-                                &provider,
-                                &profile_id,
-                            )
-                        {
-                            tracing::warn!(%provider, %profile_id, %error, "refresh imported provider profile");
-                        }
-                    }
-                });
-                if tokio::time::timeout(std::time::Duration::from_secs(180), refresh)
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("refresh of imported provider profiles timed out");
-                }
-                runtime_state
-                    .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            for account in accounts {
+                let registry = provider_account_target.registry.clone();
+                let owner_user_id = provider_account_target.owner_user_id.clone();
+                let (provider, profile_id) = (account.provider.clone(), account.profile_id.clone());
+                let runtime_state = self.runtime_state.clone();
+                tokio::spawn(async move {
+                    let refreshed = tokio::task::spawn_blocking(move || {
+                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                            &registry,
+                            &owner_user_id,
+                            &provider,
+                            &profile_id,
+                        )
+                        .map_err(|error| (provider, profile_id, error))
+                    })
                     .await;
-                runtime_state.record_waiting_room_change();
-            });
+                    if let Ok(Err((provider, profile_id, error))) = refreshed {
+                        tracing::warn!(%provider, %profile_id, %error, "refresh imported provider profile");
+                        return;
+                    }
+                    runtime_state
+                        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                        .await;
+                    runtime_state.record_waiting_room_change();
+                });
+            }
         }
 
         let final_store = store;

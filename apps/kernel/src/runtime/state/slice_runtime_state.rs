@@ -1948,6 +1948,82 @@ mod tests {
             .expect("active prompt should sync");
     }
 
+    #[tokio::test]
+    async fn slice_development_defaults_to_the_projects_primary_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-slice-project-selection-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let primary = root.join("primary");
+        let supporting = root.join("supporting");
+        for repository in [&primary, &supporting] {
+            std::fs::create_dir_all(repository).unwrap();
+            let status = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(repository)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.local_socket_path = root.join("kernel.sock");
+        config = config.with_session_history_root(root.join("history"));
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+        let runtime = owned_runtime_state(&app).await;
+        let primary = primary.display().to_string();
+        let supporting = supporting.display().to_string();
+        let mut project = crate::session::RuntimeProject::new(
+            "project-1",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            &primary,
+            "Imported",
+            crate::session::RuntimeProjectKind::Named,
+        );
+        project.replace_workspace_ids(vec![primary.clone(), supporting.clone()]);
+        runtime.owned.session_store.restore_projects(vec![project]);
+
+        let (selection, workspace, worktree) = runtime
+            .slice_development_selection_for_project("project-1", None, None)
+            .expect("default to the primary Workspace");
+        assert_eq!(
+            (workspace.as_str(), worktree.as_str()),
+            (primary.as_str(), primary.as_str())
+        );
+        let crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+            repositories,
+            ..
+        } = selection
+        else {
+            panic!("source-project selection expected");
+        };
+        assert_eq!(repositories.len(), 2);
+        assert_eq!(
+            repositories[0].worktree_id.as_deref(),
+            Some(primary.as_str())
+        );
+        assert_eq!(repositories[1].workspace_id, supporting);
+        assert_eq!(repositories[1].worktree_id, None);
+
+        let (_, workspace, worktree) = runtime
+            .slice_development_selection_for_project("project-1", Some(&supporting), None)
+            .expect("a supporting Workspace can be primary for the slice");
+        assert_eq!((workspace, worktree), (supporting.clone(), supporting));
+        let source = runtime
+            .slice_development_selection_for_project("project-1", Some("/source/kernel/repo"), None)
+            .expect_err("a source-kernel path is not a Workspace here");
+        assert!(source.to_string().contains("does not include Workspace"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
             config_projection,
