@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn hosted_kernel_production_temporary_peer_uses_registered_machine_binding() {
+async fn hosted_kernel_temporary_peer_keeps_machine_binding_and_rejects_alias_forgery() {
     let issuer_secret = "hosted-issuer-secret";
     let mut issuers = BTreeMap::new();
     issuers.insert("hosted-cloud".to_string(), issuer_secret.to_string());
@@ -139,55 +139,58 @@ async fn hosted_kernel_production_temporary_peer_uses_registered_machine_binding
     }
     sleep(Duration::from_millis(50)).await;
 
-    for (socket, request_id) in [(&mut home, "hosted-home"), (&mut alias_home, "alias-home")] {
-        socket
-            .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
-                    request_id: request_id.to_string(),
-                    target: ClientTarget {
-                        daemon_id: Some("worker-kernel".to_string()),
-                        daemon_alias: None,
-                    },
-                    encrypted_request: EncryptedRelayPayload {
-                        sender_public_key: if request_id == "hosted-home" {
-                            "home-public-key".to_string()
-                        } else {
-                            "alias-public-key".to_string()
-                        },
-                        nonce: "nonce".to_string(),
-                        ciphertext: "ciphertext".to_string(),
-                    },
-                })
-                .expect("peer request serializes")
-                .into(),
-            ))
-            .await
-            .expect("peer request sends");
-        let Some(Ok(Message::Text(text))) = worker.next().await else {
-            panic!("worker should receive peer request")
-        };
-        let RelayEnvelope::DaemonIncomingPeerRequest {
-            caller_identity: Some(identity),
-            ..
-        } = serde_json::from_str(&text).expect("incoming request decodes")
-        else {
-            panic!("unexpected incoming peer request")
-        };
-        if request_id == "hosted-home" {
-            let home_thumbprint = thumbprint("home-public-key");
-            assert_eq!(identity.subject_kind, RelaySubjectKind::Machine);
-            assert_eq!(identity.subject, "machine-home");
-            assert_eq!(identity.realm_id, "realm-home");
-            assert_eq!(identity.user_id.as_deref(), Some("user-home"));
-            assert_eq!(
-                identity.public_key_thumbprint.as_deref(),
-                Some(home_thumbprint.as_str())
-            );
-        } else {
-            assert_eq!(identity.subject_kind, RelaySubjectKind::Kernel);
-            assert_eq!(identity.subject, "home-alias");
-        }
-    }
+    let rejected = tokio::time::timeout(Duration::from_secs(2), alias_home.next())
+        .await
+        .expect("alias forgery should close promptly");
+    let Some(Ok(Message::Text(text))) = rejected else {
+        panic!("alias forgery should receive a protocol close envelope");
+    };
+    assert!(
+        matches!(serde_json::from_str::<RelayEnvelope>(&text).unwrap(),
+        RelayEnvelope::Close { reason }
+        if reason == "relay token subject does not match daemon registration")
+    );
+
+    home.send(Message::Text(
+        serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
+            request_id: "hosted-home".to_string(),
+            target: ClientTarget {
+                daemon_id: Some("worker-kernel".to_string()),
+                daemon_alias: None,
+            },
+            encrypted_request: EncryptedRelayPayload {
+                sender_public_key: "home-public-key".to_string(),
+                nonce: "nonce".to_string(),
+                ciphertext: "ciphertext".to_string(),
+            },
+        })
+        .expect("peer request serializes")
+        .into(),
+    ))
+    .await
+    .expect("peer request sends");
+    let incoming = tokio::time::timeout(Duration::from_secs(2), worker.next())
+        .await
+        .expect("worker should receive the canonical peer request promptly");
+    let Some(Ok(Message::Text(text))) = incoming else {
+        panic!("worker should receive peer request")
+    };
+    let RelayEnvelope::DaemonIncomingPeerRequest {
+        caller_identity: Some(identity),
+        ..
+    } = serde_json::from_str(&text).expect("incoming request decodes")
+    else {
+        panic!("unexpected incoming peer request")
+    };
+    let home_thumbprint = thumbprint("home-public-key");
+    assert_eq!(identity.subject_kind, RelaySubjectKind::Machine);
+    assert_eq!(identity.subject, "machine-home");
+    assert_eq!(identity.realm_id, "realm-home");
+    assert_eq!(identity.user_id.as_deref(), Some("user-home"));
+    assert_eq!(
+        identity.public_key_thumbprint.as_deref(),
+        Some(home_thumbprint.as_str())
+    );
 
     let _ = home.close(None).await;
     let _ = alias_home.close(None).await;

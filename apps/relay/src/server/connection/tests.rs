@@ -140,7 +140,7 @@ fn daemon_registration(daemon_id: &str) -> DaemonRegistration {
 fn scoped_daemon_registration_binds_subject_and_public_key() {
     use sha2::{Digest, Sha256};
 
-    let mut registration = daemon_registration("kernel-random");
+    let mut registration = daemon_registration("slice:dev-1");
     registration.daemon_alias = Some("slice:dev-1".to_string());
     registration.public_key = "worker-public-key".to_string();
     let thumbprint = Sha256::digest(registration.public_key.as_bytes())
@@ -179,7 +179,7 @@ fn scoped_daemon_registration_binds_subject_and_public_key() {
     );
 
     let mut wrong_subject = registration;
-    wrong_subject.daemon_alias = Some("slice:other".to_string());
+    wrong_subject.daemon_id = "slice:other".to_string();
     assert_eq!(
         validate_daemon_registration_identity(&identity, &wrong_subject),
         Err("relay token subject does not match daemon registration")
@@ -1170,4 +1170,75 @@ fn encrypted_payload() -> EncryptedRelayPayload {
         nonce: "nonce".to_string(),
         ciphertext: "ciphertext".to_string(),
     }
+}
+
+#[test]
+fn scoped_kernel_subject_cannot_register_a_foreign_daemon_through_alias() {
+    let identity = canonical_kernel_identity();
+    let mut registration = daemon_registration("kernel-foreign");
+    registration.daemon_alias = Some(identity.subject.clone());
+    assert_eq!(
+        validate_daemon_registration_identity(&identity, &registration),
+        Err("relay token subject does not match daemon registration"),
+        "a display alias must not authorize another canonical daemon identity"
+    );
+    registration.daemon_alias = None;
+    registration.kernel_alias = Some(identity.subject.clone());
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_err());
+}
+
+fn canonical_kernel_identity() -> VerifiedRelayIdentity {
+    VerifiedRelayIdentity {
+        realm_id: "realm-1".to_string(),
+        subject: "kernel-owned".to_string(),
+        subject_kind: RelaySubjectKind::Kernel,
+        allowed_actions: vec![RelayAction::DaemonRegister],
+        allowed_targets: None,
+        expires_at_ms: u64::MAX,
+        token_id: Some("synthetic-token".to_string()),
+        account_id: Some("account-1".to_string()),
+        user_id: Some("user-1".to_string()),
+        machine_id: Some("machine-1".to_string()),
+        client_id: None,
+        public_key_thumbprint: None,
+    }
+}
+
+#[test]
+fn scoped_kernel_registration_accepts_only_its_canonical_or_production_temporary_id() {
+    let identity = canonical_kernel_identity();
+    for id in [
+        "kernel-owned",
+        "kernel-owned:peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
+    ] {
+        assert!(
+            validate_daemon_registration_identity(&identity, &daemon_registration(id)).is_ok(),
+            "{id}"
+        );
+    }
+    for id in [
+        "kernel-owned:peer-tmp:arbitrary",
+        "kernel-owned:peer-tmp:daemon-peer-tmp-0-1-1",
+        "kernel-owned:peer-tmp:daemon-peer-tmp-1-1-1:foreign",
+        "kernel-other:peer-tmp:daemon-peer-tmp-1-1-1",
+    ] {
+        assert!(
+            validate_daemon_registration_identity(&identity, &daemon_registration(id)).is_err(),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn signed_machine_cannot_register_a_kernel_but_legacy_and_trusted_service_are_preserved() {
+    let registration = daemon_registration("kernel-owned");
+    let mut identity = canonical_kernel_identity();
+    identity.subject = registration.machine_id.clone();
+    identity.subject_kind = RelaySubjectKind::Machine;
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_err());
+    identity.subject_kind = RelaySubjectKind::Service;
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_ok());
+    identity.subject_kind = RelaySubjectKind::Machine;
+    identity.token_id = None;
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_ok());
 }
