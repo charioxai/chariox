@@ -3,6 +3,9 @@ use std::sync::Mutex;
 
 enum Check {
     Error(WorkerError),
+    /// Every check once the worker has exited fails: a limit the domain
+    /// recorded as the worker ended between periodic checks.
+    Recorded(WorkerError),
     Panic,
     #[cfg(target_os = "macos")]
     Growth,
@@ -51,12 +54,31 @@ impl ResourceDomain for CheckedDomain {
             }
             return result;
         }
+        if let Check::Recorded(error) = self.check {
+            // No timing dependency: a periodic check of a live worker passes.
+            let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            let exited = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    _pid as libc::id_t,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                ) == 0
+                    && info.assume_init().si_pid() != 0
+            };
+            if !exited {
+                return Ok(());
+            }
+            *self.observed.failure.lock().unwrap() = Some(Instant::now());
+            return Err(error);
+        }
         if count < 2 {
             return Ok(());
         }
         *self.observed.failure.lock().unwrap() = Some(Instant::now());
         match self.check {
             Check::Error(error) => Err(error),
+            Check::Recorded(_) => unreachable!(),
             Check::Panic => panic!("test-only running domain panic"),
             #[cfg(target_os = "macos")]
             Check::Growth => unreachable!(),
@@ -185,6 +207,33 @@ fn a_running_worker_the_domain_killed_at_its_memory_limit_ends_with_that_failure
     assert_eq!(result.failure, Some(WorkerError::MemoryLimit));
     assert_eq!(ended(&ending), Some(WorkerError::MemoryLimit));
     assert_released(&observed);
+}
+
+#[test]
+fn a_limit_recorded_when_a_running_worker_exits_is_named() {
+    // "normal" exits on its own right after Continue, as a worker that a
+    // cgroup OOM kill ends between periodic checks does.
+    let fixture = Fixture::compile();
+    for (error, named) in [
+        (WorkerError::MemoryLimit, Some(WorkerError::MemoryLimit)),
+        (WorkerError::ThreadLimit, Some(WorkerError::ThreadLimit)),
+        (WorkerError::ResourceDomain, None),
+    ] {
+        let (prepared, observed, marker) = fixture.prepare("normal", false, false);
+        let (prepared, checks) = checked(prepared, Check::Recorded(error));
+        let result = wait_with_deadline(
+            WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(marker.exists());
+        assert_eq!(result.code, Some(0), "{error}: exited on its own");
+        assert_eq!(result.failure, named, "{error}");
+        assert!(
+            checks.failure.lock().unwrap().is_some(),
+            "{error}: the domain was asked after the exit"
+        );
+        assert_released(&observed);
+    }
 }
 
 #[test]

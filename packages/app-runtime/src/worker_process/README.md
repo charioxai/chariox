@@ -62,6 +62,9 @@ from [`task_power_info_locked`](https://github.com/apple-oss-distributions/xnu/b
 Memory, thread, CPU and telemetry failures have separate stable error codes;
 each terminates and reaps through the existing reservation owner. Sampling that
 races a completed child preserves normal exit, using the held wait authority.
+A running worker that ends on its own (or whose exit cancels it) is checked
+against its domain once more before reap: a memory or task limit the domain
+recorded, such as a Linux cgroup OOM kill between samples, is its failure.
 
 These are **monitored termination thresholds**, not hard macOS memory/CPU quotas.
 The 100ms sampling interval, ordinary scheduler delay and OS kill/reap latency

@@ -90,6 +90,21 @@ impl Child {
             .domain
             .exit_failure()
     }
+    /// A hard limit the domain recorded, for a worker that ended between
+    /// checks. A kernel-enforced limit (a Linux cgroup OOM kill) makes the
+    /// exit look ordinary; only these two limits are named.
+    fn limit_failure(&mut self) -> Option<WorkerError> {
+        let result = self
+            .prepared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .domain
+            .check_running(self.pid, Instant::now());
+        match result {
+            Err(error @ (WorkerError::MemoryLimit | WorkerError::ThreadLimit)) => Some(error),
+            _ => None,
+        }
+    }
     fn exited(&self) -> io::Result<bool> {
         let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
         let result = unsafe {
@@ -379,6 +394,13 @@ pub(super) fn run(
     if !running {
         let _ = started.send(Err(failure.unwrap_or(WorkerError::EarlyExit)));
     }
+    // A running worker that ended on its own (or whose exit closed its
+    // connection first) may have been killed by a limit the OS enforces
+    // between checks; ask the domain before its reap.
+    let failure = match failure {
+        None | Some(WorkerError::Cancelled) if running => child.limit_failure().or(failure),
+        other => other,
+    };
     // Before the kill closes the SDK channel, so a call that loses it can
     // name this cause.
     ending.send_replace(Some(failure));
