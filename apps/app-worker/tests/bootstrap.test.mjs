@@ -49,8 +49,8 @@ async function fixture(source, { entry = 'runtime/main.mjs', config = {}, enviro
   } };
 }
 
-function start(prepared) {
-  const child = spawn(process.execPath, ['--no-warnings', '-e', prepared.script], {
+function start(prepared, nodeArguments = []) {
+  const child = spawn(process.execPath, ['--no-warnings', ...nodeArguments, '-e', prepared.script], {
     cwd: prepared.roots.data, env: prepared.environment, stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
   });
   active.add(child);
@@ -375,4 +375,84 @@ test('the migration timeout bounds migrations and startup is re-armed for App lo
   await running.ready();
   running.request('shutdown-slow', 'lifecycle.dispatch', { event: 'shutdown' });
   assert.equal((await running.completed).code, 0);
+});
+
+test('App worker threads keep the permission model, whatever their options', async () => {
+  const source = `import { register } from 'node:module';
+import { SHARE_ENV, Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+const probe = \`
+  const fs = require('node:fs');
+  const { Worker, parentPort, workerData } = require('node:worker_threads');
+  const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+  parentPort.postMessage({
+    outside: code(() => fs.readFileSync(workerData.outside)),
+    storage: code(() => fs.writeFileSync(workerData.storage, 'x')),
+    worker: code(() => new Worker('0', { eval: true, execArgv: [] }).terminate()),
+    register: code(() => require('node:module').register('data:text/javascript,')),
+    childProcess: code(() => require('node:child_process').spawnSync('true')),
+  });\`;
+export default chariox => chariox.tools.register('echo', async ({ outside }) => {
+  const storage = chariox.paths.data + '/from-worker';
+  const run = (Constructor, options) => new Promise(resolve => {
+    let worker;
+    try { worker = new Constructor(probe, { eval: true, workerData: { outside, storage }, ...options }); }
+    catch (error) { resolve(error.code); return; }
+    worker.once('message', resolve);
+    worker.once('error', error => resolve('error:' + error.code));
+  });
+  class Subclass extends Worker {}
+  const outcome = {
+    app: code(() => require('node:fs').readFileSync(outside)),
+    register: code(() => register('data:text/javascript,')),
+    childProcess: code(() => require('node:child_process').spawnSync('true')),
+    binding: code(() => process.binding('spawn_sync')),
+    sameWorker: require('node:worker_threads').Worker === Worker && Worker.prototype.constructor === Worker,
+    handleConstructor: code(() => {
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+      return new worker[handle].constructor();
+    }),
+    inherited: await run(Worker, {}),
+    emptyExecArgv: await run(Worker, { execArgv: [] }),
+    repeatedExecArgv: await run(Worker, { execArgv: process.execArgv }),
+    constructorExecArgv: await run(Worker.prototype.constructor, { execArgv: [] }),
+    subclassExecArgv: await run(Subclass, { execArgv: [] }),
+    customExecArgv: await run(Worker, { execArgv: ['--stack-trace-limit=5'] }),
+    widerExecArgv: await run(Worker, { execArgv: ['--permission', '--allow-fs-read=*'] }),
+    envNodeOptions: await run(Worker, { env: { NODE_OPTIONS: '--allow-fs-read=*' } }),
+    shareEnv: await run(Worker, { env: SHARE_ENV }),
+  };
+  process.env.NODE_OPTIONS = '--allow-fs-read=*';
+  outcome.processNodeOptions = await run(Worker, {});
+  Object.prototype.execArgv = [];
+  outcome.prototypeExecArgv = await run(Worker, {});
+  delete Object.prototype.execArgv;
+  return outcome;
+});`;
+  const prepared = await fixture(source);
+  const outside = path.join(path.dirname(prepared.roots.data), 'outside.txt');
+  await writeFile(outside, 'secret');
+  const roots = Object.values(prepared.roots);
+  const running = start(prepared, ['--permission', '--no-addons', '--allow-worker', '--max-old-space-size=128',
+    ...roots.map(root => `--allow-fs-read=${root}`),
+    `--allow-fs-write=${prepared.roots.data}`, `--allow-fs-write=${prepared.roots.temporary}`]);
+  await running.ready();
+  running.request('call-1', 'tools.invoke', { name: 'echo', input: { outside } });
+  const outcome = (await running.receive(message => message.id === 'call-1')).result;
+  const denied = 'ERR_ACCESS_DENIED';
+  const contained = { outside: denied, storage: 'ok', worker: denied, register: denied, childProcess: denied };
+  assert.deepEqual(outcome, {
+    app: denied, register: denied, childProcess: denied, binding: denied, sameWorker: true, handleConstructor: denied,
+    inherited: contained, emptyExecArgv: contained, repeatedExecArgv: contained,
+    constructorExecArgv: contained, subclassExecArgv: contained,
+    customExecArgv: denied, widerExecArgv: denied, envNodeOptions: contained, shareEnv: denied,
+    processNodeOptions: contained, prototypeExecArgv: contained,
+  });
+  assert.equal(await readFile(path.join(prepared.roots.data, 'from-worker'), 'utf8'), 'x');
+  running.child.kill('SIGKILL');
+  await running.completed;
 });

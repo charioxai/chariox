@@ -91,3 +91,19 @@ trap and completes a gzip exchange through the broker messages. Bootstrap/SDK
 changes belong to the versioned bundle graph, not the native compiler inputs.
 See [the Fetch contract](../../../packages/app-sdk/FETCH.md) for its precise
 supported subset and remaining integrated validation.
+
+Before the SDK or any App module loads, the bootstrap also keeps worker threads
+inside Node's permission model. On Node 24.20 a `Worker` given its own
+`execArgv` (even `[]`) is parsed afresh, so it starts without `--permission` or
+with wider allow-lists; a `NODE_OPTIONS` in its environment is parsed too; and
+`module.register` starts a hooks thread that inherits `--allow-worker`. So every
+`Worker` gets the launcher's `--permission`, `--no-addons` and file allow-lists,
+without `--allow-worker` (a worker thread cannot start another one). An App's
+`execArgv` may only repeat launcher flags, `NODE_OPTIONS` is dropped from the
+worker's environment, `SHARE_ENV` is refused, and `module.register` fails with
+`ERR_ACCESS_DENIED`, as Node itself does without `--allow-worker`. The
+replacement `Worker` is a Proxy, so the native constructor is not reachable
+from the export, its prototype or an instance, and the first Worker hides the
+constructor of its internal thread handle. Child processes, WASI, the
+inspector and `process.binding` stay denied by Node's permission model. Node's
+permissions remain defense in depth; the native sandbox contains the worker.

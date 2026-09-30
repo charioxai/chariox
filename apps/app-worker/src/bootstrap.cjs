@@ -11,6 +11,99 @@ const later = setTimeout;
 const cancelTimer = clearTimeout;
 let started = false;
 
+// Node's permission model reaches a worker thread only through inherited
+// options. On Node 24.20 a Worker given its own execArgv (even []) starts
+// without --permission or with wider allow-lists, a NODE_OPTIONS in its env is
+// parsed too, and module.register's hooks thread inherits --allow-worker and
+// can start such a Worker. Before any App code: every Worker gets the
+// launcher's permission flags without --allow-worker (so it cannot start
+// Workers or hooks itself), App execArgv may only repeat launcher flags, env
+// never carries NODE_OPTIONS, SHARE_ENV is refused, and so is module.register.
+// This runs after App code has had a chance to replace built-ins, so it uses
+// only references captured here.
+function guardWorkerPermission() {
+  const threads = require('node:worker_threads');
+  const nodeModule = require('node:module');
+  const { Worker: NativeWorker, SHARE_ENV } = threads;
+  const { apply, construct, defineProperty } = Reflect;
+  const { assign, freeze, getOwnPropertySymbols, getPrototypeOf, keys } = Object;
+  const { isArray } = Array;
+  const { includes } = Array.prototype;
+  const hostEnv = process.env;
+  const launcherFlags = freeze([...process.execArgv]);
+  const workerFlags = freeze(launcherFlags.filter(flag => flag === '--permission' || flag === '--no-addons'
+    || flag.startsWith('--allow-fs-read=') || flag.startsWith('--allow-fs-write=')));
+  // Fail closed if the permission model is on but its flags are not visible.
+  const unguarded = process.permission !== undefined && !workerFlags.includes('--permission');
+  const failure = (message, code, Type = Error) => assign(new Type(message), { code });
+  const denied = message => failure(message, 'ERR_ACCESS_DENIED');
+
+  function workerOptions(options = {}) {
+    if (unguarded) throw denied('App worker threads are unavailable in this runtime');
+    // Own properties only: an execArgv or env on Object.prototype is ignored.
+    const safe = { __proto__: null, ...options };
+    const requested = safe.execArgv;
+    if (requested) {
+      if (!isArray(requested)) {
+        throw failure('The "options.execArgv" property must be of type Array', 'ERR_INVALID_ARG_TYPE', TypeError);
+      }
+      const length = requested.length;
+      for (let index = 0; index < length; index += 1) {
+        const flag = requested[index];
+        if (typeof flag !== 'string' || !apply(includes, launcherFlags, [flag])) {
+          throw denied('App worker threads keep the App permission flags; execArgv may only repeat them');
+        }
+      }
+    }
+    safe.execArgv = workerFlags;
+    if (safe.env === SHARE_ENV) throw denied('App worker threads cannot share the process environment');
+    const source = safe.env ?? hostEnv;
+    if (typeof source !== 'object') {
+      throw failure('The "options.env" property must be of type object', 'ERR_INVALID_ARG_TYPE', TypeError);
+    }
+    const names = keys(source);
+    const env = { __proto__: null };
+    for (let index = 0; index < names.length; index += 1) {
+      if (names[index] !== 'NODE_OPTIONS') env[names[index]] = `${source[names[index]]}`;
+    }
+    safe.env = env;
+    return safe;
+  }
+
+  // An instance's internal handle would otherwise lead back to the native
+  // thread constructor. The first Worker hides it before the App sees one.
+  let handleHidden = false;
+  function hideHandleConstructor(worker) {
+    if (handleHidden) return worker;
+    const symbols = getOwnPropertySymbols(worker);
+    for (let index = 0; index < symbols.length; index += 1) {
+      if (symbols[index].description !== 'kHandle') continue;
+      defineProperty(getPrototypeOf(worker[symbols[index]]), 'constructor', {
+        value: function Worker() { throw denied('App worker threads start only through node:worker_threads'); },
+        writable: true, configurable: true,
+      });
+      handleHidden = true;
+      return worker;
+    }
+    worker.terminate();
+    throw denied('App worker threads are unavailable in this runtime');
+  }
+
+  // A Proxy never exposes the native constructor; subclasses keep new.target.
+  const Worker = new Proxy(NativeWorker, {
+    construct: (target, args, newTarget) =>
+      hideHandleConstructor(construct(target, [args[0], workerOptions(args[1])], newTarget)),
+  });
+  defineProperty(NativeWorker.prototype, 'constructor', { value: Worker, writable: true, configurable: true });
+  threads.Worker = Worker;
+  // Node refuses register itself when --allow-worker is absent.
+  nodeModule.register = function register() {
+    throw denied('module.register is not available to Apps');
+  };
+  // ESM `import { Worker } from 'node:worker_threads'` must see the same functions.
+  nodeModule.syncBuiltinESMExports();
+}
+
 function start(input) {
   let sdk;
   let transport;
@@ -38,6 +131,7 @@ function start(input) {
   arm(config.migrations.length ? config.migrationTimeoutMs : config.startupTimeoutMs);
 
   async function load() {
+    guardWorkerPermission();
     // Runtime packaging pins this complete SDK source graph. Never resolve an
     // SDK from the App, cwd, NODE_PATH, an installation script, or a URL.
     const { createAppSdk } = require('./sdk/src/index.js');
