@@ -4,6 +4,7 @@ mod store;
 mod types;
 
 pub use service::AgentService;
+pub(crate) use service::new_agent_focus_target;
 pub use service_store::AgentServiceStore;
 pub(crate) use service_store::ProviderResumeClearOutcome;
 pub use store::AgentStore;

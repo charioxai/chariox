@@ -136,12 +136,7 @@ impl AgentService {
             created_agents.push(agent);
         }
 
-        // Only a person moves the session focus: a person's new agent takes it,
-        // an agent a metaagent spawns does not.
-        let focused_agent_id = created_agents
-            .iter()
-            .rev()
-            .find(|agent| agent.controlled_by_metaagent_id().is_none())
+        let focused_agent_id = new_agent_focus_target(&created_agents)
             .map(|agent| agent.id().to_string())
             .or_else(|| session.focused_agent_id().map(str::to_string));
         let created_agents = self.store.insert_session_batch_and_apply_layout(
@@ -1183,6 +1178,16 @@ impl Default for AgentService {
     }
 }
 
+/// The new agent that takes the session focus: a person's last new agent.
+/// Only a person moves the focus, so an agent created on a metaagent's behalf
+/// (a meta-mode spawn, or workflow code for a metaagent) never takes it.
+pub(crate) fn new_agent_focus_target(agents: &[AgentInstance]) -> Option<&AgentInstance> {
+    agents
+        .iter()
+        .rev()
+        .find(|agent| agent.controlled_by_metaagent_id().is_none())
+}
+
 #[cfg(test)]
 mod workflow_copy_alias_tests {
     use super::*;
@@ -1392,6 +1397,26 @@ mod workflow_copy_alias_tests {
                 .state(),
             AgentState::Focused
         );
+
+        // A batch mixing both focuses the person's agent, whatever its order.
+        let batch = service
+            .create_agents(
+                vec![
+                    CreateAgentRequest::new(session.id(), "codex"),
+                    CreateAgentRequest::new(session.id(), "codex")
+                        .with_controlled_by_metaagent_id(person_agent.id()),
+                ],
+                &mut sessions,
+            )
+            .expect("a mixed batch should be created");
+        assert_eq!(
+            new_agent_focus_target(&batch).map(|agent| agent.id()),
+            Some(batch[0].id())
+        );
+        assert_eq!(focused(&sessions), Some(batch[0].id().to_string()));
+        // A metaagent-only batch (as a worker-backed spawn returns it) has no
+        // focus target: the session keeps its focus.
+        assert!(new_agent_focus_target(&batch[1..]).is_none());
 
         // A person's spawn still takes the focus.
         let next = service
