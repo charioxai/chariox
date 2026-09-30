@@ -3,7 +3,8 @@ use std::sync::Mutex;
 
 enum Check {
     Error(WorkerError),
-    /// Every check fails, including the first: a limit the domain recorded.
+    /// Every check once the worker has exited fails: a limit the domain
+    /// recorded as the worker ended between periodic checks.
     Recorded(WorkerError),
     Panic,
     #[cfg(target_os = "macos")]
@@ -54,6 +55,21 @@ impl ResourceDomain for CheckedDomain {
             return result;
         }
         if let Check::Recorded(error) = self.check {
+            // No timing dependency: a periodic check of a live worker passes.
+            let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            let exited = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    _pid as libc::id_t,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                ) == 0
+                    && info.assume_init().si_pid() != 0
+            };
+            if !exited {
+                return Ok(());
+            }
+            *self.observed.failure.lock().unwrap() = Some(Instant::now());
             return Err(error);
         }
         if count < 2 {
@@ -162,8 +178,8 @@ fn running_resource_failures_retain_admission_through_actual_reap() {
 
 #[test]
 fn a_limit_recorded_when_a_running_worker_exits_is_named() {
-    // "normal" exits right after Continue, before the first periodic check:
-    // a cgroup OOM kill ends a worker the same way, between checks.
+    // "normal" exits on its own right after Continue, as a worker that a
+    // cgroup OOM kill ends between periodic checks does.
     let fixture = Fixture::compile();
     for (error, named) in [
         (WorkerError::MemoryLimit, Some(WorkerError::MemoryLimit)),
@@ -179,10 +195,9 @@ fn a_limit_recorded_when_a_running_worker_exits_is_named() {
         assert!(marker.exists());
         assert_eq!(result.code, Some(0), "{error}: exited on its own");
         assert_eq!(result.failure, named, "{error}");
-        assert_eq!(
-            checks.samples.lock().unwrap().len(),
-            1,
-            "{error}: one check, after the exit"
+        assert!(
+            checks.failure.lock().unwrap().is_some(),
+            "{error}: the domain was asked after the exit"
         );
         assert_released(&observed);
     }
