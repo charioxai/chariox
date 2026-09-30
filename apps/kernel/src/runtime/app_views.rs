@@ -876,6 +876,7 @@ mod call_cancellation_tests {
                 owner: "user".into(),
                 installation: "a".into(),
                 generation: 1,
+                panel: PanelRequest::default(),
             },
         );
         views
@@ -985,6 +986,7 @@ mod call_cancellation_tests {
                 owner: "user".into(),
                 installation: "a".into(),
                 generation: 1,
+                panel: PanelRequest::default(),
             },
         );
         let new = views.track_call("s", "t1", Some("doc-2".into()));
@@ -1105,6 +1107,7 @@ mod reconnect_tests {
             owner: "user".into(),
             installation: "a".into(),
             generation,
+            panel: PanelRequest::default(),
         }
     }
 
