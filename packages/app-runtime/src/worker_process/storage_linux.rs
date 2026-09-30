@@ -63,7 +63,7 @@ impl From<crate::private_fs::FsError> for Error {
 }
 type Result<T> = StdResult<T, Error>;
 
-const DATA_BYTES: u64 = 512 * 1024 * 1024;
+const DATA_BYTES: u64 = super::DATA_QUOTA_BYTES;
 const TMP_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_INSTALLATIONS: usize = 64;
 const MAX_RESERVED_BYTES: u64 = 32 * 1024 * 1024 * 1024;

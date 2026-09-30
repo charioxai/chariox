@@ -223,6 +223,15 @@ it, or when the App is updated or uninstalled. A file name with control or
 invisible format characters (such as bidi overrides) is refused with
 `INVALID_ARGUMENT`.
 
+`files.atomic_replace {path, contentsBase64}` writes at most 512 KiB to a new
+private file and renames it over `path`, replying `{bytesWritten}`. When the
+installation's private data volume has no space left (a fixed 512 MiB quota per
+installation on Linux and macOS), it and `files.import` fail `APP_STORAGE_FULL`,
+not retryable, and the message names the quota. Nothing is written; the App must
+delete data before writing again. Other failures to write stay
+`APP_FILE_UNAVAILABLE`, and `APP_FILE_OUTCOME_UNCERTAIN` means the rename may
+have completed. An App's own `node:fs` writes to the full volume fail `ENOSPC`.
+
 `files.snapshot {name, consistency}` (no capability needed) copies the
 installation's private files, structured state and pending wakes into the
 kernel's snapshot store, outside App data. The reply is `{snapshotId,

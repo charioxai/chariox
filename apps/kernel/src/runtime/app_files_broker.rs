@@ -4,8 +4,10 @@ use super::app_operation_budget::AppOperationBudget;
 use crate::durable_state::{app_files::AppFileError, DurableKernelStateStore};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chariox_app_runtime::{
-    app_outbox::EventCatalog, wire::RemoteError, worker_peer::BrokerRequest,
-    worker_process::PrivateData,
+    app_outbox::EventCatalog,
+    wire::RemoteError,
+    worker_peer::BrokerRequest,
+    worker_process::{PrivateData, PrivateDataError, DATA_QUOTA_BYTES},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -111,23 +113,36 @@ impl AppFilesBroker {
         })
         .await
         .map_err(|_| error("APP_FILE_OUTCOME_UNCERTAIN", false))?
-        .map_err(|failure: AppFileError| {
-            use chariox_app_runtime::worker_process::PrivateDataError;
-            match failure {
-                AppFileError::File(PrivateDataError::OutcomeUncertain) => {
-                    error("APP_FILE_OUTCOME_UNCERTAIN", false)
-                }
-                AppFileError::File(PrivateDataError::Invalid) => error("INVALID_ARGUMENT", false),
-                AppFileError::Stopped(_) => error("APP_OPERATION_STOPPED", false),
-                AppFileError::Catalog(_) => error("APP_STALE", false),
-                _ => error("APP_FILE_UNAVAILABLE", false),
-            }
-        })?;
+        .map_err(file_failure)?;
         Ok(serde_json::json!({"bytesWritten":bytes_written}))
     }
 }
 #[cfg(test)]
 mod tests;
+fn file_failure(failure: AppFileError) -> RemoteError {
+    match failure {
+        AppFileError::File(PrivateDataError::OutcomeUncertain) => {
+            error("APP_FILE_OUTCOME_UNCERTAIN", false)
+        }
+        AppFileError::File(PrivateDataError::Invalid) => error("INVALID_ARGUMENT", false),
+        AppFileError::File(PrivateDataError::StorageFull) => storage_full(),
+        AppFileError::Stopped(_) => error("APP_OPERATION_STOPPED", false),
+        AppFileError::Catalog(_) => error("APP_STALE", false),
+        _ => error("APP_FILE_UNAVAILABLE", false),
+    }
+}
+/// The installation's private data volume refused a write for space. Not
+/// retryable: only deleting App data frees it.
+pub(super) fn storage_full() -> RemoteError {
+    RemoteError {
+        code: "APP_STORAGE_FULL".into(),
+        message: format!(
+            "App data storage is full ({} MiB quota); delete App data to free space",
+            DATA_QUOTA_BYTES / (1024 * 1024)
+        ),
+        retryable: Some(false),
+    }
+}
 fn error(code: &str, retryable: bool) -> RemoteError {
     let message = match code {
         "APP_FILE_OUTCOME_UNCERTAIN" => {
