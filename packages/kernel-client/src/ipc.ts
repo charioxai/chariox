@@ -973,6 +973,8 @@ export class LocalIpcClient {
         socket.terminate()
         this.setWebSocket(lane, null)
         this.setRelayDaemonPublicKey(lane, null)
+        // Its close handler no longer sees this socket as the lane's.
+        this.rejectPending("kernel websocket heartbeat missed", lane)
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -992,6 +994,8 @@ export class LocalIpcClient {
         socket.terminate()
         this.setWebSocket(lane, null)
         this.setRelayDaemonPublicKey(lane, null)
+        // Its close handler no longer sees this socket as the lane's.
+        this.rejectPending("kernel websocket heartbeat missed", lane)
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1197,6 +1201,10 @@ export class LocalIpcClient {
       this.setSuppressNextCloseEvent(lane, true)
       socket.terminate()
     }
+    // The dropped socket's close handler no longer sees it as the lane's, so
+    // its other requests end here: a replayable one is resent now, and one the
+    // kernel runs again (a worker control) is not left waiting for 600 s.
+    this.rejectPending("kernel websocket dropped", lane)
   }
 }
 

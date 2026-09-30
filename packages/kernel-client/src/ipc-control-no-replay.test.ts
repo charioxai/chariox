@@ -62,6 +62,45 @@ for (const request of [
   })
 }
 
+test("LocalIpcClient ends an App worker control at once when the heartbeat drops its socket", async (t) => {
+  // The server never answers and never pongs: a half-open link.
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0, autoPong: false })
+  await new Promise<void>((resolve) => server.once("listening", resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  let requests = 0
+  server.on("connection", (socket) => socket.on("message", () => { requests += 1 }))
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, {
+    controlResponseStallMs: 25, kernelPingIntervalMs: 250, kernelMaxMissedPongs: 1, reconnectJitterMs: 0,
+  })
+  t.after(() => {
+    client.destroy()
+    for (const socket of server.clients) socket.terminate()
+    return new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+
+  const started = Date.now()
+  await assert.rejects(client.send({ ControlAppWorker: { installation_id: "todo", action: "restart" } }),
+    (error: unknown) => error instanceof LocalIpcError && error.code === "outcome_unknown")
+  assert.ok(Date.now() - started < 5_000, "not left waiting for the request timeout")
+  assert.equal(requests, 1)
+})
+
+test("LocalIpcClient ends an App worker control at once when another request's replay drops its socket", async (t) => {
+  // Neither first request is answered; the read stalls, drops the socket and is answered on replay.
+  const { client, state } = await kernel(t, (socket, frame, count) => {
+    if (count <= 2) return
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: { ok: true }, error: null }))
+  })
+  const control = client.send({ ControlAppWorker: { installation_id: "todo", action: "restart" } })
+  const outcome = control.then(() => null, (error: unknown) => error)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(await client.send({ GetAppWorker: { installation_id: "todo" } }), { ok: true })
+  const error = await outcome
+  assert.ok(error instanceof LocalIpcError && error.code === "outcome_unknown")
+  assert.equal(state.requests, 3)
+})
+
 test("LocalIpcClient keeps the transport error of an App worker control it never wrote", async () => {
   // Nothing listens: the request is never written, so its outcome is known.
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })

@@ -29,6 +29,7 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
             names
                 .split(',')
                 .map(|name| name.trim().trim_matches('"'))
+                .filter(|name| !name.is_empty())
                 .collect::<Vec<_>>()
         })
         .expect("the kernel client lists the requests it never resends");
