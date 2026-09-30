@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
+import errno
+import gzip
 import importlib.util
 import io
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -16,11 +20,18 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 
+storage_spec = importlib.util.spec_from_file_location("release_update_storage", Path(__file__).with_name("release-update-storage.py"))
+storage = importlib.util.module_from_spec(storage_spec)
+storage_spec.loader.exec_module(storage)
+UPDATE_ID = "managed_release_update_11111111-1111-1111-1111-111111111111"
+OTHER_UPDATE_ID = "managed_release_update_22222222-2222-2222-2222-222222222222"
+
+
 class ExtractionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="chariox-extraction-test-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.archive = self.root / "input.tar.gz"
         self.destination = self.root / "output"
         self.limits = module.Limits(file_bytes=4 * 1024**2, reserve_bytes=0, reserve_inodes=0)
@@ -197,6 +208,92 @@ class ExtractionTests(unittest.TestCase):
                     module.extract_release(self.archive, destination, self.limits, publication)
                 self.assertFalse(destination.exists())
                 self.assertEqual(list(self.root.glob(".release-extract-*")), [])
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX process interruption and FIFO")
+    def test_interrupted_extraction_restarts_without_leaving_or_deleting_other_attempts(self):
+        staging_root = self.root / "update-staging"
+        other = storage.prepare(staging_root, OTHER_UPDATE_ID, expected_uid=os.geteuid())
+        (other / "keep").write_text("other attempt")
+        unrelated = staging_root / ".release-extract-unowned"
+        unrelated.mkdir()
+        (unrelated / "keep").write_text("unowned sibling")
+        restart_cleanup = (
+            "import importlib.util,os,sys; "
+            "spec=importlib.util.spec_from_file_location('storage',sys.argv[1]); "
+            "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+            "module.cleanup(sys.argv[2],sys.argv[3],expected_uid=os.geteuid())"
+        )
+        for termination in [signal.SIGTERM, signal.SIGKILL]:
+            with self.subTest(signal=termination):
+                attempt = storage.prepare(staging_root, UPDATE_ID, expected_uid=os.geteuid())
+                destination = attempt / "extracted"
+                fifo = self.root / ("archive-fifo-" + str(termination))
+                os.mkfifo(fifo, 0o600)
+                process = subprocess.Popen([
+                    sys.executable, str(Path(__file__).with_name("extract-release.py")),
+                    str(fifo), str(destination),
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                writer = None
+                try:
+                    deadline = time.monotonic() + 5
+                    while writer is None and time.monotonic() < deadline:
+                        try:
+                            writer = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                        except OSError as error:
+                            if error.errno != errno.ENXIO:
+                                raise
+                            time.sleep(0.01)
+                    self.assertIsNotNone(writer, "extractor did not open fixture archive")
+                    # Valid compressed data with its trailer withheld leaves the
+                    # extractor waiting after it has written megabytes of tar.
+                    compressed = gzip.compress(os.urandom(3 * 1024**2), mtime=0)[:-8]
+                    written = 0
+                    while written < len(compressed) and time.monotonic() < deadline:
+                        try:
+                            written += os.write(writer, memoryview(compressed)[written:])
+                        except BlockingIOError:
+                            time.sleep(0.005)
+                    self.assertEqual(written, len(compressed), "fixture archive writer stalled")
+                    scratch = []
+                    while time.monotonic() < deadline:
+                        scratch = list(attempt.glob(".release-extract-*/archive.tar"))
+                        if scratch and scratch[0].stat().st_size >= 1024**2:
+                            break
+                        self.assertIsNone(process.poll(), "extractor exited before fixture interruption")
+                        time.sleep(0.01)
+                    self.assertTrue(scratch and scratch[0].stat().st_size >= 1024**2,
+                                    "fixture did not produce persistent extraction scratch")
+                    self.assertEqual(scratch[0].parents[1], attempt)
+                    self.assertEqual(list(staging_root.glob(".release-extract-*")), [unrelated])
+                    process.send_signal(termination)
+                    self.assertEqual(process.wait(timeout=3), -termination)
+                    self.assertTrue(scratch[0].exists(), "fixture must interrupt before Python cleanup")
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate(timeout=3)
+                    if writer is not None:
+                        os.close(writer)
+                    fifo.unlink()
+                # A fresh process discovers the persisted ownership marker,
+                # removes the exact attempt, and leaves both siblings intact.
+                subprocess.run([
+                    sys.executable, "-c", restart_cleanup,
+                    str(Path(__file__).with_name("release-update-storage.py")),
+                    str(staging_root), UPDATE_ID,
+                ], check=True, capture_output=True, text=True, timeout=5)
+                self.assertFalse(attempt.exists())
+                self.assertEqual((other / "keep").read_text(), "other attempt")
+                self.assertEqual((unrelated / "keep").read_text(), "unowned sibling")
+                self.assertCountEqual(list(staging_root.iterdir()), [other, unrelated])
+                # The same identity can be retried without remembering any
+                # random scratch name from the interrupted extractor process.
+                retry = storage.prepare(staging_root, UPDATE_ID, expected_uid=os.geteuid())
+                self.write_archive([("file", tarfile.REGTYPE, b"retried release")])
+                module.extract_release(self.archive, retry / "extracted", self.limits)
+                self.assertEqual((retry / "extracted/file").read_bytes(), b"retried release")
+                self.assertEqual(list(retry.glob(".release-extract-*")), [])
+                storage.cleanup(staging_root, UPDATE_ID, expected_uid=os.geteuid())
 
     def test_existing_destination_never_modified(self):
         self.write_archive([("file", tarfile.REGTYPE, b"x")])
