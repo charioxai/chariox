@@ -169,6 +169,15 @@ Mach service lookup, device writes, home/workspace access, or desktop access.
 The signed release must keep hardened-runtime library validation and use the
 V8 JIT entitlement, then test this policy against the pinned embedded Node.
 
+**`com.apple.FSEvents` stays denied.** Node's macOS directory watch needs it.
+With the lookup allowed, a sandboxed client on macOS 26.5 that watched `/` or a
+metadata-readable ancestor received the names of deleted and renamed-away files
+in directories its policy cannot read, including other processes' files, and a
+history replay (`sinceWhen`) also returned existing unreadable files. Only
+streams rooted at unreadable directories stayed silent. The service also exposes
+the host-wide event counter. The trusted bootstrap polls directory watches
+instead, and the native probe asserts the lookup stays denied.
+
 Linux first checks prepared mount flags and zero capabilities, disables dumping,
 sets `no_new_privs`, then installs an architecture-checked default-deny BPF
 syscall policy. Threads require the thread-form `clone` flags; `clone3` returns
@@ -180,8 +189,10 @@ The mount boundary supplies filesystem policy; seccomp alone does not.
 Descriptor copies and inotify watches operate only on reachable private paths
 and inherited handles. Their memory/watch usage remains part of admitted cgroup
 and filesystem resource budgets. The Linux native fixture includes private
-copy/watch positives, escaped-watch denial, and limit query/mutation checks;
-the actual pinned Node `fs.copyFile`/`fs.watch` cases still need execution.
+copy/watch positives, escaped-watch denial, and limit query/mutation checks.
+The hosted embedded fixture runs the pinned Node `fs.copyFile` and directory
+`fs.watch`; plain, recursive and `fs/promises` directory watches also work on
+the production Linux worker path (inotify).
 
 `RLIMIT_CORE=0`, `RLIMIT_NOFILE`, `RLIMIT_CPU` and `RLIMIT_FSIZE` are hard native
 limits. CPU here is a lifetime fallback, not a bandwidth allowance. FSIZE is a

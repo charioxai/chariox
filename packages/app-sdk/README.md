@@ -68,6 +68,13 @@ Wire control events never dispatch App event handlers.
   an App cannot approve it or claim that an App-view click was human validation.
 - `paths`: the read-only package and private writable data/temporary roots supplied
   by the trusted worker. Ordinary private I/O continues to use `node:fs`.
+  On macOS, `fs.watch` and `fs/promises` `watch` on a **directory** poll every
+  250 ms: changes within one interval coalesce, directories themselves report
+  only `rename`, the returned watcher is not an `FSWatcher`, `fs/promises`
+  ignores `maxQueue`/`overflow`, and a watch over more than 4096 entries fails
+  with `ENOSPC`. File watches, `fs.watchFile` and Linux directory watches are
+  Node's own. Handle the watcher's `error` event: an unhandled one ends the
+  worker.
 
 The SDK does not expose transcripts, a second prompt area, provider credentials,
 raw kernel requests, or an approval-resolution method.

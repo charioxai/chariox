@@ -18,6 +18,7 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <dlfcn.h>
+#include <servers/bootstrap.h>
 #include <sys/sysctl.h>
 #include <sys/utsname.h>
 extern int sandbox_check(pid_t, const char*, int, ...);
@@ -120,6 +121,12 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   Dl_info runtime_info = {0};
   check("runtime_executable_policy_allowed", dladdr((void*)chariox_app_runtime_run, &runtime_info) != 0 &&
       runtime_info.dli_fname && sandbox_check(getpid(), "file-map-executable", 1, runtime_info.dli_fname) == 0);
+  // fseventsd reports deleted/renamed paths outside the roots to a watcher of
+  // "/" or an ancestor; directory watches poll in the bootstrap instead.
+  // SANDBOX_FILTER_GLOBAL_NAME=2.
+  mach_port_t fsevents = MACH_PORT_NULL;
+  check("fsevents_lookup_denied", sandbox_check(getpid(), "mach-lookup", 2, "com.apple.FSEvents") > 0 &&
+      bootstrap_look_up(bootstrap_port, "com.apple.FSEvents", &fsevents) != KERN_SUCCESS);
 #endif
   fd = open(path, O_RDONLY);
   check("package_read", fd >= 0);

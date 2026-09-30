@@ -101,12 +101,13 @@ test('native constructors and operations remain confined after exact supervisor 
   assert.equal(result.code, 0, JSON.stringify(result));
   assert.equal(result.signal, null);
   assert.ok(!result.stdout.includes(':FAIL'), result.stdout);
-  assert.equal(result.stdout.trim().split('\n').length, 23, result.stdout);
+  assert.equal(result.stdout.trim().split('\n').length, 24, result.stdout);
   assert.equal(result.sdk, 'PONG');
   assert.match(result.stdout, /constructor_host_read_denied:ok/);
   assert.match(result.stdout, /package_executable_mapping_denied:ok/);
   assert.match(result.stdout, /package_executable_policy_denied:ok/);
   assert.match(result.stdout, /runtime_executable_policy_allowed:ok/);
+  assert.match(result.stdout, /fsevents_lookup_denied:ok/);
   assert.match(result.stdout, /fork_denied:ok/);
   assert.match(result.stdout, /raw_network_denied:ok/);
   assert.match(result.stdout, /exec_denied:ok/);
@@ -136,6 +137,7 @@ test('native probe detects deliberately removed OS policy', { skip: !enabled }, 
   assert.match(result.stdout, /constructor_host_read_denied:FAIL/);
   assert.match(result.stdout, /package_write_denied:FAIL/);
   assert.match(result.stdout, /fork_denied:FAIL/);
+  assert.match(result.stdout, /fsevents_lookup_denied:FAIL/);
 });
 
 test('idle startup control stream has a finite monotonic deadline', { skip: !enabled }, () => {
