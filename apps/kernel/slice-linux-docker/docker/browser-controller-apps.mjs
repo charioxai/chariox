@@ -96,7 +96,7 @@ export class AppTabs {
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command
     // arrives: interception ends with the old connection.
-    browser.onConnected = () => { this.reconcile().catch(() => {}); };
+    browser.onConnected = () => this.reconcile().catch(() => {});
     this.apps = new Map(); // sessionId -> app
     this.calls = [];
     this.connection = null;

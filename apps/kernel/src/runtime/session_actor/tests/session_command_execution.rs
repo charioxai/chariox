@@ -1,6 +1,7 @@
 use super::*;
 
 mod browser_isolation;
+mod cold_browser_start;
 
 struct TestBrowserControllerTool {
     root: std::path::PathBuf,
@@ -10,6 +11,11 @@ struct TestBrowserControllerTool {
 
 impl TestBrowserControllerTool {
     fn new() -> Self {
+        Self::with_reconcile_failures("", 0)
+    }
+
+    /// The first `failures` reconciles fail with the controller error `code`.
+    fn with_reconcile_failures(code: &str, failures: usize) -> Self {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,6 +41,10 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.reconcile"'*)
       printf 'reconcile\n' >> '__LOG__'
+      if [ "$(grep -c reconcile '__LOG__')" -le __RECONCILE_FAILURES__ ]; then
+        printf '{"id":%s,"ok":false,"error":{"code":"__RECONCILE_ERROR__","message":"browser CDP method Page.enable timed out after 5000ms"}}\n' "$id"
+        continue
+      fi
       printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"event_cursor":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","resource_inventory":{"browser_ids":["browser-pid-41"],"profile_ids":["profile-sha256-41"]},"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
       ;;
     *'"method":"browser.snapshot"'*)
@@ -73,7 +83,9 @@ while IFS= read -r request; do
   esac
 done
 "#
-        .replace("__LOG__", &log.display().to_string());
+        .replace("__LOG__", &log.display().to_string())
+        .replace("__RECONCILE_FAILURES__", &failures.to_string())
+        .replace("__RECONCILE_ERROR__", code);
         std::fs::write(&path, script).expect("write controller tool");
         let mut permissions = std::fs::metadata(&path)
             .expect("controller tool metadata")
