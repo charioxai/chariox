@@ -371,6 +371,20 @@ if [ "$managed_provider_topology" = path1 ]; then
   chariox_login_shell=/bin/bash
 fi
 [ "$(getent passwd chariox | cut -d: -f7)" = "$chariox_login_shell" ] || usermod --shell "$chariox_login_shell" chariox
+# Path 1: agents operate their disposable single-tenant VM with full rights (plan,
+# locked decisions 2026-09-30). Shared hosts grant none, including former Path-1 hosts.
+chariox_sudoers=$install_root/etc/sudoers.d/90-chariox-path1
+if [ "$managed_provider_topology" = path1 ]; then
+  install -d -o root -g root -m 0750 "$install_root/etc/sudoers.d"
+  # sudo skips names containing a dot, so the staged file is inert until renamed.
+  chariox_sudoers_tmp=$(mktemp "$install_root/etc/sudoers.d/.chariox.XXXXXX")
+  printf '%s\n' 'chariox ALL=(ALL) NOPASSWD: ALL' >"$chariox_sudoers_tmp"
+  chmod 0440 "$chariox_sudoers_tmp"
+  visudo -cqf "$chariox_sudoers_tmp" || { rm -f "$chariox_sudoers_tmp"; echo "Path-1 sudoers drop-in is invalid" >&2; exit 1; }
+  mv -f "$chariox_sudoers_tmp" "$chariox_sudoers"
+else
+  rm -f "$chariox_sudoers"
+fi
 chariox_home_from_passwd=$(getent passwd chariox | cut -d: -f6)
 if [ "$chariox_home_from_passwd" = "/var/lib/chariox/home" ]; then
   usermod --home /home/chariox chariox

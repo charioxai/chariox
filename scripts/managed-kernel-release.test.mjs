@@ -1152,6 +1152,10 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     assert.deepEqual(await readFile(installedArtifact), expectedBytes)
   }
   assert.equal(await readFile(join(harness.state, "usermod-shell"), "utf8"), "--shell /bin/bash chariox\n")
+  const sudoers = join(harness.installRoot, "etc/sudoers.d/90-chariox-path1")
+  assert.equal(await readFile(sudoers, "utf8"), "chariox ALL=(ALL) NOPASSWD: ALL\n")
+  assert.equal((await lstat(sudoers)).mode & 0o777, 0o440)
+  assert.deepEqual((await readdir(join(harness.installRoot, "etc/sudoers.d"))), ["90-chariox-path1"])
   const systemctlCalls = await readFile(join(harness.state, "systemctl"), "utf8")
   assert.match(systemctlCalls, /enable chariox-path1-managed-bootstrap\.service/)
   assert.doesNotMatch(systemctlCalls, /enable chariox-managed-bootstrap\.service/)
@@ -1817,6 +1821,7 @@ exit 2
 printf '%s\\n' "$*" >> "$HARNESS_STATE/loginctl"
 `)
   await writeHarnessCommand(join(bin, "setfacl"), "#!/bin/sh\nexit 0\n")
+  await writeHarnessCommand(join(bin, "visudo"), "#!/bin/sh\n[ \"$1\" = -cqf ] && grep -qx 'chariox ALL=(ALL) NOPASSWD: ALL' \"$2\"\n")
   await writeHarnessCommand(join(bin, "systemctl"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$HARNESS_STATE/systemctl"
 if [ -n "\${HARNESS_SYSTEMCTL_FAIL:-}" ]; then
@@ -2020,11 +2025,14 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   const unrelatedRelease = join(harness.installRoot, "usr/lib/chariox/releases/unrelated")
   await mkdir(unrelatedRelease)
   await writeFile(sourceKernel, "kernel fixture\n", { mode: 0o755 })
-  // A host that was Path 1 before returns to nologin on a shared-host install.
+  // A host that was Path 1 before returns to nologin and loses sudo on a shared-host install.
   await writeFile(join(harness.state, "user-chariox-shell"), "/bin/bash")
+  await mkdir(join(harness.installRoot, "etc/sudoers.d"), { recursive: true })
+  await writeFile(join(harness.installRoot, "etc/sudoers.d/90-chariox-path1"), "chariox ALL=(ALL) NOPASSWD: ALL\n")
   const second = spawnSync(installer, args, { encoding: "utf8", env })
   assert.equal(second.status, 0, second.stderr)
   assert.equal(await readFile(join(harness.state, "usermod-shell"), "utf8"), "--shell /usr/sbin/nologin chariox\n")
+  assert.equal(await lstat(join(harness.installRoot, "etc/sudoers.d/90-chariox-path1")).then(() => true, () => false), false)
   assert.equal((await stat(deterministicRelease)).ino, firstReleaseInode)
   assert.equal((await lstat(currentLink)).ino, firstCurrentInode)
   assert.equal(await lstat(stalePending).then(() => true, () => false), false)

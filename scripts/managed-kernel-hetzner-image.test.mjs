@@ -871,6 +871,7 @@ test("Hetzner snapshot labels preserve the complete release digest within provid
 test("the sshd DenyUsers check accepts both sshd -T formats and requires both accounts", async () => {
   const script = await readFile(new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url), "utf8")
   assert.match(script, /DenyUsers chariox chariox-docker/)
+  assert.match(script, /runuser -u chariox -- sudo -n true \|\| fail "Path-1 chariox must have passwordless sudo"/)
   const denyCheck = script.match(/awk '(\$1 == "denyusers"[^']*)'/)?.[1]
   assert.ok(denyCheck, "sshd DenyUsers check must be an awk program")
   const denies = (output) => spawnSync("awk", [denyCheck], { input: output }).status === 0

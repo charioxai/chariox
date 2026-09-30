@@ -641,6 +641,11 @@ printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin prohibit-password' 
 printf '%s\n' "$sshd_effective" \
   | awk '$1 == "denyusers" { for (i = 2; i <= NF; i++) denied[$i] = 1 } END { exit !(denied["chariox"] && denied["chariox-docker"]) }' \
   || fail "managed image must deny SSH to its service accounts"
+if [ "$managed_provider_topology" = path1 ]; then
+  runuser -u chariox -- sudo -n true || fail "Path-1 chariox must have passwordless sudo"
+elif runuser -u chariox -- sudo -n true 2>/dev/null; then
+  fail "shared-host chariox must not have sudo"
+fi
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed
