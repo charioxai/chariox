@@ -25,7 +25,7 @@ use super::managed_kernel_quiescence::{hmac_signature, identity_values, Quiescen
 
 #[path = "managed_release_update_evidence.rs"]
 mod evidence;
-use evidence::{read_evidence, settled_report, unit_settled, UpdateIdentity, UpdateReport};
+use evidence::{prepare_archive, read_evidence, settled_report, unit_settled, UpdateIdentity, UpdateReport};
 
 const POLL_ENDPOINT: &str = "/v1/managed-kernels/release-update/poll";
 const ARTIFACT_ENDPOINT: &str = "/v1/managed-kernels/release-update/artifact";
@@ -196,20 +196,6 @@ impl ManagedReleaseUpdateClient {
 
     async fn start_update(&self, update: UpdateCommand) -> Result<(), DaemonError> {
         let archive = Path::new(DOWNLOAD_ROOT).join(format!("{}.tar.gz", update.update_id));
-        std::fs::create_dir_all(DOWNLOAD_ROOT)
-            .map_err(|error| update_error(format!("create download directory: {error}")))?;
-        let mut values = identity_values(&self.binding);
-        values.insert("protocolVersion", json!(1));
-        values.insert("action", json!("release_update_artifact"));
-        values.insert("updateId", json!(update.update_id));
-        post_cloud_to_file(
-            self.binding.api_url.clone(),
-            ARTIFACT_ENDPOINT,
-            self.signed(values)?,
-            archive.clone(),
-            MAX_ARTIFACT_BYTES,
-        )
-        .await?;
         let attempt = UpdateAttempt {
             update_id: update.update_id.clone(),
             from_runtime_release_digest: Some(update.from_runtime_release_digest.clone()),
@@ -217,14 +203,32 @@ impl ManagedReleaseUpdateClient {
         };
         let bytes =
             serde_json::to_vec(&attempt).map_err(|error| update_error(error.to_string()))?;
-        std::fs::write(&self.attempt_path, bytes)
-            .and_then(|()| std::fs::File::open(&self.attempt_path)?.sync_all())
-            .and_then(|()| {
-                std::fs::File::open(self.attempt_path.parent().expect("attempt parent"))?.sync_all()
-            })
-            .map_err(|error| update_error(format!("record release update attempt: {error}")))?;
+        let mut values = identity_values(&self.binding);
+        values.insert("protocolVersion", json!(1));
+        values.insert("action", json!("release_update_artifact"));
+        values.insert("updateId", json!(update.update_id));
+        let mut prepared = prepare_archive(
+            &self.attempt_path,
+            &archive,
+            &bytes,
+            async {
+                std::fs::create_dir_all(DOWNLOAD_ROOT)
+                    .map_err(|error| update_error(format!("create download directory: {error}")))?;
+                post_cloud_to_file(
+                    self.binding.api_url.clone(),
+                    ARTIFACT_ENDPOINT,
+                    self.signed(values)?,
+                    archive.clone(),
+                    MAX_ARTIFACT_BYTES,
+                )
+                .await
+            },
+            |error| update_error(format!("record release update attempt: {error}")),
+        )
+        .await?;
         let tooling = std::fs::canonicalize(CURRENT_RELEASE)
             .map_err(|error| update_error(format!("resolve current release: {error}")))?;
+        prepared.delegate();
         let status = Command::new("sudo")
             .args([
                 "-n",
@@ -244,7 +248,8 @@ impl ManagedReleaseUpdateClient {
             .status()
             .map_err(|error| update_error(format!("start release update unit: {error}")))?;
         if !status.success() {
-            let _ = std::fs::remove_file(&self.attempt_path);
+            // The CLI reply can be ambiguous. The next poll checks the unit
+            // and recovery journal before it reports this attempt as failed.
             return Err(update_error(format!(
                 "release update unit did not start: {status}"
             )));
@@ -440,6 +445,52 @@ mod tests {
 
     fn digest(fill: char) -> String {
         format!("sha256:{}", fill.to_string().repeat(64))
+    }
+
+    #[tokio::test]
+    async fn a_failed_download_retains_the_exact_cloud_update_for_failure_reporting() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-release-download-failure-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir(&root).expect("scratch");
+        let path = root.join("attempt.json");
+        let archive = root.join("release.tar.gz");
+        let attempt = UpdateAttempt {
+            update_id: "managed_release_update_0123abcd-0000-4000-8000-0123456789ab".into(),
+            from_runtime_release_digest: Some(digest('a')),
+            target_runtime_release_digest: digest('b'),
+        };
+        let bytes = serde_json::to_vec(&attempt).expect("attempt");
+        let result = prepare_archive(
+            &path,
+            &archive,
+            &bytes,
+            async { Err(update_error("artifact unavailable")) },
+            |error| update_error(error.to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let retained = read_attempt(&path).expect("valid attempt").expect("persisted attempt");
+        assert_eq!(retained, attempt, "the next Cloud poll retains its failedUpdateId");
+        assert_eq!(
+            settled_report(
+                &digest('a'),
+                &UpdateIdentity {
+                    update_id: &retained.update_id,
+                    from_digest: retained.from_runtime_release_digest.as_deref(),
+                    target_digest: &retained.target_runtime_release_digest,
+                    environment_id: "environment-1",
+                    machine_id: "machine-1",
+                    kernel_id: "kernel-1",
+                },
+                None,
+                false,
+            ),
+            UpdateReport::Failed,
+        );
+        std::fs::remove_dir_all(root).expect("known synthetic scratch");
     }
 
     #[test]
