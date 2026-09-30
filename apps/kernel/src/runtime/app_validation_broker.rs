@@ -375,7 +375,8 @@ mod tests {
         assert_eq!(spent.retryable, Some(false));
         assert_eq!(
             code(broker.request(
-                json!({"action":"send_payment","parameters":{"to":"x","amount":5},"operationId":id})
+                json!({"action":"send_payment","parameters":{"to":"x","amount":5},"operationId":id}),
+                Vec::new()
             )),
             "VALIDATION_CONSUMED"
         );

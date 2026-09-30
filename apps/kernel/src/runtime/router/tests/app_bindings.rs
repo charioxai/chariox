@@ -425,6 +425,7 @@ fn open_view(router: &CommandRouter, session: &str, target: &str, owner: &str, a
             owner: owner.into(),
             installation: app.into(),
             generation: 1,
+            panel: Default::default(),
         },
     );
 }
