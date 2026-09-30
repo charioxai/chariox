@@ -984,9 +984,13 @@ impl KernelRuntimeState {
         plan: serde_json::Value,
     ) {
         self.owned
-            .session_store
-            .write()
-            .record_workflow_publication_app_plan(session_id, publication_id, package_digest, plan)
+            .record_workflow_publication_release(
+                session_id,
+                publication_id,
+                package_digest,
+                &[],
+                Some(plan),
+            )
             .unwrap();
     }
 
