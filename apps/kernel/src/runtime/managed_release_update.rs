@@ -149,6 +149,14 @@ impl ManagedReleaseUpdateClient {
         if report == Some(UpdateReport::Pending) || (attempt.is_none() && recovery_pending) {
             return Ok(());
         }
+        // Reclaim the persisted, settled attempt before polling. Cloud can
+        // hand out a successor in that response; cleanup failure must not claim
+        // a command that this kernel cannot yet durably prepare.
+        if matches!(report, Some(UpdateReport::Failed | UpdateReport::Applied)) {
+            if let Some(attempt) = &attempt {
+                cleanup_attempt_storage(&attempt.update_id)?;
+            }
+        }
         let failed = attempt
             .as_ref()
             .filter(|_| report == Some(UpdateReport::Failed))
@@ -172,11 +180,6 @@ impl ManagedReleaseUpdateClient {
             ));
         }
         if matches!(report, Some(UpdateReport::Failed | UpdateReport::Applied)) {
-            // A reboot can bypass the detached shell's EXIT trap. Reclaim only
-            // this persisted, settled attempt before forgetting its ownership.
-            if let Some(attempt) = &attempt {
-                cleanup_attempt_storage(&attempt.update_id)?;
-            }
             std::fs::remove_file(&self.attempt_path)
                 .map_err(|error| update_error(format!("clear release update attempt: {error}")))?;
         }
