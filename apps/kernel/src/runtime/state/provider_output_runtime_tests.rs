@@ -220,3 +220,5 @@ fn native_client_codex_runs_keep_structured_output_authority() {
     assert!(provider_run_uses_structured_output_pump(&run));
     assert!(!provider_run_allows_quiet_pty_settlement(&run));
 }
+
+mod file_pick_revocation;

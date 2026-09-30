@@ -29,6 +29,29 @@ fn export_interaction_id(operation_id: &str) -> String {
 impl KernelRuntimeState {
     /// Runs with each validation pass: same throttle, same prompt slots.
     pub(super) async fn app_file_pick_pass(&self, now_ms: u64) {
+        self.app_file_pick_pass_after_read(now_ms, std::future::ready(()))
+            .await;
+    }
+
+    #[cfg(test)]
+    pub(super) async fn app_file_pick_pass_with_read_barrier(
+        &self,
+        now_ms: u64,
+        read: std::sync::Arc<tokio::sync::Notify>,
+        resume: std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        self.app_file_pick_pass_after_read(now_ms, async move {
+            read.notify_one();
+            resume.notified().await;
+        })
+        .await;
+    }
+
+    async fn app_file_pick_pass_after_read(
+        &self,
+        now_ms: u64,
+        after_read: impl std::future::Future<Output = ()>,
+    ) {
         let store = self.owned.durable_state_store.clone();
         let Ok(Ok(pending)) = tokio::task::spawn_blocking(move || {
             let _ = store.app_file_grant(FileGrantCommand::Expire { now_ms });
@@ -38,6 +61,7 @@ impl KernelRuntimeState {
         else {
             return;
         };
+        after_read.await;
         for pick in pending {
             if !self
                 .app_control()
@@ -63,6 +87,32 @@ impl KernelRuntimeState {
                     continue;
                 }
             };
+            // Revocation may commit after the pending read, before this
+            // interaction exists. Recheck only after registration so either
+            // ordering closes the prompt, without holding a lock across awaits.
+            let store = self.owned.durable_state_store.clone();
+            let current_pick = pick.clone();
+            let still_pending = tokio::task::spawn_blocking(move || {
+                store
+                    .app_file_pick(
+                        &current_pick.owner,
+                        &current_pick.installation,
+                        &current_pick.operation_id,
+                    )
+                    .map(|pick| {
+                        pick.is_some_and(|pick| {
+                            pick.state == crate::durable_state::app_file_grants::PickState::Pending
+                        })
+                    })
+            })
+            .await;
+            if !matches!(still_pending, Ok(Ok(true))) {
+                let _ = self
+                    .timeout_runtime_interaction(&session, &interaction_id(&pick.operation_id))
+                    .await;
+                self.app_control().end_validation_prompt(&pick.operation_id);
+                continue;
+            }
             let runtime = self.clone();
             tokio::spawn(async move {
                 let declined = receiver.await.is_ok_and(|resolution| {
