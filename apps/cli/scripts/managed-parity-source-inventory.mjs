@@ -6,8 +6,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fragmentSourceViews, fragmentMatchAnchor } from "./lib/managed-parity-fragment-source.mjs";
 import { patchSourceViews } from "./lib/managed-parity-patch-source.mjs";
-import { sourceRuleCandidates, sourceClassification, groupSourceClassifications } from "./lib/managed-parity-source-rules.mjs";
+import { sourceRuleCandidates, sourceClassification, groupSourceClassifications, sourceAuditGaps } from "./lib/managed-parity-source-rules.mjs";
 
 export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v2";
 // These approvals are bound to a historical source only. They must not be
@@ -20,6 +21,7 @@ const INVENTORY_TOOL_MODULES = [
   ["./managed-parity-source-inventory.mjs", INVENTORY_TOOL_PATH],
   ["./lib/managed-parity-patch-source.mjs", "apps/cli/scripts/lib/managed-parity-patch-source.mjs"],
   ["./lib/managed-parity-source-rules.mjs", "apps/cli/scripts/lib/managed-parity-source-rules.mjs"],
+  ["./lib/managed-parity-fragment-source.mjs", "apps/cli/scripts/lib/managed-parity-fragment-source.mjs"],
 ];
 
 function inventoryToolIdentity() {
@@ -377,6 +379,7 @@ export const DEFAULT_SEMANTIC_DISPOSITIONS = Object.freeze([]);
 const OWNED_DIRTY_PATHS = new Set([
   "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
+  "apps/cli/scripts/lib/managed-parity-fragment-source.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
   "docs/MANAGED_PATH1_PARITY_INVENTORY.md",
@@ -385,6 +388,7 @@ const OWNED_DIRTY_PATHS = new Set([
 const SELF_EXCLUDED_PATHS = new Set([
   "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
+  "apps/cli/scripts/lib/managed-parity-fragment-source.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
 ]);
@@ -879,36 +883,43 @@ export function collectSourceInventory({
 
   const files = collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit });
   const entries = [];
+  const fragments = fragmentSourceViews(files);
+  const locatedAnchors = new Set();
   const presentHistoricalPredicateIds = new Set();
   const appliedSemanticReviewIds = new Set();
-  for (const file of files) {
+  for (const file of fragments.files) {
     const rawLines = file.text.split(/\r?\n/);
     const views = file.format === "patch" ? patchSourceViews(file, classifyProductionPath)
       : [{ path: file.path, format: file.format, text: file.text, lineOffset: 0, patchLines: [] }];
     for (const view of views) {
       // A patch hunk can begin inside a literal/comment opened in omitted
       // source. Incomplete lexical context must never suppress a candidate.
-      const lines = (file.format === "patch" ? view.text : stripComments(view.text, view.format)).split(/\r?\n/);
+      const lines = (file.format === "patch" || file.unverifiedFragment ? view.text : stripComments(view.text, view.format)).split(/\r?\n/);
       const testRanges = view.format === "rust" ? findRustTestRanges(view.text, view.path) : [];
       const unitTopology = explicitUnitTopology(view.path, view.text);
       const embeddedPath = file.format === "patch" ? view.path : null;
       const manuals = sourceRuleCandidates(file, lines, embeddedPath);
+      for (const manual of manuals) locatedAnchors.add(manual.ruleId + ":" + manual.symbol);
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
         const scanLine = lines[lineIndex];
         if (!scanLine.trim() || (view.onlyRemoved && view.patchLines[lineIndex]?.change !== "removed")) continue;
         const lexical = CATEGORY_SPECS.flatMap((spec) => lineMatches(spec, scanLine).map((match) => ({
           category: spec.category, applicableMpIds: [...new Set(spec.mpIds)].sort(),
           affectedBehavior: spec.affectedBehavior, selector: redact(match.value),
-          column: match.index + 1, symbol: inferSymbol(lines, lineIndex), candidateOrigin: "lexical",
+          column: match.index + 1, matchLength: match.value.length, symbol: inferSymbol(lines, lineIndex), candidateOrigin: "lexical",
         })));
         const findings = [...lexical, ...manuals.filter((manual) => manual.lineIndex === lineIndex)
           .map((manual) => ({ ...manual, candidateOrigin: "manual_source_rule" }))];
         for (const match of findings) {
           const physicalLine = view.lineOffset + lineIndex;
-          const sourceLine = rawLines[physicalLine].trim();
+          const anchor = file.assembly
+            ? fragmentMatchAnchor(file, lineIndex, match.column, match.matchLength ?? match.selector.length)
+            : { path: file.path, blob: file.blob, line: physicalLine + 1,
+                column: match.column + (file.format === "patch" ? 1 : 0), sourceLine: rawLines[physicalLine].trim() };
+          const sourceLine = anchor.sourceLine;
           const finding = {
-            category: match.category, format: file.format, path: file.path, blob: file.blob,
-            line: physicalLine + 1, column: match.column + (file.format === "patch" ? 1 : 0),
+            category: match.category, format: file.format, path: anchor.path, blob: anchor.blob,
+            line: anchor.line, column: anchor.column,
             symbol: match.symbol, selector: match.selector, sourceLine,
             contextHash: sha256(sourceLine), affectedBehavior: match.affectedBehavior,
             applicableMpIds: match.applicableMpIds,
@@ -921,6 +932,10 @@ export function collectSourceInventory({
           if (patchSource) {
             sourceRoleHints.lexicalContext = "unknown_patch_fragment";
             sourceRoleHints.executionRole = "patch_fragment_candidate";
+          }
+          if (file.unverifiedFragment) {
+            sourceRoleHints.lexicalContext = "unknown_fragment_assembly";
+            sourceRoleHints.executionRole = "unverified_fragment_candidate";
           }
           if (patchSource?.change === "removed") {
             sourceRoleHints.executionRole = "removed_patch_source_candidate";
@@ -936,6 +951,7 @@ export function collectSourceInventory({
           entries.push({
             candidateId, ...finding, candidateOrigin: match.candidateOrigin, sourceRoleHints,
             ...(patchSource ? { patchSource } : {}),
+            ...(anchor.fragmentSource ? { fragmentSource: anchor.fragmentSource } : {}),
             sourceClassification: sourceClassification(file, embeddedPath),
             semanticDisposition: disposition,
           });
@@ -943,6 +959,7 @@ export function collectSourceInventory({
       }
     }
   }
+  const auditGaps = [...fragments.gaps, ...sourceAuditGaps(files, locatedAnchors)];
   entries.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   const observedCategories = [...new Set(entries.map((entry) => entry.category))].sort();
   const missingCategories = REQUIRED_CATEGORIES.filter((category) => !observedCategories.includes(category));
@@ -998,8 +1015,11 @@ export function collectSourceInventory({
     missingRows,
     entries,
     sourceClassifications: groupSourceClassifications(entries),
+    sourceAuditGaps: auditGaps,
+    fragmentAssemblies: fragments.assemblies,
     summary: {
       candidateCount: entries.length,
+      unresolvedSourceAuditGaps: auditGaps.length,
       removalRequired,
       unreviewed,
       pendingReviewedPredicates,
@@ -1007,7 +1027,7 @@ export function collectSourceInventory({
       allowedReleaseDeployment: entries.filter((entry) => entry.semanticDisposition.disposition === "allowed_release_deployment").length,
       requiredAutomaticShutdown: entries.filter((entry) => entry.semanticDisposition.disposition === "required_automatic_shutdown").length,
     },
-    status: missingCategories.length === 0
+    status: auditGaps.length === 0 && missingCategories.length === 0
       && missingRows.length === 0
       && removalRequired === 0
       && unreviewed === 0

@@ -861,7 +861,7 @@ test("an inspected blob gets only provisional grouping and never independent app
       .every((entry) => entry.semanticDisposition.gateEffect === "fail_closed"));
     assert.equal(report.status, "fail");
     assert.equal(report.summary.allowedReleaseDeployment, 0);
-    assert.equal(report.inventoryTool.modules.length, 3);
+    assert.equal(report.inventoryTool.modules.length, 4);
     assert.match(report.inventoryTool.bundleSha256, /^[a-f0-9]{64}$/);
   });
 });
@@ -887,7 +887,7 @@ test("malformed patches and unknown embedded Cloud production formats fail close
 
 
 
-test("Cloud source fragments and deployment formats retain selectors but remove comments", () => {
+test("deployment formats strip comments while unverified fragments remain conservative", () => {
   withFixture({}, (fixture) => {
     fixture.addFile("packages/tool-display/src/index-fragments/part-001.tsfrag", [
       '// CHARIOX_MANAGED_FRAGMENT_COMMENT',
@@ -907,7 +907,9 @@ test("Cloud source fragments and deployment formats retain selectors but remove 
     const selectors = report.entries.map((entry) => entry.selector);
     for (const selector of ["CHARIOX_MANAGED_FRAGMENT", "CHARIOX_MANAGED_JS_FRAGMENT", "CHARIOX_MANAGED_EDGE", "CHARIOX_MANAGED_SQL_VALUE"])
       assert.ok(selectors.includes(selector), selector);
-    assert.ok(!selectors.some((selector) => selector.endsWith("_COMMENT") || selector.endsWith("_BLOCK")));
+    assert.ok(!selectors.some((selector) => ["CHARIOX_MANAGED_CADDY_COMMENT", "CHARIOX_MANAGED_SQL_COMMENT", "CHARIOX_MANAGED_SQL_BLOCK"].includes(selector)));
+    const unknown = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_FRAGMENT_COMMENT");
+    assert.equal(unknown?.sourceRoleHints.lexicalContext, "unknown_fragment_assembly");
     assert.equal(report.status, "fail");
   });
 });
@@ -979,3 +981,78 @@ for (const [side, selector] of [["added", "CHARIOX_MANAGED_ADDED_TEMPLATE"], ["r
     });
   });
 }
+
+function fragmentFixture(fixture, suffix, fragments) {
+  const directory = suffix === ".tsfrag" ? "packages/tool-display/src/index-fragments" : "scripts/browser-relay-kernel-drill-fragments";
+  const dependencies = suffix === ".tsfrag"
+    ? [["packages/tool-display/scripts/build-fragments.mjs", "ae72d6fae1ef1e957a39c01417eeb5d7efefcc6b"]]
+    : [["scripts/lib/run-fragmented-script.mjs", "0e84d48c7be6e26343039fce0205e9653fc72311"], ["scripts/browser-relay-kernel-drill.mjs", "ad640a15fb5bb5019f5942d378e49403761104e8"]];
+  for (const [path, blob] of dependencies) fixture.addFile(path, "// fixture assembler identity\n", "100644", blob);
+  for (let index = fragments.length - 1; index >= 0; index--)
+    fixture.addFile(directory + "/part-" + String(index + 1).padStart(3, "0") + suffix, fragments[index]);
+  return directory;
+}
+
+for (const suffix of [".tsfrag", ".mjsfrag"]) {
+  test("assembled " + suffix + " retains lexical state and physical source anchors", () => {
+    withFixture({}, (fixture) => {
+      const fragments = ["const banner = `\n", '/* banner text\n`;\nconst selector = "CHARIOX_MANAGED_FRAGMENT_CONTEXT";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "CHARIOX_MANAGED_FRAGMENT_CONTEXT");
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_FRAGMENT_CONTEXT");
+      assert.equal(entry?.path, directory + "/part-002" + suffix);
+      assert.equal(entry?.line, 3);
+      assert.equal(entry?.fragmentSource.assemblyStatus, "verified_sort_join_empty");
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    });
+  });
+
+  test("assembled " + suffix + " captures a selector split between files", () => {
+    withFixture({}, (fixture) => {
+      const fragments = ['const selector = "CHARIOX_MANA', 'GED_JOINED";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "CHARIOX_MANAGED_JOINED");
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_JOINED");
+      assert.equal(entry?.path, directory + "/part-001" + suffix);
+      assert.equal(entry?.line, 1);
+      assert.deepEqual(entry?.fragmentSource.matchSegments.map((segment) => segment.path),
+        [directory + "/part-001" + suffix, directory + "/part-002" + suffix]);
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    });
+  });
+}
+
+test("unverified fragment assembly is an explicit unresolved source gap", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/api/src/unknown-fragments/part-001.tsfrag", '/* maybe a literal\nconst value = "CHARIOX_MANAGED_UNKNOWN_FRAGMENT";');
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_UNKNOWN_FRAGMENT"));
+    assert.ok(report.sourceAuditGaps.some((gap) => gap.kind === "fragment_assembly_unresolved"));
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("the real generic release preparation control gets a manual candidate", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "release-update-outcome-evidence");
+    const source = readFileSync(new URL("../../../apps/kernel/src/runtime/managed_release_update_evidence.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const entry = report.entries.find((entry) => entry.path === rule.path && entry.symbol === "prepare_archive" && entry.candidateOrigin === "manual_source_rule");
+    assert.ok(entry);
+    assert.equal(entry.semanticDisposition.status, "unreviewed");
+  });
+});
+
+test("an expected manual declaration that disappears is an unresolved audit gap", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "release-update-outcome-evidence");
+    const source = readFileSync(new URL("../../../apps/kernel/src/runtime/managed_release_update_evidence.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source.replaceAll("prepare_archive", "renamed_archive"));
+    const report = collect(fixture);
+    assert.ok(report.sourceAuditGaps.some((gap) => gap.ruleId === rule.id && gap.symbol === "prepare_archive" && gap.kind === "expected_declaration_missing"));
+    assert.equal(report.status, "fail");
+  });
+});

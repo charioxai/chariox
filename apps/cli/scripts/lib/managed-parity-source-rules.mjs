@@ -145,7 +145,7 @@ export function sourceRuleCandidates(file, lines, embeddedPath = null) {
   const candidates = [];
   for (const rule of rulesFor(file, embeddedPath)) {
     for (const [category, symbol] of rule.anchors) {
-      const declaration = new RegExp("\\b(?:fn|function|def)\\s+" + symbol + "\\s*\\(");
+      const declaration = new RegExp("\\b(?:fn|function|def)\\s+" + symbol + "(?:<[^\\n]*>)?\\s*\\(");
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const match = declaration.exec(lines[lineIndex]);
         if (match) candidates.push({
@@ -190,3 +190,28 @@ export function groupSourceClassifications(entries) {
   return [...groups.values()].sort((left, right) => left.ruleId.localeCompare(right.ruleId));
 }
 
+
+
+export function sourceAuditGaps(files, locatedAnchors) {
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const cloud = files.some((file) => file.path.startsWith("apps/api/"));
+  const oss = files.some((file) => file.path.startsWith("apps/kernel/"));
+  const gaps = [];
+  for (const rule of SOURCE_AUDIT_RULES) {
+    const file = byPath.get(rule.path);
+    const applies = rule.sourceCommit === CLOUD ? cloud : oss;
+    if (!file) {
+      if (applies) gaps.push({ kind: "expected_source_missing", ruleId: rule.id, path: rule.path,
+        auditedBlob: rule.blob, auditSourceCommit: rule.sourceCommit, authoritative: false });
+      continue;
+    }
+    for (const [category, symbol] of rule.anchors) {
+      if (locatedAnchors.has(rule.id + ":" + symbol)) continue;
+      gaps.push({ kind: "expected_declaration_missing", ruleId: rule.id, path: rule.path,
+        embeddedPath: rule.embeddedPath ?? null, category, symbol,
+        blob: file.blob, auditedBlob: rule.blob, auditSourceCommit: rule.sourceCommit,
+        authoritative: false });
+    }
+  }
+  return gaps;
+}
