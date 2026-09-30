@@ -135,7 +135,10 @@ impl KernelRuntimeState {
     }
 
     /// One bounded delivery pass, run with the wake pass.
-    pub(super) async fn app_inbox_pass(&self, now_ms: u64) {
+    pub(super) async fn app_inbox_pass(
+        &self,
+        now_ms: u64,
+    ) -> std::collections::BTreeSet<(String, String)> {
         let store = self.owned.durable_state_store.clone();
         let due = tokio::task::spawn_blocking(move || {
             store.app_inbox(AppInboxOperation::Due {
@@ -145,12 +148,12 @@ impl KernelRuntimeState {
         })
         .await;
         let Ok(Ok(AppInboxOutcome::Due(due))) = due else {
-            return;
+            return Default::default();
         };
         if due.is_empty() {
-            return;
+            return Default::default();
         }
-        let (deliver, planned) = self
+        let (deliver, planned, at_live_limit) = self
             .plan_app_delivery(due, now_ms, |item: &InboxItem| {
                 (item.owner_id.clone(), item.installation_id.clone())
             })
@@ -200,6 +203,7 @@ impl KernelRuntimeState {
             }
         })
         .await;
+        at_live_limit
     }
 
     async fn still_accepted(&self, item: &InboxItem) -> bool {
