@@ -84,6 +84,32 @@ workflow/agent asset methods and consented output callback registration also
 remain integration work. No broker operation is complete merely because its
 forwarding method exists here.
 
+## Durability
+
+An App's private files are ordinary `node:fs` files on its own data volume.
+What survives a crash:
+- **State transactions** (`state.transaction`, with their occurrences and
+  wakes) are committed by the kernel's database with full synchronous writes
+  before the call answers. They survive a crash of the App, the kernel or the
+  host, and power loss, as far as the host's disk honors a sync.
+- **`files.atomicReplace`** writes the new file, syncs it, renames it into
+  place and syncs its directory before it answers. The file is then the old or
+  the new version after any crash, never a mix. Use it for a raw file that must
+  survive power loss.
+- **Plain `node:fs` writes** are in the host's page cache when the call
+  returns. They survive the App or the kernel being killed, but not
+  necessarily a host crash or power loss.
+
+The runtime denies `fsync` and `fdatasync` in every form: `fs.fsyncSync`,
+`fs.fdatasyncSync`, `fs.fsync`, `fs.fdatasync`, `FileHandle.sync()` and
+`datasync()`, and so `writeFile`/`writeFileSync` with `flush: true` (after the
+data is written). Each fails `ERR_ACCESS_DENIED`. Node's permission model
+cannot tie an operation on an open descriptor to a path grant: it already
+denies the sync and callback forms, and later Node releases deny the
+`FileHandle` forms too. Denying all of them now gives Apps one behavior.
+(Node's own fast path for `writeFileSync` of a UTF-8 string ignores `flush`
+without an error.)
+
 ## Worker integration
 
 ```js

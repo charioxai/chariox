@@ -376,3 +376,44 @@ test('the migration timeout bounds migrations and startup is re-armed for App lo
   running.request('shutdown-slow', 'lifecycle.dispatch', { event: 'shutdown' });
   assert.equal((await running.completed).code, 0);
 });
+
+test('every fsync form is denied the same way before App code runs', async () => {
+  const source = `import fs from 'node:fs';
+import { fsyncSync } from 'node:fs';
+import { open } from 'node:fs/promises';
+export default chariox => chariox.tools.register('echo', async () => {
+  const file = chariox.paths.data + '/probe';
+  const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+  const settled = promise => promise.then(() => 'ok', error => error.code);
+  const fd = fs.openSync(file, 'w');
+  fs.writeSync(fd, 'x');
+  const outcome = {
+    fsyncSync: code(() => fs.fsyncSync(fd)),
+    importedFsyncSync: code(() => fsyncSync(fd)),
+    fdatasyncSync: code(() => fs.fdatasyncSync(fd)),
+    writeFileSyncFlush: code(() => fs.writeFileSync(file + '-2', Buffer.from('x'), { flush: true })),
+    fsync: await new Promise(resolve => fs.fsync(fd, error => resolve(error ? error.code : 'ok'))),
+    fdatasync: await new Promise(resolve => fs.fdatasync(fd, error => resolve(error ? error.code : 'ok'))),
+  };
+  fs.closeSync(fd);
+  const handle = await open(file, 'r+');
+  outcome.fileHandleSync = await settled(handle.sync());
+  outcome.fileHandleDatasync = await settled(handle.datasync());
+  await handle.close();
+  outcome.promisesWriteFileFlush = await settled(fs.promises.writeFile(file + '-3', 'x', { flush: true }));
+  outcome.written = fs.readFileSync(file, 'utf8');
+  return outcome;
+});`;
+  const running = start(await fixture(source));
+  await running.ready();
+  running.request('call-1', 'tools.invoke', { name: 'echo', input: {} });
+  const outcome = (await running.receive(message => message.id === 'call-1')).result;
+  const denied = 'ERR_ACCESS_DENIED';
+  assert.deepEqual(outcome, {
+    fsyncSync: denied, importedFsyncSync: denied, fdatasyncSync: denied, writeFileSyncFlush: denied,
+    fsync: denied, fdatasync: denied, fileHandleSync: denied, fileHandleDatasync: denied,
+    promisesWriteFileFlush: denied, written: 'x',
+  });
+  running.child.kill('SIGKILL');
+  await running.completed;
+});

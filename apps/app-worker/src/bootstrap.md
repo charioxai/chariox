@@ -9,6 +9,12 @@ registrations through the existing `worker.ready` request. It owns `ready`,
 Scaffolding should generate `runtime/main.mjs` with `export default function
 register(chariox) { ... }` and let the existing packer choose that entry.
 
+Before any App module loads, the bootstrap replaces every `node:fs` fsync and
+fdatasync form (sync, callback, and the `FileHandle` methods, the only ones
+Node 24.20's permission model still lets through) with one that fails
+`ERR_ACCESS_DENIED`, and re-syncs the built-in ESM exports. The SDK README's
+"Durability" section is the contract.
+
 This source is a runtime artifact, never an App-selected module. The release
 bundle must contain `bootstrap.cjs`, `bootstrap-config.cjs`, and the exact
 `@chariox/app-sdk` package source graph at `sdk/`, alongside the native runtime
