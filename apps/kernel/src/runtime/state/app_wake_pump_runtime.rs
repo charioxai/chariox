@@ -71,6 +71,14 @@ pub(super) fn plan<T>(
 /// A delivered item completes. A failed one waits without spending an
 /// attempt while an update drained its worker (the new generation gets it);
 /// any other failure, including the App's own handler error, counts.
+/// A pass that filled its page and delivered something asks for another at
+/// once: the rest of a backlog (an update's held work, events that arrived
+/// while the kernel was down) would otherwise wait a periodic tick per page.
+/// A page that only waited asks for nothing, so held work cannot spin.
+pub(super) fn page_wants_rerun(page: usize, delivered: usize) -> bool {
+    page == PAGE && delivered > 0
+}
+
 pub(super) fn after_delivery(delivered: bool, update_pending: bool, now_ms: u64) -> Settle {
     if delivered {
         Settle::Delivered
@@ -128,8 +136,11 @@ impl KernelRuntimeState {
         tokio::spawn(async move {
             let mut now_ms = now_ms;
             loop {
-                runtime.app_wake_pass(now_ms).await;
-                runtime.app_inbox_pass(now_ms).await;
+                let wakes_full = runtime.app_wake_pass(now_ms).await;
+                let inbox_full = runtime.app_inbox_pass(now_ms).await;
+                if wakes_full || inbox_full {
+                    pass.again();
+                }
                 runtime.stop_idle_apps(now_ms).await;
                 if runtime.app_control().wake_pump().prune_due(now_ms) {
                     runtime.prune_dormant_apps().await;
@@ -200,7 +211,8 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn app_wake_pass(&self, now_ms: u64) {
+    /// One bounded pass; true when it filled its page and delivered something.
+    async fn app_wake_pass(&self, now_ms: u64) -> bool {
         let store = self.owned.durable_state_store.clone();
         let due = tokio::task::spawn_blocking(move || {
             store.app_wakes(AppWakeOperation::Due {
@@ -210,8 +222,10 @@ impl KernelRuntimeState {
         })
         .await;
         let Ok(Ok(AppWakeOutcome::Due(due))) = due else {
-            return;
+            return false;
         };
+        let page = due.len();
+        let mut delivered_count = 0;
         let (deliver, planned) = self
             .plan_app_delivery(due, now_ms, |wake| {
                 (wake.owner_id.clone(), wake.installation_id.clone())
@@ -237,6 +251,7 @@ impl KernelRuntimeState {
             let delivered = lease
                 .deliver_wake(&wake.wake, overdue, DELIVERY_TIMEOUT)
                 .await;
+            delivered_count += usize::from(delivered.is_ok());
             let update_pending = delivered.is_err()
                 && self
                     .app_update_pending(&wake.owner_id, &wake.installation_id)
@@ -260,6 +275,7 @@ impl KernelRuntimeState {
             }
         })
         .await;
+        page_wants_rerun(page, delivered_count)
     }
 
     /// Splits due work into items for live workers and items that wait,
@@ -395,6 +411,17 @@ mod tests {
             ),
             AppWakeOperation::Failed { now_ms: 100, .. }
         ));
+    }
+
+    #[test]
+    fn only_a_full_page_that_delivered_asks_for_another_pass() {
+        assert!(page_wants_rerun(PAGE, 1));
+        assert!(page_wants_rerun(PAGE, PAGE));
+        // Everything waited (a worker starting, an update held it): no spin.
+        assert!(!page_wants_rerun(PAGE, 0));
+        // A short page was the whole backlog.
+        assert!(!page_wants_rerun(PAGE - 1, PAGE - 1));
+        assert!(!page_wants_rerun(0, 0));
     }
 
     #[test]
