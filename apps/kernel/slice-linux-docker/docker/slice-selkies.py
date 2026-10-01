@@ -148,8 +148,9 @@ def start(directory, *, port=None, display=None):
 
     token = secrets.token_urlsafe(32)
     environment = {**os.environ, "DISPLAY": display, "SELKIES_MASTER_TOKEN": token}
-    command = [
-        os.environ.get("CHARIOX_SLICE_SELKIES_BIN", "/opt/chariox-selkies/bin/selkies"),
+    override = os.environ.get("CHARIOX_SLICE_SELKIES_BIN")
+    command = ([override] if override and override != "/opt/chariox-selkies/bin/selkies"
+               else ["/opt/chariox-selkies/bin/python", str(Path(__file__).with_name("selkies-capture.py"))]) + [
         "--addr=127.0.0.1", f"--port={port}", "--mode=websockets",
         "--encoder=h264enc", "--use-cpu=true|locked", "--framerate=30",
         "--enable-https=false", "--enable-basic-auth=false",

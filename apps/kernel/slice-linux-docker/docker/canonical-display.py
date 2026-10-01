@@ -10,8 +10,6 @@ import sys
 import time
 import urllib.request
 
-import aiohttp
-from selkies_viewers import PrivateStreamError, locked_state, publish, lifecycle, NoRedirect
 
 
 _deadline = None
@@ -51,6 +49,10 @@ def geometry():
 
 
 def resize(width, height):
+    if os.environ.get("CHARIOX_SLICE_DISPLAY_SERVER") == "Xvfb":
+        if geometry() != (width, height):
+            raise DisplayError("physical resize requires the managed Xorg image")
+        return
     dimensions(width, height)
     outputs = re.findall(r"^(\S+) connected", run("xrandr", "--query"), re.M)
     if len(outputs) != 1:
@@ -75,6 +77,8 @@ def resize(width, height):
 
 
 async def refresh_stream(record, width, height):
+    import aiohttp
+    from selkies_viewers import lifecycle, NoRedirect
     # An internal controller cannot send mouse/keyboard input. It only causes
     # the pinned streamer to re-read the physical X root with resize disabled.
     token = secrets.token_urlsafe(32)
@@ -205,8 +209,11 @@ def apply(width, height):
     dimensions(width, height)
     if not os.environ.get("DISPLAY"):
         raise DisplayError("canonical physical display unavailable")
+    if os.environ.get("CHARIOX_SLICE_DISPLAY_SERVER") == "Xvfb":
+        resize(width, height)  # Refuse unsupported changes before capture mutation.
     if os.environ.get("CHARIOX_SLICE_VIEWER_BACKEND", "selkies") == "novnc":
         return apply_vnc(width, height)
+    from selkies_viewers import locked_state, publish, lifecycle
     started = time.monotonic()
     # Total30s includes lock wait, apply, rollback and token-table restoration.
     # Reserve11s for rollback and2s for the final viewer-only API publication.
