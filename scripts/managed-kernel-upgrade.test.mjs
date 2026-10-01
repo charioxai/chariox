@@ -113,7 +113,7 @@ esac
   }
 })
 
-test("repository release policy permits only the 343 fixture, protocols 367/368 and protocol 369 itself", async (context) => {
+test("repository release policy permits only the 343 fixture, protocols 367/368/369 and protocol 370 itself", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -124,17 +124,17 @@ test("repository release policy permits only the 343 fixture, protocols 367/368 
   const policy = JSON.parse(policyBytes)
   assert.deepEqual(policy, {
     schemaVersion: 1,
-    protocol: 369,
-    upgradeFrom: [343, 367, 368, 369],
-    rollbackTo: [343, 367, 368, 369],
+    protocol: 370,
+    upgradeFrom: [343, 367, 368, 369, 370],
+    rollbackTo: [343, 367, 368, 369, 370],
   })
   await put(join(current, policyPath), policyBytes)
   await put(join(target, policyPath), policyBytes)
 
-  for (const olderProtocol of [343, 367, 368]) {
+  for (const olderProtocol of [343, 367, 368, 369]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
-      [current, olderProtocol, target, 369],
-      [target, 369, current, olderProtocol],
+      [current, olderProtocol, target, 370],
+      [target, 370, current, olderProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
         currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
@@ -144,8 +144,8 @@ test("repository release policy permits only the 343 fixture, protocols 367/368 
 
   for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index)]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
-      [current, unsupportedProtocol, target, 369],
-      [target, 369, current, unsupportedProtocol],
+      [current, unsupportedProtocol, target, 370],
+      [target, 370, current, unsupportedProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
         currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
@@ -1835,11 +1835,11 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
 })
 
 // This signed installer fixture is not proof of real-binary state migration.
-test("managed kernel upgrade accepts a signed protocol 343 to 368 fixture transition and rollback", async (context) => {
+test("managed kernel upgrade accepts a signed protocol 343 to 370 fixture transition and rollback", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const harness = await makeHarness(context, {
     currentProtocol: 343,
-    targetProtocol: 368,
+    targetProtocol: 370,
     targetTransitionPolicy: repositoryPolicy,
   })
   const result = harness.run()
@@ -1865,7 +1865,7 @@ test("managed kernel upgrade rejects signed ambiguous protocol 351 before stoppi
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const harness = await makeHarness(context, {
     currentProtocol: 351,
-    targetProtocol: 368,
+    targetProtocol: 370,
     targetTransitionPolicy: repositoryPolicy,
   })
   const result = harness.run()
