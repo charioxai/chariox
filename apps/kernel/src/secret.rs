@@ -23,13 +23,14 @@ pub(crate) use vault::create_chariox_encrypted_vault_for_test;
 pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
 pub use vault::{
-    chariox_encrypted_vault_status, clear_all_chariox_encrypted_vault_unlocks,
-    export_transferred_vault_snapshot, extend_chariox_encrypted_vault,
-    install_transferred_vault_snapshot, is_chariox_vault_locked_error,
-    lock_chariox_encrypted_vault, restore_transferred_vault_unlock, unlock_chariox_encrypted_vault,
-    validate_installed_transferred_vault, validate_transferred_vault_snapshot_for_export,
-    CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
-    TransferredVaultSourceBinding, VaultPasskeyVerifier, VaultUnlockLease,
+    change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
+    clear_all_chariox_encrypted_vault_unlocks, export_transferred_vault_snapshot,
+    extend_chariox_encrypted_vault, install_transferred_vault_snapshot,
+    is_chariox_vault_locked_error, lock_chariox_encrypted_vault, restore_transferred_vault_unlock,
+    unlock_chariox_encrypted_vault, validate_installed_transferred_vault,
+    validate_transferred_vault_snapshot_for_export, CharioxVaultUnlockStatus, CredentialVaultStore,
+    TransferredVaultSnapshot, TransferredVaultSourceBinding, VaultPasskeyVerifier,
+    VaultUnlockLease,
 };
 
 #[cfg(test)]
