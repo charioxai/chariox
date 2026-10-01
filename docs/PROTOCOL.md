@@ -435,6 +435,7 @@ Current pushed event contract:
 
 - all pushed events use the `KernelOutgoingFrame::Event` envelope with monotonic `event_id` plus an `event` payload tagged by its `event` string
 - `terminal_output` carries terminal records and should be used for terminal append/update rendering without forcing `session.state.get`
+- Local daemon protocol v370 keeps recipient-scoped bounded output drains scheduled while records remain, even after the producer stops. Local and relay subscriptions preserve byte order and heartbeat scheduling; an empty drain does not schedule more work. Event shapes, relay peer protocol, and client minimum versions are unchanged (MP-08 / MP-10).
 - `runtime_notices` carries runtime notices for the subscribed attachment/session
 - `assistant_message_completed` carries `session_id`, `provider_run_id`, optional `agent_id`, `message_id`, and `completed_at_ms`
 - `session_snapshot` is the full subscribed-session projection and remains the fallback after attach, replay gaps, explicit recovery, and structural changes
