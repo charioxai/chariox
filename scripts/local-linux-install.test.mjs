@@ -75,7 +75,7 @@ esac
   await script(join(bin, "apparmor_parser"), `#!/bin/sh
 echo "$*" >> "$HARNESS_STATE/apparmor"
 profiles="$CHARIOX_LOCAL_INSTALL_ROOT/sys/kernel/security/apparmor/profiles"
-case "$1" in -r) echo "chariox-app-bwrap (unconfined)" > "$profiles" ;; -R) : > "$profiles" ;; esac
+case "$1" in -r) printf "chariox-app-bwrap (unconfined)\\nchariox-app-domain-entry (unconfined)\\n" > "$profiles" ;; -R) : > "$profiles" ;; esac
 `)
   // Ownership is the only thing a non-root test cannot give; the rest is real install(1).
   await script(join(bin, "install"), `#!/bin/sh
@@ -205,6 +205,15 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.match(again.out, /unchanged chariox-app-storage\.service \(running\)/)
     assert.doesNotMatch(await h.log("systemctl"), /restart|start /)
     assert.deepEqual(await Promise.all(admissionLocks.map(async (lock) => (await stat(lock)).ino)), admissionInodes)
+
+    // A lost native-entry profile must be repaired even when the file and
+    // existing bwrap profile are unchanged. No helper restart is required.
+    await writeFile(p(h, "sys/kernel/security/apparmor/profiles"), "chariox-app-bwrap (unconfined)\n")
+    await h.reset("apparmor")
+    const repairedProfile = h.install(["alice"])
+    assert.equal(repairedProfile.status, 0, repairedProfile.out)
+    assert.match(await h.log("apparmor"), /^-r /m)
+    assert.doesNotMatch(await h.log("systemctl"), /restart|start /)
 
     const second = h.install(["bob"])
     assert.equal(second.status, 0, second.out)

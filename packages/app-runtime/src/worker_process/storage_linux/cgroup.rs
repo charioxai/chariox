@@ -80,6 +80,22 @@ impl Bound {
             identity,
         })
     }
+    pub fn require_single_process(&self, pid: i32) -> Result<()> {
+        if files::identity(&self.directory.0)? != self.identity
+            || files::identity(&self._root.0)? != self.root_identity
+        {
+            return Err(Error::Identity);
+        }
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        open(&self.directory, "cgroup.procs", libc::O_RDONLY)?
+            .take(1025)
+            .read_to_end(&mut bytes)?;
+        if bytes != format!("{pid}\n").as_bytes() {
+            return Err(Error::Identity);
+        }
+        Ok(())
+    }
     pub fn require_empty(&self) -> Result<()> {
         match self.members()? {
             Members::None => Ok(()),

@@ -164,7 +164,8 @@ trait ResourceDomain: Send {
         Err(WorkerError::Preparation)
     }
     /// Trusted setup only: Linux inherits cgroup.procs at FD5 and the pinned
-    /// bubblewrap executable at FD6. Both close before native App main. Ordinary
+    /// bubblewrap executable at FD6 and a borrowed storage lease at FD7. All
+    /// setup channels close before Bubblewrap exec. Ordinary
     /// workers and macOS Apple-tool launches retain the original FD0..4 ABI.
     fn setup_descriptors(&self) -> &[File] {
         &[]

@@ -40,6 +40,7 @@ enum Operation<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         committed_generation: Option<u64>,
     },
+    VerifyWorkerGroupsV1,
     Release {
         lease: &'a str,
     },
@@ -111,6 +112,30 @@ pub(in crate::worker_process) fn delete(owner: &str, installation: &str) -> Resu
     }
 }
 impl Lease {
+    /// Borrowed only during synchronous native launch. The parent sends no
+    /// requests until that child has closed this duplicate before bwrap exec.
+    pub fn group_mapping_channel(&self) -> Result<std::fs::File> {
+        use std::os::fd::FromRawFd;
+        let fd = unsafe { libc::fcntl(self.stream.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(Error::Io);
+        }
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+    }
+
+    pub fn verify_group_mapping(&mut self) -> Result<()> {
+        wire::send(&mut self.stream, &Operation::VerifyWorkerGroupsV1)?;
+        let reply: Reply = wire::receive(&self.stream, 5)?;
+        if reply.status != "groups_verified_v1"
+            || reply.grant.is_some()
+            || reply.code.is_some()
+            || reply.host_disk.is_some()
+        {
+            return Err(Error::Identity);
+        }
+        Ok(())
+    }
+
     /// `committed_generation` is the installation's committed generation: a
     /// newer, staged generation starts on a copy the helper can roll back to.
     /// It is 0 until the first install commits; that start names none.
