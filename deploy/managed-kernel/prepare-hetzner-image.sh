@@ -264,6 +264,7 @@ configure_subid_range /etc/subgid --add-subgids
 [ "$(stat -c %d /var/lib/chariox-slice-share/.broker-private/output)" = \
   "$(stat -c %d /var/lib/chariox-slice-share)" ] \
   || fail "broker output staging is not on the managed share filesystem"
+python3 "$script_root/../local-linux/provision-docker-admission-locks.py"
 systemctl start chariox-rootless-docker.service
 rootless_docker_ready=0
 for _attempt in $(seq 1 30); do
