@@ -42,7 +42,7 @@ try {
   child = spawn("/usr/bin/docker", ["run", "--rm", "--name", container,
     "--read-only", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
     "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
-    "--security-opt", "no-new-privileges", "--memory", "512m", "--cpus", "2", "--pids-limit", "128",
+    "--security-opt", "no-new-privileges", "--memory", "512m", "--cpus", "2", "--pids-limit", "512",
     "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m", "--tmpfs", "/run/chariox-slice-broker:rw,nosuid,nodev,size=32m",
     "--mount", "type=bind,src=/run/docker.sock,dst=/run/docker.sock",
     "--mount", `type=bind,src=${enrollment.sourceRoot},dst=${enrollment.sourceRoot},readonly`,
