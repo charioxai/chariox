@@ -15,6 +15,17 @@ function fixture() {
 }
 const verify = ({ inspect, receipt }, trusted = new Set([digest])) => verifyProtectedCaptureLayout(inspect, receipt, trusted)
 test("verified actual topology accepts only the protected roots", () => assert.deepEqual(verify(fixture()), { privateHostRoot: "/protected/synthetic", homeVolume: "synthetic-home" }))
+test("standard image public defaults coexist with the protected container environment", () => {
+  const f = fixture()
+  f.inspect.Config.Env.push("NODE_VERSION=22.17.1", "YARN_VERSION=1.22.22", "PATH=/usr/local/bin:/usr/bin:/bin",
+    "DEBIAN_FRONTEND=noninteractive", "CHARIOX_SLICE_ROOT=/opt/chariox-slice",
+    "CHARIOX_SLICE_SELKIES_BIN=/opt/chariox-selkies/bin/selkies", "CHARIOX_SLICE_DISPLAY_SERVER=Xorg")
+  assert.doesNotThrow(() => verify(f))
+  for (const value of ["NODE_VERSION=synthetic-private-token", "YARN_VERSION=", "CHARIOX_SLICE_DISPLAY_SERVER=unsupported"]) {
+    const bad = fixture(); bad.inspect.Config.Env.push(value)
+    assert.throws(() => verify(bad))
+  }
+})
 test("forged labels cannot replace mounts or trusted base proof", () => {
   const f = fixture(); f.inspect.Config.Labels = { protected: "true" }; f.inspect.Mounts = []
   assert.throws(() => verify(f)); assert.throws(() => verify(fixture(), new Set()))
@@ -70,7 +81,7 @@ test("protected GitHub config is a private environment path, never a captured ho
   } finally { await rm(root,{recursive:true}) }
 })
 
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs"
+import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { preparePrivateHostRoot } from "../apps/kernel/slice-linux-docker/protected-host-root.mjs"
 test("private host roots never overwrite an existing slice or repair a missing root", () => {
@@ -480,6 +491,26 @@ test("request preflight scans the exact volume without creating a helper or chan
     assert.throws(() => requireSafeHomeVolume({volume, volumeRoot: parent,
       docker: () => ({status: 0, stdout: JSON.stringify([{Name: volume, Mountpoint: parent}])})}))
     }
+  } finally { rmSync(parent, {recursive: true}) }
+})
+
+test("running browser links reach quiescence before strict capture validation", () => {
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-running-browser-metadata-test-"))
+  try {
+    const volume = "chariox-slice-synthetic-running-home"
+    const home = join(parent, volume, "_data")
+    mkdirSync(home, {recursive: true, mode: 0o700})
+    const profile = join(home, ".chariox/browser/chromium")
+    mkdirSync(profile, {recursive: true, mode: 0o700})
+    const singleton = join(profile, "SingletonSocket")
+    symlinkSync("/tmp/.org.chromium.synthetic/SingletonSocket", singleton)
+    const docker = () => ({status: 0, stdout: JSON.stringify([{Name: volume, Mountpoint: home}])})
+    assert.doesNotThrow(() => requireSafeHomeVolume({volume, docker, volumeRoot: parent, quiesced: false}))
+    assert.throws(() => requireSafeHomeVolume({volume, docker, volumeRoot: parent}))
+    unlinkSync(singleton) // Models the production browser stop; real Chromium proof is separate.
+    assert.doesNotThrow(() => requireSafeHomeVolume({volume, docker, volumeRoot: parent}))
+    mkdirSync(join(home, ".config/gh"), {recursive: true, mode: 0o700})
+    assert.throws(() => requireSafeHomeVolume({volume, docker, volumeRoot: parent, quiesced: false}))
   } finally { rmSync(parent, {recursive: true}) }
 })
 

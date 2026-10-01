@@ -1493,7 +1493,7 @@ function execute(request) {
   }
   if (request.kind === "capture_preflight") {
     const layout = protectedLayouts.preflight(request.container)
-    requireSafeHomeVolume({volume: layout.homeVolume,
+    requireSafeHomeVolume({volume: layout.homeVolume, quiesced: false,
       docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
     return {status: 0, stdoutBase64: "", stderrBase64: ""}
   }

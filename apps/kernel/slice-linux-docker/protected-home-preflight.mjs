@@ -1,10 +1,10 @@
 import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs"
 import { join } from "node:path"
 import { verifyHomeEntryMetadata } from "./protected-home-capture.mjs"
-import { verifyHomeVolumeName } from "./protected-layout.mjs"
+import { verifyHomeVolumeName, requireSupportedHomeEntries } from "./protected-layout.mjs"
 
 function refuse() { throw new Error("Slice save/backup is unavailable for this storage layout; existing saved state is preserved") }
-export function requireSafeHomeVolume({volume, docker, volumeRoot = "/var/lib/chariox-docker/data/volumes", maxEntries = 100_000}) {
+export function requireSafeHomeVolume({volume, docker, volumeRoot = "/var/lib/chariox-docker/data/volumes", maxEntries = 100_000, quiesced = true}) {
   verifyHomeVolumeName(volume)
   const result = docker(["volume", "inspect", volume])
   if (result.status !== 0) refuse()
@@ -26,7 +26,10 @@ export function requireSafeHomeVolume({volume, docker, volumeRoot = "/var/lib/ch
       const kind = metadata.isSymbolicLink() ? "l" : metadata.isDirectory() ? "d" : metadata.isFile() ? "f" : "unsupported"
       if (metadata.mode & 0o6000) refuse()
       const target = kind === "l" ? readlinkSync(join(path, relative)) : ""
-      verifyHomeEntryMetadata(Buffer.from(`${relative}\0${kind}\0${target}\0`))
+      // Admission rejects known credential roots without inspecting transient
+      // browser links. The strict walk runs after all writers are quiesced.
+      requireSupportedHomeEntries([relative])
+      if (quiesced) verifyHomeEntryMetadata(Buffer.from(`${relative}\0${kind}\0${target}\0`))
       if (kind === "d") pending.push(relative)
     }
   }

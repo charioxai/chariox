@@ -136,6 +136,7 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_MANAGED_VAULT_PATH",
     "CHARIOX_DAEMON_SOCKET",
     "CHARIOX_SLICE_ROOT",
+    "CHARIOX_SLICE_PRIVATE_ROOT",
     MANAGED_SLICE_SERVICE_ROOT_ENV,
     MANAGED_SLICE_PUBLICATION_ROOT_ENV,
     "CHARIOX_MANAGED_RELEASE_SIGNATURE",
@@ -152,6 +153,7 @@ const PROVIDER_ACCOUNT_PATH_ENVIRONMENT: &[&str] = &[
     "XDG_CACHE_HOME",
     "XDG_RUNTIME_DIR",
     "OPENCODE_CONFIG_DIR",
+    "GH_CONFIG_DIR",
 ];
 
 pub(crate) fn managed_provider_isolation_required() -> bool {
@@ -598,6 +600,7 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Result<Vec<Path
     for name in [
         "CHARIOX_CAPABILITY_ISOLATION_ROOT",
         "CHARIOX_MANAGED_PROVIDER_HOME",
+        "CHARIOX_SLICE_PRIVATE_ROOT",
     ] {
         if let Some(raw) = std::env::var_os(name) {
             if raw.is_empty() {
@@ -962,7 +965,13 @@ pub(crate) fn apply_managed_provider_isolation(
         let workspace_roots = managed_workspace_roots(request)?;
         let working_directory = managed_working_directory(request, &workspace_roots)?;
         let runtime_roots = managed_runtime_roots(&launch)?;
+        let inherited_github = managed_inherited_github_config(&provider_home, &launch.pty_env)?;
         let account_bindings = managed_account_bindings(&mut launch.pty_env)?;
+        if let Some(directory) = inherited_github {
+            launch
+                .pty_env
+                .insert("GH_CONFIG_DIR".to_string(), directory);
+        }
         let program = rewrite_managed_program_path(&program, &provider_home, &account_bindings);
         let prompt_attachment_root = managed_prompt_attachment_root(request)?;
         let protected_namespace_roots = managed_protected_namespace_directories(&[])?;
@@ -1785,6 +1794,27 @@ fn managed_runtime_roots(launch: &ProviderLaunchResult) -> Result<Vec<PathBuf>, 
 }
 
 #[cfg(target_os = "linux")]
+fn managed_inherited_github_config(
+    provider_home: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Result<Option<String>, DaemonError> {
+    if environment.contains_key("GH_CONFIG_DIR") {
+        return Ok(None); // Explicit account selection is validated and bound below.
+    }
+    let Some(directory) = std::env::var_os("GH_CONFIG_DIR") else {
+        return Ok(None);
+    };
+    // The inherited protected setting belongs to the configured provider HOME.
+    // It may not exist before login. Never expose an arbitrary ambient directory.
+    if PathBuf::from(directory) != provider_home.join(".config/gh") {
+        return Err(isolation_error(
+            "inherited GitHub configuration is outside managed provider HOME",
+        ));
+    }
+    Ok(Some(format!("{SANDBOX_HOME}/.config/gh")))
+}
+
+#[cfg(target_os = "linux")]
 fn managed_account_bindings(
     environment: &mut BTreeMap<String, String>,
 ) -> Result<Vec<(PathBuf, PathBuf)>, DaemonError> {
@@ -2079,6 +2109,8 @@ fn isolation_error(message: impl Into<String>) -> DaemonError {
 
 #[cfg(test)]
 mod tests {
+    include!("managed_isolation/protected_account_tests.rs");
+
     use super::*;
 
     #[test]
