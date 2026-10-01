@@ -203,4 +203,14 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
         .status()
         .unwrap()
         .success());
+    println!("PROTECTED_ACCOUNT_ISOLATION_PROBE:{}", serde_json::json!({
+        "schema": "chariox.protected_account_isolation_probe.v1",
+        "actualNamespaceExecuted": true, "selectedAccountReadable": true,
+        "originalAccountTreeHidden": true, "siblingAccountHidden": true,
+        "kernelAndNssHidden": true, "privateRootControlScrubbed": true,
+        "maskRemovalNegativeFailed": true, "ambientGitHubAndGitWorked": true,
+        "explicitGitHubWorked": true, "preLoginDirectoryMayBeAbsent": true,
+        "outsideHomeAmbientGitHubRefused": true,
+    }));
+
 }
