@@ -162,7 +162,7 @@ impl KernelRuntimeState {
                         "execution_location": active_execution_location,
                         "max_safety": grant.as_ref().and_then(|grant| grant.max_safety.clone()).unwrap_or_else(|| "read".to_string()),
                         "operations": operations,
-                        "effective_when_requested": self.runtime_catalog_grant_effect(agent, granted).0,
+                        "effective_when_requested": self.runtime_catalog_grant_effect(agent, grant.is_some()).0,
                         "ready_state": if grant.is_some() { "ready" } else { "available" }
                     })
                 })
