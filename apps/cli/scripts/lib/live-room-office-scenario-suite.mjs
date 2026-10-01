@@ -217,7 +217,7 @@ async function runScenario(input, definition) {
 
     let lifecycle
     try {
-      lifecycle = await waitForPrompt(client, requests, input.sessionId, input.agentId, promptId,
+      lifecycle = await waitForPrompt(client, requests, input.sessionId, attachment.id, input.agentId, promptId,
         input.timeoutMs, input.pollMs, input.sleep)
     } catch {
       return {
@@ -293,10 +293,11 @@ function buildScenarioPrompt(scenarioId, task) {
   ].join("\n")
 }
 
-async function waitForPrompt(client, requests, sessionId, agentId, promptId, timeoutMs, pollMs, injectedSleep) {
+async function waitForPrompt(client, requests, sessionId, attachmentId, agentId, promptId, timeoutMs, pollMs, injectedSleep) {
   const sleep = injectedSleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
   const deadline = Date.now() + timeoutMs
   while (Date.now() <= deadline) {
+    await client.send(requests.pollRuntimeNoticesRequest(sessionId, attachmentId))
     const response = await client.send(requests.getSessionHistoryOutlineRequest(sessionId, [agentId], 10))
     const outline = response?.SessionHistoryOutline
     const turns = outline?.agents?.find((item) => item.agent_id === agentId)?.turns ?? []

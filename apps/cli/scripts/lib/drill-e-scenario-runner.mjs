@@ -531,7 +531,7 @@ export async function runDrillEScenario({
     "attachToSessionRequest", "detachFromSessionRequest", "getSessionStateRequest",
     "getRoomEnvironmentStateRequest", "listRoomEnvironmentActionHistoryRequest",
     "submitPromptRequest", "requestRoomEnvironmentInputTakeoverRequest",
-    "cancelQueuedPromptRequest", "releaseRoomEnvironmentInputRequest",
+    "cancelQueuedPromptRequest", "releaseRoomEnvironmentInputRequest", "pollRuntimeNoticesRequest",
   ]) assert.ok(typeof requests?.[name] === "function", "missing public request builder " + name)
 
   let attachmentId = null
@@ -605,6 +605,7 @@ export async function runDrillEScenario({
       }
     }
     const observe = async () => {
+      await bounded.send(requests.pollRuntimeNoticesRequest(options.sessionId, attachmentId))
       assert.ok(observationCount < maxObservations, "Drill E observation count exceeded its bound")
       const response = await bounded.send(requests.getRoomEnvironmentStateRequest(options.sessionId))
       const environment = unwrap(response, "RoomEnvironmentState")?.environment

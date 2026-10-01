@@ -10,6 +10,7 @@ const scenarioId = "document-intake-follow-up"
 
 function requestBuilders() {
   return {
+    pollRuntimeNoticesRequest: (sessionId, attachmentId) => ({ PollRuntimeNotices: { session_id: sessionId, attachment_id: attachmentId } }),
     getSessionStateRequest: (sessionId) => ({ GetSessionState: { session_id: sessionId } }),
     listAgentsRequest: (sessionId) => ({ ListAgents: { session_id: sessionId } }),
     listRoomEnvironmentActionHistoryRequest: (sessionId, beforeSequence, limit) => ({
@@ -84,9 +85,17 @@ test("kernel-shaped fixture responses produce allowlisted action observations an
   const sha256 = (await import("node:crypto")).createHash("sha256").update(png).digest("hex")
   const sent = []
   const requests = requestBuilders()
+  let leaseClock = 0
+  let lastHeartbeat = 0
+  let providerPolls = 0
   const client = {
     async send(request) {
       sent.push(request)
+      if (request.PollRuntimeNotices) {
+        assert.deepEqual(request.PollRuntimeNotices, { session_id: "session-1", attachment_id: "attachment-1" })
+        lastHeartbeat = leaseClock
+        return { RuntimeNotices: { notices: [] } }
+      }
       if (request.GetSessionState) return { SessionStateLoaded: { session: { id: "session-1", agent_activity: {} } } }
       if (request.ListAgents) return { AgentsListed: { agents: [{ id: "agent-1" }] } }
       if (request.ListRoomEnvironmentActionHistory) {
@@ -99,8 +108,15 @@ test("kernel-shaped fixture responses produce allowlisted action observations an
       }
       if (request.AttachToSession) return { SessionAttached: { attachment: { id: "attachment-1" } } }
       if (request.SubmitPrompt) return { PromptSubmitted: { outcome: { Started: { prompt: { id: "prompt-1" } } } } }
-      if (request.GetSessionHistoryOutline) return { SessionHistoryOutline: { agents: [{ agent_id: "agent-1", turns: [{ prompt_id: "prompt-1", lifecycle: "completed" }] }] } }
-      if (request.CaptureRoomEnvironmentScreenshot) return { RoomEnvironmentScreenshotCaptured: { artifact: { artifact_id: "screenshot-1", media_type: "image/png", size_bytes: png.length, sha256 } } }
+      if (request.GetSessionHistoryOutline) {
+        leaseClock += 20_000
+        providerPolls += 1
+        return { SessionHistoryOutline: { agents: [{ agent_id: "agent-1", turns: [{ prompt_id: "prompt-1", lifecycle: providerPolls < 3 ? "open" : "completed" }] }] } }
+      }
+      if (request.CaptureRoomEnvironmentScreenshot) {
+        assert.ok(leaseClock - lastHeartbeat < 30_000, "fixture terminal attachment expired during the provider turn")
+        return { RoomEnvironmentScreenshotCaptured: { artifact: { artifact_id: "screenshot-1", media_type: "image/png", size_bytes: png.length, sha256 } } }
+      }
       if (request.ReadRoomEnvironmentScreenshotChunk) return { RoomEnvironmentScreenshotChunk: { chunk: { artifact_id: "screenshot-1", offset: 0, data_base64: png.toString("base64"), eof: true } } }
       if (request.DetachFromSession) return { SessionDetached: {} }
       throw new Error("unexpected kernel request")
@@ -110,6 +126,7 @@ test("kernel-shaped fixture responses produce allowlisted action observations an
   const report = await runRoomOfficeScenarioSuite(input)
   assert.equal(report.status, "observed")
   assert.equal(report.acceptanceAssessment, "not_performed")
+  assert.equal(sent.filter(request => request.PollRuntimeNotices?.attachment_id === "attachment-1").length, 3)
   assert.equal(report.scenarios[0].providerTurnLifecycle, "completed")
   assert.equal(report.scenarios[0].actionAttribution, "selected_agent_and_sequence_window_only")
   assert.deepEqual(report.scenarios[0].roomActions.map((action) => action.actionId), ["action-5"])
@@ -127,6 +144,7 @@ test("a concurrently queued prompt is cancelled and requires operator review", a
   const client = {
     async send(request) {
       sent.push(request)
+      if (request.PollRuntimeNotices) return { RuntimeNotices: { notices: [] } }
       if (request.GetSessionState) return { SessionStateLoaded: { session: { id: "session-1", agent_activity: {} } } }
       if (request.ListAgents) return { AgentsListed: { agents: [{ id: "agent-1" }] } }
       if (request.ListRoomEnvironmentActionHistory) return { RoomEnvironmentActionHistoryListed: { page: { actions: [], next_before_sequence: null } } }
@@ -149,6 +167,7 @@ test("an ambiguous prompt submission is surfaced for review and never retried", 
   const client = {
     async send(request) {
       sent.push(request)
+      if (request.PollRuntimeNotices) return { RuntimeNotices: { notices: [] } }
       if (request.GetSessionState) return { SessionStateLoaded: { session: { id: "session-1", agent_activity: {} } } }
       if (request.ListAgents) return { AgentsListed: { agents: [{ id: "agent-1" }] } }
       if (request.ListRoomEnvironmentActionHistory) return { RoomEnvironmentActionHistoryListed: { page: { actions: [], next_before_sequence: null } } }

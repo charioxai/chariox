@@ -320,6 +320,7 @@ function emptyPromptStates() {
 
 function requestBuilders() {
   return {
+    pollRuntimeNoticesRequest: (sessionId, attachmentId) => ({ PollRuntimeNotices: { session_id: sessionId, attachment_id: attachmentId } }),
     attachToSessionRequest: (sessionId, clientId) => ({
       AttachToSession: { session_id: sessionId, client_id: clientId, capability_level: "FullTerminal" },
     }),
@@ -437,6 +438,7 @@ function fakeKernel({
   const client = {
     async send(request) {
       sent.push(request)
+      if (request.PollRuntimeNotices) return { RuntimeNotices: { notices: [] } }
       if (request.AttachToSession) {
         if (failAttachAfterAdmission) throw new Error("fixture attach acknowledgment timeout")
         return { SessionAttached: { attachment: { id: "attachment-e" } } }
@@ -1039,4 +1041,26 @@ test("timeout with an unresolved takeover reports the missing pending release se
   assert.equal(kernel.takeoverRequests(), 1)
   assert.equal(kernel.releaseAttempts(), 0)
   assert.equal(kernel.detachAttempts(), 1)
+})
+
+
+test("long Drill E observation preserves its exact attachment heartbeat", async () => {
+  let clock = 0
+  let lastHeartbeat = 0
+  const kernel = fakeKernel()
+  const send = kernel.client.send.bind(kernel.client)
+  kernel.client.send = async (request) => {
+    if (request.PollRuntimeNotices) {
+      assert.equal(request.PollRuntimeNotices.attachment_id, "attachment-e")
+      lastHeartbeat = clock
+    }
+    if (request.GetRoomEnvironmentState) clock += 10_000
+    if (request.SubmitPrompt && clock - lastHeartbeat > 30_000) throw new Error("fixture stale terminal attachment")
+    return send(request)
+  }
+  const capture = await runDrillEScenario({ client: kernel.client, requests: requestBuilders(),
+    options: options({ timeoutMs: 180_000 }), now: () => clock, sleep: async (ms) => { clock += ms } })
+  assert.equal(kernel.submitted.length, 5)
+  assert.equal(capture.cleanup.status, "passed")
+  assert.ok(kernel.sent.filter(request => request.PollRuntimeNotices).length > 3)
 })
