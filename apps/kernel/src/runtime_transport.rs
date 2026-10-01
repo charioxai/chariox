@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore, TryAcquireError}
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
-    accept_async, accept_hdr_async,
+    accept_hdr_async,
     tungstenite::{
         handshake::server::ErrorResponse,
         http::StatusCode,
@@ -33,6 +33,7 @@ use crate::transport::kernel_protocol::{
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
+mod local_auth;
 mod local_presence;
 
 pub(crate) mod command_cache;
@@ -43,6 +44,7 @@ pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
 use command_cache::{
     request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
 };
+use local_auth::KernelLocalAuth;
 use outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
@@ -432,14 +434,12 @@ where
             "bind_port": bind_port,
         }),
     );
-    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
-    run_kernel_websocket_server_with_bound_listener(
-        router,
-        listener,
+    let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
-        shutdown,
-    )
-    .await
+        listener.local_addr(),
+    );
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
 
 pub(crate) async fn run_kernel_websocket_server_with_router<F>(
@@ -467,14 +467,12 @@ where
             "bind_port": bind_port,
         }),
     );
-    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
-    run_kernel_websocket_server_with_bound_listener(
-        router,
-        listener,
+    let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
-        shutdown,
-    )
-    .await
+        listener.local_addr(),
+    );
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
 
 pub async fn run_kernel_websocket_server_on_listener<F>(
@@ -489,7 +487,7 @@ where
     run_kernel_websocket_server_on_listener_with_auth(
         app,
         listener,
-        configured_kernel_local_auth_token(),
+        KernelLocalAuth::host_token_or_unconfigured(configured_kernel_local_auth_token()),
         shutdown,
     )
     .await
@@ -515,20 +513,18 @@ where
             operation: "adopt kernel websocket listener",
             message: error.to_string(),
         })?;
-    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
-    run_kernel_websocket_server_with_bound_listener(
-        router,
-        listener,
+    let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
-        shutdown,
-    )
-    .await
+        listener.local_addr(),
+    );
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
 
 async fn run_kernel_websocket_server_on_listener_with_auth<F>(
     app: Arc<Mutex<DaemonApp>>,
     listener: StdTcpListener,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -539,8 +535,7 @@ where
         app,
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
     ));
-    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth_token, shutdown)
-        .await
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
 
 #[cfg(test)]
@@ -548,7 +543,7 @@ async fn run_kernel_websocket_server_on_listeners_with_auth<F>(
     app: Arc<Mutex<DaemonApp>>,
     listener: StdTcpListener,
     mcp_listener: StdTcpListener,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -564,7 +559,7 @@ where
         router,
         listener,
         mcp_listener,
-        local_auth_token,
+        local_auth,
         shutdown,
     )
     .await
@@ -589,7 +584,7 @@ fn adopt_std_listener(
 async fn run_kernel_websocket_server_with_bound_listener<F>(
     router: Arc<CommandRouter>,
     listener: TcpListener,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -600,7 +595,7 @@ where
         router,
         listener,
         mcp_listener,
-        local_auth_token,
+        local_auth,
         shutdown,
     )
     .await
@@ -610,7 +605,7 @@ async fn run_kernel_websocket_server_with_bound_listeners<F>(
     router: Arc<CommandRouter>,
     listener: TcpListener,
     mcp_listener: TcpListener,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -632,7 +627,8 @@ where
         serde_json::json!({
             "phase": "runtime_ready",
             "kernel_websocket_addr": local_addr,
-            "kernel_local_auth_required": local_auth_token.is_some(),
+            "kernel_local_auth_required": local_auth.required(),
+            "kernel_local_auth_mode": local_auth.mode_label(),
             "recent_event_limit": RECENT_EVENT_LIMIT,
             "process_inbound_request_limit": process_inbound_request_limit,
             "connection_inbound_request_limit": CONNECTION_INBOUND_REQUEST_LIMIT,
@@ -700,13 +696,13 @@ where
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();
-                let local_auth_token = local_auth_token.clone();
+                let local_auth = local_auth.clone();
                 tokio::spawn(async move {
                     let _ = handle_kernel_connection(
                         runtime,
                         router,
                         inbound_request_admission,
-                        local_auth_token,
+                        local_auth,
                         stream,
                     )
                     .await;
@@ -756,53 +752,35 @@ impl<T> EventWriteCoalescer<T> {
     }
 }
 
-fn kernel_local_authorization_matches(value: Option<&str>, expected_token: &str) -> bool {
-    let Some(token) = value.and_then(|value| value.strip_prefix("Bearer ")) else {
-        return false;
-    };
-    let expected = expected_token.as_bytes();
-    let supplied = token.as_bytes();
-    let mut difference = expected.len() ^ supplied.len();
-    for (index, byte) in expected.iter().enumerate() {
-        difference |= usize::from(*byte ^ supplied.get(index).copied().unwrap_or_default());
-    }
-    difference == 0
-}
-
 async fn handle_kernel_connection(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
     inbound_request_admission: InboundRequestAdmission,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
-    let socket = if let Some(expected_token) = local_auth_token {
-        accept_hdr_async(
-            stream,
-            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                  response| {
-                if kernel_local_authorization_matches(
-                    request
-                        .headers()
-                        .get("authorization")
-                        .and_then(|value| value.to_str().ok()),
-                    &expected_token,
-                ) {
-                    return Ok(response);
-                }
+    let peer_addr = stream.peer_addr().ok();
+    let mut local_credential = None;
+    let socket = accept_hdr_async(
+        stream,
+        |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            let Some(credential) = local_auth.admit(request.headers().get("authorization")) else {
                 let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
                 *error.status_mut() = StatusCode::UNAUTHORIZED;
-                Err(error)
-            },
-        )
-        .await
-    } else {
-        accept_async(stream).await
-    }
+                return Err(error);
+            };
+            local_credential = Some(credential);
+            Ok(response)
+        },
+    )
+    .await
     .map_err(|error| DaemonError::LocalTransport {
         operation: "accept kernel websocket handshake",
         message: error.to_string(),
     })?;
+    if let Some(credential) = local_credential {
+        local_auth.record(credential, peer_addr);
+    }
     runtime.transport_health.record_connection_opened();
     let _connection_guard = TransportConnectionGuard {
         transport_health: runtime.transport_health.clone(),

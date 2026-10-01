@@ -230,7 +230,7 @@ async fn kernel_websocket_replies_to_ping_frames() {
             app,
             listener,
             mcp_listener,
-            None,
+            KernelLocalAuth::Unconfigured,
             async {
                 let _ = shutdown_rx.await;
             },
@@ -286,7 +286,7 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
             app,
             listener,
             mcp_listener,
-            Some(Arc::<str>::from("kernel-local-auth-sentinel")),
+            KernelLocalAuth::HostToken(Arc::<str>::from("kernel-local-auth-sentinel")),
             async {
                 let _ = shutdown_rx.await;
             },
@@ -342,6 +342,81 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
     assert_eq!(pong, b"authenticated");
 
     let _ = socket.close(None).await;
+    let _ = shutdown_tx.send(());
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server should stop")
+        .expect("server task should finish")
+        .expect("server should exit cleanly");
+}
+
+#[tokio::test]
+async fn laptop_kernel_websocket_accepts_missing_or_wrong_tokens_in_log_mode() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let mcp_listener =
+        StdTcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp_listener))
+            .expect("daemon should boot"),
+    ));
+    let auth = Arc::new(local_auth::LocalTokenAuth::new(
+        local_auth::generate_kernel_local_auth_token(),
+    ));
+    let server_auth = KernelLocalAuth::LocalToken(Arc::clone(&auth));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listeners_with_auth(
+            app,
+            listener,
+            mcp_listener,
+            server_auth,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    for authorization in [
+        None,
+        Some("Bearer chx_kat_wrong".to_string()),
+        Some(format!("Bearer {}", auth.token())),
+    ] {
+        let mut request = format!("ws://{addr}")
+            .into_client_request()
+            .expect("request should build");
+        if let Some(authorization) = authorization {
+            request.headers_mut().insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&authorization).expect("header should be valid"),
+            );
+        }
+        let (mut socket, _) = connect_async(request)
+            .await
+            .expect("log mode should accept the connection");
+        socket
+            .send(Message::Ping(Vec::from("log-mode").into()))
+            .await
+            .expect("ping should send");
+        let pong = timeout(Duration::from_secs(2), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Pong(payload))) => break payload.to_vec(),
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => panic!("websocket read failed: {error}"),
+                    None => panic!("websocket closed before pong"),
+                }
+            }
+        })
+        .await
+        .expect("pong should arrive");
+        assert_eq!(pong, b"log-mode");
+        let _ = socket.close(None).await;
+    }
+    // One authenticated, one missing and one wrong connection were counted.
+    assert_eq!(auth.counts(), (1, 1, 1));
+
     let _ = shutdown_tx.send(());
     timeout(Duration::from_secs(2), server)
         .await

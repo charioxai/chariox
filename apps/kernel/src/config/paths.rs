@@ -181,6 +181,15 @@ impl DaemonConfig {
         default_config_dir().join("kernels").join("active")
     }
 
+    /// The owner-only file where a laptop kernel listening on `port` writes
+    /// its local auth token. Local clients derive the same path from
+    /// `CHARIOX_HOME`, `XDG_STATE_HOME` or `HOME` and the port they connect to.
+    pub fn default_kernel_local_auth_token_path(port: u16) -> PathBuf {
+        default_state_dir()
+            .join("kernel-local-auth")
+            .join(format!("{port}.token"))
+    }
+
     pub fn default_daemon_config_path() -> PathBuf {
         persisted_daemon::default_daemon_config_path()
     }
