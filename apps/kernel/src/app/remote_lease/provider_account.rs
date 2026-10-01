@@ -450,7 +450,7 @@ exit 2
                 is_default: false,
             },
             files: vec![crate::account_profile::ProviderAccountMaterializationFile {
-                relative_path: "auth.json".to_string(),
+                relative_path: "data/opencode/auth.json".to_string(),
                 contents_base64: contents_base64.to_string(),
             }],
             generated_at_ms: 1,
