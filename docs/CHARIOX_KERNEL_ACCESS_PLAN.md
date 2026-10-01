@@ -1,18 +1,36 @@
 # Chariox Kernel Access Plan
 
-**Status:** Draft, 2026-09-30. Owner decisions of 2026-09-30 recorded. This is an independent milestone, not part of Chariox Apps Phase 2.
+**Status:** Draft, 2026-09-30, revised 2026-10-01. Owner decisions of 2026-09-30 and 2026-10-01 recorded. The lead proposals P1 to P4 await owner confirmation. This is an independent milestone, not part of Chariox Apps Phase 2.
 
 ## Summary
 
 Today, on a laptop kernel, any process running as the owner's OS user can connect to the local kernel websocket and act as the owner. That includes an agent's own shell tool. Phase 1 of Chariox Apps closes the most dangerous consequence of this: approving a critical action now requires the Chariox passkey at approval time. The passkey is the vault passphrase.
 
-This plan covers the rest: who may talk to the kernel, and with what authority. It proposes:
+This plan covers the rest: who may talk to the kernel, and with what authority. Access comes in strata:
 
-1. Kernel access tokens, minted per agent or per session after the user enters the passkey. An agent that holds one has user-level or metaagent-level kernel access within the token's scope.
-2. A "sudoagent" that replaces today's metaagent. `/sudo` replaces `/meta`. Entering it needs the passkey or an active sudo window, and the sudoagent behaves like a normal agent instead of being delegation-only.
-3. A local socket that eventually refuses unauthenticated connections.
+1. **Chariox terminals** act for the human.
+2. **External agents**, which Chariox did not launch, get session-scoped access to the local kernel on their own machine. The user grants it and can extend it before it expires.
+3. **Sudoagents** replace today's metaagent. `/sudo <prompt>` gives a Chariox agent the user's authority, including critical approvals, for exactly one turn.
+4. **A root agent** that reaches all of the user's kernels is future work and out of scope. The design leaves room for it.
 
-How to enforce that a token only works for its own session is an open question. Section 6 lays out three options and a tentative recommendation for the owner to decide.
+Every grant, extension and `/sudo` needs the passkey, typed only into a kernel-owned popup that appears on every connected Chariox terminal. The plan proposes handing out no bearer tokens: a sudo turn's authority stays in the kernel, and an external agent's grant is bound to its connection and process, so there is nothing to copy. Eventually a connection with neither a terminal credential nor a grant can only ask for access.
+
+## Owner decisions of 2026-10-01
+
+- **D1. Passkey popups on every terminal.** Every passkey prompt (critical approvals, `/sudo`, access grants, extensions) appears as a popup on every connected Chariox terminal: TUI, web, remote TUI, and native clients later. In the TUI it is shaped like the hot-keys popup. Once the passkey is entered in one terminal, the kernel signals every terminal to close it.
+- **D2. `/sudo` lasts exactly one turn.** Sudo ends when the turn yields, and the next `/sudo` needs the passkey again. There is no `/sudo off`, no sudo window, and no time expiry during the turn. The user can still interrupt the turn, which ends it.
+- **D3. What a sudoagent may do.** It may answer critical approvals, including payments: "if the user gives sudo, it should be able to run potentially whatever, even payments". It may use the vault and create entries through kernel-owned flows, as agents do today. It still may not mint grants, read secret values, or change the passphrase.
+- **D4. No inheritance.** Agents spawned by a sudoagent or an external agent are normal agents.
+- **D5. Extension.** An external agent's access can be extended before it expires, so a legitimate agent is not cut short.
+- **D6. Access strata.** (1) Chariox terminals: the human. (2) External agents: only the local kernel on the same machine, with session-scoped access granted by the user. This is the Chariox server endpoint that external agents connect to today, where they can act as the user. (3) Sudoagents: one turn. (4) Future and out of scope: the Chariox assistant, or root agent, with access to the whole Chariox system and all of the user's kernels across machines, which it discovers through Chariox Cloud. Chariox terminals will later gain the same Cloud-based kernel discovery. The design must leave room for this stratum.
+- **D7. Retire the agent-terminal MCP.** External agents use only the access path of this plan: a grant through the popup. The external agent-terminal MCP of PR #15, which was never merged or tested, is superseded and is cleaned up (section 9, step 0).
+
+Lead proposals, each **Proposed, awaiting owner confirmation**:
+
+- **P1.** External agents may request a `/sudo` turn, with the passkey typed only in a terminal popup. The same popup grants and extends an external agent's access (sections 5.3 and 7.1).
+- **P2.** Sudo turns may answer critical approvals; an external agent's grant may not (section 7.2).
+- **P3.** No bearer secrets where avoidable: sudo authority stays in the kernel, and an external agent's grant is bound to its connection and process (section 6.5).
+- **P4.** The root agent's authorization likely builds on the Phase 2 P2.13 account-level authenticator. Recorded as an open question only (section 5.1).
 
 ## 1. Problem and current state
 
@@ -60,30 +78,33 @@ Phase 1 protects critical approvals. Everything else a same-user process can do 
 
 ## 2. Relationship to Phase 1
 
-- Phase 1 ships first and does not depend on this milestone. Nothing here changes the Phase 1 contract for critical approvals.
-- This milestone reuses the Phase 1 pieces: the passkey verifier, the rate limiter, the redaction and zeroization of the `passkey` field, the hidden-input prompts in the TUI and web, and the durable audit stream.
-- A kernel access token never satisfies a critical approval. Critical approvals keep requiring a fresh passkey, or the Phase 1 remember window, on a human surface.
-- The Phase 1 remember window and the sudo window proposed here are separate windows with separate purposes. Whether to merge them is open question 5.
+- Phase 1 ships first and does not depend on this milestone. Its contract holds until this milestone ships: agents cannot approve critical actions.
+- This milestone reuses the Phase 1 pieces: the pinned passkey verifier, the rate limiter, the redaction and zeroization of the `passkey` field, the hidden-input prompts in the TUI and web (which become the popups of section 5.2), and the durable audit stream.
+- An external agent's grant never satisfies a critical approval. A sudo turn may answer one (D3, P2), because the human entered the passkey for that turn.
+- The Phase 1 remember window stays a Phase 1 feature for approvals at a terminal. It never satisfies a `/sudo`, a grant or an extension.
+- Whether the popup should replace the Phase 1 TUI approval panel already in Phase 1 is open question 3.
 
 ## 3. Goals and non-goals
 
 ### Goals
 
-- Every connection to the kernel socket identifies itself with a credential, and the kernel knows whether it is a human surface or an agent.
-- An agent can be granted user-level or metaagent-level kernel access for a bounded scope and time, only after the user enters the passkey.
-- A granted token works only inside its scope: its session, and when per-agent, its agent.
-- Tokens are short-lived, revocable, never persisted in clear, and audited.
-- The metaagent becomes a sudoagent: normal agent behavior, entered through `/sudo` with the passkey or an active sudo window.
+- Every connection to the kernel socket identifies itself, and the kernel knows its stratum: a Chariox terminal, an external agent, or an agent the kernel launched.
+- An external agent can get session-scoped access to the local kernel, and a Chariox agent can get sudo for one turn, only after the user enters the passkey in a Chariox terminal.
+- A grant works only for its holder and inside its session. There is no string to copy.
+- Grants are short-lived, extendable, revocable, held only in kernel memory, and audited.
+- The metaagent becomes a sudoagent: normal agent behavior plus the user's authority for one `/sudo` turn.
 - Each step ships on its own, with no flag day for existing clients.
 
 ### Non-goals
 
-- Replacing the Phase 1 passkey check for critical approvals.
+- Replacing the Phase 1 passkey check for critical approvals before this milestone ships.
 - Read isolation for local agents (option D in the trust-boundary analysis). This plan names where D would help but does not deliver it.
-- Protecting against a process that can read the kernel's memory or log keystrokes. See section 10.4.
+- Protecting against a process that can read the kernel's memory or log keystrokes, or against an authorized agent that deliberately proxies for another process. See section 10.4.
+- The root agent (stratum 4) and Cloud-based kernel discovery for terminals. The design leaves room for both (section 5.1).
 - Multi-user kernels with distinct OS accounts per Chariox user.
 - A new secret. The passkey stays the vault passphrase.
 - Changing how the Cloud authenticates web users or how the relay encrypts traffic.
+- Tool discovery for external agents, which the operation registry of #15 offered. If it is needed later, it is designed fresh on top of the grant path; it is not part of this milestone unless the owner asks.
 
 ## 4. The Chariox passkey
 
@@ -92,11 +113,11 @@ Phase 1 protects critical approvals. Everything else a same-user process can do 
 - **One secret to remember.** Users already choose and type the vault passphrase. A second secret would be weaker in practice, because users would pick something short or reuse it anyway.
 - **The kernel can already verify it.** Phase 1's `VaultPasskeyVerifier` derives a key with the pinned Argon2id parameters and compares its hash with the durable commitment. This milestone reuses that verifier. Authentication of the encrypted vault file is used only to establish the initial pin through the controlled bootstrap in section 1.3.
 - **It is never given to agents.** The M26 vault plan (`docs/M26_CHARIOX_ENCRYPTED_VAULT_PLAN.md`) already guarantees that the passphrase is captured by a kernel-owned prompt and never delivered to an agent.
-- **Chariox-wide.** One secret for every critical action on a kernel, whatever the surface: TUI, web, or CLI. It belongs to the kernel's vault, so a user with several kernels has one passkey per kernel unless they choose the same passphrase for each.
+- **Chariox-wide.** One secret for every passkey prompt on a kernel, whatever the terminal: TUI, web or remote TUI. It belongs to the kernel's vault, so a user with several kernels has one passkey per kernel unless they choose the same passphrase for each.
 
 ### 4.2 Verification without unlocking
 
-Every passkey check in this milestone, including token minting and `/sudo` entry, uses the same durable pinned verifier as Phase 1. Verification derives the key using the pin's salt and KDF parameters and compares its hash with the pinned commitment. Once the pin exists, verification does not read the current vault file or accept a changed configured path as a replacement authority. Vault-file authentication is confined to the controlled initial pin bootstrap described in section 1.3. A missing pin must not enable a separate bootstrap path for token minting or `/sudo`.
+Every passkey check in this milestone, including access grants, extensions and `/sudo` entry, uses the same durable pinned verifier as Phase 1. Verification derives the key using the pin's salt and KDF parameters and compares its hash with the pinned commitment. Once the pin exists, verification does not read the current vault file or accept a changed configured path as a replacement authority. Vault-file authentication is confined to the controlled initial pin bootstrap described in section 1.3. A missing pin must not enable a separate bootstrap path for grants or `/sudo`.
 
 Verification must not touch the unlocked-vault map or change any unlock expiry. Unlock policies (`operation`, `ttl`, `kernel_init`, `always`, see `apps/kernel/src/runtime/state/runtime_vault_unlock_state.rs`) are independent of verification. A verified passkey neither unlocks a locked vault nor extends an unlocked one.
 
@@ -104,9 +125,9 @@ Argon2id is deliberately slow and memory-hungry. Verification runs on a blocking
 
 ### 4.3 Rate limits
 
-The Phase 1 limiter applies to every passkey check, including the new ones in this plan (token minting, `/sudo` entry): 5 failures, then an exponential lockout capped at 15 minutes. It is per owner and held in kernel memory, so a kernel restart clears it.
+The Phase 1 limiter applies to every passkey check, including the new ones in this plan (access grants, extensions, `/sudo` entry): 5 failures, then an exponential lockout capped at 15 minutes. It is per owner and held in kernel memory, so a kernel restart clears it.
 
-A same-user process can deliberately send wrong passkeys to lock the owner out for up to 15 minutes. That is a denial of service, not a bypass, and the cap bounds it. Once human surfaces carry their own credential (step 2 in section 9), attempts can be counted per credential class, so failures from an agent credential do not lock out the TUI.
+A same-user process can deliberately send wrong passkeys to lock the owner out for up to 15 minutes. That is a denial of service, not a bypass, and the cap bounds it. Once terminals carry their own credential (step 2 in section 9), attempts can be counted per credential class, so failures from other connections do not lock out the TUI.
 
 ### 4.4 Rotation
 
@@ -114,228 +135,263 @@ This milestone must add an explicit authenticated rotation operation before it c
 
 As part of a successful rotation, the kernel:
 
-1. revokes every kernel access token,
-2. ends every sudo window and every Phase 1 remember window,
-3. ends every active sudoagent mode, and
+1. revokes every external agent grant,
+2. ends every Phase 1 remember window,
+3. cancels every queued sudo authorization and interrupts every running sudo turn, and
 4. appends an audit event for each revocation, plus one for the rotation.
 
 ### 4.5 Non-encrypted vault backends
 
-If the vault backend is not the encrypted Chariox vault, there is nothing to verify the passkey against. Critical approvals already fail closed in Phase 1. This milestone does the same: no token minting and no `/sudo`. The user sees a clear message pointing to the encrypted vault setup. Whether to offer a standalone passkey for other backends is open question 11.
+If the vault backend is not the encrypted Chariox vault, there is nothing to verify the passkey against. Critical approvals already fail closed in Phase 1. This milestone does the same: no access grants and no `/sudo`. The user sees a clear message pointing to the encrypted vault setup. Whether to offer a standalone passkey for other backends is open question 9.
 
 ### 4.6 Remote and hosted kernels
 
-The passkey belongs to the vault of the kernel that verifies it. For a remote or hosted kernel, the user types it in the web or remote TUI. It travels end-to-end encrypted through the relay (`apps/kernel/src/transport/relay_crypto.rs`) like any other kernel request, so the relay and the Cloud see only ciphertext and never store it. Kernel-to-kernel relay peers never carry a passkey on a user's behalf.
+The passkey belongs to the vault of the kernel that verifies it. For a remote or hosted kernel, the user types it in the popup on the web or remote TUI. It travels end-to-end encrypted through the relay (`apps/kernel/src/transport/relay_crypto.rs`) like any other kernel request, so the relay and the Cloud see only ciphertext and never store it. Kernel-to-kernel relay peers never carry a passkey on a user's behalf.
 
-## 5. Kernel access tokens
+## 5. Access strata and grants
 
-### 5.1 When a token is minted
+### 5.1 The strata (D6)
 
-A token is minted only on a human surface, after the user enters the passkey, or during an active sudo window that was itself opened with the passkey. Typical triggers:
+| Stratum | Who | Reaches | Authority | Granted by | Ends |
+|---|---|---|---|---|---|
+| 1. Chariox terminals | The human, at the TUI, web, remote TUI, and native clients later | Its kernel, locally or through the relay | The owner's. Passkey popups appear here (section 5.2). | The human-surface credential (section 9, step 2) | Disconnect |
+| 2. External agents | An agent Chariox did not launch, such as a provider CLI in the user's own shell | Only the local kernel on the same machine, through the Chariox server endpoint (the local kernel socket) | The user's within one session, without critical approvals (section 5.4) | The passkey popup (section 5.3) | Expiry unless extended, or revocation |
+| 3. Sudoagents | A Chariox agent running one `/sudo` turn | Its kernel | The user's, including critical approvals (section 7) | `/sudo` and the passkey popup | The turn yields or is interrupted |
+| 4. Root agent (future) | The Chariox assistant | All of the user's kernels, discovered through Chariox Cloud | The whole Chariox system | Open (P4) | Open |
 
-- the user enters `/sudo` on an agent (section 7),
-- the user grants an agent or a session kernel access from the TUI or web ("give this session user-level access for 30 minutes").
+Today strata 2 and 3 do not exist as such: any same-user process can act as stratum 1 over the local socket (section 1.1), and the metaagent is delegation-only.
 
-An agent cannot mint a token, for itself or for anyone else. The kernel refuses a mint request from any connection that is not a human surface.
+**Room for stratum 4.** Every grant and sudo record carries its stratum and how the human authenticated it, and every audit event names both. Strata 1 to 3 are defined per kernel, and nothing in them assumes a user has only one kernel. Stratum 2's same-machine rule belongs to stratum 2, not to the kernel's authorization model. Cloud-based kernel discovery for terminals changes how a terminal finds a kernel, not how it authenticates to one.
 
-### 5.2 Format
+**P4. Proposed, awaiting owner confirmation.** The root agent's authority across kernels cannot rest on per-kernel vault passphrases, which differ per kernel (section 4.1). The likely path is the account-level authenticator of Apps Phase 2 P2.13, a Chariox-wide passkey. This plan records it as open question 2 only.
 
-- 32 random bytes from the OS random source, base64url encoded, with a fixed prefix (for example `chx_kat_`) so that log redaction and secret scanners can recognize it.
-- Opaque. It carries no claims; everything about it lives in the kernel.
-- The kernel stores only a SHA-256 hash of the token and compares in constant time. A fast hash is enough because the token has 256 bits of entropy.
-- Each token also has a short, non-secret token id used in audit events, listings and revoke commands.
+### 5.2 Passkey popups (D1)
 
-### 5.3 Scopes
+Every passkey prompt in this plan is a kernel-owned pending interaction: critical approvals, `/sudo`, access grants and extensions. The kernel projects it as a popup to every Chariox terminal connected as the owner, whether or not the terminal is attached to the session. In the TUI the popup is shaped like the hot-keys popup (`apps/cli/src/hotkey-help.ts`); the web and remote TUI show the equivalent dialog.
+
+- The first terminal where the user enters the correct passkey, or refuses, resolves the interaction, and the kernel signals every terminal to close the popup. A later answer from another terminal gets "already answered".
+- A wrong passkey counts toward the rate limit (section 4.3) and leaves the popup open.
+- If no terminal is connected, the interaction stays pending until it expires (`request_timeout_minutes`, section 5.5), then fails with a clear message to whoever raised it.
+
+The popup shows what the kernel itself established, not what the requester claims: the action, the requester's stratum and identity (on a Unix socket, the OS-reported executable and process id), the target agent and session, the full prompt for a `/sudo`, and the lifetime for a grant. Text the requester supplies, such as a reason, is labeled as such. The passkey is typed only into these popups, never into an agent's input or a CLI prompt. It travels only from the terminal to the kernel, so agents never see it.
+
+### 5.3 Granting access to an external agent (P1, P3)
+
+**Proposed, awaiting owner confirmation.**
+
+1. The external agent connects to the local kernel socket and requests access to one session, with an optional reason.
+2. The kernel raises the passkey popup, naming the agent, the session and the proposed lifetime.
+3. When the user enters the passkey, the kernel creates the grant on the requesting connection (option (a), section 6). On a Unix socket endpoint it also binds the grant to the agent's process identity (option (c)). Every request under the grant is checked against its session (option (b)), deny by default.
+4. The agent learns only the outcome. No token is issued, so there is nothing it could pass to another agent or session.
+
+Five minutes before a grant expires, the kernel shows the popup "access for <agent> expires in 5 minutes, extend?" (D5). Extending needs the passkey and starts a new term. If nobody extends it, the grant expires.
+
+Only connections on the local kernel socket can request a grant. Requests through the relay, from kernel peers, or from Apps are refused. A requester can have one pending request at a time.
+
+### 5.4 Scope and authority
+
+Each grant, and each queued or running sudo turn, is a kernel-side record:
 
 | Field | Meaning |
 |---|---|
-| `level` | `user` (acts as the owner within scope) or `metaagent` (the sudoagent tool set: spawn, prompt and supervise agents, workflows, MCP installs and grants, credential handles, routine approvals). Whether two levels are needed is open question 13. |
-| `session_id` | The one session the token is valid for. Required. There are no all-sessions agent tokens. |
-| `agent_ids` | For a per-agent token, the agent it was minted for, plus any agents that agent spawns while the token is live. Empty for a per-session token, which is valid for every agent in the session. |
-| `minted_by` | The human surface and user id that entered the passkey, plus the id of the passkey audit event. |
-| `expires_at` | Absolute expiry (section 5.4). |
+| `stratum` | 2 (external agent) or 3 (sudo turn). |
+| `session_id` | The one session it is valid for. Required. |
+| `holder` | Stratum 2: the connection, plus the process identity on a Unix socket. Stratum 3: the agent, its provider run and the turn. |
+| `authorized_by` | The terminal and user id that entered the passkey, the passkey audit event, and for a requested `/sudo`, the requesting external agent. |
+| `expires_at` | Stratum 2 only. A sudo turn has no time expiry. |
 
-Whatever the level, a token never grants:
+Both strata act as the user within their session. Requests that name another session are refused, and requests with no session scope are refused unless allowlisted for the stratum. A sudo turn's allowlist is wider (for example App and MCP installs), because the user gave that turn their authority. Neither stratum may:
 
-- answering critical approvals,
-- minting or extending tokens,
-- vault export or reading secret values (credential handles only, as today),
-- changing the passkey or the kernel access configuration.
+- mint, extend or hand out grants or sudo, for itself or anyone else;
+- read secret values or export the vault (both may use credential handles and create vault entries through kernel-owned flows, as agents do today);
+- change the passkey or the kernel access configuration.
 
-### 5.4 Lifetime
+Only a sudo turn may answer critical approvals (P2, section 7.2).
 
-The proposed defaults follow the vault's TTL defaults and are for the owner to confirm (open question 4):
+Agents that a sudo turn or an external agent spawns through the kernel are normal agents (D4). The spawn path never copies a holder's authority.
+
+### 5.5 Lifetime
 
 ```toml
 [kernel_access]
-token_default_minutes = 30
-token_max_minutes = 240
-sudo_window_default_minutes = 15
-sudo_window_max_minutes = 60
+grant_default_minutes = 30
+grant_max_minutes = 240
+grant_extend_notice_minutes = 5
+request_timeout_minutes = 10
 ```
 
-A token can be extended from a human surface before it expires. Extension needs the passkey unless a sudo window is open. It can never go past `token_max_minutes` from the original mint without a fresh passkey.
+The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. Over TCP loopback a grant also ends when its connection closes; on a Unix socket it ends when the bound process exits. A sudo turn has no lifetime setting: it lasts exactly one turn (D2). The defaults are for the owner to confirm (open question 5).
 
-### 5.5 Revocation
-
-A token is revoked, and its hash dropped, on any of:
+### 5.6 Revocation
 
 | Trigger | Notes |
 |---|---|
-| Session end | Session close, archive or delete. |
-| Agent removal | For per-agent tokens; also when the agent's provider run ends for good. |
-| `/sudo` exit | Including exit on timeout (section 7.4). |
-| Explicit revoke | From the TUI, the web, or the CLI by token id. "Revoke all" is always available. |
-| Kernel restart | Tokens live in kernel memory only (section 5.6). |
+| Session end | Session close, archive or delete. Cancels a queued sudo turn and interrupts a running one in it. |
+| Holder gone | Stratum 2: the connection closes (TCP loopback) or the bound process exits (Unix socket). Stratum 3: the turn yields, the user interrupts it, or the user cancels the queued `/sudo` prompt. |
+| Explicit revoke | From any Chariox terminal, or the CLI by grant id. "Revoke all" is always available; it cancels queued sudo turns and interrupts running ones. |
+| Kernel restart | Everything lives in kernel memory (section 5.7). |
 | Passkey change | Section 4.4. |
-| Expiry | `expires_at` reached. |
+| Expiry | Stratum 2 only, at `expires_at` unless extended. |
 
-Revocation and expiry act immediately, not at the caller's next request. Under every option in section 6 the kernel records which connections and subscriptions each token authorized; on revocation or expiry it cancels those subscriptions (the subscription loop in `runtime_transport/subscriptions.rs` runs independently of inbound requests, so an idle subscriber would otherwise keep receiving transcripts and snapshots) and closes the connections. As a second line, each delivery and replay snapshot rechecks that its token is still live. A focused test revokes and expires a token while its client stays idle and checks that no later event or replay snapshot is delivered.
+Revocation and expiry act immediately, not at the holder's next request. The kernel records which connections and subscriptions each grant or sudo turn authorized. On revocation, expiry or the end of the turn it cancels those subscriptions (the subscription loop in `runtime_transport/subscriptions.rs` runs independently of inbound requests, so an idle subscriber would otherwise keep receiving transcripts and snapshots) and closes the external agent's connections. As a second line, each delivery and replay snapshot rechecks that its grant or turn is still live. A focused test revokes and expires a grant while its client stays idle, ends a sudo turn with a subscription open, and checks that no later event or replay snapshot is delivered.
 
-### 5.6 Storage and delivery
+### 5.7 Storage
 
-**In the kernel.** Only the hash and scope record, in memory. Nothing is written to disk. A kernel restart revokes everything, and the user re-enters the passkey. Persisting hashes across restarts is open question 7; the default proposal is not to.
+Grants and sudo state live only in kernel memory. Nothing is written to disk. A kernel restart revokes everything, and the user re-enters the passkey. Grants are bound to live connections and processes, so persisting them across a restart would not help.
 
-**To the agent.** The token must reach the agent's process without being readable by other agents. Candidates:
+Nothing is delivered to the agent (P3). The 2026-09-30 draft considered handing agents a bearer token through an environment variable, a 0600 file or an inherited descriptor. Without read isolation, none of these keeps a secret from another same-user process, which is why P3 avoids bearer secrets. A sudo turn uses the run's existing runtime MCP identity, which the kernel elevates for that turn only. That per-run MCP bearer predates this plan (`generate_runtime_mcp_auth_token` in `apps/kernel/src/app/provider_launch_policy.rs`, written into the provider's MCP configuration); section 10.4 states what it means during a sudo turn.
 
-| Delivery | Readable by other same-user processes? | Fits provider CLIs? |
-|---|---|---|
-| Environment variable in the provider launch env, inherited by the agent's shell and any `chariox` CLI it runs | Often yes: another same-user process can usually read it through process inspection (for example `/proc/<pid>/environ` on Linux) | Yes. It needs an explicit exception to the env scrubbing in `provider_launch_policy.rs` for this one variable. |
-| A 0600 file in a per-agent directory | Yes, unless agents get read isolation (option D) | Yes |
-| An inherited file descriptor | Harder to reach, but provider CLIs do not reliably pass descriptors to the tool shells they spawn | Poorly |
-| No new secret: elevate the agent's existing runtime MCP identity | The per-run MCP bearer is already delivered through the provider's MCP configuration (see `generate_runtime_mcp_auth_token` in `apps/kernel/src/app/provider_launch_request.rs`); no second secret appears | Yes, for kernel access through MCP tools; not for a `chariox` CLI run from the agent's shell |
+### 5.8 Audit
 
-No delivery method keeps a secret from a determined same-user process on a laptop without read isolation. That is why the session-scoping check in section 6 must not rely on secrecy alone. The tentative proposal is to elevate the runtime MCP identity for MCP-based access, and to use the environment variable only when shell-level CLI access is wanted. Open question 2 asks the owner to choose.
+Durable events, next to `critical_approval.passkey`, never containing the passkey:
 
-### 5.7 Audit
-
-Durable events, next to `critical_approval.passkey`, never containing the token or the passkey:
-
-- `kernel_access.token` with outcome `minted`, `extended`, `revoked`, `expired` or `rejected`, plus the token id, level, session id, agent ids, the minting surface and the revocation reason.
-- `kernel_access.sudo` with outcome `entered`, `exited`, `timed_out` or `refused`.
+- `kernel_access.grant` with outcome `requested`, `granted`, `refused`, `extended`, `expired` or `revoked`, plus the grant id, session id, holder, authorizing terminal and revocation reason.
+- `kernel_access.sudo` with outcome `requested`, `entered`, `refused`, `ended` or `interrupted`, plus the agent, run and turn, and the requester for an external request.
+- Receipts of critical approvals answered by a sudo turn name the turn and the `/sudo` entry that authorized it (P2).
 - `kernel_access.denied` for each request refused for scope. These are sampled and aggregated so a looping agent cannot flood the log.
 
-The TUI and web show the live tokens for a session with their expiry and a revoke control.
+Chariox terminals list the live grants and running sudo turns, with a revoke control.
 
-## 6. Session scoping: an open question
+## 6. Binding a grant to its holder
 
-The owner decided that tokens are per agent or per session. How the kernel makes sure a token is only used within that scope is not decided. There are three options, and they can be combined.
+The 2026-09-30 draft asked how to keep a token within its scope. With no token (P3), the same three options decide who holds a grant and what it reaches. They combine.
 
-### 6.1 Option (a): connection-bound token
+### 6.1 Option (a): connection binding
 
-The token is redeemed once, on one websocket connection. From then on the authority belongs to that connection, and the token string is useless elsewhere. On loopback there is no TLS, so this is connection identity rather than cryptographic channel binding. Over the relay it could bind to the relay session keys.
+The grant belongs to the connection that requested it. There is nothing to redeem, so there is no race and no string to copy. On loopback there is no TLS, so this is connection identity rather than cryptographic channel binding.
 
-- **Pros:** a token copied after redemption cannot be replayed. Revocation is exact: close the connection. Simple to implement.
-- **Cons:** it does not scope anything by itself. A bound connection can still address any session unless (b) is also enforced. There is a race before first redemption: whoever redeems first wins. It fits long-lived connections like the TUI, but the CLI opens one connection per command, so each command would need a new token or a refresh step.
+- **Pros:** revocation is exact: close the connection. Simple to implement.
+- **Cons:** it does not scope anything by itself, so (b) is still needed. The CLI opens one connection per command, so over TCP loopback each command would need its own grant unless the agent keeps one connection open.
 
-### 6.2 Option (b): kernel-side binding to the session's agents
+### 6.2 Option (b): kernel-side session scoping
 
-The kernel keeps `token -> {level, session_id, agent_ids}`. For every request it computes the request's session scope, as `request_session_scope` in `apps/kernel/src/runtime/session_membership/scope.rs` already does (`SessionId`, `SessionIds`, `SessionRef`, `AttachmentId`, `AllSessions`), and refuses anything outside the token's session and agents. `AllSessions` requests such as `ListSessions` are filtered to the token's session. Requests with no session scope (global queries) are refused for scoped tokens unless explicitly allowlisted.
+The kernel keeps each grant's `{stratum, session_id, holder}`. For every request it computes the request's session scope, as `request_session_scope` in `apps/kernel/src/runtime/session_membership/scope.rs` already does (`SessionId`, `SessionIds`, `SessionRef`, `AttachmentId`, `AllSessions`), and refuses anything outside the grant's session. `AllSessions` requests such as `ListSessions` are filtered to the grant's session. Requests with no session scope (global queries) are refused unless allowlisted for the stratum.
 
-- **Pros:** it is the only option that actually enforces "this session only". It reuses existing scope machinery. It works the same over the local socket, the relay and the MCP listener, and is independent of the OS.
-- **Cons:** every request type needs a correct scope mapping, and a missing or wrong mapping is a hole. Today `request_session_scope` returns `None` for global requests, so deny-by-default for scoped tokens is essential. A token stolen by another same-user process still works within its session until it expires or is revoked. New request types add maintenance cost; a test should fail when a request type has no decided scope.
+- **Pros:** it is the only option that actually enforces "this session only". It reuses existing scope machinery. It is independent of the OS, and applies equally to the local socket and the runtime MCP listener.
+- **Cons:** every request type needs a correct scope mapping, and a missing or wrong mapping is a hole. Today `request_session_scope` returns `None` for global requests, so deny by default is essential. New request types add maintenance cost; a test should fail when a request type has no decided scope.
 
-### 6.3 Option (c): process identity check
+### 6.3 Option (c): process identity
 
-The kernel identifies the connecting process and checks that it belongs to the provider process tree it launched for the token's agent. The OS reports the peer through `getpeereid` and `LOCAL_PEERPID` or `LOCAL_PEERTOKEN` (the macOS audit token, which avoids PID reuse), and `SO_PEERCRED` on Linux. These work only on Unix domain sockets, so this option means adding a Unix socket endpoint (mode 0600) next to, or instead of, the loopback TCP port. Mapping a TCP loopback connection back to a PID through the OS socket table is possible, but racy and platform-specific.
+The kernel identifies the connecting process through the OS: `getpeereid` and `LOCAL_PEERPID` or `LOCAL_PEERTOKEN` on macOS (the audit token avoids PID reuse), and `SO_PEERCRED` plus a pidfd or the process start time on Linux. These work only on Unix domain sockets, so this option means adding a Unix socket endpoint (mode 0600) next to, or instead of, the loopback TCP port. Mapping a TCP loopback connection back to a PID through the OS socket table is possible, but racy and platform-specific.
 
-- **Pros:** a stolen token is useless from any other process. There is no secret to deliver, which also sidesteps section 5.6. The OS user check also stops other OS users outright.
-- **Cons:** PID ancestry is fragile. Daemonized helpers reparent to `launchd` or `init`, provider CLIs spawn helpers and subagents, and sandbox wrappers or containers change the picture (managed workers run in containers with a different PID namespace). PID reuse needs audit tokens or start-time checks. A same-user process can still inject into the agent's process on many systems. It does not apply to remote clients at all, and Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`). It is the most platform code of the three.
+- **External agents.** The grant binds to the agent's own process, which the requesting CLI names among its ancestors. The kernel verifies the ancestry, and the popup shows that process's executable and pid before the user enters the passkey. Later connections are accepted only from that process or its descendants, checked with the same PID-reuse protection, so per-command CLI connections from the agent's shell keep the grant. A requester that names a broad ancestor, such as a terminal emulator or a login shell, shows it in the popup.
+- **Kernel-launched agents.** For shell-level CLI access from a sudo turn, the kernel creates a dedicated OS session (`setsid`) at each provider launch and tracks the descendant identities it launched, with PID-reuse protection. Process-group or shared OS-session membership alone is not an identity: on Linux any process in the same session can `setpgid` into another group. A negative test has a sibling agent's process join the target's group and try to use its authority.
+
+- **Pros:** a grant cannot be used from any other process. The OS user check also stops other OS users outright.
+- **Cons:** PID ancestry is fragile: daemonized helpers reparent to `launchd` or `init`, and sandbox wrappers or containers change the picture. A same-user process can still inject into the holder on many systems. It does not apply to remote clients, and Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`). It is the most platform code of the three.
 
 ### 6.4 Comparison
 
-| | (a) Connection-bound | (b) Kernel-side binding | (c) Process identity |
+| | (a) Connection | (b) Session scoping | (c) Process identity |
 |---|---|---|---|
-| Enforces the session scope | No, needs (b) | Yes | No, needs (b) for request-level scope |
-| Stops replay of a stolen token | After redemption only | No | Yes |
-| Works over the relay and for remote clients | Partly (relay session) | Yes | No |
-| Needs a secret delivered to the agent | Yes | Yes | No |
-| Platform-specific code | None | None | Significant (macOS, Linux, Windows) |
-| Fits the per-command CLI | Poorly | Yes | Yes, with a Unix socket |
-| Main failure mode | Race before redemption | A request type with a wrong scope mapping | Reparented or containerized processes rejected; injection into the agent |
+| Enforces the session scope | No, needs (b) | Yes | No, needs (b) |
+| Covers a new connection from the same agent (per-command CLI) | No | Not applicable | Yes, from the same process tree |
+| Lets another process use the grant | Only through the holder's connection | Not applicable | Only through the holder (proxying or injection) |
+| Platform-specific code | None | None | Significant (macOS, Linux; Windows open) |
+| Main failure mode | One grant per connection for the per-command CLI | A request type with a wrong scope mapping | Reparented or containerized processes rejected; injection into the holder |
 | Implementation cost | Low | Medium | High |
 
-### 6.5 Tentative recommendation (needs the owner's decision)
+### 6.5 Proposal (P3)
 
-Use **(b) as the base in every topology**, since it is the only option that enforces scope, and make it deny by default for requests with no mapped scope. Add **(c) as hardening for agent tokens on local kernels** once a Unix socket endpoint exists, starting with macOS and Linux. Process-group or shared OS-session membership alone is not an identity: on Linux any process in the same session can `setpgid` into another group. (c) therefore needs a dedicated OS session created at each provider launch (`setsid`) plus kernel-tracked descendant identity with PID-reuse protection (for example the pid with its start time, or a pidfd on Linux), and a negative test where a sibling agent's process joins the target's group and presents the stolen token. Use **(a) only for long-lived human-surface connections**, such as the TUI, where it costs nothing. This is a proposal, not a decision (open question 1).
+**Proposed, awaiting owner confirmation.** This answers the owner's question whether a token can be passed to other agents or sessions: hand out no bearer secrets where avoidable.
+
+- **Sudoagent.** The authority is held kernel-side and attached to the one provider-run turn the kernel launched. No token exists.
+- **External agent.** The grant binds to the requesting connection (a); on a Unix socket endpoint, also to the requesting process identity (c); and (b) scopes every request to its session, deny by default. There is no string to copy, so another agent cannot reuse the grant. Repeated per-command CLI connections from the same process tree are covered by (c). Over TCP loopback the grant falls back to the connection.
+- **Residual risk.** An authorized agent can deliberately act as a proxy for another process. No mechanism can stop that, and the audit attributes everything to the authorized agent (section 10.4).
 
 ## 7. The sudoagent
 
-Today `/meta <task>` puts the focused agent into a temporary Meta mode that is delegation-only (`docs/M26_METAAGENTS_DELEGATION_ONLY_PLAN.md`, catalog entry in `apps/kernel/src/runtime/terminal_command_catalog/catalog/core.json`). The metaagent can plan and supervise but cannot edit files or run shell tools. The owner's decision is to replace this with a sudoagent.
+Today `/meta <task>` puts the focused agent into a temporary Meta mode that is delegation-only (`docs/M26_METAAGENTS_DELEGATION_ONLY_PLAN.md`, catalog entry in `apps/kernel/src/runtime/terminal_command_catalog/catalog/core.json`). The metaagent can plan and supervise but cannot edit files or run shell tools. The owner's decision is to replace this with a sudoagent that holds the user's authority for one turn.
 
 ### 7.1 Entering
 
-- `/sudo <task>` replaces `/meta <task>` on the focused agent.
-- Entering requires the passkey, or an active sudo window. The sudo window works like the vault's TTL: when the user enters the passkey they may choose a window (default 15 minutes, max 60, per section 5.4), and further `/sudo` entries within it need no passkey.
-- Entry mints a per-agent token at `metaagent` level (or `user` level if the owner chooses, open question 13), scoped to the agent's session.
-- `/sudo` can only be typed on a human surface. An agent cannot put itself or another agent into sudo mode.
+- `/sudo <prompt>` replaces `/meta <task>` on the focused agent, typed in a Chariox terminal.
+- Every `/sudo` raises the passkey popup (section 5.2); the Phase 1 remember window does not apply. The prompt is sent only after the passkey is verified.
+- Sudo attaches to the turn this prompt starts. If the agent is busy, the prompt waits for the current turn to yield; it is never merged into a running turn.
+- While it waits, the authorization is revocable kernel-memory state. The triggers in section 5.6 cancel it, including rotation and "revoke all", and dispatch atomically checks that it is still live before the turn starts. It is never written to the durable prompt queue, so after a kernel restart the queued `/sudo` prompt is dropped with a notice instead of restored. A focused test queues `/sudo` behind a busy turn, rotates the passkey or revokes all before dispatch, lets the busy turn finish, and checks that sudo does not start without a fresh passkey.
+- An agent cannot put itself or another agent into sudo.
 
-### 7.2 What the sudoagent can do
+**External `/sudo` requests (P1). Proposed, awaiting owner confirmation.** An external agent may request a `/sudo` turn for an agent in a session it holds a grant for. The request becomes a kernel-owned pending interaction, shown as the passkey popup on every connected terminal. It names the requesting agent, the target agent and session, and the full prompt. The user types the passphrase in the popup; the external agent never sees it and learns only the outcome. If no terminal is connected, the request stays pending until it expires, then fails with a clear message. Each request needs its own passphrase entry (D2).
 
-- Everything a normal agent does: edit files, run shell and script tools, use its MCP tools. It is no longer delegation-only.
-- Kernel access within its token's scope: spawn, prompt and supervise agents in its session; create and run workflows; install and grant MCPs and skills; manage credential handles through kernel-owned flows; answer routine approvals (tool permissions, App binding approvals in Ask mode) as the metaagent can today.
+### 7.2 What a sudo turn can do
+
+- Everything a normal agent does: edit files, run shell and script tools, use its MCP tools.
+- Act as the user through its runtime MCP tools, within section 5.4: spawn, prompt and supervise agents; create and run workflows; install and grant MCPs and skills; answer routine approvals; use the vault and create entries through kernel-owned flows.
+- Answer critical approvals, including payments (D3).
+
+Shell-level `chariox` CLI calls from the turn carry sudo only once the Unix socket and process identity for kernel-launched agents exist (section 6.3). Until then, kernel access goes through the run's MCP tools.
+
+**Critical approvals (P2). Proposed, awaiting owner confirmation.** A sudo turn may answer critical approvals (D3). The receipt is attributed to the sudo turn and to the human `/sudo` entry that authorized it. An external agent's grant (stratum 2) does not answer critical approvals; the agent can request a `/sudo` turn instead (P1). Until this milestone ships, Phase 1 is unchanged: agents cannot approve.
 
 ### 7.3 What it still cannot do
 
-- Answer critical approvals. Those always need a fresh passkey, or the Phase 1 remember window, on a human surface. The sudoagent can raise a request that leads to one; a human answers it.
-- Mint, extend or hand out tokens, for itself or for other agents.
-- Export the vault or read secret values.
-- Change the passkey, the vault, or the kernel access configuration.
-- Act outside its session.
+- Mint, extend or hand out grants or sudo, for itself or for other agents.
+- Read secret values or export the vault.
+- Change the passkey, the vault passphrase or the kernel access configuration.
+- Pass sudo on: agents it spawns are normal agents (D4).
+- Act in another session. This confinement comes from the 2026-09-30 draft; whether to keep it is part of open question 4.
 
-### 7.4 Exit, timeout and audit
+### 7.4 End and audit
 
-- The sudoagent leaves sudo mode when its task completes, when the user exits it (for example `/sudo off` or a control in the TUI and web), when its token expires, or on any revocation trigger in section 5.5.
-- On exit the agent returns to normal mode and its token is revoked.
-- Every transition appends a `kernel_access.sudo` event. Every kernel request made with the token is attributed to the token id in existing traces.
+- Sudo ends when the turn yields. There is no `/sudo off`, no sudo window and no time expiry during the turn: a long turn keeps sudo until it yields.
+- The user can interrupt the turn as usual, which ends it. The revocation triggers in section 5.6 also interrupt it.
+- The next `/sudo` needs the passkey again.
+- Every transition appends a `kernel_access.sudo` event. Every kernel request made under sudo is attributed to the turn in existing traces.
 
 ### 7.5 Compatibility for existing `/meta` users
 
 - For one release, `/meta` keeps working and shows a notice that `/sudo` replaces it. `/meta` stays delegation-only and needs no passkey, because it grants nothing new.
 - Meta tasks already running (`apps/kernel/src/runtime/state/metaagent_task_runtime_state.rs`) finish in Meta mode. They are never upgraded to sudo automatically, since that would grant authority without a passkey.
-- In a later release `/meta` is removed from the command catalog and the CLI (`apps/cli/src/command-center.test.ts` covers it today). Whether a delegation-only mode survives under another name is open question 8.
+- In a later release `/meta` is removed from the command catalog and the CLI (`apps/cli/src/command-center.test.ts` covers it today). Whether a delegation-only mode survives under another name is open question 7.
 
 ## 8. Effect on each client
 
 | Client | Credential to the kernel | Passkey prompt | Change |
 |---|---|---|---|
-| Web via relay | Cloud session, then relay end-to-end encryption; the kernel sees a `RelayClient` with a user id | Hidden-input dialog in the web; end-to-end encrypted to the kernel | Adds the `/sudo` entry dialog, the token list with revoke, and the sudo window countdown. The browser never holds a kernel access token. |
-| TUI (local) | The local-kernel auth token (step 1), later a human-surface credential (step 2) | Hidden-input panel, as in Phase 1 | Reads the token file at start; shows sudo state and live tokens. |
-| CLI, interactive | Same token file as the TUI | Prompted on a TTY with echo off | Commands that need the passkey prompt for it. |
-| CLI, non-interactive (scripts) | Token file, or an agent token from the environment when run inside an agent's shell | None | Commands that need the passkey fail with a clear error when there is no TTY. There is no passkey flag or environment variable (open question 9 asks about stdin). |
-| Remote TUI | Relay, like the web | Hidden input, end-to-end encrypted | Same as the web. |
-| Kernel-to-kernel relay peers (`apps/kernel/src/transport/relay_peer.rs`) | Peer identity and relay keys | Never | Tokens are never forwarded to peers. A remote agent gets kernel access only from its own kernel. Relayed answers to kernel-operation decisions stay refused, as today. |
-| Hosted and managed workers | `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)`, as today, held by the host controller | Through the web, end-to-end encrypted | Unchanged. That token keeps its meaning as the host controller's credential. Agent tokens are layered on top, and managed isolation already keeps the host token from agents. |
+| Web via relay | Cloud session, then relay end-to-end encryption; the kernel sees a `RelayClient` with a user id | The popup (section 5.2), end-to-end encrypted to the kernel | Shows the popup for every passkey prompt, and the live grants and sudo turns with revoke. The browser never holds a grant. |
+| TUI (local) | The local-kernel auth token (step 1), later a human-surface credential (step 2) | The popup, shaped like the hot-keys popup | Shows the popup, sudo state and live grants. |
+| Remote TUI | Relay, like the web | The popup, end-to-end encrypted | Same as the web. |
+| CLI commands | The token file when the user runs them; a grant when an external agent runs them | Never typed in the CLI | A command that needs the passkey raises the request and waits while the user answers the popup in a terminal. With no terminal connected it fails when the request expires. |
+| External agents | None of their own; the local kernel socket only | Never | Request grants and `/sudo` turns. Grants are bound as in section 6.5. |
+| Kernel-launched agents | The per-run runtime MCP bearer, as today | Never | A `/sudo` turn elevates it for that turn only. |
+| Kernel-to-kernel relay peers (`apps/kernel/src/transport/relay_peer.rs`) | Peer identity and relay keys | Never | Grants are never forwarded, and peers cannot request them. A remote agent gets kernel access only from its own kernel. Relayed answers to kernel-operation decisions stay refused, as today. |
+| Hosted and managed workers | `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)`, as today, held by the host controller | Through the web, end-to-end encrypted | Unchanged. That token keeps its meaning as the host controller's credential. Grants and sudo are layered on top, and managed isolation already keeps the host token from agents. |
 
 The same local-token pattern is used for package actions in `docs/DEPLOYED_WORKFLOWS_THREAT_MODEL.md` (random kernel auth, authenticated handshake, token removed before provider launch). This plan brings it to the laptop kernel.
 
 ## 9. Migration steps
 
-Each step ships on its own and leaves the system working.
+Each step ships on its own and leaves the system working. Steps 3 to 7 change serialized protocol shapes, so each needs a future protocol version under the Protocol Change Rule.
 
+0. **Retire #15 (D7).** PR #15 ("feat: external agent terminal MCP peer", branch `codex/agent-terminal-runtime`, one commit `95137ee73`) is open and was never merged. It adds the stdio MCP server `chariox-agent-terminal` and `chariox-shell agent-terminal`, whose `chariox_execute` tool reaches every registry kernel request over the unauthenticated loopback socket with no auth of its own. It also adds `GetTerminalOperationRegistry` and `TerminalOperationRegistry`, a `PromptSource` on `SubmitPrompt`, generated `contracts.json` and `parity_manifest.json`, and the docs `AGENT_TERMINAL.md` and `AGENT_TERMINAL_VALIDATION.md`. Main and `apps/p1-app-bound-copy` contain none of it, so nothing is removed from main.
+   - Close #15 with a pointer to this plan, archive the branch as a git bundle, then delete `codex/agent-terminal-runtime`.
+   - Closing and deleting need the owner's go-ahead. The same commit bundles unrelated changes (it removes `ListPromptSettings` and `GetPromptSetting`, rewrites `session/runtime_session/workflows.rs` and edits `ci.yml`), which must first be confirmed unwanted.
+   - These stay, because other features use them: the per-run runtime MCP listener (`transport/mcp_server.rs`, `generate_runtime_mcp_auth_token`), `GetTerminalCommandCatalog`, `chariox-shell` and the `LocalIpcClient` in `@chariox/kernel-client`, and `prompt_origin: "external"`, which observes provider sessions run outside Chariox.
 1. **Local-kernel auth token (option A), defense in depth.** On start, the laptop kernel writes a random token to a 0600 file in its state directory and accepts it on the handshake `Authorization` header, as managed workers already do. The TUI and CLI read the file. At first, connections without it are accepted but logged. This stops other OS users once enforced, and prepares every client.
-2. **Human-surface credentials.** The kernel records which credential class each connection used (host token, human surface, agent), counts passkey failures per class, and attributes audit events to it. `is_terminal_caller` becomes a statement about credential class rather than transport source.
-3. **Agent tokens.** Minting, scopes, lifetime, revocation, delivery and audit (section 5), with the session-scoping enforcement the owner chooses (section 6). Tokens are optional: nothing requires them yet.
-4. **Require credentials on the local socket.** Unauthenticated loopback connections are refused. This needs a future protocol version so that old clients get a clear upgrade message instead of a bare 401. Managed workers are unaffected.
-5. **`/sudo`.** The sudoagent (section 7) ships alongside `/meta`, with the notice on `/meta`.
-6. **Retire `/meta`.** Remove it from the catalog, the CLI and the tool set after one release. This also needs a future protocol version, because the command catalog and interaction shapes change.
-7. **Optional hardening.** The Unix socket endpoint and process identity check (option (c)) for local agent tokens, and read isolation (option D) if the owner pursues it.
+2. **Human-surface credentials.** The kernel records the stratum of each connection (host token, Chariox terminal, external agent, kernel-launched agent), counts passkey failures per class, and attributes audit events to it. `is_terminal_caller` becomes a statement about credential class rather than transport source.
+3. **Passkey popups.** The kernel-owned pending interaction of section 5.2, projected to every connected terminal and closed everywhere once resolved. Whether Phase 1's critical approvals move to it at this step or earlier is open question 3.
+4. **External agent grants.** Requests, the popup, connection binding (a), session scoping (b) with deny by default, lifetime, extension, revocation and audit (sections 5 and 6). Grants are optional at first: connections without one keep working as today.
+5. **Restrict the local socket.** A connection with neither a terminal credential nor a grant can only request access. Old clients get a clear upgrade message instead of a bare refusal. Managed workers are unaffected.
+6. **`/sudo`.** One-turn sudo (section 7) ships alongside `/meta`, with the notice on `/meta`, critical approvals by sudo turns (P2) and external `/sudo` requests (P1).
+7. **Retire `/meta`.** Remove it from the catalog, the CLI and the tool set after one release.
+8. **Unix socket and process identity.** The 0600 Unix socket endpoint and option (c), for external agent grants and for shell-level CLI access from sudo turns. Until then, external agent grants fall back to connection binding. Read isolation (option D) stays optional.
 
 ## 10. Threat model
 
 ### 10.1 Assets
 
-- Pending decisions, above all critical approvals.
+- Pending decisions, above all critical approvals, including payments a sudo turn may approve.
 - The passkey (the vault passphrase) and the vault contents.
 - Kernel control: spawning and prompting agents, workflows, App installs and bindings.
 - Session data: transcripts, events, artifacts.
-- Kernel access tokens and the audit log.
+- Grants, sudo turns and the audit log.
 
 ### 10.2 Actors
 
 | Actor | Description |
 |---|---|
 | Same-user agent process | An agent's shell or tool, or any process it starts, running as the owner's OS user on a laptop kernel. The main concern of this plan. |
+| External agent | An agent the user runs outside Chariox on the same machine. It may request or hold a grant, and it is also a same-user process. |
 | Other OS users | Accounts on the same machine that can reach loopback. |
 | Browser pages | Pages in the owner's browser that try to open a websocket to loopback. |
 | Compromised relay | A relay or Cloud component that an attacker controls. |
@@ -346,44 +402,44 @@ Each step ships on its own and leaves the system working.
 
 | Attack | Mitigation |
 |---|---|
-| A same-user agent connects to the socket and answers a critical approval | Phase 1: the passkey is required at approval time; agents never see it. |
-| A same-user agent connects to the socket and acts as the owner in other ways | Steps 1 to 4: credentials required; agent tokens scoped by (b); optionally bound to the process by (c). |
+| A same-user agent answers a critical approval | Phase 1: the passkey is required at approval time; agents never see it. After this milestone, only a Chariox terminal with the passkey, or a sudo turn the human started with the passkey (P2), can answer. A grant never can. |
+| A same-user agent acts as the owner in other ways | Steps 1 to 5: credentials required; a connection without a terminal credential or a grant can only request access; grants scoped by (b) and bound by (a) and (c). |
 | Another OS user connects to loopback | Step 1 token in a 0600 file; later a 0600 Unix socket with a peer UID check. |
 | A browser page drives the kernel over loopback | #618 refuses any upgrade with an `Origin` header. |
-| A compromised relay reads or replays the passkey or a token | End-to-end encryption; the relay sees ciphertext only. Tokens are never sent to or through peers. Passkey fields are zeroized after use. |
-| A remote peer answers the owner's decisions | Already refused for kernel-operation decisions (#443 tests); peers never receive tokens. |
-| A malicious App escalates through its workflows | App workflows never receive tokens. App validation is a critical approval and needs the passkey. |
-| An agent steals another agent's token | (b) confines it to that token's session; (c) makes it useless from another process; short lifetimes and revocation bound the window. |
-| An agent tries to mint a token or enter `/sudo` | Minting and `/sudo` are accepted only from human-surface credentials, with the passkey. |
+| A compromised relay reads or replays the passkey | End-to-end encryption; the relay sees ciphertext only. Passkey fields are zeroized after use. Grants are local only and never cross the relay. |
+| A remote peer answers the owner's decisions or asks for access | Relayed answers to kernel-operation decisions are already refused (#443 tests). Stratum 2 is local only, so peers cannot request grants. |
+| A malicious App escalates through its workflows | App workflows never hold or request grants or sudo. App validation is a critical approval. |
+| An agent reuses another agent's grant | There is no string to copy. The grant is bound to its holder's connection, and on a Unix socket to its process tree; (b) confines it to one session. Deliberate proxying by the holder remains (section 10.4). |
+| An agent grants itself access or sudo | Every grant, extension and `/sudo` needs the passkey typed into a terminal popup. Agents can only request. |
+| Request spoofing: an external request misleads the user about who is asking or for what | The popup shows what the kernel established: the requester's stratum and OS-reported process, the target agent and session, and the full prompt. Requester-supplied text is labeled as such. |
+| Request flooding: an agent fills the terminals with popups | One pending request per requester; requests expire; refusals are audited. |
+| Prompt spoofing: an agent shows a fake passkey prompt in its transcript or its own UI | The passkey is typed only into kernel-owned popups with a distinct look, never inline in agent output, a CLI prompt or an external agent's UI. The docs tell users never to type it anywhere else. |
 | Online guessing of the passkey | 5 failures, then exponential lockout capped at 15 minutes; one Argon2id verification at a time. |
 | An agent locks the owner out with wrong guesses | A DoS bounded at 15 minutes; per-class counting after step 2. |
-| Prompt spoofing: an agent prints a fake passkey prompt in its transcript | Passkey prompts appear only in kernel-owned UI with a distinct look, never inline in agent output; the docs tell users never to type the passkey into an agent's input. |
-| A token leaks into logs or transcripts | Fixed prefix for redaction and scanning; the kernel stores only the hash; tokens never appear in audit events. |
+| A secret leaks into logs or transcripts | Grants and sudo issue no bearer token, and the passkey is never logged or recorded. |
 
 ### 10.4 Residual risks
 
-- **Memory and input capture.** A same-user process that can read the kernel's memory, attach a debugger, or log keystrokes can capture the passkey or tokens. On macOS keystroke capture needs a TCC permission; under X11 on Linux any client can read keystrokes. This plan does not address it.
-- **File reads by agents.** Without read isolation (option D), local agents can read the token file from step 1 and the vault file. The token file then only stops other OS users, and the vault file enables offline guessing of the passkey, slowed only by Argon2id. Passphrase strength matters more now that it gates approvals (open question 10).
-- **Token theft within scope.** With (b) alone, a token stolen by another same-user process works within its session until it expires or is revoked.
-- **Remember and sudo windows.** Within an open window a human approves or enters sudo without retyping the passkey. The windows are short, off or minimal by default, and still require a human surface.
-- **Process identity gaps.** With (c), processes that reparent or live in another PID namespace are rejected (safe but inconvenient), and code injection into the agent's process defeats the check.
+- **Memory and input capture.** A same-user process that can read the kernel's memory, attach a debugger, or log keystrokes can capture the passkey. On macOS keystroke capture needs a TCC permission; under X11 on Linux any client can read keystrokes. This plan does not address it.
+- **File reads by agents.** Without read isolation (option D), local agents can read the token file from step 1, the vault file, and the per-run MCP bearers in providers' MCP configurations. The token file then only stops other OS users. The vault file enables offline guessing of the passkey, slowed only by Argon2id, so passphrase strength matters more now that it gates approvals and sudo (open question 8). During a sudo turn the run's MCP bearer carries sudo authority, so a process that reads it can use that authority until the turn yields.
+- **Proxying.** An authorized agent can deliberately act as a proxy for another process: forward its requests over the granted connection, or run it inside its own process tree. No mechanism can stop that, and the audit attributes everything to the authorized agent. The same holds for an external agent's own sub-agents and helpers, which the kernel cannot tell apart from it; D4 covers agents spawned through the kernel.
+- **Sudo turn breadth.** A sudo turn can approve critical actions, including payments, for as long as it runs, and a misbehaving or prompt-injected agent can misuse that within the turn. The bounds are one turn, the user's ability to interrupt it, and receipts that name the turn and the `/sudo` entry. Open question 4 asks about a safety cap.
+- **Phase 1 remember window.** Within it a human at a terminal approves without retyping the passkey. It is off by default, lasts at most 15 minutes, and never applies to `/sudo`, grants or extensions.
+- **Process identity gaps.** With (c), processes that reparent or live in another PID namespace are rejected (safe but inconvenient), and code injection into the holder defeats the check. Over TCP loopback a grant is bound to its connection only.
 
 ## 11. Open questions for the owner
 
-1. Session-scoping enforcement: adopt the tentative recommendation of (b) everywhere, (c) for local agent tokens, and (a) for long-lived human connections? Or a different combination?
-2. Token delivery: elevate the agent's existing runtime MCP identity (no new secret), inject an environment variable for shell-level CLI access, or both?
-3. Default granularity: should `/sudo` and the grant UI default to per-agent or per-session tokens?
-4. Lifetimes: confirm the token default of 30 minutes and max of 240, and the sudo window default of 15 minutes and max of 60.
-5. Should the sudo window and the Phase 1 remember window stay separate, or become one "presence window"?
-6. On laptops, accept that the human-surface token file is readable by same-user agents until read isolation exists, or add an OS presence check (option C, Touch ID or polkit) for `/sudo` entry and token minting?
-7. Keep tokens in kernel memory only, so that a restart revokes them all, or persist hashes so tokens survive restarts?
-8. How long should `/meta` stay as an alias, and should a no-passkey delegation-only mode survive under another name?
-9. May the CLI read the passkey from stdin for automation, or only from an interactive TTY?
-10. Should the kernel enforce a minimum passphrase strength now that the passphrase is the passkey, and prompt existing users with weak passphrases to rotate?
-11. For non-encrypted vault backends: fail closed permanently, or offer a standalone passkey?
-12. Is Windows in scope for the process identity check, or is (c) macOS and Linux only?
-13. Are two token levels (`user` and `metaagent`) needed, or should the sudoagent simply get `user` level within its session?
-14. Should the grant UI allow tokens for sessions shared with other users, and if so, whose passkey mints them?
+1. **Lead proposals.** Confirm P1 (external `/sudo` requests through the terminal popup, section 7.1), P2 (critical approvals by sudo turns only, section 7.2), P3 (no bearer secrets, section 6.5) and P4 (the root-agent direction, section 5.1). P3 replaces the earlier questions on session-scoping enforcement, token delivery, token granularity, token persistence and token levels.
+2. **Root agent.** How is the root agent (stratum 4) authorized across the user's kernels? Per-kernel vault passphrases do not fit; P4 points to the Phase 2 P2.13 account-level authenticator.
+3. **Phase 1 approval panel.** Should the popup replace the passkey input of the Phase 1 TUI approval panel already in Phase 1, or only when this milestone ships?
+4. **Sudo safety cap.** D2 gives a sudo turn no time expiry. Should it still have a safety cap, such as a limit on critical approvals or payment amounts per turn, or confinement to its own session (section 7.3)?
+5. **Lifetimes.** Confirm the grant default of 30 minutes and maximum of 240, the 5-minute extension notice, and the 10-minute request timeout.
+6. **Presence on laptops.** Accept that the human-surface credential file is readable by same-user agents until read isolation exists, so an agent can pose as a terminal for everything except passkey prompts? Or add an OS presence check (option C, Touch ID or polkit) to the popup?
+7. How long should `/meta` stay as an alias, and should a no-passkey delegation-only mode survive under another name?
+8. Should the kernel enforce a minimum passphrase strength now that the passphrase is the passkey, and prompt existing users with weak passphrases to rotate?
+9. For non-encrypted vault backends: fail closed permanently, or offer a standalone passkey?
+10. Is Windows in scope for the process identity check, or is (c) macOS and Linux only?
+11. Should grants be allowed for sessions shared with other users? If so, whose passkey authorizes them, and whose terminals show the popup?
 
 ## References
 
@@ -394,5 +450,8 @@ Each step ships on its own and leaves the system working.
 - Session membership and request scoping: `apps/kernel/src/runtime/session_membership.rs`, `apps/kernel/src/runtime/session_membership/scope.rs`
 - Encrypted vault and unlock policies: `apps/kernel/src/secret/vault.rs`, `apps/kernel/src/runtime/state/runtime_vault_unlock_state.rs`, `docs/M26_CHARIOX_ENCRYPTED_VAULT_PLAN.md`
 - Metaagents: `docs/M23_METAAGENTS_PLAN.md`, `docs/M26_METAAGENTS_DELEGATION_ONLY_PLAN.md`, `apps/kernel/src/runtime/state/tool_dispatch/meta.rs`
-- Runtime MCP listener and per-run bearer: `apps/kernel/src/transport/mcp_server.rs`, `apps/kernel/src/app/provider_launch_request.rs`
+- Runtime MCP listener and per-run bearer: `apps/kernel/src/transport/mcp_server.rs`, `apps/kernel/src/app/provider_launch_policy.rs`, `apps/kernel/src/app/provider_launch_request.rs`
+- TUI hot-keys popup: `apps/cli/src/hotkey-help.ts`
+- Step-up authentication (P2.13, V2-AUTH-01): `docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html`
 - Package action local token: `docs/DEPLOYED_WORKFLOWS_THREAT_MODEL.md`
+- Superseded agent-terminal MCP: PR #15, branch `codex/agent-terminal-runtime`
