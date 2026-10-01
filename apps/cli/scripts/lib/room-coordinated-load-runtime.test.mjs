@@ -139,7 +139,7 @@ test("actual runtime attaches a viewer, starts Selkies, starts a normal TUI, the
         ? { kind: "text", data: new TextEncoder().encode("PIPELINE_RESETTING primary") }
         : received === 2
         ? { kind: "text", data: new TextEncoder().encode("VIDEO_STARTED") }
-        : { kind: "binary", data: new Uint8Array([1, 2, 3]) }
+        : { kind: "binary", data: new Uint8Array([4, ...Array(10).fill(1)]) }
     },
     async close() { controls.push("CLOSED") },
   }
@@ -213,6 +213,37 @@ test("prepared identity validation rejects a foreign owner and a mismatched chil
       protocol: fixture.protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
     })
     await assert.rejects(runtime.verifyPrepared(), /identity|prepared slice/)
+    assert.equal(fixture.clients[0].closed, 1)
+  }
+})
+
+
+test("shared Selkies viewer requires a reset and a valid video frame without an individual VIDEO_STARTED", async (t) => {
+  const scratch = await inScratch(t)
+  for (const validFrame of [true, false]) {
+    const fixture = clientFixture()
+    const messages = [
+      { kind: "text", data: new TextEncoder().encode("PIPELINE_RESETTING primary") },
+      { kind: "binary", data: new Uint8Array(validFrame ? [4, ...Array(10).fill(1)] : [1, 2, 3]) },
+    ]
+    let closed = false
+    fixture.protocol.openSelkiesDisplayStream = async () => ({
+      endpoint: { stream_id: "shared-viewer" },
+      async sendControl() {},
+      async receive() { if (!messages.length) throw new Error("fixture receive deadline"); return messages.shift() },
+      async close() { closed = true },
+    })
+    const runtime = await createRoomCoordinatedLoadRuntime({ plan: approvedPlan(), ...scratch }, {
+      protocol: fixture.protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
+    })
+    if (validFrame) {
+      const viewer = await runtime.startViewer(null, { id: "web-local", route: "local" })
+      await runtime.stopOwnedTask(viewer)
+    } else {
+      await assert.rejects(runtime.startViewer(null, { id: "web-local", route: "local" }), /video frame/)
+    }
+    assert.equal(closed, true)
+    assert.ok(fixture.requests.some((request) => request.DetachFromSession))
     assert.equal(fixture.clients[0].closed, 1)
   }
 })

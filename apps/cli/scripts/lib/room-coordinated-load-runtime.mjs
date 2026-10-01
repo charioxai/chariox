@@ -189,7 +189,7 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
           signal,
         })
         await stream.sendControl("START_VIDEO", { signal })
-        await waitForVideoStarted(stream, 10_000, signal)
+        await waitForVideoReady(stream, 10_000, signal)
         const firstFrame = await nextBinaryFrame(stream, 15_000, signal)
         viewers.set(viewer.id, { client, stream, attachmentId: attachment.id, route: viewer.route, frameBytes: firstFrame.byteLength })
         return own("viewer", viewer.id, { client, stream, attachmentId: attachment.id, route: viewer.route }, {
@@ -444,11 +444,16 @@ async function receiveMessage(stream, timeoutMs, signal) {
   return await stream.receive({ timeoutMs, signal })
 }
 
-async function waitForVideoStarted(stream, timeoutMs, signal) {
+async function waitForVideoReady(stream, timeoutMs, signal) {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
     const message = await receiveMessage(stream, Math.max(1, deadline - performance.now()), signal)
-    if (message.kind === "text" && new TextDecoder().decode(message.data) === "VIDEO_STARTED") return
+    if (message.kind === "text") {
+      const text = new TextDecoder().decode(message.data)
+      // Pinned Selkies shared viewers receive a reset and IDR instead of the
+      // individual display's VIDEO_STARTED. Both still require a video frame.
+      if (text === "VIDEO_STARTED" || text === "PIPELINE_RESETTING primary") return
+    }
   }
   throw new Error("Selkies viewer did not start its normal video stream within the bound")
 }
@@ -457,7 +462,12 @@ async function nextBinaryFrame(stream, timeoutMs, signal) {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
     const message = await receiveMessage(stream, Math.max(1, deadline - performance.now()), signal)
-    if (message.kind === "binary" && message.data.byteLength > 0) return message.data
+    if (message.kind === "binary") {
+      if (message.data.byteLength > 10 && message.data.byteLength <= 4 * 1024 * 1024 && message.data[0] === 4) {
+        return message.data
+      }
+      throw new Error("display stream returned an invalid Selkies video frame")
+    }
     if (message.kind !== "text") throw new Error("display stream returned an unsupported message")
   }
   throw new Error("display stream did not deliver a binary frame within the bound")
