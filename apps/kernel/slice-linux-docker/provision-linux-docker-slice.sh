@@ -1592,6 +1592,27 @@ destroy_container() {
   fi
 }
 
+restore_slice_state() {
+  require_docker
+  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
+  build_image
+  if [[ -n "${CHARIOX_SLICE_RESTORE_GENERATION:-}" ]]; then
+    # Materialize and durably verify the fresh generation while the old
+    # container/home still exist. Never remove retained previous data here.
+    prepare_home_volume
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-generation.mjs" --require-ready \
+      || fail "restored home generation is incomplete; previous home is preserved"
+    stop_container
+    if container_exists; then run_with_timeout 30 docker rm "$SLICE_NAME" >/dev/null; fi
+  else
+    destroy_container
+  fi
+  ensure_container
+  ensure_protected_runtime_barrier
+  stop_container
+  log "saved slice state restored; container remains stopped"
+}
+
 main() {
   local action="${1:-provision}"
   case "$action" in
@@ -1618,24 +1639,7 @@ main() {
       log "provision completed; use status or logs actions for diagnostics"
       ;;
     restore-state)
-      require_docker
-      [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
-      build_image
-      if [[ -n "${CHARIOX_SLICE_RESTORE_GENERATION:-}" ]]; then
-        # Materialize and durably verify the fresh generation while the old
-        # container/home still exist. Never remove retained previous data here.
-        prepare_home_volume
-        node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-generation.mjs" --require-ready \
-          || fail "restored home generation is incomplete; previous home is preserved"
-        stop_container
-        if container_exists; then run_with_timeout 30 docker rm "$SLICE_NAME" >/dev/null; fi
-      else
-        destroy_container
-      fi
-      ensure_container
-      ensure_protected_runtime_barrier
-      stop_container
-      log "saved slice state restored; container remains stopped"
+      restore_slice_state
       ;;
     recover)
       require_docker

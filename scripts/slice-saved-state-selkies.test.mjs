@@ -47,6 +47,7 @@ function runCapabilityProbe(source, currentState, baseState) {
     "  esac",
     "}",
     "SLICE_SAVED_HOME_ARCHIVE=/etc/hosts",
+    "SLICE_PRIVATE_HOST_ROOT=''",
     "SLICE_VIEWER_BACKEND=selkies",
     "SLICE_IMAGE=saved-image",
     "SLICE_BASE_IMAGE=base-image",
@@ -169,4 +170,39 @@ test("new saved-state volumes are labeled and cleaned up after restore failure",
   assert.match(output, /STATUS=91/)
   assert.match(output, /DOCKER_CALL volume create --label io\.chariox\.saved-home\.archive-sha256=/)
   assert.match(output, /DOCKER_CALL volume rm saved-home/)
+})
+
+test("protected restoration cannot stop the previous container before extraction and readiness succeed", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const restore = section(source, "restore_slice_state() {", "main() {")
+  for (const fault of ["extraction", "readiness", "none"]) {
+    const result = runProbe([
+      "SLICE_SAVED_HOME_ARCHIVE=synthetic-archive; SLICE_NAME=synthetic-slice; REPO_ROOT=/synthetic",
+      "CHARIOX_SLICE_RESTORE_GENERATION=synthetic-generation",
+      "require_docker() { :; }; build_image() { :; }; log() { :; }",
+      "fail() { return 91; }",
+      "prepare_home_volume() { printf 'EXTRACT\\n'; [[ $PROBE_FAULT != extraction ]]; }",
+      "node() { printf 'READY_CHECK\\n'; [[ $PROBE_FAULT != readiness ]]; }",
+      "stop_container() { printf 'STOP_OLD\\n'; }",
+      "container_exists() { return 0; }",
+      "run_with_timeout() { shift; \"$@\"; }",
+      "docker() { printf 'DOCKER %s\\n' \"$*\" >&2; }",
+      "destroy_container() { printf 'DESTROY_HOME\\n'; }",
+      "ensure_container() { printf 'BIND_NEW_HOME\\n'; }",
+      "ensure_protected_runtime_barrier() { printf 'RETENTION_CHECK\\n'; }",
+      restore,
+      "restore_slice_state",
+    ], {PROBE_FAULT: fault})
+    const output = `${result.stdout}${result.stderr}`
+    assert.doesNotMatch(output, /DESTROY_HOME|volume rm/)
+    if (fault !== "none") {
+      assert.notEqual(result.status, 0)
+      assert.doesNotMatch(output, /STOP_OLD|DOCKER|BIND_NEW_HOME|RETENTION_CHECK/)
+    } else {
+      assert.equal(result.status, 0, output)
+      assert.ok(output.indexOf("READY_CHECK") < output.indexOf("STOP_OLD"))
+      assert.ok(output.indexOf("STOP_OLD") < output.indexOf("BIND_NEW_HOME"))
+      assert.match(output, /DOCKER rm synthetic-slice/)
+    }
+  }
 })
