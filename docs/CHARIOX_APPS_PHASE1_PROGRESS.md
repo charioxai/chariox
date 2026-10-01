@@ -106,7 +106,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V1-INT-12 | Step-up authentication | Authenticator integration tests plus real human verification drill; test mocks never count as production authentication | Phase 2 (see verification) |
 | V1-INT-13 | Capability-expanding update | Decline keeps old release; recovery preserves accepted work; no early capability use | Verified (macOS kernel) (see verification) |
 | V1-INT-14 | App-origin escape | Browser-controlled origin and network policy holds; host loopback and metadata are not ambient authority | Partial (see verification) |
-| V1-INT-15 | Concurrent viewer semantics | Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal | Needs user (see verification) |
+| V1-INT-15 | Concurrent viewer semantics | Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal | Partial: slice-restart recheck; App-view screen reader to Phase 1.1 (#709 at `1ccd0d353`; see verification) |
 | V1-INT-16 | Transport conformance and SSRF | Measured source adaptations; bounded trusted-side memory and actual connected-address checks | Partial (see verification) |
 | V1-INT-17 | Slack contract cutover | Live third-party-style App parity before old code removal; final artifact has no privileged Slack fallback | Partial (see verification) |
 | V1-INT-18 | Schedule correctness | Persisted occurrence revision controls enqueue; overdue work recovers within declared budget | Partial [user step: sleep/wake] (see verification) |
@@ -172,7 +172,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 |---|---|---|---|
 | V-UX-01 | App Tab and viewer isolation | Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment. | Partial (see verification) |
 | V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Partial: three widths (`screens/responsive-*`) |
-| V-UX-03 | Accessibility | Automated audit plus manual VoiceOver pass for every App view. | Implemented: axe 0 violations; owner VoiceOver passes over the Todo, Slack and Documents views (see verification) |
+| V-UX-03 | Accessibility | Automated audit; keyboard, focus, contrast, screen reader and touch target size. | Partial: owner S1-5 failed; cloud#269 at `8beda5a1d` and #716 at `d5fda47bd` need rerun. Room App-view screen reader to Phase 1.1 (#709 at `1ccd0d353`; see verification) |
 | V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Implemented (see verification) |
 | V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial: live remote TUI (`remote-tui/`) |
 | V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Partial (see verification) |
