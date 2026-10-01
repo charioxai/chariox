@@ -444,6 +444,15 @@ install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \
   "$install_root/var/lib/chariox-docker" \
   "$install_root/var/lib/chariox-docker/home"
+private_layout_root="$install_root/var/lib/chariox-docker/private-layout"
+if [ -e "$private_layout_root" ] || [ -L "$private_layout_root" ]; then
+  [ -d "$private_layout_root" ] && [ ! -L "$private_layout_root" ] \
+    && [ "$(stat -c %u "$private_layout_root")" = "$(id -u chariox-docker)" ] \
+    && [ "$(stat -c %a "$private_layout_root")" = 711 ] \
+    || fail "protected slice layout ownership is incompatible; retained private state is unchanged"
+else
+  install -d -o chariox-docker -g chariox-docker -m 0711 "$private_layout_root"
+fi
 install -d -o root -g chariox-slice -m 0710 "$install_root/var/lib/chariox-slice-share"
 setfacl -P -m "u:chariox-docker:--x" -- "$install_root/var/lib/chariox-slice-share"
 install -d -o root -g root -m 0711 "$install_root/var/lib/chariox-slice-share/.broker-private"
