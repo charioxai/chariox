@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, statfs, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, statfs, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -56,6 +57,7 @@ async function resources() {
 }
 let watchdog;
 let started = false;
+let transportDirectory;
 try {
   await resources();
   watchdog = setInterval(() => { resources().catch(() => { interrupted = true; for (const child of owned) child.kill("SIGTERM"); }); }, 5000);
@@ -85,10 +87,17 @@ try {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   receipt.inspect = JSON.parse((await docker(["inspect", container])).stdout)[0];
+  transportDirectory = await mkdtemp(path.join(os.tmpdir(), "chariox-ctlconc-transport-"));
+  await symlink(path.join(root, "apps/cli/scripts/lib/browser-controller-concurrency-transport.mjs"),
+    path.join(transportDirectory, "docker"));
+  const realDocker = await realpath((await command("which", ["docker"])).stdout.trim());
   const test = await command(options["test-binary"], [
     "runtime::state::tool_dispatch::slice::controller_browser::concurrency_drill::headed_controller_concurrency_acceptance",
     "--exact", "--ignored", "--nocapture"], { timeout: 60000, log: path.join(options.output, "test.log"),
-    env: { ...process.env, CHARIOX_CONCURRENCY_CONTAINER: container, CHARIOX_CONCURRENCY_FIXTURE: mapping } });
+    env: { ...process.env, PATH: transportDirectory + path.delimiter + process.env.PATH,
+      CHARIOX_CONCURRENCY_REAL_DOCKER: realDocker,
+      CHARIOX_CONCURRENCY_TRANSPORT_RECEIPT: path.join(options.output, "transport.jsonl"),
+      CHARIOX_CONCURRENCY_CONTAINER: container, CHARIOX_CONCURRENCY_FIXTURE: mapping } });
   await writeFile(path.join(options.output, "test.log"), test.stdout + test.stderr, { mode: 0o600 });
   receipt.probe = test.stdout.split("\n").filter(line => line.startsWith("{"))
     .map(line => { try { return JSON.parse(line); } catch { return null; } })
@@ -121,6 +130,7 @@ try {
       retainedImages: [options.image] };
     await resources();
   } catch (error) { receipt.cleanup = { status: "RED", error: error.message }; receipt.status = "RED"; process.exitCode = 1; }
+  if (transportDirectory) await rm(transportDirectory, { recursive: true });
   receipt.finishedAt = new Date().toISOString();
   await writeFile(path.join(options.output, "result.json"), JSON.stringify(receipt, null, 2) + "\n", { mode: 0o600 });
   console.log(JSON.stringify({ mp_items, status: receipt.status, cleanup: receipt.cleanup, evidence: options.output }));

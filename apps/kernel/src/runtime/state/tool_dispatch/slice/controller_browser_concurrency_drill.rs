@@ -97,7 +97,7 @@ async fn read(
     let binding = runtime
         .room_environment_controller_tab_binding(room, &tab.tab_id)
         .unwrap();
-    await_controller_browser_observation(guard, async {
+    let (_, mut observation) = await_controller_browser_observation(guard, async {
         let result = runtime
             .room_browser_controller_command(
                 room,
@@ -114,6 +114,11 @@ async fn read(
     })
     .await
     .unwrap();
+    observation
+        .as_mut()
+        .unwrap()
+        .finish(EnvironmentActionTerminal::Completed)
+        .unwrap();
 }
 
 async fn mutation(

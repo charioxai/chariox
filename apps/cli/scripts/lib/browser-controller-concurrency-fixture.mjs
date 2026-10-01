@@ -40,7 +40,7 @@ export async function startBrowserConcurrencyFixture({ host = "0.0.0.0", port = 
       <input id="note" aria-label="Note ${tab}" oninput="fetch('/effect?tab=${tab}&kind=type&text='+encodeURIComponent(this.value))">
       <output id="count">0</output><script>
       window.clicks=0; let epoch=-1, probes=new Set();
-      const report=(kind,id)=>{const key=epoch+':'+kind+':'+id;if(probes.has(key))return;probes.add(key);fetch('/probe?tab=${tab}&kind='+kind+'&id='+id+'&epoch='+epoch)};
+      const report=(kind,id)=>{const key=epoch+':'+kind+':'+id;if(probes.has(key))return;probes.add(key);fetch('/probe?tab=${tab}&kind='+kind+'&id='+encodeURIComponent(id)+'&epoch='+epoch)};
       const query=Document.prototype.querySelector;
       Document.prototype.querySelector=function(selector){if(selector.startsWith('#read-'))report('read',selector);return query.call(this,selector)};
       const rect=Element.prototype.getBoundingClientRect;
