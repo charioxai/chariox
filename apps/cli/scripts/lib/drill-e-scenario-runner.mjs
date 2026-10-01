@@ -159,21 +159,15 @@ function readOverlap(environment, options) {
   return a && b && c ? { a, b, c } : null
 }
 
-function runningMutation(environment, agentId, tabId) {
-  return environment.actions.find((action) => action?.state === "running"
-    && action.actor_id === "agent:" + agentId && tabTarget(action) === tabId
-    && action.kind === reloadKind) ?? null
-}
-
-function runningSelectedMutation(environment, agentId, tabId, options) {
+function runningMutation(environment, agentId, tabId, options) {
   return environment.actions.find((action) => action?.state === "running"
     && action.actor_id === "agent:" + agentId && tabTarget(action) === tabId
     && action.kind === (options.mutationKind ?? reloadKind)) ?? null
 }
 
 function runningSameTabMutation(environment, options) {
-  return runningSelectedMutation(environment, options.agentA, options.sameTabId, options)
-    ?? runningSelectedMutation(environment, options.agentB, options.sameTabId, options)
+  return runningMutation(environment, options.agentA, options.sameTabId, options)
+    ?? runningMutation(environment, options.agentB, options.sameTabId, options)
 }
 
 function queuePair(environment, options) {
@@ -689,7 +683,7 @@ export async function runDrillEScenario({
       const pair = now() < deadline
         ? await waitFor((environment) => {
           const pair = queuePair(environment, options)
-          const independent = runningSelectedMutation(environment, options.agentC, options.otherTabId, options)
+          const independent = runningMutation(environment, options.agentC, options.otherTabId, options)
           return pair && (!synchronization || independent) ? { ...pair, independent } : null
         },
           startedAt + Math.floor(options.timeoutMs * 0.8))
