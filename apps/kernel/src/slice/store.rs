@@ -14,6 +14,9 @@ use super::ports::{self, LocalDockerSlicePorts};
 mod environment;
 mod invariants;
 
+pub(crate) const ENVIRONMENT_USE_ADMISSION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 use invariants::{
     reconcile_slice_status_after_kernel_restart, redact_slice_operation_error, validate_slice_name,
 };

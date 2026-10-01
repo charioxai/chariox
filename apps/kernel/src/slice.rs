@@ -37,8 +37,8 @@ pub use model::{
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
-pub(crate) use store::SliceEnvironmentUseGuard;
 pub use store::{SliceAgentAttachment, SliceHostRuntimeState, SliceOperationGuard, SliceStore};
+pub(crate) use store::{SliceEnvironmentUseGuard, ENVIRONMENT_USE_ADMISSION_TIMEOUT};
 
 #[cfg(test)]
 mod tests {

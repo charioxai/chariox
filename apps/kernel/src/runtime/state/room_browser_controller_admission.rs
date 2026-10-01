@@ -8,6 +8,7 @@ impl KernelRuntimeState {
         session_id: &str,
         slice_id: &str,
         command: &Command,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<(SliceRecord, Option<SliceEnvironmentUseGuard>), DaemonError> {
         // Cancellation bypasses the slot held by its original action. App
         // bridge polls/answers only drain a queue and may share a route slot.
@@ -40,7 +41,15 @@ impl KernelRuntimeState {
             Some(
                 self.owned
                     .slice_store
-                    .queue_environment_use(slice_id, Some(session_id), "browser_controller.route")
+                    .queue_environment_use_until(
+                        slice_id,
+                        Some(session_id),
+                        "browser_controller.route",
+                        deadline.unwrap_or_else(|| {
+                            tokio::time::Instant::now()
+                                + crate::slice::ENVIRONMENT_USE_ADMISSION_TIMEOUT
+                        }),
+                    )
                     .await?,
             )
         } else {

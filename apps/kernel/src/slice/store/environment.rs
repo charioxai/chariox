@@ -14,12 +14,12 @@ impl SliceStore {
             slice_ref,
             session_id,
             operation,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            tokio::time::Instant::now() + ENVIRONMENT_USE_ADMISSION_TIMEOUT,
         )
         .await
     }
 
-    async fn queue_environment_use_until(
+    pub(crate) async fn queue_environment_use_until(
         &self,
         slice_ref: &str,
         session_id: Option<&str>,

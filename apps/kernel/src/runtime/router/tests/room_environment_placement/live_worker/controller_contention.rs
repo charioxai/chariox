@@ -28,11 +28,21 @@ async fn stale_input_waits_for_controller_route() {
     contended_input(WaitingInput::ChangeViewport).await;
 }
 
+#[test]
+fn concurrent_human_room_inputs_survive_controller_contention_longer_than_five_seconds() {
+    run_test(concurrent_inputs_wait_for_controller_route);
+}
+
+async fn concurrent_inputs_wait_for_controller_route() {
+    contended_input(WaitingInput::Concurrent).await;
+}
+
 #[derive(Clone, Copy)]
 enum WaitingInput {
     Complete,
     Cancel,
     ChangeViewport,
+    Concurrent,
 }
 
 async fn contended_input(outcome: WaitingInput) {
@@ -132,19 +142,57 @@ async fn contended_input(outcome: WaitingInput) {
             })
             .await
             .expect("human Action should enter the ledger while the route is occupied");
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            if matches!(outcome, WaitingInput::Concurrent) {
+                timeout(Duration::from_secs(2), async {
+                    loop {
+                        let environment = runtime.room_environment_snapshot(&action_room).unwrap();
+                        if environment.actions.iter().any(|action| action.kind == "keyboard_key"
+                            && action.state == crate::session::EnvironmentActionState::Queued) { break; }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.expect("second human input must queue in the ledger behind the waiting click");
+                tokio::time::sleep(Duration::from_secs(7)).await;
+            } else {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
             drop(route);
         });
         let read = json!({"GetRoomEnvironmentTabAccessibility": {
             "session_id":room,"tab_id":environment["tabs"][0]["tab_id"]
         }});
-        let (result, read) = tokio::join!(
+        let key_request = json!({"SubmitRoomEnvironmentAction": {
+            "session_id":room,"runtime_generation":environment["runtime_generation"],
+            "viewport_revision":environment["viewport"]["revision"],
+            "idempotency_key":"concurrent-key",
+            "action":{"kind":"keyboard_key","key":"ctrl+a","repeat":1}
+        }});
+        let concurrent_key = async {
+            if !matches!(outcome, WaitingInput::Concurrent) { return None; }
+            let actor_id = timeout(Duration::from_secs(2), async {
+                loop {
+                    let environment = fixture.home.runtime_state.room_environment_snapshot(room).unwrap();
+                    if let Some(click) = environment.actions.iter().find(|action| action.kind == "pointer_click") {
+                        break click.actor_id.clone();
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            let LocalDaemonRequest::SubmitRoomEnvironmentAction(request) = serde_json::from_value(key_request.clone()).unwrap()
+                else { unreachable!() };
+            // Session command lanes serialize client submissions. Exercise the
+            // shared kernel executor directly to force simultaneous ledger
+            // admission, as happens with runtime-dispatched actions.
+            Some(fixture.home.runtime_state.execute_human_room_environment_action(request,
+                crate::session::EnvironmentActor::new(actor_id, crate::session::EnvironmentActorKind::Human, "viewer")).await)
+        };
+        let (result, read, concurrent_key) = tokio::join!(
             dispatch_json(&fixture.home, request.clone()),
             dispatch_json(&fixture.home, read),
+            concurrent_key,
         );
         release.await.unwrap();
         read.expect("viewer read should wait for the route and complete");
-        if !matches!(outcome, WaitingInput::Complete) {
+        if matches!(outcome, WaitingInput::Cancel | WaitingInput::ChangeViewport) {
             if matches!(outcome, WaitingInput::Cancel) {
                 assert!(matches!(
                     result,
@@ -198,6 +246,16 @@ async fn contended_input(outcome: WaitingInput) {
             &repeated["RoomEnvironmentActionSubmitted"]["action_id"],
             action_id
         );
+        if matches!(outcome, WaitingInput::Concurrent) {
+            let (key_id, environment) = concurrent_key.unwrap().expect("the key must survive the ledger wait and execute once after the click");
+            let keys: Vec<_> = environment.actions.iter().filter(|action| action.action_id == key_id).collect();
+            assert_eq!(keys.len(), 1);
+            assert_eq!(keys[0].state, crate::session::EnvironmentActionState::Completed);
+            let repeated = dispatch_json(&fixture.home, key_request).await.unwrap();
+            assert_eq!(repeated["RoomEnvironmentActionSubmitted"]["action_id"], key_id);
+            assert_eq!(std::fs::read_to_string(&log).unwrap(), "pointer-click 320 180 left 1\ncomputer-key-stdin 1\n");
+            return;
+        }
         assert_eq!(
             std::fs::read_to_string(&log).unwrap(),
             "pointer-click 320 180 left 1\n"
