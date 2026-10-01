@@ -110,7 +110,9 @@ test("nested provider namespaces can use a host-installed AppArmor profile", asy
   assert.match(source, /--cap-add SYS_PTRACE/)
   assert.match(source, /--security-opt apparmor="\$SLICE_APPARMOR_PROFILE"/)
   assert.match(image, /chmod 4755 \/usr\/bin\/bwrap/)
-  assert.match(launcher, /\/usr\/bin\/bwrap --seccomp 3/)
+  assert.match(launcher, /exec \/usr\/bin\/setpriv --no-new-privs \/usr\/bin\/bwrap --seccomp 3 "\$@"/)
+  // The compatibility probe must exercise the same unprivileged launch mode.
+  assert.match(source, /setpriv --no-new-privs\s*\\\s*bwrap[\s\S]*--disable-userns/)
   assert.match(seccomp, /SCMP_SYS\(unshare\)/)
   assert.match(seccomp, /SCMP_SYS\(clone3\)/)
   assert.match(runtimeSource, /CHARIOX_MANAGED_PROVIDER_BWRAP="\/usr\/local\/libexec\/chariox\/managed-provider-bwrap"/)
