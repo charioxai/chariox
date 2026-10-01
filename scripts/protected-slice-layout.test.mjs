@@ -390,7 +390,7 @@ import { requireSafeHomeVolume } from "../apps/kernel/slice-linux-docker/protect
 test("request preflight scans the exact volume without creating a helper or changing state", () => {
   const parent = mkdtempSync(join(process.env.HOME, ".chariox-home-volume-metadata-test-"))
   try {
-    const volume = "chariox-slice-synthetic-home"
+    for (const volume of ["chariox-slice-synthetic-home", `chariox-slice-synthetic-home-g${"a".repeat(32)}`]) {
     const directory = join(parent, volume)
     mkdirSync(directory, {mode: 0o700})
     const home = join(directory, "_data")
@@ -406,6 +406,7 @@ test("request preflight scans the exact volume without creating a helper or chan
     assert.equal(readFileSync(join(home, "notes"), "utf8"), "synthetic ordinary data")
     assert.throws(() => requireSafeHomeVolume({volume, volumeRoot: parent,
       docker: () => ({status: 0, stdout: JSON.stringify([{Name: volume, Mountpoint: parent}])})}))
+    }
   } finally { rmSync(parent, {recursive: true}) }
 })
 

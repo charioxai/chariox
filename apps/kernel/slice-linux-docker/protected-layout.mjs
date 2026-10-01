@@ -20,6 +20,12 @@ function refuse() {
   throw new Error("Slice save/backup is unavailable for this storage layout; existing saved state is preserved")
 }
 
+export function verifyHomeVolumeName(volume, owner) {
+  if (typeof volume !== "string" || !/^chariox-slice-[A-Za-z0-9_.:-]+-home(?:-g[a-f0-9]{32})?$/.test(volume)) refuse()
+  if (owner !== undefined && !(volume === `${owner}-home`
+      || (volume.startsWith(`${owner}-home-g`) && /^[a-f0-9]{32}$/.test(volume.slice(`${owner}-home-g`.length))))) refuse()
+}
+
 // The receipt is supplied by the trusted host provisioner, never container labels.
 // Filesystem ownership and the signed build-context proof are verified by its caller.
 export function verifyProtectedCaptureLayout(inspect, receipt, trustedBaseDigests) {

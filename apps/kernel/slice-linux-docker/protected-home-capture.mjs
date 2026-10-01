@@ -3,7 +3,7 @@ import { validateCompressedArchive } from "./protected-home-restore.mjs"
 import { spawnSync } from "node:child_process"
 import { dirname } from "node:path"
 import { streamArchiveToProtectedSink } from "./protected-archive-stream.mjs"
-import { requireSupportedHomeEntries } from "./protected-layout.mjs"
+import { requireSupportedHomeEntries, verifyHomeVolumeName } from "./protected-layout.mjs"
 import { verifyPrivateHostDirectory } from "./protected-host-root.mjs"
 
 function refuse() { throw new Error("Slice save/backup is unavailable for this storage layout; existing saved state is preserved") }
@@ -23,8 +23,8 @@ export function verifyHomeEntryMetadata(bytes) {
 
 export function verifyCaptureHelperVolume(helper, volume) {
   const owner = helper.match(/^(chariox-slice-[A-Za-z0-9_.:-]+)-home-archive-[0-9]+$/)?.[1]
-  if (!owner || !(volume === `${owner}-home`
-      || (volume.startsWith(`${owner}-home-g`) && /^[a-f0-9]{32}$/.test(volume.slice(`${owner}-home-g`.length))))) refuse()
+  if (!owner) refuse()
+  verifyHomeVolumeName(volume, owner)
 }
 
 export async function captureProtectedHome({helper, volume, path, docker, environment, maxBytes, reserveBytes}) {

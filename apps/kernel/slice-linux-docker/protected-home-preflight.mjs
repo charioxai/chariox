@@ -1,10 +1,11 @@
 import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs"
 import { join } from "node:path"
 import { verifyHomeEntryMetadata } from "./protected-home-capture.mjs"
+import { verifyHomeVolumeName } from "./protected-layout.mjs"
 
 function refuse() { throw new Error("Slice save/backup is unavailable for this storage layout; existing saved state is preserved") }
 export function requireSafeHomeVolume({volume, docker, volumeRoot = "/var/lib/chariox-docker/data/volumes", maxEntries = 100_000}) {
-  if (!/^chariox-slice-[A-Za-z0-9_.:-]+-home$/.test(volume)) refuse()
+  verifyHomeVolumeName(volume)
   const result = docker(["volume", "inspect", volume])
   if (result.status !== 0) refuse()
   const records = JSON.parse(result.stdout)
