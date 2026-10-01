@@ -1274,6 +1274,14 @@ for (let index = 0; index < args.length; index += 1) {
   filtered.push(args[index])
 }
 const result = spawnSync("/usr/bin/install", filtered, { stdio: "inherit" })
+// The fixture discards ordinary chown flags. Preserve this new admission
+// boundary's real synthetic ownership so idempotent-install checks are honest.
+if (result.status === 0 && args.includes("-d") && args.includes("chariox-docker")) {
+  const fs = require("node:fs")
+  for (const path of filtered.filter(value => value.endsWith("/var/lib/chariox-docker/private-layout"))) {
+    fs.chownSync(path, 997, 997)
+  }
+}
 process.exit(result.status ?? 1)
 `)
   await writeHarnessCommand(join(bin, "mv"), `#!/bin/sh
