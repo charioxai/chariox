@@ -1119,3 +1119,27 @@ test("long Drill E observation preserves its exact attachment heartbeat", async 
   assert.equal(capture.cleanup.status, "passed")
   assert.ok(kernel.sent.filter(request => request.PollRuntimeNotices).length > 3)
 })
+
+test("MP-08/MP-10: provider B may reach the same-tab mutation before provider A", async () => {
+  const sequence = fullSequence()
+  // Clone shared fixture objects before walking: each action is transformed once.
+  const reversed = structuredClone(sequence)
+  const seen = new WeakSet()
+  const once = (value) => {
+    if (!value || typeof value !== "object" || seen.has(value)) return
+    seen.add(value)
+    if (value.kind === "browser_history_reload" && value.targets?.[0]?.id === "tab-same") {
+      value.actor_id = value.actor_id === "agent:agent-a" ? "agent:agent-b" : "agent:agent-a"
+    }
+    for (const child of Object.values(value)) once(child)
+  }
+  once(reversed)
+  const kernel = fakeKernel({ sequence: reversed })
+  let clock = 1_000
+  const capture = await runDrillEScenario({
+    client: kernel.client, requests: requestBuilders(), options: options(),
+    now: () => clock, sleep: async (ms) => { clock += ms },
+  })
+  assert.equal(capture.report.status, "passed")
+  assert.equal(kernel.takeoverRequests(), 1)
+})

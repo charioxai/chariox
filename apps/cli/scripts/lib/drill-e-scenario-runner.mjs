@@ -165,10 +165,16 @@ function runningMutation(environment, agentId, tabId) {
     && action.kind === reloadKind) ?? null
 }
 
+function runningSameTabMutation(environment, options) {
+  return runningMutation(environment, options.agentA, options.sameTabId)
+    ?? runningMutation(environment, options.agentB, options.sameTabId)
+}
+
 function queuePair(environment, options) {
-  const first = runningMutation(environment, options.agentA, options.sameTabId)
+  const first = runningSameTabMutation(environment, options)
   const second = environment.actions.find((action) => action?.state === "queued"
-    && action.actor_id === "agent:" + options.agentB
+    && [options.agentA, options.agentB].some((id) => action.actor_id === "agent:" + id)
+    && action.actor_id !== first?.actor_id
     && tabTarget(action) === options.sameTabId && action.kind === reloadKind)
   return first && second && second.submitted_at_ms >= first.started_at_ms
     ? { first, second }
@@ -192,7 +198,7 @@ function relevantSnapshotKinds(environment, options) {
   if (reads) kinds.push("reads:" + reads.a.action_id + ":" + reads.b.action_id + ":" + reads.c.action_id)
   const pair = queuePair(environment, options)
   if (pair) kinds.push("queue:" + pair.first.action_id + ":" + pair.second.action_id)
-  const first = runningMutation(environment, options.agentA, options.sameTabId)
+  const first = runningSameTabMutation(environment, options)
   const third = environment.actions.find((action) => action?.state === "running"
     && action.actor_id === "agent:" + options.agentC
     && tabTarget(action) === options.otherTabId && action.kind === reloadKind)
@@ -650,7 +656,7 @@ export async function runDrillEScenario({
       ], prompts)
       stage = "first_mutation_observation"
       firstMutation = await waitFor((environment) =>
-        runningMutation(environment, options.agentA, options.sameTabId),
+        runningSameTabMutation(environment, options),
       startedAt + Math.floor(options.timeoutMs * 0.6))
     }
 
