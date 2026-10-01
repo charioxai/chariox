@@ -51,7 +51,7 @@ async function bundle(t) {
   await mkdir(join(dir, 'bin'), { recursive: true });
   await mkdir(join(dir, 'libexec'));
   await mkdir(join(dir, 'runtime/sdk'), { recursive: true });
-  for (const name of ['chariox-kernel', 'chariox-cli', 'chariox-app-package'])
+  for (const name of ['chariox-kernel', 'chariox', 'chariox-app-package'])
     await writeFile(join(dir, 'bin', name), Buffer.concat([ARM64, Buffer.from(name === 'chariox-kernel' ? LOOKUP_KERNEL : name)]), { mode: 0o755 });
   await writeFile(join(dir, 'libexec/chariox-app-runtime-install'), Buffer.concat([ARM64, Buffer.from('installer')]), { mode: 0o755 });
   const inventory = '{"schema":"fixture","target":"darwin-arm64"}\n';
@@ -108,6 +108,7 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
     await assert.rejects(packagePlan(parseArguments(args({ ...copy, digest }, ['--unsigned']), {})), pattern);
   };
   await refused(dir => rm(join(dir, 'bin/chariox-kernel')), /missing|no bin\/chariox-kernel/u);
+  await refused(dir => rm(join(dir, 'bin/chariox')), /the bundle has no bin\/chariox$/u);
   await refused(dir => writeFile(join(dir, 'bin/helper'), ARM64), /bin\/helper is not a Chariox release binary/u);
   await refused(dir => writeFile(join(dir, 'bin/chariox-relay'), '#!/bin/sh\n'), /not a Mach-O/u);
   await refused(dir => writeFile(join(dir, 'bin/chariox-relay'), X86_64), /chariox-relay is x86_64, but bin\/chariox-kernel is arm64/u);
@@ -132,10 +133,29 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   await refused(dir => replace(join(dir, 'runtime/runtime-inventory.json'), '{"target":"darwin-x64"}'), /runtime\/ targets darwin-x64, but bin\/chariox-kernel is arm64/u);
   await refused(dir => replace(join(dir, 'runtime/runtime-inventory.json'), 'not json'), /not JSON/u);
   await refused(async dir => {
-    for (const path of ['bin/chariox-kernel', 'bin/chariox-cli', 'bin/chariox-app-package', `libexec/${INSTALLER_TOOL}`]) await writeFile(join(dir, path), UNIVERSAL);
+    for (const path of ['bin/chariox-kernel', 'bin/chariox', 'bin/chariox-app-package', `libexec/${INSTALLER_TOOL}`]) await writeFile(join(dir, path), UNIVERSAL);
   }, /arm64\+x86_64; build one package per architecture/u);
   await writeFile(fixture.output, '');
   await assert.rejects(packagePlan(parseArguments(args(fixture, ['--unsigned']), {})), /already exists/u);
+});
+
+test('the release bundle\'s darwin layout is accepted, and chariox-cli is packaged only when present', async t => {
+  // release-bundle.mjs PLATFORMS['darwin-arm64']: bin/chariox, chariox-kernel, chariox-relay, chariox-app-package;
+  // libexec/chariox-app-runtime-install; runtime/; share/chariox/slice-build-context; LICENSE and the signed manifest.
+  const fixture = await bundle(t);
+  await writeFile(join(fixture.dir, 'bin/chariox-relay'), Buffer.concat([ARM64, Buffer.from('relay')]), { mode: 0o755 });
+  await rm(join(fixture.dir, 'SHA256SUMS'));
+  for (const name of ['LICENSE', 'manifest.json', 'manifest.sig']) await writeFile(join(fixture.dir, name), 'not packaged\n');
+  const plan = await packagePlan(parseArguments(args(fixture, ['--unsigned']), {}));
+  assert.deepEqual(plan.release.binaries.map(binary => binary.name), ['chariox', 'chariox-app-package', 'chariox-kernel', 'chariox-relay']);
+  assert.deepEqual(plan.release.ignored, ['LICENSE', 'manifest.json', 'manifest.sig']);
+  assert.equal(plan.payload.find(entry => entry.path === `${PACKAGE_DIR}/bin.sha256`).content.split('\n').filter(Boolean)
+    .map(line => line.split('  ')[1]).join(), '/usr/local/bin/chariox,/usr/local/bin/chariox-app-package,/usr/local/bin/chariox-kernel,/usr/local/bin/chariox-relay');
+  // An older bundle's chariox-cli still installs beside it.
+  await writeFile(join(fixture.dir, 'bin/chariox-cli'), Buffer.concat([ARM64, Buffer.from('cli')]), { mode: 0o755 });
+  const older = await packagePlan(parseArguments(args(fixture, ['--unsigned']), {}));
+  assert.ok(older.payload.some(entry => entry.path === 'usr/local/bin/chariox-cli' && entry.mode === 0o755));
+  assert.match(older.payload.find(entry => entry.path === `${PACKAGE_DIR}/bin.sha256`).content, /  \/usr\/local\/bin\/chariox-cli\n/u);
 });
 
 test('the dry-run plan pins the runtime and orders the release signing steps', async t => {
@@ -349,9 +369,9 @@ test('uninstall removes what the package installed and keeps changed binaries', 
   await file(`${SUPPORT}/AppRuntime/.runtime-installer.lock`);
   await file(`${SUPPORT}/AppRuntimes/${OLD}/.runtime-lease`);
   await file('usr/local/bin/chariox-kernel', 'kernel');
-  await file('usr/local/bin/chariox-cli', 'replaced by the user');
+  await file('usr/local/bin/chariox', 'replaced by the user');
   await file(`${PACKAGE_DIR}/start-kernel.sh`);
-  await file(`${PACKAGE_DIR}/bin.sha256`, `${sha256('kernel')}  /usr/local/bin/chariox-kernel\n${sha256('cli')}  /usr/local/bin/chariox-cli\n`);
+  await file(`${PACKAGE_DIR}/bin.sha256`, `${sha256('kernel')}  /usr/local/bin/chariox-kernel\n${sha256('cli')}  /usr/local/bin/chariox\n`);
   await layContext(fake.R);
   await mkdir(join(fake.R, 'usr/local/share/man'));
   const script = join(fake.R, PACKAGE_DIR, 'uninstall.sh');
@@ -367,12 +387,12 @@ test('uninstall removes what the package installed and keeps changed binaries', 
   assert.equal(fake.calls().some(call => !call.startsWith('launchctl print') && !call.startsWith('pkgutil --pkg-info')), false);
   const result = spawnSync(script, [], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /kept \/usr\/local\/bin\/chariox-cli: it changed/u);
+  assert.match(result.stdout, /kept \/usr\/local\/bin\/chariox: it changed/u);
   for (const gone of ['Library/LaunchAgents/dev.chariox.kernel.plist', SUPPORT, 'usr/local/bin/chariox-kernel', PACKAGE_DIR, 'usr/local/share/chariox'])
     assert.equal(existsSync(join(fake.R, gone)), false, gone);
   // /usr/local/share is shared with other software.
   assert.equal(existsSync(join(fake.R, 'usr/local/share/man')), true);
-  assert.equal(readFileSync(join(fake.R, 'usr/local/bin/chariox-cli'), 'utf8'), 'replaced by the user');
+  assert.equal(readFileSync(join(fake.R, 'usr/local/bin/chariox'), 'utf8'), 'replaced by the user');
   assert.ok(fake.calls().includes(`chariox-app-runtime-install cleanup --inventory-sha256 ${OLD}`));
   assert.ok(fake.calls().includes('pkgutil --forget dev.chariox.pkg'));
 });
@@ -474,7 +494,7 @@ test('an unsigned package builds from a release bundle with the pinned postinsta
   const { receipt } = await buildMacosPkg(parseArguments(args(fixture, ['--unsigned']), {}), { run });
   assert.equal(receipt.signing, 'unsigned test package: Gatekeeper refuses it');
   assert.equal(receipt.sha256, sha256(readFileSync(fixture.output)));
-  assert.deepEqual(receipt.payload.map(entry => entry.path), ['/usr/local/bin/chariox-app-package', '/usr/local/bin/chariox-cli',
+  assert.deepEqual(receipt.payload.map(entry => entry.path), ['/usr/local/bin/chariox', '/usr/local/bin/chariox-app-package',
     '/usr/local/bin/chariox-kernel', `/${PACKAGE_DIR}/chariox-app-runtime-install`, `/${PACKAGE_DIR}/start-kernel.sh`,
     `/${PACKAGE_DIR}/uninstall.sh`, `/${PACKAGE_DIR}/bin.sha256`, `/${PACKAGE_DIR}/slice-build-context.sha256`,
     '/Library/LaunchAgents/dev.chariox.kernel.plist']);
