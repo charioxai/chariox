@@ -1381,7 +1381,14 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         session_id: &str,
         request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
     ) -> Result<serde_json::Value, String> {
-        self.require_lease(session_id)?;
+        self.require_lease(session_id).map_err(|_| {
+            match self.owner_session_id.as_deref() {
+                Some(owner) if owner != session_id => format!(
+                    "This browser Environment belongs to Room {owner}, not Room {session_id}. Attach to that Room and use /app open <installation-id>, then /room view; or bind a separate Environment to this Room with /room bind <slice>."
+                ),
+                _ => "This Room's browser Environment is not started. Use /room start, then retry /app open <installation-id>.".to_owned(),
+            }
+        })?;
         self.supervisor.app_view(request)
     }
 
@@ -2060,9 +2067,10 @@ mod tests {
 
     use super::{
         BrowserControllerBrowserSnapshot, BrowserControllerProcessBackend,
-        BrowserControllerProcessHealth, BrowserControllerProcessState,
-        BrowserControllerProcessStdioBackend, BrowserControllerProcessStore,
-        BrowserControllerProcessSupervisor, CONTROLLER_RESTARTED_BEFORE_OPERATION,
+        BrowserControllerProcessHealth, BrowserControllerProcessOwnership,
+        BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
+        BrowserControllerProcessStore, BrowserControllerProcessSupervisor,
+        CONTROLLER_RESTARTED_BEFORE_OPERATION,
     };
     use crate::runtime::browser_controller_action::{BrowserDialogAction, BrowserLocatorAction};
     use crate::session::CanonicalViewport;
@@ -2286,6 +2294,40 @@ mod tests {
         );
         assert_eq!(supervisor.snapshot().runtime_generation, 1);
         assert_eq!(supervisor.backend().stop_count, 1);
+    }
+
+    #[test]
+    fn app_open_reports_the_environment_owner_and_how_to_view_it() {
+        let mut ownership = BrowserControllerProcessOwnership::new(FakeBackend::default());
+        ownership.owner_session_id = Some("room-1".to_owned());
+        ownership.leased = true;
+        let error = ownership
+            .app_view(
+                "room-2",
+                &crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls,
+            )
+            .unwrap_err();
+        assert!(error.contains("belongs to Room room-1, not Room room-2"));
+        assert!(error.contains("/app open <installation-id>"));
+        assert!(error.contains("/room view"));
+        assert_eq!(ownership.owner_session_id.as_deref(), Some("room-1"));
+        assert!(
+            ownership.leased,
+            "failed open must leave the owner's browser alone"
+        );
+    }
+
+    #[test]
+    fn app_open_in_an_unstarted_environment_explains_how_to_start_it() {
+        let mut ownership = BrowserControllerProcessOwnership::new(FakeBackend::default());
+        let error = ownership
+            .app_view(
+                "room-1",
+                &crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls,
+            )
+            .unwrap_err();
+        assert!(error.contains("not started"));
+        assert!(error.contains("/room start"));
     }
 
     #[test]

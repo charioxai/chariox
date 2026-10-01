@@ -52,7 +52,11 @@ export async function executeAppCommand(
     request = getAppWorkerRequest(rest[0])
   } else if ((action === "start" || action === "stop" || action === "restart") && rest.length === 1 && rest[0]) {
     request = controlAppWorkerRequest(rest[0], action)
-  } else if (action === "open" && rest[0] && (rest.length === 1 || (rest.length === 3 && rest[1] === "--session" && rest[2]))) {
+  } else if (action === "open") {
+    if (!rest[0] || rest[0].startsWith("--") || !(rest.length === 1 ||
+      (rest.length === 3 && rest[1] === "--session" && rest[2] && !rest[2].startsWith("--")))) {
+      return { ok: false, message: "usage: app open <installation-id> [--session <session-id>]" }
+    }
     const sessionId = rest[2] ?? defaults.sessionId
     if (!sessionId) return { ok: false, message: "Attach to a session or pass --session to open an App view." }
     request = openAppViewRequest(sessionId, rest[0])
