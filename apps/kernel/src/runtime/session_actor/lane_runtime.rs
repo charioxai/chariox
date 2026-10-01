@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
 use crate::runtime::command_latency::{
     log_lane_completed, log_lane_dispatched, log_lane_enqueue_failed, log_lane_enqueued,
@@ -32,6 +32,7 @@ struct SessionCommandEnvelope {
     caller_user_id: String,
     caller_metaagent_id: Option<String>,
     terminal_caller: bool,
+    connection_class: Option<KernelConnectionClass>,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -104,6 +105,7 @@ impl SessionRuntime {
             .verified_metaagent_caller_id(&command, &session_id, &caller_user_id)
             .await?;
         let terminal_caller = command.is_terminal_caller() && caller_metaagent_id.is_none();
+        let connection_class = command.caller.connection_class;
         let command_id = command.command_id;
         let command_type = command.command_type;
         match lane.try_send(SessionCommandEnvelope {
@@ -113,6 +115,7 @@ impl SessionRuntime {
             caller_user_id,
             caller_metaagent_id,
             terminal_caller,
+            connection_class,
             request,
             result_tx,
         }) {
@@ -250,6 +253,7 @@ impl SessionRuntime {
             caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
             caller_metaagent_id: None,
             terminal_caller: false,
+            connection_class: None,
             request,
             result_tx,
         })
@@ -303,6 +307,7 @@ async fn run_session_command_lane(
                 envelope.caller_user_id,
                 envelope.caller_metaagent_id,
                 envelope.terminal_caller,
+                envelope.connection_class,
             )
             .await;
         log_lane_completed(

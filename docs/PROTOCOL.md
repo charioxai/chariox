@@ -2550,6 +2550,21 @@ Workflow trigger and deployment direction:
   bounds the whole exchange by its request timeout. Unsupported negotiation, EOF,
   timeout, or capability mismatch fails closed, with no fallback connection or
   automatic mutation replay. Numeric versions never replace capability checks.
+- protocol 393: every connection has a class from a fixed vocabulary:
+  `terminal` (the kernel's local token on TCP loopback, or a relay client with
+  a user id), `external_agent` (reserved for access grants, not assigned yet),
+  `kernel_agent` (an agent the kernel launched, by its per-run runtime MCP
+  bearer), `host` (`CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)`), `relay_peer`
+  (another kernel or a hosted service, by its relay identity) and
+  `unauthenticated` (neither: a laptop connection without its token in log
+  mode, a relay client without a user id). The kernel assigns it at admission,
+  records it on the caller and in command traces, and each
+  `critical_approval.passkey` event names it as `connection_class` (null for
+  the kernel's own callers). A `RespondToInteraction` `passkey` from a
+  `kernel_agent`, `host`, `relay_peer` or `external_agent` connection is
+  refused with `PASSKEY_NOT_ACCEPTED` before verification: it is not audited
+  and does not count toward the owner's limit. Nothing else changes; which
+  connections answer as terminals is unchanged until enforcement.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -1,13 +1,17 @@
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
-use crate::local::LocalDaemonResponse;
+use crate::local::{KernelConnectionClass, LocalDaemonResponse};
 use crate::runtime::command::{KernelCaller, KernelCommandSource};
 use crate::runtime::response_redaction::redact_response_for_user;
 
 impl CommandRouter {
-    pub(crate) async fn local_command_caller(&self, source: KernelCommandSource) -> KernelCaller {
-        let mut caller = KernelCaller::for_source(&source);
+    pub(crate) async fn local_command_caller(
+        &self,
+        source: KernelCommandSource,
+        connection_class: KernelConnectionClass,
+    ) -> KernelCaller {
+        let mut caller = KernelCaller::for_source(&source).with_connection_class(connection_class);
         let cloud_profile = self.config_projection.snapshot().cloud_relay;
         if let Some(profile) = cloud_profile {
             caller.user_id = Some(profile.user_id);

@@ -280,7 +280,10 @@ async fn dispatch_local_ipc_request(
     let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
     let command_id = format!("ipc-{}-{sequence}", unix_epoch_ms());
     let caller = router
-        .local_command_caller(KernelCommandSource::LocalIpc)
+        .local_command_caller(
+            KernelCommandSource::LocalIpc,
+            crate::local::KernelConnectionClass::Unauthenticated,
+        )
         .await;
     let command = KernelCommand::from_local_request_with_caller(
         command_id,

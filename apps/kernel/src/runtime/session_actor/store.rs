@@ -758,6 +758,7 @@ impl SessionRuntimeStore {
         &self,
         request: RespondToInteractionRequest,
         terminal_user_id: Option<String>,
+        connection_class: Option<crate::local::KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -781,6 +782,7 @@ impl SessionRuntimeStore {
                 terminal_user_id.as_deref(),
                 passkey.as_ref(),
                 passkey_remember_minutes,
+                connection_class,
             )
             .await
         {

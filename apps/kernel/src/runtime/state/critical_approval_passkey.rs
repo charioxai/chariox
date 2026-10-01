@@ -11,6 +11,10 @@
 //! or the first right passkey). Changing the configured vault path or the file
 //! later never moves it; only a passphrase change of that vault does, after
 //! the current passphrase verifies against the pin (`change_vault_passphrase`).
+//!
+//! Protocol 393: a passkey from a connection class that may not submit one
+//! (kernel agents, hosts, relay peers) is refused before verification, and
+//! every audit event names the answering connection's class.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,13 +23,14 @@ use std::time::{Duration, Instant};
 use super::KernelRuntimeState;
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
-use crate::local::{ApprovalPasskey, PASSKEY_REMEMBER_MAX_MINUTES};
+use crate::local::{ApprovalPasskey, KernelConnectionClass, PASSKEY_REMEMBER_MAX_MINUTES};
 use crate::secret::{CharioxVaultUnlockStatus, VaultPasskeyVerifier};
 
 pub(crate) const PASSKEY_REQUIRED: &str = "PASSKEY_REQUIRED";
 pub(crate) const PASSKEY_REJECTED: &str = "PASSKEY_REJECTED";
 pub(crate) const PASSKEY_RATE_LIMITED: &str = "PASSKEY_RATE_LIMITED";
 pub(crate) const PASSKEY_UNAVAILABLE: &str = "PASSKEY_UNAVAILABLE";
+pub(crate) const PASSKEY_NOT_ACCEPTED: &str = "PASSKEY_NOT_ACCEPTED";
 const AUDIT_EVENT: &str = "critical_approval.passkey";
 const PIN_EVENT: &str = "critical_approval.passkey_verifier";
 /// A pin move recorded before the vault file is re-keyed (`PinMove`).
@@ -439,7 +444,10 @@ impl KernelRuntimeState {
     /// Whether this answer proves the owner's presence for a passkey-gated
     /// choice. `Ok(false)` when the choice needs no passkey or the caller does
     /// not own the decision (the answer path then refuses on its own terms).
-    /// Every gated answer is audited, with its outcome only.
+    /// Every gated answer is audited, with its outcome and the connection's
+    /// class only. A passkey from a class that may not submit one is refused
+    /// first, without verification or a count against the owner's limit.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn authorize_critical_approval(
         &self,
         session_id: &str,
@@ -448,7 +456,14 @@ impl KernelRuntimeState {
         caller_user_id: Option<&str>,
         passkey: Option<&ApprovalPasskey>,
         remember_minutes: Option<u32>,
+        connection_class: Option<KernelConnectionClass>,
     ) -> Result<bool, DaemonError> {
+        if passkey.is_some() && connection_class.is_some_and(|class| !class.may_submit_passkey()) {
+            return Err(passkey_error(
+                PASSKEY_NOT_ACCEPTED,
+                "only a Chariox terminal can submit the passkey",
+            ));
+        }
         let Some((owner, operation_id)) =
             self.owned
                 .passkey_gate(session_id, interaction_id, choice_id, caller_user_id)
@@ -471,6 +486,7 @@ impl KernelRuntimeState {
                 interaction_id,
                 outcome,
                 remember_minutes,
+                connection_class,
             )
         };
         let Some(passkey) = passkey else {
@@ -567,6 +583,36 @@ impl KernelRuntimeState {
         self.owned.critical_approval_passkeys.expire_for_test(owner);
     }
 
+    /// The local owner's critical-action decision, as the App validation pump
+    /// raises it, for transport tests. It stays pending while the returned
+    /// guard (its responder) lives.
+    #[cfg(test)]
+    pub(crate) async fn raise_critical_approval_for_test(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+    ) -> Box<dyn std::any::Any + Send> {
+        use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
+        self.create_kernel_operation_interaction(
+            session_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            RuntimeInteraction::for_kernel_operation(
+                interaction_id,
+                format!("validation:{interaction_id}"),
+                "Approve App action",
+                "An App asks to perform a protected action.",
+                vec![
+                    RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                    RuntimeInteractionChoice::new("approve", "Approve", "allow", None)
+                        .requiring_passkey(),
+                ],
+            ),
+        )
+        .await
+        .map(|responder| Box::new(responder) as Box<dyn std::any::Any + Send>)
+        .expect("critical approval should be raised")
+    }
+
     fn audit_critical_approval(
         &self,
         owner: &str,
@@ -574,16 +620,18 @@ impl KernelRuntimeState {
         interaction_id: &str,
         outcome: &str,
         remember_minutes: Option<u32>,
+        connection_class: Option<KernelConnectionClass>,
     ) -> Result<(), DaemonError> {
         self.owned.durable_state_store.append_event(
             AUDIT_EVENT,
             Some(operation_id.to_owned()),
-            serde_json::json!({
-                "owner": owner,
-                "interaction_id": interaction_id,
-                "outcome": outcome,
-                "remember_minutes": remember_minutes,
-            }),
+            critical_approval_audit_payload(
+                owner,
+                interaction_id,
+                outcome,
+                remember_minutes,
+                connection_class,
+            ),
         )?;
         Ok(())
     }
@@ -845,4 +893,22 @@ mod tests {
             .unwrap();
         assert!(f.accepts(NEW) && f.vault_opens_with(NEW));
     }
+}
+
+/// The `critical_approval.passkey` event: the outcome and, since protocol
+/// 393, the answering connection's class. Never the passkey.
+pub(crate) fn critical_approval_audit_payload(
+    owner: &str,
+    interaction_id: &str,
+    outcome: &str,
+    remember_minutes: Option<u32>,
+    connection_class: Option<KernelConnectionClass>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "owner": owner,
+        "interaction_id": interaction_id,
+        "outcome": outcome,
+        "remember_minutes": remember_minutes,
+        "connection_class": connection_class,
+    })
 }
