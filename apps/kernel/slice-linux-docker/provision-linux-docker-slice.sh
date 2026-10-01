@@ -1481,16 +1481,22 @@ print_provider_auth_status() {
     probe() {
       local label=\"\$1\"
       shift
+      local status
+      # Auth/status harness output may contain credentials. Retain only the
+      # command label and exit classification, never either probe stream.
       if command -v timeout >/dev/null 2>&1; then
-        timeout 8s \"\$@\"
-        local status=\$?
-        if [[ \$status -eq 124 ]]; then
-          printf '%s probe timed out\\n' \"\$label\" >&2
-        fi
-        return \$status
+        timeout 8s \"\$@\" >/dev/null 2>&1
+        status=\$?
+      else
+        \"\$@\" >/dev/null 2>&1
+        status=\$?
       fi
-      \"\$@\"
-      return \$?
+      case \$status in
+        0) printf '%s auth status probe completed\\n' \"\$label\" ;;
+        124) printf '%s auth probe timed out\\n' \"\$label\" ;;
+        *) printf '%s auth unavailable (exit %s)\\n' \"\$label\" \"\$status\" ;;
+      esac
+      return \$status
     }
     echo '--- provider auth'
     probe codex codex login status || true

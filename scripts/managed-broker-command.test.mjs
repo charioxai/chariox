@@ -3,7 +3,14 @@ import { test } from "node:test"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { runBrokerCommand } from "../apps/kernel/slice-linux-docker/managed-broker-command.mjs"
+import { dockerControlPolicy, runBrokerCommand } from "../apps/kernel/slice-linux-docker/managed-broker-command.mjs"
+
+test("MP-08 MP-10 MP-11 raw controls are bounded while archive producers retain owned lifetime", () => {
+ for (const command of ["info", "ps", "inspect", "logs", "exec", "image", "container", "start", "stop", "pause", "unpause", "rm", "create"]) {
+  assert.equal(dockerControlPolicy([command]).timeout, 30_000, command)
+ }
+ for (const command of ["commit", "cp"]) assert.equal(dockerControlPolicy([command]).timeout, undefined, command)
+})
 
 for (const progress of [false,true]) test(`MP-08 MP-10 MP-11 owned broker command permits ${progress ? "healthy" : "silent"} producers`, async context => {
  const logRoot=await mkdtemp(join(tmpdir(),"chariox-broker-lifetime-"))

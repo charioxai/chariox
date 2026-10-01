@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { runBrokerCommand } from "./managed-broker-command.mjs"
+import { dockerControlPolicy, runBrokerCommand } from "./managed-broker-command.mjs"
 
 import { spawnSync } from "node:child_process"
 import { isPositiveDockerCpuLimit } from "./docker-cpu-policy.mjs"
@@ -1682,7 +1682,10 @@ async function execute(request) {
             ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
             : {}),
         }
-      return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
+      return spawnBounded(command, args, {
+        env, maxBuffer: MAX_OUTPUT_BYTES,
+        ...(request.kind === "docker" ? dockerControlPolicy(request.args) : {}),
+      })
     }
     const containerName = request.kind === "docker" ? request.args[1] : undefined
     const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])

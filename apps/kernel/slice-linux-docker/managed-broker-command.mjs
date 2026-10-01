@@ -5,18 +5,38 @@ import { fileURLToPath } from "node:url"
 
 const guard = fileURLToPath(new URL("./slice-command-guard.py", import.meta.url))
 
+// MP-08/MP-10/MP-11: raw noninteractive Docker uses the provisioner's
+// 30-second control policy. Auth inspection needs only an exit status.
+export function dockerControlPolicy(args) {
+  // Image snapshots and container-to-host copies are archive producers.
+  // Like provisioner builds and home capture, they retain owned cancellation.
+  if (args[0] === "commit" || args[0] === "cp") return {}
+  return {
+    timeout: 30_000,
+    statusOnly: args[0] === "exec" && args[1] === "-u" && args[2] === "slice"
+      && (args[4] === "gh" || args[4] === "test"),
+  }
+}
+
 // MP-08/MP-10/MP-11: the same process-group owner as ordinary provisioning.
 // A live or silent build has no total deadline. Lease loss settles its producer.
-export async function runBrokerCommand(command, args, { env, maxBuffer, signal, logRoot }) {
+export async function runBrokerCommand(command, args, { env, maxBuffer, signal, logRoot, timeout, statusOnly = false }) {
   if (signal?.aborted) throw new Error("slice broker operation cancelled")
   if (!Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > 4 * 1024 * 1024) throw new Error("invalid broker summary limit")
-  mkdirSync(logRoot, { recursive: true, mode: 0o700 })
-  const metadata = lstatSync(logRoot)
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || (metadata.mode & 0o777) !== 0o700 || metadata.uid !== process.getuid()) throw new Error("broker command log root is not private")
-  const logDirectory = mkdtempSync(join(logRoot, "command-"))
-  const descriptors = ["stdout.log", "stderr.log"].map(name => openSync(join(logDirectory, name), "wx", 0o600))
-  const child = spawn("/usr/bin/python3", [guard, "unbounded", "--", command, ...args], {
-    env, stdio: ["ignore", "pipe", "pipe"],
+  if (timeout !== undefined && (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2147483647)) throw new Error("invalid broker control timeout")
+  let logDirectory
+  const descriptors = []
+  if (!statusOnly) {
+    mkdirSync(logRoot, { recursive: true, mode: 0o700 })
+    const metadata = lstatSync(logRoot)
+    if (!metadata.isDirectory() || metadata.isSymbolicLink() || (metadata.mode & 0o777) !== 0o700 || metadata.uid !== process.getuid()) throw new Error("broker command log root is not private")
+    logDirectory = mkdtempSync(join(logRoot, "command-"))
+    for (const name of ["stdout.log", "stderr.log"]) descriptors.push(openSync(join(logDirectory, name), "wx", 0o600))
+  }
+  const lifetime = timeout === undefined ? ["unbounded"] : ["run", String(timeout / 1000)]
+  const child = spawn("/usr/bin/python3", [guard, ...lifetime, "--", command, ...args], {
+    // Drop auth probe streams before any broker capture or log allocation.
+    env, stdio: ["ignore", statusOnly ? "ignore" : "pipe", statusOnly ? "ignore" : "pipe"],
   })
   const output = [Buffer.alloc(0), Buffer.alloc(0)], truncated = [false, false]
   let error
@@ -26,6 +46,7 @@ export async function runBrokerCommand(command, args, { env, maxBuffer, signal, 
     return await new Promise(resolve => {
       child.on("error", failure => { error = failure })
       for (const [index, stream] of [child.stdout, child.stderr].entries()) {
+        if (!stream) continue
         stream.on("data", chunk => {
           if (!error) {
             try {
