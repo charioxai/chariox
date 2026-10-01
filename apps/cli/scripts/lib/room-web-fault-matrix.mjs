@@ -5,7 +5,7 @@ import { createHmac, randomUUID } from 'node:crypto'
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { assertWebFaultRecovery } from './room-web-fault-invariants.mjs'
+import { assertWebFaultRecovery, controllerFaultAttributed } from './room-web-fault-invariants.mjs'
 
 export function faultRelayCredential(token, ready, mode) {
   if (mode === 'valid') return token
@@ -18,7 +18,7 @@ export function faultRelayCredential(token, ready, mode) {
   return `${prefix}.${encoded}.${createHmac('sha256', ready.relayScopedSecret).update(encoded).digest('base64url')}`
 }
 
-export async function runRoomWebFaultMatrix({ page, client, ready, coordinationDir, evidenceRoot, setIdentityMode, requests }) {
+export async function runRoomWebFaultMatrix({ page, client, ready, coordinationDir, evidenceRoot, setIdentityMode, identityFaultStats, requests }) {
   // The companion's observational client runs under Node; product browser timers remain native.
   globalThis.window ??= { setTimeout, clearTimeout, setInterval, clearInterval }
   const attempt = randomUUID()
@@ -117,8 +117,17 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
   }
   await page.evaluate(() => { window.__webfaultShell = document.querySelector('.terminal-app-workspace') })
   const original = await webSnapshot('initial')
-  const faults = ['relay', 'display', 'controller', 'expired', 'stale-key', 'kernel', 'queue']
-  for (const fault of faults) for (const boundary of ['beginning', 'middle', 'commit']) {
+  const selection = await readFile(path.join(coordinationDir, 'fault-selection.json'), 'utf8').then(JSON.parse).catch(error => {
+    if (error.code === 'ENOENT') return null
+    throw error
+  })
+  const supportedFaults = ['relay', 'display', 'controller', 'expired', 'stale-key', 'queue', 'kernel']
+  const supportedBoundaries = ['beginning', 'middle', 'commit']
+  const faults = selection?.faults ?? supportedFaults
+  const boundaries = selection?.boundaries ?? supportedBoundaries
+  assert.ok(faults.length && faults.every(fault => supportedFaults.includes(fault)))
+  assert.ok(boundaries.length && boundaries.every(boundary => supportedBoundaries.includes(boundary)))
+  for (const fault of faults) for (const boundary of boundaries) {
     const label = `${fault}-${boundary}`
     const row = { fault, boundary, status: 'running', startedAt: new Date().toISOString(), assertions: [], errors: [] }
     rows.push(row); await report()
@@ -140,6 +149,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
         if (boundary === 'commit') row.operationResponse = await pending
       }
       const triggerAt = Date.now()
+      const identityBefore = identityFaultStats?.()
       if (fault === 'relay' || fault === 'expired' || fault === 'stale-key') {
         if (fault !== 'relay') setIdentityMode(fault)
         row.trigger = await control('relay_stop')
@@ -151,9 +161,18 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       if (fault === 'expired' || fault === 'stale-key') await control('relay_start')
       // Observe degraded projection while the injected seam remains unhealthy.
       await sleep(fault === 'controller' ? 2000 : 5000)
+      if (fault === 'expired' || fault === 'stale-key') {
+        const deadline = Date.now() + 15000
+        while ((identityFaultStats?.()[fault] ?? 0) <= (identityBefore?.[fault] ?? 0) && Date.now() < deadline) await sleep(200)
+        row.identityFault = identityFaultStats?.()
+        check((row.identityFault?.[fault] ?? 0) > (identityBefore?.[fault] ?? 0), 'faulted identity was sent on a real Web relay handshake')
+      }
       row.webFault = await webSnapshot(`${label}-fault`)
       row.clientsFault = await control('clients')
-      if (fault === 'controller') row.controllerFaultState = await control('state')
+      if (fault === 'controller') {
+        row.controllerFaultState = await control('state')
+        row.controllerFaultEvents = await control('controller_events')
+      }
       row.detectionSampleMs = Date.now() - triggerAt
       check(row.webFault.timeOrigin === original.timeOrigin, 'document did not reload')
       check(row.webFault.shellMounted && row.webFault.shellSame, 'terminal shell remained mounted')
@@ -215,7 +234,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
         row.operationAfter = actions
         check(actions.length === 1 && !['running', 'queued'].includes(actions[0]?.state), 'in-flight operation settled once')
       }
-      if (fault === 'controller') check(/controller|process.lost|failed|recover|degraded/i.test(JSON.stringify(row.controllerFaultState?.environment?.health)), 'controller fault is attributed in health or Action outcome')
+      if (fault === 'controller') check(controllerFaultAttributed(row.controllerFaultState?.environment, row.controllerFaultEvents?.replay, row.operationAfter), 'controller fault is attributed in health or Action outcome')
       check(row.webRecovery.timeOrigin === original.timeOrigin && row.webRecovery.shellSame, 'recovery retained terminal shell')
       row.status = row.errors.length ? 'RED' : 'GREEN'
     } catch (error) {
