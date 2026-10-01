@@ -883,8 +883,30 @@ mod tests {
         assert!(error.to_string().contains("slice.start"));
     }
 
+    // Tests that hold a listener on a slice candidate port take this lock, so
+    // one cannot occupy a port another expects to be free.
+    static SLICE_PORT_LISTENERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn hold_slice_port_listeners() -> std::sync::MutexGuard<'static, ()> {
+        SLICE_PORT_LISTENERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    // Other tests' allocations probe ports with brief binds; retry past them.
+    fn past_port_probes<T, E>(mut attempt: impl FnMut() -> Result<T, E>) -> Result<T, E> {
+        for _ in 0..100 {
+            if let Ok(value) = attempt() {
+                return Ok(value);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        attempt()
+    }
+
     #[test]
     fn local_docker_slice_port_check_reports_busy_ports() {
+        let _listeners = hold_slice_port_listeners();
         let store = SliceStore::default();
         let slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
@@ -903,20 +925,15 @@ mod tests {
 
     #[test]
     fn local_docker_slice_start_proceeds_when_its_first_port_set_is_taken() {
+        let _listeners = hold_slice_port_listeners();
         let first_choice = LocalDockerSlicePorts::from_assignment(
             ports::allocate_local_docker_ports_for_slice(&std::collections::BTreeMap::new())
                 .expect("a free port set should exist"),
         );
-        // Other tests' allocations probe ports with brief binds; retry past them.
-        let _taken = (0..100)
-            .find_map(|_| {
-                let taken = TcpListener::bind(("127.0.0.1", first_choice.codex_range_start + 3));
-                if taken.is_err() {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                taken.ok()
-            })
-            .expect("the first free set's port should be bindable");
+        let _taken = past_port_probes(|| {
+            TcpListener::bind(("127.0.0.1", first_choice.codex_range_start + 3))
+        })
+        .expect("the first free set's port should be bindable");
         let store = SliceStore::default();
         let slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
@@ -924,7 +941,7 @@ mod tests {
 
         let ports = LocalDockerSlicePorts::for_record(&slice);
         assert_ne!(ports, first_choice);
-        ensure_local_docker_slice_ports_available(&slice)
+        past_port_probes(|| ensure_local_docker_slice_ports_available(&slice))
             .expect("the slice's own ports should be free to start");
     }
 
