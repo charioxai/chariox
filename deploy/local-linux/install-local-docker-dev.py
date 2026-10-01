@@ -7,8 +7,8 @@ import argparse, grp, hashlib, json, os, pathlib, pwd, re, shutil, stat, subproc
 
 ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'DOCKER_HOST': 'unix:///run/docker.sock', 'DOCKER_CONFIG': '/nonexistent'}
 def refuse(message): raise SystemExit('Local Docker DEV enrollment refused: ' + message)
-def command(args):
-    return subprocess.run(['/usr/bin/docker', *args], env=ENV, check=True, capture_output=True, text=True, timeout=1200).stdout
+def command(args, environment=ENV):
+    return subprocess.run(['/usr/bin/docker', *args], env=environment, check=True, capture_output=True, text=True, timeout=1200).stdout
 
 def directory(path, mode):
     try: path.mkdir(mode=mode)
@@ -34,6 +34,8 @@ p.add_argument('--worker-image', required=True)
 p.add_argument('--worker-kernel-sha256', required=True)
 p.add_argument('--node-runtime', required=True, type=pathlib.Path)
 p.add_argument('--node-runtime-sha256', required=True)
+p.add_argument('--buildx-runtime', required=True, type=pathlib.Path)
+p.add_argument('--buildx-runtime-sha256', required=True)
 p.add_argument('--docker-cli-sha256', required=True, help='Reviewed SHA-256 of the public host Docker CLI copied into the helper')
 a = p.parse_args()
 if os.geteuid() != 0: refuse('root installation required')
@@ -72,6 +74,15 @@ if len(node_bytes) > 128 * 1024 * 1024 or hashlib.sha256(node_bytes).hexdigest()
 # Execute only root-controlled, explicitly pinned public bytes with no profiles.
 loaded = subprocess.run([str(node), '--version'], env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'}, capture_output=True, text=True, timeout=10)
 if loaded.returncode or not re.fullmatch(r'v22\.[0-9]+\.[0-9]+\n?', loaded.stdout): refuse('public Node loader/version preflight failed')
+plugin = a.buildx_runtime
+if not plugin.is_absolute() or not re.fullmatch('[a-f0-9]{64}', a.buildx_runtime_sha256): refuse('absolute public Buildx executable and reviewed pin required')
+for entry in [plugin, *plugin.parents]:
+    m = entry.lstat()
+    if stat.S_ISLNK(m.st_mode) or m.st_uid != 0 or m.st_mode & 0o022: refuse('Buildx ancestry must be root-controlled')
+    if entry == plugin and (not stat.S_ISREG(m.st_mode) or m.st_nlink != 1): refuse('Buildx must be a single regular file')
+    if entry != plugin and not stat.S_ISDIR(m.st_mode): refuse('Buildx ancestor is not a directory')
+plugin_bytes = plugin.read_bytes()
+if len(plugin_bytes) > 128 * 1024 * 1024 or hashlib.sha256(plugin_bytes).hexdigest() != a.buildx_runtime_sha256: refuse('public Buildx pin mismatch')
 files = [('.local-public-tools/docker', cli_bytes), ('.local-public-tools/node', node_bytes)]
 for name in subprocess.check_output(['git', '-C', str(source), 'ls-files', 'apps/kernel/slice-linux-docker', 'apps/kernel/src/transport/relay_peer.rs', 'apps/browser-session-import'], text=True).splitlines():
     relative = pathlib.PurePosixPath(name)
@@ -100,7 +111,20 @@ publish(root / 'source-manifest.json', manifest, 0o444)
 # Unique tag and iid receipt. No profile, credential or private state enters context.
 with tempfile.TemporaryDirectory(prefix='chariox-local-broker-build-', dir='/run') as scratch:
     iid = pathlib.Path(scratch) / 'image.id'
-    command(['build', '--network', 'default', '--iidfile', str(iid), '--build-arg', f'CHARIOX_LOCAL_SOURCE_DIGEST=sha256:{digest}', '--build-arg', f'CHARIOX_LOCAL_DOCKER_SHA256={a.docker_cli_sha256}', '-f', str(root / 'apps/kernel/slice-linux-docker/docker/LocalBroker.Dockerfile'), '-t', f'chariox-local-broker-dev:{digest}', str(root)])
+    config = pathlib.Path(scratch) / 'docker-config'
+    plugins = config / 'cli-plugins'; plugins.mkdir(parents=True, mode=0o700)
+    verified_plugin = plugins / 'docker-buildx'
+    publish(verified_plugin, plugin_bytes, 0o555)
+    build_environment = {**ENV, 'DOCKER_CONFIG': str(config)}
+    command(['buildx', 'version'], build_environment)
+    builder = f'chariox-local-helper-{os.getpid()}-{digest[:12]}'
+    created = False
+    try:
+        command(['buildx', 'create', '--name', builder, '--driver', 'docker-container'], build_environment)
+        created = True
+        command(['buildx', 'build', '--builder', builder, '--load', '--network', 'default', '--iidfile', str(iid), '--build-arg', f'CHARIOX_LOCAL_SOURCE_DIGEST=sha256:{digest}', '--build-arg', f'CHARIOX_LOCAL_DOCKER_SHA256={a.docker_cli_sha256}', '-f', str(root / 'apps/kernel/slice-linux-docker/docker/LocalBroker.Dockerfile'), '-t', f'chariox-local-broker-dev:{digest}', str(root)], build_environment)
+    finally:
+        if created: command(['buildx', 'rm', builder], build_environment)
     helper = iid.read_text().strip()
 if not re.fullmatch('sha256:[a-f0-9]{64}', helper): refuse('helper build identity unavailable')
 # Test loader/dependencies in the actual pinned helper, then negotiate with the
