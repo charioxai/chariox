@@ -6,6 +6,7 @@ import path from "node:path"
 import { performance } from "node:perf_hooks"
 import { pathToFileURL } from "node:url"
 
+import { startLoadViewerReader } from "./room-coordinated-load-viewer.mjs"
 import { roomTuiPtyInvocation } from "./room-tui-pty.mjs"
 import { assertPreparedIdentities, COORDINATED_LOAD_VIEWERS } from "./room-coordinated-load-runner.mjs"
 import { countListeners, readDockerInventory, readDockerStats, readListeners } from "./room-coordinated-load-resource-observer.mjs"
@@ -185,8 +186,9 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
         await stream.sendControl("START_VIDEO", { signal })
         await waitForVideoReady(stream, 10_000, signal)
         const firstFrame = await nextBinaryFrame(stream, 15_000, signal)
-        viewers.set(viewer.id, { client, stream, attachmentId: attachment.id, route: viewer.route, frameBytes: firstFrame.byteLength })
-        return own("viewer", viewer.id, { client, stream, attachmentId: attachment.id, route: viewer.route }, {
+        const reader = startLoadViewerReader(stream, (activeStream) => nextBinaryFrame(activeStream, 10_000, signal))
+        viewers.set(viewer.id, { client, stream, reader, attachmentId: attachment.id, route: viewer.route, frameBytes: firstFrame.byteLength })
+        return own("viewer", viewer.id, { client, stream, reader, attachmentId: attachment.id, route: viewer.route }, {
           streamId: stream.endpoint.stream_id,
         })
       } catch (error) {
@@ -281,8 +283,9 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
     async injectSlowViewer(task, delayMs) {
       const state = privateTask(task, "viewer")
       const before = performance.now()
-      await processApi.sleep(delayMs, signal)
-      await nextBinaryFrame(state.stream, 10_000, signal)
+      state.reader.pause()
+      try { await processApi.sleep(delayMs, signal) } finally { state.reader.resume() }
+      await state.reader.takeFrame()
       return {
         viewerId: task.id,
         requestedDelayMs: delayMs,
@@ -299,8 +302,8 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
         workflowStatus, dockerStats, processes, openListenerCount] = await Promise.all([
         measureRoomLatency(local.client, requests, plan.headedSlices),
         measureRoomLatency(relay.client, requests, plan.headedSlices),
-        nextBinaryFrame(local.stream, 10_000, signal),
-        nextBinaryFrame(relay.stream, 10_000, signal),
+        local.reader.takeFrame(),
+        relay.reader.takeFrame(),
         processApi.readAutomationSnapshot(localTui.automationSocket, signal),
         processApi.readAutomationSnapshot(relayTui.automationSocket, signal),
         readWorkflowStatus(workflowTask),
@@ -340,7 +343,7 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
       } else if (task.kind === "viewer") {
         let cleanupFailed = false
         await state.stream.sendControl("STOP_VIDEO", { signal }).catch(() => undefined)
-        await state.stream.close().catch(() => { cleanupFailed = true })
+        await state.reader.stop().catch(() => { cleanupFailed = true })
         await state.client.send(requests.detachFromSessionRequest(state.attachmentId)).catch(() => { cleanupFailed = true })
         viewers.delete(task.id)
         await closeUnusedClient(state.route).catch(() => { cleanupFailed = true })
