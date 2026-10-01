@@ -1,6 +1,86 @@
 use super::*;
 
 impl SliceStore {
+    /// FIFO admission for controller routes and viewer reads. Only controller
+    /// contention is retryable; lifecycle, quarantine and scope errors remain
+    /// refusals. Waiting never dispatches or retries the caller's command.
+    pub(crate) async fn queue_environment_use(
+        &self,
+        slice_ref: &str,
+        session_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<SliceEnvironmentUseGuard, DaemonError> {
+        self.queue_environment_use_until(
+            slice_ref,
+            session_id,
+            operation,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+    }
+
+    async fn queue_environment_use_until(
+        &self,
+        slice_ref: &str,
+        session_id: Option<&str>,
+        operation: &'static str,
+        deadline: tokio::time::Instant,
+    ) -> Result<SliceEnvironmentUseGuard, DaemonError> {
+        let slice = self.resolve(slice_ref)?;
+        let queue = {
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state
+                .environment_use_queues
+                .entry(slice.id.clone())
+                .or_default()
+                .clone()
+        };
+        let timed_out = || DaemonError::LocalTransport {
+            operation,
+            message: "Room Environment operation admission deadline expired before dispatch"
+                .to_string(),
+        };
+        let queue = tokio::time::timeout_at(deadline, queue.lock_owned())
+            .await
+            .map_err(|_| timed_out())?;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(timed_out());
+            }
+            self.check_shared_environment_use(
+                &slice.id,
+                session_id,
+                "browser_controller.route",
+                operation,
+            )?;
+            match self.guard_environment_use(&slice.id, session_id, operation) {
+                Ok(guard) => {
+                    return Ok(SliceEnvironmentUseGuard {
+                        _operation: guard,
+                        _queue: Some(queue),
+                    })
+                }
+                Err(DaemonError::LocalTransport {
+                    operation: "slice.operation",
+                    ..
+                }) => {
+                    // Normal queued callers serialize on the FIFO mutex. This
+                    // also waits for an already-admitted synchronous route.
+                    tokio::time::timeout_at(
+                        deadline,
+                        tokio::time::sleep(std::time::Duration::from_millis(10)),
+                    )
+                    .await
+                    .map_err(|_| timed_out())?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub(crate) fn guard_environment_use(
         &self,
         slice_ref: &str,
@@ -209,3 +289,6 @@ fn worker_refs(slice: &SliceRecord) -> impl Iterator<Item = &str> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
 }
+
+#[cfg(test)]
+mod queue_tests;

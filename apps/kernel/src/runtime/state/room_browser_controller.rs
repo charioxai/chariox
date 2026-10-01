@@ -135,43 +135,9 @@ impl KernelRuntimeState {
         slice: crate::slice::SliceRecord,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        // The original action retains its operation guard until terminal proof.
-        // Cancellation must not wait for that very action to release the guard.
-        // App view polls and answers only drain and resolve the page bridge's
-        // queue, so they share the slot with controller routes (the local
-        // controller runs these concurrently too); holding it would starve
-        // or fail agent and Room commands 4 times a second.
-        let _guard = if matches!(&command, Command::CancelAction { .. }) {
-            None
-        } else if matches!(
-            &command,
-            Command::AppView {
-                request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls
-                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Respond { .. }
-            }
-        ) {
-            self.owned.slice_store.check_shared_environment_use(
-                &slice.id,
-                Some(session_id),
-                "browser_controller.route",
-                "browser_controller.route",
-            )?;
-            None
-        } else {
-            Some(self.owned.slice_store.guard_environment_use(
-                &slice.id,
-                Some(session_id),
-                "browser_controller.route",
-            )?)
-        };
-        // Check under admission, before relay I/O. Offline reconciliation retries
-        // must release the lifecycle slot immediately so a user can start the slice.
-        let slice = self.owned.slice_store.resolve(&slice.id)?;
-        if slice.status != crate::slice::SliceStatus::Running {
-            return Err(controller_route_error(
-                "browser_controller_unavailable: slice is not running",
-            ));
-        }
+        let (slice, _guard) = self
+            .admit_room_browser_controller_route(session_id, &slice.id, &command)
+            .await?;
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
         let target = ClientTarget {

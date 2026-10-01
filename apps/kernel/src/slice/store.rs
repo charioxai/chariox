@@ -45,6 +45,21 @@ pub struct SliceOperationGuard {
     operation: String,
 }
 
+pub(crate) struct SliceEnvironmentUseGuard {
+    // Release the operation marker before admitting the next queued caller.
+    _operation: SliceOperationGuard,
+    _queue: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl From<SliceOperationGuard> for SliceEnvironmentUseGuard {
+    fn from(operation: SliceOperationGuard) -> Self {
+        Self {
+            _operation: operation,
+            _queue: None,
+        }
+    }
+}
+
 impl Drop for SliceOperationGuard {
     fn drop(&mut self) {
         let mut state = self
@@ -70,6 +85,7 @@ struct SliceStoreState {
     backups: BTreeMap<String, SliceBackupRecord>,
     pending_backup_restores: BTreeMap<String, SliceBackupRestoreTransactionRecord>,
     active_operations: BTreeMap<String, String>,
+    environment_use_queues: BTreeMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl SliceStore {

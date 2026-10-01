@@ -82,11 +82,16 @@ impl KernelRuntimeState {
         session_id: &str,
         slice: &SliceRecord,
     ) -> Result<RoomEnvironmentScreenshotArtifact, DaemonError> {
-        let _guard = self.owned.slice_store.guard_environment_use(
-            &slice.id,
-            Some(session_id),
-            "environment.screenshot.capture",
-        )?;
+        let _guard = self
+            .owned
+            .slice_store
+            .queue_environment_use(
+                &slice.id,
+                Some(session_id),
+                "environment.screenshot.capture",
+            )
+            .await?;
+        let slice = self.running_room_screenshot_slice(session_id)?;
         let response = self
             .send_room_screenshot_peer_request(
                 &slice,
@@ -147,11 +152,12 @@ impl KernelRuntimeState {
         offset: u64,
         max_bytes: u32,
     ) -> Result<RoomEnvironmentScreenshotChunk, DaemonError> {
-        let _guard = self.owned.slice_store.guard_environment_use(
-            &slice.id,
-            Some(session_id),
-            "environment.screenshot.read",
-        )?;
+        let _guard = self
+            .owned
+            .slice_store
+            .queue_environment_use(&slice.id, Some(session_id), "environment.screenshot.read")
+            .await?;
+        let slice = self.running_room_screenshot_slice(session_id)?;
         let response = self
             .send_room_screenshot_peer_request(
                 &slice,
