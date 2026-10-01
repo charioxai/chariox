@@ -28,7 +28,7 @@ const r=await import(pathToFileURL(`${clientRoot}/packages/kernel-client/dist/ip
 const exec=promisify(execFile),runId=`loops-${Date.now()}-${process.pid}`,mpItems=['MP-07','MP-08','MP-10','MP-11']
 await mkdir(evidence,{recursive:true,mode:0o700});await mkdir(lane,{recursive:true,mode:0o700})
 const root=await mkdtemp(`${lane}/runtime-`),owned=[],slices=[],savedImages=new Set(),observedPids=new Map(),ownedPorts=new Set(),failures=[],gates={}
-let local,session,slice,environment,relayChild,kernelChild,fixture,webServer,webContainer,monitor,stage='provenance',interrupted=false
+let local,session,slice,environment,relayChild,kernelChild,fixture,webServer,webContainer,monitor,stage='provenance',interrupted=false,ocrRun=null
 const activeTuis=new Map()
 const write=(name,value)=>writeFile(`${evidence}/${name}.json`,JSON.stringify({mpItems,...value},null,2)+'\n',{mode:0o600})
 const cmd=async(program,args,timeout=120000)=>{
@@ -137,7 +137,7 @@ try{
  assert.equal(await hash(relayBinary),'85511eb0b02a533158814688568ad099b3a04632f54cdb6bf14f012cea8f159f')
  const labels=JSON.parse(await docker(['image','inspect',image]))[0].Config.Labels
  assert.equal(labels['io.chariox.runtime-source-revision'],process.env.LOOPS_EXPECT_RUNTIME_REVISION??'25a451deeb43da0d61172a31cc8db0661ca6e394c4737f31dc18b27889ba09fc')
- await write('identity',{runId,root,runtimeCommit:'b37f4504e4ce040a2d6c35dc56475315defbc861',harnessCommit:await cmd('git',['-C',repo,'rev-parse','HEAD']),clientCommit:await cmd('git',['-c',`safe.directory=${clientRoot}`,'-C',clientRoot,'rev-parse','HEAD']),cloudCommit:await cmd('git',['-c',`safe.directory=${cloud}`,'-C',cloud,'rev-parse','HEAD']),kernelHash:await hash(kernel),relayHash:await hash(relayBinary),image,labels,protocol:370,peer:64,phase:process.env.LOOPS_PHASE??'all',limits:{diskReserveGiB:10,memoryReserveGiB:4},cycles:{reconnect:Number(process.env.LOOPS_RECONNECT_CYCLES??50),save:Number(process.env.LOOPS_SAVE_CYCLES??10),createDelete:Number(process.env.LOOPS_CREATE_CYCLES??50)},scope:'ordinary signed B loopback; synthetic bootstrap; no providers/hosted/fresh-machine acceptance'})
+ await write('identity',{runId,root,runtimeCommit:'b37f4504e4ce040a2d6c35dc56475315defbc861',harnessCommit:await cmd('git',['-C',repo,'rev-parse','HEAD']),clientCommit:await cmd('git',['-c',`safe.directory=${clientRoot}`,'-C',clientRoot,'rev-parse','HEAD']),cloudCommit:await cmd('git',['-c',`safe.directory=${cloud}`,'-C',cloud,'rev-parse','HEAD']),workerSource:process.env.LOOPS_WORKER_SOURCE??'b37f4504e4ce040a2d6c35dc56475315defbc861',workerKernelHash:process.env.LOOPS_WORKER_KERNEL_HASH??'0695a7cb3a266546e51634f6fcda8b33b5d8f6f8e4f35430f96d4b2f4e2d229d',kernelHash:await hash(kernel),relayHash:await hash(relayBinary),image,labels,protocol:370,peer:64,phase:process.env.LOOPS_PHASE??'all',limits:{diskReserveGiB:10,memoryReserveGiB:4},cycles:{reconnect:Number(process.env.LOOPS_RECONNECT_CYCLES??50),save:Number(process.env.LOOPS_SAVE_CYCLES??10),createDelete:Number(process.env.LOOPS_CREATE_CYCLES??50)},scope:process.env.LOOPS_RUN_SCOPE??'ordinary signed B loopback; synthetic bootstrap; no providers/hosted/fresh-machine acceptance'})
  await guard();await mkdir(`${root}/home`);await mkdir(`${root}/workspace`);await cmd('chmod',['711',root]);await cmd('chmod',['777',`${root}/workspace`]);await cmd('git',['init','-q',`${root}/workspace`])
  await writeFile(`${root}/home/config.toml`,`version = 1\n[state]\npath = "${root}/state.db"\n[slices]\nroot = "${root}/slices"\n[slices.linux]\ndocker_image = "${image}"\nbuild_image = "never"\nmemory_mb = 2048\ncpus = "1"\nscreen_width = 1280\nscreen_height = 800\n`)
  const ports=[];for(let i=0;i<5;i++)ports.push(await freePort())
@@ -145,7 +145,7 @@ try{
  const daemonId=`${runId}-home`,machineId=`${runId}-machine`,issuer=`${runId}-issuer`,secret=randomUUID()
  const mint=(subject,kind)=>roomDrillRelayToken({issuer,secret,machineId,subject,subjectKind:kind,actions:kind==='kernel'?['daemon_register','daemon_heartbeat','packet_route','peer_request','peer_event']:['client_metadata_read','client_connect','packet_route'],userId:'local',minimumLifetimeMs:4*3600000,env:{}})
  const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!/^(CHARIOX|CODEX|CLAUDE|OPENCODE|OPENAI|ANTHROPIC)_|TOKEN|SECRET|CREDENTIAL|AUTH|API_KEY/i.test(k)))
- Object.assign(env,{HOME:root,CHARIOX_HOME:`${root}/home`,CHARIOX_LOG_DIR:`${root}/logs`,XDG_CONFIG_HOME:`${root}/config`,XDG_STATE_HOME:`${root}/xdg-state`,XDG_CACHE_HOME:`${root}/cache`,CHARIOX_KERNEL_PORT:String(ports[0]),CHARIOX_MCP_PORT:String(ports[1]),CHARIOX_CODEX_PORT:String(ports[2]),CHARIOX_OPENCODE_PORT:String(ports[3]),CHARIOX_RELAY_PORT:String(ports[4]),CHARIOX_RELAY_HOST:'127.0.0.1',CHARIOX_RELAY_URL:`ws://127.0.0.1:${ports[4]}`,CHARIOX_RELAY_TOKEN:mint(daemonId,'kernel'),CHARIOX_RELAY_SCOPED_ISSUER:issuer,CHARIOX_RELAY_SCOPED_HMAC_SECRET:secret,CHARIOX_DAEMON_ID:daemonId,CHARIOX_DAEMON_ALIAS:daemonId,CHARIOX_MACHINE_ID:machineId,CHARIOX_MACHINE_ALIAS:machineId,CHARIOX_DAEMON_SOCKET:`${root}/daemon.sock`,CHARIOX_SESSION_HISTORY_DIR:`${root}/history`,CHARIOX_SLICE_DOCKER_PROVISIONER:`${repo}/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh`,CHARIOX_SLICE_DOCKER_PIDS_LIMIT:'1024',DOCKER_HOST:'unix:///var/run/docker.sock',DOCKER_CONFIG:`${root}/docker-config`})
+ Object.assign(env,{HOME:root,CHARIOX_HOME:`${root}/home`,CHARIOX_LOG_DIR:`${root}/logs`,XDG_CONFIG_HOME:`${root}/config`,XDG_STATE_HOME:`${root}/xdg-state`,XDG_CACHE_HOME:`${root}/cache`,CHARIOX_KERNEL_PORT:String(ports[0]),CHARIOX_MCP_PORT:String(ports[1]),CHARIOX_CODEX_PORT:String(ports[2]),CHARIOX_OPENCODE_PORT:String(ports[3]),CHARIOX_RELAY_PORT:String(ports[4]),CHARIOX_RELAY_HOST:'127.0.0.1',CHARIOX_RELAY_URL:`ws://127.0.0.1:${ports[4]}`,CHARIOX_RELAY_TOKEN:mint(daemonId,'kernel'),CHARIOX_RELAY_SCOPED_ISSUER:issuer,CHARIOX_RELAY_SCOPED_HMAC_SECRET:secret,CHARIOX_DAEMON_ID:daemonId,CHARIOX_DAEMON_ALIAS:daemonId,CHARIOX_MACHINE_ID:machineId,CHARIOX_MACHINE_ALIAS:machineId,CHARIOX_DAEMON_SOCKET:`${root}/daemon.sock`,CHARIOX_SESSION_HISTORY_DIR:`${root}/history`,CHARIOX_SLICE_DOCKER_PROVISIONER:`${process.env.LOOPS_PROVISIONER_ROOT??repo}/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh`,CHARIOX_SLICE_DOCKER_PIDS_LIMIT:'1024',DOCKER_HOST:'unix:///var/run/docker.sock',DOCKER_CONFIG:`${root}/docker-config`})
  relayChild=launch(relayBinary,env,'relay')
  kernelChild=launch(kernel,env,'kernel')
  local=await wait(async()=>{const c=new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`);try{await c.send(r.listSessionsRequest());return c}catch{await c.close();return false}},'kernel readiness')
@@ -166,7 +166,7 @@ try{
  await gate('ocr-tools-list',async()=>{
   const launched=unwrap(await send(r.launchProviderRunsRequest([{sessionId:session.id,provider:'dev-stub',accountProfile:'default',effort:'low',model:'native-tui-idle',agentId:session.agents[0].id,native:{nativeTui:true}}],1)),'ProviderRunsLaunchAccepted')
   assert.equal(launched.failures.length,0)
-  const providerRun=await wait(async()=>{const p=unwrap(await send(r.getProviderRunRequest(launched.provider_runs[0].provider_run.id)),'ProviderRun').provider_run;return p.runtime_mcp_auth_token?p:false},'MCP readiness')
+  const providerRun=await wait(async()=>{const p=unwrap(await send(r.getProviderRunRequest(launched.provider_runs[0].provider_run.id)),'ProviderRun').provider_run;return p.runtime_mcp_auth_token&&['Starting','Running'].includes(p.state)?p:false},'active MCP readiness');ocrRun=providerRun
   const response=await fetch(providerRun.runtime_mcp_server_url,{method:'POST',headers:{Authorization:`Bearer ${providerRun.runtime_mcp_auth_token}`,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list',params:{}})})
   const result=await response.json();await write('ocr-tools-list',{providerRunId:providerRun.id,model:providerRun.model,state:providerRun.state,toolNames:result.result?.tools?.map(t=>t.name),error:result.error??null})
   assert.ok(result.result?.tools?.some(t=>t.name==='slice_ocr'),'slice_ocr missing in native dev-stub tools/list')
@@ -219,6 +219,7 @@ try{
    console.log(`MP-08 MP-10 reconnect ${cycle}`)
   }
  })
+ if(slice){try{const log=await docker(['exec',cname(slice),'sh','-c',"cat /home/slice/.local/state/chariox/logs/*daemon*.ndjson /home/slice/.chariox/logs/*daemon*.ndjson /opt/chariox-slice/logs/*daemon*.ndjson 2>/dev/null; true"]);await writeFile(`${evidence}/worker-forwarder.log`,log.split('\n').filter(line=>line.includes('\"component\":\"display.')).join('\n')+'\n',{mode:0o600})}catch{}}
  await Promise.all([...activeTuis.keys()].map(stopTui))
  if(webContainer){await docker(['rm','-f',webContainer]);webContainer=null}
  if(webServer){await new Promise(resolve=>webServer.close(resolve));webServer=null}
@@ -240,7 +241,6 @@ try{
    }
    let portRaceRetries
    try{portRaceRetries=await restoreSavedWithPortRetry(saved,cycle)}finally{
- if(slice){try{const log=await docker(['exec',cname(slice),'sh','-c',"cat /home/slice/.local/state/chariox/logs/*daemon*.ndjson"]);await writeFile(`${evidence}/worker-forwarder.log`,log.split('\n').filter(line=>line.includes('Selkies forwarder stopped')).join('\n')+'\n',{mode:0o600})}catch{}}
 if(collisionListener)await new Promise(resolve=>collisionListener.close(resolve))}
    if(cycle===1&&process.env.LOOPS_FORCE_RESTORE_PORT_RACE==='1')assert.ok(portRaceRetries>=1,'forced port collision must exercise saved-state-preserving retry')
    await screen('status');await exposeFixture();if(portRaceRetries){portsBefore=structuredClone(slice.local_docker_ports)}else{assert.deepEqual(slice.local_docker_ports,portsBefore)};const machineIdAfter=await docker(['exec',cname(slice),'cat','/etc/machine-id']);assertRestoredMachineIdentity(machineIdBefore,machineIdAfter,sliceIdBefore,slice.id);idBefore=machineIdAfter;assert.equal(await docker(['exec',cname(slice),'cat','/home/slice/loops-document.txt']),runId)
@@ -271,6 +271,7 @@ if(collisionListener)await new Promise(resolve=>collisionListener.close(resolve)
  })
 }catch(error){failures.push({stage,error:error.message});await write('failure',{stage,error:error.stack})}
 finally{
+ if(slice){try{const log=await docker(['exec',cname(slice),'sh','-c',"cat /home/slice/.local/state/chariox/logs/*daemon*.ndjson /home/slice/.chariox/logs/*daemon*.ndjson /opt/chariox-slice/logs/*daemon*.ndjson 2>/dev/null; true"]);await writeFile(`${evidence}/worker-forwarder.log`,log.split('\n').filter(line=>line.includes('\"component\":\"display.')).join('\n')+'\n',{mode:0o600})}catch{}}
  clearInterval(monitor)
  for(const kind of [...activeTuis.keys()])await stopTui(kind).catch(e=>failures.push({stage:'cleanup-tui',error:e.message}))
  if(webContainer)await docker(['rm','-f',webContainer]).catch(e=>failures.push({stage:'cleanup-web',error:e.message}))
@@ -279,13 +280,20 @@ finally{
  for(const s of slices){const exists=await docker(['inspect',cname(s)]).catch(()=>null);if(exists&&local)await deleteSlice(s).catch(e=>failures.push({stage:'cleanup-slice',error:e.message}))}
  for(const ref of savedImages)if(ref.startsWith(`chariox-slice-state:${runId}-`))await docker(['image','rm',ref]).catch(()=>{})
  if(local&&session)await send(r.endSessionRequest(session.id)).catch(e=>failures.push({stage:'cleanup-session',error:e.message}))
+ if(local&&ocrRun){try{
+  const ended=unwrap(await send(r.getProviderRunRequest(ocrRun.id)),'ProviderRun').provider_run
+  const discovery=await fetch(ocrRun.runtime_mcp_server_url,{method:'POST',headers:{Authorization:`Bearer ${ocrRun.runtime_mcp_auth_token}`,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:3,method:'tools/list',params:{}})}).then(x=>x.json())
+  const toolNames=discovery.result?.tools?.map(t=>t.name)
+  await write('ocr-tools-list-ended',{providerRunId:ended.id,state:ended.state,toolNames})
+  assert.equal(ended.state,'Ended');assert.deepEqual(toolNames,[])
+ }catch(error){failures.push({stage:'ocr-ended-discovery',error:error.message})}}
  await local?.close().catch(()=>{})
  for(const child of owned){try{process.kill(-child.pid,'SIGTERM')}catch{}}
  await sleep(1500)
  for(const child of owned)if(child.exitCode===null&&child.signalCode===null){try{process.kill(-child.pid,'SIGKILL')}catch{}}
  const after=await inventory('final-inventory').catch(e=>({error:e.message}))
  const cleanupErrors=['containers','volumes','images','ownedPids','listeners'].filter(k=>after[k]?.length)
- await write('result',{runId,status:failures.length||cleanupErrors.length?'RED':'GREEN',gates,failures,cleanupErrors,scope:'provider-free ordinary signed B; no MP item closes',root,finishedAt:new Date().toISOString()})
+ await write('result',{runId,status:failures.length||cleanupErrors.length?'RED':'GREEN',gates,failures,cleanupErrors,scope:process.env.LOOPS_RUN_SCOPE??'provider-free ordinary signed B; no MP item closes',root,finishedAt:new Date().toISOString()})
  // Publish only owned kernel/relay logs; synthetic tokens are never emitted intentionally.
  for(const name of ['kernel','relay']){const log=await readFile(`${root}/${name}.log`,'utf8').catch(()=>'');const safe=log.replace(/chariox-scoped-v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,'[REDACTED]');await writeFile(`${evidence}/${name}.log`,safe,{mode:0o600})}
  if(!cleanupErrors.length)await rm(root,{recursive:true,force:true})
