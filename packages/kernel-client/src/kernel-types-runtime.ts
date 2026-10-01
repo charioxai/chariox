@@ -271,6 +271,12 @@ export type CharioxUserConfig = {
   ui?: Record<string, unknown>
   relay?: Record<string, unknown>
   kernel?: Record<string, unknown>
+  kernel_access?: {
+    grant_default_minutes: number
+    grant_max_minutes: number
+    grant_extend_notice_minutes: number
+    request_timeout_minutes: number
+  }
   workflow?: {
     max_queues_per_workflow?: number
     session_default_max_agents?: number

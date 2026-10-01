@@ -659,6 +659,8 @@ impl ClassAuditKernel {
 }
 
 #[cfg(unix)]
+mod kernel_access_config;
+#[cfg(unix)]
 mod passkey_prompts;
 
 #[cfg(unix)]
