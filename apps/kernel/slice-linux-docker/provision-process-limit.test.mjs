@@ -112,6 +112,7 @@ async function invoke({
     await writeFile(join(root, "docker"), `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
+const paused = process.env.CHARIOX_TEST_PAUSED === "1" && !fs.existsSync(process.env.CHARIOX_TEST_UNPAUSED_FILE);
 fs.appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify(args) + "\\n");
 if (args[0] === "info") { console.log("engine-fixture"); process.exit(0); }
 if (args[0] === "image" && args[1] === "inspect") {
@@ -127,7 +128,7 @@ if (args[0] === "inspect" && !args.includes("--format") && !args.includes("-f"))
   const running = process.env.CHARIOX_TEST_RUNNING === "1";
   console.log(JSON.stringify([{
     Id: "a".repeat(64), Image: "fixture-image", Created: "fixture-created",
-    State: { Running: running, Paused: false, Restarting: false, Status: running ? "running" : "exited", Pid: running ? 123 : 0,
+    State: { Running: running, Paused: paused, Restarting: false, Status: running ? "running" : "exited", Pid: running ? 123 : 0,
       StartedAt: "2026-09-30T00:00:00Z", FinishedAt: running ? "" : "2026-09-30T00:01:00Z" },
     HostConfig: { PidMode: "" }, Config: { Env: ["HOME=/home/slice"], Labels: {
       "io.chariox.slice.id": process.env.CHARIOX_SLICE_ID,
@@ -140,7 +141,7 @@ if (args[0] === "inspect" && !args.includes("--format") && !args.includes("-f"))
 if (args[0] === "inspect") {
   const format = args[args.indexOf("--format") + 1] || args[args.indexOf("-f") + 1] || "";
   if (format.includes("HostConfig.Ulimits")) console.log(process.env.CHARIOX_TEST_NOFILE);
-  else if (format.includes("State.Paused")) console.log(process.env.CHARIOX_TEST_PAUSED === "1" ? "true" : "false");
+  else if (format.includes("State.Paused")) console.log(paused ? "true" : "false");
   else console.log(process.env.CHARIOX_TEST_RUNNING === "1" ? "true" : "false");
   process.exit(0);
 }
@@ -154,7 +155,11 @@ if (args[0] === "ps") {
 }
 if (["volume", "create", "start", "stop", "rm"].includes(args[0])) process.exit(0);
 if (args[0] === "update") process.exit(process.env.CHARIOX_TEST_UPDATE_FAILS === "1" ? 73 : 0);
-if (args[0] === "unpause") process.exit(process.env.CHARIOX_TEST_UNPAUSE_FAILS === "1" ? 74 : 0);
+if (args[0] === "unpause") {
+  if (process.env.CHARIOX_TEST_UNPAUSE_FAILS === "1") process.exit(74);
+  fs.writeFileSync(process.env.CHARIOX_TEST_UNPAUSED_FILE, "", { mode: 0o600 });
+  process.exit(0);
+}
 if (args[0] === "exec" && args.includes("python3")) {
   console.log(JSON.stringify({ disposition: "clear", profileProcessCount: 0 }));
   process.exit(0);
@@ -172,6 +177,7 @@ throw new Error("unexpected Docker call: " + args[0]);
         CHARIOX_TEST_EXISTING: existing ? "1" : "0", CHARIOX_TEST_UPDATE_FAILS: updateFails ? "1" : "0",
         CHARIOX_TEST_RUNNING: running ? "1" : "0", CHARIOX_TEST_NOFILE: existingNofile,
         CHARIOX_TEST_PAUSED: paused ? "1" : "0", CHARIOX_TEST_UNPAUSE_FAILS: unpauseFails ? "1" : "0",
+        CHARIOX_TEST_UNPAUSED_FILE: join(root, "unpaused-fixture"),
         CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: `sha256:${"a".repeat(64)}`,
         CHARIOX_SLICE_BUILD_IMAGE: "never", CHARIOX_SLICE_NAME: "chariox-process-limit-fixture",
         CHARIOX_SLICE_ID: "slice-fixture",
