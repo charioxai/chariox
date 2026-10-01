@@ -805,6 +805,31 @@ test("strict observer rejects wrong actors, environments, generations, identitie
   assert.equal(verifyDrillE(unchangedOwnership).checks.humanTakeover.status, "incomplete")
 })
 
+test("MP-08/MP-10: synchronized locator clicks retain the same queue and takeover verifier", async () => {
+  const sequence = fullSequence()
+  for (const value of Object.values(sequence)) {
+    for (const action of (Array.isArray(value) ? value : value.actions ?? [])) {
+      if (action.action_id.startsWith("action-mutation-")) action.kind = "click"
+    }
+  }
+  const kernel = fakeKernel({ sequence })
+  let clock = 10_000
+  const observed = []
+  const capture = await runDrillEScenario({
+    client: kernel.client, requests: requestBuilders(), options: options(),
+    now: () => clock, sleep: async (ms) => { clock += ms },
+    synchronization: {
+      mutationKind: "click", beforePhase: async () => {}, promptPrefix: () => "",
+      mutationPrompt: (agent, tab) => `MP-08/MP-10 click observed reference for ${tab}`,
+      observed: (phase, actions) => { observed.push([phase, actions.map(a => a.kind)]) },
+      settle: async () => {}, close: () => {},
+    },
+  })
+  assert.equal(capture.report.status, "passed")
+  assert.deepEqual(observed.at(-1), ["mutations", ["click", "click", "click"]])
+  assert.ok(kernel.submitted.slice(3).every(p => p.prompt.includes("click observed reference")))
+})
+
 test("timeout gets an independent cleanup budget, cancels only exact queued prompts, and attempts detach", async () => {
   const clock = { value: 1_000, runDeadline: 2_000 }
   const kernel = fakeKernel({

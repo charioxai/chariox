@@ -22,11 +22,27 @@ test("MP-08/MP-10: HTTP fixture primes pages, gates three providers, and release
 
 test("MP-08/MP-10: closing fixture unblocks incomplete provider preparation", async () => {
   const fixture = await startDrillESynchronizedFixture({ actors: ["a", "b", "c"] })
-  fixture.beforePhase("mutations")
-  const pending = fetch(`http://127.0.0.1:${fixture.port}/ready/mutations/a`)
-  while (fixture.evidence().mutations.ready.length === 0) await new Promise(resolve => setTimeout(resolve, 5))
-  fixture.close()
-  assert.equal((await pending).status, 409)
-  assert.equal(fixture.evidence().mutations.releaseReason, "cleanup")
-  await fixture.stop()
+  try {
+    fixture.beforePhase("mutations")
+    const pending = fetch(`http://127.0.0.1:${fixture.port}/ready/mutations/a`)
+    while (fixture.evidence().mutations.ready.length === 0) await new Promise(resolve => setTimeout(resolve, 5))
+    fixture.close()
+    assert.equal((await pending).status, 409)
+    assert.equal(fixture.evidence().mutations.releaseReason, "cleanup")
+  } finally { await fixture.stop() }
+})
+
+test("MP-08/MP-10: click hold safety starts at observed admission and releases after takeover", async () => {
+  const fixture = await startDrillESynchronizedFixture({ actors: ["a", "b", "c"] })
+  try {
+    fixture.beforePhase("mutations")
+    fixture.tick({ actions: [{ kind: "browser_status", state: "running" }] })
+    assert.equal(fixture.evidence().mutations.pageHolds.length, 0)
+    assert.equal((await (await fetch(`http://127.0.0.1:${fixture.port}/state`)).json()).held, true)
+    fixture.tick({ actions: [{ kind: "click", state: "running" }] })
+    fixture.tick({ actions: [{ kind: "click", state: "running" }] })
+    assert.equal(fixture.evidence().mutations.pageHolds.length, 1)
+    fixture.observed("mutations", ["a", "b", "c"].map(action_id => ({ action_id })))
+    assert.equal((await (await fetch(`http://127.0.0.1:${fixture.port}/state`)).json()).held, false)
+  } finally { await fixture.stop() }
 })
