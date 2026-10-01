@@ -8,7 +8,7 @@ import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { buildMacosPkg, CONTEXT_DIR, formatPlan, packagePlan, PACKAGE_DIR, parseArguments, renderTemplate, UsageError } from './build-macos-pkg.mjs';
+import { ADMISSION_CONTRACT, ADMISSION_LABEL, buildMacosPkg, CONTEXT_DIR, formatPlan, packagePlan, PACKAGE_DIR, parseArguments, renderTemplate, UsageError } from './build-macos-pkg.mjs';
 
 const KEY = 'a'.repeat(64);
 const OLD = 'b'.repeat(64);
@@ -27,7 +27,7 @@ const CONTEXT_FILES = { [PROVISIONER]: '#!/bin/bash\n', 'apps/kernel/.charioxign
   'apps/kernel/slice-linux-docker/runtime-source-roots.txt': 'Cargo.toml\napps/kernel\n', 'Cargo.toml': '[workspace]\n' };
 const CONTEXT_BYTES = Object.values(CONTEXT_FILES).join('').length;
 // A release kernel with the installed-context lookup holds its path as a string constant.
-const LOOKUP_KERNEL = `chariox-kernel\0${CONTEXT}\0`;
+const LOOKUP_KERNEL = `chariox-kernel\0${CONTEXT}\0${ADMISSION_CONTRACT}\0`;
 const contextManifest = () => Object.entries(CONTEXT_FILES).map(([path, text]) => `${sha256(text)}  /${CONTEXT_DIR}/${path}\n`).join('');
 const darwin = { skip: process.platform !== 'darwin' && 'needs macOS packaging tools and BSD stat' };
 const sha256 = text => createHash('sha256').update(text).digest('hex');
@@ -120,6 +120,8 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   await refused(dir => rm(join(dir, 'share'), { recursive: true }), noContext);
   await refused(dir => writeFile(join(dir, 'bin/chariox-kernel'), Buffer.concat([ARM64, Buffer.from('an older or debug kernel')])),
     /bin\/chariox-kernel does not look for share\/chariox\/slice-build-context beside its bin\//u);
+  await refused(dir => writeFile(join(dir, 'bin/chariox-kernel'), Buffer.concat([ARM64, Buffer.from(`old-kernel\0${CONTEXT}\0`)])),
+    /cannot use provisioned root-owned read-only Docker admission locks/u);
   await refused(dir => rm(join(dir, CONTEXT, PROVISIONER)), noContext);
   await refused(dir => chmod(join(dir, CONTEXT, PROVISIONER), 0o644), noContext);
   await refused(dir => mkdir(join(dir, 'share/man')), /share\/ must hold only chariox\/slice-build-context/u);
@@ -261,8 +263,25 @@ async function layContext(R, extra = {}) {
   await writeFile(join(R, PACKAGE_DIR, 'slice-build-context.sha256'), contextManifest());
 }
 
+async function layAdmission(R) {
+  await mkdir(join(R, PACKAGE_DIR), { recursive: true });
+  await mkdir(join(R, 'Library/LaunchDaemons'), { recursive: true });
+  const deploy = join(dirname(fileURLToPath(import.meta.url)), '../deploy');
+  await writeFile(join(R, PACKAGE_DIR, 'provision-docker-admission-locks.py'),
+    await readFile(join(deploy, 'local-linux/provision-docker-admission-locks.py')));
+  await writeFile(join(R, `Library/LaunchDaemons/${ADMISSION_LABEL}.plist`),
+    await readFile(join(deploy, `local-macos/${ADMISSION_LABEL}.plist`)));
+}
+
+const admissionCalls = R => [
+  `launchctl print system/${ADMISSION_LABEL}`,
+  `launchctl enable system/${ADMISSION_LABEL}`,
+  `launchctl bootstrap system ${join(R, `Library/LaunchDaemons/${ADMISSION_LABEL}.plist`)}`,
+];
+
 async function postinstall(fake, digest, inventory, { context = true, stale = {} } = {}) {
   if (context) await layContext(fake.R, stale);
+  await layAdmission(fake.R);
   const staged = join(fake.R, PACKAGE_DIR, `staging/runtime-${digest}`);
   await mkdir(staged, { recursive: true });
   await writeFile(join(staged, 'runtime-inventory.json'), inventory);
@@ -295,6 +314,7 @@ test('postinstall enrolls the pinned runtime, restarts the console user\'s kerne
   assert.equal(result.status, 0, result.stderr);
   const uid = process.getuid();
   assert.deepEqual(fake.calls(), [
+    ...admissionCalls(fake.R),
     `chariox-app-runtime-install cleanup --inventory-sha256 ${OLD}`,
     `chariox-app-runtime-install cleanup --inventory-sha256 ${FREE}`,
     `chariox-app-runtime-install install --source ${join(fake.R, PACKAGE_DIR, `staging/runtime-${digest}`)} `
@@ -316,12 +336,12 @@ test('postinstall stops when the installer refuses and skips the agent without a
   const failure = await postinstall(refused, digest, 'pinned\n');
   assert.equal(failure.status, 1);
   assert.match(failure.stderr, /refused the runtime; the kernel was not restarted/u);
-  assert.deepEqual(refused.calls().map(call => call.split(' ').slice(0, 2).join(' ')), ['chariox-app-runtime-install install']);
+  assert.deepEqual(refused.calls().map(call => call.split(' ').slice(0, 2).join(' ')), ['launchctl print', 'launchctl enable', 'launchctl bootstrap', 'chariox-app-runtime-install install']);
   const nobody = await host(t);
   const success = await postinstall(nobody, digest, 'pinned\n');
   assert.equal(success.status, 0, success.stderr);
   assert.match(success.stdout, /no user is logged in at the console/u);
-  assert.equal(nobody.calls().some(call => call.startsWith('launchctl')), false);
+  assert.deepEqual(nobody.calls().filter(call => call.startsWith('launchctl')), admissionCalls(nobody.R));
 });
 
 test('postinstall frees unused generations before enrolling at the eight-generation limit', darwin, async t => {
@@ -364,6 +384,7 @@ test('uninstall removes what the package installed and keeps changed binaries', 
     await mkdir(dirname(join(fake.R, path)), { recursive: true });
     await writeFile(join(fake.R, path), text);
   };
+  await layAdmission(fake.R);
   await file('Library/LaunchAgents/dev.chariox.kernel.plist');
   await file(`${SUPPORT}/AppRuntime/runtime-enrollment.json`, '{}');
   await file(`${SUPPORT}/AppRuntime/.runtime-installer.lock`);
@@ -495,7 +516,8 @@ test('an unsigned package builds from a release bundle with the pinned postinsta
   assert.equal(receipt.signing, 'unsigned test package: Gatekeeper refuses it');
   assert.equal(receipt.sha256, sha256(readFileSync(fixture.output)));
   assert.deepEqual(receipt.payload.map(entry => entry.path), ['/usr/local/bin/chariox', '/usr/local/bin/chariox-app-package',
-    '/usr/local/bin/chariox-kernel', `/${PACKAGE_DIR}/chariox-app-runtime-install`, `/${PACKAGE_DIR}/start-kernel.sh`,
+    '/usr/local/bin/chariox-kernel', `/${PACKAGE_DIR}/chariox-app-runtime-install`,
+    `/${PACKAGE_DIR}/provision-docker-admission-locks.py`, `/Library/LaunchDaemons/${ADMISSION_LABEL}.plist`, `/${PACKAGE_DIR}/start-kernel.sh`,
     `/${PACKAGE_DIR}/uninstall.sh`, `/${PACKAGE_DIR}/bin.sha256`, `/${PACKAGE_DIR}/slice-build-context.sha256`,
     '/Library/LaunchAgents/dev.chariox.kernel.plist']);
   assert.deepEqual(receipt.sliceBuildContext, { path: `/${CONTEXT_DIR}`, files: 4, bytes: CONTEXT_BYTES });
@@ -549,4 +571,81 @@ test('a signed build requires a macOS-capable installer, Developer ID code and a
   assert.deepEqual(receipt.signing.notarization, { submissionId: 'abc-123', status: 'Accepted', log: `${fixture.output}.notarization-log.json` });
   assert.equal(receipt.signing.teamId, 'ABCDE12345');
   assert.equal(existsSync(fixture.output), true);
+});
+
+
+test('pkg payload carries the shared provisioner and root RunAtLoad daemon with fixed paths and modes', async t => {
+  const fixture = await bundle(t);
+  const plan = await packagePlan(parseArguments(args(fixture, ['--unsigned']), {}));
+  const helper = plan.payload.find(entry => entry.path === `${PACKAGE_DIR}/provision-docker-admission-locks.py`);
+  const daemon = plan.payload.find(entry => entry.path === `Library/LaunchDaemons/${ADMISSION_LABEL}.plist`);
+  const source = join(dirname(fileURLToPath(import.meta.url)), '../deploy/local-linux/provision-docker-admission-locks.py');
+  assert.equal(helper.mode, 0o555);
+  assert.equal(helper.content, await readFile(source, 'utf8'));
+  assert.equal(daemon.mode, 0o644);
+  const parsed = spawnSync('/usr/bin/python3', ['-c', 'import json, plistlib, sys; print(json.dumps(plistlib.loads(sys.stdin.buffer.read())))'],
+    { input: daemon.content, encoding: 'utf8' });
+  assert.equal(parsed.status, 0, parsed.stderr);
+  const plist = JSON.parse(parsed.stdout);
+  assert.equal(plist.Label, ADMISSION_LABEL);
+  assert.equal(plist.UserName, 'root');
+  assert.equal(plist.GroupName, 'wheel');
+  assert.equal(plist.RunAtLoad, true);
+  assert.deepEqual(plist.ProgramArguments, ['/usr/bin/python3', `/${PACKAGE_DIR}/provision-docker-admission-locks.py`]);
+});
+
+test('postinstall provisions before enrollment, bootstraps system daemon and survives fake reboot', async t => {
+  const fake = await host(t);
+  const digest = sha256('pinned\n');
+  const result = await postinstall(fake, digest, 'pinned\n');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(fake.calls().slice(0, 3), admissionCalls(fake.R));
+  assert.ok(fake.calls()[3].startsWith('chariox-app-runtime-install install'));
+  const names = ['memory', 'disk'].map(resource => `chariox-docker-${resource}-admission.lock`);
+  const inodes = names.map(name => statSync(join(fake.R, 'tmp', name)).ino);
+  for (const name of names) {
+    const lock = statSync(join(fake.R, 'tmp', name));
+    assert.equal(lock.uid, process.getuid());
+    assert.equal(lock.mode & 0o777, 0o444);
+    assert.equal(lock.nlink, 1);
+    assert.equal(lock.size, 0);
+  }
+  // Upgrade must preserve the held lock inode. No production paths are opened.
+  assert.equal((await postinstall(fake, digest, 'pinned\n')).status, 0);
+  assert.deepEqual(names.map(name => statSync(join(fake.R, 'tmp', name)).ino), inodes);
+  await rm(join(fake.R, 'tmp'), { recursive: true });
+  const program = join(fake.R, PACKAGE_DIR, 'provision-docker-admission-locks.py');
+  assert.equal(spawnSync('/usr/bin/python3', [program, '--root', fake.R], { encoding: 'utf8' }).status, 0);
+  assert.ok(names.every(name => existsSync(join(fake.R, 'tmp', name))));
+  // Refuse unsafe old locks before enrolling or changing launchd.
+  await chmod(join(fake.R, 'tmp', names[0]), 0o666);
+  await rm(fake.log);
+  const failure = await postinstall(fake, digest, 'pinned\n');
+  assert.equal(failure.status, 1);
+  assert.match(failure.stderr, /stop all kernels sharing Docker/u);
+  assert.deepEqual(fake.calls(), []);
+});
+
+test('uninstall unloads system daemon but leaves shared lock inodes, including dry run', async t => {
+  const fake = await host(t);
+  await layAdmission(fake.R);
+  const program = join(fake.R, PACKAGE_DIR, 'provision-docker-admission-locks.py');
+  assert.equal(spawnSync('/usr/bin/python3', [program, '--root', fake.R]).status, 0);
+  const lock = join(fake.R, 'tmp/chariox-docker-memory-admission.lock');
+  const inode = statSync(lock).ino;
+  // Simulate a loaded system daemon without touching host launchd.
+  await writeFile(join(fake.R, 'bin/launchctl'), `#!/bin/sh\nprintf 'launchctl %s\n' "$*" >> '${fake.log}'\n`, { mode: 0o755 });
+  const script = join(fake.root, 'uninstall');
+  await writeFile(script, await renderTemplate('uninstall.sh', { ROOT: fake.R }), { mode: 0o755 });
+  const dry = spawnSync(script, ['--dry-run'], { encoding: 'utf8' });
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /would stop the Docker admission boot daemon/u);
+  assert.ok(existsSync(program));
+  assert.equal(fake.calls().some(call => call.startsWith('launchctl bootout')), false);
+  const result = spawnSync(script, [], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fake.calls().includes(`launchctl bootout system/${ADMISSION_LABEL}`));
+  assert.equal(existsSync(program), false);
+  assert.equal(existsSync(join(fake.R, `Library/LaunchDaemons/${ADMISSION_LABEL}.plist`)), false);
+  assert.equal(statSync(lock).ino, inode);
 });
