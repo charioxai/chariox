@@ -219,7 +219,7 @@ const MATRIX = [
   }),
   scenario({
     id: "local-slice-save-acknowledgement-loss",
-    description: "lose a completed slice-save response and replay its original generation without a second dispatch",
+    description: "lose an unsupported-capture refusal and replay it without dispatching a backend save",
     script: sliceSaveAckLossFaultDrill,
     args: [],
     classification: "kernel-authority",
@@ -227,8 +227,8 @@ const MATRIX = [
     deployment: "local",
     provider: "dev-stub",
     exitCriteria: [
-      "same-process retry returns the first slice-save result without another dispatch",
-      "kernel-cache reload returns the same saved-state generation without another dispatch",
+      "same-process retry returns the same unsupported-capture refusal with zero backend saves",
+      "kernel-cache reload preserves the refusal; successful Save replay remains a separate live obligation",
       "reusing the command id for a different save request fails closed",
       "the focused drill records resources externally and removes its temporary cache",
     ],
@@ -267,7 +267,7 @@ const MATRIX = [
   }),
   scenario({
     id: "local-slice-restore-interruption",
-    description: "interrupt backup restore after replacement creation and recover the rollback generation on kernel restart",
+    description: "interrupt startup recovery of a seeded pending restore and recover its rollback generation on restart",
     script: sliceRestoreInterruptionFaultDrill,
     args: [],
     classification: "kernel-authority",
@@ -275,8 +275,8 @@ const MATRIX = [
     deployment: "local",
     provider: "dev-stub",
     exitCriteria: [
-      "restore intent is durable before the target replacement starts",
-      "SIGKILL after replacement creation leaves no committed restore resolution",
+      "a seeded durable pending-restore intent survives interrupted startup recovery",
+      "SIGKILL during startup recovery leaves no committed restore; actual post-target-creation interruption remains separate",
       "kernel startup restores the rollback generation and removes the partial runtime",
       "the focused drill records resources externally and removes every private fixture",
     ],

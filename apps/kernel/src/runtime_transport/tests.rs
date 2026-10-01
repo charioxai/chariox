@@ -604,7 +604,7 @@ exit 0
     println!(
         "CHARIOX_SLICE_SAVE_ACK_LOSS_PROBE:{}",
         serde_json::json!({
-            "schema": "chariox.slice_save_ack_loss_probe.v1",
+            "schema": "chariox.slice_save_ack_loss_probe.v2",
             "sameProcessReplay": true,
             "restartReplay": true,
             "unsupportedCaptureRefusalPreserved": true,
@@ -999,7 +999,7 @@ exit 0
     println!(
         "CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:{}",
         serde_json::json!({
-            "schema": "chariox.slice_restore_interruption_probe.v1",
+            "schema": "chariox.slice_restore_interruption_probe.v2",
             "childInterruptedDuringStartupRecovery": true,
             "postTargetCreationInterruptionStillRequiresProtectedLiveFixture": true,
             "durableIntentSurvived": true,
