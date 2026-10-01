@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -19,9 +20,14 @@ class ViewerRuntimeTest(unittest.TestCase):
                            "CHARIOX_BROWSER_LIFECYCLE_ROOT": str(root / "lifecycle")}
             helper = ["python3", str(root / "browser-lifecycle.py")]
             profile = str(root / "profile")
+            browser = root / "chromium-fixture.py"
+            browser.write_text("import time; time.sleep(30)\n")
             try:
-                subprocess.run([*helper, "start", profile, str(root / "browser.log"), "/bin/sleep", "30"],
-                               env=environment, capture_output=True, text=True, check=True, timeout=10)
+                started = subprocess.run([*helper, "start", profile, str(root / "browser.log"),
+                                          "python3", str(browser), profile],
+                                         env=environment, capture_output=True, text=True, check=True, timeout=10)
+                record = json.loads(started.stdout)
+                viewer.crash_chromium(record["browser"]["pid"])
             finally:
                 stopped = subprocess.run([*helper, "stop", profile], env=environment,
                                          capture_output=True, text=True, timeout=10)
