@@ -41,7 +41,27 @@ pub(super) async fn controller_placement_lifecycle() {
     controller::controller_scenario(false).await;
 }
 
+// MP-08/MP-10: this in-process worker requires the same Git CWD as a real kernel.
+// The enclosing placement fixture owns the process-wide environment guard.
+struct WorkerWorkingDirectory(std::path::PathBuf);
+
+impl WorkerWorkingDirectory {
+    fn enter(path: &std::path::Path) -> Self {
+        let previous = std::env::current_dir().expect("fixture current directory");
+        std::env::set_current_dir(path).expect("fixture worker Git directory");
+        Self(previous)
+    }
+}
+
+impl Drop for WorkerWorkingDirectory {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.0).expect("restore external fixture directory");
+    }
+}
+
 struct LiveWorker {
+    // Restore CWD before dropping the retained worker Git fixture below.
+    _working_directory: WorkerWorkingDirectory,
     _home_persistence_environment: Option<HomePersistenceEnvironment>,
     home: Arc<CommandRouter>,
     worker: Arc<CommandRouter>,
@@ -119,6 +139,7 @@ impl LiveWorker {
         const LOCAL_SLICE_TOKEN: &str = "slice-local-environment-home-slice-1";
         let mut home_state = TestState::new();
         let mut worker_state = TestState::new();
+        let working_directory = WorkerWorkingDirectory::enter(worker_state.worktree.path());
         if let Some(backend) = home_vault_backend {
             home_state.config.user_config.credential_vault.backend = backend;
         }
@@ -285,6 +306,7 @@ impl LiveWorker {
         }
         let worker = Arc::new(worker);
         let mut fixture = Self {
+            _working_directory: working_directory,
             _home_persistence_environment: home_persistence_environment,
             home: Arc::clone(&home),
             worker: Arc::clone(&worker),
