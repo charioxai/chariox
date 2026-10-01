@@ -203,3 +203,41 @@ test("a disconnected terminal sends nothing", () => {
   assert.equal(h.requests.length, 0)
   assert.equal(h.popup.view().connected, false)
 })
+
+test("a passkey typed for one request never answers another that takes its place", async () => {
+  const h = harness()
+  h.popup.apply([prompt("p1"), prompt("p2")])
+  type(h, "for-p1")
+  h.popup.handleKey(key("tab"))
+  assert.deepEqual(h.popup.view().passkey, { length: 6, rememberMinutes: 5 })
+  // Another terminal answered p1: the kernel's set keeps only p2, at index 0.
+  h.popup.apply([prompt("p2")])
+  assert.equal(h.popup.view().prompt?.interaction_id, "p2")
+  assert.deepEqual(h.popup.view().passkey, { length: 0, rememberMinutes: 0 })
+  h.popup.handleKey(key("return"))
+  assert.deepEqual(h.requests, [], "nothing typed for p2, so nothing is sent")
+  // The same request staying in place keeps what was typed for it.
+  type(h, "for-p2")
+  h.popup.apply([prompt("p2"), prompt("p3")])
+  assert.equal(h.popup.view().passkey.length, 6)
+  // An earlier request leaving moves the shown one, never the entry.
+  h.popup.apply([prompt("p0"), prompt("p2"), prompt("p3")])
+  assert.equal(h.popup.view().prompt?.interaction_id, "p2")
+  assert.equal(h.popup.view().passkey.length, 6)
+  h.popup.apply([prompt("p2"), prompt("p3")])
+  assert.equal(h.popup.view().prompt?.interaction_id, "p2")
+  assert.equal(h.popup.view().passkey.length, 6)
+})
+
+test("an answered earlier request leaves the shown one in view", async () => {
+  const h = harness()
+  h.popup.apply([prompt("p1"), prompt("p2"), prompt("p3")])
+  h.popup.handleKey(key("r", { ctrl: true }))
+  assert.deepEqual(h.requests, [["p1", "deny"]])
+  // The approval panel shows another request while the refusal is pending.
+  assert.equal(h.popup.show("session-1", "p3"), true)
+  h.resolve()
+  await settle()
+  assert.equal(h.popup.view().prompt?.interaction_id, "p3")
+  assert.equal(h.popup.view().count, 2)
+})

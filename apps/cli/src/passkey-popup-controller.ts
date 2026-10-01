@@ -131,17 +131,24 @@ export function createPasskeyPopupController(deps: {
     if (open) deps.onOpen()
     else { clearEntry(); deps.onClose() }
   }
-  const select = (next: number) => {
-    if (next !== index) clearEntry()
+  // The typed passkey belongs to the request it was typed for: any change of
+  // the shown request drops it, even when another one takes the same place.
+  const select = (next: number, shown: PasskeyPrompt | null = current()) => {
     index = next
+    const now = current()
+    if (!shown || !now || promptKey(shown) !== promptKey(now)) clearEntry()
+  }
+  // Keeps the shown request where it went, or shows the first one.
+  const reselect = (shown: PasskeyPrompt | null) => {
+    const at = shown ? prompts.findIndex((item) => promptKey(item) === promptKey(shown)) : -1
+    select(at >= 0 ? at : 0, shown)
   }
   const settle = (prompt: PasskeyPrompt) => {
-    answered.add(promptKey(prompt))
     const key = promptKey(prompt)
-    const wasCurrent = current() && promptKey(current()!) === key
+    answered.add(key)
+    const shown = current()
     prompts = prompts.filter((item) => promptKey(item) !== key)
-    if (wasCurrent) { clearEntry(); index = 0 }
-    index = Math.min(index, Math.max(0, prompts.length - 1))
+    reselect(shown)
     syncOpen()
   }
   const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof) => {
@@ -213,8 +220,7 @@ export function createPasskeyPopupController(deps: {
       for (const key of answered) if (!listed.has(key)) answered.delete(key)
       prompts = next.filter((prompt) => !answered.has(promptKey(prompt)))
       if (prompts.some((prompt) => !known.has(promptKey(prompt)))) hidden = false
-      const at = shown ? prompts.findIndex((prompt) => promptKey(prompt) === promptKey(shown)) : -1
-      select(at >= 0 ? at : 0)
+      reselect(shown)
       syncOpen()
       render()
     },
