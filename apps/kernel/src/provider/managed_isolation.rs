@@ -736,6 +736,14 @@ fn append_managed_runtime_user_openbox_boundary(
     append_managed_runtime_user_anchor(args, &config, "runtime user .config", created)?;
     let local = home.join(".local");
     append_managed_runtime_user_anchor(args, &local, "runtime user .local", created)?;
+    // The runtime .local bind recursively exposes the browser's private NSS
+    // submount. Hide that alias after the bind, preserving other user data.
+    if std::env::var_os("CHARIOX_SLICE_PRIVATE_ROOT").is_some() {
+        let nss = validate_boundary_directory(&local.join("share/pki/nssdb"), "runtime NSS alias")?;
+        append_directory(args, &nss, created);
+        args.extend(["--tmpfs".to_string(), nss.display().to_string()]);
+    }
+
     for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
         let command_directory =
             validate_boundary_directory(&home.join(relative), "runtime user command directory")?;

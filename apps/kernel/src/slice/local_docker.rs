@@ -988,10 +988,27 @@ fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> Sl
 fn local_docker_runtime_log_entry(record: &SliceRecord, tail_lines: u32) -> SliceLogEntry {
     let container = local_docker_container_name(record);
     let tail_lines_arg = tail_lines.to_string();
+    let protected = match broker::provider_auth_protected(&container) {
+        Ok(value) => value,
+        Err(_) => {
+            return SliceLogEntry {
+                source: "runtime".to_string(),
+                path: None,
+                text: "slice runtime log layout verification refused".to_string(),
+                truncated: false,
+            }
+        }
+    };
+    let layout = if protected { "protected" } else { "legacy" };
     let script = r#"
 set -eu
 found=0
-for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
+case "$2" in
+  protected) runtime=/var/lib/chariox/slice-private/runtime/logs; kernel=/var/lib/chariox/slice-private/kernel/logs ;;
+  legacy) runtime=/opt/chariox-slice/logs; kernel=/home/slice/.local/state/chariox/logs ;;
+  *) exit 64 ;;
+esac
+for file in "$runtime"/*.log "$kernel"/*.ndjson; do
   [ -f "$file" ] || continue
   found=1
   printf '\n=== %s ===\n' "$file"
@@ -1012,6 +1029,7 @@ fi
             script,
             "slice-runtime-logs",
             &tail_lines_arg,
+            layout,
         ])
         .output();
     match output {

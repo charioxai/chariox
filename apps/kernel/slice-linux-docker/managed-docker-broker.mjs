@@ -238,7 +238,12 @@ function isDiskAdmissionHelper(value) {
 const SLICE_RUNTIME_LOG_SCRIPT = `
 set -eu
 found=0
-for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
+case "$2" in
+  protected) runtime=/var/lib/chariox/slice-private/runtime/logs; kernel=/var/lib/chariox/slice-private/kernel/logs ;;
+  legacy) runtime=/opt/chariox-slice/logs; kernel=/home/slice/.local/state/chariox/logs ;;
+  *) exit 64 ;;
+esac
+for file in "$runtime"/*.log "$kernel"/*.ndjson; do
   [ -f "$file" ] || continue
   found=1
   printf '\\n=== %s ===\\n' "$file"
@@ -331,12 +336,13 @@ function validateDockerExec(args) {
   ) return
   if (
     args[2] === "slice" &&
-    command.length === 5 &&
+    command.length === 6 &&
     command[0] === "sh" &&
     command[1] === "-c" &&
     command[2] === SLICE_RUNTIME_LOG_SCRIPT &&
     command[3] === "slice-runtime-logs" &&
-    /^[0-9]{1,4}$/.test(command[4])
+    /^[0-9]{1,4}$/.test(command[4]) &&
+    new Set(["legacy", "protected"]).has(command[5])
   ) return
   fail("Docker exec command shape is not allowed")
 }
@@ -1519,6 +1525,10 @@ function execute(request) {
   if (request.kind === "docker" && request.args[0] === "exec"
       && PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(request.args.at(-1))) {
     protectedLayouts.preflight(request.args[3])
+  }
+  if (request.kind === "docker" && request.args[0] === "exec" && request.args[7] === "slice-runtime-logs") {
+    const protectedLayout = protectedLayouts.providerAuthProtected(request.args[3])
+    if (request.args[9] !== (protectedLayout ? "protected" : "legacy")) fail("slice runtime log layout does not match verified container")
   }
   let commitSource
   let commitParent
