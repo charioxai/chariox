@@ -455,3 +455,55 @@ async fn external_active_prompt_rejects_queued_prompt_steering() {
         &queued_prompt_id,
     );
 }
+
+#[tokio::test]
+async fn late_launch_completion_preserves_active_local_prompt_and_queued_successor() {
+    let worktree = crate::test_support::TestWorktree::new("late-launch-active-local");
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "late-launch-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("client should attach");
+    // Prepare a real idle managed provider, but deliberately hold its launch
+    // completion until the ordinary prompt owner has an active turn and a queue.
+    let started = app
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(), "dev-stub", "dev-stub", "default", "native-tui-idle",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should start");
+    assert_eq!(started.run.state(), crate::provider::ProviderRunState::Starting);
+    for (id, prompt, force_queue) in [
+        ("late-launch-active", "active local prompt", false),
+        ("late-launch-queued", "queued local successor", true),
+    ] {
+        let item = crate::session::PromptQueueItem::new(
+            id, attachment.id(), agent.id(), prompt, crate::session::PromptStatus::Queued,
+        );
+        let outcome = app.prompt_owner_submit_prepared_prompt(session.id(), item, force_queue)
+            .expect("ordinary prompt admission should succeed");
+        assert_eq!(matches!(outcome, crate::session::PromptSubmissionOutcome::Queued { .. }), force_queue);
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.finish_provider_launch(&started, None).await;
+    let run = runtime.owned.provider_store.get_run(started.run.id()).expect("run remains queryable");
+    let snapshot = runtime.owned.session_snapshot(session.id()).expect("session remains queryable");
+    // Always reap this test's real idle shell, even when the regression is red.
+    app.lock().await.teardown_provider_processes(None, true).expect("fixture cleanup");
+    assert_eq!(run.state(), crate::provider::ProviderRunState::Running,
+        "queue occupancy is not a provider initialization failure");
+    assert_eq!(snapshot.active_prompt_for_agent(agent.id()).map(|p| p.id()), Some("late-launch-active"));
+    let queued = snapshot.queued_prompts_for_agent(agent.id()).expect("queue exists");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id(), "late-launch-queued");
+}
