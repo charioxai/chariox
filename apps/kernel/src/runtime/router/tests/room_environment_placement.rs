@@ -635,6 +635,13 @@ async fn slice_down_is_reported_and_stop_completes() {
     let state = TestState::new();
     let (router, rooms) = state.router();
     create_desktop(&router, "paused").await;
+    router
+        .app
+        .lock()
+        .await
+        .slices()
+        .set_status("paused", SliceStatus::Running, 1)
+        .unwrap();
     // The slice's relay runs inside its container; a stopped container
     // refuses the connection.
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -663,17 +670,25 @@ async fn slice_down_is_reported_and_stop_completes() {
             "desktop_pixel_width":1280,"desktop_pixel_height":800
         }
     }});
-    for request in [start, json!({"RetryRoomEnvironment": {"session_id": &rooms[0]}})] {
-        let error = dispatch_json(&router, request).await.unwrap_err().to_string();
+    for request in [
+        start,
+        json!({"RetryRoomEnvironment": {"session_id": &rooms[0]}}),
+    ] {
+        let error = dispatch_json(&router, request)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("room_slice_unreachable"), "{error}");
         assert!(error.contains("`paused`"), "names the slice: {error}");
     }
-    let stopped = dispatch_json(&router, json!({"StopRoomEnvironment": {"session_id": &rooms[0]}}))
-        .await
-        .expect("a Room whose slice is gone stops without its relay");
+    let stopped = dispatch_json(
+        &router,
+        json!({"StopRoomEnvironment": {"session_id": &rooms[0]}}),
+    )
+    .await
+    .expect("a Room whose slice is gone stops without its relay");
     assert_eq!(
-        stopped["RoomEnvironmentUpdated"]["environment"]["lifecycle"],
-        "stopped",
+        stopped["RoomEnvironmentUpdated"]["environment"]["lifecycle"], "stopped",
         "{stopped}"
     );
 }
@@ -690,6 +705,13 @@ async fn relay_failure_keeps_stop_failed() {
         state.config.relay_token = Some("fixture-relay-token".into());
         let (router, rooms) = state.router();
         create_desktop(&router, "live").await;
+        router
+            .app
+            .lock()
+            .await
+            .slices()
+            .set_status("live", SliceStatus::Running, 1)
+            .unwrap();
         let relay = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = relay.local_addr().unwrap().port();
         // Public/shared relay: connection refused. Private relay: accepts TCP
@@ -717,13 +739,22 @@ async fn relay_failure_keeps_stop_failed() {
         dispatch_json(&router, bind(&rooms[0], "live"))
             .await
             .unwrap();
-        let start_error = dispatch_json(&router, json!({"StartRoomEnvironment": {
-            "session_id": &rooms[0], "viewport": {
-                "css_width":1280,"css_height":800,"device_scale_factor":1,
-                "desktop_pixel_width":1280,"desktop_pixel_height":800
-            }
-        }})).await.expect_err("relay failed before controller readiness").to_string();
-        assert!(!start_error.contains("room_slice_unreachable"), "{start_error}");
+        let start_error = dispatch_json(
+            &router,
+            json!({"StartRoomEnvironment": {
+                "session_id": &rooms[0], "viewport": {
+                    "css_width":1280,"css_height":800,"device_scale_factor":1,
+                    "desktop_pixel_width":1280,"desktop_pixel_height":800
+                }
+            }}),
+        )
+        .await
+        .expect_err("relay failed before controller readiness")
+        .to_string();
+        assert!(
+            !start_error.contains("room_slice_unreachable"),
+            "{start_error}"
+        );
 
         let error = dispatch_json(
             &router,
@@ -758,4 +789,48 @@ async fn relay_failure_keeps_stop_failed() {
         );
         drop(relay);
     }
+}
+
+#[test]
+fn room_environment_controller_does_not_block_start_on_stopped_or_starting_slice() {
+    run_test(controller_does_not_block_start_on_stopped_or_starting_slice);
+}
+
+async fn controller_does_not_block_start_on_stopped_or_starting_slice() {
+    let state = TestState::new();
+    let (router, rooms) = state.router();
+    create_desktop(&router, "desktop").await;
+    dispatch_json(&router, bind(&rooms[0], "desktop"))
+        .await
+        .unwrap();
+    router.shutdown_cleanup().await.unwrap();
+    drop(router);
+    wait_for_durable_owner_release(&state.config.durable_state_path()).await;
+    let app = DaemonApp::bootstrap(state.config.clone()).expect("restart throwaway kernel");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
+    let slices = router.app.lock().await.slices().clone();
+    for status in [SliceStatus::Stopped, SliceStatus::Starting] {
+        slices.set_status("desktop", status, 42).unwrap();
+        for _ in 0..3 {
+            let route = router
+                .runtime_state
+                .ensure_browser_controller_process_started(&rooms[0]);
+            tokio::pin!(route);
+            let result = tokio::select! {
+                result = &mut route => Some(result),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => None,
+            };
+            let _start = slices
+                .try_begin_operation("desktop", "slice.start")
+                .expect("recurring routes must never reserve a stopped/starting slice");
+            let error = result
+                .expect("offline route must fail promptly")
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("slice is not running"),
+                "{error}"
+            );
+        }
+    }
+    router.shutdown_cleanup().await.unwrap();
 }
