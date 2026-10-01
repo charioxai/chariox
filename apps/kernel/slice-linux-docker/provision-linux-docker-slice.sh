@@ -649,6 +649,9 @@ build_standard_runtime_image() {
       -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
       -t "$image" \
       "$REPO_ROOT"
+    if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+      node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+    fi
     return
   fi
   docker_build \
@@ -660,6 +663,9 @@ build_standard_runtime_image() {
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
     -t "$image" \
     "$REPO_ROOT"
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+  fi
 }
 
 ensure_runtime_base_image() {
@@ -882,7 +888,7 @@ ensure_container() {
         -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
         -v "$SLICE_PRIVATE_HOST_ROOT:$SLICE_PRIVATE_ROOT"
         -v "$SLICE_PRIVATE_HOST_ROOT/nssdb:/home/slice/.local/share/pki/nssdb"
-        --tmpfs /tmp/chariox-slice-state:rw,nosuid,nodev,noexec,mode=0700,uid=1000,gid=1000
+        --tmpfs /tmp/chariox-slice-state:rw,nosuid,nodev,noexec,mode=0700,uid=1001,gid=1001
       )
     fi
     if [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]]; then
@@ -1016,6 +1022,9 @@ recover_existing_container() {
 }
 
 start_slice_services() {
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+  fi
   if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
     import_provider_auth
   fi
@@ -1649,6 +1658,9 @@ main() {
       require_docker
       ensure_container
       require_slice_free_space "runtime" /home/slice /tmp
+      if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+        node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+      fi
       exec_slice /opt/chariox-slice/start-runtime.sh
       ;;
     start-providers)

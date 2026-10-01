@@ -141,20 +141,13 @@ test("fresh controller binds exact image/mount receipt and refuses missing same-
     info.Mounts[1].Name = `${environment.CHARIOX_SLICE_NAME}-home`
     info.Mounts[2].Source = `${privateRoot}/nssdb`
     environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT = privateRoot
-    controller.complete(environment)
-    assert.equal(controller.preflight(environment.CHARIOX_SLICE_NAME).privateHostRoot, privateRoot)
-    assert.equal(controller.prepare("recover", environment), privateRoot)
-    const foreignOwnerController = createManagedLayoutController({root, sourceDigest: source, docker, dataOwner: process.getuid() + 1})
-    assert.throws(() => foreignOwnerController.preflight(environment.CHARIOX_SLICE_NAME))
-    const priorSource = info.Mounts[0].Source
-    info.Mounts[0].Source = join(parent, "foreign-root")
+    assert.throws(() => controller.complete(environment), "missing first-use restoration proof cannot enable capture")
     assert.throws(() => controller.preflight(environment.CHARIOX_SLICE_NAME))
-    info.Mounts[0].Source = priorSource
-    info.Config.Env.push("TOKEN=synthetic-private-sentinel")
-    assert.throws(() => controller.preflight(environment.CHARIOX_SLICE_NAME), e => !e.message.includes("sentinel"))
-    info.Config.Env.pop()
+    assert.throws(() => controller.prepare("provision", environment), "an unreceipted protected container cannot fall back to legacy boot")
+    const foreignOwnerController = createManagedLayoutController({root, sourceDigest: source, docker, dataOwner: process.getuid() + 1})
+    assert.throws(() => foreignOwnerController.complete(environment))
     rmSync(identity)
-    assert.throws(() => controller.prepare("recover", environment))
+    assert.throws(() => controller.complete(environment))
     assert.equal(existsSync(identity), false, "missing identity must not be generated")
     assert.equal(existsSync(privateRoot), true, "retained private root must remain")
   } finally { rmSync(parent, {recursive: true}) }
@@ -178,5 +171,40 @@ test("first-use retention refuses missing or invalid synthetic identity without 
     assert.equal(existsSync(join(backupRoot, "synthetic.json")), false, "invalid identity cannot publish first-use proof")
     assert.equal(existsSync(join(kernel, "identity.json")), true, "original identity remains untouched")
     assert.throws(() => retainFreshIdentity({privateRoot, backupRoot, sliceId: "synthetic", dataOwner: process.getuid()}), "interrupted backup must not be replaced")
+  } finally { rmSync(parent, {recursive: true}) }
+})
+
+import { mappedSliceOwner, SLICE_CONTAINER_UID } from "../apps/kernel/slice-linux-docker/protected-rootless-owner.mjs"
+test("managed host owner derives from the actual rootless mapping rather than container UID", () => {
+  const metadata = {daemonUid: 987, daemonGid: 987, processUid: 987,
+    uidMap: "0 987 1\n1 231072 65536\n", gidMap: "0 987 1\n1 231072 65536\n",
+    subuids: "chariox-docker:231072:65536\n", subgids: "chariox-docker:231072:65536\n"}
+  assert.equal(SLICE_CONTAINER_UID, 1001)
+  assert.equal(mappedSliceOwner(metadata), 232072)
+  assert.notEqual(mappedSliceOwner(metadata), SLICE_CONTAINER_UID)
+  assert.throws(() => mappedSliceOwner({...metadata, processUid: 988}))
+  assert.throws(() => mappedSliceOwner({...metadata, uidMap: "0 0 4294967295\n"}))
+  assert.throws(() => mappedSliceOwner({...metadata, gidMap: "0 987 1\n1 331072 65536\n"}))
+  assert.throws(() => mappedSliceOwner({...metadata, subuids: "chariox-docker:231072:65536\nchariox-docker:331072:65536\n"}))
+})
+
+import { ensureFirstBootRetention } from "../apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+test("first-boot barrier invokes only offline preparation and refuses partial identity without retry generation", () => {
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-first-boot-metadata-test-"))
+  try {
+    const privateRoot = preparePrivateHostRoot(parent, "private-boot", process.getuid(), true)
+    const backupRoot = join(parent, "backups")
+    mkdirSync(backupRoot, {mode: 0o700})
+    const calls = []
+    const parameters = {privateRoot, backupRoot, sliceId: "synthetic", container: "chariox-slice-synthetic", port: 43119,
+      dataOwner: process.getuid(), docker: args => { calls.push(args); return {status: 1} }}
+    assert.throws(() => ensureFirstBootRetention(parameters))
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].at(-2), "--prepare-protected-slice-identity")
+    assert.equal(calls[0][2], "1001", "container UID is distinct from host owner")
+    writeFileSync(join(privateRoot, "kernel/machine/identity.json"), "synthetic incomplete sentinel", {mode: 0o600})
+    assert.throws(() => ensureFirstBootRetention(parameters))
+    assert.equal(calls.length, 1, "partial identity must not trigger initialization again")
+    assert.equal(existsSync(join(backupRoot, "synthetic.json")), false)
   } finally { rmSync(parent, {recursive: true}) }
 })

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { createManagedLayoutController } from "./protected-managed-layout.mjs"
+import { managedRootlessSliceOwner } from "./protected-rootless-owner.mjs"
+import { DURABLE_LAYOUT_ROOT } from "./protected-first-boot.mjs"
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import {
@@ -73,6 +76,16 @@ function signedBuildContextDigest() {
 }
 
 const SIGNED_BUILD_CONTEXT_DIGEST = signedBuildContextDigest()
+const protectedLayouts = createManagedLayoutController({
+  root: DURABLE_LAYOUT_ROOT, sourceDigest: process.platform === "linux" && process.getuid() === 0 ? SIGNED_BUILD_CONTEXT_DIGEST : undefined,
+  dataOwner: () => {
+    if (DOCKER_HOST !== "unix:///run/chariox-docker/docker.sock") fail("protected slice layout requires the verified managed Docker engine")
+    return managedRootlessSliceOwner()
+  },
+  docker: args => spawnSync("/usr/bin/docker", args, {
+    env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 60_000,
+  }),
+})
 const persistentHandleDescriptors = new Map()
 let persistentHandleRecords
 const ACTIONS = new Set([
@@ -1195,7 +1208,11 @@ function dockerEnvironment() {
 function expectedProvisionerMounts(environment) {
   const container = environment.CHARIOX_SLICE_NAME
   const mode = environment.CHARIOX_SLICE_WORKSPACE_MOUNT_MODE ?? "rw"
-  const mounts = []
+  const mounts = environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT
+    ? [
+      {destination: "/var/lib/chariox/slice-private", source: environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT, rw: true},
+      {destination: "/home/slice/.local/share/pki/nssdb", source: join(environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT, "nssdb"), rw: true},
+    ] : []
   if (environment.CHARIOX_SLICE_WORKSPACE) {
     const targets = ["/workspace"]
     const mountCount = Number(environment.CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT ?? "0")
@@ -1223,13 +1240,13 @@ function expectedProvisionerMounts(environment) {
 
 function recordedContainerMounts(container) {
   loadPersistentHandles()
-  return persistentHandleRecords
+  return [...protectedLayouts.privateMounts(container), ...persistentHandleRecords
     .filter((record) => record.container === container)
     .flatMap((record) => record.targets.map((destination) => ({
       destination,
       rw: record.rw,
       source: join(HANDLE_ROOT, record.handle),
-    })))
+    })))]
 }
 
 function normalizedMounts(mounts) {
@@ -1316,6 +1333,8 @@ function prepareDocker(args) {
 
 function prepareProvisioner(request) {
   const environment = { ...request.environment }
+  const privateRoot = protectedLayouts.prepare(request.action, environment)
+  if (privateRoot) environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT = privateRoot
   const descriptors = []
   const handles = new Set()
   const newHandles = new Set()
@@ -1465,7 +1484,7 @@ function execute(request) {
         DOCKER_HOST,
         ...prepared.environment,
         ...(SIGNED_BUILD_CONTEXT_DIGEST
-          ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
+          ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
           : {}),
       }
     const result = spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
@@ -1477,6 +1496,7 @@ function execute(request) {
     }
     if (request.kind === "provisioner" && new Set(["provision", "restore-state"]).has(request.action)) {
       if (result.status === 0) {
+        protectedLayouts.complete(prepared.environment)
         removePersistentHandles(
           (record) => record.container === request.environment.CHARIOX_SLICE_NAME && !prepared.handles.has(record.handle),
         )

@@ -3,23 +3,27 @@ import { join } from "node:path"
 import { preparePrivateHostRoot, verifyPrivateHostDirectory } from "./protected-host-root.mjs"
 import { readProtectedLayoutReceipt, writeProtectedLayoutReceipt, requireRetainedRuntimeIdentity } from "./protected-layout-store.mjs"
 import { requireManagedImageProof } from "./protected-image-proof.mjs"
+import { requireIdentityRetention } from "./protected-identity-retention.mjs"
 import { PRIVATE_ROOT, verifyProtectedCaptureLayout } from "./protected-layout.mjs"
 
 function identifier(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/.test(value) }
 
 function refuse() { throw new Error("Protected slice layout is unavailable; existing identity and saved state are preserved") }
 
-export function createManagedLayoutController({root, sourceDigest, docker, dataOwner = 1000}) {
+export function createManagedLayoutController({root, sourceDigest, docker, dataOwner}) {
   const controlOwner = process.getuid()
   const homeRoot = join(root, "homes")
   const receiptRoot = join(root, "receipts")
   const imageRoot = join(root, "images")
+  const backupRoot = join(root, "backups")
+  const owner = () => typeof dataOwner === "function" ? dataOwner() : dataOwner
   const trusted = /^sha256:[a-f0-9]{64}$/.test(sourceDigest ?? "")
   function initialize() {
     if (!trusted) refuse()
-    for (const path of [root, homeRoot, receiptRoot, imageRoot]) {
-      try { mkdirSync(path, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
-      verifyPrivateHostDirectory(path, controlOwner)
+    for (const path of [root, homeRoot, receiptRoot, imageRoot, backupRoot]) {
+      const traversalOnly = path === root || path === homeRoot
+      try { mkdirSync(path, {mode: traversalOnly ? 0o711 : 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
+      verifyPrivateHostDirectory(path, controlOwner, traversalOnly)
     }
   }
   function receipt(container) {
@@ -40,8 +44,10 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     return records[0]
   }
   function retained(record) {
+    const dataOwner = owner()
     if (record.dataOwner !== dataOwner || !identifier(record.ownerSliceId) || record.privateHostRoot !== join(homeRoot, record.ownerSliceId)) refuse()
     requireRetainedRuntimeIdentity(record.privateHostRoot, record.identityPaths, dataOwner)
+    requireIdentityRetention({privateRoot: record.privateHostRoot, backupRoot, sliceId: record.ownerSliceId, dataOwner})
   }
   return {
     imageRoot,
@@ -56,7 +62,6 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     },
     prepare(action, environment) {
       if (!trusted) return null // Legacy compatibility never enables capture.
-      initialize()
       const container = environment.CHARIOX_SLICE_NAME
       if (!identifier(container) || !identifier(environment.CHARIOX_SLICE_ID)) refuse()
       const existing = receipt(container)
@@ -66,12 +71,19 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         return existing.privateHostRoot
       }
       if (!["provision", "restore-state"].includes(action)) return null
+      const dataOwner = owner()
+      if (!Number.isSafeInteger(dataOwner) || dataOwner < 0) refuse()
       // Existing mixed containers/homes are never retrofitted or migrated.
-      if (containerInfo(container)) return null
+      const prior = containerInfo(container)
+      if (prior) {
+        if (prior.Mounts?.some(mount => mount.Destination === PRIVATE_ROOT)) refuse()
+        return null
+      }
       const volumes = docker(["volume", "ls", "--format", "{{.Name}}"])
       if (volumes.status !== 0) refuse()
       const home = environment.CHARIOX_SLICE_HOME_VOLUME ?? `${container}-home`
       if (String(volumes.stdout).split("\n").includes(home)) return null
+      initialize()
       return preparePrivateHostRoot(homeRoot, environment.CHARIOX_SLICE_ID, controlOwner, true, dataOwner)
     },
     complete(environment) {
@@ -91,7 +103,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         ownerSliceId: environment.CHARIOX_SLICE_ID, containerId: info.Id,
         imageId: info.Image, baseImageId: info.Image, privateHostRoot,
         homeVolume: environment.CHARIOX_SLICE_HOME_VOLUME ?? `${environment.CHARIOX_SLICE_NAME}-home`,
-        identityPaths, dataOwner}
+        identityPaths, dataOwner: owner()}
       retained(record)
       verifyProtectedCaptureLayout(info, record, new Set([info.Image]))
       writeProtectedLayoutReceipt(receiptRoot, record.sliceId, record)
