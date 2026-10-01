@@ -222,7 +222,7 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
     model: "default",
     mode: "build",
     permissions: "yolo",
-    serverInKernel: false,
+    serverInKernel: true,
     grantMcps: [],
     grantSkills: [],
   }
