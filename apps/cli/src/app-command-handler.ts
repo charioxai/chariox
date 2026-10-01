@@ -20,18 +20,43 @@ export type AppCommandHandlerDeps = {
 
 /** `/app` arguments as the TUI sends them. Quoted words are decoded as the
  * shell decodes them (so a copied `app list --after "todo"` works), without
- * variable expansion, as in the web palette. An inbox test's JSON payload is
- * the rest of the line: JSON exactly as typed, so a double-quoted object keeps
- * its quotes and spaces, or a single-quoted word decoded as the shell decoded
- * it. */
+ * variable expansion, as in the web palette. An inbox test's payload is the
+ * rest of the line after its five shell words (which may quote IDs with
+ * spaces): JSON exactly as typed, so a double-quoted object keeps its quotes
+ * and spaces, or a single-quoted word decoded as the shell decoded it. */
 export function appSlashArgs(raw: string): string[] {
   const line = raw.trim().replace(/^\/app(?:\s+|$)/, "")
-  const inboxTest = /^inbox\s+test\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S[\s\S]*)$/.exec(line)
-  if (!inboxTest) return tokenizeShellLine(line)
-  const ids = tokenizeShellLine(inboxTest.slice(1, 4).join(" "))
-  const payload = inboxTest[4]!
+  const [words, payload] = /^inbox\s+test\s/.test(line) ? splitShellWords(line, 5) : [line, ""]
+  if (!payload) return tokenizeShellLine(line)
   const quoted = payload.startsWith("'") ? tokenizeShellLine(payload) : null
-  return ["inbox", "test", ...ids, quoted?.length === 1 ? quoted[0]! : payload]
+  return [...tokenizeShellLine(words), quoted?.length === 1 ? quoted[0]! : payload]
+}
+
+/** `line` split after its first `count` shell words, with the quoting and
+ * escapes of `tokenizeShellLine`; the rest is empty when there is none. */
+function splitShellWords(line: string, count: number): [string, string] {
+  let quote: string | null = null
+  let escaping = false
+  let inWord = false
+  let words = 0
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!
+    if (escaping) {
+      escaping = false
+    } else if (char === "\\" && quote !== "'") {
+      escaping = true
+    } else if (quote) {
+      if (char === quote) quote = null
+    } else if (char === "'" || char === '"') {
+      quote = char
+    } else if (/\s/.test(char)) {
+      if (inWord && ++words === count) return [line.slice(0, index), line.slice(index).trimStart()]
+      inWord = false
+      continue
+    }
+    inWord = true
+  }
+  return [line, ""]
 }
 
 export async function handleAppSlashCommand(

@@ -97,28 +97,38 @@ test("/app arguments decode shell quoting but keep an inbox test payload exact",
   assert.deepEqual(appSlashArgs(`/app inbox test todo mail occ-1 '{"title":"a  b"}'`), ["inbox", "test", "todo", "mail", "occ-1", '{"title":"a  b"}'])
   assert.deepEqual(appSlashArgs(`/app inbox test todo mail occ-1 '{"title":"it'\\''s"}'`), ["inbox", "test", "todo", "mail", "occ-1", `{"title":"it's"}`])
   assert.deepEqual(appSlashArgs('/app inbox test "todo" mail occ-1 "hi"'), ["inbox", "test", "todo", "mail", "occ-1", '"hi"'])
+  // Quoted or escaped IDs with spaces end where the shell ends them.
+  assert.deepEqual(appSlashArgs('/app inbox test todo "mail route" "occ 1" {"title":"x y"}'), ["inbox", "test", "todo", "mail route", "occ 1", '{"title":"x y"}'])
+  assert.deepEqual(appSlashArgs(`/app inbox test todo 'mail route' occ\\ 1 '{"title":"x y"}'`), ["inbox", "test", "todo", "mail route", "occ 1", '{"title":"x y"}'])
+  assert.deepEqual(appSlashArgs("/app inbox test todo mail occ-1"), ["inbox", "test", "todo", "mail", "occ-1"])
   // Not one quoted word: kept as typed, so the JSON check refuses it.
   assert.deepEqual(appSlashArgs(`/app inbox test todo mail occ-1 '{}' x`), ["inbox", "test", "todo", "mail", "occ-1", "'{}' x"])
   assert.throws(() => appSlashArgs('/app status "todo'), /unterminated quote/)
 })
 
-for (const payload of ['{"step":"request","message":"remote TUI T-05"}', `'{"step":"request","message":"remote TUI T-05"}'`]) {
-  test(`/app inbox test sends the JSON payload exactly (${payload.startsWith("'") ? "single-quoted" : "bare"})`, async () => {
+for (const [occurrence, payload] of [
+  ["occ-1", '{"step":"request","message":"remote TUI T-05"}'],
+  ["occ-1", `'{"step":"request","message":"remote TUI T-05"}'`],
+  ['"occ 1"', '{"step":"request","message":"remote TUI T-05"}'],
+  ['"occ 1"', `'{"step":"request","message":"remote TUI T-05"}'`],
+] as const) {
+  test(`/app inbox test sends the JSON payload exactly (${occurrence}, ${payload.startsWith("'") ? "single-quoted" : "bare"})`, async () => {
     const requests: unknown[] = []
     const notices: string[] = []
-    const raw = `/app inbox test todo mail occ-1 ${payload}`
+    const occurrenceId = occurrence.replaceAll('"', "")
+    const raw = `/app inbox test todo mail ${occurrence} ${payload}`
     await handleAppSlashCommand({
       sendAppRequest: async (request) => {
         requests.push(request)
-        return { AppInboxOccurrenceAccepted: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", duplicate: false } }
+        return { AppInboxOccurrenceAccepted: { installation_id: "todo", route_id: "mail", occurrence_id: occurrenceId, duplicate: false } }
       },
       appendNotice: message => { notices.push(message) },
       flashFooter: message => assert.fail(message),
     }, parseSlashCommand(raw) as Extract<ParsedSlashCommand, { kind: "app" }>)
     assert.deepEqual(requests, [{ TestAppInboxRoute: {
-      installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { step: "request", message: "remote TUI T-05" },
+      installation_id: "todo", route_id: "mail", occurrence_id: occurrenceId, payload: { step: "request", message: "remote TUI T-05" },
     } }])
-    assert.deepEqual(notices, ["Occurrence occ-1 on mail accepted; the App receives it shortly."])
+    assert.deepEqual(notices, [`Occurrence ${occurrenceId} on mail accepted; the App receives it shortly.`])
   })
 }
 

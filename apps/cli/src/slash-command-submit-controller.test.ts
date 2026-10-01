@@ -82,6 +82,8 @@ for (const [label, raw, request] of [
     { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { step: "request", n: 1 } } }],
   ["a single-quoted inbox payload with spaces", `/app inbox test todo mail occ-1 '{"title":"a  b"}'`,
     { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "a  b" } } }],
+  ["a quoted route ID with spaces and a single-quoted payload", `/app inbox test todo "mail route" occ-1 '{"title":"a  b"}'`,
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail route", occurrence_id: "occ-1", payload: { title: "a  b" } } }],
   ["a copied next-page command", '/app list --after "todo"', { ListAppInstallations: { after: "todo", limit: null } }],
 ] as const) {
   test(`${label} reaches the kernel through the TUI's App handler, not the shared shell`, async () => {
