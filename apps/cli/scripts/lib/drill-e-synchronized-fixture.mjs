@@ -33,7 +33,7 @@ export async function startDrillESynchronizedFixture({ actors }) {
       }
       if (parts[0] === "state") {
         response.setHeader("Content-Type", "application/json")
-        response.end(JSON.stringify({ held: phase === "mutations"
+        response.end(JSON.stringify({ held: phase !== null
           && phases.get(phase)?.evidence().pageReleaseReason === null }))
         return
       }
@@ -74,10 +74,11 @@ export async function startDrillESynchronizedFixture({ actors }) {
       if (phases.has(next)) throw new Error("MP-08/MP-10 duplicate fixture phase")
       phase = next
       armed = false
+      mutationTimerStarted = false
       phases.set(next, createDrillEBarrier({ actors }))
     },
     tick(environment) {
-      if (phase !== "mutations" || mutationTimerStarted) return
+      if (phase === null || mutationTimerStarted) return
       if (!environment.actions.some(action => action.kind === "click" && action.state === "running")) return
       mutationTimerStarted = true
       void phases.get(phase).hold("actionability")

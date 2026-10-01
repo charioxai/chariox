@@ -10,13 +10,13 @@ The caller owns an isolated Room and headed slice, the three agents, two fixture
 tabs, resource monitoring, provider diagnostics, evidence, and final session and
 slice cleanup. Use the fixture's `browserOrigin` for the pages `/page/same` and
 `/page/other`. Focus the same tab before the scenario. Warm all three provider
-tool catalogs, including the independent worker's reload tool. Match source,
+tool catalogs, including the independent worker's click tool. Match source,
 client, signed kernel, and image identities explicitly.
 
 Pass these synchronization hooks:
 
 - `beforePhase("reads")`: call the fixture method. The readers perform one
-  status operation; the third agent reloads the other tab. The same page's
+  status operation; the third agent waits on the other tab's button. The same page's
   10,000 probe buttons make snapshot work observable after Action admission;
   the production result remains capped at 5,000 nodes. The other page's HTTP
   response waits for observed overlap, with a four-second safety release.

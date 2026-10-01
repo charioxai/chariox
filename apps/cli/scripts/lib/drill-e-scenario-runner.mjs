@@ -155,7 +155,7 @@ function readOverlap(environment, options) {
   const b = active.find((action) => action.actor_id === "agent:" + options.agentB
     && tabTarget(action) === options.sameTabId && readKinds.has(action.kind))
   const c = active.find((action) => action.actor_id === "agent:" + options.agentC
-    && tabTarget(action) === options.otherTabId && action.kind === reloadKind)
+    && tabTarget(action) === options.otherTabId && action.kind === (options.readWorkerKind ?? reloadKind))
   return a && b && c ? { a, b, c } : null
 }
 
@@ -539,7 +539,8 @@ export async function runDrillEScenario({
 }) {
   assert.ok(options.execute, "scenario execution requires explicit --execute opt-in")
   assert.ok(client && typeof client.send === "function", "Drill E requires LocalIpcClient.send")
-  options = { ...options, mutationKind: synchronization?.mutationKind ?? reloadKind }
+  options = { ...options, mutationKind: synchronization?.mutationKind ?? reloadKind,
+    readWorkerKind: synchronization?.readWorkerKind ?? reloadKind }
   for (const name of [
     "attachToSessionRequest", "detachFromSessionRequest", "getSessionStateRequest",
     "getRoomEnvironmentStateRequest", "listRoomEnvironmentActionHistoryRequest",
@@ -651,7 +652,8 @@ export async function runDrillEScenario({
       [options.agentB, phasePrompt("reads", options.agentB, synchronization
         ? "Call slice_browser_status exactly once on the focused tab, then stop. Do not mutate any tab."
         : readPrompt()), "same-tab reads B"],
-      [options.agentC, phasePrompt("reads", options.agentC, historyPrompt(options.otherTabId, "independent-tab work")), "independent-tab work C"],
+      [options.agentC, phasePrompt("reads", options.agentC, synchronization?.readWorkerPrompt?.()
+        ?? historyPrompt(options.otherTabId, "independent-tab work")), "independent-tab work C"],
     ], prompts)
 
     stage = "read_overlap_observation"
