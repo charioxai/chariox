@@ -250,3 +250,73 @@ test("shared Selkies viewer requires a reset and a valid video frame without an 
     assert.equal(fixture.clients[0].closed, 1)
   }
 })
+
+
+test("live sample validates both Room routes, TUI attachments, frames and workflow", async (t) => {
+  const scratch = await inScratch(t)
+  const plan = approvedPlan()
+  const fixture = clientFixture()
+  const protocol = {
+    ...fixture.protocol,
+    requests: {
+      ...fixture.protocol.requests,
+      invokeWorkflowEndpointRequest: () => ({ InvokeWorkflowEndpoint: {} }),
+      getWorkflowRunRequest: () => ({ GetWorkflowRun: {} }),
+    },
+    openSelkiesDisplayStream: async () => {
+      let count = 0
+      return {
+        endpoint: { stream_id: "fixture-stream" },
+        async sendControl() {},
+        async receive() { return ++count === 1
+          ? { kind: "text", data: new TextEncoder().encode("VIDEO_STARTED") }
+          : { kind: "binary", data: new Uint8Array([4, ...Array(10).fill(1)]) } },
+        async close() {},
+      }
+    },
+  }
+  const originalSend = protocol.LocalIpcClient.prototype.send
+  let wrongEnvironment = false
+  protocol.LocalIpcClient.prototype.send = async function(request) {
+    if (request.InvokeWorkflowEndpoint) return { WorkflowRunInvoked: { workflow_run: { id: "run-1" } } }
+    if (request.GetWorkflowRun) return { WorkflowRun: { workflow_run: { id: "run-1", status: "Completed" } } }
+    const response = await originalSend.call(this, request)
+    if (wrongEnvironment && request.GetRoomEnvironmentState) response.RoomEnvironmentState.environment.environment_id = "foreign"
+    return response
+  }
+  const child = Object.assign(new EventEmitter(), { pid: 32125, exitCode: null, signalCode: null })
+  const runtime = await createRoomCoordinatedLoadRuntime({ plan, ...scratch }, {
+    protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
+    spawn: () => child,
+    execFileAsync: async (cmd, args) => args[0] === "stats"
+      ? { stdout: "chariox-slice-drillh-runtime-test-123-one|12.5%|200 MiB / 2 GiB\n" }
+      : fakeExecFile(cmd, args),
+    tuiProcess: {
+      waitForAutomationRoom: async (state) => { state.attachmentId = state.route + "-attachment" },
+      readAutomationSnapshot: async (socket) => ({ session: { id: "room-1" }, attachmentId: socket.includes("relay-tui") ? "relay-attachment" : "local-attachment" }),
+      readOwnedProcessMetrics: async () => ({ count: 2, rssBytes: 1000 }),
+      stopProcessGroup: async () => {}, removeAutomationSocket: async () => {},
+    },
+  })
+  const tasks = []
+  try {
+    for (const route of ["local", "relay"]) tasks.push(await runtime.startViewer(null, { id: "web-" + route, route }))
+    for (const route of ["local", "relay"]) tasks.push(await runtime.startTui(null, { id: route === "local" ? "local-tui" : "relay-tui", route }))
+    const workflowTask = await runtime.startWorkflow()
+    tasks.push(workflowTask)
+    const sample = await runtime.sample(null, { sampleIndex: 0, ownedTasks: tasks, workflowTask, elapsedMs: 100 })
+    assert.equal(sample.workflowStatus, "completed")
+    assert.equal(sample.viewerLocalFrameBytes, 11)
+    assert.equal(sample.viewerRelayFrameBytes, 11)
+    assert.equal(sample.aggregateContainerMemoryBytes, 200 * 1024 ** 2)
+    assert.equal(sample.aggregateContainerCpuPercent, 12.5)
+    assert.equal(sample.ownedProcessCount, 2)
+    assert.ok(sample.localKernelLatencyMs >= 0)
+    assert.ok(sample.relayKernelLatencyMs >= 0)
+    wrongEnvironment = true
+    await assert.rejects(runtime.sample(null, { sampleIndex: 1, ownedTasks: tasks, workflowTask, elapsedMs: 200 }), /different or unready Room/)
+  } finally {
+    wrongEnvironment = false
+    for (const task of tasks.reverse()) await runtime.stopOwnedTask(task)
+  }
+})

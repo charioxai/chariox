@@ -75,12 +75,6 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
     clients.set(route, client)
     return client
   }
-  const unwrap = (response, variant) => {
-    if (!response || typeof response !== "object" || !Object.hasOwn(response, variant)) {
-      throw new Error("public kernel response omitted its expected variant")
-    }
-    return response[variant]
-  }
   const own = (kind, id, privateState, extras = {}) => {
     const stopToken = randomUUID()
     taskStates.set(stopToken, { runId: plan.runId, kind, id, ...privateState })
@@ -424,6 +418,13 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
   }
 
   return runtime
+}
+
+function unwrap(response, variant) {
+  if (!response || typeof response !== "object" || !Object.hasOwn(response, variant)) {
+    throw new Error("public kernel response omitted its expected variant")
+  }
+  return response[variant]
 }
 
 async function measureRoomLatency(client, requests, slices) {
