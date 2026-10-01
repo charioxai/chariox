@@ -643,6 +643,11 @@ function validateRequest(request) {
     validateProvisioner(request.action, request.environment, request.files)
     return
   }
+  if (request?.kind === "provider_auth_layout") {
+    exactKeys(request, ["kind", "container"], "provider auth layout request")
+    validateSliceContainer(request.container, "provider auth layout container")
+    return
+  }
   if (request?.kind === "capture_preflight") {
     exactKeys(request, ["kind", "container"], "slice capture preflight request")
     validateResource(request.container, "slice capture container")
@@ -1481,6 +1486,10 @@ function execute(request) {
       docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
     commitSource = inspectDockerObject("container", request.args[1])
     commitParent = inspectDockerObject("image", commitSource.Image)
+  }
+  if (request.kind === "provider_auth_layout") {
+    const protectedLayout = protectedLayouts.providerAuthProtected(request.container)
+    return {status: 0, stdoutBase64: Buffer.from(JSON.stringify({protectedLayout})).toString("base64"), stderrBase64: ""}
   }
   if (request.kind === "capture_preflight") {
     const layout = protectedLayouts.preflight(request.container)

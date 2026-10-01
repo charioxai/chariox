@@ -1,21 +1,24 @@
 import { constants, openSync, closeSync, fstatSync, readFileSync, writeFileSync, fsyncSync, mkdirSync, readdirSync, lstatSync } from "node:fs"
 import { join, dirname, basename, parse } from "node:path"
 import { createECDH, createPrivateKey, createPublicKey, randomBytes, sign, verify, timingSafeEqual } from "node:crypto"
+import { isVerifiedHostAncestor } from "./protected-namespace-entry.mjs"
 import { verifyPrivateHostDirectory } from "./protected-host-root.mjs"
 import { requireRetainedRuntimeIdentity, writeProtectedLayoutReceipt, readProtectedLayoutReceipt } from "./protected-layout-store.mjs"
 
 function refuse() { throw new Error("Protected identity retention proof is unavailable; this slice has not started") }
-function readPrivateFile(path, owner) {
+export function readPrivateFile(path, owner) {
   if (process.platform !== "linux") refuse()
   const descriptors = []
   try {
     let directory = openSync(parse(path).root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
     descriptors.push(directory)
+    let current = parse(path).root
     for (const component of dirname(path).slice(1).split("/")) {
       directory = openSync(`/proc/${process.pid}/fd/${directory}/${component}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
       descriptors.push(directory)
+      current = join(current, component)
       const metadata = fstatSync(directory)
-      if (!metadata.isDirectory() || (metadata.uid !== 0 && metadata.uid !== owner) || (metadata.mode & 0o022) !== 0) refuse()
+      if (!metadata.isDirectory() || (metadata.uid !== 0 && metadata.uid !== owner && !isVerifiedHostAncestor(current, metadata)) || (metadata.mode & 0o022) !== 0) refuse()
     }
     const parent = fstatSync(directory)
     if (parent.uid !== owner || (parent.mode & 0o077) !== 0) refuse()

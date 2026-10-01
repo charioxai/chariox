@@ -78,6 +78,9 @@ enum BrokerRequest<'a> {
         container: &'a str,
         path: &'a str,
     },
+    ProviderAuthLayout {
+        container: &'a str,
+    },
     CapturePreflight {
         container: &'a str,
     },
@@ -239,6 +242,29 @@ fn broker_is_configured() -> bool {
 
 pub(super) fn configured() -> bool {
     broker_is_configured()
+}
+
+pub(super) fn provider_auth_protected(container: &str) -> io::Result<bool> {
+    if !broker_is_configured() {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Layout {
+            protected_layout: bool,
+        }
+        let output = execute(&BrokerRequest::ProviderAuthLayout { container })?;
+        if output.status.success() {
+            return serde_json::from_slice::<Layout>(&output.stdout)
+                .map(|layout| layout.protected_layout)
+                .map_err(io::Error::other);
+        }
+    }
+    Err(io::Error::other(
+        "provider auth layout verification refused",
+    ))
 }
 
 pub(super) fn require_capture_preflight(container: &str) -> io::Result<()> {

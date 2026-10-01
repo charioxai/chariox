@@ -666,6 +666,34 @@ pub fn start_local_docker_slice_provider_login(
     })
 }
 
+fn provider_auth_paths(
+    account: Option<&LocalDockerProviderAccount>,
+    protected: bool,
+) -> (String, String) {
+    let root = if protected {
+        "/var/lib/chariox/slice-private/provider-accounts"
+    } else {
+        "/home/slice/.chariox/daemon/provider-accounts"
+    };
+    let owner = account
+        .map(|account| account.owner_path_component.as_str())
+        .unwrap_or("local-user");
+    let profile = account
+        .map(|account| account.profile_id.as_str())
+        .unwrap_or("default");
+    if protected || account.is_some() {
+        (
+            format!("{root}/{owner}/codex/{profile}/codex/auth.json"),
+            format!("{root}/{owner}/opencode/{profile}/data/opencode/auth.json"),
+        )
+    } else {
+        (
+            "/home/slice/.codex/auth.json".to_string(),
+            "/home/slice/.local/share/opencode/auth.json".to_string(),
+        )
+    }
+}
+
 pub fn inspect_local_docker_slice_provider_auth(
     record: &SliceRecord,
     provider: &str,
@@ -681,20 +709,13 @@ pub fn inspect_local_docker_slice_provider_auth(
     let account_profile = provider_account
         .map(|account| account.profile_id.as_str())
         .unwrap_or("default");
-    let profile_base = provider_account.map(|account| {
-        format!(
-            "/home/slice/.chariox/daemon/provider-accounts/{}/{}/{}",
-            account.owner_path_component, provider, account.profile_id
-        )
-    });
-    let codex_path = profile_base
-        .as_ref()
-        .map(|base| format!("{base}/codex/auth.json"))
-        .unwrap_or_else(|| "/home/slice/.codex/auth.json".to_string());
-    let opencode_path = profile_base
-        .as_ref()
-        .map(|base| format!("{base}/data/opencode/auth.json"))
-        .unwrap_or_else(|| "/home/slice/.local/share/opencode/auth.json".to_string());
+    let protected = broker::provider_auth_protected(&container).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "slice.auth.inspect",
+            message: format!("failed to verify provider auth layout: {error}"),
+        }
+    })?;
+    let (codex_path, opencode_path) = provider_auth_paths(provider_account, protected);
     let checks = match provider {
         "all" => vec![
             ("codex", codex_path.as_str()),

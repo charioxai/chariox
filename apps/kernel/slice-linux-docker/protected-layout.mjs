@@ -5,6 +5,7 @@ export const PRIVATE_ENVIRONMENT = Object.freeze({
   CHARIOX_HOME: `${PRIVATE_ROOT}/kernel`,
   CHARIOX_MANAGED_PROVIDER_HOME: `${PRIVATE_ROOT}/provider-home`,
   CHARIOX_SLICE_PRIVATE_ROOT: PRIVATE_ROOT,
+  GH_CONFIG_DIR: `${PRIVATE_ROOT}/provider-home/.config/gh`,
 })
 
 const PUBLIC_ENVIRONMENT = new Set([
