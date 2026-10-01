@@ -56,7 +56,26 @@ impl DaemonApp {
             self.ensure_prompt_provider_run_for_agent(session_id, agent_id)
         };
         self.turn_substitute_launch = None;
-        launched
+        let provider_run_id = launched?;
+        // The workflow node keeps its worktree claim; it now belongs to the
+        // substitute run that settles the node.
+        if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        {
+            self.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+            self.acquire_workflow_node_workspace_claim(
+                session_id,
+                &provider_run_id,
+                agent_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+        }
+        Ok(provider_run_id)
     }
 
     /// The profile a provider launch for `agent` uses, with the turn it reruns

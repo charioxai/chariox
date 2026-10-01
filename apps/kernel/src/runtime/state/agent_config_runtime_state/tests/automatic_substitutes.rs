@@ -536,6 +536,13 @@ async fn a_failed_workflow_turn_reruns_without_failing_its_workflow_run() {
         substitute.workflow_tools_enabled(),
         "the rerun launches through the workflow path"
     );
+    assert!(
+        turn.runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(substitute.id()),
+        "the node's worktree claim moves to the substitute run"
+    );
     let session = turn
         .runtime
         .owned

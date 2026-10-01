@@ -78,6 +78,9 @@ impl KernelRuntimeState {
                 .await;
             let error = match launched {
                 Ok(provider_run_id) => {
+                    // The failed attempt's turn tracking ends here; the turn
+                    // continues on the substitute run.
+                    let _ = self.owned.clear_prompt_activity(failed_run.id());
                     let dispatch =
                         self.turn_rerun_dispatch(session_id, &provider_run_id, active_prompt)?;
                     if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
