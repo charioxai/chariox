@@ -533,6 +533,7 @@ export async function runDrillEScenario({
   client,
   requests,
   options,
+  synchronization = null,
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
@@ -635,24 +636,37 @@ export async function runDrillEScenario({
       return null
     }
 
+    const phasePrompt = (phase, agentId, prompt) =>
+      (synchronization?.promptPrefix(phase, agentId) ?? "") + prompt
     stage = "read_prompt_submission"
+    await synchronization?.beforePhase("reads")
     await submitTogether(bounded, requests, options.sessionId, attachmentId, [
-      [options.agentA, readPrompt(), "same-tab reads A"],
-      [options.agentB, readPrompt(), "same-tab reads B"],
-      [options.agentC, historyPrompt(options.otherTabId, "independent-tab work"), "independent-tab work C"],
+      [options.agentA, phasePrompt("reads", options.agentA, synchronization
+        ? "Call slice_browser_status exactly once on the focused tab, then stop. Do not mutate any tab."
+        : readPrompt()), "same-tab reads A"],
+      [options.agentB, phasePrompt("reads", options.agentB, synchronization
+        ? "Call slice_browser_status exactly once on the focused tab, then stop. Do not mutate any tab."
+        : readPrompt()), "same-tab reads B"],
+      [options.agentC, phasePrompt("reads", options.agentC, historyPrompt(options.otherTabId, "independent-tab work")), "independent-tab work C"],
     ], prompts)
 
     stage = "read_overlap_observation"
-    await waitFor((environment) => readOverlap(environment, options),
+    const reads = await waitFor((environment) => readOverlap(environment, options),
       startedAt + Math.floor(options.timeoutMs * 0.3))
+    if (synchronization) {
+      assert.ok(reads, "MP-08/MP-10 fixture failed to produce three overlapping read-phase actions")
+      synchronization.observed("reads", [reads.a, reads.b, reads.c])
+      await synchronization.settle("reads", { prompts, deadline, attachmentId })
+    }
 
     let firstMutation = null
     if (now() < deadline) {
       stage = "first_mutation_prompt_submission"
+      await synchronization?.beforePhase("mutations")
       await submitTogether(bounded, requests, options.sessionId, attachmentId, [
-        [options.agentA, historyPrompt(options.sameTabId, "first same-tab mutation"), "first mutation A"],
-        [options.agentC, historyPrompt(options.otherTabId, "independent-tab concurrency"), "independent mutation C"],
-        [options.agentB, historyPrompt(options.sameTabId, "second same-tab mutation"), "second mutation B"],
+        [options.agentA, phasePrompt("mutations", options.agentA, historyPrompt(options.sameTabId, "first same-tab mutation")), "first mutation A"],
+        [options.agentC, phasePrompt("mutations", options.agentC, historyPrompt(options.otherTabId, "independent-tab concurrency")), "independent mutation C"],
+        [options.agentB, phasePrompt("mutations", options.agentB, historyPrompt(options.sameTabId, "second same-tab mutation")), "second mutation B"],
       ], prompts)
       stage = "first_mutation_observation"
       firstMutation = await waitFor((environment) =>
@@ -663,7 +677,11 @@ export async function runDrillEScenario({
     if (firstMutation && now() < deadline) {
       stage = "same_tab_queue_observation"
       const pair = now() < deadline
-        ? await waitFor((environment) => queuePair(environment, options),
+        ? await waitFor((environment) => {
+          const pair = queuePair(environment, options)
+          const independent = runningMutation(environment, options.agentC, options.otherTabId)
+          return pair && (!synchronization || independent) ? { ...pair, independent } : null
+        },
           startedAt + Math.floor(options.timeoutMs * 0.8))
         : null
       if (pair) {
@@ -691,10 +709,13 @@ export async function runDrillEScenario({
           && takeover.blockingActionIds.includes(pair.first.action_id),
         "kernel takeover response did not bind cancellation to the observed running mutation")
         if (takeoverEnvironment) retain(takeoverEnvironment, { force: true, forcedKind: "takeover" })
+        synchronization?.observed("mutations", [pair.first, pair.second, pair.independent])
         stage = "human_takeover_observation"
         await waitFor((environment) => humanOwnsTab(environment, options.sameTabId), deadline)
       }
+      if (synchronization) assert.ok(pair, "MP-08/MP-10 fixture failed to produce queued and independent mutations")
     }
+    await synchronization?.settle("mutations", { prompts, deadline, attachmentId })
 
     stage = "final_environment_observation"
     const finalResponse = await bounded.send(requests.getRoomEnvironmentStateRequest(options.sessionId))
@@ -722,6 +743,7 @@ export async function runDrillEScenario({
     failure = error
     failureStage = stage
   } finally {
+    synchronization?.close()
     stage = "cleanup"
     try {
       cleanup = await cleanupDrillState({

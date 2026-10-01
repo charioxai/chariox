@@ -735,6 +735,26 @@ test("real-shaped kernel sequence proves concurrent reads, serialized mutations,
   assert.equal(kernel.detachAttempts(), 1)
 })
 
+test("MP-08/MP-10: fixture synchronization is driven by observed actions and settles before cleanup", async () => {
+  const kernel = fakeKernel({ sequence: fullSequence() })
+  const events = []
+  let clock = 10_000
+  const capture = await runDrillEScenario({
+    client: kernel.client, requests: requestBuilders(), options: options(),
+    now: () => clock, sleep: async (ms) => { clock += ms },
+    synchronization: {
+      beforePhase: async phase => { events.push(phase) },
+      promptPrefix: (phase, agent) => `MP-08/MP-10 barrier ${phase} ${agent}. `,
+      observed: (phase, actions) => { events.push(`${phase}:${actions.length}`) },
+      settle: async phase => { events.push(`settle:${phase}`) },
+      close: () => { events.push("close") },
+    },
+  })
+  assert.equal(capture.report.status, "passed")
+  assert.deepEqual(events, ["reads", "reads:3", "settle:reads", "mutations", "mutations:3", "settle:mutations", "close"])
+  assert.ok(kernel.submitted.every(p => p.prompt.startsWith("MP-08/MP-10 barrier")))
+})
+
 test("strict observer rejects wrong actors, environments, generations, identities, and unchanged ownership", async () => {
   const sequence = fullSequence()
   const kernel = fakeKernel({ sequence })
