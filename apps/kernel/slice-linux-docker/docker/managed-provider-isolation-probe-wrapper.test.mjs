@@ -55,11 +55,16 @@ async function makeFixture(
     if (seedDeniedPayload) {
       await writeFile(path.join(deniedRoot, ".protected-payload"), `${payloadMarker}\n`);
     }
-    // Keys are relative directories (masked mountpoints); a true value seeds a file.
-    for (const [name, payload] of Object.entries(privateRootEntries ?? {})) {
+    // Keys are relative directories (masked mountpoints). A true value seeds a
+    // file; an object may also set the directory mode after seeding.
+    const modes = [];
+    for (const [name, entry] of Object.entries(privateRootEntries ?? {})) {
+      const { payload = false, mode } = typeof entry === "object" ? entry : { payload: entry };
       await mkdir(path.join(deniedRoot, name), { recursive: true });
       if (payload) await writeFile(path.join(deniedRoot, name, ".protected-payload"), `${payloadMarker}\n`);
+      if (mode !== undefined) modes.push([path.join(deniedRoot, name), mode]);
     }
+    for (const [directory, mode] of modes.reverse()) await chmod(directory, mode);
     await chmod(deniedRoot, deniedPathMode);
   }
 
@@ -194,10 +199,13 @@ test("allows only an empty masked slice state directory and diagnoses payload", 
       assert.match(run.result, /^masked_private_root_parents=.*var\/lib\/chariox$/m);
     }
 
-    // Any payload below the masked roots still fails without exposing it.
+    // Any payload below the masked roots still fails without exposing it,
+    // including below a searchable directory that cannot be listed.
     for (const [name, privateRootEntries] of [
       ["private-root-payload", { "slice-private": true }],
       ["nested-root-payload", { "slice-private/provider-home": true }],
+      ["searchable-unlistable-root", { "slice-private": { payload: true, mode: 0o111 } }],
+      ["searchable-unlistable-nested", { "slice-private/provider-home": { payload: true, mode: 0o111 } }],
     ]) {
       const fixture = await makeFixture(path.join(root, name), {
         deniedPath: "var/lib/chariox",
@@ -216,6 +224,7 @@ test("allows only an empty masked slice state directory and diagnoses payload", 
     await Promise.all(
       fixtures.map((fixture) => rm(fixture.workspace, { recursive: true, force: true })),
     );
+    await execFileAsync("chmod", ["-R", "u+rwx", root]).catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
 });
