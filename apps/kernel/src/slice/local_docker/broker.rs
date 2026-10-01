@@ -20,7 +20,7 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(unix)]
 use std::thread;
 #[cfg(unix)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 const BROKER_SOCKET_ENV: &str = "CHARIOX_SLICE_DOCKER_BROKER_SOCKET";
@@ -34,6 +34,8 @@ const MAX_BROKER_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_BROKER_REQUEST_BYTES: usize = 12 * 1024 * 1024;
 #[cfg(unix)]
 const BROKER_IO_TIMEOUT: Duration = Duration::from_secs(21 * 60);
+#[cfg(unix)]
+const LOCAL_BROKER_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 #[cfg(unix)]
 struct BrokerConnection {
@@ -45,6 +47,16 @@ struct BrokerConnection {
 static BROKER: OnceLock<Mutex<Option<BrokerConnection>>> = OnceLock::new();
 #[cfg(unix)]
 static BROKER_CONFIGURED: OnceLock<bool> = OnceLock::new();
+
+/// Why the local DEV broker never connected; a later broker use retries it.
+#[cfg(unix)]
+struct LocalBrokerOutage {
+    reason: String,
+    last_attempt: Instant,
+}
+
+#[cfg(unix)]
+static LOCAL_BROKER_OUTAGE: Mutex<Option<LocalBrokerOutage>> = Mutex::new(None);
 
 #[cfg(unix)]
 #[derive(serde::Serialize)]
@@ -142,8 +154,11 @@ pub fn initialize() {
             None
         };
         let local_configured = local.is_some();
-        if let Some(Ok(path)) = local {
-            socket_path = Some(path.into_os_string());
+        let mut local_failure = None;
+        match local {
+            Some(Ok(path)) => socket_path = Some(path.into_os_string()),
+            Some(Err(error)) => local_failure = Some(error.to_string()),
+            None => {}
         }
         let configured = local_configured
             || socket_path.is_some()
@@ -187,6 +202,10 @@ pub fn initialize() {
                 return;
             }
         }
+        if let Some(reason) = local_failure {
+            record_local_broker_outage(reason);
+            return;
+        }
         let Some(socket_path) = socket_path else {
             return;
         };
@@ -197,26 +216,118 @@ pub fn initialize() {
         if state.is_some() {
             return;
         }
-        for _ in 0..50 {
-            match UnixStream::connect(Path::new(&socket_path)) {
-                Ok(writer) => {
-                    if configure_stream_deadlines(&writer).is_err() {
-                        return;
-                    }
-                    let reader = match writer.try_clone() {
-                        Ok(reader) => reader,
-                        Err(_) => return,
-                    };
-                    *state = Some(BrokerConnection {
-                        reader: BufReader::new(reader),
-                        writer,
-                    });
-                    return;
-                }
-                Err(_) => thread::sleep(Duration::from_millis(100)),
+        match connect(Path::new(&socket_path)) {
+            Ok(connection) => *state = Some(connection),
+            Err(error) if local_configured => record_local_broker_outage(error.to_string()),
+            Err(_) => {}
+        }
+    }
+}
+
+#[cfg(unix)]
+fn connect(socket_path: &Path) -> io::Result<BrokerConnection> {
+    let mut refused = None;
+    for _ in 0..50 {
+        match UnixStream::connect(socket_path) {
+            Ok(writer) => {
+                configure_stream_deadlines(&writer)?;
+                let reader = writer.try_clone()?;
+                return Ok(BrokerConnection {
+                    reader: BufReader::new(reader),
+                    writer,
+                });
+            }
+            Err(error) => {
+                refused = Some(error);
+                thread::sleep(Duration::from_millis(100));
             }
         }
     }
+    Err(io::Error::other(format!(
+        "managed slice Docker broker transport refused the connection: {}",
+        refused.map_or_else(String::new, |error| error.to_string())
+    )))
+}
+
+#[cfg(unix)]
+fn record_local_broker_outage(reason: String) {
+    // The process logger starts after the broker, so stderr carries this one.
+    eprintln!(
+        "chariox-kernel: managed slice Docker broker is unavailable: {reason}; a later slice operation retries it"
+    );
+    *LOCAL_BROKER_OUTAGE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(LocalBrokerOutage {
+        reason,
+        last_attempt: Instant::now(),
+    });
+}
+
+#[cfg(unix)]
+fn start_local_broker() -> io::Result<BrokerConnection> {
+    let path = super::local_authority::start().unwrap_or_else(|| {
+        Err(io::Error::other(
+            "local DEV broker enrollment is no longer present",
+        ))
+    })?;
+    connect(&path)
+}
+
+/// Retries a local DEV broker that never connected, at most once per interval,
+/// and logs every outcome. Established connections are never restarted here.
+#[cfg(unix)]
+fn retry_local_broker(
+    outage: &mut Option<LocalBrokerOutage>,
+    now: Instant,
+    start: impl FnOnce() -> io::Result<BrokerConnection>,
+) -> Option<BrokerConnection> {
+    let current = outage.as_mut()?;
+    if now.saturating_duration_since(current.last_attempt) < LOCAL_BROKER_RETRY_INTERVAL {
+        return None;
+    }
+    current.last_attempt = now;
+    match start() {
+        Ok(connection) => {
+            *outage = None;
+            crate::logging::info(
+                "slice.local_docker.broker",
+                "managed slice Docker broker started on retry",
+            );
+            Some(connection)
+        }
+        Err(error) => {
+            current.reason = error.to_string();
+            crate::logging::warn_with_fields(
+                "slice.local_docker.broker",
+                "managed slice Docker broker start failed; a later slice operation retries it",
+                serde_json::json!({ "reason": current.reason }),
+            );
+            None
+        }
+    }
+}
+
+#[cfg(unix)]
+fn broker_unavailable() -> io::Error {
+    unavailable(
+        &LOCAL_BROKER_OUTAGE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+#[cfg(unix)]
+fn unavailable(outage: &Option<LocalBrokerOutage>) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        match outage {
+            Some(outage) => format!(
+                "managed slice Docker broker is unavailable: {}; a later slice operation retries it",
+                outage.reason
+            ),
+            None => "managed slice Docker broker is unavailable".to_string(),
+        },
+    )
 }
 
 #[cfg(unix)]
@@ -331,13 +442,17 @@ fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
     let mut state = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state.is_none() {
+        *state = retry_local_broker(
+            &mut LOCAL_BROKER_OUTAGE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            Instant::now(),
+            start_local_broker,
+        );
+    }
     let result = (|| {
-        let connection = state.as_mut().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotConnected,
-                "managed slice Docker broker is unavailable",
-            )
-        })?;
+        let connection = state.as_mut().ok_or_else(broker_unavailable)?;
         connection
             .writer
             .write_all(&(request.len() as u32).to_be_bytes())?;
@@ -673,6 +788,59 @@ pub(super) fn mark_broker_stream_close_on_exec(stream: &UnixStream) -> io::Resul
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    fn outage(reason: &str, last_attempt: Instant) -> Option<LocalBrokerOutage> {
+        Some(LocalBrokerOutage {
+            reason: reason.to_string(),
+            last_attempt,
+        })
+    }
+
+    fn connection() -> BrokerConnection {
+        let (writer, _peer) = UnixStream::pair().expect("socket pair should open");
+        BrokerConnection {
+            reader: BufReader::new(writer.try_clone().expect("socket should clone")),
+            writer,
+        }
+    }
+
+    #[test]
+    fn a_failed_local_broker_start_is_retried_later_and_recovers() {
+        let failed_at = Instant::now();
+        let mut state = outage("transport refused: socket owner 0 mode 0755", failed_at);
+        let too_soon = failed_at + Duration::from_secs(1);
+        assert!(retry_local_broker(&mut state, too_soon, || panic!("retry waits")).is_none());
+
+        let later = failed_at + LOCAL_BROKER_RETRY_INTERVAL;
+        let still_failing = retry_local_broker(&mut state, later, || {
+            Err(io::Error::other(
+                "helper exited before publishing the transport",
+            ))
+        });
+        assert!(still_failing.is_none());
+        let error = unavailable(&state).to_string();
+        assert!(
+            error.contains("helper exited before publishing the transport")
+                && error.contains("a later slice operation retries it"),
+            "callers must see why the broker is missing: {error}"
+        );
+
+        let recovered = retry_local_broker(&mut state, later + LOCAL_BROKER_RETRY_INTERVAL, || {
+            Ok(connection())
+        });
+        assert!(recovered.is_some());
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn only_a_local_broker_that_never_connected_is_retried() {
+        let mut state = None;
+        assert!(retry_local_broker(&mut state, Instant::now(), || panic!("no retry")).is_none());
+        assert_eq!(
+            unavailable(&state).to_string(),
+            "managed slice Docker broker is unavailable"
+        );
+    }
 
     #[test]
     fn managed_provider_isolation_probe_survives_broker_filter() {

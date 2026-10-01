@@ -1,9 +1,10 @@
-import { mkdtempSync, chmodSync, lstatSync, existsSync, readFileSync, unlinkSync, rmdirSync } from "node:fs"
+import { mkdtempSync, chmodSync, lstatSync, readFileSync, unlinkSync, rmdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
 import { readLocalDevEnrollment, verifyInstalledLocalSource } from "./protected-local-docker-authority.mjs"
 import { watchLocalBrokerLifetime } from "./local-docker-broker-lifetime.mjs"
+import { LocalBrokerRefusal, awaitLocalBrokerTransport } from "./local-docker-broker-transport.mjs"
 
 // Only the ordinary home kernel starts this launcher. No private input is placed
 // in argv, environment, image or transport directory.
@@ -34,7 +35,7 @@ try {
   verifyInstalledLocalSource(enrollment)
   const socketIdentity = lstatSync("/run/docker.sock")
   if (!socketIdentity.isSocket() || socketIdentity.uid !== enrollment.socket.uid
-      || socketIdentity.gid !== enrollment.socket.gid || (socketIdentity.mode & 0o777) !== enrollment.socket.mode) throw new Error("socket refused")
+      || socketIdentity.gid !== enrollment.socket.gid || (socketIdentity.mode & 0o777) !== enrollment.socket.mode) throw new LocalBrokerRefusal("Docker socket differs from the enrollment")
   directory = mkdtempSync(join(tmpdir(), `chariox-local-broker-${uid}-`))
   chmodSync(directory, 0o700)
   const socket = join(directory, "control.sock")
@@ -64,16 +65,12 @@ try {
     `${enrollment.sourceRoot}/apps/kernel/slice-linux-docker/managed-docker-broker.mjs`], {env, stdio: "ignore"})
   child.once("error", quit)
   child.once("exit", quit)
-  const deadline = performance.now() + 30_000
-  while (!existsSync(socket)) {
-    if (child.exitCode !== null || performance.now() >= deadline) throw new Error("startup refused")
-    await new Promise(resolve => setTimeout(resolve, 100))
-  }
-  const metadata = lstatSync(socket)
-  if (!metadata.isSocket() || metadata.uid !== uid || (metadata.mode & 0o777) !== 0o600) throw new Error("transport refused")
+  await awaitLocalBrokerTransport(socket, {ownerUid: uid, helperExited: () => child.exitCode !== null})
   process.stdout.write(`${socket}\n`)
-} catch {
+} catch (error) {
   cleanup()
-  process.stderr.write("Verified local Docker DEV broker startup refused\n")
+  // The kernel logs this line; only refusals carry a reason.
+  const reason = error instanceof LocalBrokerRefusal ? `: ${error.message}` : ""
+  process.stderr.write(`Verified local Docker DEV broker startup refused${reason}\n`)
   process.exit(1)
 }
