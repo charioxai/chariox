@@ -1,9 +1,11 @@
 import { parseKeypress } from "@opentui/core"
-import { useKeyboard } from "@opentui/solid"
+import { useKeyboard, useRenderer } from "@opentui/solid"
+import { onCleanup } from "solid-js"
 
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
+import { routeInteractionPastes } from "./interaction-paste-routing.js"
 import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
@@ -499,6 +501,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
   const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
   const handleFocusedInteractionKey = focusedInteractionChoiceController.handleKey
+  onCleanup(routeInteractionPastes(
+    useRenderer().keyInput,
+    focusedInteractionChoiceController.handlePaste,
+    () => deps.kernelApprovalOwnsInput?.() ?? false,
+  ))
 
   const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
     handleKernelApprovalKey: (event) => deps.handleKernelApprovalKey?.(event) ?? false,
