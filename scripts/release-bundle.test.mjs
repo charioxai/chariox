@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { runtimeReleaseFixture } from './app-runtime-release-fixture.mjs';
-import { assemble, parseArgs, signBundle, verifyBundle } from './release-bundle.mjs';
+import { assemble, exportSliceBuildContext, parseArgs, signBundle, verifyBundle } from './release-bundle.mjs';
 import { signRuntimeRelease } from './sign-app-runtime-release.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -36,10 +36,13 @@ async function bundleInputs(root, target) {
   await mkdir(join(source, 'deploy/release-bundle'), { recursive: true });
   await copyFile(join(repository, 'deploy/release-bundle/install.sh'), join(source, 'deploy/release-bundle/install.sh'));
   await put(join(source, 'LICENSE'), 'license');
+  const sliceBuildContext = join(root, 'slice-build-context');
+  await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/runtime-source-roots.txt'), 'apps/kernel\n');
+  await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'), '#!/bin/sh\n', 0o755);
   const releaseKey = generateKeyPairSync('ed25519').privateKey;
   const releaseKeyPath = join(root, 'bundle-release.pem');
   await put(releaseKeyPath, releaseKey.export({ type: 'pkcs8', format: 'pem' }), 0o600);
-  return { executables, sourceRoot: source, releaseKeyPath, releasePublic: keyHex(releaseKey) };
+  return { executables, sourceRoot: source, sliceBuildContext, releaseKeyPath, releasePublic: keyHex(releaseKey) };
 }
 
 async function fixture(context, { target = 'linux-x64', runtimeCommit = commit } = {}) {
@@ -60,7 +63,7 @@ async function fixture(context, { target = 'linux-x64', runtimeCommit = commit }
   await put(join(runtime, 'runtime-inventory.sig'), sign(null, inventory, runtimeKey).toString('hex'), 0o444);
   await put(join(runtime, '.runtime-lease'), '', 0o444);
   const options = {
-    platform: target, version: '0.2.0', sourceCommit: commit, executables: inputs.executables,
+    platform: target, version: '0.2.0', sourceCommit: commit, executables: inputs.executables, sliceBuildContext: inputs.sliceBuildContext,
     runtime, runtimePublicKey: keyHex(runtimeKey), sourceRoot: inputs.sourceRoot, output: join(root, 'out', `chariox-0.2.0-${target}`),
   };
   return { root, options, runtimeKey, releaseKeyPath: inputs.releaseKeyPath, releasePublic: inputs.releasePublic };
@@ -81,9 +84,13 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
     'install.sh', 'libexec/chariox-app-runtime-install', 'libexec/chariox-app-storage',
     'runtime/.runtime-lease', 'runtime/chariox-app-worker', 'runtime/libnode.so.137', 'runtime/runtime-inventory.json',
     'runtime/runtime-inventory.sig', 'runtime/sdk/src/index.js',
+    'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh',
+    'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/runtime-source-roots.txt',
   ]);
   const mode = path => manifest.files.find(file => file.path === path).mode;
-  assert.deepEqual(['bin/chariox', 'install.sh', 'runtime/chariox-app-worker', 'runtime/libnode.so.137', 'LICENSE'].map(mode), ['0755', '0755', '0555', '0444', '0644']);
+  assert.deepEqual(['bin/chariox', 'install.sh', 'runtime/chariox-app-worker', 'runtime/libnode.so.137', 'LICENSE',
+    'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'].map(mode),
+  ['0755', '0755', '0555', '0444', '0644', '0755']);
   assert.equal(assembled.files, manifest.files.length);
 
   await assert.rejects(verifyBundle(options.output, releasePublic), /manifest\.sig/);
@@ -117,6 +124,7 @@ test('assembly refuses inputs that are not the release it names', async (context
   await refused({ version: 'v0.2' }, /semantic version/);
   await refused({ platform: 'windows-x64' }, /--platform must be one of/);
   await refused({ macosSigningReceipt: join(root, 'receipt.json') }, /only to macOS bundles/);
+  await refused({ sliceBuildContext: join(root, 'missing') }, /slice build context's .*runtime-source-roots\.txt is missing/);
   const darwin = await fixture(context, { target: 'darwin-arm64' });
   await refused({ runtime: darwin.options.runtime, runtimePublicKey: darwin.options.runtimePublicKey }, /runtime target darwin-arm64 is not linux-x64/);
 
@@ -189,12 +197,41 @@ test('a bundle carries the runtime that the production signer released outside t
   const output = join(f.root, 'out', 'chariox-0.2.0-linux-x64');
   const assembled = await assemble({ platform: 'linux-x64', version: '0.2.0', sourceCommit: f.proof.sourceCommit,
     executables: inputs.executables, runtime: f.options.output, runtimePublicKey: receipt.publicKeyHex,
-    sourceRoot: inputs.sourceRoot, output });
+    sliceBuildContext: inputs.sliceBuildContext, sourceRoot: inputs.sourceRoot, output });
   assert.deepEqual(assembled.runtime, { inventorySha256: receipt.inventorySha256, publicKeyHex: receipt.publicKeyHex });
   await signBundle(output, inputs.releaseKeyPath);
   assert.equal((await verifyBundle(output, inputs.releasePublic)).runtime.inventorySha256, receipt.inventorySha256);
   await assert.rejects(assemble({ platform: 'linux-x64', version: '0.2.0', sourceCommit: 'c'.repeat(40), executables: inputs.executables,
-    runtime: f.options.output, runtimePublicKey: receipt.publicKeyHex, sourceRoot: inputs.sourceRoot, output: `${output}-other` }), /runtime source/);
+    runtime: f.options.output, runtimePublicKey: receipt.publicKeyHex, sliceBuildContext: inputs.sliceBuildContext,
+    sourceRoot: inputs.sourceRoot, output: `${output}-other` }), /runtime source/);
+});
+
+test('the slice build context is exactly the committed runtime source roots and the Dockerfile input', async (context) => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'chariox-slice-context-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, 'source');
+  await put(join(source, 'apps/kernel/slice-linux-docker/runtime-source-roots.txt'), 'Cargo.toml\napps/kernel\n');
+  await put(join(source, 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'), '#!/bin/sh\n', 0o755);
+  await put(join(source, 'apps/kernel/src/lib.rs'), '// kernel\n');
+  await put(join(source, 'apps/browser-session-import/chrome-cookie-batch.mjs'), 'export {}\n');
+  await put(join(source, 'Cargo.toml'), '[workspace]\n');
+  await put(join(source, 'docs/unrelated.md'), 'not in the context\n');
+  const run = args => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' }).trim();
+  run(['init', '-q']);
+  run(['add', '.']);
+  run(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']);
+  const head = run(['rev-parse', 'HEAD']);
+  await put(join(source, 'apps/kernel/src/uncommitted.rs'), 'not committed\n');
+
+  const exported = await exportSliceBuildContext(source, head, join(root, 'context'));
+  assert.equal(exported.files, 5);
+  const listing = execFileSync('find', ['.', '-type', 'f'], { cwd: join(root, 'context'), encoding: 'utf8' }).trim().split('\n').sort();
+  assert.deepEqual(listing, ['./Cargo.toml', './apps/browser-session-import/chrome-cookie-batch.mjs', './apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh',
+    './apps/kernel/slice-linux-docker/runtime-source-roots.txt', './apps/kernel/src/lib.rs']);
+  const { stat: statFile } = await import('node:fs/promises');
+  assert.ok((await statFile(join(root, 'context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'))).mode & 0o100);
+  await assert.rejects(exportSliceBuildContext(source, head, join(root, 'context')), /EEXIST/);
+  await assert.rejects(exportSliceBuildContext(source, 'f'.repeat(40), join(root, 'other')), /git show failed/);
 });
 
 // install.sh checks the bundle with python3 and OpenSSL 3 (Ed25519 raw verification), as on a Linux host.

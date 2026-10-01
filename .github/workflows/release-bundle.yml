@@ -176,8 +176,10 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/release.pem"' EXIT
           out="$RUNNER_TEMP/out"
           mkdir "$RUNNER_TEMP/executables" && tar -xzf unsigned-linux-x64.tar.gz -C "$RUNNER_TEMP/executables"
+          node scripts/release-bundle.mjs slice-context --source-commit "$COMMIT" --output "$RUNNER_TEMP/slice-build-context"
           node scripts/release-bundle.mjs assemble --platform linux-x64 --version "$VERSION" --source-commit "$COMMIT" \
             --executables "$RUNNER_TEMP/executables" --runtime "$RUNNER_TEMP/runtime" \
+            --slice-build-context "$RUNNER_TEMP/slice-build-context" \
             --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicKeyHex' "$RUNNER_TEMP/runtime-receipt.json")" \
             --output "$out/$BUNDLE"
           (umask 077; printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/release.pem")
@@ -257,6 +259,9 @@ jobs:
             > "$RUNNER_TEMP/macos-signing-receipt.json"
           # Bun's JIT must still run under the hardened runtime.
           test "$("$RUNNER_TEMP/signed/bin/chariox" --version)" = "chariox $VERSION"
+          # The runtime installer must carry macOS enrollment (#431); without it, it answers platform_unsupported.
+          answer=$("$RUNNER_TEMP/signed/libexec/chariox-app-runtime-install" 2>&1 || true)
+          [[ "$answer" == *app_runtime_installer_requires_root* ]] || { echo "the runtime installer has no macOS enrollment: $answer"; exit 1; }
       - name: Codesign the App runtime, then sign its inventory over the signed bytes
         env:
           RUNTIME_RELEASE_KEY: ${{ secrets.CHARIOX_RUNTIME_RELEASE_KEY }}
@@ -279,8 +284,10 @@ jobs:
         run: |
           trap 'rm -f "$RUNNER_TEMP/release.pem"' EXIT
           out="$RUNNER_TEMP/out"
+          node scripts/release-bundle.mjs slice-context --source-commit "$COMMIT" --output "$RUNNER_TEMP/slice-build-context"
           node scripts/release-bundle.mjs assemble --platform darwin-arm64 --version "$VERSION" --source-commit "$COMMIT" \
             --executables "$RUNNER_TEMP/signed" --runtime "$RUNNER_TEMP/runtime" \
+            --slice-build-context "$RUNNER_TEMP/slice-build-context" \
             --macos-signing-receipt "$RUNNER_TEMP/macos-signing-receipt.json" \
             --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicKeyHex' "$RUNNER_TEMP/runtime-receipt.json")" \
             --output "$out/$BUNDLE"

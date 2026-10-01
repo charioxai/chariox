@@ -13,12 +13,15 @@
 #    the runtime key the signed manifest names. --check stops here and needs no root.
 # 2. Runs deploy/local-linux/install-root.sh for --user with the App runtime key
 #    and inventory digest from the signed manifest.
-# 3. Installs chariox (the CLI/TUI) and chariox-app-package into /usr/local/bin.
+# 3. Installs the slice build context the kernel provisions slices from into
+#    /usr/lib/chariox/slice-build-context, and chariox (the CLI/TUI) and
+#    chariox-app-package into /usr/local/bin.
 # 4. Prints the ordinary user's step, deploy/local-linux/install-user.sh, which
 #    installs and starts the kernel as that user's systemd --user unit.
 #
-# Requires bash, python3, openssl and sha256-capable coreutils. To remove Chariox,
-# see deploy/local-linux/install-user.sh uninstall and install-root.sh uninstall.
+# Requires bash, python3, openssl, diffutils and coreutils. To remove Chariox, see
+# deploy/local-linux/install-user.sh uninstall and install-root.sh uninstall, then
+# remove /usr/lib/chariox/slice-build-context and the two /usr/local/bin commands.
 set -euo pipefail
 umask 022
 
@@ -117,6 +120,22 @@ args=(install)
 for user in "${users[@]}"; do args+=(--user "$user"); done
 "$stage/deploy/local-linux/install-root.sh" "${args[@]}" --bin "$stage/libexec" --runtime "$stage/runtime" \
   --runtime-key "$runtime_key" --runtime-digest "$runtime_digest" "${dry_run[@]}"
+
+# A release kernel runs its slice provisioner from the system-wide slice build context.
+context=/usr/lib/chariox/slice-build-context
+if [[ ${#dry_run[@]} -gt 0 ]]; then
+  say "would install $context"
+elif [[ -d "$context" && ! -L "$context" ]] && diff -rq -- "$stage/share/chariox/slice-build-context" "$context" > /dev/null 2>&1; then
+  say "unchanged $context"
+else
+  say "install $context"
+  install -d -m 0755 -o 0 -g 0 /usr/lib/chariox
+  rm -rf -- "$context.chariox-new" "$context.chariox-old"
+  cp -R -- "$stage/share/chariox/slice-build-context" "$context.chariox-new"
+  if [[ -e "$context" || -L "$context" ]]; then mv -- "$context" "$context.chariox-old"; fi
+  mv -- "$context.chariox-new" "$context"
+  rm -rf -- "$context.chariox-old"
+fi
 
 for name in chariox chariox-app-package; do
   if [[ ${#dry_run[@]} -gt 0 ]]; then

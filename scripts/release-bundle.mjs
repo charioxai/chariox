@@ -3,12 +3,18 @@
 // (docs/CHARIOX_DISTRIBUTION_PLAN.md). It runs on the CI builder and never runs
 // the artifacts.
 //
+//   release-bundle.mjs slice-context --source-root DIR --source-commit SHA --output DIR
 //   release-bundle.mjs assemble --platform linux-x64|darwin-arm64 --version V
 //       --source-commit SHA --executables DIR --runtime DIR --runtime-public-key HEX
-//       [--macos-signing-receipt FILE] [--source-root DIR] --output DIR
+//       --slice-build-context DIR [--macos-signing-receipt FILE] [--source-root DIR]
+//       --output DIR
 //   release-bundle.mjs sign --bundle DIR --signing-key PEM
 //   release-bundle.mjs verify --bundle DIR --public-key HEX
 //
+// `slice-context` exports, from the source commit, the slice build context a
+// release kernel runs its slice provisioner from: the provisioner's
+// runtime-source-roots.txt roots (which it fingerprints and builds the slice
+// image from) and the one Dockerfile input outside them, in the repository layout.
 // `assemble` copies already built (and, on macOS, already codesigned and
 // notarized) artifacts into the bundle layout and writes manifest.json: the
 // version, platform, source commit, the signed App runtime's inventory digest
@@ -17,6 +23,7 @@
 // checks that signature against a key from the release authority, then every
 // file's size and SHA-256, refuses any file the manifest does not name, and
 // re-verifies the App runtime's own signed inventory.
+import { spawnSync } from 'node:child_process';
 import { createPrivateKey, createPublicKey, sign as signBytes, verify as verifyBytes } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -28,6 +35,12 @@ export const SCHEMA = 'chariox.release-bundle.v1';
 const MACOS_RECEIPT_SCHEMA = 'chariox.macos-release-signing.v1';
 const RUNTIME_SCHEMA = 'chariox.app-runtime-inventory.v1';
 const RUNTIME_CONTROL = ['runtime-inventory.json', 'runtime-inventory.sig', '.runtime-lease'];
+// Release kernels look for this beside their bin/ (apps/kernel/src/slice/local_docker.rs).
+const SLICE_CONTEXT = 'share/chariox/slice-build-context';
+const SLICE_ROOTS = 'apps/kernel/slice-linux-docker/runtime-source-roots.txt';
+const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
+// The slice Dockerfile's only input outside the runtime source roots.
+const SLICE_EXTRA_INPUTS = ['apps/browser-session-import'];
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const rustBinaries = ['chariox-kernel', 'chariox-relay', 'chariox-app-package'];
@@ -106,6 +119,30 @@ export async function verifyRuntime(directory, keyHex, platform, sourceCommit) {
   }
   if (expected.size) fail(`runtime is missing ${[...expected.keys()].join(', ')}`);
   return { inventorySha256: sha256(inventoryBytes), publicKeyHex: keyHex };
+}
+
+function git(sourceRoot, args, maxBuffer = 1 << 20) {
+  const result = spawnSync('git', ['-C', sourceRoot, ...args], { maxBuffer, env: {
+    PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', LC_ALL: 'C' } });
+  if (result.status !== 0) fail(`git ${args[0]} failed: ${result.stderr?.toString().trim() || result.error?.message}`);
+  return result.stdout;
+}
+
+/** Exports the slice build context of `commit` from the Git repository `sourceRoot`. */
+export async function exportSliceBuildContext(sourceRoot, commit, output) {
+  hex(commit, 40, '--source-commit');
+  const target = resolve(output ?? fail('--output is required'));
+  const roots = git(resolve(sourceRoot), ['show', `${commit}:${SLICE_ROOTS}`]).toString('utf8').split('\n').filter(Boolean);
+  if (!roots.length || roots.some(root => !/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/.test(root) || root.split('/').includes('..')))
+    fail(`${SLICE_ROOTS} lists an invalid root`);
+  const archive = git(resolve(sourceRoot), ['archive', '--format=tar', commit, '--', SLICE_ROOTS, ...roots, ...SLICE_EXTRA_INPUTS], 512 << 20);
+  await mkdir(target, { mode: 0o755 });
+  const unpacked = spawnSync('tar', ['-x', '-f', '-', '-C', target], { input: archive, maxBuffer: 1 << 20 });
+  if (unpacked.status !== 0) {
+    await rm(target, { recursive: true, force: true });
+    fail(`the slice build context did not unpack: ${unpacked.stderr?.toString().trim()}`);
+  }
+  return { output: target, sourceCommit: commit, files: (await files(target)).length };
 }
 
 /** Checks #678's signing receipt covers every executable with the bytes being bundled. */
@@ -190,6 +227,8 @@ export async function assemble(options) {
     installer.push([join(sourceRoot, 'deploy/release-bundle/install.sh'), 'install.sh']);
   }
   installer.push([join(sourceRoot, 'LICENSE'), 'LICENSE']);
+  const sliceContext = resolve(options.sliceBuildContext ?? fail('--slice-build-context is required'));
+  for (const path of [SLICE_ROOTS, SLICE_PROVISIONER]) await regularFile(join(sliceContext, path), `the slice build context's ${path}`);
 
   await mkdir(dirname(output), { recursive: true });
   await mkdir(output, { mode: 0o755 });
@@ -199,6 +238,7 @@ export async function assemble(options) {
       await place(source, output, path);
     }
     for (const path of await files(resolve(options.runtime))) await place(join(resolve(options.runtime), path), output, `runtime/${path}`);
+    for (const path of await files(sliceContext)) await place(join(sliceContext, path), output, `${SLICE_CONTEXT}/${path}`);
     const manifest = await writeManifest(output, {
       name: 'chariox', version: options.version, platform: options.platform, sourceCommit: options.sourceCommit,
       runtime, macosSigning,
@@ -255,7 +295,8 @@ export async function signBundle(bundle, signingKey) {
 }
 
 const COMMANDS = {
-  assemble: ['platform', 'version', 'source-commit', 'executables', 'runtime', 'runtime-public-key', 'macos-signing-receipt', 'source-root', 'output'],
+  'slice-context': ['source-root', 'source-commit', 'output'],
+  assemble: ['platform', 'version', 'source-commit', 'executables', 'runtime', 'runtime-public-key', 'slice-build-context', 'macos-signing-receipt', 'source-root', 'output'],
   sign: ['bundle', 'signing-key'],
   verify: ['bundle', 'public-key'],
 };
@@ -279,7 +320,8 @@ export function parseArgs(argv) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const { command, options } = parseArgs(process.argv.slice(2));
-    const result = command === 'assemble' ? await assemble(options)
+    const result = command === 'slice-context' ? await exportSliceBuildContext(options.sourceRoot ?? repositoryRoot, options.sourceCommit, options.output)
+      : command === 'assemble' ? await assemble(options)
       : command === 'sign' ? await signBundle(options.bundle ?? fail('--bundle is required'), options.signingKey ?? fail('--signing-key is required'))
         : await verifyBundle(options.bundle ?? fail('--bundle is required'), options.publicKey ?? fail('--public-key is required'));
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
