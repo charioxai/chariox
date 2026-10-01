@@ -41,7 +41,7 @@ test("helper topology refuses privileged, foreign image and extra/control mount 
   const {verifyLocalHelperTopology} = await import("../apps/kernel/slice-linux-docker/protected-local-docker-authority.mjs")
   const record = fresh()
   const helper = () => ({Image: record.helperImageId, Config: {User: "0:0"},
-    HostConfig: {Privileged: false, ReadonlyRootfs: true, NetworkMode: "none", PidMode: "", UsernsMode: "", IpcMode: "private",
+    HostConfig: {Privileged: false, ReadonlyRootfs: true, Init: true, NetworkMode: "none", PidMode: "", UsernsMode: "", IpcMode: "private",
       Tmpfs: {"/tmp":"rw,nosuid,nodev,size=128m", "/run/chariox-slice-broker":"rw,nosuid,nodev,size=32m"},
       CapDrop: ["ALL"], CapAdd: ["CHOWN", "DAC_OVERRIDE", "FOWNER"], SecurityOpt: ["no-new-privileges"]},
     Mounts: [
@@ -64,6 +64,17 @@ test("helper topology refuses privileged, foreign image and extra/control mount 
     const actual = helper(); mutate(actual)
     assert.throws(() => verifyLocalHelperTopology(record, actual), /authority is unavailable/)
   }
+  // Without an init, Node is PID 1 and never reaps orphaned grandchildren.
+  for (const mutate of [h => h.HostConfig.Init = false, h => delete h.HostConfig.Init]) {
+    const actual = helper(); mutate(actual)
+    assert.throws(() => verifyLocalHelperTopology(record, actual), /authority is unavailable/)
+  }
+})
+
+test("the local helper runs Node under an init that reaps orphaned processes", async () => {
+  const {readFileSync} = await import("node:fs")
+  const launcher = readFileSync(new URL("../apps/kernel/slice-linux-docker/local-docker-broker-launch.mjs", import.meta.url), "utf8")
+  assert.match(launcher, /\["run", "--rm", "--init", "--name", container,/)
 })
 
 test("a root-owned recreated socket binds current launch inode without changing durable engine policy", () => {
