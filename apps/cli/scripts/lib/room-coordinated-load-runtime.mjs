@@ -189,10 +189,7 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
           signal,
         })
         await stream.sendControl("START_VIDEO", { signal })
-        const started = await receiveMessage(stream, 10_000, signal)
-        if (started.kind !== "text" || new TextDecoder().decode(started.data) !== "VIDEO_STARTED") {
-          throw new Error("Selkies viewer did not start its normal video stream")
-        }
+        await waitForVideoStarted(stream, 10_000, signal)
         const firstFrame = await nextBinaryFrame(stream, 15_000, signal)
         viewers.set(viewer.id, { client, stream, attachmentId: attachment.id, route: viewer.route, frameBytes: firstFrame.byteLength })
         return own("viewer", viewer.id, { client, stream, attachmentId: attachment.id, route: viewer.route }, {
@@ -445,6 +442,15 @@ async function measureRoomLatency(client, requests, slices) {
 
 async function receiveMessage(stream, timeoutMs, signal) {
   return await stream.receive({ timeoutMs, signal })
+}
+
+async function waitForVideoStarted(stream, timeoutMs, signal) {
+  const deadline = performance.now() + timeoutMs
+  while (performance.now() < deadline) {
+    const message = await receiveMessage(stream, Math.max(1, deadline - performance.now()), signal)
+    if (message.kind === "text" && new TextDecoder().decode(message.data) === "VIDEO_STARTED") return
+  }
+  throw new Error("Selkies viewer did not start its normal video stream within the bound")
 }
 
 async function nextBinaryFrame(stream, timeoutMs, signal) {

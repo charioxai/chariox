@@ -136,6 +136,8 @@ test("actual runtime attaches a viewer, starts Selkies, starts a normal TUI, the
     async receive() {
       received += 1
       return received === 1
+        ? { kind: "text", data: new TextEncoder().encode("PIPELINE_RESETTING primary") }
+        : received === 2
         ? { kind: "text", data: new TextEncoder().encode("VIDEO_STARTED") }
         : { kind: "binary", data: new Uint8Array([1, 2, 3]) }
     },
