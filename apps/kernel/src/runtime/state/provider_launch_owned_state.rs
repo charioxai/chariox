@@ -1340,6 +1340,27 @@ mod tests {
         .await
         .expect("idle retry should request vault unlock again");
         resolve_vault_passphrase_interaction(&runtime, session.id(), &second_unlock).await;
+        // MP-08/MP-10: forced catalog activation uses the existing 12s policy
+        // relaunch delay. Match its bounded 30s readiness gate, then retain the
+        // separate 2s continuation-delivery assertion below.
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if runtime
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(session.id(), agent.id())
+                    .is_some_and(|run| {
+                        run.id() != running.id()
+                            && run.state() == crate::provider::ProviderRunState::Running
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("forced catalog reload should produce a new running provider");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 let resumed = runtime
