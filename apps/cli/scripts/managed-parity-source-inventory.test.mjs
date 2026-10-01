@@ -1,8 +1,10 @@
+import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { SOURCE_AUDIT_RULES } from "./lib/managed-parity-source-rules.mjs";
 import {
   collectSourceInventory,
   DEFAULT_SOURCE_REF,
@@ -141,11 +143,11 @@ function makeFixture(options = {}) {
   const files = fixtureFiles(options);
   const entries = [];
   let index = 1;
-  const addFile = (file, contents, mode = "100644") => {
+  const addFile = (file, contents, mode = "100644", blob = null) => {
     const absolute = join(root, file);
     mkdirSync(dirname(absolute), { recursive: true });
     writeFileSync(absolute, contents);
-    entries.push(`${mode} blob ${String(index).padStart(40, "0")}\t${file}`);
+    entries.push(`${mode} blob ${(blob ?? String(index).padStart(40, "0"))}\t${file}`);
     index += 1;
   };
   for (const [file, contents] of Object.entries(files)) {
@@ -783,3 +785,1134 @@ test("output is deterministic and redacts selector secrets", () => {
     assert.match(serialized, /contextHash/);
   });
 });
+
+test("unified patches retain active and removed selectors with embedded source roles", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/openship/patches/fixture.patch", [
+      "diff --git a/apps/api/src/host.ts b/apps/api/src/host.ts",
+      "index 1111111..2222222 100644",
+      "--- a/apps/api/src/host.ts",
+      "+++ b/apps/api/src/host.ts",
+      "@@ -1,2 +1,2 @@",
+      "-const old = \"bwrap CHARIOX_MANAGED_REMOVED\";",
+      "+const next = \"CHARIOX_OPENSHIP_RUNTIME_PROFILE\";",
+      " const ordinary = true;",
+      "diff --git a/apps/api/test/host.test.ts b/apps/api/test/host.test.ts",
+      "index 1111111..2222222 100644",
+      "--- a/apps/api/test/host.test.ts",
+      "+++ b/apps/api/test/host.test.ts",
+      "@@ -0,0 +1 @@",
+      "+const fixture = \"CHARIOX_MANAGED_PATCH_TEST\";",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const removed = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_REMOVED");
+    assert.equal(removed?.patchSource.change, "removed");
+    assert.equal(removed?.patchSource.path, "apps/api/src/host.ts");
+    assert.equal(removed?.patchSource.oldLine, 1);
+    assert.equal(removed?.sourceRoleHints.positivePath1Directive, false);
+    const added = report.entries.find((entry) => entry.selector === "CHARIOX_OPENSHIP_RUNTIME_PROFILE");
+    assert.equal(added?.patchSource.change, "added");
+    assert.equal(added?.patchSource.newLine, 1);
+    assert.equal(added?.line, 7);
+    assert.equal(added?.semanticDisposition.status, "unreviewed");
+    const evidence = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_PATCH_TEST");
+    assert.equal(evidence?.sourceRoleHints.testRegion, "test_source");
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("manual release candidates retain exact ownership and resource controls without approving them", () => {
+  withFixture({}, (fixture) => {
+    const path = "deploy/managed-kernel/extract-release.py";
+    fixture.addFile(path, [
+      "def path_name(name):",
+      "    return name",
+      "def space_available(path, bytes_needed, inodes_needed, limits):",
+      "    pass",
+      "def validate(archive, limits, block_size):",
+      "    pass",
+      "def extract_release(source, destination, limits=Limits(), publication=None):",
+      "    pass",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const candidates = report.entries.filter((entry) => entry.path === path);
+    assert.equal(candidates.length, 4);
+    assert.ok(candidates.every((entry) => entry.candidateOrigin === "manual_source_rule"));
+    assert.ok(candidates.every((entry) => entry.sourceClassification.status === "source_drift"));
+    assert.ok(candidates.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    assert.equal(report.status, "fail");
+  });
+});
+
+
+test("an inspected blob gets only provisional grouping and never independent approval", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "bounded-release-archive-admission");
+    const source = readFileSync(new URL("../../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
+    assert.equal(group.status, "source_inspected");
+    assert.equal(group.classification, "signed_release_deployment_control");
+    assert.equal(group.authoritative, false);
+    assert.equal(group.independentDisposition, "pending");
+    assert.equal(group.candidateIds.length, 4);
+    assert.ok(report.entries.filter((entry) => group.candidateIds.includes(entry.candidateId))
+      .every((entry) => entry.semanticDisposition.gateEffect === "fail_closed"));
+    assert.equal(report.status, "fail");
+    assert.equal(report.summary.allowedReleaseDeployment, 0);
+    assert.equal(report.inventoryTool.modules.length, 6);
+    assert.match(report.inventoryTool.bundleSha256, /^[a-f0-9]{64}$/);
+  });
+});
+
+test("malformed patches and unknown embedded Cloud production formats fail closed", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/openship/patches/broken.patch", [
+      "diff --git a/apps/api/src/host.ts b/apps/api/src/host.ts",
+      "--- a/apps/api/src/host.ts", "+++ b/apps/api/src/host.ts",
+      "@@ -0,0 +1,2 @@", "+const selector = \"CHARIOX_MANAGED_PATCH\";",
+    ].join("\n") + "\n");
+    assert.throws(() => collect(fixture), /(?:incomplete patch hunk|invalid patch line)/);
+  });
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/openship/patches/unknown.patch", [
+      "diff --git a/apps/api/src/host.selector b/apps/api/src/host.selector",
+      "--- a/apps/api/src/host.selector", "+++ b/apps/api/src/host.selector",
+      "@@ -0,0 +1 @@", "+CHARIOX_MANAGED_PATCH",
+    ].join("\n") + "\n");
+    assert.throws(() => collect(fixture), /unclassified production file: apps\/api\/src\/host.selector/);
+  });
+});
+
+
+
+test("deployment formats strip comments while unverified fragments remain conservative", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("packages/tool-display/src/index-fragments/part-001.tsfrag", [
+      '// CHARIOX_MANAGED_FRAGMENT_COMMENT',
+      'const selector = "CHARIOX_MANAGED_FRAGMENT";',
+    ].join("\n") + "\n");
+    fixture.addFile("scripts/control-drill-fragments/part-001.mjsfrag", 'const selector = "CHARIOX_MANAGED_JS_FRAGMENT";\n');
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      '# CHARIOX_MANAGED_CADDY_COMMENT',
+      'header X-Chariox "CHARIOX_MANAGED_EDGE"',
+    ].join("\n") + "\n");
+    fixture.addFile("packages/db/prisma/migrations/20260930000000_controls/migration.sql", [
+      '-- CHARIOX_MANAGED_SQL_COMMENT',
+      '/* CHARIOX_MANAGED_SQL_BLOCK */',
+      "SELECT 'CHARIOX_MANAGED_SQL_VALUE';",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const selectors = report.entries.map((entry) => entry.selector);
+    for (const selector of ["CHARIOX_MANAGED_FRAGMENT", "CHARIOX_MANAGED_JS_FRAGMENT", "CHARIOX_MANAGED_EDGE", "CHARIOX_MANAGED_SQL_VALUE"])
+      assert.ok(selectors.includes(selector), selector);
+    assert.ok(!selectors.some((selector) => ["CHARIOX_MANAGED_CADDY_COMMENT", "CHARIOX_MANAGED_SQL_COMMENT", "CHARIOX_MANAGED_SQL_BLOCK"].includes(selector)));
+    const unknown = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_FRAGMENT_COMMENT");
+    assert.equal(unknown?.sourceRoleHints.lexicalContext, "unknown_fragment_assembly");
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("removed patch block comments cannot hide active added selectors", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/openship/patches/comment-transition.patch", [
+      "diff --git a/apps/api/src/control.ts b/apps/api/src/control.ts",
+      "--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts",
+      "@@ -1,2 +1 @@",
+      "-/* CHARIOX_MANAGED_REMOVED_COMMENT",
+      '+const selector = "CHARIOX_MANAGED_PATCH_ACTIVE";',
+      '-*/',
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const active = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_PATCH_ACTIVE");
+    assert.equal(active?.patchSource.change, "added");
+    const uncertain = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_REMOVED_COMMENT");
+    assert.equal(uncertain?.sourceRoleHints.lexicalContext, "unknown_patch_fragment");
+    assert.equal(uncertain?.semanticDisposition.status, "unreviewed");
+  });
+});
+
+for (const [side, selector] of [["added", "CHARIOX_MANAGED_ADDED_GAP"], ["removed", "CHARIOX_MANAGED_REMOVED_GAP"]]) {
+  test("omitted inter-hunk comment closure cannot hide " + side + " patch source", () => {
+    withFixture({}, (fixture) => {
+      fixture.addFile("deploy/openship/patches/lexical-gap.patch", [
+        "diff --git a/apps/api/src/control.ts b/apps/api/src/control.ts",
+        "--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts",
+        "@@ -1 +1 @@", "-/* old comment", "+/* new comment",
+        "@@ -20 +20 @@",
+        '-const selector = "' + (side === "removed" ? selector : "ordinary") + '";',
+        '+const selector = "' + (side === "added" ? selector : "ordinary") + '";',
+      ].join("\n") + "\n");
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.ok(entry, "unknown omitted lexical context must retain a candidate");
+      assert.equal(entry.patchSource.change, side);
+      assert.equal(entry.patchSource[side === "added" ? "newLine" : "oldLine"], 20);
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+
+for (const [side, selector] of [["added", "CHARIOX_MANAGED_ADDED_TEMPLATE"], ["removed", "CHARIOX_MANAGED_REMOVED_TEMPLATE"]]) {
+  test("unknown starting template context preserves " + side + " patch selectors", () => {
+    withFixture({}, (fixture) => {
+      const oldLines = ["/* old banner", "  `;", 'const selector = "' + (side === "removed" ? selector : "ordinary") + '";'];
+      const newLines = ["/* new banner", "    `;", 'const selector = "' + (side === "added" ? selector : "ordinary") + '";'];
+      for (const lines of [oldLines, newLines]) {
+        const complete = [...Array(18).fill(""), "const banner = `", ...lines, "selector;"].join("\n");
+        assert.equal(runInNewContext(complete), lines === oldLines && side === "removed" || lines === newLines && side === "added" ? selector : "ordinary");
+      }
+      fixture.addFile("deploy/openship/patches/template-gap.patch", [
+        "diff --git a/apps/api/src/control.ts b/apps/api/src/control.ts",
+        "--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts",
+        "@@ -20,3 +20,3 @@",
+        ...oldLines.flatMap((line, index) => ["-" + line, "+" + newLines[index]]),
+      ].join("\n") + "\n");
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.ok(entry, "a valid source template beginning outside the hunk cannot hide executable source");
+      assert.equal(entry.patchSource.change, side);
+      assert.equal(entry.sourceRoleHints.lexicalContext, "unknown_patch_fragment");
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+function fragmentFixture(fixture, suffix, fragments) {
+  const directory = suffix === ".tsfrag" ? "packages/tool-display/src/index-fragments" : "scripts/browser-relay-kernel-drill-fragments";
+  const dependencies = suffix === ".tsfrag"
+    ? [["packages/tool-display/scripts/build-fragments.mjs", "ae72d6fae1ef1e957a39c01417eeb5d7efefcc6b"]]
+    : [["scripts/lib/run-fragmented-script.mjs", "0e84d48c7be6e26343039fce0205e9653fc72311"], ["scripts/browser-relay-kernel-drill.mjs", "ad640a15fb5bb5019f5942d378e49403761104e8"]];
+  for (const [path, blob] of dependencies) fixture.addFile(path, "// fixture assembler identity\n", "100644", blob);
+  for (let index = fragments.length - 1; index >= 0; index--)
+    fixture.addFile(directory + "/part-" + String(index + 1).padStart(3, "0") + suffix, fragments[index]);
+  return directory;
+}
+
+for (const suffix of [".tsfrag", ".mjsfrag"]) {
+  test("assembled " + suffix + " retains lexical state and physical source anchors", () => {
+    withFixture({}, (fixture) => {
+      const fragments = ["const banner = `\n", '/* banner text\n`;\nconst selector = "CHARIOX_MANAGED_FRAGMENT_CONTEXT";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "CHARIOX_MANAGED_FRAGMENT_CONTEXT");
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_FRAGMENT_CONTEXT");
+      assert.equal(entry?.path, directory + "/part-002" + suffix);
+      assert.equal(entry?.line, 3);
+      assert.equal(entry?.fragmentSource.assemblyStatus, "verified_sort_join_empty");
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    });
+  });
+
+  test("assembled " + suffix + " captures a selector split between files", () => {
+    withFixture({}, (fixture) => {
+      const fragments = ['const selector = "CHARIOX_MANA', 'GED_JOINED";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "CHARIOX_MANAGED_JOINED");
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_JOINED");
+      assert.equal(entry?.path, directory + "/part-001" + suffix);
+      assert.equal(entry?.line, 1);
+      assert.deepEqual(entry?.fragmentSource.matchSegments.map((segment) => segment.path),
+        [directory + "/part-001" + suffix, directory + "/part-002" + suffix]);
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    });
+  });
+}
+
+test("unverified fragment assembly is an explicit unresolved source gap", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/api/src/unknown-fragments/part-001.tsfrag", '/* maybe a literal\nconst value = "CHARIOX_MANAGED_UNKNOWN_FRAGMENT";');
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_UNKNOWN_FRAGMENT"));
+    assert.ok(report.sourceAuditGaps.some((gap) => gap.kind === "fragment_assembly_unresolved"));
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("the real generic release preparation control gets a manual candidate", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "release-update-outcome-evidence");
+    const source = readFileSync(new URL("../../../apps/kernel/src/runtime/managed_release_update_evidence.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const entry = report.entries.find((entry) => entry.path === rule.path && entry.symbol === "prepare_archive" && entry.candidateOrigin === "manual_source_rule");
+    assert.ok(entry);
+    assert.equal(entry.semanticDisposition.status, "unreviewed");
+  });
+});
+
+test("an expected manual declaration that disappears is an unresolved audit gap", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "release-update-outcome-evidence");
+    const source = readFileSync(new URL("../../../apps/kernel/src/runtime/managed_release_update_evidence.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source.replaceAll("prepare_archive", "renamed_archive"));
+    const report = collect(fixture);
+    assert.ok(report.sourceAuditGaps.some((gap) => gap.ruleId === rule.id && gap.symbol === "prepare_archive" && gap.kind === "expected_declaration_missing"));
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("a scoped runtime audit does not classify unrelated inline tests", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "official-provider-adapter-wiring");
+    const source = readFileSync(new URL("../../../apps/kernel/src/provider/registry.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const entries = report.entries.filter((entry) => entry.path === rule.path);
+    assert.ok(entries.some((entry) => entry.sourceClassification?.status === "source_inspected"));
+    const tests = entries.filter((entry) => entry.sourceRoleHints.testRegion === "cfg_test");
+    assert.ok(tests.length > 0);
+    assert.ok(tests.every((entry) => entry.sourceClassification === null));
+    assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
+    assert.deepEqual(group.auditedRanges, [[1, 259]]);
+  });
+});
+
+test("slice placement observations remain separate from independent removal findings", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "machine-scoped-slice-creation-and-placement");
+    const source = readFileSync(new URL("../../../apps/kernel/src/slice/store.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
+    assert.equal(group.classification, "shared_slice_identity_namespace");
+    assert.equal(group.status, "source_inspected");
+    assert.ok(group.openFindings.some((finding) => finding.includes("Fresh ordinary/Path-1 runtime comparison")));
+    assert.equal(group.independentDisposition, "pending");
+    assert.equal(report.summary.removalRequired, 0);
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("manual audit anchors include generic utility resource functions", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "shared-provider-utility-capture-budget");
+    const source = readFileSync(new URL("../../../apps/kernel/src/local/provider_requests/catalog/probe_capture.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
+    assert.deepEqual(entries.map((entry) => entry.symbol).sort(), ["capture", "drain"]);
+    assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+  });
+});
+
+test("machine enrollment data shapes get explicit candidates without widening source review", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "managed-bootstrap-machine-profile-shape");
+    const source = readFileSync(new URL("../../../apps/kernel/src/managed_bootstrap/cloud.rs", import.meta.url), "utf8");
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const candidate = report.entries.find((entry) => entry.path === rule.path && entry.symbol === "ManagedCloudRelayProfile");
+    assert.equal(candidate?.candidateOrigin, "manual_source_rule");
+    assert.equal(candidate?.sourceClassification.status, "source_inspected");
+    assert.equal(candidate?.sourceClassification.classification, "machine_bound_deployment_enrollment");
+    assert.equal(candidate?.semanticDisposition.status, "unreviewed");
+    assert.ok(report.entries.filter((entry) => entry.path === rule.path && entry.line > 64)
+      .every((entry) => entry.sourceClassification === null));
+  });
+});
+
+
+for (const delimiter of ["$$", "$banner$"]) {
+  test("PostgreSQL " + delimiter + " literals cannot hide following SQL selectors", () => {
+    withFixture({}, (fixture) => {
+      const path = "packages/db/prisma/migrations/20261001000000_dollar/migration.sql";
+      fixture.addFile(path, [
+        "SELECT " + delimiter + "/* banner text -- still literal" + delimiter + ";",
+        "SELECT 'CHARIOX_MANAGED_SQL_AFTER_DOLLAR';",
+      ].join("\n") + "\n");
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_DOLLAR");
+      assert.equal(entry?.path, path);
+      assert.equal(entry?.line, 2);
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+test("PostgreSQL dollar quotes close only at the matching tag", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("packages/db/prisma/migrations/20261001000001_tags/migration.sql", [
+      "SELECT $banner$other delimiters $$ $other$ /* literal",
+      "$banner$;",
+      "/* CHARIOX_MANAGED_SQL_ACTUAL_COMMENT */",
+      "SELECT 'CHARIOX_MANAGED_SQL_AFTER_MATCHED_TAG';",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_MATCHED_TAG" && entry.line === 4));
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_ACTUAL_COMMENT"));
+  });
+});
+
+test("PostgreSQL nested block comments do not leak outer comment candidates", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("packages/db/prisma/migrations/20261001000002_nested/migration.sql", [
+      "/* outer /* inner */ CHARIOX_MANAGED_SQL_NESTED_COMMENT */",
+      "SELECT 'CHARIOX_MANAGED_SQL_AFTER_NESTED';",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_NESTED" && entry.line === 2));
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_NESTED_COMMENT"));
+  });
+});
+
+test("PostgreSQL E-string escapes keep comment markers inside the literal", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("packages/db/prisma/migrations/20261001000003_escape/migration.sql",
+      "SELECT E'escaped\\'/* banner -- still literal';\nSELECT 'CHARIOX_MANAGED_SQL_AFTER_ESCAPE';\n");
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_ESCAPE" && entry.line === 2));
+  });
+});
+
+test("PostgreSQL plain-string backslash settings cannot hide executable SQL", () => {
+  withFixture({}, (fixture) => {
+    // Valid with standard_conforming_strings=on: the first string contains a
+    // literal backslash; the second contains a comment opener.
+    fixture.addFile("packages/db/prisma/migrations/20261001000004_plain/migration.sql",
+      "SELECT '\\';\nSELECT '/* banner text';\nSELECT 'CHARIOX_MANAGED_SQL_AFTER_PLAIN_BACKSLASH';\n");
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_PLAIN_BACKSLASH" && entry.line === 3));
+  });
+});
+
+
+test("PostgreSQL dollar characters inside unquoted identifiers do not open literals", () => {
+  withFixture({}, (fixture) => {
+    const path = "packages/db/prisma/migrations/20261001000005_identifier/migration.sql";
+    fixture.addFile(path, [
+      "CREATE TABLE foo$tag$(id text DEFAULT '$tag$/*');",
+      "SELECT 'CHARIOX_MANAGED_SQL_AFTER_DOLLAR_IDENTIFIER';",
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_SQL_AFTER_DOLLAR_IDENTIFIER");
+    assert.equal(entry?.path, path);
+    assert.equal(entry?.line, 2);
+    assert.equal(entry?.semanticDisposition.status, "unreviewed");
+  });
+});
+
+
+// Pinned declaration excerpts keep scanner tests independent of PR664's runtime
+// base. Historical 65d/8e9 reports are retained; refreshed observations require
+// exact current-source scans. These fixtures test declaration/range/disposition only.
+const CURRENT_DECLARATION_EXCERPTS = {
+  "shared-exact-slice-binding-recovery": [
+    [45, "pub(crate) async fn execute_remote_agent_binding_refresh("],
+    [651, "pub(crate) fn spawn_worker_agent("],
+    [1002, "pub(crate) fn prepare_remote_agent_binding_refresh("],
+    [1099, "pub(crate) fn refresh_remote_agent_binding("],
+    [1171, "pub(crate) fn refresh_remote_agent_binding_to_worker_kernel_with_operation("],
+    [1503, "fn select_remote_kernel_by_ref_with_config("],
+  ],
+  "guarded-friendly-slice-reference-resolution": [[6, "pub(crate) fn resolve_execution_worker_kernel_ref("]],
+  "inner-slice-kernel-bootstrap-identity": [[132, "start_slice_kernel() {"]],
+  "slice-provisioner-container-identity-forwarding": [[1120, "exec_slice_with_timeout() {"]],
+  "path1-broker-prepared-image-admission": [
+    [115, "const ALLOWED_ENVIRONMENT = new Set(["],
+    [335, "function validateDocker(args) {"],
+    [438, "function validateProvisioner(action, environment, files) {"],
+  ],
+  "per-creation-machine-scoped-slice-ref": [
+    [6, "pub(super) fn new_local_docker_worker_ref("],
+    [23, "fn worker_ref_with_nonce("],
+    [43, "pub(super) fn qualified_worker_ref_parts(worker_ref: &str) -> Option<(&str, &str)> {"],
+    [56, "pub(crate) fn machine_scoped_slice_worker_ref(worker_ref: &str, machine_id: &str) -> bool {"],
+    [66, "pub(crate) fn require_hosted_slice_worker_ref("],
+    [78, 'const OUTSIDE_SCOPE: &str = "CHARIOX_MANAGED_CURRENT_OUTSIDE_SCOPE";'],
+  ],
+};
+
+function currentDeclarationExcerpt(ruleId) {
+  const excerpt = CURRENT_DECLARATION_EXCERPTS[ruleId];
+  const lines = Array.from({ length: Math.max(...excerpt.map(([line]) => line)) }, () => "");
+  for (const [line, text] of excerpt) lines[line - 1] = text;
+  return lines.join("\n") + "\n";
+}
+
+for (const [ruleId, symbol] of [
+  ["inner-slice-kernel-bootstrap-identity", "start_slice_kernel"],
+  ["slice-provisioner-container-identity-forwarding", "exec_slice_with_timeout"],
+  ["path1-broker-prepared-image-admission", "ALLOWED_ENVIRONMENT"],
+]) {
+  test("current source audit anchors " + symbol + " at its pinned declaration", () => {
+    withFixture({}, (fixture) => {
+      const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === ruleId);
+      fixture.addFile(rule.path, currentDeclarationExcerpt(ruleId), "100644", rule.blob);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.path === rule.path && entry.symbol === symbol && entry.candidateOrigin === "manual_source_rule");
+      assert.ok(entry, "an inspected declaration cannot silently lose its manual candidate");
+      assert.equal(entry.sourceClassification.status, "source_inspected");
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+      assert.ok(!report.sourceAuditGaps.some((gap) => gap.ruleId === ruleId && gap.symbol === symbol));
+    });
+  });
+}
+
+test("current Machine-qualified namespace observations do not approve out-of-range source or drift", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "per-creation-machine-scoped-slice-ref");
+    const source = currentDeclarationExcerpt(rule.id);
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
+    assert.deepEqual(entries.map((entry) => entry.symbol).sort(), [
+      "machine_scoped_slice_worker_ref", "new_local_docker_worker_ref",
+      "qualified_worker_ref_parts", "require_hosted_slice_worker_ref", "worker_ref_with_nonce",
+    ]);
+    assert.ok(entries.every((entry) => entry.sourceClassification.classification === "shared_slice_identity_namespace"));
+    assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CURRENT_OUTSIDE_SCOPE")?.sourceClassification, null);
+    withFixture({}, (changedFixture) => {
+      changedFixture.addFile(rule.path, source + "\n// changed source identity\n");
+      const changed = collect(changedFixture).sourceClassifications.find((group) => group.ruleId === rule.id);
+      assert.equal(changed.status, "source_drift");
+      assert.equal(changed.classification, null);
+    });
+  });
+});
+
+test("slice context and attachment observations stay scoped and unreviewed", () => {
+  withFixture({}, (fixture) => {
+    const context = SOURCE_AUDIT_RULES.find((rule) => rule.id === "slice-local-worker-context");
+    const attachment = SOURCE_AUDIT_RULES.find((rule) => rule.id === "slice-recorded-attachment-identity");
+    assert.equal(context.blob, attachment.blob);
+    const lines = Array.from({ length: 173 }, () => "");
+    for (const [line, declaration] of [
+      [5, "pub(crate) fn slice_worker_id("],
+      [28, "pub(crate) fn current_slice_worker_id() -> Option<String> {"],
+      [39, "pub(crate) fn slice_worker_id_for_config(config: &DaemonConfig) -> Option<String> {"],
+      [52, "enum RecordedSliceWorker<'a> {"],
+      [58, "pub(crate) fn recorded_slice_for_worker<'a>("],
+      [73, "pub(crate) fn retained_slice_attachment_matches("],
+      [95, "fn recorded_relay_is_hosted(config: &DaemonConfig, slice: &SliceRecord) -> bool {"],
+      [105, "fn recorded_slice_worker<'a>("],
+      [173, 'const OUTSIDE: &str = "CHARIOX_MANAGED_ATTACHMENT_TEST_ONLY";'],
+    ]) lines[line - 1] = declaration;
+    fixture.addFile(context.path, lines.join("\n") + "\n", "100644", context.blob);
+    const report = collect(fixture);
+    const manual = report.entries.filter((entry) => entry.path === context.path && entry.candidateOrigin === "manual_source_rule");
+    assert.equal(manual.length, 8);
+    assert.ok(manual.every((entry) => entry.sourceClassification.status === "source_inspected"));
+    assert.ok(manual.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_ATTACHMENT_TEST_ONLY")?.sourceClassification, null);
+    assert.ok(!report.sourceAuditGaps.some((gap) => [context.id, attachment.id].includes(gap.ruleId)));
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("current Cloud source anchors remain explicit missing-source gaps", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/api/src/current-cloud.ts", "export const ready = true;\n");
+    const report = collect(fixture);
+    const gap = report.sourceAuditGaps.find((entry) => entry.ruleId === "canonical-slice-cloud-recovery-shape");
+    assert.equal(gap?.kind, "expected_source_missing");
+    assert.equal(gap?.auditSourceCommit, "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2");
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("corrected source observations still require independent disposition", () => {
+  withFixture({}, (fixture) => {
+    const ids = ["shared-exact-slice-binding-recovery", "guarded-friendly-slice-reference-resolution"];
+    for (const id of ids) {
+      const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === id);
+      fixture.addFile(rule.path, CURRENT_DECLARATION_EXCERPTS[id] ? currentDeclarationExcerpt(id)
+        : readFileSync(new URL("../../../" + rule.path, import.meta.url), "utf8"), "100644", rule.blob);
+    }
+    const report = collect(fixture);
+    for (const id of ids) {
+      const group = report.sourceClassifications.find((entry) => entry.ruleId === id);
+      assert.equal(group?.status, "source_inspected");
+      assert.ok(group.openFindings.some((finding) => finding.includes("independent semantic disposition remain pending")));
+      assert.ok(!group.openFindings.some((finding) => finding.startsWith("Open at OSS 65d")));
+      assert.equal(group.independentDisposition, "pending");
+    }
+    assert.equal(report.summary.removalRequired, 0);
+    assert.equal(report.status, "fail");
+  });
+});
+
+
+for (const [name, argument] of [
+  ["backtick-quoted", '`#{$CHARIOX_MANAGED_CADDY_CONTROL}`'],
+  ["within an unquoted token", "prefix#{$CHARIOX_MANAGED_CADDY_CONTROL}"],
+]) {
+  test("Caddy keeps active selector " + name, () => {
+    withFixture({}, (fixture) => {
+      fixture.addFile("deploy/production/control-edge.Caddyfile", [
+        ":8080 {", "    header X-Selector " + argument, "}", "",
+      ].join("\n"));
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_CONTROL");
+      assert.ok(entry, "valid Caddy token contents cannot disappear as comments");
+      assert.equal(entry.line, 2);
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+test("Caddy token-boundary comments remain absent after quoted and unquoted tokens", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      '# CHARIOX_MANAGED_CADDY_STANDALONE_COMMENT',
+      'header X-Value "literal"# CHARIOX_MANAGED_CADDY_AFTER_QUOTE_COMMENT',
+      'header X-Value prefix"literal # CHARIOX_MANAGED_CADDY_INSIDE_TOKEN_QUOTE_COMMENT',
+      'header X-Value ordinary # CHARIOX_MANAGED_CADDY_AFTER_TOKEN_COMMENT',
+      'header X-Value `backtick`# CHARIOX_MANAGED_CADDY_AFTER_BACKTICK_COMMENT',
+      'header X-Value "CHARIOX_MANAGED_CADDY_DOUBLE_QUOTED"',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    const selectors = report.entries.map((entry) => entry.selector);
+    assert.ok(selectors.includes("CHARIOX_MANAGED_CADDY_DOUBLE_QUOTED"));
+    assert.ok(!selectors.some((selector) => selector.endsWith("_COMMENT") && selector.includes("_CADDY_")));
+  });
+});
+
+test("Caddy multiline quotes and heredocs keep literal hash content and physical anchors", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      'header X-Value `first line',
+      '# CHARIOX_MANAGED_CADDY_MULTILINE_BACKTICK',
+      'last line`',
+      'header X-Value "first line',
+      '# CHARIOX_MANAGED_CADDY_MULTILINE_DOUBLE',
+      'last line"',
+      'respond <<BODY',
+      '# CHARIOX_MANAGED_CADDY_HEREDOC',
+      'literal `quote" text',
+      'BODY',
+      '# CHARIOX_MANAGED_CADDY_AFTER_HEREDOC_COMMENT',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    for (const [selector, line] of [
+      ["CHARIOX_MANAGED_CADDY_MULTILINE_BACKTICK", 2],
+      ["CHARIOX_MANAGED_CADDY_MULTILINE_DOUBLE", 5],
+      ["CHARIOX_MANAGED_CADDY_HEREDOC", 8],
+    ]) {
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.equal(entry?.line, line);
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    }
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_AFTER_HEREDOC_COMMENT"));
+  });
+});
+
+test("Caddy backtick escapes stay literal while double-quoted escaped quotes remain quoted", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      'header X-Value `literal\\`# CHARIOX_MANAGED_CADDY_BACKTICK_COMMENT',
+      'header X-Value "literal\\" # CHARIOX_MANAGED_CADDY_ESCAPED_DOUBLE"',
+      'header X-Value prefix\\#{$CHARIOX_MANAGED_CADDY_ESCAPED_PREFIX}',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_BACKTICK_COMMENT"));
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_ESCAPED_DOUBLE")?.line, 2);
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_ESCAPED_PREFIX")?.line, 3);
+  });
+});
+
+
+test("Caddy CR and Unicode token boundaries follow the lexer rather than generic config rules", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      '\ufeffheader X-Value prefix\r#{$CHARIOX_MANAGED_CADDY_CR_TOKEN}',
+      'header X-Value prefix\ufeff#{$CHARIOX_MANAGED_CADDY_INTERIOR_BOM}',
+      'header X-Value prefix\u00a0# CHARIOX_MANAGED_CADDY_UNICODE_COMMENT',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_CR_TOKEN")?.line, 1);
+    assert.equal(report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_INTERIOR_BOM")?.line, 2);
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_UNICODE_COMMENT"));
+  });
+});
+
+test("Caddy escaped heredoc openers keep true comments while uncertain heredocs stay conservative", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/production/control-edge.Caddyfile", [
+      'respond \\<<BODY',
+      '# CHARIOX_MANAGED_CADDY_ESCAPED_HEREDOC_COMMENT',
+      'BODY',
+      'respond <<UNCLOSED',
+      '# CHARIOX_MANAGED_CADDY_UNCERTAIN_HEREDOC',
+      '',
+    ].join("\n"));
+    const report = collect(fixture);
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_ESCAPED_HEREDOC_COMMENT"));
+    const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_UNCERTAIN_HEREDOC");
+    assert.equal(entry?.line, 5);
+    assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    assert.equal(report.status, "fail");
+  });
+});
+
+
+for (const suffix of [".tsfrag", ".mjsfrag"]) {
+  test("assembled " + suffix + " preserves nested templates before active controls", () => {
+    withFixture({}, (fixture) => {
+      const fragments = ['const banner = `${`/* banner text`}`;\n',
+        'const selector = "CHARIOX_MANAGED_NESTED_FRAGMENT";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "CHARIOX_MANAGED_NESTED_FRAGMENT");
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_NESTED_FRAGMENT");
+      assert.equal(entry?.path, directory + "/part-002" + suffix);
+      assert.equal(entry?.line, 1);
+      assert.equal(entry?.sourceRoleHints.lexicalContext, "unparsed_fragment_assembly");
+      assert.equal(entry?.fragmentSource.assemblyStatus, "verified_sort_join_empty");
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    });
+  });
+
+  test("assembled " + suffix + " retains regex and apparent-comment candidates conservatively", () => {
+    withFixture({}, (fixture) => {
+      const fragments = ['const punctuation = /[/*]/;\n',
+        '// CHARIOX_MANAGED_FRAGMENT_COMMENT_CANDIDATE\nconst selector = "CHARIOX_MANAGED_REGEX_FRAGMENT";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "CHARIOX_MANAGED_REGEX_FRAGMENT");
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      for (const [selector, line] of [["CHARIOX_MANAGED_FRAGMENT_COMMENT_CANDIDATE", 1], ["CHARIOX_MANAGED_REGEX_FRAGMENT", 2]]) {
+        const entry = report.entries.find((entry) => entry.selector === selector);
+        assert.equal(entry?.path, directory + "/part-002" + suffix);
+        assert.equal(entry?.line, line);
+        assert.equal(entry?.sourceRoleHints.lexicalContext, "unparsed_fragment_assembly");
+        assert.equal(entry?.semanticDisposition.status, "unreviewed");
+      }
+      assert.equal(report.fragmentAssemblies[0]?.lexicalContext, "unparsed_fragment_assembly");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+
+for (const quote of ['`', '"']) {
+  for (const opener of ['<<END', '<\r<END']) {
+    test("Caddy heredoc preserves an adjacent multiline " + JSON.stringify(quote) + " token after " + JSON.stringify(opener), () => {
+      withFixture({}, (fixture) => {
+        fixture.addFile("deploy/production/control-edge.Caddyfile", [
+          ':8080 {', '  map {host} {first} {second} {', '    default ' + opener,
+          'body', 'END' + quote + 'first line', 'END',
+          '#{$CHARIOX_MANAGED_CADDY_EARLY_END}', 'last line' + quote,
+          '# CHARIOX_MANAGED_CADDY_AFTER_ADJACENT_COMMENT',
+          '  }', '  respond "{second}"', '}', '',
+        ].join('\n'));
+        const report = collect(fixture);
+        const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_EARLY_END");
+        assert.equal(entry?.line, 7);
+        assert.equal(entry?.semanticDisposition.status, "unreviewed");
+        assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_CADDY_AFTER_ADJACENT_COMMENT"));
+      });
+    });
+  }
+}
+
+
+test("manual shutdown declarations retain MP09 and require independent disposition", () => {
+  withFixture({}, (fixture) => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "managed-auto-stop-deadline");
+    fixture.addFile(rule.path, "export function normalizeAutoStopPolicy(policy) {}\nexport function managedEnvironmentIdleDeadline(environment, idleAt) {}\n", "100644", rule.blob);
+    const report = collect(fixture);
+    const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
+    assert.equal(entries.length, 2);
+    for (const entry of entries) {
+      assert.ok(entry.applicableMpIds.includes("MP-09"));
+      assert.equal(entry.sourceClassification.status, "source_inspected");
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+    }
+    assert.equal(report.status, "fail");
+  });
+});
+
+
+test("JSON policy declaration anchors bind exact data without granting approval", () => {
+  const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "typed-docker-image-reference-policy-data");
+  const source = JSON.stringify({ reference: "synthetic-expression", maximumRepositoryPath: 255, defaultBase: "synthetic:base" }, null, 2) + "\n";
+  withFixture({}, (fixture) => {
+    fixture.addFile(rule.path, source, "100644", rule.blob);
+    const report = collect(fixture);
+    const manual = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
+    assert.deepEqual(manual.map((entry) => entry.symbol).sort(), ["defaultBase", "maximumRepositoryPath", "reference"]);
+    assert.ok(manual.every((entry) => entry.sourceClassification.status === "source_inspected"));
+    assert.ok(manual.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+    assert.ok(!report.sourceAuditGaps.some((gap) => gap.ruleId === rule.id));
+    assert.equal(report.status, "fail");
+  });
+  withFixture({}, (fixture) => {
+    fixture.addFile(rule.path, source.replace("255", "256"));
+    const group = collect(fixture).sourceClassifications.find((group) => group.ruleId === rule.id);
+    assert.equal(group?.status, "source_drift");
+    assert.equal(group?.classification, null);
+    assert.equal(group?.independentDisposition, "pending");
+  });
+});
+
+for (const [id, declarations] of [
+  ["shared-private-home-archive-dispatch", [[916, "fn archive_local_docker_home_volume() {}"], [958, "fn archive_local_docker_home_volume_with_helper() {}"]]],
+  ["ordinary-private-home-archive-stream", [[47, "pub(super) fn capture() {}"], [272, "fn remove_created_archive() {}"]]],
+  ["managed-private-home-archive-publication", [[681, "function validateArtifactIdentity() {}"], [705, "async function captureHomeArchive() {}"], [774, "async function inspectManagedHomeArchive() {}"], [813, "async function verifyHomeArchive() {}"], [824, "function removeHomeArchive() {}"]]],
+  ["managed-home-archive-stream-policy", [[16, "export function isHomeArchiveRestoreRequest() {}"], [22, "export function homeArchiveMetadataMatches() {}"], [30, "export async function capturePrivateHomeArchive() {}"]]],
+]) {
+  test("scoped home archive declarations stay unreviewed: " + id, () => {
+    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === id);
+    assert.ok(rule, "archive policy requires an explicit inspected source rule");
+    const lines = Array.from({ length: Math.max(...declarations.map(([line]) => line)) }, () => "");
+    for (const [line, declaration] of declarations) lines[line - 1] = declaration;
+    withFixture({}, (fixture) => {
+      fixture.addFile(rule.path, lines.join("\n") + "\n", "100644", rule.blob);
+      const report = collect(fixture);
+      const manual = report.entries.filter((entry) => entry.candidateOrigin === "manual_source_rule" && entry.sourceClassification?.ruleId === id);
+      assert.equal(manual.length, declarations.length);
+      assert.ok(manual.every((entry) => entry.sourceClassification.status === "source_inspected"));
+      assert.ok(manual.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+      assert.ok(manual.every((entry) => entry.sourceClassification.independentDisposition === "pending"));
+      assert.ok(!report.sourceAuditGaps.some((gap) => gap.ruleId === id));
+      if (id.startsWith("managed-")) {
+        assert.ok(manual.every((entry) => entry.sourceClassification.independentDisposition === "pending"));
+      }
+      assert.equal(report.status, "fail");
+    });
+    withFixture({}, (fixture) => {
+      fixture.addFile(rule.path, lines.join("\n") + "\n");
+      const report = collect(fixture);
+      const group = report.sourceClassifications.find((group) => group.ruleId === id);
+      assert.equal(group?.status, "source_drift");
+      assert.equal(group?.classification, null);
+      assert.equal(group?.independentDisposition, "pending");
+    });
+  });
+}
+
+
+// Pinned declaration-only fixtures from the final source; no runtime source is imported.
+const FINAL_ARCHIVE_SOURCE = "686ec57d5e46cdd46e723155b7eb89f6f25202a2";
+const FINAL_ARCHIVE_DECLARATIONS = [
+  {
+    "id": "managed-home-archive-digest-policy",
+    "path": "apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs",
+    "blob": "9d4e017f5f03fb2a4bd57994d7c203d003913239",
+    "declarations": [
+      [
+        6,
+        "export async function digestPinnedHomeArchive() {}"
+      ],
+      [
+        13,
+        "export async function digestHomeArchiveStream() {}"
+      ],
+      [
+        35,
+        "function validateProgressTimeout() {}"
+      ]
+    ],
+    "anchorCount": 3
+  },
+  {
+    "id": "shared-home-archive-policy-data",
+    "path": "apps/kernel/slice-linux-docker/home-archive-policy.json",
+    "blob": "1d54fe7e4eca155a39afdb9a30939465a7037f5a",
+    "declarations": [
+      [
+        1,
+        "{\"schemaVersion\":1,\"minimumFreeBytes\":2147483648,\"progressTimeoutMs\":300000}"
+      ]
+    ],
+    "anchorCount": 3
+  },
+  {
+    "id": "home-archive-broker-response-lifetime",
+    "path": "apps/kernel/src/slice/local_docker/broker.rs",
+    "blob": "125a471ee52b117481cf69fcf14a34859195bd59",
+    "declarations": [
+      [
+        207,
+        "fn configure_stream_deadlines() {}"
+      ],
+      [
+        250,
+        "fn execute_with_disk_evidence() {}"
+      ]
+    ],
+    "anchorCount": 2
+  },
+  {
+    "id": "shared-home-archive-disk-reserve-admission",
+    "path": "apps/kernel/src/slice/local_docker/disk_admission.rs",
+    "blob": "c97438de3b8ce2dd78d049f25e28be42a151a4a1",
+    "declarations": [
+      [
+        137,
+        "fn evaluate_slice_snapshot_disk_admission() {}"
+      ],
+      [
+        157,
+        "pub(super) fn with_slice_snapshot_disk_admission<T>() {}"
+      ],
+      [
+        171,
+        "pub(super) fn validate_slice_snapshot_disk_admission() {}"
+      ]
+    ],
+    "anchorCount": 3
+  },
+  {
+    "id": "shared-windows-pipe-producer-ownership",
+    "path": "apps/kernel/src/io/windows_pipe_process.rs",
+    "blob": "9ee7448312dbc063dbc5fb6cf37bf8299b8b9ac4",
+    "declarations": [
+      [
+        59,
+        "pub(crate) fn readiness() {}"
+      ],
+      [
+        81,
+        "pub(crate) struct Process {}"
+      ],
+      [
+        88,
+        "pub(crate) fn spawn() {}"
+      ],
+      [
+        109,
+        "pub(crate) fn stop() {}"
+      ],
+      [
+        131,
+        "fn resume() {}"
+      ]
+    ],
+    "anchorCount": 5
+  },
+  {
+    "id": "ordinary-backup-verification-cancellation-scope",
+    "path": "apps/kernel/src/slice/local_docker/state.rs",
+    "blob": "cb8d5f2d1439b00e0e9645f0ac1baabfe3e9bdd7",
+    "declarations": [
+      [
+        178,
+        "pub fn validate_local_docker_slice_backup() {}"
+      ],
+      [
+        990,
+        "fn file_sha256() {}"
+      ]
+    ],
+    "anchorCount": 2
+  },
+  {
+    "id": "shared-provisioner-command-ownership",
+    "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
+    "blob": "de2d0c0cee1fc054d719e4c06a3bd80e452943f6",
+    "declarations": [
+      [
+        9,
+        "docker() {}"
+      ],
+      [
+        182,
+        "run_guarded_command() {}"
+      ],
+      [
+        209,
+        "run_with_timeout() {}"
+      ],
+      [
+        215,
+        "run_with_file_stdin_timeout() {}"
+      ],
+      [
+        256,
+        "volume_inspect_reports_not_found() {}"
+      ],
+      [
+        1585,
+        "stop_container() {}"
+      ],
+      [
+        1608,
+        "destroy_container() {}"
+      ]
+    ],
+    "anchorCount": 7
+  },
+  {
+    "id": "shared-saved-home-restore-stream-and-identity",
+    "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
+    "blob": "de2d0c0cee1fc054d719e4c06a3bd80e452943f6",
+    "declarations": [
+      [
+        274,
+        "saved_home_archive_identity() {}"
+      ],
+      [
+        291,
+        "restore_saved_home_volume() {}"
+      ],
+      [
+        331,
+        "prepare_home_volume() {}"
+      ]
+    ],
+    "anchorCount": 3
+  },
+  {
+    "id": "broker-control-settlement",
+    "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "declarations": [
+      [
+        897,
+        "function spawnControl() {}"
+      ],
+      [
+        907,
+        "function handleIsMountpoint() {}"
+      ],
+      [
+        915,
+        "function unmountHandle() {}"
+      ],
+      [
+        932,
+        "function publishHandle() {}"
+      ],
+      [
+        1234,
+        "function inspectContainerMounts() {}"
+      ],
+      [
+        1377,
+        "function requireExactContainerMounts() {}"
+      ]
+    ],
+    "anchorCount": 6
+  },
+  {
+    "id": "broker-build-duration-limit",
+    "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "declarations": [
+      [
+        1549,
+        "function spawnBounded() {}"
+      ],
+      [
+        1673,
+        "const selector = \"CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS\";"
+      ]
+    ],
+    "anchorCount": 1
+  },
+  {
+    "id": "shared-provisioner-command-guard",
+    "path": "apps/kernel/slice-linux-docker/slice-command-guard.py",
+    "blob": "4df7d2d754c2b09183e1450118af086466038c11",
+    "declarations": [
+      [
+        15,
+        "def progress_timeout_seconds(): pass"
+      ],
+      [
+        32,
+        "def stop_orphaned_anchor(): pass"
+      ],
+      [
+        41,
+        "def finish_worker(): pass"
+      ],
+      [
+        50,
+        "def command_worker(): pass"
+      ],
+      [
+        90,
+        "def digest_worker(): pass"
+      ],
+      [
+        114,
+        "def source_digest_worker(): pass"
+      ],
+      [
+        141,
+        "def run_owned(): pass"
+      ],
+      [
+        227,
+        "def main(): pass"
+      ]
+    ],
+    "anchorCount": 8
+  },
+  {
+    "id": "m20-owned-fallback-image-cleanup",
+    "path": "apps/cli/scripts/lib/browser-state-drill-cleanup.mjs",
+    "blob": "9c0f3f9fb2638c5b6314649c18d3e6c93c80f7d4",
+    "declarations": [
+      [
+        1,
+        "export function browserStateCleanupFailure() {}"
+      ],
+      [
+        22,
+        "export async function cleanupBrowserStateImages() {}"
+      ]
+    ],
+    "anchorCount": 2
+  },
+  {
+    "id": "m20-fallback-image-cleanup-callers",
+    "path": "apps/cli/scripts/live-docker-slice-browser-state-drill.mjs",
+    "blob": "d94d169c1a9003e6a6d77488f22aee43664915cf",
+    "declarations": [
+      [
+        1025,
+        "async function cleanup() {}"
+      ]
+    ],
+    "anchorCount": 1
+  }
+];
+for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
+  test("final archive policy declaration retains review gap: " + pinned.id, () => {
+    const rule = SOURCE_AUDIT_RULES.find(rule => rule.id === pinned.id);
+    assert.ok(rule, "the inspected policy must be represented even without a lexical selector");
+    assert.equal(rule.sourceCommit, FINAL_ARCHIVE_SOURCE);
+    assert.equal(rule.path, pinned.path);
+    assert.equal(rule.blob, pinned.blob);
+    const lines = Array.from({ length: Math.max(...pinned.declarations.map(([line]) => line)) }, () => "");
+    for (const [line, declaration] of pinned.declarations) lines[line - 1] = declaration;
+    withFixture({}, fixture => {
+      fixture.addFile(pinned.path, lines.join("\n") + "\n", "100644", pinned.blob);
+      const report = collect(fixture);
+      const manual = report.entries.filter(entry => entry.candidateOrigin === "manual_source_rule" && entry.sourceClassification?.ruleId === pinned.id);
+      assert.equal(manual.length, pinned.anchorCount);
+      assert.ok(manual.every(entry => entry.sourceClassification.status === "source_inspected"));
+      assert.ok(manual.every(entry => entry.semanticDisposition.status === "unreviewed"));
+      assert.ok(manual.every(entry => entry.sourceClassification.independentDisposition === "pending"));
+      assert.ok(!report.sourceAuditGaps.some(gap => gap.ruleId === pinned.id));
+      if (pinned.id === "broker-build-duration-limit") {
+        assert.ok(manual.every(entry => entry.sourceClassification.classification.startsWith("unresolved_")));
+        assert.ok(manual.every(entry => entry.sourceClassification.openFindings.some(finding => finding.includes("1200"))));
+      }
+      assert.equal(report.status, "fail");
+    });
+    withFixture({}, fixture => {
+      fixture.addFile(pinned.path, lines.join("\n") + "\n");
+      const group = collect(fixture).sourceClassifications.find(group => group.ruleId === pinned.id);
+      assert.equal(group?.status, "source_drift");
+      assert.equal(group?.classification, null);
+      assert.equal(group?.independentDisposition, "pending");
+    });
+  });
+}
