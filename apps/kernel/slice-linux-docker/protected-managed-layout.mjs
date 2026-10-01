@@ -120,7 +120,9 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     beginRestore(environment, archiveDigest, action) {
       if (!environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT || !environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) return
       const container = environment.CHARIOX_SLICE_NAME
-      if (action !== "restore-state" && receipt(container)) {
+      const existing = receipt(container)
+      if (existing) generations.resolveInitialization(container, existing)
+      if (action !== "restore-state" && existing) {
         environment.CHARIOX_SLICE_HOME_VOLUME = this.homeVolume(container)
         return
       }
@@ -129,7 +131,6 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       const images = JSON.parse(image.stdout)
       if (!Array.isArray(images) || images.length !== 1) refuse()
       requireManagedRuntimeHash(imageRoot, sourceDigest, images[0].Id)
-      const existing = receipt(container)
       const prior = generations.read(container)
       const pending = prior && prior.phase !== "resolved"
         ? generations.prepareRollback({container, archiveDigest, imageId: images[0].Id,
@@ -225,6 +226,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         generations.publish({container: record.sliceId, token: environment.CHARIOX_SLICE_RESTORE_GENERATION,
           volume: record.homeVolume, digest: environment.CHARIOX_SLICE_RESTORE_DIGEST})
       }
+      generations.resolveInitialization(record.sliceId, record)
     },
     requireQuiescedHome(container) {
       const record = receipt(container)
