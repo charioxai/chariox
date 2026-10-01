@@ -112,7 +112,7 @@ ${mode === "parent-exit" || mode === "closed-pipes" ? "sys.exit(0)" : "time.slee
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test("build waiting is unchanged without the trusted broker marker", async () => {
+test("MP-08 MP-10 MP-11 build waiting ignores obsolete placement deadlines", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-build-deadline-"))
   try {
     const body = `run_with_timeout() { printf 'bounded:%s\\n' "$*"; }
@@ -126,10 +126,10 @@ run_build_command docker buildx build --load --tag fixture .`
     }
     const broker = await runShell(root, body, { environment: { CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS: "1200" } })
     assert.equal(broker.status, 0, broker.stderr)
-    assert.match(broker.stdout, /^bounded:1200 docker buildx build/)
+    assert.match(broker.stdout, /^owned:unbounded -- docker buildx build/)
     const invalid = await runShell(root, body, { environment: { CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS: "20" } })
-    assert.equal(invalid.status, 1)
-    assert.match(invalid.stderr, /invalid broker build deadline/)
+    assert.equal(invalid.status, 0)
+    assert.match(invalid.stdout, /^owned:unbounded -- docker buildx build/)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -180,7 +180,7 @@ run_build_command() { printf '%s\\n' "$*"; }
 docker_build --tag public-fixture .`
     const ordinary = await runShell(root, body)
     assert.equal(ordinary.status, 0, ordinary.stderr)
-    assert.equal(ordinary.stdout.trim(), "docker buildx build --load --tag public-fixture .")
+    assert.equal(ordinary.stdout.trim(), "docker buildx build --builder default --load --tag public-fixture .")
     const extension = await runShell(root, body, { environment: { CHARIOX_SLICE_MANAGED_DOCKER_HOST: "unix:///public-fixture" } })
     assert.equal(extension.status, 0, extension.stderr)
     assert.equal(extension.stdout.trim(), "docker buildx build --builder default --load --tag public-fixture .")

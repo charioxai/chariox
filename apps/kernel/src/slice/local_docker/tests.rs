@@ -2650,18 +2650,40 @@ fn mp08_mp11_slice_sandbox_option_is_independent_of_broker_placement() {
 #[test]
 fn mp08_mp11_inherited_tuning_is_explicit_in_both_adapters() {
     let _guard = crate::env_lock::lock();
-    let tuning = [("CHARIOX_SLICE_DOCKER_PIDS_LIMIT", "2048"), ("CHARIOX_SLICE_DOCKER_NOFILE_LIMIT", "32768"), ("CHARIOX_SLICE_MIN_FREE_MB", "768")];
+    let tuning = [
+        ("CHARIOX_SLICE_DOCKER_PIDS_LIMIT", "2048"),
+        ("CHARIOX_SLICE_DOCKER_NOFILE_LIMIT", "32768"),
+        ("CHARIOX_SLICE_MIN_FREE_MB", "768"),
+    ];
     let previous = tuning.map(|(name, _)| (name, std::env::var_os(name)));
-    for (name, value) in tuning { std::env::set_var(name, value); }
+    for (name, value) in tuning {
+        std::env::set_var(name, value);
+    }
     let mut command = Command::new("unused-provisioner");
-    let result = configure_local_docker_slice_command(&mut command, &test_record(), None, &test_options(), true);
+    let result = configure_local_docker_slice_command(
+        &mut command,
+        &test_record(),
+        None,
+        &test_options(),
+        true,
+    );
     for (name, value) in previous {
-        if let Some(value) = value { std::env::set_var(name, value); } else { std::env::remove_var(name); }
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
     }
     result.unwrap();
     let projected = broker::provisioner_environment(&command);
     for (name, value) in tuning {
-        assert_eq!(projected.get(name).map(String::as_str), Some(value), "missing tuning {name}");
-        assert!(command.get_envs().any(|(key, actual)| key == name && actual == Some(std::ffi::OsStr::new(value))));
+        assert_eq!(
+            projected.get(name).map(String::as_str),
+            Some(value),
+            "missing tuning {name}"
+        );
+        assert!(command
+            .get_envs()
+            .any(|(key, actual)| key == name && actual == Some(std::ffi::OsStr::new(value))));
     }
 }

@@ -243,7 +243,6 @@ pub fn validate_local_docker_slice_backup(
                 let (size, digest) = file_sha256(archive_path, OPERATION)?;
                 (size, digest, false)
             }
-
         };
     if actual_size != expected_size || actual_digest != expected_digest {
         return reject_corrupt_home_archive(
