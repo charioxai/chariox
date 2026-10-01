@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Builds the Chariox macOS installer package from one platform release bundle:
-//   bin/      chariox-kernel and chariox-cli; optionally chariox (the CLI/TUI),
-//             chariox-app-package and chariox-relay. Installed in /usr/local/bin.
+//   bin/      chariox-kernel and chariox, the single-executable CLI/TUI; optionally
+//             chariox-app-package, chariox-relay and chariox-cli. Installed in
+//             /usr/local/bin. The release bundle (release-bundle.mjs) is the source
+//             of this layout.
 //   libexec/  chariox-app-runtime-install, the root App runtime installer.
 //   runtime/  the signed App runtime release (runtime-inventory.json and .sig).
 //   share/chariox/slice-build-context/
@@ -48,8 +50,8 @@ const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker
 // The context paths the manifest may hold (uninstall.sh checks the same): no
 // spaces, quotes or line breaks, and no . or .. component.
 const CONTEXT_PATH = /^\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*(\/\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$/u;
-const BINARIES = new Map([['chariox-kernel', true], ['chariox-cli', true], ['chariox', false],
-  ['chariox-app-package', false], ['chariox-relay', false]]);
+const BINARIES = new Map([['chariox-kernel', true], ['chariox', true], ['chariox-app-package', false],
+  ['chariox-relay', false], ['chariox-cli', false]]);
 const RUNTIME_INSTALLER = 'chariox-app-runtime-install';
 const IDENTITY = /^Developer ID Installer: [^\r\n]+ \(([A-Z0-9]{10})\)$/u;
 const PROFILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
