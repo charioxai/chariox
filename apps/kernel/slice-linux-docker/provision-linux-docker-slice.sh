@@ -109,8 +109,16 @@ SLICE_LOGIN_PROVIDER="${CHARIOX_SLICE_LOGIN_PROVIDER:-codex}"
 SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
 SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
+SLICE_PRIVATE_HOST_ROOT="${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}"
+SLICE_PRIVATE_ROOT="/var/lib/chariox/slice-private"
+SLICE_KERNEL_HOME="/home/slice/.chariox"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
 SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
+if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+  SLICE_KERNEL_HOME="$SLICE_PRIVATE_ROOT/kernel"
+  SLICE_ACCOUNT_ROOT="$SLICE_PRIVATE_ROOT/provider-accounts/$SLICE_ACCOUNT_OWNER"
+  SLICE_PROVIDER_HOME="$SLICE_PRIVATE_ROOT/provider-home"
+fi
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -864,6 +872,18 @@ ensure_container() {
       -v "$SLICE_WORKSPACE_SOURCE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
       --add-host "host.docker.internal:host-gateway"
     )
+    if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+      # The trusted host provisioner prepares and verifies this retained root.
+      # Existing legacy containers are not retrofitted or migrated here.
+      docker_create_args+=(
+        -e "CHARIOX_HOME=$SLICE_KERNEL_HOME"
+        -e "CHARIOX_MANAGED_PROVIDER_HOME=$SLICE_PROVIDER_HOME"
+        -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
+        -v "$SLICE_PRIVATE_HOST_ROOT:$SLICE_PRIVATE_ROOT"
+        -v "$SLICE_PRIVATE_HOST_ROOT/nssdb:/home/slice/.local/share/pki/nssdb"
+        --tmpfs /tmp/chariox-slice-state:rw,nosuid,nodev,noexec,mode=0700,uid=1000,gid=1000
+      )
+    fi
     if [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]]; then
       # The worker kernel launches providers through an inner bubblewrap user,
       # PID, and mount namespace. Docker's default seccomp, AppArmor, and
@@ -1032,6 +1052,13 @@ exec_slice_with_timeout() {
   local seconds="$1"
   shift
   local relay_env_args=()
+  if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+    relay_env_args+=(
+      -e "CHARIOX_HOME=$SLICE_KERNEL_HOME"
+      -e "CHARIOX_MANAGED_PROVIDER_HOME=$SLICE_PROVIDER_HOME"
+      -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
+    )
+  fi
   # Forward a provisioner-supplied binding, including partial values so kernel
   # boot validation rejects incomplete identities rather than running unbound.
   local binding_name

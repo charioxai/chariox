@@ -57,7 +57,7 @@ export function verifyProtectedCaptureLayout(inspect, receipt, trustedBaseDigest
 
 // Known managed roots only. This does not detect arbitrarily named user secrets.
 export function requireSupportedHomeEntries(paths) {
-  const forbidden = [".codex", ".claude", ".claude.json", ".ssh", ".gnupg", ".config/gh", ".local/share/opencode", ".chariox/kernels", ".chariox/daemon", ".chariox/provider-home", ".chariox/keys"]
+  const forbidden = [".codex", ".claude", ".claude.json", ".ssh", ".gnupg", ".config/gh", ".local/share/opencode", ".chariox/kernels", ".chariox/daemon", ".chariox/state", ".local/state/chariox", ".local/share/pki/nssdb/key4.db", ".chariox/provider-home", ".chariox/keys"]
   for (const path of paths) {
     if (path.startsWith("/") || path.split("/").includes("..")) refuse()
     if (forbidden.some(root => path === root || path.startsWith(`${root}/`))) refuse()

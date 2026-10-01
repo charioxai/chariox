@@ -51,3 +51,28 @@ test("private host roots never overwrite an existing slice or repair a missing r
     assert.throws(() => preparePrivateHostRoot(root, "alias", uid, false))
   } finally { rmSync(root, { recursive: true }) }
 })
+
+import { existsSync, lstatSync, writeFileSync, readFileSync } from "node:fs"
+import { streamArchiveToProtectedSink } from "../apps/kernel/slice-linux-docker/protected-archive-stream.mjs"
+test("archive streams only into protected durable sink and preserves prior generations", async () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-layout-stream-test-"))
+  try {
+    const previous = join(root, "previous.tar.zst")
+    writeFileSync(previous, "synthetic prior generation", {mode: 0o600})
+    const path = join(root, "next.tar.zst")
+    const result = await streamArchiveToProtectedSink({command: process.execPath,
+      args: ["-e", "process.stdout.write('synthetic browser data')"], path, reserveBytes: 0})
+    assert.equal(result.sizeBytes, 22)
+    assert.equal(lstatSync(path).mode & 0o777, 0o600)
+    assert.equal(readFileSync(previous, "utf8"), "synthetic prior generation")
+    await assert.rejects(streamArchiveToProtectedSink({command: process.execPath,
+      args: ["-e", "process.stdout.write('synthetic interrupted data');process.exit(1)"],
+      path: join(root, "failed.tar.zst"), reserveBytes: 0}))
+    assert.equal(existsSync(join(root, "failed.tar.zst")), false)
+    assert.equal(readFileSync(previous, "utf8"), "synthetic prior generation")
+    await assert.rejects(streamArchiveToProtectedSink({command: process.execPath,
+      args: ["-e", "process.stdout.write('synthetic too-large data')"],
+      path: join(root, "oversize.tar.zst"), maxBytes: 2, reserveBytes: 0}))
+    assert.equal(existsSync(join(root, "oversize.tar.zst")), false)
+  } finally { rmSync(root, {recursive: true}) }
+})
