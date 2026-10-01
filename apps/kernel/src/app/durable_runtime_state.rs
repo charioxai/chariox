@@ -427,10 +427,17 @@ impl DaemonApp {
                     },
                 )
             })?;
-            crate::slice::cleanup_replaced_saved_state_generation(&transaction, &generation);
-            crate::slice::remove_local_docker_slice_backup_best_effort(
-                &transaction.rollback_backup,
-            );
+            // Startup recovery now references the existing rollback artifacts:
+            // retain them and prior generations rather than deleting live state.
+            if generation.state.image_ref != transaction.rollback_backup.image_ref
+                || generation.state.home_archive_path
+                    != transaction.rollback_backup.home_archive_path
+            {
+                crate::slice::cleanup_replaced_saved_state_generation(&transaction, &generation);
+                crate::slice::remove_local_docker_slice_backup_best_effort(
+                    &transaction.rollback_backup,
+                );
+            }
             crate::logging::warn_with_fields(
                 "slice.backup.restore",
                 "rolled back an interrupted slice backup restore during kernel startup",

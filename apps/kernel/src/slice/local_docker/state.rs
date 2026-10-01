@@ -489,7 +489,48 @@ pub(crate) fn recover_pending_local_docker_slice_backup_restore(
         None,
         &rollback_options,
     )?;
-    save_local_docker_slice_state_retaining_replaced(record, options)
+    // Recovery reuses the already verified rollback generation. Recapturing here
+    // would quarantine legacy transactions forever under the capture preflight.
+    recovered_rollback_generation(record, options, transaction)
+}
+
+pub(super) fn recovered_rollback_generation(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    transaction: &SliceBackupRestoreTransactionRecord,
+) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
+    let rollback = &transaction.rollback_backup;
+    let state_id = active_state_id(record);
+    let directory = options.root.join("states").join(&state_id);
+    std::fs::create_dir_all(&directory).map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.backup.restore",
+        message: format!("failed to create recovered state directory: {error}"),
+    })?;
+    let manifest = directory.join("manifest.json");
+    let now_ms = crate::session::unix_epoch_ms();
+    let state = SliceSavedStateRecord {
+        id: state_id,
+        slice_name: record.name.clone(),
+        source_slice_id: record.id.clone(),
+        backend: record.backend.clone(),
+        os: record.os.clone(),
+        image_ref: rollback.image_ref.clone(),
+        home_archive_path: rollback.home_archive_path.clone(),
+        manifest_path: manifest.display().to_string(),
+        created_at_ms: rollback.created_at_ms,
+        updated_at_ms: now_ms,
+        size_bytes: rollback.size_bytes,
+        last_operation: Some("backup.restore.rolled_back".to_string()),
+        last_operation_status: Some(crate::slice::SliceOperationStatus::Failed),
+        last_error: Some(
+            "interrupted backup restore rolled back during kernel startup".to_string(),
+        ),
+    };
+    write_state_manifest(&manifest, &state)?;
+    Ok(LocalDockerSavedStateGeneration {
+        state,
+        replaced_state: None,
+    })
 }
 
 pub(crate) fn cleanup_replaced_saved_state_generation(

@@ -26,3 +26,5 @@ localStorage/IndexedDB/CacheStorage/service workers, installed program persisten
 provider/identity exclusion, invalid mount/config/base refusal, previous-generation
 preservation on interruption and safe fresh-volume restore. The existing scoped
 browser-only synthetic roundtrip is component evidence and does not close this gate.
+
+Pending legacy restore recovery validates and restores the existing rollback backup, then publishes a saved-state manifest referencing that same generation. It does not recapture. The rollback and previous generations remain retained across persistence failure and durable resolution; cleanup must not remove the artifacts referenced by recovered state. Normal request admission refuses after slice lookup and before operation/provider parking; backend and capture guards remain defense in depth.

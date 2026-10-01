@@ -8,8 +8,8 @@ pub(crate) use local_docker::managed_docker_broker_configured;
 pub(crate) use local_docker::{
     cleanup_replaced_saved_state_generation, recover_local_docker_snapshot_pause,
     recover_pending_local_docker_slice_backup_restore,
-    remove_local_docker_slice_backup_best_effort, restore_local_docker_slice_backup,
-    SliceBackupRestoreResolution,
+    remove_local_docker_slice_backup_best_effort, require_supported_slice_capture_layout,
+    restore_local_docker_slice_backup, SliceBackupRestoreResolution,
 };
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
