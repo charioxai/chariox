@@ -108,10 +108,6 @@ impl KernelRuntimeState {
                 "slice repository mapping is incomplete",
             ));
         }
-        let selections = repositories
-            .iter()
-            .map(crate::managed_context::outbound_service::resolve_repository_selection)
-            .collect::<Result<Vec<_>, _>>()?;
         let public_key = self
             .owned
             .relay_state
@@ -161,6 +157,10 @@ impl KernelRuntimeState {
             }
             layer
         } else {
+            let selections = repositories
+                .iter()
+                .map(crate::managed_context::outbound_service::resolve_repository_selection)
+                .collect::<Result<Vec<_>, _>>()?;
             self.prepare_project_environment_layer(
                 project_id,
                 &selections,

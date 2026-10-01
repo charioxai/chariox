@@ -87,6 +87,7 @@ impl KernelRuntimeState {
             &crate::slice::SliceBackendKind::LocalDocker,
             Some(&workspace_id),
             Some(&worktree_id),
+            None,
         )?;
         Ok((selection, workspace_id, worktree_id))
     }
@@ -97,7 +98,11 @@ impl KernelRuntimeState {
         backend: &crate::slice::SliceBackendKind,
         workspace_id: Option<&str>,
         worktree_id: Option<&str>,
+        source_slice_ref: Option<&str>,
     ) -> Result<(), DaemonError> {
+        if let Some(source_ref) = source_slice_ref {
+            self.validate_source_slice_export(source_ref, development)?;
+        }
         let Some(ManagedContextDevelopmentSelection::SourceProject {
             project_id,
             repositories,
@@ -132,7 +137,9 @@ impl KernelRuntimeState {
                     repository.workspace_id
                 )));
             }
-            crate::managed_context::outbound_service::resolve_repository_selection(repository)?;
+            if source_slice_ref.is_none() {
+                crate::managed_context::outbound_service::resolve_repository_selection(repository)?;
+            }
         }
         Ok(())
     }

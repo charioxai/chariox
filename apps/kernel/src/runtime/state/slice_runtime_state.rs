@@ -32,10 +32,8 @@ impl KernelRuntimeState {
             &request.backend,
             request.workspace_id.as_deref(),
             request.worktree_id.as_deref(),
+            request.source_slice_ref.as_deref(),
         )?;
-        if let Some(source_ref) = request.source_slice_ref.as_deref() {
-            self.validate_source_slice_export(source_ref, request.development.as_ref())?;
-        }
         let config = self.owned.config_projection.snapshot();
         let development_storage_parent = (request.development.is_some()
             && request.backend == crate::slice::SliceBackendKind::LocalDocker)

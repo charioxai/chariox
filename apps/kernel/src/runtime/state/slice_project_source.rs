@@ -173,3 +173,132 @@ impl KernelRuntimeState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mp08_mp10_mp11_source_slice_export_does_not_require_original_home_files() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "chariox-envlayer5-source-slice-{}",
+            rand::random::<u64>()
+        )));
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let root = std::fs::canonicalize(&scratch.0).unwrap();
+        let workspace = root.join("repository");
+        std::fs::create_dir_all(&workspace).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&workspace)
+            .status()
+            .unwrap()
+            .success());
+        let mut config =
+            crate::DaemonConfig::for_tests().with_session_history_root(root.join("sessions"));
+        config.user_config_path = root.join("config.toml");
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.history.operational.path =
+            Some(root.join("history.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        config.user_config.slices.root = Some(root.join("slices").display().to_string());
+        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+        let (session, _) = app
+            .create_session(
+                crate::session::CreateSessionRequest::new(
+                    workspace.display().to_string(),
+                    workspace.display().to_string(),
+                )
+                .with_owner_user_id("user-1"),
+            )
+            .unwrap();
+        let runtime = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        )
+        .runtime_state();
+        let development = ManagedContextDevelopmentSelection::SourceProject {
+            project_id: session.project_id().into(),
+            repositories: vec![DevelopmentSourceRepositoryBinding {
+                workspace_id: session.workspace_id().into(),
+                worktree_id: Some(session.workspace_id().into()),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+        };
+        let request = |name: &str, source: Option<String>| crate::local::CreateSliceRequest {
+            source_slice_ref: source,
+            name: name.into(),
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".into(),
+            display_mode: crate::slice::SliceDisplayMode::Headless,
+            display_backend: crate::slice::SliceDisplayBackend::default(),
+            workspace_id: Some(session.workspace_id().into()),
+            worktree_id: Some(session.workspace_id().into()),
+            workspace_mount: None,
+            development: Some(development.clone()),
+            worker_kernel_ref: None,
+            display_url: None,
+            provider_auth: vec![],
+            from_saved_state: None,
+            base: Some(crate::local::SliceCreateBase::Clean),
+        };
+        let first = runtime.create_slice(request("first", None)).await.unwrap();
+        let publication_root = root.join("slices/development/first/development");
+        let published = publication_root.join("repository");
+        std::fs::create_dir_all(&published).unwrap();
+        std::fs::write(published.join("app.ts"), "actual slice change\n").unwrap();
+        runtime
+            .owned
+            .slice_store
+            .set_development_publication(
+                &first.id,
+                crate::slice::SliceDevelopmentPublication {
+                    publication_id: "development".into(),
+                    destination_root: publication_root.display().to_string(),
+                    primary_repository_path: published.display().to_string(),
+                    repository_paths: vec![published.display().to_string()],
+                },
+                1,
+            )
+            .unwrap();
+        runtime
+            .owned
+            .slice_store
+            .set_status(&first.id, crate::slice::SliceStatus::Running, 2)
+            .unwrap();
+        std::fs::remove_dir_all(&workspace).unwrap();
+        assert!(runtime
+            .create_slice(request("home-unavailable", None))
+            .await
+            .is_err());
+        let second = runtime
+            .create_slice(request("second", Some(first.id.clone())))
+            .await
+            .unwrap();
+        let selections = runtime.slice_repository_selections(&second).unwrap();
+        assert_eq!(selections.len(), 1);
+        assert_eq!(selections[0].worktree_path, published);
+        assert_eq!(
+            std::fs::read_to_string(selections[0].worktree_path.join("app.ts")).unwrap(),
+            "actual slice change\n"
+        );
+        runtime
+            .owned
+            .slice_store
+            .set_status(&first.id, crate::slice::SliceStatus::Stopped, 3)
+            .unwrap();
+        assert!(runtime
+            .create_slice(request("stopped-source", Some(first.id)))
+            .await
+            .is_err());
+    }
+}
