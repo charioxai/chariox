@@ -14,6 +14,12 @@
 //! Protocol 393: a passkey from a connection class that may not submit one
 //! (kernel agents, hosts, relay peers) is refused before verification, and
 //! every audit event names the answering connection's class.
+//!
+//! Protocol 394: the decision is a passkey prompt on every terminal of its
+//! owner (`passkey_prompts`). Passkey answers are checked one at a time and
+//! each holds its turn until its answer is applied, so a second terminal's
+//! passkey for a prompt the first just answered is not verified: it is told
+//! the prompt was already answered.
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,6 +49,22 @@ pub(crate) fn passkey_error(code: &str, message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "critical approval",
         message: format!("{code}: {message}"),
+    }
+}
+
+/// Whether an answer proved the owner's presence. A verified passkey keeps
+/// the verification turn until the answer is applied.
+pub(super) struct CriticalApprovalAuthorization {
+    pub(super) verified: bool,
+    _turn: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl CriticalApprovalAuthorization {
+    fn without_passkey(verified: bool) -> Self {
+        Self {
+            verified,
+            _turn: None,
+        }
     }
 }
 
@@ -167,11 +189,12 @@ impl CriticalApprovalPasskeys {
 
 impl KernelRuntimeState {
     /// Whether this answer proves the owner's presence for a passkey-gated
-    /// choice. `Ok(false)` when the choice needs no passkey or the caller does
-    /// not own the decision (the answer path then refuses on its own terms).
-    /// Every gated answer is audited, with its outcome and the connection's
-    /// class only. A passkey from a class that may not submit one is refused
-    /// first, without verification or a count against the owner's limit.
+    /// choice. Not verified when the choice needs no passkey or the caller
+    /// does not own the decision (the answer path then refuses on its own
+    /// terms). Every gated answer is audited, with its outcome and the
+    /// connection's class only. A passkey from a class that may not submit
+    /// one is refused first, without verification or a count against the
+    /// owner's limit.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn authorize_critical_approval(
         &self,
@@ -182,7 +205,7 @@ impl KernelRuntimeState {
         passkey: Option<&ApprovalPasskey>,
         remember_minutes: Option<u32>,
         connection_class: Option<KernelConnectionClass>,
-    ) -> Result<bool, DaemonError> {
+    ) -> Result<CriticalApprovalAuthorization, DaemonError> {
         if passkey.is_some() && connection_class.is_some_and(|class| !class.may_submit_passkey()) {
             return Err(passkey_error(
                 PASSKEY_NOT_ACCEPTED,
@@ -193,7 +216,7 @@ impl KernelRuntimeState {
             self.owned
                 .passkey_gate(session_id, interaction_id, choice_id, caller_user_id)
         else {
-            return Ok(false);
+            return Ok(CriticalApprovalAuthorization::without_passkey(false));
         };
         if remember_minutes.is_some_and(|minutes| {
             minutes == 0 || minutes > PASSKEY_REMEMBER_MAX_MINUTES || passkey.is_none()
@@ -217,7 +240,7 @@ impl KernelRuntimeState {
         let Some(passkey) = passkey else {
             if presence.remembered(&owner, Instant::now()) {
                 audit("remembered")?;
-                return Ok(true);
+                return Ok(CriticalApprovalAuthorization::without_passkey(true));
             }
             audit("missing")?;
             return Err(passkey_error(
@@ -225,7 +248,22 @@ impl KernelRuntimeState {
                 "approving this critical action needs your Chariox passkey",
             ));
         };
-        let _verifying = presence.verifying.lock().await;
+        let turn = presence.verifying.clone().lock_owned().await;
+        // Another terminal may have answered while this one waited its turn.
+        if self
+            .owned
+            .passkey_gate(session_id, interaction_id, choice_id, caller_user_id)
+            .is_none()
+        {
+            return Err(self.owned.closed_interaction_error(
+                session_id,
+                interaction_id,
+                DaemonError::LocalTransport {
+                    operation: "resolve runtime interaction",
+                    message: format!("interaction {interaction_id} was not pending"),
+                },
+            ));
+        }
         if let Some(remaining) = presence.locked_for(&owner, Instant::now()) {
             audit("rate_limited")?;
             return Err(passkey_error(
@@ -270,7 +308,10 @@ impl KernelRuntimeState {
             Ok(true) => {
                 presence.record_success(&owner, Instant::now(), remember_minutes);
                 audit("verified")?;
-                Ok(true)
+                Ok(CriticalApprovalAuthorization {
+                    verified: true,
+                    _turn: Some(turn),
+                })
             }
             Ok(false) => {
                 presence.record_failure(&owner, Instant::now());

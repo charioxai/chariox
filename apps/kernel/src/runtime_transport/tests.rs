@@ -659,6 +659,9 @@ impl ClassAuditKernel {
 }
 
 #[cfg(unix)]
+mod passkey_prompts;
+
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn slice_state_save_acknowledgement_replays_without_a_second_dispatch() {
     use std::os::unix::fs::PermissionsExt;

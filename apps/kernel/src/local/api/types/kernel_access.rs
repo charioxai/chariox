@@ -31,3 +31,34 @@ impl KernelConnectionClass {
         matches!(self, Self::Terminal | Self::Unauthenticated)
     }
 }
+
+/// Protocol 394: what a passkey prompt asks the owner to authorize. Critical
+/// approvals only, for now; `/sudo` and access grants add their kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasskeyPromptKind {
+    /// A kernel decision whose approve choice is marked `requires_passkey`.
+    CriticalApproval,
+}
+
+/// Protocol 394: a kernel-owned pending interaction that needs the Chariox
+/// passkey, projected as a popup to every terminal connected as its owner,
+/// attached to the session or not. Every field is what the kernel itself
+/// established. It is answered with `RespondToInteraction` on `session_id`
+/// and `interaction_id`: the approve choice with the passkey, or the refuse
+/// choice without it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasskeyPrompt {
+    pub kind: PasskeyPromptKind,
+    pub session_id: String,
+    /// The session's alias, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_alias: Option<String>,
+    pub interaction_id: String,
+    pub title: String,
+    pub message: String,
+    pub approve_choice_id: String,
+    pub refuse_choice_id: String,
+    pub requested_at_ms: u64,
+    pub expires_at_ms: u64,
+}

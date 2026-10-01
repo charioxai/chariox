@@ -63,6 +63,9 @@ pub(super) struct PendingInteraction {
     pub(super) session_store_identity: Weak<()>,
     pub(super) kernel_operation_owner: Option<String>,
     pub(super) kernel_operation_deadline: Option<std::time::Instant>,
+    /// Protocol 394: the popup projected to the owner's terminals, for a
+    /// decision that needs the passkey.
+    pub(super) passkey_prompt: Option<Arc<crate::local::PasskeyPrompt>>,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
 }
 

@@ -58,6 +58,7 @@ export type WorkspaceLayoutProps = {
   onFooterSummaryBoxRef: RefHandler
   onHotkeysOverlayBoxRef: RefHandler
   onKernelApprovalBoxRef: RefHandler
+  onPasskeyPopupBoxRef: RefHandler
 }
 
 export function WorkspaceLayout(props: WorkspaceLayoutProps) {
@@ -359,6 +360,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         top={0}
       />
       <box ref={props.onKernelApprovalBoxRef} position="absolute" left={0} top={0} />
+      <box ref={props.onPasskeyPopupBoxRef} position="absolute" left={0} top={0} />
     </box>
   )
 }

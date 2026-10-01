@@ -6,9 +6,17 @@ use super::request_errors::map_relay_error;
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::transport::kernel_protocol::WaitingRoomInventoryEventProjection;
+use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 use chariox_relay::protocol::RelayCallerIdentity;
 
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
+
+/// Who a relay subscription serves: the caller's user and, for its passkey
+/// popups (protocol 394), its connection class.
+pub(super) struct RelaySubscriber {
+    pub(super) user_id: String,
+    pub(super) connection_class: crate::local::KernelConnectionClass,
+}
 
 pub(super) struct RelaySubscriptionTask {
     pub(super) relay_subscription_id: String,
@@ -62,7 +70,10 @@ pub(super) async fn handle_relay_subscribe(
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
-    let caller_user_id = relay_subscription_caller_user_id(caller_identity.as_ref());
+    let subscriber = RelaySubscriber {
+        user_id: relay_subscription_caller_user_id(caller_identity.as_ref()),
+        connection_class: crate::runtime::command::relay_connection_class(caller_identity.as_ref()),
+    };
     let is_inventory_subscription =
         subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
     if resume_from_event_id.is_none() {
@@ -255,7 +266,7 @@ pub(super) async fn handle_relay_subscribe(
         subscription_scope.clone(),
         Arc::clone(event_runtime),
         resume_from_event_id.is_some(),
-        caller_user_id,
+        subscriber,
     ));
     subscription_tasks.lock().await.insert(
         task_key,
@@ -339,7 +350,7 @@ pub(super) async fn run_relay_subscription_loop(
     subscription_scope: Option<String>,
     event_runtime: Arc<RelayEventRuntime>,
     resumed: bool,
-    caller_user_id: String,
+    subscriber: RelaySubscriber,
 ) {
     if subscription_scope.as_deref() == Some("waiting_room_inventory") {
         run_relay_waiting_room_inventory_subscription_loop(
@@ -349,11 +360,13 @@ pub(super) async fn run_relay_subscription_loop(
             client_public_key,
             event_runtime,
             resumed,
-            caller_user_id,
+            subscriber,
         )
         .await;
         return;
     }
+    let mut passkey_prompts =
+        PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
@@ -363,6 +376,22 @@ pub(super) async fn run_relay_subscription_loop(
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
+        if let Some(event) = passkey_prompts.next_event(&router) {
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                &event_stream_id,
+                event,
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
         let terminal_attachment_change_sequence =
             router.terminal_attachment_change_sequence(&session_id, &attachment_id);
         let terminal_session_change_sequence = router.terminal_session_change_sequence(&session_id);
@@ -666,6 +695,7 @@ pub(super) async fn run_relay_subscription_loop(
                     _ = router.wait_for_workflow_design_change_after(
                         workflow_design_change_sequence
                     ) => {}
+                    _ = passkey_prompts.changed(&router) => {}
                 }
             },
         )
@@ -768,8 +798,10 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     client_public_key: String,
     event_runtime: Arc<RelayEventRuntime>,
     resumed: bool,
-    caller_user_id: String,
+    subscriber: RelaySubscriber,
 ) {
+    let mut passkey_prompts =
+        PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
     let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status = if resumed {
         Some(router.transport_relay_status_snapshot().await)
@@ -785,12 +817,31 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
     loop {
+        if let Some(event) = passkey_prompts.next_event(&router) {
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                event,
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty
             || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
         {
-            match router.waiting_room_public_snapshot(&caller_user_id).await {
+            match router
+                .waiting_room_public_snapshot(&subscriber.user_id)
+                .await
+            {
                 Ok(snapshot) => {
                     inventory_dirty = false;
                     for event in waiting_room_event_projection.project(snapshot) {
@@ -927,13 +978,21 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             next_heartbeat_at
                 .checked_duration_since(Instant::now())
                 .unwrap_or(Duration::ZERO),
-            wait_for_relay_waiting_room_inventory_change(
-                router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
-                router.wait_for_session_projection_change_after(session_projection_change_sequence),
-            ),
+            async {
+                tokio::select! {
+                    _ = wait_for_relay_waiting_room_inventory_change(
+                        router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+                        router.wait_for_session_projection_change_after(
+                            session_projection_change_sequence,
+                        ),
+                    ) => true,
+                    // Popups are sent at once, without the inventory coalescing.
+                    _ = passkey_prompts.changed(&router) => false,
+                }
+            },
         )
         .await;
-        if wait_result.is_ok() {
+        if matches!(wait_result, Ok(true)) {
             sleep(Duration::from_millis(WAITING_ROOM_ROW_COALESCE_MS)).await;
             inventory_dirty = true;
         }

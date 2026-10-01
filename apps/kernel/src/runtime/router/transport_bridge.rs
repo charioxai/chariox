@@ -139,6 +139,21 @@ impl CommandRouter {
             .await;
     }
 
+    /// Protocol 394: the passkey prompts pending for `user_id`.
+    pub(crate) fn passkey_prompts_for(&self, user_id: &str) -> Vec<crate::local::PasskeyPrompt> {
+        self.runtime_state.passkey_prompts_for(user_id)
+    }
+
+    pub(crate) fn passkey_prompt_change_sequence(&self) -> u64 {
+        self.runtime_state.passkey_prompt_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_passkey_prompt_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_passkey_prompt_change_after(sequence)
+            .await;
+    }
+
     pub(crate) fn workflow_design_change_sequence(&self) -> u64 {
         self.runtime_state.workflow_design_change_sequence()
     }

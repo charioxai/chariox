@@ -94,22 +94,12 @@ impl KernelCaller {
     pub fn for_relay_request(identity: Option<RelayCallerIdentity>) -> Self {
         identity.map(Self::from_relay_identity).unwrap_or_else(|| {
             Self::for_source(&KernelCommandSource::RelayClient)
-                .with_connection_class(KernelConnectionClass::Unauthenticated)
+                .with_connection_class(relay_connection_class(None))
         })
     }
 
     pub fn from_relay_identity(identity: RelayCallerIdentity) -> Self {
-        // A client with a user id is a terminal (web, remote TUI); kernels,
-        // machines and hosted services are relay peers.
-        let connection_class = match identity.subject_kind {
-            RelaySubjectKind::Client if identity.user_id.is_some() => {
-                KernelConnectionClass::Terminal
-            }
-            RelaySubjectKind::Client => KernelConnectionClass::Unauthenticated,
-            RelaySubjectKind::Kernel | RelaySubjectKind::Machine | RelaySubjectKind::Service => {
-                KernelConnectionClass::RelayPeer
-            }
-        };
+        let connection_class = relay_connection_class(Some(&identity));
         let (caller_kind, client_id, machine_id) = match identity.subject_kind {
             RelaySubjectKind::Client => (
                 KernelCallerKind::RemoteClient,
@@ -134,6 +124,23 @@ impl KernelCaller {
             metaagent_id: None,
             connection_class: Some(connection_class),
         }
+    }
+}
+
+/// The class of a relay connection, for its requests and subscriptions: a
+/// client with a user id is a terminal (web, remote TUI); kernels, machines
+/// and hosted services are relay peers; a client without a user id, or no
+/// identity, is unauthenticated.
+pub(crate) fn relay_connection_class(
+    identity: Option<&RelayCallerIdentity>,
+) -> KernelConnectionClass {
+    match identity.map(|identity| (identity.subject_kind, identity.user_id.is_some())) {
+        Some((RelaySubjectKind::Client, true)) => KernelConnectionClass::Terminal,
+        Some((RelaySubjectKind::Client, false)) | None => KernelConnectionClass::Unauthenticated,
+        Some((
+            RelaySubjectKind::Kernel | RelaySubjectKind::Machine | RelaySubjectKind::Service,
+            _,
+        )) => KernelConnectionClass::RelayPeer,
     }
 }
 

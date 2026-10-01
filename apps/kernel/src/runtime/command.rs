@@ -9,6 +9,7 @@ mod caller;
 mod local_request_metadata;
 
 pub(crate) use caller::command_caller_user_id;
+pub(crate) use caller::relay_connection_class;
 pub use caller::{KernelCaller, KernelCallerKind, KernelCommandSource};
 
 use local_request_metadata::local_request_metadata;
