@@ -2,7 +2,7 @@ import http from "node:http"
 import { createDrillEBarrier } from "./drill-e-barrier.mjs"
 
 // MP-08/MP-10: fixture traffic only. Provider tools still use the normal kernel MCP path.
-export async function startDrillESynchronizedFixture({ actors }) {
+export async function startDrillESynchronizedFixture({ actors, isolatedFrameHost = "127.0.0.1" }) {
   const phases = new Map()
   let phase = null
   let armed = false
@@ -24,15 +24,28 @@ export async function startDrillESynchronizedFixture({ actors }) {
         response.end("released")
         return
       }
+      if (parts[0] === "frame") {
+        response.setHeader("Content-Type", "text/html")
+        response.end(`<h2>MP-08/MP-10 isolated snapshot barrier</h2><script>
+          addEventListener('message', event => {
+            if (event.data !== 'drill-e-read') return;
+            const request = new XMLHttpRequest();
+            request.open('GET', '/read-hold', false); request.send();
+          });
+          </script>`)
+        return
+      }
       if (parts[0] === "page" && ["same", "other"].includes(parts[1])) {
         if (armed) await phases.get(phase).hold(parts[1])
         response.setHeader("Content-Type", "text/html")
         response.end(`<title>MP-08/MP-10 Drill E ${parts[1]}</title><h1>Drill E probe</h1>
+          ${parts[1] === "same" ? `<iframe id="snapshot-barrier" src="http://${isolatedFrameHost}:${server.address().port}/frame"></iframe>` : ""}
           <script>
           const nativeVisibility = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
           Object.defineProperty(document, 'visibilityState', {get() {
-            const request = new XMLHttpRequest();
-            request.open('GET', '/read-hold', false); request.send();
+            // Keep top-page reconciliation responsive. Only the isolated child
+            // renderer blocks, at the subsequent structured-snapshot seam.
+            document.getElementById('snapshot-barrier')?.contentWindow.postMessage('drill-e-read', '*');
             return nativeVisibility.get.call(document);
           }});
           </script>`)
