@@ -6,7 +6,7 @@ test("MP-08/MP-10: HTTP fixture primes pages, gates three providers, and release
   const fixture = await startDrillESynchronizedFixture({ actors: ["a", "b", "c"] })
   const base = `http://127.0.0.1:${fixture.port}`
   try {
-    assert.equal((await (await fetch(`${base}/page/same`)).text()).match(/<button>/g).length, 10_000)
+    assert.equal((await (await fetch(`${base}/page/same`)).text()).match(/<button>/g).length, 30_000)
     fixture.beforePhase("reads")
     const arrivals = ["a", "b", "c"].map(actor => fetch(`${base}/ready/reads/${actor}`))
     assert.ok((await Promise.all(arrivals)).every(response => response.ok))
@@ -45,4 +45,20 @@ test("MP-08/MP-10: click hold safety starts at observed admission and releases a
     fixture.observed("mutations", ["a", "b", "c"].map(action_id => ({ action_id })))
     assert.equal((await (await fetch(`http://127.0.0.1:${fixture.port}/state`)).json()).held, false)
   } finally { await fixture.stop() }
+})
+
+test("MP-08/MP-10: page holds release through pushed events without background timers", async () => {
+  const fixture = await startDrillESynchronizedFixture({ actors: ["a", "b", "c"] })
+  let reader
+  try {
+    const response = await fetch(`http://127.0.0.1:${fixture.port}/events`)
+    assert.equal(response.headers.get("content-type"), "text/event-stream")
+    reader = response.body.getReader()
+    const next = async () => new TextDecoder().decode((await reader.read()).value)
+    assert.match(await next(), /"held":false/)
+    fixture.beforePhase("mutations")
+    assert.match(await next(), /"held":true/)
+    fixture.observed("mutations", ["a", "b", "c"].map(action_id => ({ action_id })))
+    assert.match(await next(), /"held":false/)
+  } finally { await reader?.cancel(); await fixture.stop() }
 })

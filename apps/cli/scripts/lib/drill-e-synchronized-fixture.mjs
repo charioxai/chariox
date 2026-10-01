@@ -8,6 +8,11 @@ export async function startDrillESynchronizedFixture({ actors }) {
   let armed = false
   let mutationTimerStarted = false
   const deliveries = []
+  const streams = new Set()
+  const held = () => phase !== null && phases.get(phase)?.evidence().pageReleaseReason === null
+  const publish = () => {
+    for (const stream of streams) stream.write(`data: ${JSON.stringify({ held: held() })}\n\n`)
+  }
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, "http://fixture.invalid")
@@ -22,19 +27,25 @@ export async function startDrillESynchronizedFixture({ actors }) {
           response.writeHead(409).end("MP-08/MP-10 ABORTED: do not call a Browser tool")
           return
         }
-        // The independent worker starts first. This is a role-based fixture
-        // schedule shared by all providers, not a provider adapter change.
-        if (phase === "mutations" && parts[2] !== actors[2]) {
-          await new Promise(resolve => setTimeout(resolve, 2_000))
-        }
+        // Role scheduling only; no provider adapter or runtime policy changes.
+        const delay = phase === "reads"
+          ? (parts[2] === actors[2] ? 5_000 : 0)
+          : (parts[2] === actors[1] ? 0 : 3_000)
+        if (delay) await new Promise(resolve => setTimeout(resolve, delay))
         deliveries.push({ phase: parts[1], actor: parts[2], atMs: Date.now() })
         response.end("MP-08/MP-10 READY: call the requested Chariox Browser tool now")
         return
       }
       if (parts[0] === "state") {
         response.setHeader("Content-Type", "application/json")
-        response.end(JSON.stringify({ held: phase !== null
-          && phases.get(phase)?.evidence().pageReleaseReason === null }))
+        response.end(JSON.stringify({ held: held() }))
+        return
+      }
+      if (parts[0] === "events") {
+        response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" })
+        streams.add(response)
+        response.on("close", () => streams.delete(response))
+        publish()
         return
       }
       if (parts[0] === "page" && ["same", "other"].includes(parts[1])) {
@@ -44,16 +55,14 @@ export async function startDrillESynchronizedFixture({ actors }) {
         // unchanged 5000-node result bound. A large fixture makes that read
         // observable after admission, without blocking preflight reconciliation.
         const probes = parts[1] === "same"
-          ? Array.from({ length: 10_000 }, (_, index) => `<button>Drill E probe ${index}</button>`).join("")
+          ? Array.from({ length: 30_000 }, (_, index) => `<button>Drill E probe ${index}</button>`).join("")
           : "";
         response.end(`<title>MP-08/MP-10 Drill E ${parts[1]}</title><h1>Drill E probe</h1>
           <button id="held-mutation" onclick="document.getElementById('count').textContent=++window.clicks">Drill E held mutation</button>
           <output id="count">0</output>${probes}<script>
           window.clicks=0;
-          setInterval(async()=>{try{
-            const state=await (await fetch('/state')).json();
-            document.getElementById('held-mutation').disabled=state.held;
-          }catch{}},50);
+          const events=new EventSource('/events');
+          events.onmessage=event=>{document.getElementById('held-mutation').disabled=JSON.parse(event.data).held};
           </script>`)
         return
       }
@@ -76,12 +85,13 @@ export async function startDrillESynchronizedFixture({ actors }) {
       armed = false
       mutationTimerStarted = false
       phases.set(next, createDrillEBarrier({ actors }))
+      publish()
     },
     tick(environment) {
       if (phase === null || mutationTimerStarted) return
       if (!environment.actions.some(action => action.kind === "click" && action.state === "running")) return
       mutationTimerStarted = true
-      void phases.get(phase).hold("actionability")
+      void phases.get(phase).hold("actionability").then(publish)
     },
     promptPrefix(next, actor) {
       const endpoint = `http://127.0.0.1:${port}/ready/${next}/${actor}`
@@ -93,12 +103,14 @@ export async function startDrillESynchronizedFixture({ actors }) {
     observed(next, actions) {
       phases.get(next).releasePages("observed_overlap", actions.map(action => action.action_id))
       armed = false
+      publish()
     },
     evidence() { return Object.fromEntries([...phases].map(([name, gate]) => [name,
       { ...gate.evidence(), deliveries: deliveries.filter(item => item.phase === name) }])) },
     close() {
       armed = false
       for (const gate of phases.values()) gate.close()
+      publish()
     },
     async stop() {
       this.close()
