@@ -1,0 +1,72 @@
+import { mkdtempSync, chmodSync, lstatSync, existsSync, readFileSync, unlinkSync, rmdirSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { spawn, spawnSync } from "node:child_process"
+import { readLocalDevEnrollment, verifyInstalledLocalSource } from "./protected-local-docker-authority.mjs"
+
+// Only the ordinary home kernel starts this launcher. No private input is placed
+// in argv, environment, image or transport directory.
+const uid = process.getuid()
+const parent = process.ppid
+const parentBirth = () => {
+  try { return readFileSync(`/proc/${parent}/stat`, "utf8").split(") ").at(-1).split(" ")[19] } catch { return undefined }
+}
+const originalParentBirth = parentBirth()
+let directory, child, container
+const env = {PATH: "/usr/bin:/bin", HOME: "/nonexistent", DOCKER_HOST: "unix:///run/docker.sock"}
+function cleanup() {
+  if (container) spawnSync("/usr/bin/docker", ["stop", "-t", "3", container], {env, stdio: "ignore", timeout: 10_000})
+  // This exact mkdtemp directory contains only the owned public transport socket.
+  if (directory) {
+    const socket = join(directory, "control.sock")
+    try { if (lstatSync(socket).isSocket()) unlinkSync(socket) } catch (error) { if (error.code !== "ENOENT") throw error }
+    try { rmdirSync(directory) } catch (error) { if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) throw error }
+  }
+}
+try {
+  const enrollment = readLocalDevEnrollment(uid)
+  verifyInstalledLocalSource(enrollment)
+  const socketIdentity = lstatSync("/run/docker.sock")
+  if (!socketIdentity.isSocket() || socketIdentity.uid !== enrollment.socket.uid
+      || socketIdentity.gid !== enrollment.socket.gid || (socketIdentity.mode & 0o777) !== enrollment.socket.mode) throw new Error("socket refused")
+  directory = mkdtempSync(join(tmpdir(), `chariox-local-broker-${uid}-`))
+  chmodSync(directory, 0o700)
+  const socket = join(directory, "control.sock")
+  container = `chariox-local-broker-${uid}-${directory.split("-").at(-1).toLowerCase()}`
+  child = spawn("/usr/bin/docker", ["run", "--rm", "--name", container,
+    "--read-only", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
+    "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
+    "--security-opt", "no-new-privileges", "--memory", "512m", "--cpus", "2", "--pids-limit", "128",
+    "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m", "--tmpfs", "/run/chariox-slice-broker:rw,nosuid,nodev,size=32m",
+    "--mount", "type=bind,src=/run/docker.sock,dst=/run/docker.sock",
+    "--mount", `type=bind,src=${enrollment.sourceRoot},dst=${enrollment.sourceRoot},readonly`,
+    "--mount", `type=bind,src=/etc/chariox/slice-local-dev/${uid}.json,dst=/etc/chariox/slice-local-dev/${uid}.json,readonly`,
+    "--mount", `type=bind,src=${enrollment.controlRoot.slice(0, -7)},dst=${enrollment.controlRoot.slice(0, -7)}`,
+    "--mount", `type=bind,src=${directory},dst=${directory}`,
+    "-e", `CHARIOX_SLICE_LOCAL_DEV_OWNER_UID=${uid}`, "-e", `CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME=${container}`,
+    "-e", `CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY=${JSON.stringify({dev: socketIdentity.dev, ino: socketIdentity.ino})}`,
+    "-e", "DOCKER_HOST=unix:///run/docker.sock", "-e", `CHARIOX_SLICE_DOCKER_BROKER_SOCKET=${socket}`,
+    "-e", `CHARIOX_SLICE_DOCKER_SHARE_ROOT=${enrollment.controlRoot}/share`,
+    "-e", `CHARIOX_SLICE_DOCKER_BROKER_OUTPUT_ROOT=${enrollment.controlRoot}/share/.broker-private/output`,
+    "-e", `CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT=${enrollment.controlRoot}/share/.broker-private/artifacts`,
+    "-e", `CHARIOX_SLICE_DOCKER_HANDLE_ROOT=${enrollment.controlRoot}/handles`,
+    "-e", `CHARIOX_SLICE_DOCKER_HANDLE_STATE=${enrollment.controlRoot}/handles.json`,
+    "--entrypoint", "/usr/local/bin/node", enrollment.helperImageId,
+    `${enrollment.sourceRoot}/apps/kernel/slice-linux-docker/managed-docker-broker.mjs`], {env, stdio: "ignore"})
+  const deadline = performance.now() + 30_000
+  while (!existsSync(socket)) {
+    if (child.exitCode !== null || performance.now() >= deadline) throw new Error("startup refused")
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  const metadata = lstatSync(socket)
+  if (!metadata.isSocket() || metadata.uid !== uid || (metadata.mode & 0o777) !== 0o600) throw new Error("transport refused")
+  process.stdout.write(`${socket}\n`)
+  const quit = () => { cleanup(); process.exit(0) }
+  process.on("SIGTERM", quit); process.on("SIGINT", quit); process.on("SIGHUP", quit)
+  child.once("exit", () => { cleanup(); process.exit(0) })
+  setInterval(() => { if (!originalParentBirth || parentBirth() !== originalParentBirth) quit() }, 1000)
+} catch {
+  cleanup()
+  process.stderr.write("Verified local Docker DEV broker startup refused\n")
+  process.exitCode = 1
+}

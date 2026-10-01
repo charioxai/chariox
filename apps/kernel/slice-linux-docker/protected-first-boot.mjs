@@ -1,4 +1,5 @@
-import { managedRootlessSliceOwner, SLICE_CONTAINER_UID } from "./protected-rootless-owner.mjs"
+import { SLICE_CONTAINER_UID } from "./protected-rootless-owner.mjs"
+import { verifiedProtectedAuthority } from "./protected-authority.mjs"
 import { existsSync, mkdirSync, readdirSync, openSync, closeSync, writeFileSync, fsyncSync, constants } from "node:fs"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -9,8 +10,8 @@ import { verifyProtectedCaptureLayout } from "./protected-layout.mjs"
 import { retainFreshIdentity, requireIdentityRetention } from "./protected-identity-retention.mjs"
 import { writeProtectedLayoutReceipt } from "./protected-layout-store.mjs"
 
-export { DURABLE_LAYOUT_ROOT } from "./protected-namespace-entry.mjs"
-import { DURABLE_LAYOUT_ROOT } from "./protected-namespace-entry.mjs"
+export { DURABLE_LAYOUT_ROOT } from "./protected-authority.mjs"
+import { DURABLE_LAYOUT_ROOT } from "./protected-authority.mjs"
 function refuse() { throw new Error("Protected identity retention is required before this slice can start") }
 
 export function verifyFirstBootTopology(info, privateRoot, homeVolume) {
@@ -87,8 +88,10 @@ if (process.argv[1]?.endsWith("/protected-first-boot.mjs")) {
     verifyFirstBootTopology(info, privateRoot, environment.CHARIOX_SLICE_HOME_VOLUME ?? `${environment.CHARIOX_SLICE_NAME}-home`)
     const kernelHash = requireManagedRuntimeHash(join(DURABLE_LAYOUT_ROOT, "images"), environment.CHARIOX_SLICE_BUILD_CONTEXT_DIGEST, info.Image)
     requireRuntimeProof(docker, environment.CHARIOX_SLICE_NAME, kernelHash)
-    if (environment.DOCKER_HOST !== "unix:///run/chariox-docker/docker.sock") refuse()
-    const dataOwner = managedRootlessSliceOwner()
+    const authority = verifiedProtectedAuthority()
+    if (environment.DOCKER_HOST !== (authority.kind === "linux-local-rootful-dev"
+        ? "unix:///run/docker.sock" : "unix:///run/chariox-docker/docker.sock")) refuse()
+    const dataOwner = authority.dataUid
     ensureFirstBootRetention({privateRoot, backupRoot, sliceId, dataOwner,
       container: environment.CHARIOX_SLICE_NAME, port: Number(environment.CHARIOX_SLICE_KERNEL_PORT ?? 43119),
       docker})

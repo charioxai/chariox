@@ -129,11 +129,15 @@ struct HomeArchiveCaptureResponse {
 pub fn initialize() {
     #[cfg(unix)]
     {
-        let socket_path = std::env::var_os(BROKER_SOCKET_ENV);
+        let mut socket_path = std::env::var_os(BROKER_SOCKET_ENV);
         let inherited_fd = std::env::var(BROKER_FD_ENV)
             .ok()
             .and_then(|value| value.parse::<RawFd>().ok());
-        let configured = socket_path.is_some()
+        let local = if socket_path.is_none() && inherited_fd.is_none()
+            && std::env::var_os(BROKER_REQUIRED_ENV).is_none() { super::local_authority::start() } else { None };
+        let local_configured = local.is_some();
+        if let Some(Ok(path)) = local { socket_path = Some(path.into_os_string()); }
+        let configured = local_configured || socket_path.is_some()
             || inherited_fd.is_some()
             || std::env::var_os(BROKER_REQUIRED_ENV).is_some();
         let _ = BROKER_CONFIGURED.set(configured);

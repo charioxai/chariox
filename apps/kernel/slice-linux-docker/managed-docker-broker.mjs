@@ -3,12 +3,14 @@
 import { recordCapturedImageProof } from "./protected-image-proof.mjs"
 import { requireSafeHomeVolume } from "./protected-home-preflight.mjs"
 import { createManagedLayoutController } from "./protected-managed-layout.mjs"
-import { managedRootlessSliceOwner } from "./protected-rootless-owner.mjs"
+import { verifiedProtectedAuthority } from "./protected-authority.mjs"
+import { recordManagedImageProof } from "./protected-image-proof.mjs"
 import { DURABLE_LAYOUT_ROOT } from "./protected-first-boot.mjs"
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import {
   chmodSync,
+  chownSync,
   closeSync,
   constants,
   existsSync,
@@ -78,13 +80,18 @@ function signedBuildContextDigest() {
   return artifact.sha256
 }
 
-const SIGNED_BUILD_CONTEXT_DIGEST = signedBuildContextDigest()
+const LOCAL_AUTHORITY = process.env.CHARIOX_SLICE_LOCAL_DEV_OWNER_UID === undefined
+  ? undefined : verifiedProtectedAuthority()
+const VERIFIED_BUILD_CONTEXT_DIGEST = LOCAL_AUTHORITY?.sourceDigest ?? signedBuildContextDigest()
 const protectedLayouts = createManagedLayoutController({
   root: DURABLE_LAYOUT_ROOT, sourceDigest: process.platform === "linux" && process.getuid() === 0
-    && DOCKER_HOST === "unix:///run/chariox-docker/docker.sock" ? SIGNED_BUILD_CONTEXT_DIGEST : undefined,
+    && (LOCAL_AUTHORITY ? DOCKER_HOST === "unix:///run/docker.sock"
+      : DOCKER_HOST === "unix:///run/chariox-docker/docker.sock") ? VERIFIED_BUILD_CONTEXT_DIGEST : undefined,
   dataOwner: () => {
-    if (DOCKER_HOST !== "unix:///run/chariox-docker/docker.sock") fail("protected slice layout requires the verified managed Docker engine")
-    return managedRootlessSliceOwner()
+    const authority = verifiedProtectedAuthority()
+    if (DOCKER_HOST !== (authority.kind === "linux-local-rootful-dev"
+        ? "unix:///run/docker.sock" : "unix:///run/chariox-docker/docker.sock")) fail("protected slice Docker authority mismatch")
+    return authority.dataUid
   },
   docker: args => spawnSync("/usr/bin/docker", args, {
     env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 60_000,
@@ -1348,6 +1355,19 @@ function prepareDocker(args) {
 
 function prepareProvisioner(request) {
   const environment = { ...request.environment }
+  if (LOCAL_AUTHORITY) {
+    environment.CHARIOX_SLICE_LOCAL_DEV_OWNER_UID = String(LOCAL_AUTHORITY.enrollment.ownerUid)
+    environment.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME = process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME
+    environment.CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY = process.env.CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY
+    environment.CHARIOX_SLICE_LOCAL_DEV_OWNED_WORKSPACE = "1"
+    environment.CHARIOX_SLICE_BUILD_IMAGE = "never"
+    if (["provision", "restore-state"].includes(request.action) && !environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) {
+      const requested = environment.CHARIOX_SLICE_DOCKER_IMAGE
+      if (requested && !["chariox-slice-linux:0.1.0", LOCAL_AUTHORITY.enrollment.workerImageId].includes(requested)) fail("Local DEV worker image must match its installed enrollment")
+      environment.CHARIOX_SLICE_DOCKER_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
+      environment.CHARIOX_SLICE_BASE_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
+    }
+  }
   const privateRoot = protectedLayouts.prepare(request.action, environment)
   if (privateRoot) {
     environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT = privateRoot
@@ -1477,8 +1497,30 @@ function inspectDockerObject(kind, reference) {
   return records[0]
 }
 
+function seedLocalDevWorkerProof() {
+  if (!LOCAL_AUTHORITY) return
+  const enrollment = LOCAL_AUTHORITY.enrollment
+  const image = inspectDockerObject("image", enrollment.workerImageId)
+  if (image.Id !== enrollment.workerImageId || image.Config?.User !== "slice") fail("Local DEV worker image identity mismatch")
+  const runtime = spawnSync("/usr/bin/docker", ["run", "--rm", "--read-only", "--network", "none",
+    "--cap-drop", "ALL", "--memory", "64m", "--pids-limit", "16", "--user", "0:0",
+    "--entrypoint", "/usr/bin/sha256sum", enrollment.workerImageId, "/opt/chariox-slice/bin/chariox-kernel"],
+    {env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024, timeout: 30_000})
+  if (runtime.status !== 0 || runtime.stdout.trim().split(/\s+/)[0] !== enrollment.workerKernelHash) fail("Local DEV runtime image hash mismatch")
+  // Root-installed explicit DEV enrollment is this proof's authority. It makes
+  // no managed signature claim. The same image/lineage checks protect capture.
+  recordManagedImageProof(protectedLayouts.imageRoot, enrollment.sourceDigest, image, enrollment.workerKernelHash)
+}
+
 function execute(request) {
   validateRequest(request)
+  if (LOCAL_AUTHORITY) {
+    verifiedProtectedAuthority()
+    if (request.kind === "provisioner" && (request.environment.CHARIOX_SLICE_WORKSPACE
+        || Number(request.environment.CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT ?? "0") !== 0)) {
+      fail("Local protected DEV slices do not support host workspace or development mounts")
+    }
+  }
   if (request.kind === "docker" && request.args[0] === "exec"
       && PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(request.args.at(-1))) {
     protectedLayouts.preflight(request.args[3])
@@ -1547,14 +1589,17 @@ function execute(request) {
         PATH: "/usr/local/bin:/usr/bin:/bin",
         DOCKER_HOST,
         ...prepared.environment,
-        ...(SIGNED_BUILD_CONTEXT_DIGEST
-          ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
+        ...(LOCAL_AUTHORITY ? {CHARIOX_SLICE_LOCAL_DEV_OWNER_UID: String(LOCAL_AUTHORITY.enrollment.ownerUid),
+          CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME: process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME,
+          CHARIOX_SLICE_BUILD_IMAGE: "never"} : {}),
+        ...(VERIFIED_BUILD_CONTEXT_DIGEST
+          ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
           : {}),
       }
     const result = spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
     if (commitSource && result.status === 0) {
       const captured = inspectDockerObject("image", request.args[2])
-      recordCapturedImageProof(protectedLayouts.imageRoot, SIGNED_BUILD_CONTEXT_DIGEST,
+      recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
         commitParent, commitSource, captured)
     }
     if (request.kind === "docker" && prepared.output && result.status === 0) {
@@ -1628,6 +1673,7 @@ if (process.argv[2] === "--validate-request") {
     process.stdout.write(`${responsePayload(response).toString()}\n`)
   }
 } else {
+  seedLocalDevWorkerProof()
   rmSync(BROKER_INPUT_ROOT, { recursive: true, force: true })
   mkdirSync(BROKER_INPUT_ROOT, { recursive: true, mode: 0o700 })
   const outputMetadata = lstatSync(BROKER_OUTPUT_ROOT)
@@ -1679,7 +1725,12 @@ if (process.argv[2] === "--validate-request") {
       }
     })
   })
-  server.listen(SOCKET_PATH, () => chmodSync(SOCKET_PATH, 0o660))
+  server.listen(SOCKET_PATH, () => {
+    if (LOCAL_AUTHORITY) {
+      chownSync(SOCKET_PATH, LOCAL_AUTHORITY.enrollment.ownerUid, LOCAL_AUTHORITY.enrollment.ownerGid)
+      chmodSync(SOCKET_PATH, 0o600)
+    } else chmodSync(SOCKET_PATH, 0o660)
+  })
   setTimeout(() => {
     if (!accepted) {
       server.close()
