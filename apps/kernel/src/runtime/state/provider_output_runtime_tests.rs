@@ -222,3 +222,73 @@ fn native_client_codex_runs_keep_structured_output_authority() {
     assert!(provider_run_uses_structured_output_pump(&run));
     assert!(!provider_run_allows_quiet_pty_settlement(&run));
 }
+
+// MP-08/MP-10: capability continuations survive the requesting client's detach.
+#[tokio::test]
+async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
+    let scratch = std::env::temp_dir().join(format!(
+        "chariox-extfix-continuation-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            scratch.to_string_lossy(),
+            scratch.to_string_lossy(),
+        ))
+        .unwrap();
+    let attachment = app
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "extfix-client",
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+            agent.owner_user_id(),
+        ))
+        .unwrap();
+    let continuation = PendingMcpContinuation {
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+        source_attachment_id: attachment.id().into(),
+        mcp_name: "mid_session_script".into(),
+        previous_prompt: "invoke the granted script".into(),
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.detach(attachment.id()).unwrap();
+    let source = runtime
+        .ensure_mcp_continuation_attachment(&continuation)
+        .unwrap();
+    assert_ne!(source, attachment.id());
+    assert_eq!(
+        source,
+        runtime
+            .ensure_mcp_continuation_attachment(&continuation)
+            .unwrap()
+    );
+    let prepared = crate::app::KernelPreparedPromptSubmission {
+        session_id: session.id().into(),
+        prompt: crate::session::PromptQueueItem::new(
+            "extfix-continuation",
+            &source,
+            agent.id(),
+            &continuation.previous_prompt,
+            crate::session::PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    let submission = runtime.submit_prepared_prompt(prepared).await.unwrap();
+    assert!(matches!(
+        submission.outcome,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    let attribution = runtime
+        .owned
+        .ensure_attachment_in_session(session.id(), &source)
+        .unwrap();
+    assert_eq!(attribution.owner_user_id(), agent.owner_user_id());
+    runtime.owned.detach(&source).unwrap();
+    std::fs::remove_dir_all(scratch).unwrap();
+}

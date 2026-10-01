@@ -248,7 +248,7 @@ impl KernelRuntimeState {
                 "pending-draft:mcp-continuation:{}:{}",
                 continuation.session_id, continuation.agent_id
             ),
-            &continuation.source_attachment_id,
+            self.ensure_mcp_continuation_attachment(&continuation)?,
             &continuation.agent_id,
             continuation.previous_prompt,
             crate::session::PromptStatus::Queued,
@@ -269,6 +269,41 @@ impl KernelRuntimeState {
             self.spawn_remote_prompt_dispatch(dispatch);
         }
         Ok(())
+    }
+
+    // An accepted capability continuation belongs to the kernel, even after the
+    // client that submitted the original turn disconnects. Use the same automation
+    // attachment/admission path as schedules and metaagent tasks.
+    pub(super) fn ensure_mcp_continuation_attachment(
+        &self,
+        continuation: &PendingMcpContinuation,
+    ) -> Result<String, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(&continuation.agent_id)?;
+        if agent.session_id() != continuation.session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: continuation.session_id.clone(),
+                agent_id: continuation.agent_id.clone(),
+            });
+        }
+        let client_id = format!("mcp-continuation:{}", agent.id());
+        if let Some(attachment) = self
+            .owned
+            .attachment_store
+            .list_client_attachments(&client_id)
+            .into_iter()
+            .find(|attachment| attachment.session_id() == continuation.session_id)
+        {
+            return Ok(attachment.id().to_string());
+        }
+        let attachment = self
+            .owned
+            .attach(crate::attachment::AttachRequest::for_user(
+                &continuation.session_id,
+                client_id,
+                crate::attachment::ClientCapabilityLevel::AutomationOnly,
+                agent.owner_user_id(),
+            ))?;
+        Ok(attachment.id().to_string())
     }
 
     async fn wait_for_agent_provider_relaunch(
