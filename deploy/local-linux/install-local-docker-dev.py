@@ -32,6 +32,8 @@ p.add_argument('--source', required=True, type=pathlib.Path)
 p.add_argument('--user', required=True)
 p.add_argument('--worker-image', required=True)
 p.add_argument('--worker-kernel-sha256', required=True)
+p.add_argument('--node-runtime', required=True, type=pathlib.Path)
+p.add_argument('--node-runtime-sha256', required=True)
 p.add_argument('--docker-cli-sha256', required=True, help='Reviewed SHA-256 of the public host Docker CLI copied into the helper')
 a = p.parse_args()
 if os.geteuid() != 0: refuse('root installation required')
@@ -58,7 +60,19 @@ if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_nli
 cli_bytes = cli.read_bytes()
 if len(cli_bytes) > 64 * 1024 * 1024 or hashlib.sha256(cli_bytes).hexdigest() != a.docker_cli_sha256:
     refuse('public Docker CLI pin mismatch or oversized binary')
-files = [('.local-public-tools/docker', cli_bytes)]
+node = a.node_runtime
+if not node.is_absolute() or not re.fullmatch('[a-f0-9]{64}', a.node_runtime_sha256): refuse('absolute public Node runtime and reviewed pin required')
+for entry in [node, *node.parents]:
+    m = entry.lstat()
+    if stat.S_ISLNK(m.st_mode) or m.st_uid != 0 or m.st_mode & 0o022: refuse('Node runtime ancestry must be root-controlled')
+    if entry == node and (not stat.S_ISREG(m.st_mode) or m.st_nlink != 1): refuse('Node runtime must be a single regular file')
+    if entry != node and not stat.S_ISDIR(m.st_mode): refuse('Node runtime ancestor is not a directory')
+node_bytes = node.read_bytes()
+if len(node_bytes) > 128 * 1024 * 1024 or hashlib.sha256(node_bytes).hexdigest() != a.node_runtime_sha256: refuse('public Node runtime pin mismatch')
+# Execute only root-controlled, explicitly pinned public bytes with no profiles.
+loaded = subprocess.run([str(node), '--version'], env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'}, capture_output=True, text=True, timeout=10)
+if loaded.returncode or not re.fullmatch(r'v22\.[0-9]+\.[0-9]+\n?', loaded.stdout): refuse('public Node loader/version preflight failed')
+files = [('.local-public-tools/docker', cli_bytes), ('.local-public-tools/node', node_bytes)]
 for name in subprocess.check_output(['git', '-C', str(source), 'ls-files', 'apps/kernel/slice-linux-docker', 'apps/kernel/src/transport/relay_peer.rs', 'apps/browser-session-import'], text=True).splitlines():
     relative = pathlib.PurePosixPath(name)
     if 'prebuilt' in relative.parts: continue
@@ -81,7 +95,7 @@ for name, data in files:
         if parent != root and root not in parent.parents: continue
         directory(parent, 0o755)
     directory(target.parent, 0o755)
-    publish(target, data, 0o555 if name.endswith('.sh') else 0o444)
+    publish(target, data, 0o555 if name.endswith('.sh') or name == '.local-public-tools/node' else 0o444)
 publish(root / 'source-manifest.json', manifest, 0o444)
 # Unique tag and iid receipt. No profile, credential or private state enters context.
 with tempfile.TemporaryDirectory(prefix='chariox-local-broker-build-', dir='/run') as scratch:
@@ -106,6 +120,6 @@ directory(layout / 'share/.broker-private/output', 0o700)
 directory(layout / 'share/.broker-private/artifacts', 0o700)
 record = {'version': 1, 'topology': 'linux-local-rootful-dev', 'ownerUid': user.pw_uid, 'ownerGid': user.pw_gid, 'engineId': engine['ID'], 'socket': {'path': '/run/docker.sock', 'dev': socket.st_dev, 'ino': socket.st_ino, 'uid': socket.st_uid, 'gid': socket.st_gid, 'mode': stat.S_IMODE(socket.st_mode)}, 'helperImageId': helper, 'workerImageId': a.worker_image, 'workerKernelHash': a.worker_kernel_sha256, 'sourceDigest': f'sha256:{digest}', 'sourceRoot': str(root), 'controlRoot': str(layout)}
 publish(pathlib.Path(f'/etc/chariox/slice-local-dev/{user.pw_uid}.json'), json.dumps(record, separators=(',', ':')).encode(), 0o644)
-launcher = f'#!/bin/sh\nexec /usr/bin/node {root}/apps/kernel/slice-linux-docker/local-docker-broker-launch.mjs\n'.encode()
+launcher = f'#!/bin/sh\nexec {root}/.local-public-tools/node {root}/apps/kernel/slice-linux-docker/local-docker-broker-launch.mjs\n'.encode()
 publish(pathlib.Path(f'/usr/libexec/chariox-local-docker-broker-{user.pw_uid}'), launcher, 0o555)
 print(json.dumps({'topology': record['topology'], 'ownerUid': user.pw_uid, 'sourceDigest': record['sourceDigest'], 'helperImageId': helper, 'workerImageId': a.worker_image, 'workerKernelHash': proof}))

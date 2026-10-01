@@ -91,7 +91,7 @@ export function verifyInstalledLocalSource(enrollment) {
     seen.add(entry.path)
     const file = join(enrollment.sourceRoot, entry.path)
     const current = requireRootControlledPath(file)
-    if ((current.mode & 0o222) !== 0 || current.size > (entry.path === ".local-public-tools/docker" ? 64 : 16) * 1024 * 1024
+    if ((current.mode & 0o222) !== 0 || (entry.path === ".local-public-tools/node" && !(current.mode & 0o111)) || current.size > (entry.path === ".local-public-tools/node" ? 128 : entry.path === ".local-public-tools/docker" ? 64 : 16) * 1024 * 1024
         || createHash("sha256").update(readFileSync(file)).digest("hex") !== entry.sha256) refuse()
   }
   return manifest
