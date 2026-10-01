@@ -73,6 +73,15 @@ mod local_docker {
         use super::*;
 '''.replace('mod capture_preflight { include!("GUARD_PATH"); }',
             '#[path = ' + repr(str(guard)).replace("'", '"') + '] mod capture_preflight;')
+early = ""
+for name, operation in [("save_local_docker_slice_state_inner", "slice.state.save"), ("create_local_docker_slice_backup_inner", "slice.backup.create")]:
+    body = function(name)
+    first = body.split("{", 1)[1].strip().splitlines()[0]
+    expected = f'    super::capture_preflight::require_supported_layout("{operation}")?;'
+    if first.strip() != expected.strip():
+        raise AssertionError(f"{name} must refuse before any state or Docker operation")
+    early += f'\nfn {name}_early() -> Result<(), DaemonError> {{ {first} Ok(()) }}\n'
+early += '\n#[test] fn public_entries_refuse_before_side_effects() { assert!(save_local_docker_slice_state_inner_early().is_err()); assert!(create_local_docker_slice_backup_inner_early().is_err()); }\n'
 footer = r'''
         fn archive_local_docker_home_volume_with_helper(_: &str, _: &str, path: &Path, _: &str, _: &str, _: &'static str)
             -> Result<(PathBuf, u64, String), DaemonError> {
@@ -89,7 +98,7 @@ footer = r'''
             };
             let record = SliceRecord { name: metadata_category.into(), metadata };
             let error = docker_commit_container(&record, "synthetic-image", operation).unwrap_err();
-            assert!(error.to_string().contains("unavailable for this capture layout"));
+            assert!(error.to_string().contains("unavailable because this storage layout"));
             assert!(!error.to_string().contains(metadata_category));
             assert!(archive_local_docker_home_volume(&record, &LocalDockerSliceOptions,
                 Path::new("synthetic-home.tar.zst"), "backup", "synthetic", operation).is_err());
@@ -106,7 +115,7 @@ with tempfile.TemporaryDirectory(prefix="chariox-capture-preflight-", dir=os.env
     root = Path(scratch)
     harness = root / "test.rs"
     harness.write_text(header + function("docker_commit_container") + "\n" +
-                       function("archive_local_docker_home_volume") + footer)
+                       function("archive_local_docker_home_volume") + early + footer)
     rustc = os.environ.get("CHARIOX_TEST_RUSTC", "rustc")
     subprocess.run([rustc, "--edition=2021", "--test", str(harness), "-o", str(root / "test")], check=True)
     subprocess.run([str(root / "test"), "--test-threads=1"], check=True)
