@@ -1865,12 +1865,15 @@ Workflow trigger and deployment direction:
   the install operation requests. A release that declares exactly the active
   release's capabilities is approved by kernel policy; any capability change
   asks the owner ("Update App"), and declining keeps the old release.
-  A stale generation, another unfinished install/update of the installation or
-  a release that changes the data schema (`app_update_migration_required`,
-  until migrations land) is refused. After approval the kernel fences admission,
-  drains the old worker (not a user stop), starts the new generation and
-  commits it only after its health check; a failure before commit leaves the
-  old generation active, and it restarts on use. App data is kept. The new
+  A stale generation or another unfinished install/update of the installation
+  is refused. The current implementation supports structured-state schema
+  migrations: after approval it fences admission and snapshots the installation's
+  structured state, drains the old worker (not a user stop), and runs the staged
+  worker's migration steps before its health check. Commit requires the target
+  schema and a successful health check. A failure before commit restores the
+  structured-state snapshot and leaves the old generation active; interrupted
+  migration retries rewind to that snapshot before running the steps again.
+  The old generation restarts on use. App data is kept. The new
   generation must run to pass its health check, so an App the user had
   stopped is running after a committed update. Views opened
   on the old generation answer `APP_VIEW_STALE` until reopened. A tool call
