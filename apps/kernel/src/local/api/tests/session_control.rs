@@ -573,6 +573,67 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
 }
 
 #[test]
+fn deleting_session_removes_agents_but_keeps_saved_provider_conversations() {
+    for provider in ["codex", "claude", "opencode"] {
+        let worktree = crate::test_support::TestWorktree::new("delete-saved-conversation");
+        let harness = LocalRouterTestHarness::new();
+        let (session, agent) = match harness
+            .dispatch(LocalDaemonRequest::CreateSession(
+                worktree.session_request(),
+            ))
+            .unwrap()
+        {
+            LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+            other => panic!("unexpected response {other:?}"),
+        };
+        let store = harness.with_app(|app| app.external_provider_session_index_store());
+        let provider_session_id = format!("saved-{provider}");
+        let external_session_id = format!("{provider}:default:{provider_session_id}");
+        store.upsert(
+            serde_json::from_value(serde_json::json!({
+                "owner_user_id": crate::session::DEFAULT_LOCAL_USER_ID,
+                "external_session_id": external_session_id,
+                "provider": provider,
+                "provider_session_id": provider_session_id,
+                "title": "Saved conversation from deleted room",
+                "last_modified_at_ms": 1,
+                "account_profile": "default",
+                "capabilities": {"can_read_history": true}
+            }))
+            .unwrap(),
+        );
+        store.mark_attached(&external_session_id, session.id(), agent.id());
+        let list = || {
+            store.list(&crate::local::ListExternalProviderSessionsRequest {
+                provider: Some(provider.to_string()),
+                cursor: None,
+                limit: None,
+            })
+        };
+        assert!(list().sessions.is_empty());
+        harness
+            .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: session.id().to_string(),
+                workspace_id: None,
+            }))
+            .unwrap();
+        harness.with_app(|app| {
+            assert!(
+                app.agents().get_agent(agent.id()).is_err(),
+                "deleted room must not leave a live agent"
+            );
+            assert!(app.sessions().get_session(session.id()).is_err());
+        });
+        let saved = list();
+        assert_eq!(saved.sessions.len(), 1);
+        assert_eq!(saved.sessions[0].provider_session_id, provider_session_id);
+        assert!(saved.sessions[0].attached_session_ids.is_empty());
+        assert!(saved.sessions[0].attached_agent_ids.is_empty());
+        assert!(!saved.sessions[0].attached_to_chariox);
+    }
+}
+
+#[test]
 fn local_request_api_manages_session_invites_and_members() {
     let worktree = crate::test_support::TestWorktree::new("session-control-invites");
     let harness = LocalRouterTestHarness::new();

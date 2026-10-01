@@ -523,7 +523,7 @@ test("waiting room activation loads older unattached agent pages", async () => {
 
   assert.deepEqual(harness.calls, [
     "loadOlderExternalProviderSessions",
-    "flash:info:loaded 2 older unattached agents",
+    "flash:info:loaded 2 older saved conversations",
   ])
 })
 
