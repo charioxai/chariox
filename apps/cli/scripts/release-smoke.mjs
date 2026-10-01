@@ -30,7 +30,8 @@ try {
   assert.equal(run(`${JSON.stringify(executable)} --version`).trim(), `chariox ${version}`)
   assert.match(run(`${JSON.stringify(executable)} --help`), /^usage: /)
 
-  const handler = path.join(scratch, "hook handler.mjs")
+  // Shell metacharacters in the path must reach the executable literally.
+  const handler = path.join(scratch, "hook $HOME `id` it's.mjs")
   await writeClaudeHookHandler(handler)
   const hook = claudeHookShellCommand(handler, { version, executable })
   const hookEnv = {

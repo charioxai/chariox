@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises"
 
 import { claudeHookCommand, releaseVersion } from "../release-build.js"
+import { shellQuote } from "./launch-environment.js"
 
 export async function writeClaudeHookHandler(file: string) {
   await writeFile(file, `#!/usr/bin/env node
@@ -113,8 +114,8 @@ export function claudeHookShellCommand(
   release: { version: string | undefined, executable: string } = { version: releaseVersion, executable: process.execPath },
 ): string {
   return release.version === undefined
-    ? `node ${JSON.stringify(handlerPath)}`
-    : `${JSON.stringify(release.executable)} ${claudeHookCommand} ${JSON.stringify(handlerPath)}`
+    ? `node ${shellQuote(handlerPath)}`
+    : `${shellQuote(release.executable)} ${claudeHookCommand} ${shellQuote(handlerPath)}`
 }
 
 export function claudeHookSettings(handlerPath: string, command = claudeHookShellCommand(handlerPath)) {
