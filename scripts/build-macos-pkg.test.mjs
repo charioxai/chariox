@@ -448,8 +448,11 @@ test('start-kernel sets the kernel environment and a login shell\'s PATH, applie
   await rm(log);
   await writeFile(join(home, '.config/chariox/kernel.env'), `CHARIOX_KERNEL_PORT=${free}\nPATH=/usr/bin:/bin:${home}/.local/bin\n`);
   assert.equal(spawnSync(script, [], { encoding: 'utf8', env: launchd }).status, 0);
-  assert.match(readFileSync(log, 'utf8'), new RegExp(`^PATH=/usr/bin:/bin:${home}/\\.local/bin\n${home}/\\.local/bin/claude\n$`, 'mu'));
-  assert.doesNotMatch(readFileSync(log, 'utf8'), /\/docker\n/u);
+  const overridden = readFileSync(log, 'utf8');
+  assert.match(overridden, new RegExp(`^PATH=/usr/bin:/bin:${home}/\\.local/bin\n`, 'mu'));
+  assert.match(overridden, new RegExp(`^${home}/\\.local/bin/claude$`, 'mu'));
+  // None of the default directories remain (a host may still have its own /usr/bin/docker).
+  assert.doesNotMatch(overridden, new RegExp(`^${root}/(?:usr/local|opt/homebrew|Applications)/|\\.docker/bin`, 'mu'));
   // Occupied, then released: the kernel waits instead of failing, and starts once the endpoint is free.
   await rm(log);
   const port = busy.address().port;
