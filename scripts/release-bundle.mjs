@@ -36,9 +36,9 @@ const MACOS_RECEIPT_SCHEMA = 'chariox.macos-release-signing.v1';
 const RUNTIME_SCHEMA = 'chariox.app-runtime-inventory.v1';
 const RUNTIME_CONTROL = ['runtime-inventory.json', 'runtime-inventory.sig', '.runtime-lease'];
 // Release kernels look for this beside their bin/ (apps/kernel/src/slice/local_docker.rs).
-const SLICE_CONTEXT = 'share/chariox/slice-build-context';
+export const SLICE_CONTEXT = 'share/chariox/slice-build-context';
 const SLICE_ROOTS = 'apps/kernel/slice-linux-docker/runtime-source-roots.txt';
-const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
+export const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
 // The slice Dockerfile's only input outside the runtime source roots.
 const SLICE_EXTRA_INPUTS = ['apps/browser-session-import'];
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');

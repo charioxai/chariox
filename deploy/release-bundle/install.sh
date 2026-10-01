@@ -121,7 +121,9 @@ for user in "${users[@]}"; do args+=(--user "$user"); done
 "$stage/deploy/local-linux/install-root.sh" "${args[@]}" --bin "$stage/libexec" --runtime "$stage/runtime" \
   --runtime-key "$runtime_key" --runtime-digest "$runtime_digest" "${dry_run[@]}"
 
-# A release kernel runs its slice provisioner from the system-wide slice build context.
+# A release kernel looks for its slice provisioner in the context beside its bin/, then
+# in this system-wide one (apps/kernel/src/slice/local_docker.rs). install-user.sh
+# copies the kernel to ~/.local/bin, so the installed kernel uses this copy.
 context=/usr/lib/chariox/slice-build-context
 if [[ ${#dry_run[@]} -gt 0 ]]; then
   say "would install $context"

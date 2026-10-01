@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { runtimeReleaseFixture } from './app-runtime-release-fixture.mjs';
-import { assemble, exportSliceBuildContext, parseArgs, signBundle, verifyBundle } from './release-bundle.mjs';
+import { SLICE_CONTEXT, SLICE_PROVISIONER, assemble, exportSliceBuildContext, parseArgs, signBundle, verifyBundle } from './release-bundle.mjs';
 import { signRuntimeRelease } from './sign-app-runtime-release.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -232,6 +232,17 @@ test('the slice build context is exactly the committed runtime source roots and 
   assert.ok((await statFile(join(root, 'context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'))).mode & 0o100);
   await assert.rejects(exportSliceBuildContext(source, head, join(root, 'context')), /EEXIST/);
   await assert.rejects(exportSliceBuildContext(source, 'f'.repeat(40), join(root, 'other')), /git show failed/);
+});
+
+test('the bundle and install.sh put the slice build context where a release kernel looks for it', async () => {
+  // A release kernel never uses its build checkout: it looks beside its real bin/, then system-wide
+  // (installed_slice_script, covered by the kernel's own tests).
+  const kernel = await readFile(join(repository, 'apps/kernel/src/slice/local_docker.rs'), 'utf8');
+  const constant = name => kernel.match(new RegExp(`const ${name}: &str =\\s*"([^"]+)";`))?.[1];
+  assert.equal(constant('RELEASE_SLICE_BUILD_CONTEXT'), SLICE_CONTEXT);
+  assert.equal(constant('SLICE_DOCKER_PROVISIONER'), SLICE_PROVISIONER);
+  const installer = await readFile(join(repository, 'deploy/release-bundle/install.sh'), 'utf8');
+  assert.equal(installer.match(/^context=(\S+)$/m)?.[1], constant('SYSTEM_SLICE_BUILD_CONTEXT'));
 });
 
 // install.sh checks the bundle with python3 and OpenSSL 3 (Ed25519 raw verification), as on a Linux host.
