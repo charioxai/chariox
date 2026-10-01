@@ -164,6 +164,14 @@ impl KernelRuntimeState {
                 "browser_controller.route",
             )?)
         };
+        // Check under admission, before relay I/O. Offline reconciliation retries
+        // must release the lifecycle slot immediately so a user can start the slice.
+        let slice = self.owned.slice_store.resolve(&slice.id)?;
+        if slice.status != crate::slice::SliceStatus::Running {
+            return Err(controller_route_error(
+                "browser_controller_unavailable: slice is not running",
+            ));
+        }
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
         let target = ClientTarget {

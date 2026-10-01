@@ -616,3 +616,47 @@ async fn append_failure_remains_unhealthy_and_retryable() {
     assert_eq!(repaired.status, SliceStatus::Running);
     assert_eq!(repaired.providers, vec!["codex", "opencode"]);
 }
+
+#[test]
+fn room_environment_controller_does_not_block_start_on_stopped_or_starting_slice() {
+    run_test(controller_does_not_block_start_on_stopped_or_starting_slice);
+}
+
+async fn controller_does_not_block_start_on_stopped_or_starting_slice() {
+    let state = TestState::new();
+    let (router, rooms) = state.router();
+    create_desktop(&router, "desktop").await;
+    dispatch_json(&router, bind(&rooms[0], "desktop"))
+        .await
+        .unwrap();
+    router.shutdown_cleanup().await.unwrap();
+    drop(router);
+    wait_for_durable_owner_release(&state.config.durable_state_path()).await;
+    let app = DaemonApp::bootstrap(state.config.clone()).expect("restart throwaway kernel");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
+    let slices = router.app.lock().await.slices().clone();
+    for status in [SliceStatus::Stopped, SliceStatus::Starting] {
+        slices.set_status("desktop", status, 42).unwrap();
+        for _ in 0..3 {
+            let route = router
+                .runtime_state
+                .ensure_browser_controller_process_started(&rooms[0]);
+            tokio::pin!(route);
+            let result = tokio::select! {
+                result = &mut route => Some(result),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => None,
+            };
+            let _start = slices
+                .try_begin_operation("desktop", "slice.start")
+                .expect("recurring routes must never reserve a stopped/starting slice");
+            let error = result
+                .expect("offline route must fail promptly")
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("slice is not running"),
+                "{error}"
+            );
+        }
+    }
+    router.shutdown_cleanup().await.unwrap();
+}

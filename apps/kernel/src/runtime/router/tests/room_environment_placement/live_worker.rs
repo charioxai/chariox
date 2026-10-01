@@ -325,6 +325,18 @@ impl LiveWorker {
         )
         .await
         .unwrap();
+        // The real worker is already running; only Docker provisioning is mocked.
+        self.home
+            .app
+            .lock()
+            .await
+            .slices()
+            .set_status(
+                "desktop",
+                SliceStatus::Running,
+                crate::session::unix_epoch_ms(),
+            )
+            .unwrap();
         // Fixture discovery metadata: use this test's relay instead of Docker.
         self.home
             .app
