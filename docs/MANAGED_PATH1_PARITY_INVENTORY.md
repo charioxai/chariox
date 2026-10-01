@@ -1012,3 +1012,15 @@ source/diff hashes, exit codes, resource samples and scoped cleanup receipts.
 No live slice, provider, signed release, Cloud staging change, deployment or
 GitHub action was performed. Independent review, a new signed aggregate
 artifact and ordinary-versus-Path-1 fresh-machine comparison remain pending.
+
+MP-10 nondumpable process inspection: Linux kernels protect process executable
+and descriptor metadata with `PR_SET_DUMPABLE=0`. The collector first tries the
+provider user's ordinary `/proc` reads. Only denied executable or socket-owner
+reads use `managed-ordinary-proc-metadata.mjs` through the same noninteractive
+sudo access expected in both Path-1 and ordinary acceptance environments. This
+helper accepts numeric PIDs/socket inodes and returns read-only executable
+hash/path, boot/start identity, or descriptor owner IDs. It never reads process
+arguments, environments or account files; the helper receives a minimal public
+environment. Collection and permission probes retain the provider user. Missing
+sudo, ambiguous owners, changed identities or unsigned executable substitutions
+fail closed. A helper success alone does not establish MP-10 matrix acceptance.

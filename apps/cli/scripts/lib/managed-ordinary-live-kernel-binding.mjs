@@ -1,3 +1,4 @@
+import { inspectPrivilegedProcMetadata } from "./managed-ordinary-proc-metadata.mjs"
 import { managedOrdinaryKernelConnection } from "./managed-ordinary-kernel-endpoint.mjs"
 import { createHash } from "node:crypto"
 import { readFile, readdir, readlink, realpath } from "node:fs/promises"
@@ -135,7 +136,7 @@ async function findUnixSocketInode(filesystem, socketPath) {
   return matches[0].inode
 }
 
-async function findSocketOwnerPid(filesystem, inode) {
+async function findSocketOwnerPid(filesystem, inode, privilegedInspector) {
   let entries
   try {
     entries = await filesystem.readdir(PROC_ROOT)
@@ -145,13 +146,15 @@ async function findSocketOwnerPid(filesystem, inode) {
 
   const target = `socket:[${inode}]`
   const owners = new Set()
+  let accessDenied = false
   for (const entry of entries) {
     const pid = String(entry)
     if (!/^\d+$/.test(pid)) continue
     let fds
     try {
       fds = await filesystem.readdir(join(PROC_ROOT, pid, "fd"))
-    } catch {
+    } catch (error) {
+      if (["EACCES", "EPERM"].includes(error?.code)) accessDenied = true
       continue
     }
     for (const fd of fds) {
@@ -163,6 +166,13 @@ async function findSocketOwnerPid(filesystem, inode) {
       }
     }
   }
+  if (owners.size === 0 && accessDenied && privilegedInspector) {
+    const inspected = await privilegedInspector("socket-owner", inode)
+    if (!Array.isArray(inspected?.owners) || inspected.owners.some(pid => !Number.isSafeInteger(pid) || pid < 1)) {
+      throw bindingError("kernel_socket_owner_mismatch", "privileged socket-owner metadata is invalid")
+    }
+    for (const pid of inspected.owners) owners.add(String(pid))
+  }
   if (owners.size !== 1) {
     throw bindingError("kernel_socket_owner_mismatch", "local daemon socket does not have exactly one observable process owner")
   }
@@ -172,21 +182,23 @@ async function findSocketOwnerPid(filesystem, inode) {
 export async function inspectLinuxKernelProcess({
   filesystem = NODE_FILESYSTEM,
   socketPath,
+  privilegedInspector = inspectPrivilegedProcMetadata,
   expectedExecutablePath,
   expectedExecutableDigest,
 }) {
   const socketInode = await findUnixSocketInode(filesystem, socketPath)
-  const pid = await findSocketOwnerPid(filesystem, socketInode)
-  return inspectKernelProcessIdentity(filesystem, pid, socketInode, expectedExecutablePath, expectedExecutableDigest)
+  const pid = await findSocketOwnerPid(filesystem, socketInode, privilegedInspector)
+  return inspectKernelProcessIdentity(filesystem, pid, socketInode, expectedExecutablePath, expectedExecutableDigest, privilegedInspector)
 }
 
-async function inspectKernelProcessIdentity(filesystem, pid, socketInode, expectedExecutablePath, expectedExecutableDigest) {
+async function inspectKernelProcessIdentity(filesystem, pid, socketInode, expectedExecutablePath, expectedExecutableDigest, privilegedInspector) {
   const procPath = join(PROC_ROOT, String(pid))
 
   let bootId
   let stat
   let executableLink
   let executableBytes
+  let executableDigest
   try {
     [bootId, stat, executableLink, executableBytes] = await Promise.all([
       filesystem.readFile(join(PROC_ROOT, "sys/kernel/random/boot_id"), "utf8"),
@@ -195,7 +207,19 @@ async function inspectKernelProcessIdentity(filesystem, pid, socketInode, expect
       filesystem.readFile(join(procPath, "exe")),
     ])
   } catch (error) {
-    throw bindingError("kernel_process_unreadable", "running kernel process identity or executable cannot be inspected", error)
+    if (!["EACCES", "EPERM"].includes(error?.code) || !privilegedInspector) {
+      throw bindingError("kernel_process_unreadable", "running kernel process identity or executable cannot be inspected", error)
+    }
+    try {
+      const metadata = await privilegedInspector("process", pid)
+      if (metadata?.pid !== pid || !DIGEST.test(metadata.executableDigest ?? "")) throw new Error("invalid process metadata")
+      bootId = metadata.bootId
+      stat = metadata.stat
+      executableLink = metadata.executableLink
+      executableDigest = metadata.executableDigest.toLowerCase()
+    } catch (cause) {
+      throw bindingError("kernel_process_unreadable", "privileged read-only process inspection failed", cause)
+    }
   }
 
   const normalizedBootId = String(bootId).trim().toLowerCase()
@@ -209,7 +233,7 @@ async function inspectKernelProcessIdentity(filesystem, pid, socketInode, expect
   if (!isAbsolute(executableLink) || resolve(executableLink) !== expectedExecutablePath) {
     throw bindingError("kernel_executable_path_mismatch", "running kernel executable path is not the verified signed artifact")
   }
-  const executableDigest = sha256(executableBytes)
+  executableDigest ??= sha256(executableBytes)
   if (executableDigest !== expectedExecutableDigest) {
     throw bindingError("kernel_executable_digest_mismatch", "running kernel executable bytes do not match the expected executable")
   }
@@ -411,11 +435,11 @@ async function observeProductKernel(filesystem, processApi, options, readKernelS
   }
   const inode = options.captureIdentity.transport === "kernel-public-api"
     ? await loopbackListenerInode(filesystem, options.socketPath) : null
-  if (inode !== null && await findSocketOwnerPid(filesystem, inode) !== native.pid) {
+  if (inode !== null && await findSocketOwnerPid(filesystem, inode, options.privilegedInspector) !== native.pid) {
     throw bindingError("kernel_socket_owner_mismatch", "product endpoint listener is not owned by the responding kernel")
   }
   await requireKernelAncestor(filesystem, processApi.pid, native.pid)
-  const observed = await inspectKernelProcessIdentity(filesystem, native.pid, inode, options.expectedExecutablePath, options.expectedExecutableDigest)
+  const observed = await inspectKernelProcessIdentity(filesystem, native.pid, inode, options.expectedExecutablePath, options.expectedExecutableDigest, options.privilegedInspector)
   if (observed.linux_boot_id !== native.linux_boot_id.toLowerCase() || observed.start_time_ticks !== native.start_time_ticks) {
     throw bindingError("kernel_native_process_identity_mismatch", "authenticated product process identity does not match the independent Linux observation")
   }
@@ -425,6 +449,7 @@ async function observeProductKernel(filesystem, processApi, options, readKernelS
 export async function startManagedOrdinaryLiveKernelBinding({
   filesystem = NODE_FILESYSTEM,
   processApi = process,
+  privilegedInspector = inspectPrivilegedProcMetadata,
   selectedKernelPath,
   expectedArtifactDigest,
   expectedBoundary,
@@ -455,6 +480,7 @@ export async function startManagedOrdinaryLiveKernelBinding({
   }
 
   const options = {
+    privilegedInspector,
     socketPath,
     expectedExecutablePath: expectedKernelPath,
     expectedExecutableDigest: expectedArtifactDigest.toLowerCase(),

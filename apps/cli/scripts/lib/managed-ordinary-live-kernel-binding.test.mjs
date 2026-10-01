@@ -492,3 +492,66 @@ test("MP-10 rejects a spoofed local product status from a different TCP listener
   h.filesystem.readlink = async path => path.endsWith("/fd/7") ? "socket:[foreign-inode]" : readlink(path)
   await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), error => error.code === "kernel_socket_owner_mismatch")
 })
+
+test("MP-10 nondumpable provider kernel uses metadata-only privileged inspection without elevating collection", async () => {
+  const h = productHarness()
+  const reads = h.filesystem.readFile.bind(h.filesystem)
+  const link = h.filesystem.readlink.bind(h.filesystem)
+  const dirs = h.filesystem.readdir.bind(h.filesystem)
+  const metadata = {
+    pid: PROCESS_ID,
+    bootId: await reads('/proc/sys/kernel/random/boot_id', 'utf8'),
+    stat: await reads(`/proc/${PROCESS_ID}/stat`, 'utf8'),
+    executableLink: await link(`/proc/${PROCESS_ID}/exe`),
+    executableDigest: KERNEL_DIGEST,
+  }
+  const calls = []
+  h.options.privilegedInspector = async (action, id) => {
+    calls.push({ action, id })
+    return action === 'socket-owner' ? { owners: [PROCESS_ID] } : metadata
+  }
+  h.filesystem.readdir = async path => {
+    if (path === `/proc/${PROCESS_ID}/fd`) throw Object.assign(new Error('nondumpable'), { code: 'EACCES' })
+    return dirs(path)
+  }
+  h.filesystem.readlink = async path => {
+    if (path === `/proc/${PROCESS_ID}/exe`) throw Object.assign(new Error('nondumpable'), { code: 'EACCES' })
+    return link(path)
+  }
+  const binding = await startManagedOrdinaryLiveKernelBinding(h.options)
+  const proof = await binding.finish()
+  assert.equal(proof.kernel_process.executable_sha256, KERNEL_DIGEST)
+  assert.equal(proof.stable_across_capture, true)
+  assert.deepEqual(calls.map(c => c.action), ['socket-owner', 'process', 'socket-owner', 'process'])
+  metadata.executableDigest = `sha256:${'f'.repeat(64)}`
+  await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), e => e.code === 'kernel_executable_digest_mismatch')
+})
+
+test('MP-10 read-only privileged fallback fails closed when sudo or owner inspection fails', async () => {
+  const h = productHarness()
+  const dirs = h.filesystem.readdir.bind(h.filesystem)
+  h.filesystem.readdir = async path => {
+    if (path === `/proc/${PROCESS_ID}/fd`) throw Object.assign(new Error('nondumpable'), { code: 'EACCES' })
+    return dirs(path)
+  }
+  h.options.privilegedInspector = async () => { throw new Error('MP-10 unavailable metadata inspector') }
+  await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), /unavailable metadata inspector/)
+  h.options.privilegedInspector = async () => ({ owners: [PROCESS_ID, PROCESS_ID + 1] })
+  await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), e => e.code === 'kernel_socket_owner_mismatch')
+  h.options.privilegedInspector = async () => ({ owners: ['spoofed'] })
+  await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), e => e.code === 'kernel_socket_owner_mismatch')
+})
+
+test('MP-10 inaccessible executable still rejects substituted metadata PID and artifact path', async () => {
+  const h = productHarness()
+  const reads = h.filesystem.readFile.bind(h.filesystem), link = h.filesystem.readlink.bind(h.filesystem)
+  const metadata = { pid: PROCESS_ID + 1, bootId: await reads('/proc/sys/kernel/random/boot_id', 'utf8'), stat: await reads(`/proc/${PROCESS_ID}/stat`, 'utf8'), executableLink: KERNEL_PATH, executableDigest: KERNEL_DIGEST }
+  h.filesystem.readlink = async path => {
+    if (path === `/proc/${PROCESS_ID}/exe`) throw Object.assign(new Error('nondumpable'), { code: 'EACCES' })
+    return link(path)
+  }
+  h.options.privilegedInspector = async () => metadata
+  await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), e => e.code === 'kernel_process_unreadable')
+  metadata.pid = PROCESS_ID; metadata.executableLink = '/other/kernel'
+  await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), e => e.code === 'kernel_executable_path_mismatch')
+})
