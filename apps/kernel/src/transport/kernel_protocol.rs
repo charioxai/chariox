@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::config::WorkspaceLiveSyncMode;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonRequest, RelayStatus, RemoteMachineRecord, WaitingRoomLaunchTarget,
+    LocalDaemonRequest, PasskeyPrompt, RelayStatus, RemoteMachineRecord, WaitingRoomLaunchTarget,
     WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot, WorkflowDesignOpForwarded,
 };
 use crate::provider::{OpenCodeProviderCatalog, RuntimeProviderRun};
@@ -171,6 +171,14 @@ pub(crate) enum KernelEvent {
         first_retained_event_id: Option<u64>,
         latest_event_id: Option<u64>,
         message: String,
+    },
+    /// Protocol 394: every passkey prompt now pending for this terminal's
+    /// user, on every subscription of a connection that may submit a passkey.
+    /// Sent when the subscription starts and whenever the set changes; a
+    /// prompt that leaves the set was answered or expired, so its popup
+    /// closes. Never replayed: each subscription sends the current set.
+    PasskeyPromptsChanged {
+        prompts: Vec<PasskeyPrompt>,
     },
 }
 
@@ -349,6 +357,11 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "workflow_id": workflow_run.workflow_id(),
             "status": workflow_run.status(),
             "active_node_run_id": workflow_run.active_node_run_id(),
+        }),
+        KernelEvent::PasskeyPromptsChanged { prompts } => serde_json::json!({
+            "event_id": event_id,
+            "event": "passkey_prompts_changed",
+            "prompt_count": prompts.len(),
         }),
         other => serde_json::json!({
             "event_id": event_id,
@@ -632,6 +645,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::Heartbeat { .. } => "heartbeat",
         KernelEvent::TransportResumed { .. } => "transport_resumed",
         KernelEvent::ReplayGap { .. } => "replay_gap",
+        KernelEvent::PasskeyPromptsChanged { .. } => "passkey_prompts_changed",
     }
 }
 
@@ -661,6 +675,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ReplayGap { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::PasskeyPromptsChanged { .. } => None,
     }
 }
 
@@ -720,6 +735,8 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::Heartbeat { .. }
         | KernelEvent::TransportResumed { .. }
         | KernelEvent::ReplayGap { .. } => true,
+        // The current set is sent at each subscription start instead.
+        KernelEvent::PasskeyPromptsChanged { .. } => false,
     }
 }
 

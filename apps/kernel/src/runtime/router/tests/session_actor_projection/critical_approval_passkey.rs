@@ -34,6 +34,15 @@ fn id(name: &str) -> String {
 impl Fixture {
     /// With `vault`, the encrypted vault exists (locked) with `PASSKEY`.
     fn new(vault: bool) -> Self {
+        Self::build(vault, None)
+    }
+
+    /// The local owner hosts a session shared with `guest`.
+    fn shared_with(guest: &str) -> Self {
+        Self::build(true, Some(guest))
+    }
+
+    fn build(vault: bool, guest: Option<&str>) -> Self {
         let root = std::env::temp_dir().join(format!("passkey-{:016x}", rand::random::<u64>()));
         std::fs::create_dir_all(&root).unwrap();
         let vault_path = root.join("vault.json");
@@ -46,7 +55,7 @@ impl Fixture {
         config.user_config.credential_vault.path = vault_path.display().to_string();
         config.user_config_path = root.join("config.toml");
         let app = DaemonApp::bootstrap(config).unwrap();
-        let session = RuntimeSession::new(
+        let mut session = RuntimeSession::new(
             format!("passkey-{:016x}", rand::random::<u64>()),
             None,
             "workspace",
@@ -54,6 +63,13 @@ impl Fixture {
             "machine",
             "kernel",
         );
+        if let Some(guest) = guest {
+            session.add_member(
+                guest,
+                Some(DEFAULT_LOCAL_USER_ID.to_owned()),
+                crate::session::CollaborationLevel::Full,
+            );
+        }
         let session_id = session.id().to_owned();
         app.sessions_mut().restore_session(session);
         let durable = app.durable_state_store();
@@ -560,6 +576,8 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
     );
     assert!(f.outcomes("guarded").is_empty());
     assert_eq!(f.active().await, 1);
+    // Protocol 394: the popup stays open on the owner's terminals.
+    assert_eq!(f.prompt_ids(), [id("guarded")]);
     // The owner is not locked out: a terminal's passkey is verified at once.
     f.answer_as(
         "guarded",
@@ -580,3 +598,5 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
         [("verified".to_owned(), serde_json::json!("terminal"))]
     );
 }
+
+mod passkey_prompts;

@@ -94,6 +94,13 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
+        // Protocol 394: a decision that needs the passkey is also a popup on
+        // every terminal of its owner.
+        let passkey_prompt = super::super::passkey_prompts::passkey_prompt(
+            &session,
+            &interaction,
+            crate::session::unix_epoch_ms(),
+        )?;
         session.add_active_interaction(interaction.clone());
         let pending = super::super::PendingInteraction {
             session_id: session_id.into(),
@@ -107,12 +114,20 @@ impl KernelRuntimeOwnedState {
                             .expect("validated decision timeout"),
                     )
             }),
+            passkey_prompt: passkey_prompt.clone(),
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
         let identity = pending.responder.clone();
+        if passkey_prompt.is_some() {
+            self.passkey_prompts
+                .forget_answered(session_id, interaction.id());
+        }
         self.pending_interactions
             .write()
             .insert(interaction.id().into(), pending);
+        if passkey_prompt.is_some() {
+            self.passkey_prompts.record_change();
+        }
         sessions.restore_session(session);
         activity_mutation.record();
         drop(sessions);
@@ -138,6 +153,9 @@ impl KernelRuntimeOwnedState {
                     session.remove_active_interaction(interaction.id());
                     sessions.restore_session(session);
                 }
+            }
+            if passkey_prompt.is_some() {
+                self.passkey_prompts.record_change();
             }
             return Err(error);
         }
