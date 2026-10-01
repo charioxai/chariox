@@ -401,7 +401,7 @@ test('uninstall keeps a changed file of the slice build context and refuses a ma
 
 const listen = () => new Promise(done => { const server = createServer().listen(0, '127.0.0.1', () => done(server)); });
 
-test('start-kernel sets the kernel environment, applies kernel.env, and waits for a taken endpoint', async t => {
+test('start-kernel sets the kernel environment and a login shell\'s PATH, applies kernel.env, and waits for a taken endpoint', async t => {
   const root = await scratch(t);
   const home = join(root, 'home');
   const busy = await listen();
@@ -413,17 +413,43 @@ test('start-kernel sets the kernel environment, applies kernel.env, and waits fo
   const env = port => writeFile(join(home, '.config/chariox/kernel.env'),
     `# comment\nCHARIOX_KERNEL_PORT=${port}\nnot a pair\n1BAD=x\nCHARIOX_KERNEL_HOST=127.0.0.1\nCHARIOX_TOKEN_FILE=a=b c`);
   await env(free);
-  await mkdir(join(root, 'usr/local/bin'), { recursive: true });
-  await writeFile(join(root, 'usr/local/bin/chariox-kernel'), '#!/bin/sh\npwd\nenv | grep ^CHARIOX_ | sort\n', { mode: 0o755 });
+  // The kernel runs docker and the provider CLIs from directories outside launchd's PATH:
+  // Homebrew's, /etc/paths and /etc/paths.d (path_helper), and the user's own.
+  const tool = async (path, name) => {
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, name), '#!/bin/sh\n', { mode: 0o755 });
+  };
+  await tool(join(root, 'opt/homebrew/bin'), 'colima');
+  await tool(join(root, 'usr/local/bin'), 'docker');
+  await tool(join(root, 'Applications/Tool/bin'), 'paths-d-tool');
+  await tool(join(home, '.local/bin'), 'claude');
+  await tool(join(home, '.docker/bin'), 'docker-credential-desktop');
+  // path_helper puts /etc/paths and /etc/paths.d first and keeps the inherited entries.
+  await mkdir(join(root, 'usr/libexec'));
+  await writeFile(join(root, 'usr/libexec/path_helper'),
+    `#!/bin/sh\nprintf 'PATH="%s"; export PATH;\\n' "${root}/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${root}/Applications/Tool/bin"\n`, { mode: 0o755 });
+  await writeFile(join(root, 'usr/local/bin/chariox-kernel'), '#!/bin/sh\npwd\nenv | grep ^CHARIOX_ | sort\necho "PATH=$PATH"\n'
+    + 'for name in docker colima claude docker-credential-desktop paths-d-tool; do command -v "$name"; done\ntrue\n', { mode: 0o755 });
   const script = join(root, 'start-kernel.sh');
   await writeFile(script, await renderTemplate('start-kernel.sh', { ROOT: root }), { mode: 0o755 });
-  const result = spawnSync(script, [], { encoding: 'utf8', env: { HOME: home, PATH: '/usr/bin:/bin' } });
+  const launchd = { HOME: home, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
+  const result = spawnSync(script, [], { encoding: 'utf8', env: launchd });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr.match(/not KEY=VALUE/gu).length, 2);
   const log = join(home, '.chariox/logs/kernel.launchd.log');
   assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), [
     home, `CHARIOX_HOME=${home}/.chariox`, 'CHARIOX_KERNEL_HOST=127.0.0.1', `CHARIOX_KERNEL_PORT=${free}`,
-    `CHARIOX_LOG_DIR=${home}/.chariox/logs`, 'CHARIOX_TOKEN_FILE=a=b c']);
+    `CHARIOX_LOG_DIR=${home}/.chariox/logs`, 'CHARIOX_TOKEN_FILE=a=b c',
+    `PATH=${root}/opt/homebrew/bin:${root}/opt/homebrew/sbin:${root}/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:`
+      + `${root}/Applications/Tool/bin:${home}/.local/bin:${home}/.docker/bin`,
+    `${root}/usr/local/bin/docker`, `${root}/opt/homebrew/bin/colima`, `${home}/.local/bin/claude`,
+    `${home}/.docker/bin/docker-credential-desktop`, `${root}/Applications/Tool/bin/paths-d-tool`]);
+  // A PATH in kernel.env replaces it.
+  await rm(log);
+  await writeFile(join(home, '.config/chariox/kernel.env'), `CHARIOX_KERNEL_PORT=${free}\nPATH=/usr/bin:/bin:${home}/.local/bin\n`);
+  assert.equal(spawnSync(script, [], { encoding: 'utf8', env: launchd }).status, 0);
+  assert.match(readFileSync(log, 'utf8'), new RegExp(`^PATH=/usr/bin:/bin:${home}/\\.local/bin\n${home}/\\.local/bin/claude\n$`, 'mu'));
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /\/docker\n/u);
   // Occupied, then released: the kernel waits instead of failing, and starts once the endpoint is free.
   await rm(log);
   const port = busy.address().port;

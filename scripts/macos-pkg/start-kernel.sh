@@ -5,6 +5,12 @@
 # from $HOME, then applies ~/.config/chariox/kernel.env (KEY=VALUE lines, taken
 # literally; its values win) and execs the kernel, appending its output to
 # $CHARIOX_LOG_DIR/kernel.launchd.log.
+#
+# launchd gives agents PATH=/usr/bin:/bin:/usr/sbin:/sbin, which hides the
+# docker of Docker Desktop or Colima and the provider CLIs the kernel runs. The
+# kernel gets a login shell's search path instead: Homebrew's directories, then
+# /etc/paths and /etc/paths.d (path_helper, as /etc/zprofile runs it), then
+# ~/.local/bin and ~/.docker/bin. A PATH line in kernel.env replaces it.
 set -eu
 umask 077
 # Empty in the package; tests render a fake root.
@@ -13,6 +19,8 @@ R='@@ROOT@@'
 export CHARIOX_HOME="$HOME/.chariox"
 export CHARIOX_LOG_DIR="$CHARIOX_HOME/logs"
 export CHARIOX_KERNEL_HOST=127.0.0.1
+if [ -x "$R/usr/libexec/path_helper" ]; then eval "$("$R/usr/libexec/path_helper" -s)"; fi
+export PATH="$R/opt/homebrew/bin:$R/opt/homebrew/sbin:$PATH:$HOME/.local/bin:$HOME/.docker/bin"
 env_file="$HOME/.config/chariox/kernel.env"
 if [ -f "$env_file" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
