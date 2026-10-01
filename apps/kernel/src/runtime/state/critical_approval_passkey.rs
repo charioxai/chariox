@@ -73,6 +73,9 @@ pub(super) struct CriticalApprovalPasskeys {
     /// ever taken from it.
     boot_vault: Option<PathBuf>,
     pinned: Arc<std::sync::Mutex<Option<VaultPasskeyVerifier>>>,
+    /// The pin in memory comes from a re-key whose new file is in use but
+    /// not yet durable; its move is still unsettled in durable state.
+    unsynced: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl CriticalApprovalPasskeys {
@@ -84,6 +87,7 @@ impl CriticalApprovalPasskeys {
                 == crate::config::CredentialVaultBackend::CharioxEncrypted)
                 .then(|| super::runtime_vault_unlock_state::expand_vault_path(&boot_config.path)),
             pinned: Default::default(),
+            unsynced: Default::default(),
         }
     }
 
@@ -176,8 +180,10 @@ impl CriticalApprovalPasskeys {
     /// vault file is re-keyed and its outcome after, once the new file is
     /// durable. If recording the outcome fails, the pin is dropped from
     /// memory, so the next check settles the recorded move from the vault
-    /// file. Without a pin yet, the new key is pinned once the file is
-    /// re-keyed, as an unlock would pin it. Once the boot vault is re-keyed,
+    /// file. A change whose new file is in use but not durable takes effect in
+    /// this process only; the next change first makes it durable and records
+    /// it, or refuses. Without a pin yet, the new key is pinned once the file
+    /// is re-keyed, as an unlock would pin it. Once the boot vault is re-keyed,
     /// every remember window ends.
     fn change_passphrase(
         &self,
@@ -188,6 +194,23 @@ impl CriticalApprovalPasskeys {
         new: &str,
     ) -> Result<Option<CharioxVaultUnlockStatus>, DaemonError> {
         let previous = if passkey { self.pinned(durable)? } else { None };
+        if passkey && self.unsynced.load(std::sync::atomic::Ordering::SeqCst) {
+            // An earlier change's new file is in use but not yet durable:
+            // make it durable and record its outcome before another move.
+            crate::secret::sync_chariox_encrypted_vault(vault).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "credential_vault",
+                    message: format!(
+                        "the previous Chariox vault passphrase change is not yet on disk, so the passphrase is unchanged: {error}"
+                    ),
+                }
+            })?;
+            if let Some(pin) = &previous {
+                append_pin_event(durable, PIN_EVENT, pin)?;
+            }
+            self.unsynced
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
         if let Some(previous) = &previous {
             if !previous.verify(current)? {
                 return Ok(None);
@@ -222,6 +245,10 @@ impl CriticalApprovalPasskeys {
         } else {
             previous.clone().filter(|_| attempted)
         };
+        if undurable {
+            self.unsynced
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if let Some(verifier) = outcome {
             let in_use = undurable || append_pin_event(durable, PIN_EVENT, &verifier).is_ok();
             *self.pinned.lock().expect("passkey verifier poisoned") = in_use.then_some(verifier);
@@ -636,7 +663,7 @@ mod tests {
         let kernel = f.kernel();
         let before = std::fs::read(&f.vault).unwrap();
         kernel.record_success("owner", Instant::now(), Some(5));
-        crate::secret::fail_next_vault_write_after_rename_for_test();
+        crate::secret::fail_next_vault_dir_sync_for_test();
         let error = kernel
             .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
             .expect_err("the failed directory sync is reported");
@@ -660,12 +687,51 @@ mod tests {
     #[test]
     fn a_rotation_whose_unsynced_rename_survives_settles_on_the_new_passphrase() {
         let f = Fixture::pinned();
-        crate::secret::fail_next_vault_write_after_rename_for_test();
+        crate::secret::fail_next_vault_dir_sync_for_test();
         assert!(f
             .kernel()
             .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
             .is_err());
         assert!(f.accepts(NEW) && !f.accepts(OLD));
+    }
+
+    #[test]
+    fn a_rotation_after_an_unsynced_one_first_makes_it_durable_or_refuses() {
+        const THIRD: &str = "third passphrase";
+        let f = Fixture::pinned();
+        let kernel = f.kernel();
+        let before = std::fs::read(&f.vault).unwrap();
+        crate::secret::fail_next_vault_dir_sync_for_test();
+        assert!(kernel
+            .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
+            .is_err());
+        // The next change cannot make that rename durable: it is refused and
+        // records nothing, so a crash that loses the rename still recovers.
+        crate::secret::fail_next_vault_dir_sync_for_test();
+        let refused = kernel
+            .change_passphrase(&f.durable, &f.vault, true, NEW, THIRD)
+            .expect_err("an undurable earlier change blocks the next one");
+        assert!(refused.to_string().contains("not yet on disk"), "{refused}");
+        assert!(f.vault_opens_with(NEW));
+        let after = std::fs::read(&f.vault).unwrap();
+        std::fs::write(&f.vault, &before).unwrap();
+        assert!(f.accepts(OLD) && !f.accepts(NEW));
+        std::fs::write(&f.vault, after).unwrap();
+
+        // Once the directory syncs, the earlier change is recorded and the
+        // next one goes through.
+        let f = Fixture::pinned();
+        let kernel = f.kernel();
+        crate::secret::fail_next_vault_dir_sync_for_test();
+        assert!(kernel
+            .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
+            .is_err());
+        kernel
+            .change_passphrase(&f.durable, &f.vault, true, NEW, THIRD)
+            .unwrap()
+            .unwrap();
+        assert!(f.accepts(THIRD) && !f.accepts(NEW) && !f.accepts(OLD));
+        assert!(f.vault_opens_with(THIRD));
     }
 
     #[test]

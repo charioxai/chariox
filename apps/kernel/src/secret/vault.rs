@@ -990,26 +990,26 @@ fn write_vault_file(
             path.display()
         ))
     })?;
-    #[cfg(test)]
-    if FAIL_AFTER_RENAME.with(std::cell::Cell::take) {
-        return Err(secret_error(
-            "failed to sync Chariox vault directory (test)".to_string(),
-        ));
-    }
     sync_vault_parent_dir(path)?;
     Ok(())
 }
 
-#[cfg(test)]
-thread_local! {
-    static FAIL_AFTER_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// Makes the last replacement of the vault file at `path` durable, by syncing
+/// its directory as every vault write does.
+pub fn sync_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
+    sync_vault_parent_dir(&normalize_vault_path(path.as_ref().to_path_buf()))
 }
 
-/// Makes this thread's next vault write fail after its rename, as a failed
-/// directory sync does.
 #[cfg(test)]
-pub(crate) fn fail_next_vault_write_after_rename_for_test() {
-    FAIL_AFTER_RENAME.with(|fail| fail.set(true));
+thread_local! {
+    static FAIL_NEXT_DIR_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes this thread's next vault directory sync fail; a vault write then
+/// fails after its rename.
+#[cfg(test)]
+pub(crate) fn fail_next_vault_dir_sync_for_test() {
+    FAIL_NEXT_DIR_SYNC.with(|fail| fail.set(true));
 }
 
 fn decrypt_vault_payload(
@@ -1518,6 +1518,12 @@ fn vault_temp_path(path: &Path) -> PathBuf {
 }
 
 fn sync_vault_parent_dir(path: &Path) -> Result<(), DaemonError> {
+    #[cfg(test)]
+    if FAIL_NEXT_DIR_SYNC.with(std::cell::Cell::take) {
+        return Err(secret_error(
+            "failed to sync Chariox vault directory (test)".to_string(),
+        ));
+    }
     let Some(parent) = path.parent() else {
         return Ok(());
     };
@@ -2015,7 +2021,7 @@ mod tests {
             .set_secret("chariox-test", "token", "secret-value")
             .expect("secret should store");
 
-        fail_next_vault_write_after_rename_for_test();
+        fail_next_vault_dir_sync_for_test();
         let error = change_chariox_encrypted_vault_passphrase(&path, "old", "new", |_| Ok(()))
             .expect_err("the failed directory sync is reported");
         assert!(error.to_string().contains("was changed"), "{error}");
