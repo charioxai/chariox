@@ -56,6 +56,9 @@ async fn try_forward_display_stream_event(
         return;
     };
     if sender.try_send(event).is_ok() {
+        // A buffered daemon burst must give the ready viewer writer a chance
+        // to drain its bounded queue before admitting the next fragment.
+        tokio::task::yield_now().await;
         return;
     }
     registry

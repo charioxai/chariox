@@ -369,12 +369,17 @@ pub(super) async fn handle_incoming_envelope(
         }
         RelayEnvelope::DaemonDisplayTunnelClientChunk { chunk } => {
             let stream_id = chunk.stream_id.clone();
-            state.write().await.try_send_display_stream_event(
-                &stream_id,
-                RelayDisplayTunnelClientEvent::Chunk(chunk),
-            );
+            super::display_ingress::forward_display_client_event(
+                state, &stream_id, RelayDisplayTunnelClientEvent::Chunk(chunk),
+            ).await;
         }
-        RelayEnvelope::DaemonDisplayTunnelClientClose { stream_id, .. } => {
+        RelayEnvelope::DaemonDisplayTunnelClientClose { stream_id, error } => {
+            if let Some(error) = error {
+                crate::logging::warn_with_fields(
+                    "display.proxy", "relay closed display client",
+                    serde_json::json!({"stream_id": stream_id, "code": error.code}),
+                );
+            }
             state
                 .write()
                 .await

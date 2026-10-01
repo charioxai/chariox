@@ -39,6 +39,7 @@ mod connection_state;
 mod connector;
 mod daemon_requests;
 mod display_tunnel;
+mod display_ingress;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;

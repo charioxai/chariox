@@ -470,8 +470,9 @@ impl RelayClientState {
         let Some(sender) = self.display_streams.get(stream_id) else {
             return false;
         };
-        if sender.try_send(event).is_ok() {
-            return true;
+        match sender.try_send(event) {
+            Ok(()) => return true,
+            Err(error) => crate::logging::warn_with_fields("display.proxy", "display ingress stopped", serde_json::json!({"stream_id": stream_id, "full": matches!(error, mpsc::error::TrySendError::Full(_))})),
         }
         // Never drop an encrypted fragment and leave the channel alive: the
         // next packet would be out of sequence. Removing the only state-owned
