@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, createPrivateKey, generateKeyPairSync, sign } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { runtimeReleaseFixture } from './app-runtime-release-fixture.mjs';
 import { assemble, parseArgs, signBundle, verifyBundle } from './release-bundle.mjs';
+import { signRuntimeRelease } from './sign-app-runtime-release.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const commit = 'a'.repeat(40);
@@ -20,14 +22,30 @@ async function put(path, contents, mode = 0o644) {
   await chmod(path, mode);
 }
 
-async function fixture(context, { target = 'linux-x64', runtimeCommit = commit } = {}) {
-  const root = await mkdtemp(join(await realpath(tmpdir()), 'chariox-release-bundle-'));
-  context.after(() => rm(root, { recursive: true, force: true }));
+// Built executables, the repository files a bundle carries and a release key.
+async function bundleInputs(root, target) {
   const executables = join(root, 'executables');
   for (const name of ['chariox', 'chariox-kernel', 'chariox-relay', 'chariox-app-package'])
     await put(join(executables, 'bin', name), `#!/bin/sh\necho ${name}\n`, 0o755);
   const libexec = target === 'linux-x64' ? ['chariox-app-storage', 'chariox-app-runtime-install'] : ['chariox-app-runtime-install'];
   for (const name of libexec) await put(join(executables, 'libexec', name), `#!/bin/sh\necho ${name}\n`, 0o755);
+  const source = join(root, 'source-root');
+  for (const name of ['install-root.sh', 'install-user.sh', 'start-kernel.sh']) await put(join(source, 'deploy/local-linux', name), '#!/bin/sh\n', 0o755);
+  for (const name of ['chariox-kernel.service', 'chariox-app-bwrap.apparmor']) await put(join(source, 'deploy/local-linux', name), name);
+  await put(join(source, 'deploy/managed-kernel/chariox-app-storage.service'), '[Unit]\n');
+  await mkdir(join(source, 'deploy/release-bundle'), { recursive: true });
+  await copyFile(join(repository, 'deploy/release-bundle/install.sh'), join(source, 'deploy/release-bundle/install.sh'));
+  await put(join(source, 'LICENSE'), 'license');
+  const releaseKey = generateKeyPairSync('ed25519').privateKey;
+  const releaseKeyPath = join(root, 'bundle-release.pem');
+  await put(releaseKeyPath, releaseKey.export({ type: 'pkcs8', format: 'pem' }), 0o600);
+  return { executables, sourceRoot: source, releaseKeyPath, releasePublic: keyHex(releaseKey) };
+}
+
+async function fixture(context, { target = 'linux-x64', runtimeCommit = commit } = {}) {
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'chariox-release-bundle-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const inputs = await bundleInputs(root, target);
   // A signed App runtime release, as sign-app-runtime-release.mjs lays it out.
   const runtime = join(root, 'runtime');
   const payload = { 'chariox-app-worker': ['worker', 0o555], 'libnode.so.137': ['libnode', 0o444], 'sdk/src/index.js': ['export {}', 0o444] };
@@ -41,22 +59,11 @@ async function fixture(context, { target = 'linux-x64', runtimeCommit = commit }
   await put(join(runtime, 'runtime-inventory.json'), inventory, 0o444);
   await put(join(runtime, 'runtime-inventory.sig'), sign(null, inventory, runtimeKey).toString('hex'), 0o444);
   await put(join(runtime, '.runtime-lease'), '', 0o444);
-  // The repository files a Linux bundle carries.
-  const source = join(root, 'source');
-  for (const name of ['install-root.sh', 'install-user.sh', 'start-kernel.sh']) await put(join(source, 'deploy/local-linux', name), '#!/bin/sh\n', 0o755);
-  for (const name of ['chariox-kernel.service', 'chariox-app-bwrap.apparmor']) await put(join(source, 'deploy/local-linux', name), name);
-  await put(join(source, 'deploy/managed-kernel/chariox-app-storage.service'), '[Unit]\n');
-  await mkdir(join(source, 'deploy/release-bundle'), { recursive: true });
-  await copyFile(join(repository, 'deploy/release-bundle/install.sh'), join(source, 'deploy/release-bundle/install.sh'));
-  await put(join(source, 'LICENSE'), 'license');
-  const releaseKey = generateKeyPairSync('ed25519').privateKey;
-  const releaseKeyPath = join(root, 'release.pem');
-  await put(join(releaseKeyPath), releaseKey.export({ type: 'pkcs8', format: 'pem' }), 0o600);
   const options = {
-    platform: target, version: '0.2.0', sourceCommit: commit, executables,
-    runtime, runtimePublicKey: keyHex(runtimeKey), sourceRoot: source, output: join(root, 'out', `chariox-0.2.0-${target}`),
+    platform: target, version: '0.2.0', sourceCommit: commit, executables: inputs.executables,
+    runtime, runtimePublicKey: keyHex(runtimeKey), sourceRoot: inputs.sourceRoot, output: join(root, 'out', `chariox-0.2.0-${target}`),
   };
-  return { root, options, runtimeKey, releaseKeyPath, releasePublic: keyHex(releaseKey) };
+  return { root, options, runtimeKey, releaseKeyPath: inputs.releaseKeyPath, releasePublic: inputs.releasePublic };
 }
 
 test('a Linux bundle is assembled, signed and verified, and any change is refused', async (context) => {
@@ -173,11 +180,28 @@ test('the release key must be private to the signer, and arguments are exact', a
   assert.throws(() => parseArgs(['publish']), /usage/);
 });
 
+test('a bundle carries the runtime that the production signer released outside the checkout', async (t) => {
+  const f = await runtimeReleaseFixture(t);
+  // The signer refuses an output inside its source checkout, so CI signs into $RUNNER_TEMP.
+  await assert.rejects(signRuntimeRelease({ ...f.options, output: join(f.options.repository, 'runtime') }), /separate from source/);
+  const receipt = await signRuntimeRelease(f.options);
+  const inputs = await bundleInputs(f.root, 'linux-x64');
+  const output = join(f.root, 'out', 'chariox-0.2.0-linux-x64');
+  const assembled = await assemble({ platform: 'linux-x64', version: '0.2.0', sourceCommit: f.proof.sourceCommit,
+    executables: inputs.executables, runtime: f.options.output, runtimePublicKey: receipt.publicKeyHex,
+    sourceRoot: inputs.sourceRoot, output });
+  assert.deepEqual(assembled.runtime, { inventorySha256: receipt.inventorySha256, publicKeyHex: receipt.publicKeyHex });
+  await signBundle(output, inputs.releaseKeyPath);
+  assert.equal((await verifyBundle(output, inputs.releasePublic)).runtime.inventorySha256, receipt.inventorySha256);
+  await assert.rejects(assemble({ platform: 'linux-x64', version: '0.2.0', sourceCommit: 'c'.repeat(40), executables: inputs.executables,
+    runtime: f.options.output, runtimePublicKey: receipt.publicKeyHex, sourceRoot: inputs.sourceRoot, output: `${output}-other` }), /runtime source/);
+});
+
 // install.sh checks the bundle with python3 and OpenSSL 3 (Ed25519 raw verification), as on a Linux host.
 const opensslEd25519 = process.platform === 'linux'
   && /^OpenSSL 3/.test(spawnSync('openssl', ['version'], { encoding: 'utf8' }).stdout ?? '');
 
-test('install.sh --check accepts only the bundle signed by the given release key', { skip: !opensslEd25519 && 'needs Linux with OpenSSL 3' }, async (context) => {
+test('install.sh --check accepts only the bundle and runtime signed by their keys', { skip: !opensslEd25519 && 'needs Linux with OpenSSL 3' }, async (context) => {
   const { options, releaseKeyPath, releasePublic } = await fixture(context);
   await assemble(options);
   await signBundle(options.output, releaseKeyPath);
@@ -186,6 +210,19 @@ test('install.sh --check accepts only the bundle signed by the given release key
   assert.equal(accepted.status, 0, accepted.stderr);
   assert.match(accepted.stdout, /is Chariox 0\.2\.0, signed by the release key/);
   assert.match(check(keyHex(generateKeyPairSync('ed25519').privateKey)).stderr, /does not verify with the release key/);
+  // A manifest signed by the release key still needs a valid runtime inventory signature.
+  const inventorySig = join(options.output, 'runtime/runtime-inventory.sig');
+  const inventory = await readFile(join(options.output, 'runtime/runtime-inventory.json'));
+  await chmod(inventorySig, 0o644);
+  await writeFile(inventorySig, sign(null, inventory, generateKeyPairSync('ed25519').privateKey).toString('hex'));
+  const manifestPath = join(options.output, 'manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const entry = manifest.files.find(file => file.path === 'runtime/runtime-inventory.sig');
+  entry.sha256 = sha256(await readFile(inventorySig));
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const releaseKey = createPrivateKey(await readFile(releaseKeyPath));
+  await writeFile(join(options.output, 'manifest.sig'), sign(null, await readFile(manifestPath), releaseKey).toString('hex'));
+  assert.match(check(releasePublic).stderr, /runtime-inventory\.sig does not verify with the runtime key in the signed manifest/);
   await writeFile(join(options.output, 'runtime/sdk/src/index.js'), 'changed');
   assert.match(check(releasePublic).stderr, /runtime\/sdk\/src\/index\.js does not match the signed manifest/);
   assert.match(execFileSync(join(options.output, 'install.sh'), ['--help'], { encoding: 'utf8' }), /usage: sudo \.\/install\.sh/);

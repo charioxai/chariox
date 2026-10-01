@@ -8,8 +8,9 @@
 # hexadecimal characters), never read from this directory.
 #
 # 1. Copies the bundle into a private root-owned directory and checks that copy:
-#    manifest.sig against --release-key, then every file's size and SHA-256, and
-#    that no file was added. --check stops here and needs no root.
+#    manifest.sig against --release-key, then every file's size and SHA-256,
+#    that no file was added, and the App runtime's inventory signature against
+#    the runtime key the signed manifest names. --check stops here and needs no root.
 # 2. Runs deploy/local-linux/install-root.sh for --user with the App runtime key
 #    and inventory digest from the signed manifest.
 # 3. Installs chariox (the CLI/TUI) and chariox-app-package into /usr/local/bin.
@@ -47,19 +48,21 @@ check_bundle() {
 import base64, hashlib, json, os, subprocess, sys, tempfile
 root, key = sys.argv[1], bytes.fromhex(sys.argv[2])
 def fail(message): sys.exit(f"[chariox-install] error: {message}")
+def verify(key, message, signature, what):
+    if len(signature) != 128 or any(c not in "0123456789abcdef" for c in signature):
+        fail(f"{what} must be 128 lowercase hexadecimal characters")
+    spki = bytes.fromhex("302a300506032b6570032100") + key
+    pem = "-----BEGIN PUBLIC KEY-----\n" + base64.b64encode(spki).decode() + "\n-----END PUBLIC KEY-----\n"
+    with tempfile.TemporaryDirectory() as scratch:
+        paths = {name: os.path.join(scratch, name) for name in ("key.pem", "signature", "message")}
+        for name, data in (("key.pem", pem.encode()), ("signature", bytes.fromhex(signature)), ("message", message)):
+            open(paths[name], "wb").write(data)
+        verified = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", paths["key.pem"], "-rawin",
+                                   "-in", paths["message"], "-sigfile", paths["signature"]], capture_output=True)
+    return verified.returncode == 0
 manifest_bytes = open(os.path.join(root, "manifest.json"), "rb").read()
 signature = open(os.path.join(root, "manifest.sig"), "rb").read().decode("ascii", "replace")
-if len(signature) != 128 or any(c not in "0123456789abcdef" for c in signature):
-    fail("manifest.sig must be 128 lowercase hexadecimal characters")
-spki = bytes.fromhex("302a300506032b6570032100") + key
-pem = "-----BEGIN PUBLIC KEY-----\n" + base64.b64encode(spki).decode() + "\n-----END PUBLIC KEY-----\n"
-with tempfile.TemporaryDirectory() as scratch:
-    for name, data in (("key.pem", pem.encode()), ("manifest.sig.bin", bytes.fromhex(signature)), ("manifest.json", manifest_bytes)):
-        open(os.path.join(scratch, name), "wb").write(data)
-    verified = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", os.path.join(scratch, "key.pem"), "-rawin",
-                               "-in", os.path.join(scratch, "manifest.json"), "-sigfile", os.path.join(scratch, "manifest.sig.bin")],
-                              capture_output=True)
-if verified.returncode != 0:
+if not verify(key, manifest_bytes, signature, "manifest.sig"):
     fail("manifest.sig does not verify with the release key: this bundle is not that release")
 manifest = json.loads(manifest_bytes)
 if manifest.get("schema") != "chariox.release-bundle.v1" or manifest.get("platform") != "linux-x64":
@@ -82,7 +85,14 @@ for directory, subdirectories, names in os.walk(root):
             fail(f"{relative} does not match the signed manifest")
 if listed:
     fail("the bundle is missing " + ", ".join(sorted(listed)))
+# The App runtime's own inventory signature, as root enrollment will check it.
 runtime = manifest["runtime"]
+inventory = open(os.path.join(root, "runtime", "runtime-inventory.json"), "rb").read()
+if hashlib.sha256(inventory).hexdigest() != runtime["inventorySha256"]:
+    fail("runtime/runtime-inventory.json is not the inventory the signed manifest names")
+inventory_signature = open(os.path.join(root, "runtime", "runtime-inventory.sig"), "rb").read().decode("ascii", "replace")
+if not verify(bytes.fromhex(runtime["publicKeyHex"]), inventory, inventory_signature, "runtime/runtime-inventory.sig"):
+    fail("runtime/runtime-inventory.sig does not verify with the runtime key in the signed manifest")
 print(runtime["publicKeyHex"], runtime["inventorySha256"], manifest["version"])
 PY
 }

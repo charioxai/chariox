@@ -9,6 +9,8 @@ name: Release bundle
 # libraries plus the runtime builder's signed attestation) comes from the
 # runtime builder run named by `runtime_input_run`, as artifacts
 # `runtime-input-<platform>` holding `input/`, `builder.json` and `builder.sig`.
+# Release work happens under $RUNNER_TEMP: the runtime signer refuses inputs
+# and outputs inside a source checkout.
 #
 # `release` environment:
 #   secrets  CHARIOX_RELEASE_KEY          Ed25519 PKCS#8 PEM; signs bundle manifests
@@ -113,8 +115,8 @@ jobs:
           pnpm --filter @chariox/cli run build
           pnpm --filter @chariox/cli run test:compile
           bun apps/cli/scripts/compile.mjs --target ${{ matrix.platform }} --outfile unsigned/bin/chariox --version "$VERSION"
-          test "$(unsigned/bin/chariox --version)" = "chariox $VERSION"
-          unsigned/bin/chariox --help > /dev/null
+          # --version, --help and native-Claude hooks with neither Node nor Bun on PATH.
+          node apps/cli/scripts/release-smoke.mjs unsigned/bin/chariox "$VERSION"
       # A tarball keeps the executable modes that an artifact upload drops.
       - run: tar -czf unsigned-${{ matrix.platform }}.tar.gz -C unsigned .
       - uses: actions/upload-artifact@v4
@@ -151,7 +153,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: runtime-input-linux-x64
-          path: runtime-input
+          path: ${{ runner.temp }}/runtime-input
           run-id: ${{ inputs.runtime_input_run }}
           github-token: ${{ github.token }}
       - name: Sign the App runtime inventory (existing release signer)
@@ -162,29 +164,30 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/runtime-release.pem"' EXIT
           (umask 077; printf '%s\n' "$RUNTIME_RELEASE_KEY" > "$RUNNER_TEMP/runtime-release.pem")
           printf '%s\n' "$RUNTIME_BUILDER_PUBLIC_KEY" > "$RUNNER_TEMP/runtime-builder.pub.pem"
-          node scripts/sign-app-runtime-release.mjs --input "$PWD/runtime-input/input" \
-            --builder-attestation "$PWD/runtime-input/builder.json" --builder-signature "$PWD/runtime-input/builder.sig" \
+          node scripts/sign-app-runtime-release.mjs --input "$RUNNER_TEMP/runtime-input/input" \
+            --builder-attestation "$RUNNER_TEMP/runtime-input/builder.json" --builder-signature "$RUNNER_TEMP/runtime-input/builder.sig" \
             --trusted-builder-key "$RUNNER_TEMP/runtime-builder.pub.pem" --signing-key "$RUNNER_TEMP/runtime-release.pem" \
-            --output "$PWD/runtime" > runtime-receipt.json
+            --output "$RUNNER_TEMP/runtime" > "$RUNNER_TEMP/runtime-receipt.json"
       - name: Assemble, sign and verify the bundle
         env:
           RELEASE_KEY: ${{ secrets.CHARIOX_RELEASE_KEY }}
           RELEASE_PUBLIC_KEY: ${{ vars.CHARIOX_RELEASE_PUBLIC_KEY }}
         run: |
           trap 'rm -f "$RUNNER_TEMP/release.pem"' EXIT
-          mkdir executables && tar -xzf unsigned-linux-x64.tar.gz -C executables
+          out="$RUNNER_TEMP/out"
+          mkdir "$RUNNER_TEMP/executables" && tar -xzf unsigned-linux-x64.tar.gz -C "$RUNNER_TEMP/executables"
           node scripts/release-bundle.mjs assemble --platform linux-x64 --version "$VERSION" --source-commit "$COMMIT" \
-            --executables "$PWD/executables" --runtime "$PWD/runtime" \
-            --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync("runtime-receipt.json")).publicKeyHex')" \
-            --output "$PWD/out/$BUNDLE"
+            --executables "$RUNNER_TEMP/executables" --runtime "$RUNNER_TEMP/runtime" \
+            --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicKeyHex' "$RUNNER_TEMP/runtime-receipt.json")" \
+            --output "$out/$BUNDLE"
           (umask 077; printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/release.pem")
-          node scripts/release-bundle.mjs sign --bundle "$PWD/out/$BUNDLE" --signing-key "$RUNNER_TEMP/release.pem"
-          node scripts/release-bundle.mjs verify --bundle "$PWD/out/$BUNDLE" --public-key "$RELEASE_PUBLIC_KEY"
-          out/$BUNDLE/install.sh --check --release-key "$RELEASE_PUBLIC_KEY"
+          node scripts/release-bundle.mjs sign --bundle "$out/$BUNDLE" --signing-key "$RUNNER_TEMP/release.pem"
+          node scripts/release-bundle.mjs verify --bundle "$out/$BUNDLE" --public-key "$RELEASE_PUBLIC_KEY"
+          "$out/$BUNDLE/install.sh" --check --release-key "$RELEASE_PUBLIC_KEY"
           tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${{ needs.prepare.outputs.epoch }}" \
-            -czf "$BUNDLE.tar.gz" -C out "$BUNDLE"
-          cp "out/$BUNDLE/manifest.json" "$BUNDLE.manifest.json"
-          cp "out/$BUNDLE/manifest.sig" "$BUNDLE.manifest.sig"
+            -czf "$BUNDLE.tar.gz" -C "$out" "$BUNDLE"
+          cp "$out/$BUNDLE/manifest.json" "$BUNDLE.manifest.json"
+          cp "$out/$BUNDLE/manifest.sig" "$BUNDLE.manifest.sig"
       - uses: actions/upload-artifact@v4
         with:
           name: bundle-linux-x64
@@ -220,7 +223,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: runtime-input-darwin-arm64
-          path: runtime-input
+          path: ${{ runner.temp }}/runtime-input
           run-id: ${{ inputs.runtime_input_run }}
           github-token: ${{ github.token }}
       - name: Load the Developer ID identity and notary profile into a temporary keychain
@@ -249,40 +252,44 @@ jobs:
       # inventory is then signed over the codesigned bytes, never before.
       - name: Codesign and notarize the executables
         run: |
-          mkdir executables && tar -xzf unsigned-darwin-arm64.tar.gz -C executables
-          node scripts/sign-macos-release.mjs --input "$PWD/executables" --output "$PWD/signed" > macos-signing-receipt.json
+          mkdir "$RUNNER_TEMP/executables" && tar -xzf unsigned-darwin-arm64.tar.gz -C "$RUNNER_TEMP/executables"
+          node scripts/sign-macos-release.mjs --input "$RUNNER_TEMP/executables" --output "$RUNNER_TEMP/signed" \
+            > "$RUNNER_TEMP/macos-signing-receipt.json"
           # Bun's JIT must still run under the hardened runtime.
-          test "$("$PWD/signed/bin/chariox" --version)" = "chariox $VERSION"
+          test "$("$RUNNER_TEMP/signed/bin/chariox" --version)" = "chariox $VERSION"
       - name: Codesign the App runtime, then sign its inventory over the signed bytes
         env:
           RUNTIME_RELEASE_KEY: ${{ secrets.CHARIOX_RUNTIME_RELEASE_KEY }}
           RUNTIME_BUILDER_PUBLIC_KEY: ${{ vars.CHARIOX_RUNTIME_BUILDER_PUBLIC_KEY }}
         run: |
           trap 'rm -f "$RUNNER_TEMP/runtime-release.pem"' EXIT
-          node scripts/sign-macos-release.mjs --input "$PWD/runtime-input/input" --output "$PWD/runtime-codesigned" > runtime-codesign-receipt.json
+          node scripts/sign-macos-release.mjs --input "$RUNNER_TEMP/runtime-input/input" --output "$RUNNER_TEMP/runtime-codesigned" \
+            > "$RUNNER_TEMP/runtime-codesign-receipt.json"
           (umask 077; printf '%s\n' "$RUNTIME_RELEASE_KEY" > "$RUNNER_TEMP/runtime-release.pem")
           printf '%s\n' "$RUNTIME_BUILDER_PUBLIC_KEY" > "$RUNNER_TEMP/runtime-builder.pub.pem"
-          node scripts/sign-app-runtime-release.mjs --input "$PWD/runtime-input/input" \
-            --builder-attestation "$PWD/runtime-input/builder.json" --builder-signature "$PWD/runtime-input/builder.sig" \
+          node scripts/sign-app-runtime-release.mjs --input "$RUNNER_TEMP/runtime-input/input" \
+            --builder-attestation "$RUNNER_TEMP/runtime-input/builder.json" --builder-signature "$RUNNER_TEMP/runtime-input/builder.sig" \
             --trusted-builder-key "$RUNNER_TEMP/runtime-builder.pub.pem" --signing-key "$RUNNER_TEMP/runtime-release.pem" \
-            --codesigned "$PWD/runtime-codesigned" --codesign-identity "$CHARIOX_CODESIGN_IDENTITY" \
-            --output "$PWD/runtime" > runtime-receipt.json
+            --codesigned "$RUNNER_TEMP/runtime-codesigned" --codesign-identity "$CHARIOX_CODESIGN_IDENTITY" \
+            --output "$RUNNER_TEMP/runtime" > "$RUNNER_TEMP/runtime-receipt.json"
       - name: Assemble, sign and verify the bundle
         env:
           RELEASE_KEY: ${{ secrets.CHARIOX_RELEASE_KEY }}
           RELEASE_PUBLIC_KEY: ${{ vars.CHARIOX_RELEASE_PUBLIC_KEY }}
         run: |
           trap 'rm -f "$RUNNER_TEMP/release.pem"' EXIT
+          out="$RUNNER_TEMP/out"
           node scripts/release-bundle.mjs assemble --platform darwin-arm64 --version "$VERSION" --source-commit "$COMMIT" \
-            --executables "$PWD/signed" --runtime "$PWD/runtime" --macos-signing-receipt "$PWD/macos-signing-receipt.json" \
-            --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync("runtime-receipt.json")).publicKeyHex')" \
-            --output "$PWD/out/$BUNDLE"
+            --executables "$RUNNER_TEMP/signed" --runtime "$RUNNER_TEMP/runtime" \
+            --macos-signing-receipt "$RUNNER_TEMP/macos-signing-receipt.json" \
+            --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicKeyHex' "$RUNNER_TEMP/runtime-receipt.json")" \
+            --output "$out/$BUNDLE"
           (umask 077; printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/release.pem")
-          node scripts/release-bundle.mjs sign --bundle "$PWD/out/$BUNDLE" --signing-key "$RUNNER_TEMP/release.pem"
-          node scripts/release-bundle.mjs verify --bundle "$PWD/out/$BUNDLE" --public-key "$RELEASE_PUBLIC_KEY"
-          tar --uid 0 --gid 0 -czf "$BUNDLE.tar.gz" -C out "$BUNDLE"
-          cp "out/$BUNDLE/manifest.json" "$BUNDLE.manifest.json"
-          cp "out/$BUNDLE/manifest.sig" "$BUNDLE.manifest.sig"
+          node scripts/release-bundle.mjs sign --bundle "$out/$BUNDLE" --signing-key "$RUNNER_TEMP/release.pem"
+          node scripts/release-bundle.mjs verify --bundle "$out/$BUNDLE" --public-key "$RELEASE_PUBLIC_KEY"
+          tar --uid 0 --gid 0 -czf "$BUNDLE.tar.gz" -C "$out" "$BUNDLE"
+          cp "$out/$BUNDLE/manifest.json" "$BUNDLE.manifest.json"
+          cp "$out/$BUNDLE/manifest.sig" "$BUNDLE.manifest.sig"
       - name: Remove the temporary keychain
         if: always()
         run: |
