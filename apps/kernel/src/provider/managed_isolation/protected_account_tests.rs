@@ -23,6 +23,14 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir(&root).expect("unique synthetic root");
+    // The runtime HOME is deliberately under /home: this exercises the
+    // admitted late workspace rebind over the synthetic /home namespace.
+    let runtime_home = PathBuf::from(format!(
+        "/home/chariox-nss-alias-test-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir(&runtime_home).expect("unique synthetic runtime home");
     let names = [
         MANAGED_PROVIDER_ISOLATION_ENV,
         MANAGED_PROVIDER_HOME_ENV,
@@ -38,6 +46,7 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
         .collect::<Vec<_>>();
     struct Cleanup {
         root: PathBuf,
+        runtime_home: PathBuf,
         previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
     }
     impl Drop for Cleanup {
@@ -45,11 +54,13 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
             for (name, value) in self.previous.drain(..) {
                 restore_env(name, value);
             }
+            let _ = std::fs::remove_dir_all(&self.runtime_home); // Only this newly created synthetic home.
             let _ = std::fs::remove_dir_all(&self.root); // Only this newly created synthetic fixture.
         }
     }
     let _cleanup = Cleanup {
         root: root.clone(),
+        runtime_home: runtime_home.clone(),
         previous,
     };
     let private = root.join("private");
@@ -58,8 +69,8 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
     let sibling = private.join("provider-accounts/person-b/codex/profile");
     let kernel = private.join("kernel");
     let nss = private.join("nssdb");
-    let workspace = root.join("workspace");
-    let nss_alias = root.join(".local/share/pki/nssdb");
+    let workspace = runtime_home.join(".local");
+    let nss_alias = runtime_home.join(".local/share/pki/nssdb");
     for directory in [
         &home, &selected, &sibling, &kernel, &nss, &nss_alias, &workspace,
     ] {
@@ -72,7 +83,11 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
     std::fs::write(kernel.join("private-sentinel"), "synthetic-kernel-private").unwrap();
     std::fs::write(nss.join("private-sentinel"), "synthetic-nss-private").unwrap();
     std::fs::write(nss_alias.join("private-sentinel"), "synthetic-nss-private").unwrap();
-    std::fs::write(root.join(".local/ordinary-user-data"), "ordinary-synthetic").unwrap();
+    std::fs::write(
+        runtime_home.join(".local/ordinary-user-data"),
+        "ordinary-synthetic",
+    )
+    .unwrap();
     std::fs::write(
         home.join(".config/gh/hosts.yml"),
         "synthetic-github-account",
@@ -104,9 +119,23 @@ esac
     std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &home);
     std::env::set_var("CHARIOX_HOME", &kernel);
     std::env::set_var("CHARIOX_SLICE_PRIVATE_ROOT", &private);
-    std::env::set_var("HOME", &root);
+    std::env::set_var("HOME", &runtime_home);
     std::env::set_var("GH_CONFIG_DIR", home.join(".config/gh"));
     std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap);
+    let private_runtime = managed_isolated_utility_launch(
+        "/bin/true",
+        Vec::new(),
+        BTreeMap::from([(
+            "CHARIOX_CLAUDE_NATIVE_SYNTHETIC".into(),
+            private.display().to_string(),
+        )]),
+        Some(workspace.clone()),
+        "private-runtime-refusal",
+    );
+    assert!(
+        private_runtime.is_err(),
+        "late runtime roots must not re-expose private storage"
+    );
     let script = r#"
 set -eu
 test "$(cat "$CODEX_HOME/auth.json")" = selected-synthetic-account
@@ -128,7 +157,7 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
             script.into(),
             "protected-account-probe".into(),
             private.display().to_string(),
-            root.display().to_string(),
+            runtime_home.display().to_string(),
         ],
         BTreeMap::from([("CODEX_HOME".into(), selected.display().to_string())]),
         Some(workspace.clone()),
@@ -142,6 +171,30 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
         .windows(2)
         .position(|args| args[0] == "--tmpfs" && args[1] == nss_alias.display().to_string())
         .expect("NSS alias mask follows runtime .local bind");
+    assert!(
+        launch
+            .pty_args
+            .windows(3)
+            .filter(|args| args[0] == "--bind"
+                && args[1] == workspace.display().to_string()
+                && args[2] == workspace.display().to_string())
+            .count()
+            >= 2,
+        "the /home workspace must be rebound after its runtime anchor"
+    );
+    let workspace_rebind = launch
+        .pty_args
+        .windows(3)
+        .rposition(|args| {
+            args[0] == "--bind"
+                && args[1] == workspace.display().to_string()
+                && args[2] == workspace.display().to_string()
+        })
+        .expect("actual /home runtime workspace rebind");
+    assert!(
+        workspace_rebind < mask,
+        "NSS mask must follow the late workspace bind"
+    );
     launch.pty_args.splice(
         mask..mask,
         [
@@ -149,6 +202,21 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
             nss.display().to_string(),
             nss_alias.display().to_string(),
         ],
+    );
+    let mut alias_negative = launch.clone();
+    let final_mask = alias_negative
+        .pty_args
+        .windows(2)
+        .position(|args| args[0] == "--tmpfs" && args[1] == nss_alias.display().to_string())
+        .expect("final NSS mask");
+    alias_negative.pty_args.drain(final_mask..final_mask + 2);
+    assert!(
+        !command_from_provider_launch(alias_negative)
+            .unwrap()
+            .status()
+            .unwrap()
+            .success(),
+        "removing only the NSS alias mask must expose the synthetic second mount"
     );
     let output = command_from_provider_launch(launch)
         .expect("namespace command")
@@ -173,7 +241,7 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
             script.into(),
             "protected-account-negative".into(),
             private.display().to_string(),
-            root.display().to_string(),
+            runtime_home.display().to_string(),
         ],
         BTreeMap::from([("CODEX_HOME".into(), selected.display().to_string())]),
         Some(workspace.clone()),
