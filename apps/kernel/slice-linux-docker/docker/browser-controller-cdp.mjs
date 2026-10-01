@@ -68,7 +68,9 @@ export class BrowserCdpClient {
     uploadRoots = [],
     fileSystem,
     eventJournal = new BrowserEventJournal(),
+    applyCanonicalDisplay,
   } = {}) {
+    this.applyCanonicalDisplay = applyCanonicalDisplay;
     this.debuggerEndpoint = new URL(debuggerEndpoint);
     this.requestTimeoutMs = requestTimeoutMs;
     this.fetchImpl = fetchImpl;
@@ -101,6 +103,7 @@ export class BrowserCdpClient {
 
   async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth } = {}) {
     const viewport = canonicalViewport(rawViewport);
+    await this.applyCanonicalDisplay?.(viewport);
     // A kernel before the automatic App panel sends no width: App pages then
     // get the whole viewport and no panel is drawn beside them.
     this.appViewport = Number.isSafeInteger(appPanelCssWidth) && appPanelCssWidth > 0

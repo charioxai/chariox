@@ -15,6 +15,8 @@ import {
   validateBrowserResourceInventory,
 } from "./browser-controller-resources.mjs";
 
+import { managedCanonicalDisplay } from "./browser-controller-display.mjs";
+
 let browserImportModule;
 
 export async function handleBrowserControllerRequest(
@@ -319,6 +321,7 @@ async function runCli() {
     process.env.CHARIOX_SLICE_MIN_FREE_MB,
   );
   const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: managedCanonicalDisplay(),
     ...(debuggerEndpoint ? { debuggerEndpoint } : {}),
     downloadDirectory: process.env.CHARIOX_BROWSER_DOWNLOAD_DIR,
     minimumDownloadFreeBytes,

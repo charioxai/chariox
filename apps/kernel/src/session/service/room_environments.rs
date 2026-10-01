@@ -166,6 +166,26 @@ impl SessionService {
             .set_browser_bar_visible_as_actor(session_id, actor, visible)
     }
 
+    pub(crate) fn preview_update_room_environment_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.preview_update_viewport_as_actor(
+            session_id,
+            actor,
+            expected_revision,
+            viewport,
+        )
+    }
+
     pub(crate) fn update_room_environment_viewport_as_actor(
         &mut self,
         session_id: &str,

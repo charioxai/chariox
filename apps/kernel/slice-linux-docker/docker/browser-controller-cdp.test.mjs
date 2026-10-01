@@ -1421,3 +1421,14 @@ class DialogFaultSocket extends FakeSocket {
       .then((result) => this.message({ id: request.id, result }));
   }
 }
+
+ test("canonical display refusal prevents CDP layout changes", async () => {
+  let connects = 0;
+  const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { throw new Error("physical display refused"); },
+    connectionFactory: async () => { connects += 1; return new FakeConnection(); },
+  });
+  await assert.rejects(browser.reconcile(viewport), /physical display refused/);
+  assert.equal(connects, 0);
+  assert.equal(browser.appViewport, undefined);
+});

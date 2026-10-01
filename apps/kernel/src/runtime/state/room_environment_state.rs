@@ -116,6 +116,23 @@ impl KernelRuntimeState {
             .set_room_browser_bar_visible_as_actor(session_id, actor, visible)
     }
 
+    pub(crate) fn preview_update_room_environment_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .preview_update_room_environment_viewport_as_actor(
+                session_id,
+                actor,
+                expected_revision,
+                viewport,
+            )
+    }
+
     pub(crate) fn update_room_environment_viewport_as_actor(
         &self,
         session_id: &str,

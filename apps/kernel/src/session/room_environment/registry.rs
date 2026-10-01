@@ -187,6 +187,24 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn preview_update_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let mut environment = self
+            .environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .clone();
+        environment.update_viewport_as_actor(actor, expected_revision, viewport)?;
+        Ok(environment.snapshot())
+    }
+
     pub(crate) fn update_viewport_as_actor(
         &mut self,
         session_id: &str,

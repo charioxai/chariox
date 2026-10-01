@@ -187,6 +187,9 @@ impl KernelRuntimeState {
         };
         let send = |target, command| async {
             let timeout = match &command {
+                // Outlast the worker's verified display/layout application and
+                // rollback; a home timeout must not race that physical work.
+                Command::Reconcile { .. } => Duration::from_secs(60),
                 Command::ComputerInput {
                     action: crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText { input },
                     ..

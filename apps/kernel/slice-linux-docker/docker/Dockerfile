@@ -67,6 +67,7 @@ FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CHARIOX_SLICE_ROOT=/opt/chariox-slice
+ENV CHARIOX_SLICE_DISPLAY_SERVER=Xorg
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
@@ -127,6 +128,9 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     xdotool \
     xterm \
     xvfb \
+    xserver-xorg-core \
+    xserver-xorg-video-dummy \
+    xcvt \
     zstd \
   && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
@@ -205,6 +209,10 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh
+COPY apps/kernel/slice-linux-docker/docker/xorg-dummy.conf /opt/chariox-slice/xorg-dummy.conf
+COPY apps/kernel/slice-linux-docker/docker/canonical-display.py /opt/chariox-slice/canonical-display.py
+COPY apps/kernel/slice-linux-docker/docker/canonical_vnc.py /opt/chariox-slice/canonical_vnc.py
+COPY apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs /opt/chariox-slice/browser-controller-display.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/tint2rc /opt/chariox-slice/tint2rc
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-keyboard.py /opt/chariox-slice/slice-keyboard.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-text-finder.py /opt/chariox-slice/slice-text-finder.py

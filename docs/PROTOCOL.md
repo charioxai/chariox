@@ -1372,6 +1372,10 @@ The canonical viewport carries:
 
 Clients submit viewport requests with the revision they observed. The kernel accepts one transition or rejects it as stale, unauthorized, unsupported, or unsafe. When the desktop already has an input owner, only that Actor may change the canonical viewport. An accepted response is complete only when browser layout, desktop resolution, streamer dimensions, screenshot coordinates, and input coordinates agree on the new revision.
 
+The managed Linux headed image uses Xorg dummy modes for physical resize. Its pinned H264 path supports even desktop-pixel dimensions from 64 through 4096 on each axis; unsupported physical sizes are refused before the canonical revision changes. CSS dimensions remain independent (for example, CSS width 393 can use an even physical width). The kernel verifies physical and capture/framebuffer geometry before committing the candidate revision; a failed apply restores the previous display without restarting Chrome. A failed rollback marks the Browser and Room degraded.
+
+This behavior requires the updated host kernel, compatible worker kernel, and managed Linux image together. Existing saved images using Xvfb do not acquire physical resizing from a host-only update; they require the updated image. Generic local/Mac CDP and headless controllers do not require Linux display tooling. The explicit noVNC rollback backend verifies an existing RFB connection receives DesktopSize after resize; it does not rely only on a new viewer's initial geometry.
+
 Viewer-only scaling is local presentation state and does not change the canonical viewport.
 
 Pointer presence uses desktop-pixel coordinates from the canonical viewport. Each pointer carries one kernel-derived Actor ID and the viewport revision that makes its coordinates meaningful. Each Actor has one stable closed-enum presentation color derived from the Actor ID. Clients map that semantic color to their palette. They do not send CSS colors or choose another Actor's identity.
