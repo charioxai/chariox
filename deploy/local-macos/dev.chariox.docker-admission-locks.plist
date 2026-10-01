@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>dev.chariox.docker-admission-locks</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/usr/local/libexec/chariox/provision-docker-admission-locks.py</string>
+    </array>
+    <key>UserName</key><string>root</string>
+    <key>GroupName</key><string>wheel</string>
+    <key>RunAtLoad</key><true/>
+    <key>ProcessType</key><string>Background</string>
+    <key>StandardErrorPath</key><string>/var/log/chariox-docker-admission-locks.log</string>
+</dict>
+</plist>

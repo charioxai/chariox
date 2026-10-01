@@ -34,6 +34,8 @@ AGENT="$R/Library/LaunchAgents/$LABEL.plist"
 KERNEL="$R/usr/local/bin/chariox-kernel"
 LAUNCHCTL="$R/bin/launchctl"
 PKGUTIL="$R/usr/sbin/pkgutil"
+ADMISSION_LABEL=dev.chariox.docker-admission-locks
+ADMISSION_DAEMON="$R/Library/LaunchDaemons/$ADMISSION_LABEL.plist"
 
 say() { printf '[chariox-uninstall] %s\n' "$*"; }
 die() { printf '[chariox-uninstall] error: %s\n' "$*" >&2; exit 1; }
@@ -149,8 +151,15 @@ if [ -d "$CONTEXT" ]; then
 fi
 prune "$R/usr/local/share/chariox"
 
-# 4. The package itself.
-for file in "$INSTALLER" "$PACKAGE/start-kernel.sh" "$MANIFEST" "$CONTEXT_MANIFEST" "$PACKAGE/uninstall.sh"; do
+# 4. The package itself. Keep /tmp admission lock inodes: another installation
+# or developer kernel can still hold them, and reboot clears them.
+if [ -e "$ADMISSION_DAEMON" ]; then
+  if "$LAUNCHCTL" print "system/$ADMISSION_LABEL" >/dev/null 2>&1; then
+    act "stop the Docker admission boot daemon" "$LAUNCHCTL" bootout "system/$ADMISSION_LABEL"
+  fi
+  act "remove $ADMISSION_DAEMON" rm -f -- "$ADMISSION_DAEMON"
+fi
+for file in "$PACKAGE/provision-docker-admission-locks.py" "$INSTALLER" "$PACKAGE/start-kernel.sh" "$MANIFEST" "$CONTEXT_MANIFEST" "$PACKAGE/uninstall.sh"; do
   [ ! -e "$file" ] || act "remove $file" rm -f -- "$file"
 done
 [ ! -d "$PACKAGE/staging" ] || act "remove $PACKAGE/staging" rm -rf -- "$PACKAGE/staging"

@@ -8,7 +8,8 @@
 #      leaves the previous release's other files in place;
 #   2. checks that the staged App runtime is the one this package pins: the
 #      SHA-256 of its runtime-inventory.json must be RUNTIME_DIGEST;
-#   3. enrolls it with chariox-app-runtime-install, which verifies the inventory's
+#   3. provisions the shared Docker admission locks and loads their root boot
+#      LaunchDaemon, then enrolls it with chariox-app-runtime-install, which verifies the inventory's
 #      Ed25519 signature against RUNTIME_KEY before it publishes
 #      /Library/Application Support/Chariox/AppRuntimes/<digest> and the
 #      enrollment. The key and digest are pinned here, in the signed package,
@@ -42,6 +43,9 @@ CONTEXT_MANIFEST="$PACKAGE/slice-build-context.sha256"
 RUNTIMES="$SUPPORT/AppRuntimes"
 AGENT="$R/Library/LaunchAgents/$LABEL.plist"
 LAUNCHCTL="$R/bin/launchctl"
+ADMISSION_LABEL=dev.chariox.docker-admission-locks
+ADMISSION_PROGRAM="$PACKAGE/provision-docker-admission-locks.py"
+ADMISSION_DAEMON="$R/Library/LaunchDaemons/$ADMISSION_LABEL.plist"
 
 say() { printf '[chariox-pkg] %s\n' "$*"; }
 die() { printf '[chariox-pkg] error: %s\n' "$*" >&2; exit 1; }
@@ -61,6 +65,8 @@ if [ -z "$R" ]; then
   [ "$(id -u)" = 0 ] || die "the macOS Installer runs this as root"
   [ "${3:-/}" = / ] || die "Chariox installs only on the startup volume, not ${3:-}"
   trusted "$INSTALLER" || die "$INSTALLER or a directory above it is not root's alone"
+  trusted "$ADMISSION_PROGRAM" || die "$ADMISSION_PROGRAM or a directory above it is not root's alone"
+  trusted "$ADMISSION_DAEMON" || die "$ADMISSION_DAEMON or a directory above it is not root's alone"
   trusted "$CONTEXT" || die "$CONTEXT or a directory above it is not root's alone"
 fi
 trap 'rm -rf -- "$STAGING"' EXIT
@@ -98,6 +104,20 @@ actual=$(shasum -a 256 "$inventory")
 actual=${actual%% *}
 [ "$actual" = "$RUNTIME_DIGEST" ] \
   || die "the staged runtime inventory is $actual, not the pinned $RUNTIME_DIGEST; nothing was enrolled"
+# Provision immediately: launchd's RunAtLoad is asynchronous, and /tmp is
+# volatile. Never unlink or adopt a legacy user-owned lock, even on upgrade.
+[ -f "$ADMISSION_PROGRAM" ] && [ ! -L "$ADMISSION_PROGRAM" ] \
+  && [ -f "$ADMISSION_DAEMON" ] && [ ! -L "$ADMISSION_DAEMON" ] \
+  || die "the package's Docker admission boot artifacts are missing"
+/usr/bin/python3 "$ADMISSION_PROGRAM" --root "${R:-/}" \
+  || die "could not provision Docker admission locks; ensure /usr/bin/python3 is available via Apple Command Line Tools; for unsafe legacy locks, stop all kernels sharing Docker before administrator repair, then reinstall; never replace a live lock"
+if "$LAUNCHCTL" print "system/$ADMISSION_LABEL" >/dev/null 2>&1; then
+  "$LAUNCHCTL" bootout "system/$ADMISSION_LABEL" \
+    || die "could not unload the previous Docker admission daemon"
+fi
+"$LAUNCHCTL" enable "system/$ADMISSION_LABEL"
+"$LAUNCHCTL" bootstrap system "$ADMISSION_DAEMON"
+
 # Generations whose leases were released since the last install no longer
 # count against the limit.
 retire_unused

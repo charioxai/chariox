@@ -18,7 +18,8 @@
 // package's one privileged step (macos-pkg/postinstall). The payload also holds
 // the kernel LaunchAgent dev.chariox.kernel and, in /usr/local/libexec/chariox,
 // the runtime installer, the agent's start script, uninstall.sh and the SHA-256
-// manifests of the binaries and the slice build context.
+// manifests of the binaries and the slice build context. A root RunAtLoad
+// LaunchDaemon recreates the shared Docker admission locks in volatile /tmp.
 //
 // A release names "Developer ID Installer: <Name> (<TEAMID>)" and a notarytool
 // keychain profile at run time (--identity and --keychain-profile, or
@@ -43,6 +44,8 @@ export const COMPONENT = 'chariox.pkg';
 export const SUBMISSION_ID = '<submission-id>';
 export const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), 'macos-pkg');
 export const PACKAGE_DIR = 'usr/local/libexec/chariox';
+const DEPLOY = join(dirname(TEMPLATES), '../deploy');
+export const ADMISSION_LABEL = 'dev.chariox.docker-admission-locks';
 const SLICE_CONTEXT = 'share/chariox/slice-build-context';
 // Beside usr/local/bin, where a release kernel looks for it.
 export const CONTEXT_DIR = `usr/local/${SLICE_CONTEXT}`;
@@ -287,6 +290,8 @@ export async function packagePlan(options) {
   const payload = [
     ...release.binaries.map(binary => ({ path: `usr/local/bin/${binary.name}`, mode: 0o755, source: binary.path, sha256: binary.sha256 })),
     { path: `${PACKAGE_DIR}/${RUNTIME_INSTALLER}`, mode: 0o555, source: release.installer.path, sha256: release.installer.sha256 },
+    content(`${PACKAGE_DIR}/provision-docker-admission-locks.py`, 0o555, await readFile(join(DEPLOY, 'local-linux/provision-docker-admission-locks.py'), 'utf8')),
+    content(`Library/LaunchDaemons/${ADMISSION_LABEL}.plist`, 0o644, await readFile(join(DEPLOY, `local-macos/${ADMISSION_LABEL}.plist`), 'utf8')),
     content(`${PACKAGE_DIR}/start-kernel.sh`, 0o555, await renderTemplate('start-kernel.sh', { ROOT: '' })),
     content(`${PACKAGE_DIR}/uninstall.sh`, 0o555, await renderTemplate('uninstall.sh', { ROOT: '' })),
     content(`${PACKAGE_DIR}/bin.sha256`, 0o444, release.binaries.map(binary => `${binary.sha256}  /usr/local/bin/${binary.name}\n`).join('')),
