@@ -2,7 +2,6 @@ import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, read
 import { createWriteStream, readFileSync, readlinkSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFile, spawn } from "node:child_process"
-import http from "node:http"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -21,6 +20,8 @@ import {
   validateCompletedSoakResult,
   validateGatePrerequisites,
 } from "./browser-computer-soak.mjs"
+
+import { startActiveSoakFixture, waitForFixtureMarker } from "./browser-computer-soak-fixture.mjs"
 
 const execFileAsync = promisify(execFile)
 const schema = "chariox.browser_computer_soak.v1"
@@ -536,7 +537,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
       XDG_RUNTIME_DIR: runtimeRoot,
     })
     await assertRuntimeStillAvailable(allocation)
-    fixture = await startFixtureServer()
+    fixture = await startActiveSoakFixture()
     const xvfb = await spawnLogged("xvfb", "Xvfb", [display, "-screen", "0", "800x600x24", "-ac", "+extension", "RANDR", "+extension", "XTEST"], {
       env: environment, cwd: repoRoot, logsRoot,
     })
@@ -622,9 +623,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
           action: { kind: "fill", text: marker },
         })
         structuredBrowserActions += 1
-        const observedMarker = await fetch(`${fixture.url}health`, { signal: AbortSignal.timeout(2_000) })
-          .then((response) => response.text())
-        if (observedMarker !== marker) throw new Error("Chromium mutation did not reach the active fixture")
+        const fixtureProof = await waitForFixtureMarker(fixture.url, marker)
         chromiumMutations += 1
         stream.requestKeyframe()
         const inputProof = await verifyComputerInputEffect({ iteration: iterations, cwd: repoRoot, env: environment })
@@ -646,6 +645,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
           computerScreenshots,
           computerInputs,
           inputProof,
+          fixtureProof,
           screenshotDigest,
           stream: stream.metrics(),
         })}\n`, { mode: 0o600 })
@@ -1627,37 +1627,6 @@ function commandEvidence({ options, paths, allocation }) {
     `--max-open-files ${options.limits.maxOpenFiles}`,
     `--max-network-mib ${options.limits.maxNetworkBytes / 1024 / 1024}`,
   ].join(" ")
-}
-
-async function startFixtureServer() {
-  let marker = "SOAK-00000000"
-  let bytes = 0
-  const server = http.createServer((request, response) => {
-    bytes += Buffer.byteLength(`${request.method ?? ""} ${request.url ?? ""}`)
-    if (request.url === "/health") {
-      response.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" })
-      bytes += Buffer.byteLength(marker)
-      return response.end(marker)
-    }
-    if (request.url?.startsWith("/mark?")) {
-      marker = new URL(request.url, "http://127.0.0.1").searchParams.get("value") ?? marker
-      response.writeHead(204, { "cache-control": "no-store" })
-      return response.end()
-    }
-    response.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" })
-    const body = `<!doctype html><title>Chariox active soak</title><style>body{font:24px sans-serif;background:#14213d;color:#fff}main{padding:60px}input{font-size:28px;width:520px}.pulse{width:120px;height:120px;background:#fca311;animation:pulse 1s infinite alternate}@keyframes pulse{to{transform:translateX(320px);background:#2ec4b6}}</style><main><label>Soak marker <input id="marker" value="${marker}"></label><p id="echo">${marker}</p><div class="pulse"></div></main><script>const field=document.querySelector('#marker');field.addEventListener('input',()=>{document.querySelector('#echo').textContent=field.value;document.title=field.value;fetch('/mark?value='+encodeURIComponent(field.value)).catch(()=>{})})</script>`
-    bytes += Buffer.byteLength(body)
-    response.end(body)
-  })
-  await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve))
-  const port = server.address().port
-  const url = `http://127.0.0.1:${port}/`
-  return {
-    url,
-    port,
-    metrics: () => ({ bytes }),
-    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
-  }
 }
 
 async function waitForDisplay(display, env) {
