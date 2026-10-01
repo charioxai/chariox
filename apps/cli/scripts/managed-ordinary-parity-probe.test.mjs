@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, chown, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,11 +13,13 @@ const probeSource = fileURLToPath(new URL("./managed-ordinary-parity-probe.mjs",
 const matrixSource = fileURLToPath(new URL("./managed-ordinary-parity-matrix.mjs", import.meta.url))
 const projectSetupObserverSource = fileURLToPath(new URL("./lib/managed-ordinary-project-setup-observer.mjs", import.meta.url))
 const providerTurnBindingSource = fileURLToPath(new URL("./lib/managed-ordinary-provider-turn-binding.mjs", import.meta.url))
+const kernelEndpointSource = fileURLToPath(new URL("./lib/managed-ordinary-kernel-endpoint.mjs", import.meta.url))
 const PROBE_FIXTURE_PATHS = Object.freeze([
   "apps/cli/scripts/managed-ordinary-parity-probe.mjs",
   "apps/cli/scripts/managed-ordinary-parity-matrix.mjs",
   "apps/cli/scripts/lib/managed-ordinary-provider-turn-binding.mjs",
   "apps/cli/scripts/lib/managed-ordinary-project-setup-observer.mjs",
+  "apps/cli/scripts/lib/managed-ordinary-kernel-endpoint.mjs",
 ])
 
 async function copyProbeRuntimeSources(root) {
@@ -33,6 +35,7 @@ async function copyProbeRuntimeSources(root) {
   ])
   const observerPath = join(root, PROBE_FIXTURE_PATHS[3])
   await writeFile(observerPath, await readFile(projectSetupObserverSource))
+  await writeFile(join(root, PROBE_FIXTURE_PATHS[4]), await readFile(kernelEndpointSource))
   return probePath
 }
 
@@ -112,9 +115,7 @@ test("exact-path probe honors a workspace cwd distinct from the reviewed source 
   assert.equal(payload.result.cwd_fingerprint, payload.result.requested_cwd_fingerprint)
 })
 
-test("control-file protection requires its parent to remain writable as a workspace", {
-  skip: process.getuid?.() === 0,
-}, async (context) => {
+test("control-file protection requires its parent to remain writable as a workspace", async (context) => {
   const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-parity-control-parent-"))
   const controlParent = join(root, "workspace")
   const destination = await copyProbeRuntimeSources(root)
@@ -134,6 +135,19 @@ test("control-file protection requires its parent to remain writable as a worksp
   ])
   await git(root, ["commit", "--quiet", "-m", "probe fixture"])
   const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
+  // MP-03: root bypasses directory permissions, so restrict this fixture's child.
+  const restrictedIdentity = process.getuid?.() === 0 ? { uid: 65534, gid: 65534 } : {}
+  if (restrictedIdentity.uid !== undefined) {
+    async function transferFixtureOwnership(path) {
+      for (const entry of await readdir(path, { withFileTypes: true })) {
+        const child = join(path, entry.name)
+        if (entry.isDirectory()) await transferFixtureOwnership(child)
+        else await chown(child, restrictedIdentity.uid, restrictedIdentity.gid)
+      }
+      await chown(path, restrictedIdentity.uid, restrictedIdentity.gid)
+    }
+    await transferFixtureOwnership(root)
+  }
   await chmod(controlParent, 0o555)
   context.after(async () => {
     await chmod(controlParent, 0o755)
@@ -152,6 +166,7 @@ test("control-file protection requires its parent to remain writable as a worksp
     "--nested-path", join(os.tmpdir(), `chariox-parity-nested-${process.pid}`),
     "--new-directory", join(os.tmpdir(), `chariox-parity-created-${process.pid}`),
   ], {
+    ...restrictedIdentity,
     cwd: root,
     encoding: "utf8",
     env: {
