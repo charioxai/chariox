@@ -1561,7 +1561,10 @@ fn expand_user_path_for_slice(value: &str) -> PathBuf {
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
     if broker::configured() {
-        return validate_linux_docker_slice_script(PathBuf::from(MANAGED_SLICE_DOCKER_PROVISIONER));
+        // The broker runs its own installed provisioner and receives only the
+        // action and filtered environment; this host path is never executed.
+        // A local DEV enrollment installs no managed build context on the host.
+        return Ok(PathBuf::from(MANAGED_SLICE_DOCKER_PROVISIONER));
     }
     if let Some(script) = std::env::var_os("CHARIOX_SLICE_DOCKER_PROVISIONER") {
         let script = expand_user_path_for_slice(&script.to_string_lossy());
