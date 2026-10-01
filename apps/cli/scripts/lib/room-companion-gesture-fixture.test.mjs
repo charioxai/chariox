@@ -5,8 +5,10 @@ import { observeRoomGestureFixture, roomCompanionGestureTargets, roomGestureObse
 const fixtureOrigin = "http://host.docker.internal:23456"
 const initial = { origin: {x:14,y:98}, windowGeometry:[12,0,1256,800] }
 const current = { windowGeometry:[12,0,1256,800], selection:{x:160,y:40,width:800,height:100}, scroller:{x:160,y:420,width:960,height:160} }
-const viewport = {width:1280,height:800}
-test("native content origin and current DOM rectangles produce desktop targets", () => {
+// Exact RoomEnvironmentUpdated.environment.viewport shape from the kernel.
+const viewport = {css_width:1280,css_height:800,device_scale_factor:1,
+  desktop_pixel_width:1280,desktop_pixel_height:800,revision:1,last_actor_id:null}
+test("canonical kernel viewport and native origin produce desktop gesture targets", () => {
   assert.deepEqual(roomCompanionGestureTargets(initial,current,viewport), {
     drag:{start:{x:254,y:188},end:{x:894,y:188}},scroll:{x:654,y:598},
   })

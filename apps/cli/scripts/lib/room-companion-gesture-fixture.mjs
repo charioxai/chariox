@@ -69,7 +69,10 @@ export function roomCompanionGestureTargets(initial, current, viewport) {
   assert.equal(initial.windowGeometry?.length, 4, "initial window geometry is missing")
   assert.equal(current.windowGeometry?.length, 4, "current window geometry is missing")
   assert.deepEqual(current.windowGeometry, initial.windowGeometry, "browser window moved before Web gestures")
-  assert.ok(Number.isFinite(viewport.width) && viewport.width > 0 && Number.isFinite(viewport.height) && viewport.height > 0)
+  const width = viewport?.desktop_pixel_width
+  const height = viewport?.desktop_pixel_height
+  assert.ok(Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0,
+    "canonical desktop viewport must have positive dimensions")
   const point = (rect, fractionX, fractionY) => {
     assert.ok(rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite), "gesture target rectangle is missing")
     assert.ok(rect.width > 0 && rect.height > 0, "gesture target rectangle is empty")
@@ -77,7 +80,7 @@ export function roomCompanionGestureTargets(initial, current, viewport) {
       x: Math.round(initial.origin.x + rect.x + rect.width * fractionX),
       y: Math.round(initial.origin.y + rect.y + rect.height * fractionY),
     }
-    assert.ok(result.x >= 0 && result.x < viewport.width && result.y >= 0 && result.y < viewport.height,
+    assert.ok(result.x >= 0 && result.x < width && result.y >= 0 && result.y < height,
       "gesture target is outside the desktop viewport")
     return result
   }
