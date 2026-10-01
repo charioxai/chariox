@@ -20,9 +20,6 @@ pub(super) fn limit() -> RemoteError {
         false,
     )
 }
-pub(super) fn busy() -> RemoteError {
-    error("BUSY", "Kernel App operation capacity is full", true)
-}
 pub(super) fn unavailable() -> RemoteError {
     error("UNAVAILABLE", "App storage is unavailable", true)
 }

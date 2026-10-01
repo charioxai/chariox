@@ -9,7 +9,7 @@ mod receipt;
 #[cfg(test)]
 mod tests;
 
-use super::app_operation_budget::AppOperationBudget;
+use super::app_operation_budget::{AppOperationBudget, AppOperationStopped};
 use crate::durable_state::{
     app_state::{AppStateOperation, AppStateOutcome},
     DurableKernelStateStore,
@@ -33,7 +33,7 @@ pub(crate) struct AppStorageBroker {
 
 impl AppStorageBroker {
     /// `admission` is AppControl's existing shared eight-operation semaphore.
-    /// No new queue or per-worker permit pool is created by this delegate.
+    /// Waiting stays inside the peer's bounded broker handlers.
     pub(crate) fn new(
         store: DurableKernelStateStore,
         trusted_owner: String,
@@ -61,11 +61,17 @@ impl AppStorageBroker {
         };
         budget.check().map_err(errors::stopped)?;
         let operation = decode::operation(&request.method, request.params)?;
-        let permit = self
-            .admission
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| errors::busy())?;
+        // A burst from one App can occupy all eight shared slots. Keep the
+        // neighbour in its already bounded peer handler instead of refusing it
+        // at that instant. FIFO semaphore admission preserves the global cap.
+        let mut cancellation = request.cancellation.clone();
+        let permit = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(errors::stopped(AppOperationStopped::Cancelled)),
+            _ = tokio::time::sleep_until(request.deadline) => return Err(errors::stopped(AppOperationStopped::Deadline)),
+            permit = self.admission.clone().acquire_owned() => permit.map_err(|_| errors::unavailable())?,
+        };
+        budget.check().map_err(errors::stopped)?;
         let service = self.clone();
         let result = tokio::task::spawn_blocking(move || {
             // The closure owns admission even if the async caller disappears.
