@@ -30,6 +30,7 @@ import {
 } from "./lib/live-room-real-provider.mjs"
 import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
 import { roomCompanionClickFixture, roomClickFixtureCounterScript } from "./lib/room-companion-click-fixture.mjs"
+import { roomCompanionGestureTargets, roomGestureObservationScript } from "./lib/room-companion-gesture-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import { makeAvailablePorts, portIsAvailable } from "./lib/drill-runtime-helpers.mjs"
 import {
@@ -179,6 +180,7 @@ const sensitiveValues = [
   cancellationRecoveryText,
   ...clipboardValues,
 ]
+let webGestureOrigin = null
 const generatedSecretLength = 24
 const { kernelPort, relayPort } = await makeAvailablePorts({
   candidateFactory: () => {
@@ -606,6 +608,7 @@ async function run() {
   ])
   await waitForBrowserText("POINTER_CLICK_COUNT=1", 20_000, "physical click did not reach the fixture")
   await screenshot("after-click")
+  if (webPointerGestures) webGestureOrigin = await readWebGestureFixture()
 
   const retry = unwrap(await client.send(requests.submitRoomEnvironmentActionRequest(
     sessionId,
@@ -2244,6 +2247,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       options: realProviderOptions,
     })
     : null
+  const pointerGestureTargets = {}
   return await runRoomEnvironmentCompanion({
     env: process.env,
     sleep,
@@ -2252,12 +2256,16 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       // Give the Web companion a fresh physical page, not the last drill's form.
       await sliceScreen(["open-url", `${browserFixtureOrigin}${companionFixture.path}`])
       await waitForBrowserText(companionFixture.readyMarker, 30_000, "Web companion fixture did not reset")
+      if (webPointerGestures) {
+        const current = await readWebGestureFixture()
+        Object.assign(pointerGestureTargets, roomCompanionGestureTargets(webGestureOrigin, current, environment.viewport))
+      }
       resources.push(await resourceSnapshot("before-web-companion"))
     },
     ready: {
       ...(webKeyboardText ? { keyboardText: webKeyboardText } : {}),
       ...(webKeyboardReplacementText ? { keyboardReplacementText: webKeyboardReplacementText } : {}),
-      ...(webPointerGestures ? { pointerGestures: true } : {}),
+      ...(webPointerGestures ? { pointerGestures: true, pointerGestureTargets } : {}),
       pointerClickExpectedCount: companionFixture.pointerClickExpectedCount,
       ...(realProviderOptions ? { realProvider: realProviderOptions, providerWorkspace: fixtureWorkspace } : {}),
       ...(providerAgent ? { providerAgent } : {}),
@@ -3159,6 +3167,16 @@ async function waitForAutomationSnapshot(automation, predicate, label, timeoutMs
 async function sliceScreen(args) {
   const result = await docker(["exec", "-u", "slice", containerName, "/opt/chariox-slice/slice-screen.sh", ...args])
   return `${result.stdout}${result.stderr}`
+}
+
+async function readWebGestureFixture() {
+  const origin = sharedBrowserStateFixture
+    ? `http://127.0.0.1:${fixture.port}`
+    : `http://host.docker.internal:${fixture.port}`
+  const result = await docker(["exec", "-u", "slice", containerName, "node", "--input-type=module",
+    "-e", roomGestureObservationScript(origin)])
+  assert.equal(result.stderr, "", "gesture fixture observation emitted stderr")
+  return JSON.parse(result.stdout)
 }
 
 async function readPhysicalClipboard() {
