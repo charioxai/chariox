@@ -2315,8 +2315,9 @@ Workflow trigger and deployment direction:
   against a pinned commitment to the vault key (the KDF parameters and a hash
   of the derived key, kept durably and taken from the vault the boot
   configuration names when the kernel first unlocks it or first sees a
-  passkey that opens it; a later vault path or file change never moves it;
-  the vault's unlock state is unchanged), or an open remember window: a verified passkey with `passkey_remember_minutes` accepts
+  passkey that opens it; a later vault path or file change never moves it,
+  only a passphrase change does, see below; the vault's unlock state is
+  unchanged), or an open remember window: a verified passkey with `passkey_remember_minutes` accepts
   the owner's critical approvals without it for that long, in kernel memory
   only, independent of the vault's own unlock window. Otherwise the answer is
   refused with `PASSKEY_REQUIRED`; a wrong passkey with `PASSKEY_REJECTED`;
@@ -2325,7 +2326,16 @@ Workflow trigger and deployment direction:
   15 minutes. Without the encrypted Chariox vault the approval fails closed
   (`PASSKEY_UNAVAILABLE`). Denying needs no passkey, and a passkey sent for any
   other choice is ignored. Each check appends a durable
-  `critical_approval.passkey` event (outcome only). Clients prompt for the
+  `critical_approval.passkey` event (outcome only). `/credential vault
+  manage` offers Change passphrase (`ManageCredentialVault` answers with
+  action `passphrase_changed`; no request or response shape changes): three
+  secret prompts take the current passphrase and the new one twice. For the
+  boot vault this rotates the passkey: the current passphrase must verify
+  against the pin, under the same limit; the pin moves with the re-keyed
+  vault file through a durable `critical_approval.passkey_verifier_move`
+  record that a restart settles from the file, so the two never disagree;
+  every remember window ends; and a `critical_approval.passkey_rotation`
+  event records the outcome only. Clients prompt for the
   passkey with hidden input only for a `requires_passkey` choice; to a remote
   kernel it travels inside the end-to-end encrypted relay request.
 - serving either a live source trigger or a deployed package MUST validate
