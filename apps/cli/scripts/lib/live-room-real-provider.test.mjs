@@ -157,7 +157,7 @@ test("standalone recovery proves page acceptance and both TUI failure notices", 
   run.input.waitForTuis = async (value) => notices.push(value)
   await runRoomRealProvider(run.input)
   assert.ok(physical.includes("BROWSER_STALE_RECOVERY_ACCEPTED"))
-  assert.ok(notices.some((pattern) => pattern.test("Room action #3: real-opencode · browser fill · failed (controller_failure)")))
+  assert.ok(notices.some((pattern) => pattern.test("Room action #3: real-opencode · browser fill · tab tab-1 · failed (controller_failure)")))
   assert.equal(notices.length, 4)
 })
 
@@ -232,8 +232,8 @@ test("standalone form drill verifies accepted navigation and both fill and submi
   await runRoomRealProvider(run.input)
   assert.deepEqual(physical, ["POINTER_CLICK_COUNT=1", "BROWSER_FORM_ACCEPTED"])
   assert.equal(notices.length, 2)
-  assert.match("Room action #2: real-opencode · browser fill · completed", notices[0])
-  assert.match("Room action #3: real-opencode · browser submit · completed", notices[1])
+  assert.match("Room action #2: real-opencode · browser fill · tab tab-1 · completed", notices[0])
+  assert.match("Room action #3: real-opencode · browser submit · tab tab-1 · completed", notices[1])
 })
 
 test("structured Browser mode requires a fresh tab-targeted browser click", async () => {
@@ -243,7 +243,7 @@ test("structured Browser mode requires a fresh tab-targeted browser click", asyn
   run.input.options.mode = "browser"
   const physical = []
   run.input.waitForPhysicalEffect = async (value) => physical.push(value)
-  run.input.waitForTuis = async (pattern) => assert.match("Room action #2: real-opencode · browser click · completed", pattern)
+  run.input.waitForTuis = async (pattern) => assert.match("Room action #2: real-opencode · browser click · tab tab-1 · completed", pattern)
   const result = await runRoomRealProvider(run.input)
   assert.equal(result.mode, "browser")
   assert.equal(result.actionId, "browser-action")
@@ -851,7 +851,7 @@ test("successful provider action still requires physical and both TUI observatio
   const observed = []
   run.input.waitForPhysicalEffect = async (marker) => observed.push(marker)
   run.input.waitForTuis = async (pattern) => {
-    assert.match("Room action #1: real-opencode · computer pointer_click · completed", pattern)
+    assert.match("Room action #1: real-opencode · computer pointer_click · desktop, tab tab-1 · completed", pattern)
     observed.push("both-tuis")
   }
   const result = await runRoomRealProvider(run.input)

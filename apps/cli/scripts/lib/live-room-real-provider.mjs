@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { roomActionNoticePattern } from "./room-tui-notices.mjs"
 import { captureRoomProviderDiagnostic } from "./live-room-provider-diagnostic.mjs"
 import { assertRoomBrowserRecoveryActions, observeRoomStaleToolError } from "./live-room-browser-recovery.mjs"
 import { waitForRoomProviderSettlement } from "./live-room-provider-settlement.mjs"
@@ -209,17 +210,21 @@ export function roomProviderAgentReadyMetadata({ agent, sessionId, sliceId, opti
 
 export async function runRoomRealProvider(input) {
   const result = await runRoomRealProviderAction(input)
+  const notice = (sequence, kind, state = "completed") => roomActionNoticePattern({
+    sequence, kind, mode: result.mode, state,
+    ...(state === "failed" ? { outcome: { status: "failed", code: "controller_failure" } } : {}),
+  }, `real-${result.provider}`)
   await input.waitForPhysicalEffect(result.expectedPhysicalEffect)
   if (result.browserMutation === "replace-field") {
     await input.waitForPhysicalEffect("BROWSER_STALE_RECOVERY_ACCEPTED")
-    await input.waitForTuis(new RegExp(`^Room action #${result.replacementActionSequence}: real-${result.provider} · browser click · completed$`))
-    await input.waitForTuis(new RegExp(`^Room action #${result.staleActionSequence}: real-${result.provider} · browser fill · failed \\(controller_failure\\)$`))
+    await input.waitForTuis(notice(result.replacementActionSequence, "click"))
+    await input.waitForTuis(notice(result.staleActionSequence, "fill", "failed"))
   }
   if (result.browserTask === "form") {
     await input.waitForPhysicalEffect("BROWSER_FORM_ACCEPTED")
-    await input.waitForTuis(new RegExp(`^Room action #${result.fillActionSequence}: real-${result.provider} · browser fill · completed$`))
+    await input.waitForTuis(notice(result.fillActionSequence, "fill"))
   } else if (result.mode === "browser") await input.waitForPhysicalEffect("BROWSER_CLICK_ACCEPTED")
-  await input.waitForTuis(new RegExp(`^Room action #\\d+: real-${result.provider} · ${result.mode} ${result.actionKind} · completed$`))
+  await input.waitForTuis(notice(result.actionSequence, result.actionKind))
   await input.screenshot("after-real-provider-click")
   const verified = {
     ...result, physicalEffect: result.expectedPhysicalEffect, localTuiObserved: true, remoteTuiObserved: true,
