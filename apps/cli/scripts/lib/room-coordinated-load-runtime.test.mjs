@@ -46,7 +46,7 @@ function publicRequests() {
   }
 }
 
-function clientFixture({ rejectInventory = false } = {}) {
+function clientFixture({ rejectInventory = false, ownerKernelId = "kernel-local" } = {}) {
   const requests = []
   const clients = []
   class LocalIpcClient {
@@ -58,7 +58,7 @@ function clientFixture({ rejectInventory = false } = {}) {
       }
       if (request.GetSlice) return { Slice: { slice: {
         id: "slice-1", name: "drillh-runtime-test-123-one", status: "running", display_mode: "headed",
-        backend: "local_docker", owner_kernel_id: "kernel-local", owner_machine_id: "machine-local",
+        backend: "local_docker", owner_kernel_id: ownerKernelId, owner_machine_id: "machine-local",
         worker_kernel_id: "kernel-local", worker_machine_id: "machine-local", local_docker_ports: portMap,
       } } }
       if (request.GetRoomEnvironmentSlice) return { RoomEnvironmentSlice: { binding: {
@@ -199,4 +199,18 @@ test("actual runtime attaches a viewer, starts Selkies, starts a normal TUI, the
   await assert.rejects(failedRuntime.startTui(null, { id: "relay-tui", route: "relay" }), /fixture startup failure/)
   assert.deepEqual(failedTui.requests, [{ DetachFromSession: { attachment_id: "attachment-before-startup-failure" } }])
   assert.equal(failedTui.clients[0].closed, 1)
+})
+
+test("prepared identity validation rejects a foreign owner and a mismatched child worker", async (t) => {
+  const scratch = await inScratch(t)
+  for (const foreignOwner of [true, false]) {
+    const plan = approvedPlan()
+    const fixture = clientFixture({ ownerKernelId: foreignOwner ? "another-kernel" : "kernel-local" })
+    if (!foreignOwner) plan.headedSlices[0].workerKernelId = "different-worker"
+    const runtime = await createRoomCoordinatedLoadRuntime({ plan, ...scratch }, {
+      protocol: fixture.protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
+    })
+    await assert.rejects(runtime.verifyPrepared(), /identity|prepared slice/)
+    assert.equal(fixture.clients[0].closed, 1)
+  }
 })

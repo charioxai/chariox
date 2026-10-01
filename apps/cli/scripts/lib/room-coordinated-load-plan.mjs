@@ -102,9 +102,8 @@ export function validateCoordinatedLoadConfig(config, { repoRoot }) {
       ports: validatePorts(slice.ports, `headedSlices[${index}].ports`),
     }
     row.publishedPorts = publishedPorts(row.ports)
-    if (row.workerKernelId !== homeKernel.kernelId || row.workerMachineId !== homeKernel.machineId) {
-      throw new Error(`headedSlices[${index}] must be a local slice on the configured home kernel and machine`)
-    }
+    // Docker slices run a child worker. verifyPrepared checks the local backend,
+    // home ownership, and these exact worker identities against the kernel.
     return row
   })
   for (const field of ["sliceId", "sliceName", "roomId", "environmentId"]) {

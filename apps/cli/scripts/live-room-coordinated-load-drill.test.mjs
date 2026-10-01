@@ -130,6 +130,15 @@ test("config requires exact approved identities and bounded local endpoints", ()
   }), { repoRoot }), /exactly match/)
 })
 
+test("a local Docker slice may have a child worker identity distinct from its home authority", () => {
+  const prepared = config()
+  prepared.headedSlices[0].workerKernelId = "slice:worker-kernel"
+  prepared.headedSlices[0].workerMachineId = "slice:slice-1"
+  const parsed = validateCoordinatedLoadConfig(prepared, { repoRoot })
+  assert.equal(parsed.headedSlices[0].workerKernelId, "slice:worker-kernel")
+  assert.equal(parsed.homeKernel.kernelId, "kernel-local")
+})
+
 test("argument parser requires one explicit mode and config", () => {
   assert.equal(parseCoordinatedLoadArgs(["--validate-config", "--config", "/tmp/config.json"]).mode, "validate")
   assert.equal(parseCoordinatedLoadArgs(["--execute-live", "--config", "/tmp/config.json"]).mode, "execute")
