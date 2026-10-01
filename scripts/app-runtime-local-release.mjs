@@ -16,6 +16,11 @@ import { executable, launcherInputs, nativeExecutables, platformFiles, releasePa
 import { signRuntimeRelease } from './sign-app-runtime-release.mjs';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+export function dockerAdmissionSetupCommand(repository = REPOSITORY) {
+  const script = join(repository, 'deploy/local-macos/install-docker-admission-locks.py');
+  return `sudo /usr/bin/python3 '${script.replaceAll("'", "'\\''")}'`;
+}
+
 const KEYS = join(homedir(), '.chariox/dev/app-runtime-keys');
 
 async function localKey(name) {
@@ -68,7 +73,8 @@ export async function localRelease({ nativeDirectory, output, target }) {
       builderSignature: join(scratch, 'builder.sig'), trustedBuilderKey: builderPublic,
       signingKey: await localKey('local-release'), output: resolve(output), developerRuntime: true });
     return { ...receipt, output: resolve(output),
-      enroll: `sudo <chariox-app-runtime-install> install --source ${resolve(output)} --trusted-public-key-hex ${receipt.publicKeyHex} --inventory-sha256 ${receipt.inventorySha256}` };
+      provisionDockerAdmissionLocks: dockerAdmissionSetupCommand(),
+      enroll: `${dockerAdmissionSetupCommand()} && sudo <chariox-app-runtime-install> install --source ${resolve(output)} --trusted-public-key-hex ${receipt.publicKeyHex} --inventory-sha256 ${receipt.inventorySha256}` };
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
