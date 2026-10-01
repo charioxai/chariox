@@ -147,10 +147,10 @@ empty_masked_denied_path="none"
 inaccessible_masked_denied_paths="none"
 masked_private_root_parents="none"
 allowed_empty_masked_directory=/home/slice/.chariox
-# A protected-layout slice mounts its private root at /var/lib/chariox/slice-private
-# and the kernel masks that root with an empty tmpfs. Its parent then lists only
-# the masked mountpoint, which carries no payload.
-allowed_masked_private_root=slice-private
+# A protected-layout slice mounts its private root at /var/lib/chariox/slice-private.
+# Managed isolation masks that root, and protected roots below it, with empty
+# tmpfs mounts, so the parent can only list mountpoint directories. Any file,
+# link or socket at any depth is payload; unreadable directories are masked.
 for denied in \
   /var/lib/chariox \
   /home/slice/.chariox \
@@ -176,23 +176,16 @@ do
       empty_masked_denied_path="$denied"
       continue
     fi
-    if [[ "$entry_count" == "1" ]] \
+    if [[ "$entry_count" != "0" ]] \
       && [[ "$denied" == /var/lib/chariox || "$denied" == /proc/1/root/var/lib/chariox ]]; then
-      private_root="$denied/$allowed_masked_private_root"
-      if [[ -d "$private_root" && ! -L "$private_root" ]]; then
-        private_permission="$(directory_permission_label "$private_root")"
-        private_entries="unavailable"
-        if [[ "$private_permission" != "inaccessible" ]]; then
-          private_entries="$(directory_entry_count "$private_root")" || private_entries="unavailable"
+      if payload="$(find "$denied" -mindepth 1 \( -type d ! -readable -prune \) \
+          -o \( ! -type d -print -quit \) 2>/dev/null)" && [[ -z "$payload" ]]; then
+        if [[ "$masked_private_root_parents" == "none" ]]; then
+          masked_private_root_parents="$denied"
+        else
+          masked_private_root_parents+=",$denied"
         fi
-        if [[ "$private_permission" == "inaccessible" || "$private_entries" == "0" ]]; then
-          if [[ "$masked_private_root_parents" == "none" ]]; then
-            masked_private_root_parents="$denied"
-          else
-            masked_private_root_parents+=",$denied"
-          fi
-          continue
-        fi
+        continue
       fi
     fi
     if [[ "$entry_count" == "0" ]]; then
