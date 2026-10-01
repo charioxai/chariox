@@ -66,9 +66,13 @@ only exceptions.
 MP-08/MP-11 focused verification: CLI/shared waiting-room suites 280/280,
 Web affected suites 235/235, scanner 148/148, all zero skips; Web typecheck
 passes. The extracted production Rust socket seam passes 4/4 after its fail-first
-1260-second assertion. Final compiled handoff/full-Web results and cleanup are
-recorded in the external lane evidence and status, without treating a passing
-source test as MP acceptance. Earlier diagnostics remain retained.
+1260-second assertion. Final compiled supervisor suite passes 9/9 plus its explicitly spawned child
+probe (0 ignored), including the delayed actual supervisor handoff. The final
+built-Web suite passes 4,913/4,913 with zero skips. Both exact source inventories
+have zero audit gaps and remain RED on independent semantic admission (OSS
+6,226 and Cloud 2,877 unreviewed candidates). Cleanup and artifact/source hashes
+are retained externally. Earlier diagnostics remain retained; none of these
+results closes an MP acceptance item.
 
 MP-08/MP-11 runtime files changed:
 
