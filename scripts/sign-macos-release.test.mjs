@@ -114,7 +114,7 @@ test('the plan refuses stale inventories, links, existing outputs and inputs wit
 });
 
 // Simulates the Apple tools: ditto copies, codesign changes the code bytes.
-function apple({ notary = 'Accepted', runtime = true, authority = IDENTITY, extraEntitlement = false } = {}) {
+function apple({ notary = 'Accepted', runtime = true, authority = IDENTITY, extraEntitlement = false, gatekeeper = true } = {}) {
   const calls = [];
   const run = command => {
     calls.push(command);
@@ -138,7 +138,8 @@ function apple({ notary = 'Accepted', runtime = true, authority = IDENTITY, extr
     if (tool === '/usr/bin/xcrun' && args[1] === 'submit')
       return ok(JSON.stringify({ id: '2efe2717-52ef-43a5-96dc-0797e4ca1041', status: notary, message: 'Processing complete' }));
     if (tool === '/usr/bin/xcrun' && args[1] === 'log') { writeFileSync(file, '{}'); return ok(); }
-    if (tool === '/usr/sbin/spctl') return ok('', `${file}: accepted\nsource=Notarized Developer ID\n`);
+    if (tool === '/usr/sbin/spctl') return gatekeeper ? ok('', `${file}: accepted\nsource=Notarized Developer ID\n`)
+      : { status: 3, stdout: '', stderr: `${file}: rejected\n` };
     return { status: 1, stdout: '', stderr: `unexpected ${tool}` };
   };
   return { calls, run };
@@ -177,6 +178,16 @@ test('a rejected notarization or a wrong signature removes the signed copy', asy
     /unexpected entitlements/u);
   await assert.rejects(signMacosRelease(options(paths), { run: apple().run, platform: 'linux' }), /runs on macOS/u);
   await assert.rejects(lstat(paths.output), { code: 'ENOENT' });
+});
+
+test('a failure after the notary log is written leaves nothing that blocks a retry', async t => {
+  const paths = await fixture(t);
+  await assert.rejects(signMacosRelease(options(paths), { run: apple({ gatekeeper: false }).run, platform: 'darwin' }),
+    /gatekeeper failed for chariox-app-runtime-install.*; accepted notarization 2efe2717-52ef-43a5-96dc-0797e4ca1041 keeps its log: xcrun notarytool log 2efe2717-52ef-43a5-96dc-0797e4ca1041 --keychain-profile chariox-notary$/su);
+  for (const path of [paths.output, `${paths.output}.notarization.zip`, `${paths.output}.notarization-log.json`])
+    await assert.rejects(lstat(path), { code: 'ENOENT' }, path);
+  const { receipt } = await signMacosRelease(options(paths), { run: apple().run, platform: 'darwin' });
+  assert.equal(receipt.notarization.log, `${receipt.output}.notarization-log.json`);
 });
 
 test('the command line prints the dry-run plan and never echoes a misplaced value', async t => {

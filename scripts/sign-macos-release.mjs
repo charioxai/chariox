@@ -195,8 +195,8 @@ export async function signMacosRelease(options, { run = runCommand, platform = p
   if (options.dryRun) return { plan };
   if (platform !== 'darwin') throw new Error('macOS release signing runs on macOS');
   let copied = false;
+  let submissionId;
   try {
-    let submissionId;
     let log = plan.log;
     const gatekeeper = [];
     for (const step of plan.steps) {
@@ -235,7 +235,10 @@ export async function signMacosRelease(options, { run = runCommand, platform = p
       staple: STAPLE, gatekeeper, runtimeInventory: 'not-signed',
     } };
   } catch (error) {
-    if (copied) await Promise.all([plan.output, plan.archive].map(path => rm(path, { recursive: true, force: true })));
+    // The plan proved all three paths absent, so a failed run removes them and a retry can reuse them.
+    if (copied) await Promise.all([plan.output, plan.archive, plan.log].map(path => rm(path, { recursive: true, force: true })));
+    if (submissionId) error.message += `; accepted notarization ${submissionId} keeps its log: `
+      + `xcrun notarytool log ${submissionId} --keychain-profile ${options.keychainProfile}`;
     throw error;
   }
 }
