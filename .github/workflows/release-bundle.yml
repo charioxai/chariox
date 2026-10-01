@@ -1,0 +1,317 @@
+name: Release bundle
+
+# Builds one versioned, signed release bundle per platform from the tagged commit
+# (docs/CHARIOX_DISTRIBUTION_PLAN.md). Only the owner dispatches it. Jobs that use
+# signing material run in the protected `release` environment; the workflow never
+# prints a key and removes each key file after use.
+#
+# The App runtime input (the native artifact, launcher, sandbox and platform
+# libraries plus the runtime builder's signed attestation) comes from the
+# runtime builder run named by `runtime_input_run`, as artifacts
+# `runtime-input-<platform>` holding `input/`, `builder.json` and `builder.sig`.
+#
+# `release` environment:
+#   secrets  CHARIOX_RELEASE_KEY          Ed25519 PKCS#8 PEM; signs bundle manifests
+#            CHARIOX_RUNTIME_RELEASE_KEY  Ed25519 PKCS#8 PEM; signs App runtime inventories
+#            MACOS_DEVELOPER_ID_P12, MACOS_DEVELOPER_ID_P12_PASSWORD   Developer ID Application identity (base64 .p12)
+#            APPLE_NOTARY_KEY, APPLE_NOTARY_KEY_ID, APPLE_NOTARY_ISSUER  App Store Connect API key for notarytool
+#   vars     CHARIOX_RELEASE_PUBLIC_KEY   the published release key (64 hex), checked against every signed bundle
+#            CHARIOX_RUNTIME_BUILDER_PUBLIC_KEY  SPKI PEM of the trusted runtime builder key
+#            CHARIOX_CODESIGN_IDENTITY    "Developer ID Application: <Name> (<TEAMID>)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version without the v; tag v<version> must point at the dispatched commit'
+        required: true
+      runtime_input_run:
+        description: 'Run ID of the runtime builder run with runtime-input-linux-x64 and runtime-input-darwin-arm64'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-bundle-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: '1.4.2'
+  NODE_VERSION: '24.20.0'
+  PNPM_VERSION: '9.15.0'
+  RUST_TOOLCHAIN: '1.88.0'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+      epoch: ${{ steps.version.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: One version for one commit
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "version must be semantic, without a v"; exit 1; }
+          commit=$(git rev-parse HEAD)
+          tagged=$(git rev-parse --verify --quiet "refs/tags/v$VERSION^{commit}") || { echo "tag v$VERSION does not exist"; exit 1; }
+          [[ "$tagged" == "$commit" ]] || { echo "tag v$VERSION is $tagged, not the dispatched $commit"; exit 1; }
+          { echo "version=$VERSION"; echo "commit=$commit"; echo "epoch=$(git log -1 --format=%ct)"; } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux-x64
+            # The oldest supported runner sets the glibc floor (2.35).
+            runner: ubuntu-22.04
+            libexec: chariox-app-storage chariox-app-runtime-install
+          - platform: darwin-arm64
+            runner: macos-15
+            libexec: chariox-app-runtime-install
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Build the kernel, relay and helpers
+        run: |
+          bins=(chariox-kernel chariox-relay chariox-app-package ${{ matrix.libexec }})
+          cargo build --release --locked -p chariox-kernel -p chariox-relay -p chariox-app-package -p chariox-app-runtime "${bins[@]/#/--bin=}"
+          mkdir -p unsigned/bin unsigned/libexec
+          cp target/release/{chariox-kernel,chariox-relay,chariox-app-package} unsigned/bin/
+          for name in ${{ matrix.libexec }}; do cp "target/release/$name" unsigned/libexec/; done
+      - name: Compile the CLI/TUI into one executable
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @chariox/cli run build
+          pnpm --filter @chariox/cli run test:compile
+          bun apps/cli/scripts/compile.mjs --target ${{ matrix.platform }} --outfile unsigned/bin/chariox --version "$VERSION"
+          test "$(unsigned/bin/chariox --version)" = "chariox $VERSION"
+          unsigned/bin/chariox --help > /dev/null
+      # A tarball keeps the executable modes that an artifact upload drops.
+      - run: tar -czf unsigned-${{ matrix.platform }}.tar.gz -C unsigned .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-${{ matrix.platform }}
+          path: unsigned-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+      BUNDLE: chariox-${{ needs.prepare.outputs.version }}-linux-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: node --test scripts/release-bundle.test.mjs
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-input-linux-x64
+          path: runtime-input
+          run-id: ${{ inputs.runtime_input_run }}
+          github-token: ${{ github.token }}
+      - name: Sign the App runtime inventory (existing release signer)
+        env:
+          RUNTIME_RELEASE_KEY: ${{ secrets.CHARIOX_RUNTIME_RELEASE_KEY }}
+          RUNTIME_BUILDER_PUBLIC_KEY: ${{ vars.CHARIOX_RUNTIME_BUILDER_PUBLIC_KEY }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/runtime-release.pem"' EXIT
+          (umask 077; printf '%s\n' "$RUNTIME_RELEASE_KEY" > "$RUNNER_TEMP/runtime-release.pem")
+          printf '%s\n' "$RUNTIME_BUILDER_PUBLIC_KEY" > "$RUNNER_TEMP/runtime-builder.pub.pem"
+          node scripts/sign-app-runtime-release.mjs --input "$PWD/runtime-input/input" \
+            --builder-attestation "$PWD/runtime-input/builder.json" --builder-signature "$PWD/runtime-input/builder.sig" \
+            --trusted-builder-key "$RUNNER_TEMP/runtime-builder.pub.pem" --signing-key "$RUNNER_TEMP/runtime-release.pem" \
+            --output "$PWD/runtime" > runtime-receipt.json
+      - name: Assemble, sign and verify the bundle
+        env:
+          RELEASE_KEY: ${{ secrets.CHARIOX_RELEASE_KEY }}
+          RELEASE_PUBLIC_KEY: ${{ vars.CHARIOX_RELEASE_PUBLIC_KEY }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/release.pem"' EXIT
+          mkdir executables && tar -xzf unsigned-linux-x64.tar.gz -C executables
+          node scripts/release-bundle.mjs assemble --platform linux-x64 --version "$VERSION" --source-commit "$COMMIT" \
+            --executables "$PWD/executables" --runtime "$PWD/runtime" \
+            --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync("runtime-receipt.json")).publicKeyHex')" \
+            --output "$PWD/out/$BUNDLE"
+          (umask 077; printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/release.pem")
+          node scripts/release-bundle.mjs sign --bundle "$PWD/out/$BUNDLE" --signing-key "$RUNNER_TEMP/release.pem"
+          node scripts/release-bundle.mjs verify --bundle "$PWD/out/$BUNDLE" --public-key "$RELEASE_PUBLIC_KEY"
+          out/$BUNDLE/install.sh --check --release-key "$RELEASE_PUBLIC_KEY"
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${{ needs.prepare.outputs.epoch }}" \
+            -czf "$BUNDLE.tar.gz" -C out "$BUNDLE"
+          cp "out/$BUNDLE/manifest.json" "$BUNDLE.manifest.json"
+          cp "out/$BUNDLE/manifest.sig" "$BUNDLE.manifest.sig"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-linux-x64
+          path: chariox-*-linux-x64.*
+          if-no-files-found: error
+          retention-days: 30
+
+  macos:
+    needs: [prepare, build]
+    runs-on: macos-15
+    environment: release
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+      BUNDLE: chariox-${{ needs.prepare.outputs.version }}-darwin-arm64
+      CHARIOX_CODESIGN_IDENTITY: ${{ vars.CHARIOX_CODESIGN_IDENTITY }}
+      CHARIOX_NOTARY_PROFILE: chariox-release-notary
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-darwin-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-input-darwin-arm64
+          path: runtime-input
+          run-id: ${{ inputs.runtime_input_run }}
+          github-token: ${{ github.token }}
+      - name: Load the Developer ID identity and notary profile into a temporary keychain
+        env:
+          P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/identity.p12" "$RUNNER_TEMP/notary.p8"' EXIT
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          (umask 077; printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"; printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8")
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -d user -s "$keychain"
+          xcrun notarytool store-credentials "$CHARIOX_NOTARY_PROFILE" --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --keychain "$keychain"
+          echo "RELEASE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      # #678: Developer ID codesigning and notarization of a copy; #681: the runtime
+      # inventory is then signed over the codesigned bytes, never before.
+      - name: Codesign and notarize the executables
+        run: |
+          mkdir executables && tar -xzf unsigned-darwin-arm64.tar.gz -C executables
+          node scripts/sign-macos-release.mjs --input "$PWD/executables" --output "$PWD/signed" > macos-signing-receipt.json
+          # Bun's JIT must still run under the hardened runtime.
+          test "$("$PWD/signed/bin/chariox" --version)" = "chariox $VERSION"
+      - name: Codesign the App runtime, then sign its inventory over the signed bytes
+        env:
+          RUNTIME_RELEASE_KEY: ${{ secrets.CHARIOX_RUNTIME_RELEASE_KEY }}
+          RUNTIME_BUILDER_PUBLIC_KEY: ${{ vars.CHARIOX_RUNTIME_BUILDER_PUBLIC_KEY }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/runtime-release.pem"' EXIT
+          node scripts/sign-macos-release.mjs --input "$PWD/runtime-input/input" --output "$PWD/runtime-codesigned" > runtime-codesign-receipt.json
+          (umask 077; printf '%s\n' "$RUNTIME_RELEASE_KEY" > "$RUNNER_TEMP/runtime-release.pem")
+          printf '%s\n' "$RUNTIME_BUILDER_PUBLIC_KEY" > "$RUNNER_TEMP/runtime-builder.pub.pem"
+          node scripts/sign-app-runtime-release.mjs --input "$PWD/runtime-input/input" \
+            --builder-attestation "$PWD/runtime-input/builder.json" --builder-signature "$PWD/runtime-input/builder.sig" \
+            --trusted-builder-key "$RUNNER_TEMP/runtime-builder.pub.pem" --signing-key "$RUNNER_TEMP/runtime-release.pem" \
+            --codesigned "$PWD/runtime-codesigned" --codesign-identity "$CHARIOX_CODESIGN_IDENTITY" \
+            --output "$PWD/runtime" > runtime-receipt.json
+      - name: Assemble, sign and verify the bundle
+        env:
+          RELEASE_KEY: ${{ secrets.CHARIOX_RELEASE_KEY }}
+          RELEASE_PUBLIC_KEY: ${{ vars.CHARIOX_RELEASE_PUBLIC_KEY }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/release.pem"' EXIT
+          node scripts/release-bundle.mjs assemble --platform darwin-arm64 --version "$VERSION" --source-commit "$COMMIT" \
+            --executables "$PWD/signed" --runtime "$PWD/runtime" --macos-signing-receipt "$PWD/macos-signing-receipt.json" \
+            --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync("runtime-receipt.json")).publicKeyHex')" \
+            --output "$PWD/out/$BUNDLE"
+          (umask 077; printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/release.pem")
+          node scripts/release-bundle.mjs sign --bundle "$PWD/out/$BUNDLE" --signing-key "$RUNNER_TEMP/release.pem"
+          node scripts/release-bundle.mjs verify --bundle "$PWD/out/$BUNDLE" --public-key "$RELEASE_PUBLIC_KEY"
+          tar --uid 0 --gid 0 -czf "$BUNDLE.tar.gz" -C out "$BUNDLE"
+          cp "out/$BUNDLE/manifest.json" "$BUNDLE.manifest.json"
+          cp "out/$BUNDLE/manifest.sig" "$BUNDLE.manifest.sig"
+      - name: Remove the temporary keychain
+        if: always()
+        run: |
+          [[ -z "${RELEASE_KEYCHAIN:-}" ]] || security delete-keychain "$RELEASE_KEYCHAIN"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-darwin-arm64
+          path: chariox-*-darwin-arm64.*
+          if-no-files-found: error
+          retention-days: 30
+
+  draft-release:
+    needs: [prepare, linux, macos]
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+      - name: Draft the GitHub release; the owner reviews and publishes it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          sha256sum chariox-"$VERSION"-* > SHA256SUMS
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "Chariox $VERSION" \
+            --notes "Signed release bundles for linux-x64 and darwin-arm64. Check a bundle with its install.sh --check or scripts/release-bundle.mjs verify and the published release key." \
+            chariox-"$VERSION"-* SHA256SUMS
