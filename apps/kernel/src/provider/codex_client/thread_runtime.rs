@@ -218,6 +218,32 @@ impl CodexClient {
         )
     }
 
+    /// Deliver Chariox context without adding it to native user-message history.
+    pub(crate) fn thread_inject_hidden_context(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        thread_id: &str,
+        context: &str,
+        buffered_notifications: &mut Vec<CodexNotification>,
+    ) -> Result<(), DaemonError> {
+        let _: Value = self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "thread/inject_items",
+            json!({
+                "threadId": thread_id,
+                "items": [{
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": context}],
+                }],
+            }),
+            buffered_notifications,
+        )?;
+        Ok(())
+    }
+
     pub(super) fn turn_steer_params(
         thread_id: &str,
         expected_turn_id: &str,

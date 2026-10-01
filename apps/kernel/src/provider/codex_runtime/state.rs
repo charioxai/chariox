@@ -38,7 +38,7 @@ pub struct CodexRuntimeState {
     thread_ready: bool,
     developer_instructions_fingerprint: Option<String>,
     context_hot_reload_enabled: bool,
-    turn_input_includes_hidden_context: bool,
+    inject_hidden_context_on_submit: bool,
     /// Read-only discovery must keep its permission and MCP policy when the
     /// event drain reconstructs a client for server requests.
     read_only_discovery_permissions: bool,
@@ -67,8 +67,8 @@ impl std::fmt::Debug for CodexRuntimeState {
                 &self.context_hot_reload_enabled,
             )
             .field(
-                "turn_input_includes_hidden_context",
-                &self.turn_input_includes_hidden_context,
+                "inject_hidden_context_on_submit",
+                &self.inject_hidden_context_on_submit,
             )
             .field(
                 "read_only_discovery_permissions",
@@ -101,7 +101,7 @@ impl CodexRuntimeState {
             thread_ready: true,
             developer_instructions_fingerprint: None,
             context_hot_reload_enabled: false,
-            turn_input_includes_hidden_context: true,
+            inject_hidden_context_on_submit: true,
             read_only_discovery_permissions: false,
             socket,
             next_request_id,
@@ -120,14 +120,14 @@ impl CodexRuntimeState {
         socket: CodexSocket,
         next_request_id: u64,
     ) -> Self {
-        let turn_input_includes_hidden_context = thread_id.is_some();
+        let inject_hidden_context_on_submit = thread_id.is_some();
         Self {
             endpoint,
             thread_id: thread_id.unwrap_or_default(),
             thread_ready: false,
             developer_instructions_fingerprint: None,
             context_hot_reload_enabled: true,
-            turn_input_includes_hidden_context,
+            inject_hidden_context_on_submit,
             read_only_discovery_permissions: false,
             socket,
             next_request_id,
@@ -164,8 +164,8 @@ impl CodexRuntimeState {
         self.context_hot_reload_enabled
     }
 
-    pub(super) fn turn_input_includes_hidden_context(&self) -> bool {
-        self.turn_input_includes_hidden_context
+    pub(super) fn inject_hidden_context_on_submit(&self) -> bool {
+        self.inject_hidden_context_on_submit
     }
 
     pub(super) fn read_only_discovery_permissions(&self) -> bool {
@@ -194,7 +194,7 @@ impl CodexRuntimeState {
         self.thread_id = thread_id.into();
         self.thread_ready = true;
         self.developer_instructions_fingerprint = developer_instructions_fingerprint;
-        self.turn_input_includes_hidden_context = false;
+        self.inject_hidden_context_on_submit = false;
         self.buffered_notifications.clear();
         self.active_turn_id = None;
         self.turn_tracker = CodexTurnTracker::default();

@@ -60,13 +60,27 @@ pub fn submit_codex_prompt(
         });
         return Ok(());
     }
-    let turn_input_prompt = codex_turn_input_prompt(
-        &envelope.visible_user_prompt,
-        &envelope.hidden_system_context,
-        state.turn_input_includes_hidden_context(),
-    );
-    let input = codex_input(&turn_input_prompt, &envelope.attachments);
+    // Native and resumed threads keep their provider identity. Deliver context
+    // through Codex's developer-message seam instead of visible user input.
+    // Steering cannot reload a thread, so use the same seam at that boundary.
     let thread_id = state.thread_id().to_string();
+    if state.inject_hidden_context_on_submit() || envelope.steering {
+        if let Some(context) = hidden_context_for_provider(&envelope.hidden_system_context) {
+            if let Err(error) = client.thread_inject_hidden_context(
+                &mut state.socket,
+                &mut state.next_request_id,
+                &thread_id,
+                context,
+                &mut state.buffered_notifications,
+            ) {
+                state.buffered_notifications.push(CodexNotification::Error {
+                    message: error.to_string(),
+                });
+                return Ok(());
+            }
+        }
+    }
+    let input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
     let active_steering_turn_id = envelope.steering.then(|| {
         state
             .active_turn_id
@@ -274,11 +288,140 @@ mod prompt_tests {
     use crate::provider::{
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
+    use crate::session::PromptAttachment;
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::net::TcpListener;
     use std::thread;
     use tokio_tungstenite::tungstenite::{accept, connect, Message};
+
+    // MP-08/MP-10: native input and Chariox-origin input share this provider seam.
+    #[test]
+    fn native_codex_turns_keep_hidden_context_out_of_user_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept fixture");
+            let mut socket = accept(stream).expect("upgrade fixture");
+            let mut requests = Vec::new();
+            for index in 0..2 {
+                let context = read_json_request(&mut socket, "thread/inject_items");
+                socket
+                    .send(Message::Text(
+                        json!({"id": context["id"], "result": {}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .expect("inject context");
+                let request = read_json_request(&mut socket, "turn/start");
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "id": request["id"],
+                            "result": {"turn": {"id": format!("turn-{index}")}}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .expect("admit turn");
+                requests.push((context, request));
+            }
+            let rejected = read_json_request(&mut socket, "thread/inject_items");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": rejected["id"],
+                        "error": {"code": -32601, "message": "context injection unavailable"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("reject context");
+            // A rejected bridge must not fall back to a visible turn.
+            assert!(!matches!(socket.read(), Ok(Message::Text(_))));
+            requests
+        });
+        let endpoint = format!("ws://{address}");
+        let (socket, _) = connect(&endpoint).expect("connect fixture");
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "default")
+            .with_agent_id("agent");
+        let run = RuntimeProviderRun::new(
+            "run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "fixture".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let mut state = super::super::state::CodexRuntimeState::new(
+            endpoint,
+            "native-thread".to_string(),
+            socket,
+            1,
+        );
+        for hidden in [
+            "<runtime-instructions>FIRST</runtime-instructions>",
+            "<native-permission-instructions>SECOND</native-permission-instructions>",
+        ] {
+            state.active_turn_id = None;
+            super::submit_codex_prompt(
+                &run,
+                &mut state,
+                &PromptEnvelope::new(
+                    "visible prompt",
+                    hidden,
+                    vec![PromptAttachment::new(
+                        "file:///tmp/native%20image.png",
+                        "image/png",
+                        None,
+                    )],
+                    PromptManifest::current(),
+                ),
+            )
+            .expect("submit prompt");
+        }
+        state.active_turn_id = None;
+        super::submit_codex_prompt(
+            &run,
+            &mut state,
+            &PromptEnvelope::new(
+                "must not submit",
+                "hidden rejected",
+                Vec::new(),
+                PromptManifest::current(),
+            ),
+        )
+        .expect("provider rejection is projected through notifications");
+        assert!(state.active_turn_id.is_none());
+        assert!(state.buffered_notifications.iter().any(|notification| matches!(
+            notification, CodexNotification::Error { message } if message.contains("context injection unavailable")
+        )));
+        drop(state);
+        let requests = server.join().expect("join fixture");
+        for ((context, request), marker) in requests.iter().zip(["FIRST", "SECOND"]) {
+            assert_eq!(request["params"]["threadId"], "native-thread");
+            assert_eq!(
+                request["params"]["input"],
+                json!([
+                    {"type": "text", "text": "visible prompt"},
+                    {"type": "localImage", "path": "/tmp/native image.png"}
+                ])
+            );
+            assert_eq!(context["params"]["threadId"], "native-thread");
+            assert_eq!(context["params"]["items"][0]["role"], "developer");
+            assert!(context["params"]["items"][0]["content"][0]["text"]
+                .as_str()
+                .expect("hidden channel")
+                .contains(marker));
+        }
+    }
 
     #[test]
     fn active_steering_preserves_the_existing_codex_thread() {
@@ -439,7 +582,24 @@ mod prompt_tests {
                 ))
                 .expect("send large resume response");
 
+            let context = read_json_request(&mut socket, "thread/inject_items");
+            assert_eq!(context["params"]["items"][0]["role"], "developer");
+            assert_eq!(
+                context["params"]["items"][0]["content"][0]["text"],
+                "resumed hidden context"
+            );
+            socket
+                .send(Message::Text(
+                    json!({"id": context["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .expect("inject resumed context");
             let turn_request = read_json_request(&mut socket, "turn/start");
+            assert_eq!(
+                turn_request["params"]["input"],
+                json!([{"type": "text", "text": "continue after the failed prompt"}])
+            );
             socket
                 .send(Message::Text(
                     json!({
@@ -506,7 +666,7 @@ mod prompt_tests {
             &mut state,
             &PromptEnvelope::new(
                 "continue after the failed prompt",
-                "",
+                "resumed hidden context",
                 Vec::new(),
                 PromptManifest::current(),
             ),
@@ -687,24 +847,6 @@ fn hidden_context_for_provider(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
-fn codex_turn_input_prompt(
-    visible_user_prompt: &str,
-    hidden_system_context: &str,
-    include_hidden_context: bool,
-) -> String {
-    if !include_hidden_context || hidden_system_context.trim().is_empty() {
-        return visible_user_prompt.to_string();
-    }
-    match (hidden_system_context.trim(), visible_user_prompt.trim()) {
-        ("", visible) => visible.to_string(),
-        (hidden, "") => hidden.to_string(),
-        // Provider-native and resumed threads cannot reliably retrofit developer
-        // instructions. Keep the handoff first and the workflow contract last so
-        // the raw payload does not become the turn's final instruction.
-        (hidden, visible) => format!("{visible}\n\n{hidden}"),
-    }
-}
-
 fn is_codex_mcp_handshake_timeout(error: &DaemonError) -> bool {
     let DaemonError::ProviderProtocol {
         operation, message, ..
@@ -818,30 +960,4 @@ pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<Stri
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::codex_turn_input_prompt;
-
-    #[test]
-    fn attached_or_resumed_codex_thread_receives_hidden_context_in_turn_input() {
-        let prompt = codex_turn_input_prompt(
-            "<workflow-handoff-payloads>20</workflow-handoff-payloads>",
-            "<node-level-prompt>subtract 9</node-level-prompt>",
-            true,
-        );
-
-        assert_eq!(
-            prompt,
-            "<workflow-handoff-payloads>20</workflow-handoff-payloads>\n\n<node-level-prompt>subtract 9</node-level-prompt>"
-        );
-    }
-
-    #[test]
-    fn new_managed_codex_thread_keeps_hidden_context_in_developer_instructions() {
-        let prompt = codex_turn_input_prompt("visible handoff", "hidden instructions", false);
-
-        assert_eq!(prompt, "visible handoff");
-    }
 }

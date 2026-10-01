@@ -281,7 +281,7 @@ Provider-native credential enrollment callback bridge (local daemon protocol 241
 Native TUI hidden context:
 
 - granted skill prompt context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
-- Codex native TUI hidden context MUST use the same Codex turn-scoped `developer_instructions` channel as ordinary Codex provider runs
+- Codex native TUI hidden context MUST use Codex `thread/inject_items` developer messages before `turn/start` or `turn/steer`, preserving the attached thread and keeping `input` limited to visible user text and attachments. Resumed threads use the same bridge; newly created ordinary threads retain `thread/start.developerInstructions`. Injection failures MUST fail the prompt rather than fall back to visible user input.
 - OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
 - Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Chariox CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
