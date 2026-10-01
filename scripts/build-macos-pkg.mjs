@@ -4,12 +4,17 @@
 //             chariox-app-package and chariox-relay. Installed in /usr/local/bin.
 //   libexec/  chariox-app-runtime-install, the root App runtime installer.
 //   runtime/  the signed App runtime release (runtime-inventory.json and .sig).
+//   share/chariox/slice-build-context/
+//             the tree a release kernel runs local Docker slices from. The kernel
+//             looks for it beside its real bin/ (apps/kernel/src/slice/local_docker.rs),
+//             so it installs in /usr/local/share/chariox/slice-build-context.
 // Other top-level entries are not packaged. The runtime's trusted key and
 // inventory digest come from the release authority (the runtime signing
 // receipt), never from the bundle. They are pinned in the postinstall, the
 // package's one privileged step (macos-pkg/postinstall). The payload also holds
 // the kernel LaunchAgent dev.chariox.kernel and, in /usr/local/libexec/chariox,
-// the runtime installer, the agent's start script and uninstall.sh.
+// the runtime installer, the agent's start script, uninstall.sh and the SHA-256
+// manifests of the binaries and the slice build context.
 //
 // A release names "Developer ID Installer: <Name> (<TEAMID>)" and a notarytool
 // keychain profile at run time (--identity and --keychain-profile, or
@@ -34,6 +39,13 @@ export const COMPONENT = 'chariox.pkg';
 export const SUBMISSION_ID = '<submission-id>';
 export const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), 'macos-pkg');
 export const PACKAGE_DIR = 'usr/local/libexec/chariox';
+const SLICE_CONTEXT = 'share/chariox/slice-build-context';
+// Beside usr/local/bin, where a release kernel looks for it.
+export const CONTEXT_DIR = `usr/local/${SLICE_CONTEXT}`;
+const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
+// The context paths the manifest may hold (uninstall.sh checks the same): no
+// spaces, quotes or line breaks, and no . or .. component.
+const CONTEXT_PATH = /^\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*(\/\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$/u;
 const BINARIES = new Map([['chariox-kernel', true], ['chariox-cli', true], ['chariox', false],
   ['chariox-app-package', false], ['chariox-relay', false]]);
 const RUNTIME_INSTALLER = 'chariox-app-runtime-install';
@@ -135,24 +147,51 @@ async function executable(path, label) {
   return { path, archs, sha256: await hashFile(path) };
 }
 
-async function runtimeFiles(runtime) {
+// Every regular file below a bundle directory, sorted, within its limits; links and special files are refused.
+async function bundleFiles(bundle, label, { maxFiles = Infinity, maxBytes = Infinity, maxDepth = 16 } = {}) {
+  const root = join(bundle, label);
   const files = [];
   let bytes = 0;
   async function walk(directory, depth) {
-    if (depth > 8) throw new Error('runtime/ nests too deeply');
+    if (depth > maxDepth) throw new Error(`${label}/ nests too deeply`);
     for (const name of (await readdir(directory)).sort()) {
       const path = join(directory, name);
       const metadata = await lstat(path);
       if (metadata.isDirectory()) { await walk(path, depth + 1); continue; }
-      if (!metadata.isFile()) throw new Error(`runtime/${relative(runtime, path)} is a link or special file`);
-      if (files.length === RUNTIME_FILES) throw new Error(`runtime/ has more than ${RUNTIME_FILES} files`);
-      if ((bytes += metadata.size) > RUNTIME_BYTES) throw new Error('runtime/ exceeds the runtime installer\'s 512 MiB');
-      // The installer refuses group- or other-writable input; it sets its own modes on publication.
-      files.push({ path: relative(runtime, path), source: path, mode: metadata.mode & 0o555, archs: await machO(path) });
+      if (!metadata.isFile()) throw new Error(`${label}/${relative(root, path)} is a link or special file`);
+      if (files.length === maxFiles) throw new Error(`${label}/ has more than ${maxFiles} files`);
+      if ((bytes += metadata.size) > maxBytes) throw new Error(`${label}/ exceeds ${maxBytes / 1024 / 1024} MiB`);
+      files.push({ path: relative(root, path), source: path, mode: metadata.mode });
     }
   }
-  await walk(runtime, 0);
-  return { path: runtime, files, bytes };
+  await walk(root, 0);
+  return { path: root, files, bytes };
+}
+
+async function runtimeFiles(bundle) {
+  const runtime = await bundleFiles(bundle, 'runtime', { maxFiles: RUNTIME_FILES, maxBytes: RUNTIME_BYTES, maxDepth: 8 });
+  for (const file of runtime.files) {
+    // The installer refuses group- or other-writable input; it sets its own modes on publication.
+    file.mode &= 0o555;
+    file.archs = await machO(file.source);
+  }
+  return runtime;
+}
+
+// The slice build context. Its files install as root's, 0755 when executable and 0644 otherwise, as the release bundle has them.
+async function contextFiles(bundle) {
+  const provisioner = await lstat(join(bundle, SLICE_CONTEXT, SLICE_PROVISIONER)).catch(() => null);
+  if (!provisioner?.isFile() || !(provisioner.mode & 0o100))
+    throw new Error(`the bundle has no executable ${SLICE_CONTEXT}/${SLICE_PROVISIONER}: a release kernel runs local Docker slices from that slice build context`);
+  if ((await readdir(join(bundle, 'share'))).join('/') !== 'chariox' || (await readdir(join(bundle, 'share/chariox'))).join('/') !== 'slice-build-context')
+    throw new Error('share/ must hold only chariox/slice-build-context');
+  const context = await bundleFiles(bundle, SLICE_CONTEXT);
+  for (const file of context.files) {
+    if (!CONTEXT_PATH.test(file.path)) throw new Error(`${SLICE_CONTEXT}/ has a path the package cannot list: ${JSON.stringify(file.path)}`);
+    file.mode = file.mode & 0o111 ? 0o755 : 0o644;
+    file.sha256 = await hashFile(file.source);
+  }
+  return context;
 }
 
 export async function readBundle(input, runtimeDigest) {
@@ -173,7 +212,7 @@ export async function readBundle(input, runtimeDigest) {
   const { archs } = binaries.find(binary => binary.name === 'chariox-kernel');
   for (const [label, item] of [...binaries.map(binary => [`bin/${binary.name}`, binary]), [`libexec/${RUNTIME_INSTALLER}`, installer]])
     if (item.archs.join() !== archs.join()) throw new Error(`${label} is ${item.archs.join('+')}, but bin/chariox-kernel is ${archs.join('+')}`);
-  const runtime = await runtimeFiles(join(bundle, 'runtime'));
+  const runtime = await runtimeFiles(bundle);
   for (const name of ['runtime-inventory.json', 'runtime-inventory.sig'])
     if (!runtime.files.some(file => file.path === name)) throw new Error(`runtime/ has no ${name}`);
   const digest = await hashFile(join(runtime.path, 'runtime-inventory.json'));
@@ -188,7 +227,8 @@ export async function readBundle(input, runtimeDigest) {
   for (const file of runtime.files)
     if (file.archs && file.archs.join() !== archs.join())
       throw new Error(`runtime/${file.path} is ${file.archs.join('+')}, but bin/chariox-kernel is ${archs[0]}`);
-  return { bundle, binaries, installer, runtime, archs, ignored: top.filter(name => !['bin', 'libexec', 'runtime'].includes(name)) };
+  const context = await contextFiles(bundle);
+  return { bundle, binaries, installer, runtime, context, archs, ignored: top.filter(name => !['bin', 'libexec', 'runtime', 'share'].includes(name)) };
 }
 
 // Templates name host paths below @@ROOT@@, which is empty in the package.
@@ -242,7 +282,10 @@ export async function packagePlan(options) {
     content(`${PACKAGE_DIR}/start-kernel.sh`, 0o555, await renderTemplate('start-kernel.sh', { ROOT: '' })),
     content(`${PACKAGE_DIR}/uninstall.sh`, 0o555, await renderTemplate('uninstall.sh', { ROOT: '' })),
     content(`${PACKAGE_DIR}/bin.sha256`, 0o444, release.binaries.map(binary => `${binary.sha256}  /usr/local/bin/${binary.name}\n`).join('')),
+    content(`${PACKAGE_DIR}/slice-build-context.sha256`, 0o444, release.context.files.map(file => `${file.sha256}  /${CONTEXT_DIR}/${file.path}\n`).join('')),
     content(`Library/LaunchAgents/${AGENT_LABEL}.plist`, 0o644, await readFile(join(TEMPLATES, `${AGENT_LABEL}.plist`), 'utf8')),
+    // Two trees, summarized in the plan and receipt: the context's manifest and the pinned inventory record their bytes.
+    ...release.context.files.map(file => ({ path: `${CONTEXT_DIR}/${file.path}`, mode: file.mode, source: file.source })),
     ...release.runtime.files.map(file => ({ path: `${staged}/${file.path}`, mode: file.mode, source: file.source })),
   ];
   const postinstall = await renderTemplate('postinstall', { ROOT: '', VERSION: options.version,
@@ -291,7 +334,9 @@ export function formatPlan(plan) {
   const lines = ['# Dry run: nothing below was executed or written.',
     `# bundle ${release.bundle} (${release.archs.join('+')}); not packaged: ${release.ignored.join(', ') || 'nothing'}`,
     `# postinstall pins runtime key ${plan.runtimeKey} and inventory ${plan.runtimeDigest}`];
-  for (const entry of plan.payload) if (!entry.path.includes('/staging/')) lines.push(`# payload ${octal(entry.mode)} /${entry.path}`);
+  for (const entry of plan.payload) if (entry.sha256) lines.push(`# payload ${octal(entry.mode)} /${entry.path}`);
+  lines.push(`# payload 0755 /${CONTEXT_DIR}/: the slice build context, ${release.context.files.length} files, `
+    + `${release.context.bytes} bytes, listed in /${PACKAGE_DIR}/slice-build-context.sha256`);
   lines.push(`# payload 0700 /${PACKAGE_DIR}/staging/runtime-${plan.runtimeDigest}/: ${release.runtime.files.length} files, `
     + `${release.runtime.bytes} bytes, removed by the postinstall`);
   let phase = '';
@@ -337,7 +382,7 @@ function checkPayload(listing, plan) {
     const parts = entry.path.split('/');
     for (let depth = 1; depth <= parts.length; depth += 1) expected.add(`./${parts.slice(0, depth).join('/')}`);
   }
-  const listed = listing.split('\n').filter(Boolean);
+  const listed = new Set(listing.split('\n').filter(Boolean));
   let appleDouble = 0;
   for (const path of listed) {
     if (expected.has(path)) continue;
@@ -345,7 +390,7 @@ function checkPayload(listing, plan) {
     if (companion !== path && expected.has(companion)) { appleDouble += 1; continue; }
     throw new Error(`the component payload has an unexpected entry ${path}`);
   }
-  const missing = [...expected].filter(path => !listed.includes(path));
+  const missing = [...expected].filter(path => !listed.has(path));
   if (missing.length) throw new Error(`the component payload lacks ${missing.slice(0, 3).join(', ')}`);
   return appleDouble;
 }
@@ -446,6 +491,7 @@ export async function buildMacosPkg(options, { run = runCommand, platform = proc
       architectures: plan.release.archs, minimumMacos: MIN_MACOS,
       runtime: { inventorySha256: plan.runtimeDigest, publicKeyHex: plan.runtimeKey,
         files: plan.release.runtime.files.length, bytes: plan.release.runtime.bytes },
+      sliceBuildContext: { path: `/${CONTEXT_DIR}`, files: plan.release.context.files.length, bytes: plan.release.context.bytes },
       payload: plan.payload.filter(entry => entry.sha256).map(entry => ({ path: `/${entry.path}`, mode: octal(entry.mode), sha256: entry.sha256 })),
       appleDoubleEntries: appleDouble, notPackaged: plan.release.ignored,
       signing: plan.unsigned ? 'unsigned test package: Gatekeeper refuses it'

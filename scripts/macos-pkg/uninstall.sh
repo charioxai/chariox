@@ -6,8 +6,9 @@
 #   2. withdraws the App runtime enrollment, then retires every runtime
 #      generation with chariox-app-runtime-install cleanup, which takes each
 #      generation's exclusive lease first;
-#   3. removes the binaries the package put in /usr/local/bin, but only while
-#      their bytes are still the package's; a replaced file is kept and reported;
+#   3. removes the binaries the package put in /usr/local/bin and the slice
+#      build context in /usr/local/share/chariox, but only the files whose bytes
+#      are still the package's; a replaced file is kept and reported;
 #   4. removes the package's own files and forgets its receipt.
 # Every user's ~/.chariox (kernel state, Apps and their data) is kept; delete it
 # to remove those too. --dry-run prints each change without making it. A failed
@@ -25,6 +26,8 @@ SUPPORT="$R/Library/Application Support/Chariox"
 PACKAGE="$R/usr/local/libexec/chariox"
 INSTALLER="$PACKAGE/chariox-app-runtime-install"
 MANIFEST="$PACKAGE/bin.sha256"
+CONTEXT="$R/usr/local/share/chariox/slice-build-context"
+CONTEXT_MANIFEST="$PACKAGE/slice-build-context.sha256"
 RUNTIMES="$SUPPORT/AppRuntimes"
 ENROLLMENT_DIR="$SUPPORT/AppRuntime"
 AGENT="$R/Library/LaunchAgents/$LABEL.plist"
@@ -73,6 +76,7 @@ running() {
 if [ -z "$R" ]; then
   [ "$(id -u)" = 0 ] || die "run it with sudo"
   [ ! -e "$INSTALLER" ] || trusted "$INSTALLER" || die "$INSTALLER or a directory above it is not root's alone"
+  [ ! -e "$CONTEXT" ] || trusted "$CONTEXT" || die "$CONTEXT or a directory above it is not root's alone"
 fi
 
 # 1. Kernels. A loginwindow runs as each logged-in user.
@@ -111,7 +115,7 @@ done
 prune "$RUNTIMES"
 prune "$ENROLLMENT_DIR"
 
-# 3. Binaries.
+# 3. Binaries and the slice build context.
 if [ -f "$MANIFEST" ]; then
   while read -r sum path; do
     case "$path" in /usr/local/bin/chariox*) ;; *) die "unexpected entry in $MANIFEST: $path" ;; esac
@@ -125,9 +129,28 @@ if [ -f "$MANIFEST" ]; then
     fi
   done < "$MANIFEST"
 fi
+# The slice build context: one shasum run checks every file of its manifest.
+if [ -f "$CONTEXT_MANIFEST" ]; then
+  bad=$(grep -v -m 1 -E '^[0-9a-f]{64}  /usr/local/share/chariox/slice-build-context(/\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*)+$' "$CONTEXT_MANIFEST" || true)
+  [ -z "$bad" ] || die "unexpected entry in $CONTEXT_MANIFEST: $bad"
+  unchanged=()
+  while IFS= read -r line; do
+    case "$line" in
+      *': OK') unchanged+=("${line%: OK}") ;;
+      *': FAILED') say "kept ${line%: FAILED}: it changed after the package installed it" ;;
+    esac
+  done < <(sed "s|  /|  $R/|" "$CONTEXT_MANIFEST" | shasum -a 256 -c - 2>/dev/null || true)
+  [ "${#unchanged[@]}" = 0 ] \
+    || act "remove the ${#unchanged[@]} unchanged files of $CONTEXT" rm -f -- "${unchanged[@]}"
+fi
+if [ -d "$CONTEXT" ]; then
+  act "remove the emptied directories of $CONTEXT" find "$CONTEXT" -type d -empty -delete
+  [ ! -d "$CONTEXT" ] || [ "$dry_run" = 1 ] || say "kept $CONTEXT: it is not empty"
+fi
+prune "$R/usr/local/share/chariox"
 
 # 4. The package itself.
-for file in "$INSTALLER" "$PACKAGE/start-kernel.sh" "$MANIFEST" "$PACKAGE/uninstall.sh"; do
+for file in "$INSTALLER" "$PACKAGE/start-kernel.sh" "$MANIFEST" "$CONTEXT_MANIFEST" "$PACKAGE/uninstall.sh"; do
   [ ! -e "$file" ] || act "remove $file" rm -f -- "$file"
 done
 [ ! -d "$PACKAGE/staging" ] || act "remove $PACKAGE/staging" rm -rf -- "$PACKAGE/staging"

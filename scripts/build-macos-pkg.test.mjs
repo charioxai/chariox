@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFileSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { buildMacosPkg, formatPlan, packagePlan, PACKAGE_DIR, parseArguments, renderTemplate, UsageError } from './build-macos-pkg.mjs';
+import { buildMacosPkg, CONTEXT_DIR, formatPlan, packagePlan, PACKAGE_DIR, parseArguments, renderTemplate, UsageError } from './build-macos-pkg.mjs';
 
 const KEY = 'a'.repeat(64);
 const OLD = 'b'.repeat(64);
@@ -19,6 +19,13 @@ const X86_64 = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01]);
 const UNIVERSAL = Buffer.from('cafebabe00000002' + '0100000c' + '00'.repeat(16) + '01000007' + '00'.repeat(16), 'hex');
 const INSTALLER_TOOL = 'chariox-app-runtime-install';
 const SUPPORT = 'Library/Application Support/Chariox';
+const CONTEXT = 'share/chariox/slice-build-context';
+const PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
+// A slice build context in the release bundle's layout: the provisioner, a dot file and plain sources.
+const CONTEXT_FILES = { [PROVISIONER]: '#!/bin/bash\n', 'apps/kernel/.charioxignore': 'target\n',
+  'apps/kernel/slice-linux-docker/runtime-source-roots.txt': 'Cargo.toml\napps/kernel\n', 'Cargo.toml': '[workspace]\n' };
+const CONTEXT_BYTES = Object.values(CONTEXT_FILES).join('').length;
+const contextManifest = () => Object.entries(CONTEXT_FILES).map(([path, text]) => `${sha256(text)}  /${CONTEXT_DIR}/${path}\n`).join('');
 const darwin = { skip: process.platform !== 'darwin' && 'needs macOS packaging tools and BSD stat' };
 const sha256 = text => createHash('sha256').update(text).digest('hex');
 async function until(condition, ms = 15000) {
@@ -49,6 +56,12 @@ async function bundle(t) {
   await writeFile(join(dir, 'runtime/runtime-inventory.sig'), 'signature', { mode: 0o444 });
   await writeFile(join(dir, 'runtime/chariox-app-worker'), Buffer.concat([ARM64, Buffer.from('worker')]), { mode: 0o555 });
   await writeFile(join(dir, 'runtime/sdk/index.js'), 'export {};\n', { mode: 0o444 });
+  for (const [path, text] of Object.entries(CONTEXT_FILES)) {
+    await mkdir(dirname(join(dir, CONTEXT, path)), { recursive: true });
+    await writeFile(join(dir, CONTEXT, path), text);
+    // Group-writable sources still install as root's 0644, and the provisioner as 0755.
+    await chmod(join(dir, CONTEXT, path), path === PROVISIONER ? 0o775 : 0o664);
+  }
   await writeFile(join(dir, 'SHA256SUMS'), 'not packaged\n');
   return { root, dir, digest: sha256(inventory), output: join(root, 'Chariox-1.2.3.pkg') };
 }
@@ -98,6 +111,15 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   await refused(dir => symlink('/etc/hosts', join(dir, 'runtime/sdk/hosts')), /link or special file/u);
   await refused(dir => writeFile(join(dir, 'libexec/extra'), ARM64), /libexec\/ must hold only/u);
   await refused(dir => rm(join(dir, 'runtime/runtime-inventory.sig')), /no runtime-inventory\.sig/u);
+  // A release kernel runs local Docker slices only from the bundle's slice build context.
+  const noContext = /the bundle has no executable share\/chariox\/slice-build-context\/apps\/kernel\/slice-linux-docker\/provision-linux-docker-slice\.sh/u;
+  await refused(dir => rm(join(dir, 'share'), { recursive: true }), noContext);
+  await refused(dir => rm(join(dir, CONTEXT, PROVISIONER)), noContext);
+  await refused(dir => chmod(join(dir, CONTEXT, PROVISIONER), 0o644), noContext);
+  await refused(dir => mkdir(join(dir, 'share/man')), /share\/ must hold only chariox\/slice-build-context/u);
+  await refused(dir => symlink('/etc/hosts', join(dir, CONTEXT, 'hosts')), /slice-build-context\/hosts is a link or special file/u);
+  for (const name of ['a b.rs', "it's.rs", 'line\nbreak.rs', '..hidden'])
+    await refused(dir => writeFile(join(dir, CONTEXT, 'apps', name), ''), /a path the package cannot list/u);
   // The runtime files are read-only, as in a release.
   const replace = (path, bytes) => rm(path).then(() => writeFile(path, bytes));
   // The runtime must match the package's one architecture, by its inventory target and every Mach-O.
@@ -120,6 +142,18 @@ test('the dry-run plan pins the runtime and orders the release signing steps', a
   assert.match(text, /# payload 0755 \/usr\/local\/bin\/chariox-kernel/u);
   assert.match(text, /# payload 0644 \/Library\/LaunchAgents\/dev\.chariox\.kernel\.plist/u);
   assert.match(text, /# payload 0555 \/usr\/local\/libexec\/chariox\/chariox-app-runtime-install/u);
+  // The slice build context sits where a release kernel installed in /usr/local/bin looks for it:
+  // <the prefix of its real bin/>/share/chariox/slice-build-context.
+  assert.equal(join(dirname(dirname('/usr/local/bin/chariox-kernel')), CONTEXT), `/${CONTEXT_DIR}`);
+  assert.match(text, new RegExp(`^# payload 0755 /${CONTEXT_DIR}/: the slice build context, 4 files, ${CONTEXT_BYTES} bytes, `
+    + `listed in /${PACKAGE_DIR}/slice-build-context\\.sha256$`, 'mu'));
+  assert.match(text, /^# payload 0444 \/usr\/local\/libexec\/chariox\/slice-build-context\.sha256$/mu);
+  assert.doesNotMatch(text, /# payload \S+ \/usr\/local\/share\/chariox\/slice-build-context\/[^:]/u);
+  const lines = text => text.split('\n').filter(Boolean).sort();
+  assert.deepEqual(lines(plan.payload.find(entry => entry.path === `${PACKAGE_DIR}/slice-build-context.sha256`).content), lines(contextManifest()));
+  const context = plan.payload.filter(entry => entry.path.startsWith(`${CONTEXT_DIR}/`));
+  assert.deepEqual(Object.fromEntries(context.map(entry => [entry.path.slice(CONTEXT_DIR.length + 1), entry.mode])),
+    Object.fromEntries(Object.keys(CONTEXT_FILES).map(path => [path, path === PROVISIONER ? 0o755 : 0o644])));
   // Every Mach-O, the runtime worker included, must be Developer ID code of the team.
   assert.equal(plan.checks.filter(step => step.phase === 'code-describe').length, 5);
   assert.deepEqual(plan.checks[0].command, [join(fixture.dir, 'libexec', INSTALLER_TOOL)]);
@@ -184,7 +218,18 @@ esac`);
   return { root, R, log, calls: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] };
 }
 
-async function postinstall(fake, digest, inventory) {
+// The slice build context and its manifest as the payload lays them down; extra files are an earlier release's.
+async function layContext(R, extra = {}) {
+  for (const [path, text] of Object.entries({ ...CONTEXT_FILES, ...extra })) {
+    await mkdir(dirname(join(R, CONTEXT_DIR, path)), { recursive: true });
+    await writeFile(join(R, CONTEXT_DIR, path), text);
+  }
+  await mkdir(join(R, PACKAGE_DIR), { recursive: true });
+  await writeFile(join(R, PACKAGE_DIR, 'slice-build-context.sha256'), contextManifest());
+}
+
+async function postinstall(fake, digest, inventory, { context = true, stale = {} } = {}) {
+  if (context) await layContext(fake.R, stale);
   const staged = join(fake.R, PACKAGE_DIR, `staging/runtime-${digest}`);
   await mkdir(staged, { recursive: true });
   await writeFile(join(staged, 'runtime-inventory.json'), inventory);
@@ -262,6 +307,24 @@ test('postinstall frees unused generations before enrolling at the eight-generat
   assert.deepEqual(left, [...[0, 1, 2, 3, 4, 5].map(index => String(index).repeat(64)), digest].sort());
 });
 
+test('postinstall leaves exactly the listed slice build context after an upgrade', darwin, async t => {
+  const fake = await host(t);
+  const digest = sha256('pinned\n');
+  // An upgrade's payload does not remove the files a previous release installed.
+  const result = await postinstall(fake, digest, 'pinned\n', { stale: { 'apps/kernel/src/bin/old.rs': 'fn main() {}\n', 'apps/old/README.md': 'old\n' } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /removed 2 files an earlier release left in \S+\/usr\/local\/share\/chariox\/slice-build-context\n/u);
+  const left = spawnSync('/usr/bin/find', ['.'], { cwd: join(fake.R, CONTEXT_DIR), encoding: 'utf8' }).stdout.trim().split('\n').sort();
+  assert.deepEqual(left, ['.', './Cargo.toml', './apps', './apps/kernel', './apps/kernel/.charioxignore', './apps/kernel/slice-linux-docker',
+    `./${PROVISIONER}`, './apps/kernel/slice-linux-docker/runtime-source-roots.txt'].sort());
+  // A payload without its context is not this package's; nothing is enrolled.
+  const missing = await host(t);
+  const failure = await postinstall(missing, digest, 'pinned\n', { context: false });
+  assert.equal(failure.status, 1);
+  assert.match(failure.stderr, /the package's slice build context is missing/u);
+  assert.deepEqual(missing.calls(), []);
+});
+
 test('uninstall removes what the package installed and keeps changed binaries', darwin, async t => {
   const fake = await host(t);
   const file = async (path, text = '') => {
@@ -276,6 +339,8 @@ test('uninstall removes what the package installed and keeps changed binaries', 
   await file('usr/local/bin/chariox-cli', 'replaced by the user');
   await file(`${PACKAGE_DIR}/start-kernel.sh`);
   await file(`${PACKAGE_DIR}/bin.sha256`, `${sha256('kernel')}  /usr/local/bin/chariox-kernel\n${sha256('cli')}  /usr/local/bin/chariox-cli\n`);
+  await layContext(fake.R);
+  await mkdir(join(fake.R, 'usr/local/share/man'));
   const script = join(fake.R, PACKAGE_DIR, 'uninstall.sh');
   await writeFile(script, await renderTemplate('uninstall.sh', { ROOT: fake.R }), { mode: 0o755 });
   assert.equal(spawnSync(script, ['--force'], { encoding: 'utf8' }).status, 2);
@@ -283,16 +348,42 @@ test('uninstall removes what the package installed and keeps changed binaries', 
   assert.equal(dry.status, 0, dry.stderr);
   assert.match(dry.stdout, /would withdraw the App runtime enrollment/u);
   assert.match(dry.stdout, new RegExp(`would retire App runtime ${OLD}`, 'u'));
+  assert.match(dry.stdout, /would remove the 4 unchanged files of \S+\/usr\/local\/share\/chariox\/slice-build-context\n/u);
   assert.equal(existsSync(join(fake.R, `${SUPPORT}/AppRuntime/runtime-enrollment.json`)), true);
+  assert.equal(existsSync(join(fake.R, CONTEXT_DIR, PROVISIONER)), true);
   assert.equal(fake.calls().some(call => !call.startsWith('launchctl print') && !call.startsWith('pkgutil --pkg-info')), false);
   const result = spawnSync(script, [], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept \/usr\/local\/bin\/chariox-cli: it changed/u);
-  for (const gone of ['Library/LaunchAgents/dev.chariox.kernel.plist', SUPPORT, 'usr/local/bin/chariox-kernel', PACKAGE_DIR])
+  for (const gone of ['Library/LaunchAgents/dev.chariox.kernel.plist', SUPPORT, 'usr/local/bin/chariox-kernel', PACKAGE_DIR, 'usr/local/share/chariox'])
     assert.equal(existsSync(join(fake.R, gone)), false, gone);
+  // /usr/local/share is shared with other software.
+  assert.equal(existsSync(join(fake.R, 'usr/local/share/man')), true);
   assert.equal(readFileSync(join(fake.R, 'usr/local/bin/chariox-cli'), 'utf8'), 'replaced by the user');
   assert.ok(fake.calls().includes(`chariox-app-runtime-install cleanup --inventory-sha256 ${OLD}`));
   assert.ok(fake.calls().includes('pkgutil --forget dev.chariox.pkg'));
+});
+
+test('uninstall keeps a changed file of the slice build context and refuses a manifest entry outside it', darwin, async t => {
+  const fake = await host(t);
+  await layContext(fake.R);
+  await writeFile(join(fake.R, CONTEXT_DIR, 'Cargo.toml'), '[workspace]\n# edited\n');
+  const manifest = join(fake.R, PACKAGE_DIR, 'slice-build-context.sha256');
+  const script = join(fake.R, PACKAGE_DIR, 'uninstall.sh');
+  await writeFile(script, await renderTemplate('uninstall.sh', { ROOT: fake.R }), { mode: 0o755 });
+  await writeFile(manifest, `${contextManifest()}${sha256('kernel')}  /${CONTEXT_DIR}/../../../bin/chariox-kernel\n`);
+  const refused = spawnSync(script, [], { encoding: 'utf8' });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /unexpected entry in \S+slice-build-context\.sha256: \S+  \/usr\/local\/share\/chariox\/slice-build-context\/\.\.\/\.\.\/\.\.\/bin\/chariox-kernel/u);
+  assert.equal(existsSync(join(fake.R, CONTEXT_DIR, PROVISIONER)), true);
+  await writeFile(manifest, contextManifest());
+  const result = spawnSync(script, [], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /kept \S+\/slice-build-context\/Cargo\.toml: it changed after the package installed it/u);
+  assert.match(result.stdout, /remove the 3 unchanged files of /u);
+  assert.match(result.stdout, /kept \S+\/usr\/local\/share\/chariox\/slice-build-context: it is not empty/u);
+  const left = spawnSync('/usr/bin/find', ['.'], { cwd: join(fake.R, 'usr/local/share/chariox'), encoding: 'utf8' }).stdout.trim().split('\n').sort();
+  assert.deepEqual(left, ['.', './slice-build-context', './slice-build-context/Cargo.toml']);
 });
 
 const listen = () => new Promise(done => { const server = createServer().listen(0, '127.0.0.1', () => done(server)); });
@@ -343,11 +434,27 @@ test('an unsigned package builds from a release bundle with the pinned postinsta
   assert.equal(receipt.sha256, sha256(readFileSync(fixture.output)));
   assert.deepEqual(receipt.payload.map(entry => entry.path), ['/usr/local/bin/chariox-app-package', '/usr/local/bin/chariox-cli',
     '/usr/local/bin/chariox-kernel', `/${PACKAGE_DIR}/chariox-app-runtime-install`, `/${PACKAGE_DIR}/start-kernel.sh`,
-    `/${PACKAGE_DIR}/uninstall.sh`, `/${PACKAGE_DIR}/bin.sha256`, '/Library/LaunchAgents/dev.chariox.kernel.plist']);
+    `/${PACKAGE_DIR}/uninstall.sh`, `/${PACKAGE_DIR}/bin.sha256`, `/${PACKAGE_DIR}/slice-build-context.sha256`,
+    '/Library/LaunchAgents/dev.chariox.kernel.plist']);
+  assert.deepEqual(receipt.sliceBuildContext, { path: `/${CONTEXT_DIR}`, files: 4, bytes: CONTEXT_BYTES });
   assert.equal(existsSync(`${fixture.output}.build`), false);
   const expanded = join(fixture.root, 'expanded');
-  assert.equal(spawnSync('/usr/sbin/pkgutil', ['--expand', fixture.output, expanded]).status, 0);
+  assert.equal(spawnSync('/usr/sbin/pkgutil', ['--expand-full', fixture.output, expanded]).status, 0);
   assert.match(await readFile(join(expanded, 'chariox.pkg/Scripts/postinstall'), 'utf8'), new RegExp(`RUNTIME_DIGEST='${fixture.digest}'`, 'u'));
+  // The installed slice build context: root's, beside /usr/local/bin, with the modes the kernel needs.
+  const bom = spawnSync('/usr/bin/lsbom', ['-p', 'MUGf', join(expanded, 'chariox.pkg/Bom')], { encoding: 'utf8' }).stdout;
+  for (const [path, mode] of [['usr/local/share', 'drwxr-xr-x'], ['usr/local/share/chariox', 'drwxr-xr-x'], [CONTEXT_DIR, 'drwxr-xr-x'],
+    [`${CONTEXT_DIR}/${PROVISIONER}`, '-rwxr-xr-x'], [`${CONTEXT_DIR}/apps/kernel/.charioxignore`, '-rw-r--r--'],
+    [`${PACKAGE_DIR}/slice-build-context.sha256`, '-r--r--r--']])
+    assert.match(bom, new RegExp(`^${mode}\\s+root\\s+wheel\\s+\\./${path.replaceAll('.', '\\.')}$`, 'mu'), path);
+  // Its manifest checks the delivered bytes.
+  const payload = join(expanded, 'chariox.pkg/Payload');
+  const manifest = await readFile(join(payload, PACKAGE_DIR, 'slice-build-context.sha256'), 'utf8');
+  assert.deepEqual(manifest.split('\n').filter(Boolean).sort(), contextManifest().split('\n').filter(Boolean).sort());
+  const check = spawnSync('/usr/bin/shasum', ['-a', '256', '-c', '-'], { input: manifest.replaceAll('  /', `  ${payload}/`), encoding: 'utf8' });
+  assert.equal(check.status, 0, `${check.stdout}${check.stderr}`);
+  assert.equal(check.stdout.match(/: OK$/gmu).length, 4);
+  assert.equal(statSync(join(payload, CONTEXT_DIR, PROVISIONER)).mode & 0o777, 0o755);
 });
 
 test('a signed build requires a macOS-capable installer, Developer ID code and an accepted notarization', darwin, async t => {

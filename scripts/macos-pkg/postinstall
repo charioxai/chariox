@@ -2,19 +2,23 @@
 # Postinstall of the Chariox macOS package (dev.chariox.pkg). The macOS Installer
 # runs it as root once the payload is in place; it is the package's one
 # privileged step. The kernel and its Apps then run as ordinary users.
-#   1. checks that the staged App runtime is the one this package pins: the
+#   1. removes from /usr/local/share/chariox/slice-build-context, the tree a
+#      release kernel builds its local Docker slices from, every file its
+#      manifest slice-build-context.sha256 does not list: an upgrade's payload
+#      leaves the previous release's other files in place;
+#   2. checks that the staged App runtime is the one this package pins: the
 #      SHA-256 of its runtime-inventory.json must be RUNTIME_DIGEST;
-#   2. enrolls it with chariox-app-runtime-install, which verifies the inventory's
+#   3. enrolls it with chariox-app-runtime-install, which verifies the inventory's
 #      Ed25519 signature against RUNTIME_KEY before it publishes
 #      /Library/Application Support/Chariox/AppRuntimes/<digest> and the
 #      enrollment. The key and digest are pinned here, in the signed package,
 #      never read from the runtime;
-#   3. removes the staged copy, whatever the outcome;
-#   4. restarts the kernel LaunchAgent in the console user's gui domain; other
+#   4. removes the staged copy, whatever the outcome;
+#   5. restarts the kernel LaunchAgent in the console user's gui domain; other
 #      users get it at their next login.
-# Before step 2 and after step 4 it retires the runtime generations no kernel
+# Before step 3 and after step 5 it retires the runtime generations no kernel
 # holds any more, so repeated upgrades stay under the installer's limit of
-# eight generations. A failure in step 1 or 2 fails the installation and does
+# eight generations. A failure in steps 1 to 3 fails the installation and does
 # not restart the kernel.
 set -euo pipefail
 umask 022
@@ -33,6 +37,8 @@ PACKAGE="$R/usr/local/libexec/chariox"
 STAGING="$PACKAGE/staging"
 STAGED="$STAGING/runtime-$RUNTIME_DIGEST"
 INSTALLER="$PACKAGE/chariox-app-runtime-install"
+CONTEXT="$R/usr/local/share/chariox/slice-build-context"
+CONTEXT_MANIFEST="$PACKAGE/slice-build-context.sha256"
 RUNTIMES="$SUPPORT/AppRuntimes"
 AGENT="$R/Library/LaunchAgents/$LABEL.plist"
 LAUNCHCTL="$R/bin/launchctl"
@@ -55,6 +61,7 @@ if [ -z "$R" ]; then
   [ "$(id -u)" = 0 ] || die "the macOS Installer runs this as root"
   [ "${3:-/}" = / ] || die "Chariox installs only on the startup volume, not ${3:-}"
   trusted "$INSTALLER" || die "$INSTALLER or a directory above it is not root's alone"
+  trusted "$CONTEXT" || die "$CONTEXT or a directory above it is not root's alone"
 fi
 trap 'rm -rf -- "$STAGING"' EXIT
 # cleanup refuses the enrolled generation and any whose shared lease a kernel or
@@ -73,7 +80,17 @@ retire_unused() {
   done
 }
 
-# 1. and 2. The runtime.
+# 1. The slice build context.
+[ -f "$CONTEXT_MANIFEST" ] && [ -d "$CONTEXT" ] || die "the package's slice build context is missing"
+stale=$(cd "$R/" && find usr/local/share/chariox/slice-build-context ! -type d | sed 's|^|/|' | LC_ALL=C sort \
+  | LC_ALL=C comm -23 - <(sed 's/^[0-9a-f]*  //' "$CONTEXT_MANIFEST" | LC_ALL=C sort))
+if [ -n "$stale" ]; then
+  while IFS= read -r path; do rm -f -- "$R$path"; done <<<"$stale"
+  find "$CONTEXT" -type d -empty -delete
+  say "removed $(wc -l <<<"$stale" | tr -d ' ') files an earlier release left in $CONTEXT"
+fi
+
+# 2. and 3. The runtime.
 say "Chariox $VERSION: enrolling App runtime $RUNTIME_DIGEST"
 inventory="$STAGED/runtime-inventory.json"
 [ -f "$inventory" ] && [ ! -L "$inventory" ] || die "the package's staged runtime is missing"
@@ -88,7 +105,7 @@ retire_unused
   --trusted-public-key-hex "$RUNTIME_KEY" --inventory-sha256 "$RUNTIME_DIGEST" \
   || die "chariox-app-runtime-install refused the runtime; the kernel was not restarted"
 
-# 4. The console user's kernel. bootout stops a running kernel (launchd waits up
+# 5. The console user's kernel. bootout stops a running kernel (launchd waits up
 # to the agent's ExitTimeOut) and fails when none is loaded.
 console=$(stat -f %Su "$R/dev/console" 2>/dev/null || true)
 case "$console" in
