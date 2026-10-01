@@ -253,6 +253,26 @@ absence of another user report cannot close an item.
   automatic shutdown. The audit must find inconsistencies proactively rather
   than wait for users to report them.
 
+### MP-09 / MP-11 provisional outage decision for 2026-10-01
+
+The coordinator/user authorized a bounded quiescence-acknowledgement outage
+policy for release D. Once the idle/auto-stop deadline has passed, Cloud requests
+its ordinary non-destructive STOP after 60 minutes without a kernel quiescence
+acknowledgement when heartbeats are stale. The cutoff uses the durable reservation
+creation/deadline and latest busy acknowledgement; restarting Cloud does not renew
+it. The STOP transaction rechecks policy, minimum runtime, deadline, activity,
+account, machine, current generation/kernel binding, fresh heartbeats, and pending
+operations. Fresh activity or a keep-running decision cancels the obsolete
+reservation. Silence never establishes a kernel admission fence.
+
+The normal operation queue, idempotency, provider stop, and retry machinery remain
+the authority. The audit records the missing acknowledgement; after successful
+STOP the existing machine summary shows `stopped without kernel acknowledgement`.
+STOP preserves disk, context, and user state. This is the mandatory-shutdown
+exception, not a new runtime exception. The owner may amend this provisional
+policy. MP-09/MP-10/MP-11 remain open pending independent aggregate review and live
+provider-stop/user-state persistence evidence on the signed fresh-machine release.
+
 ### Locked clarification record for 2026-09-20
 
 This record is a handoff checkpoint. Every resumed turn, delegated Path-1 task,

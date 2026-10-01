@@ -5,13 +5,12 @@ import { createReadStream } from "node:fs"
 import { lstat, readFile, readdir, realpath } from "node:fs/promises"
 import { basename, join, relative, resolve, sep } from "node:path"
 
+import { parseUnitSections, verifyPath1ServicePolicy } from "./path1-service-policy.mjs"
+
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const MANAGED_BUILD_TARGET = "x86_64-unknown-linux-gnu"
 const SLICE_RELAY_PATH = "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay"
 const SHARED_HOST_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap"
-const PATH1_HOME_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap"
-const PATH1_WORKER_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
-const PATH1_BOOTSTRAP_PATH = "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 const EXPECTED_ARTIFACTS = new Map([
   ["chariox-kernel", { path: "/usr/local/bin/chariox-kernel", type: "file" }],
   ["chariox-managed-bootstrap", { path: "/usr/local/bin/chariox-managed-bootstrap", type: "file" }],
@@ -58,23 +57,6 @@ const EXPECTED_ARTIFACTS = new Map([
 
 function fail(message) {
   throw new Error(message)
-}
-
-function parseUnitSections(source) {
-  const sections = new Map()
-  let section
-  for (const rawLine of source.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith("#") || line.startsWith(";")) continue
-    const header = /^\[([^\]]+)\]$/.exec(line)
-    if (header) {
-      section = header[1]
-      if (!sections.has(section)) sections.set(section, [])
-      continue
-    }
-    if (section) sections.get(section).push(line)
-  }
-  return sections
 }
 
 async function readRegularFile(path, label, maxBytes) {
@@ -438,11 +420,13 @@ async function verifyImageRelease(
     const servicePath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(selectedService).path)
     const service = (await readRegularFile(servicePath, `${selectedTopology} managed bootstrap service`, 64 * 1024))
       .toString("utf8")
-    const lines = service.split(/\r?\n/)
-    const execStarts = lines.filter((line) => line.startsWith("ExecStart="))
-    const expectedExecStart = selectedTopology === "path1" ? PATH1_HOME_EXEC_START : SHARED_HOST_EXEC_START
-    if (execStarts.length !== 1 || execStarts[0] !== expectedExecStart) {
-      fail(`selected ${selectedTopology} managed bootstrap service has an incompatible ExecStart`)
+    const sections = parseUnitSections(service)
+    const lines = [...sections.values()].flat()
+    if (selectedTopology !== "path1") {
+      const execStarts = lines.filter((line) => line.startsWith("ExecStart="))
+      if (execStarts.length !== 1 || execStarts[0] !== SHARED_HOST_EXEC_START) {
+        fail(`selected ${selectedTopology} managed bootstrap service has an incompatible ExecStart`)
+      }
     }
     if (selectedTopology === "path1") {
       const workerServiceName = "chariox-disposable-worker-bootstrap.service"
@@ -452,45 +436,9 @@ async function verifyImageRelease(
       const workerServicePath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(workerServiceName).path)
       const workerService = (await readRegularFile(workerServicePath, "Path-1 disposable-worker service", 64 * 1024))
         .toString("utf8")
-      const workerLines = workerService.split(/\r?\n/)
-      const workerExecStarts = workerLines.filter((line) => line.startsWith("ExecStart="))
-      if (workerExecStarts.length !== 1 || workerExecStarts[0] !== PATH1_WORKER_EXEC_START) {
-        fail("selected Path-1 disposable-worker service has an incompatible ExecStart")
-      }
-      if (hasDataVolumeAdmission
-        && workerLines.some((line) => line.startsWith("Environment=CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH="))) {
-        fail("selected Path-1 disposable-worker service must use the protected bootstrap path")
-      }
-      const workerPaths = workerLines.filter((line) => line.startsWith("Environment=PATH="))
-      if (workerPaths.length !== 1 || workerPaths[0] !== PATH1_BOOTSTRAP_PATH) {
-        fail("selected Path-1 disposable-worker service has an incompatible bootstrap PATH")
-      }
-      for (const [name, required] of [
-        ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"],
-        ["CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY", "Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key"],
-        ["HOME", "Environment=HOME=/home/chariox"],
-        ["CHARIOX_HOME", "Environment=CHARIOX_HOME=/home/chariox/.chariox"],
-        ["CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock"],
-        ["PATH", PATH1_BOOTSTRAP_PATH],
-      ]) {
-        const assignments = lines.filter((line) => line.startsWith(`Environment=${name}=`))
-        if (assignments.length !== 1 || assignments[0] !== required) {
-          fail(`selected Path-1 managed bootstrap service is missing or overrides ${required}`)
-        }
-      }
-      const brokerPrestarts = lines.filter((line) => line.startsWith("ExecStartPre="))
-      if (brokerPrestarts.length !== 1
-        || brokerPrestarts[0] !== "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service") {
-        fail("selected Path-1 managed bootstrap service must restart the one-shot broker before launch")
-      }
-      const afterRootless = lines.filter((line) => line.startsWith("After="))
-      if (afterRootless.length !== 1 || !afterRootless[0].split(/\s+/).includes("chariox-rootless-docker.service")) {
-        fail("selected Path-1 managed bootstrap service must start after rootless Docker")
-      }
-      const workerAfterRootless = workerLines.filter((line) => line.startsWith("After="))
-      if (workerAfterRootless.length !== 1 || !workerAfterRootless[0].split(/\s+/).includes("chariox-rootless-docker.service")) {
-        fail("selected Path-1 disposable-worker service must start after rootless Docker")
-      }
+      verifyPath1ServicePolicy(service, "home")
+      const workerSections = verifyPath1ServicePolicy(workerService, "worker")
+      const workerLines = [...workerSections.values()].flat()
       if (hasDataVolumeAdmission) {
         const requiredRootless = lines.filter((line) => line.startsWith("Requires="))
         const workerRequiresRootless = workerLines.filter((line) => line.startsWith("Requires="))
@@ -589,43 +537,7 @@ async function verifyImageRelease(
           }
         }
       }
-      for (const forbidden of [
-        "CHARIOX_MANAGED_PROVIDER_ISOLATION",
-        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
-        "CHARIOX_MANAGED_PROVIDER_BWRAP",
-        "CHARIOX_MANAGED_PROVIDER_HOME",
-        "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
-        "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
-        "CHARIOX_SLICE_ROOT",
-        "bwrap",
-        "--disposable-worker",
-        "NoNewPrivileges=",
-        "PrivateTmp=",
-        "PrivateUsers=",
-        "PrivateDevices=",
-        "PrivateNetwork=",
-        "ProtectSystem=",
-        "ProtectHome=",
-        "ProtectKernel",
-        "ProtectControlGroups=",
-        "RestrictNamespaces=",
-        "RestrictAddressFamilies=",
-        "RestrictSUIDSGID=",
-        "ReadWritePaths=",
-        "ReadOnlyPaths=",
-        "InaccessiblePaths=",
-        "BindPaths=",
-        "BindReadOnlyPaths=",
-        "RootDirectory=",
-        "RootImage=",
-        "SystemCallFilter=",
-        "CapabilityBoundingSet=",
-        "UMask=",
-        "StateDirectory=",
-        "SupplementaryGroups=",
-      ]) {
-        if (service.includes(forbidden)) fail(`selected Path-1 managed bootstrap service contains ${forbidden}`)
-      }
+
     } else if (service.includes("Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1")
       || service.includes("--disposable-worker")) {
       fail("selected shared-host managed bootstrap service has a mismatched topology")

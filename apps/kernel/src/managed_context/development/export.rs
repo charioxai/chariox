@@ -528,7 +528,7 @@ pub(super) fn unique_managed_target_directory(
     source_basename: &str,
     occupied: &mut BTreeSet<String>,
 ) -> Result<String, DaemonError> {
-    validate_managed_repository_basename(source_basename)?;
+    validate_repository_basename(source_basename)?;
     if !occupied.insert(source_basename.to_ascii_lowercase()) {
         return Err(context_error(format!(
             "source repository basename `{source_basename}` collides with another selected managed repository"
@@ -560,33 +560,6 @@ pub(super) fn validate_repository_basename(value: &str) -> Result<(), DaemonErro
     {
         return Err(context_error(
             "source repository basename is unsafe or invalid",
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_managed_repository_basename(value: &str) -> Result<(), DaemonError> {
-    validate_repository_basename(value)?;
-    let lower = value.to_ascii_lowercase();
-    const RESERVED: &[&str] = &[
-        ".chariox",
-        ".provider-account",
-        "managed-context-workspaces",
-        "managed-context",
-        "managed-runtime-auth",
-        "provider-home",
-        "kernels",
-        "state",
-        "sessions",
-        "daemon",
-        "machine",
-        "managed",
-    ];
-    if RESERVED.iter().any(|reserved| *reserved == lower)
-        || lower.starts_with(".chariox-empty-context-")
-    {
-        return Err(context_error(
-            "source repository basename is reserved by managed runtime state",
         ));
     }
     Ok(())

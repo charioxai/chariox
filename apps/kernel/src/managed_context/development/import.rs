@@ -530,7 +530,7 @@ fn import_development_context_with_options(
     )?;
     if publication_id.is_some() {
         for repository in &manifest.repositories {
-            super::export::validate_managed_repository_basename(&repository.target_directory)?;
+            super::export::validate_repository_basename(&repository.target_directory)?;
             if materialization_root != control_destination_root {
                 let destination = materialization_root.join(&repository.target_directory);
                 preflight_managed_repository_path(&destination)?;
@@ -1197,7 +1197,7 @@ fn publication_materialization_root(
         ));
     }
     if receipt.repositories.iter().all(|repository| {
-        super::export::validate_managed_repository_basename(&repository.target_directory).is_ok()
+        super::export::validate_repository_basename(&repository.target_directory).is_ok()
             && repository.destination_path == control_destination.join(&repository.target_directory)
     }) {
         return Ok(control_destination.to_path_buf());
@@ -1213,7 +1213,7 @@ fn publication_materialization_root(
         ));
     };
     if receipt.repositories.iter().all(|repository| {
-        super::export::validate_managed_repository_basename(&repository.target_directory).is_ok()
+        super::export::validate_repository_basename(&repository.target_directory).is_ok()
             && repository.destination_path == configured.join(&repository.target_directory)
     }) {
         for repository in &receipt.repositories {
@@ -1443,7 +1443,7 @@ fn cleanup_materialization_transaction(staging_root: &Path) -> Result<(), Daemon
         .cloned()
         .zip(transaction.published_target_identities.iter().cloned())
         .map(|(target_directory, identity)| {
-            super::export::validate_managed_repository_basename(&target_directory)?;
+            super::export::validate_repository_basename(&target_directory)?;
             Ok(OwnedMaterialization {
                 target_directory,
                 identity,
@@ -1456,7 +1456,7 @@ fn cleanup_materialization_transaction(staging_root: &Path) -> Result<(), Daemon
     ) {
         (None, None) => None,
         (Some(target_directory), Some(identity)) => {
-            super::export::validate_managed_repository_basename(&target_directory)?;
+            super::export::validate_repository_basename(&target_directory)?;
             Some(OwnedMaterialization {
                 target_directory,
                 identity,
@@ -1705,7 +1705,7 @@ fn validate_publication_receipt(
     let mut primary_ids = Vec::new();
     for repository in &receipt.repositories {
         validate_publication_id(&repository.repository_id)?;
-        super::export::validate_managed_repository_basename(&repository.target_directory)?;
+        super::export::validate_repository_basename(&repository.target_directory)?;
         if repository.workspace_kind.is_git() {
             validate_git_oid(&repository.head_sha)?;
         } else if ![

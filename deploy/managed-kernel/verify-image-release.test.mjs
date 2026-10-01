@@ -434,3 +434,33 @@ test("shared-host rollback retains direct ExecStart and release-signature verifi
   const result = runVerifier(fixture, "shared_host")
   assert.equal(result.status, 0, result.stderr)
 })
+
+// MP-01/MP-04/MP-07/MP-11: independently signed worker policy mutations.
+for (const directive of [
+  "PrivateTmp=true", "ProtectHome=true", "NoNewPrivileges=true", "UMask=0077",
+  "Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1",
+  "Environment=HOME=/tmp/wrong-home",
+  "Environment=CHARIOX_HOME=/tmp/wrong-state",
+  "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host",
+  "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/tmp/wrong.sock",
+  "ExecStartPre=/bin/true", "StateDirectory=extra-state",
+]) {
+  test(`MP-11 signed worker rejects ${directive}`, async (context) => {
+    const fixture = await createReleaseFixture(context, {
+      workerService: WORKER_SERVICE.replace("[Service]", `[Service]\n${directive}`),
+    })
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.notEqual(result.status, 0, result.stderr)
+    assert.match(result.stderr, /Path-1 disposable-worker service/)
+  })
+}
+
+test("MP-11 worker HOME in another unit section cannot satisfy service policy", async (context) => {
+  const fixture = await createReleaseFixture(context, {
+    workerService: WORKER_SERVICE.replace("Environment=HOME=/home/chariox\n", "")
+      .replace("[Install]", "[Install]\nEnvironment=HOME=/home/chariox"),
+  })
+  const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+  assert.notEqual(result.status, 0, result.stderr)
+  assert.match(result.stderr, /Path-1 disposable-worker service/)
+})
