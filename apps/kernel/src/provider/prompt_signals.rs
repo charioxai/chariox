@@ -219,8 +219,8 @@ pub(crate) fn provider_turn_failure_reason(
     termination: Option<&super::ProviderRunTermination>,
 ) -> String {
     // The reason is published in notices and history, so it is built only
-    // from redacted text.
-    let detail = super::sanitize_provider_diagnostic(message);
+    // from redacted text that still reads like the provider's message.
+    let detail = super::redact_provider_diagnostic(message);
     let detail = detail
         .strip_prefix("Provider prompt dispatch failed: ")
         .unwrap_or(&detail);
@@ -230,7 +230,7 @@ pub(crate) fn provider_turn_failure_reason(
     if let Some(termination) = termination.filter(|termination| {
         termination.category != super::ProviderRunTerminationCategory::ExplicitProviderError
     }) {
-        return super::sanitize_provider_diagnostic(&termination.reason);
+        return super::redact_provider_diagnostic(&termination.reason);
     }
     let detail = detail
         .strip_prefix("Provider reported a substitutable resource limit: ")
@@ -461,6 +461,15 @@ mod tests {
         );
         assert!(reason.starts_with("upstream failed"), "{reason}");
         assert!(!reason.contains("sk-live-0123456789abcdef"), "{reason}");
+        assert_eq!(
+            provider_turn_failure_reason(
+                "claude",
+                "You've used 90% of your limit · resets 10:40pm (Europe/Madrid)",
+                None,
+            ),
+            "You've used 90% of your limit · resets 10:40pm (Europe/Madrid)",
+            "the reason keeps the provider's punctuation"
+        );
     }
 
     #[test]
