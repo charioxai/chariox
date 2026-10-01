@@ -5,6 +5,7 @@ import { createHmac, randomUUID } from 'node:crypto'
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { startRoomQueuePressure } from './room-web-fault-queue.mjs'
 import { assertWebFaultRecovery, controllerFaultAttributed } from './room-web-fault-invariants.mjs'
 
 export function faultRelayCredential(token, ready, mode) {
@@ -162,16 +163,10 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       if (fault === 'queue') {
         await observerReady()
         row.queueBurstStartedAt = new Date().toISOString()
-        queueBurst = (async () => {
-          const values = []
-          const deadline = Date.now() + 8000
-          do {
-            values.push(...await Promise.all(Array.from({ length: 128 }, () => client.send(requests.getRoomEnvironmentStateRequest(ready.sessionId), { timeoutMs: 8000 }).then(() => 'ok', error => /backpressure|queue.*full|no available capacity/i.test(error.message) ? 'backpressure' : 'other-error'))))
-            await sleep(200)
-          } while (Date.now() < deadline)
-          row.queueBurstFinishedAt = new Date().toISOString()
-          return values
-        })()
+        queueBurst = startRoomQueuePressure({ client, requests, sessionId: ready.sessionId, protocolVersion: 369,
+          onComplete: () => { row.queueBurstFinishedAt = new Date().toISOString() } })
+        // Attach a handler now; settlement is inspected below after the snapshot.
+        queueBurst.catch(() => undefined)
       }
       if (fault === 'expired' || fault === 'stale-identity') await control('relay_start')
       // Observe degraded projection while the injected seam remains unhealthy.
