@@ -104,7 +104,7 @@ test("waiting room MP-08/MP-11 ready managed machines expose the common discover
     selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
     selectedKernelRef: "kernel-1b",
   }, managedRemote), {
-    machineRef: managedEnvironmentMachineRef("environment-1"),
+    machineRef: "machine-1",
     kernelRef: "kernel-1b",
     workerKernelRef: null,
     managedEnvironmentId: "environment-1",

@@ -146,8 +146,12 @@ export function waitingRoomLaunchPlacement(
 } {
   const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
   const kernelRef = waitingRoomSelectedLaunchKernelRef(state, remote)
+  const environment = remote.managedEnvironments?.find((candidate) => (
+    candidate.environmentId === managedEnvironmentIdFromMachineRef(machineRef)
+  ))
   return {
-    machineRef,
+    machineRef: environment && managedEnvironmentIsReady(environment)
+      ? environment.runtimeMachineId as string : machineRef,
     kernelRef,
     workerKernelRef: null,
     managedEnvironmentId: managedEnvironmentIdFromMachineRef(machineRef),

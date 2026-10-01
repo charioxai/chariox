@@ -42,7 +42,7 @@ const DEFAULT_MANAGED_SLICE_PUBLICATION_ROOT: &str = "/var/lib/chariox-slice-sha
 #[cfg(unix)]
 const MAX_BROKER_FRAME_BYTES: usize = 12 * 1024 * 1024;
 #[cfg(unix)]
-const BROKER_IO_TIMEOUT: Duration = Duration::from_secs(21 * 60);
+const BROKER_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 struct BrokerLease {
     reader: BufReader<UnixStream>,
@@ -88,8 +88,10 @@ pub(super) fn initialize_managed_docker_broker() {
 
 #[cfg(unix)]
 fn configure_broker_stream_deadlines(stream: &UnixStream) -> io::Result<()> {
-    stream.set_read_timeout(Some(BROKER_IO_TIMEOUT))?;
-    stream.set_write_timeout(Some(BROKER_IO_TIMEOUT))
+    // Response lifetime belongs to the broker operation owner. A healthy build
+    // or archive may be silent; EOF and the lease monitor still detect loss.
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(Some(BROKER_WRITE_TIMEOUT))
 }
 
 #[cfg(target_os = "linux")]
@@ -668,6 +670,7 @@ pub(super) fn round_trip_path1_test_broker(peer: &mut UnixStream) -> io::Result<
             "kernel closed before broker request",
         )
     })?;
+    thread::sleep(Duration::from_millis(150));
     let mut response = (b"path1-kernel-ack".len() as u32).to_be_bytes().to_vec();
     response.extend_from_slice(b"path1-kernel-ack");
     peer.write_all(&response)?;
@@ -1022,6 +1025,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             // consumes it before an ordinary provider child is spawned.
             let (path1_backend, mut path1_broker_peer) =
                 UnixStream::pair().expect("Path-1 broker pair");
+            path1_backend
+                .set_read_timeout(Some(Duration::from_millis(40)))
+                .unwrap();
+            configure_broker_stream_deadlines(&path1_backend).unwrap();
             let path1_reader = path1_backend
                 .try_clone()
                 .expect("Path-1 broker reader clone");
@@ -1057,6 +1064,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             );
             let status = child.wait().expect("Path-1 broker kernel should exit");
             assert!(status.success(), "Path-1 broker kernel failed: {status}");
+            assert!(
+                lease.lock().unwrap().is_some(),
+                "delayed handoff response must retain the supervisor lease"
+            );
             let path1_broker = std::fs::read_to_string(&path1_record)
                 .expect("Path-1 broker env record should exist");
             assert!(path1_broker.contains(&format!("home={}\n", home.display())));
@@ -1686,43 +1697,95 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         finish_bounded(broker_result, broker_thread);
     }
 
+    // MP-08/MP-11: exercise the actual supervisor response seam, not just
+    // the downstream kernel socket. An inherited timeout must be cleared too.
     #[test]
-    fn proxy_drops_a_stalled_backend_lease_after_its_transport_deadline() {
-        let (backend_client, stalled_broker) = UnixStream::pair().unwrap();
+    fn supervisor_broker_waits_for_healthy_runtime_archive_and_build_responses() {
+        let (backend_client, mut broker) = UnixStream::pair().unwrap();
         backend_client
-            .set_read_timeout(Some(Duration::from_millis(50)))
+            .set_read_timeout(Some(Duration::from_millis(40)))
             .unwrap();
-        backend_client
-            .set_write_timeout(Some(Duration::from_millis(50)))
-            .unwrap();
+        configure_broker_stream_deadlines(&backend_client).unwrap();
+        assert_eq!(backend_client.read_timeout().unwrap(), None);
+        assert_eq!(
+            backend_client.write_timeout().unwrap(),
+            Some(Duration::from_secs(30))
+        );
         let backend_reader = backend_client.try_clone().unwrap();
         let backend: &'static Mutex<Option<BrokerLease>> =
             Box::leak(Box::new(Mutex::new(Some(BrokerLease {
                 reader: BufReader::new(backend_reader),
                 writer: backend_client,
             }))));
+        let (broker_result, broker_thread) = spawn_bounded(move || {
+            for request in [
+                b"runtime".as_slice(),
+                b"archive".as_slice(),
+                b"build".as_slice(),
+            ] {
+                assert_eq!(
+                    read_broker_frame(&mut broker).unwrap(),
+                    Some(frame(request))
+                );
+                thread::sleep(Duration::from_millis(150));
+                broker.write_all(&frame(request)).unwrap();
+            }
+            // Retain the lease while the kernel's proxy generation settles.
+            broker
+        });
         let (mut kernel, proxy) = UnixStream::pair().unwrap();
         bounded_stream(&kernel);
         let (proxy_result, proxy_thread) =
             spawn_bounded(move || proxy_kernel_broker(proxy, backend));
+        for request in [
+            b"runtime".as_slice(),
+            b"archive".as_slice(),
+            b"build".as_slice(),
+        ] {
+            kernel.write_all(&frame(request)).unwrap();
+            assert_eq!(
+                read_broker_frame(&mut kernel).unwrap(),
+                Some(frame(request))
+            );
+            assert!(
+                backend.lock().unwrap().is_some(),
+                "healthy response must retain lease"
+            );
+        }
+        drop(kernel);
+        assert!(finish_bounded(proxy_result, proxy_thread).is_ok());
+        let broker = finish_bounded(broker_result, broker_thread);
+        assert!(backend.lock().unwrap().is_some());
+        drop(broker);
+        *backend.lock().unwrap() = None;
+    }
 
-        let started = Instant::now();
+    #[test]
+    fn supervisor_broker_drops_lease_on_response_eof() {
+        let (backend_client, mut broker) = UnixStream::pair().unwrap();
+        configure_broker_stream_deadlines(&backend_client).unwrap();
+        let backend_reader = backend_client.try_clone().unwrap();
+        let backend: &'static Mutex<Option<BrokerLease>> =
+            Box::leak(Box::new(Mutex::new(Some(BrokerLease {
+                reader: BufReader::new(backend_reader),
+                writer: backend_client,
+            }))));
+        let (broker_result, broker_thread) = spawn_bounded(move || {
+            assert!(read_broker_frame(&mut broker).unwrap().is_some());
+            drop(broker);
+        });
+        let (mut kernel, proxy) = UnixStream::pair().unwrap();
+        bounded_stream(&kernel);
+        let (proxy_result, proxy_thread) =
+            spawn_bounded(move || proxy_kernel_broker(proxy, backend));
         kernel
             .write_all(&frame(b"request-without-response"))
             .unwrap();
-        let error = finish_bounded(proxy_result, proxy_thread)
-            .expect_err("stalled broker response must fail the proxy generation");
-        assert!(matches!(
-            error.kind(),
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-        ));
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(backend
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_none());
-
-        drop(stalled_broker);
+        let error =
+            finish_bounded(proxy_result, proxy_thread).expect_err("EOF must lose the lease");
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(backend.lock().unwrap().is_none());
+        finish_bounded(broker_result, broker_thread);
     }
 }
 
