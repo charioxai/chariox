@@ -101,6 +101,7 @@ export function verifyInstalledLocalSource(enrollment) {
 export function verifyLocalHelperTopology(enrollment, info) {
   if (!info || info.Image !== enrollment.helperImageId || info.Config?.User !== "0:0"
       || info.HostConfig?.Privileged !== false || info.HostConfig?.ReadonlyRootfs !== true
+      || info.HostConfig?.Init !== true
       || info.HostConfig?.NetworkMode !== "none" || info.HostConfig?.PidMode
       || info.HostConfig?.IpcMode === "host" || info.HostConfig?.UsernsMode
       || JSON.stringify(info.HostConfig?.CapDrop?.map(value => value.toUpperCase()).sort()) !== '["ALL"]'

@@ -39,7 +39,10 @@ try {
   chmodSync(directory, 0o700)
   const socket = join(directory, "control.sock")
   container = `chariox-local-broker-${uid}-${directory.split("-").at(-1).toLowerCase()}`
-  child = spawn("/usr/bin/docker", ["run", "--rm", "--name", container,
+  // Node is not an init: without --init, orphaned grandchildren (for example the
+  // provisioner's timeout watchdog sleeps) become unreaped zombies that keep
+  // counting against --pids-limit until the helper can no longer start tasks.
+  child = spawn("/usr/bin/docker", ["run", "--rm", "--init", "--name", container,
     "--read-only", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
     "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
     "--security-opt", "no-new-privileges", "--memory", "512m", "--cpus", "2", "--pids-limit", "512",
