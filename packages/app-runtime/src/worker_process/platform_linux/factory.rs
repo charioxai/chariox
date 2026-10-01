@@ -135,6 +135,9 @@ pub(in crate::worker_process) fn prepare(
             .ok_or(WorkerError::Preparation)?
             .try_clone()
             .map_err(|_| WorkerError::Preparation)?,
+        storage
+            .group_mapping_channel()
+            .map_err(|_| WorkerError::Preparation)?,
     ];
     let domain = domain::Domain {
         _roots: roots,

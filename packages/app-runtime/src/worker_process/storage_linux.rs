@@ -7,6 +7,7 @@ mod code_mounts;
 mod code_sources;
 mod files;
 mod formatter;
+mod worker_groups;
 #[cfg(test)]
 mod hosted;
 mod loop_device;

@@ -1,4 +1,5 @@
-//! Real delegated cgroups and noexec mounts, disposable hosted Linux only.
+//! Raw native cgroup/observer regression, disposable hosted Linux only.
+//! This fixture does not attest production helper enrollment/group mapping.
 use super::super::*;
 use crate::worker_process::{
     record::LaunchRecord, spawn, PreparedWorker, ResourceDomain, WorkerLimits, WorkerProcess,
@@ -64,7 +65,8 @@ impl ResourceDomain for ObservedDomain {
             !self.0._roots[1].path.join("constructor-ran").exists(),
             "runtime constructor ran before inspection/Continue"
         );
-        self.0.verify_before_continue(pid)
+        self.0.leaf.verify_limits()?;
+        self.0.observer.verify(pid, &self.0.leaf.members()?, &self.0.leaf.path)
     }
     fn check_running(&mut self, pid: i32, now: Instant) -> Result<()> {
         self.0.check_running(pid, now)
@@ -95,6 +97,9 @@ fn hosted_native_worker_uses_production_cgroup_and_observer() {
     let setup = [
         leaf.processes.try_clone().unwrap(),
         File::open(scratch.join("bin/chariox-bwrap")).unwrap(),
+        // The raw test entry closes FD7 without using a helper. Production
+        // factory/native mapping is tested by worker_groups_owned instead.
+        File::open("/dev/null").unwrap(),
     ];
     let executable = File::open(roots[3].path.join("chariox-app-worker")).unwrap();
     let domain = domain::Domain {
@@ -110,7 +115,7 @@ fn hosted_native_worker_uses_production_cgroup_and_observer() {
     let prepared = PreparedWorker {
         program: CString::new(
             scratch
-                .join("bin/chariox-app-domain-entry")
+                .join("bin/domain-raw-entry")
                 .to_str()
                 .unwrap(),
         )
@@ -213,7 +218,7 @@ fn hosted_entry_constrains_immediate_fork_before_parent_can_observe_it() {
     let pid = spawn::launch(
         &CString::new(
             scratch
-                .join("bin/chariox-app-domain-entry")
+                .join("bin/domain-raw-entry")
                 .to_str()
                 .unwrap(),
         )

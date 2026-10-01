@@ -38,7 +38,7 @@ pub(super) fn launch(
     arguments: &[CString],
     files: &[&File],
 ) -> io::Result<libc::pid_t> {
-    if !(5..=7).contains(&files.len()) {
+    if !(5..=8).contains(&files.len()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "worker descriptor count",

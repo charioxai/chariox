@@ -18,8 +18,8 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 cd "$domain_repo"
-for domain_source in linux_domain_entry.c ../tests/domain_immediate_fork.c; do
-  domain_output=chariox-app-domain-entry
+for domain_source in ../tests/domain_raw_entry.c ../tests/domain_immediate_fork.c; do
+  domain_output=domain-raw-entry
   [[ "$domain_source" != ../tests/domain_immediate_fork.c ]] || domain_output=domain-immediate-fork
   /usr/bin/gcc -std=c11 -Wall -Wextra -Werror -O1 "apps/app-worker/src/$domain_source" -o "$domain_scratch/bin/$domain_output"
 done

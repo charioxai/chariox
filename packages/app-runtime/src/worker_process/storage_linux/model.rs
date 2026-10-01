@@ -91,6 +91,12 @@ pub(super) enum Request {
         #[serde(default)]
         committed_generation: Option<u64>,
     },
+    /// Trusted pre-bwrap child, on its parent kernel's already owned lease.
+    MapWorkerGroupsV1 {
+        pid: i32,
+        birth: u64,
+    },
+    VerifyWorkerGroupsV1,
     Release {
         lease: String,
     },
@@ -127,6 +133,13 @@ impl Request {
                 }
                 hex(cgroup_leaf.strip_prefix("app-").ok_or(Error::Invalid)?, 32)
             }
+            Self::MapWorkerGroupsV1 { pid, birth } => {
+                if *pid <= 1 || *birth == 0 {
+                    return Err(Error::Invalid);
+                }
+                Ok(())
+            }
+            Self::VerifyWorkerGroupsV1 => Ok(()),
             Self::Release { lease } => hex(lease, 32),
             Self::Delete {
                 owner,

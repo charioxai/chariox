@@ -203,7 +203,11 @@ enrolled_runtime() {
   python3 -c 'import json,sys; e=json.load(open(sys.argv[1])); print(e["inventorySha256"], "revision", e["revision"])' "$RUNTIME_ENROLLMENT"
 }
 
-profile_loaded() { grep -q '^chariox-app-bwrap ' "$APPARMOR_PROFILES" 2>/dev/null; }
+profile_loaded() {
+  grep -q '^chariox-app-bwrap ' "$APPARMOR_PROFILES" 2>/dev/null &&
+  grep -q '^chariox-app-domain-entry ' "$APPARMOR_PROFILES" 2>/dev/null
+}
+profile_any_loaded() { grep -Eq '^chariox-app-(bwrap|domain-entry) ' "$APPARMOR_PROFILES" 2>/dev/null; }
 
 install_all() {
   [[ ${#users[@]} -gt 0 ]] || die "name at least one --user"
@@ -362,7 +366,7 @@ uninstall_all() {
     done
   fi
   if [[ -e "$PROFILE" ]]; then
-    ! profile_loaded || act "unload AppArmor profile chariox-app-bwrap" apparmor_parser -R "$PROFILE"
+    ! profile_any_loaded || act "unload AppArmor profile chariox-app-bwrap" apparmor_parser -R "$PROFILE"
     remove "$PROFILE"
   fi
   remove "$RUNTIME_ENROLLMENT" "$ENROLLMENT" "$HELPER" "$RUNTIME_INSTALLER"

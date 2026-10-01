@@ -31,6 +31,7 @@ struct Live {
     journal: Journal,
     bound: Bound,
     code_sources: Option<super::code_sources::Sources>,
+    groups_mapped: Option<super::worker_groups::Mapping>,
 }
 #[derive(Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +66,53 @@ impl Store {
         };
         store.recover_all()?;
         Ok(store)
+    }
+    pub fn map_worker_groups(
+        &mut self,
+        uid: u32,
+        lease: &str,
+        peer: &super::worker_groups::Peer,
+        pid: i32,
+        birth: u64,
+    ) -> Result<()> {
+        let owner = self.owners.get(&uid).ok_or(Error::Identity)?;
+        let live = self.live.get_mut(lease).ok_or(Error::Identity)?;
+        if live.journal.uid != uid || live.groups_mapped.is_some() {
+            return Err(Error::Identity);
+        }
+        live.bound.require_single_process(pid)?;
+        let sources = live.code_sources.as_ref().ok_or(Error::Identity)?;
+        let entry = sources
+            .runtime
+            .file("chariox-app-domain-entry")
+            .ok_or(Error::Identity)?;
+        let cgroup = format!(
+            "0::{}/{}\n",
+            owner
+                .cgroup_root
+                .strip_prefix("/sys/fs/cgroup")
+                .ok_or(Error::Identity)?,
+            live.journal.cgroup_leaf
+        );
+        live.groups_mapped = Some(super::worker_groups::map(
+            peer, owner, entry, &cgroup, pid, birth,
+        )?);
+        Ok(())
+    }
+    pub fn verify_worker_groups(
+        &self,
+        uid: u32,
+        lease: &str,
+        peer: &super::worker_groups::Peer,
+    ) -> Result<()> {
+        let live = self.live.get(lease).ok_or(Error::Identity)?;
+        if live.journal.uid != uid {
+            return Err(Error::Identity);
+        }
+        live.groups_mapped
+            .as_ref()
+            .ok_or(Error::Identity)?
+            .verify(peer)
     }
     pub fn enrolled(&self, uid: u32) -> bool {
         self.owners.contains_key(&uid)
@@ -192,6 +240,7 @@ impl Store {
                 journal,
                 bound,
                 code_sources: None,
+                groups_mapped: None,
             },
         );
         prepared
