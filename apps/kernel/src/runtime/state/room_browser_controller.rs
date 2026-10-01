@@ -28,7 +28,17 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, false)
+        self.room_browser_controller_command_inner(session_id, command, false, None)
+            .await
+    }
+
+    pub(super) async fn room_browser_controller_command_with_admission_deadline(
+        &self,
+        session_id: &str,
+        command: Command,
+        deadline: tokio::time::Instant,
+    ) -> Result<Response, DaemonError> {
+        self.room_browser_controller_command_inner(session_id, command, false, Some(deadline))
             .await
     }
 
@@ -37,7 +47,7 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, true)
+        self.room_browser_controller_command_inner(session_id, command, true, None)
             .await
     }
 
@@ -46,6 +56,7 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
         recovery_authority: bool,
+        admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
         // Cleanup must remain available while the Room is quarantined, including
         // when the durable store cannot establish that execution is safe.
@@ -85,7 +96,13 @@ impl KernelRuntimeState {
             // Keep the relay client's large future off callers' async stacks. Local
             // controller operations stay allocation-free; only the remote boundary
             // owns this boxed transport future.
-            Box::pin(self.route_room_browser_controller_command(session_id, slice, command)).await?
+            Box::pin(self.route_room_browser_controller_command(
+                session_id,
+                slice,
+                command,
+                admission_deadline,
+            ))
+            .await?
         } else {
             if self
                 .owned
@@ -134,44 +151,16 @@ impl KernelRuntimeState {
         session_id: &str,
         slice: crate::slice::SliceRecord,
         command: Command,
+        admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
-        // The original action retains its operation guard until terminal proof.
-        // Cancellation must not wait for that very action to release the guard.
-        // App view polls and answers only drain and resolve the page bridge's
-        // queue, so they share the slot with controller routes (the local
-        // controller runs these concurrently too); holding it would starve
-        // or fail agent and Room commands 4 times a second.
-        let _guard = if matches!(&command, Command::CancelAction { .. }) {
-            None
-        } else if matches!(
-            &command,
-            Command::AppView {
-                request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls
-                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Respond { .. }
-            }
-        ) {
-            self.owned.slice_store.check_shared_environment_use(
+        let (slice, _guard) = self
+            .admit_room_browser_controller_route(
+                session_id,
                 &slice.id,
-                Some(session_id),
-                "browser_controller.route",
-                "browser_controller.route",
-            )?;
-            None
-        } else {
-            Some(self.owned.slice_store.guard_environment_use(
-                &slice.id,
-                Some(session_id),
-                "browser_controller.route",
-            )?)
-        };
-        // Check under admission, before relay I/O. Offline reconciliation retries
-        // must release the lifecycle slot immediately so a user can start the slice.
-        let slice = self.owned.slice_store.resolve(&slice.id)?;
-        if slice.status != crate::slice::SliceStatus::Running {
-            return Err(controller_route_error(
-                "browser_controller_unavailable: slice is not running",
-            ));
-        }
+                &command,
+                admission_deadline,
+            )
+            .await?;
         let config = self.owned.config_projection.snapshot();
         let slice_relay = config.slice_relay_override(&slice);
         let private_slice_relay = slice_relay.is_some()

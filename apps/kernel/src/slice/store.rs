@@ -15,6 +15,9 @@ use super::ports::{self, LocalDockerSlicePorts};
 mod environment;
 mod invariants;
 
+pub(crate) const ENVIRONMENT_USE_ADMISSION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 use invariants::{
     reconcile_slice_status_after_kernel_restart, redact_slice_operation_error, validate_slice_name,
 };
@@ -46,6 +49,21 @@ pub struct SliceOperationGuard {
     operation: String,
 }
 
+pub(crate) struct SliceEnvironmentUseGuard {
+    // Release the operation marker before admitting the next queued caller.
+    _operation: SliceOperationGuard,
+    _queue: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl From<SliceOperationGuard> for SliceEnvironmentUseGuard {
+    fn from(operation: SliceOperationGuard) -> Self {
+        Self {
+            _operation: operation,
+            _queue: None,
+        }
+    }
+}
+
 impl Drop for SliceOperationGuard {
     fn drop(&mut self) {
         let mut state = self
@@ -72,6 +90,7 @@ struct SliceStoreState {
     pending_backup_restores: BTreeMap<String, SliceBackupRestoreTransactionRecord>,
     pending_restore_acknowledgements: BTreeMap<String, SliceBackupRestoreAcknowledgementRecord>,
     active_operations: BTreeMap<String, String>,
+    environment_use_queues: BTreeMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl SliceStore {

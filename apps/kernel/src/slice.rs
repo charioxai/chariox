@@ -41,6 +41,7 @@ pub use model::{
 use ports::LocalDockerSlicePorts;
 pub(crate) use store::unacknowledged_backup_restore_error;
 pub use store::{SliceAgentAttachment, SliceHostRuntimeState, SliceOperationGuard, SliceStore};
+pub(crate) use store::{SliceEnvironmentUseGuard, ENVIRONMENT_USE_ADMISSION_TIMEOUT};
 
 #[cfg(test)]
 mod tests {
@@ -51,7 +52,7 @@ mod tests {
     use crate::config::SliceImageBuildPolicy;
     use crate::slice_provider_auth::SliceProviderAuthSummary;
 
-    fn create_input(name: &str) -> CreateSliceInput {
+    pub(super) fn create_input(name: &str) -> CreateSliceInput {
         CreateSliceInput {
             name: name.to_string(),
             backend: SliceBackendKind::LocalDocker,
@@ -155,7 +156,10 @@ mod tests {
         }
     }
 
-    fn restore_transaction(id: &str, source_slice_id: &str) -> SliceBackupRestoreTransactionRecord {
+    pub(super) fn restore_transaction(
+        id: &str,
+        source_slice_id: &str,
+    ) -> SliceBackupRestoreTransactionRecord {
         SliceBackupRestoreTransactionRecord {
             id: id.to_string(),
             source_slice_id: source_slice_id.to_string(),

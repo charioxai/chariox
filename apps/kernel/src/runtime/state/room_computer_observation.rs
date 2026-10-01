@@ -36,11 +36,12 @@ impl KernelRuntimeState {
                 ))
             })?
             .viewport;
-        let _guard = self.owned.slice_store.guard_environment_use(
-            &slice.id,
-            Some(session_id),
-            "environment.computer.observe",
-        )?;
+        let _guard = self
+            .owned
+            .slice_store
+            .queue_environment_use(&slice.id, Some(session_id), "environment.computer.observe")
+            .await?;
+        let slice = self.running_room_screenshot_slice(session_id)?;
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
         let target = ClientTarget {
