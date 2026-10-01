@@ -1,6 +1,28 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn access_id_for_test(&self, session: &str, id: String) -> String {
+        match std::env::var("CHARIOX_ACCESS_TEST_GRANT_ORDER").as_deref() {
+            Ok("ancestor-first") => format!(
+                "{}-{id}",
+                if session == "access-session" {
+                    "a"
+                } else {
+                    "z"
+                }
+            ),
+            Ok("descendant-first") => format!(
+                "{}-{id}",
+                if session == "access-session" {
+                    "z"
+                } else {
+                    "a"
+                }
+            ),
+            _ => id,
+        }
+    }
+
     pub(crate) fn use_kernel_ancestor_holder_for_test(&self) -> String {
         let (_, parent) = process::inspect(std::process::id()).unwrap();
         let mut state = self.owned.kernel_access.lock().unwrap();

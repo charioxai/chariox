@@ -35,7 +35,41 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// Global requests fail closed. SessionRef and attachment scopes resolve through kernel state.
+    pub(crate) fn external_request_in_session(
+        &self,
+        session_id: &str,
+        request: &LocalDaemonRequest,
+    ) -> bool {
+        match request_session_scope(request) {
+            Some(SessionMembershipScope::SessionId(id)) => id == session_id,
+            Some(SessionMembershipScope::SessionIds(ids)) => {
+                !ids.is_empty() && ids.iter().all(|id| id == session_id)
+            }
+            Some(SessionMembershipScope::AllSessions) => {
+                matches!(request, LocalDaemonRequest::ListSessions(_))
+            }
+            Some(SessionMembershipScope::SessionRef {
+                session_ref,
+                workspace_id,
+            }) => self
+                .owned
+                .session_store
+                .read()
+                .resolve_session_ref(&session_ref, workspace_id.as_deref())
+                .is_ok_and(|session| session.id() == session_id),
+            Some(SessionMembershipScope::AttachmentId(id)) => {
+                self.owned
+                    .session_projection
+                    .session_id_for_attachment(&id)
+                    .as_deref()
+                    == Some(session_id)
+            }
+            None => false,
+        }
+    }
+
+    /// Return the authorized session. Global requests fail closed; references
+    /// and attachments resolve through kernel state.
     pub(crate) fn authorize_external_request(
         &self,
         grant_id: &str,
@@ -60,32 +94,7 @@ impl KernelRuntimeState {
             .cloned()
             .ok_or_else(|| error("grant revoked or expired"))?;
         let session_id = &grant.summary.session_id;
-        let permitted = match request_session_scope(request) {
-            Some(SessionMembershipScope::SessionId(id)) => id == *session_id,
-            Some(SessionMembershipScope::SessionIds(ids)) => {
-                !ids.is_empty() && ids.iter().all(|id| id == session_id)
-            }
-            Some(SessionMembershipScope::AllSessions) => {
-                matches!(request, LocalDaemonRequest::ListSessions(_))
-            }
-            Some(SessionMembershipScope::SessionRef {
-                session_ref,
-                workspace_id,
-            }) => self.access_session(session_id).is_ok_and(|session| {
-                (session_ref == *session_id || session.alias() == Some(&session_ref))
-                    && workspace_id
-                        .as_deref()
-                        .is_none_or(|id| id == session.workspace_id())
-            }),
-            Some(SessionMembershipScope::AttachmentId(id)) => {
-                self.owned
-                    .session_projection
-                    .session_id_for_attachment(&id)
-                    .as_ref()
-                    == Some(session_id)
-            }
-            None => false,
-        };
+        let permitted = self.external_request_in_session(session_id, request);
         let forbidden = matches!(
             request,
             LocalDaemonRequest::RespondToInteraction(_)
@@ -129,6 +138,6 @@ impl KernelRuntimeState {
                 "request is outside this external agent's session authority",
             ));
         }
-        Ok(grant.summary.owner_user_id)
+        Ok(session_id.clone())
     }
 }

@@ -156,29 +156,29 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(crate) fn access_grant_for(
-        &self,
-        peer: &ProcessIdentity,
-        session: Option<&str>,
-    ) -> Option<Grant> {
+    pub(crate) fn access_grants_for(&self, peer: &ProcessIdentity) -> Vec<Grant> {
         self.sweep_kernel_access();
-        // The kernel and every process it launches are outside the external holder's tree,
-        // including when the user authorized a shell that launched the kernel.
-        let kernel = process::inspect(std::process::id()).ok()?.0;
+        // Kernel-launched agents never inherit external authority.
+        let Ok((kernel, _)) = process::inspect(std::process::id()) else {
+            return Vec::new();
+        };
         if kernel.contains(peer) {
-            return None;
+            return Vec::new();
         }
-        self.owned
+        let mut grants: Vec<_> = self
+            .owned
             .kernel_access
             .lock()
             .expect("access state poisoned")
             .grants
             .values()
-            .find(|grant| {
-                session.is_none_or(|id| id == grant.summary.session_id)
-                    && grant.holder.contains(peer)
-            })
+            .filter(|grant| grant.holder.contains(peer))
             .cloned()
+            .collect();
+        // A process's own grant takes precedence over an inherited grant for
+        // unscoped requests. Session-scoped requests select by session first.
+        grants.sort_by_key(|grant| grant.holder != *peer);
+        grants
     }
 
     pub(crate) fn access_grant_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
@@ -232,6 +232,8 @@ impl KernelRuntimeState {
             return Err(error("requested lifetime exceeds kernel access policy"));
         }
         let id = format!("access-{:016x}", rand::random::<u64>());
+        #[cfg(test)]
+        let id = self.access_id_for_test(&request.session_id, id);
         let key = (holder.pid, holder.start, holder.executable.clone());
         let summary = KernelAccessGrant {
             grant_id: id.clone(),
