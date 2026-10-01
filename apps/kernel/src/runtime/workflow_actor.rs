@@ -26,6 +26,7 @@ struct WorkflowCommandEnvelope {
     telemetry: LaneCommandTrace,
     caller_user_id: String,
     caller_metaagent_id: Option<String>,
+    external_grant_id: Option<String>,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -87,6 +88,7 @@ impl WorkflowRuntime {
             telemetry: telemetry.clone(),
             caller_user_id,
             caller_metaagent_id,
+            external_grant_id: command.external_grant_id(),
             request,
             result_tx,
         }) {
@@ -246,13 +248,28 @@ async fn run_workflow_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let result = executor
-            .execute(
-                envelope.request,
-                envelope.caller_user_id,
-                envelope.caller_metaagent_id,
-            )
-            .await;
+        let authorization = envelope
+            .external_grant_id
+            .as_deref()
+            .map(|id| {
+                executor
+                    .store
+                    .state
+                    .authorize_external_request(id, &envelope.request)
+            })
+            .transpose();
+        let result = match authorization {
+            Err(error) => Err(error),
+            Ok(_) => {
+                executor
+                    .execute(
+                        envelope.request,
+                        envelope.caller_user_id,
+                        envelope.caller_metaagent_id,
+                    )
+                    .await
+            }
+        };
         log_lane_completed(
             &envelope.telemetry,
             "workflow",
@@ -424,6 +441,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    mod kernel_access;
     use std::sync::Arc;
 
     use tokio::sync::Mutex;

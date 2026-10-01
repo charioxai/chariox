@@ -1,6 +1,34 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn insert_access_grant_for_test(&self, session_id: &str) -> String {
+        let session = self.access_session(session_id).unwrap();
+        let holder = process::inspect(std::process::id()).unwrap().0;
+        let id = format!("queue-access-{:016x}", rand::random::<u64>());
+        let grant = Grant {
+            summary: KernelAccessGrant {
+                grant_id: id.clone(),
+                session_id: session_id.into(),
+                owner_user_id: session.owner_user_id().into(),
+                holder_pid: holder.pid,
+                holder_executable: holder.executable.clone(),
+                lifetime_minutes: 30,
+                expires_at_ms: crate::session::unix_epoch_ms() + 1_800_000,
+            },
+            holder,
+            deadline: Instant::now() + Duration::from_secs(1800),
+            notice: Instant::now() + Duration::from_secs(1500),
+            notice_sent: false,
+        };
+        self.owned
+            .kernel_access
+            .lock()
+            .unwrap()
+            .grants
+            .insert(id.clone(), grant);
+        id
+    }
+
     pub(crate) fn access_id_for_test(&self, session: &str, id: String) -> String {
         match std::env::var("CHARIOX_ACCESS_TEST_GRANT_ORDER").as_deref() {
             Ok("ancestor-first") => format!(
