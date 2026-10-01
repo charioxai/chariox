@@ -76,6 +76,19 @@ test("broker start and unpause route Docker mutation through quota admission", a
   assert.match(executeSource, /const result = isDockerStartOrUnpause\s*\? await sliceDiskQuotaCoordinator\.withContainerLock\(containerName, async \(lock\) => runWithSliceDiskQuotaAdmission\(\{[\s\S]*?quotaMarkerPresent: diskQuotaMarkerPresent\(containerName\),[\s\S]*?run: async \(quotaResult, admission\) => \{[\s\S]*?assertLockHeld\(lock\)[\s\S]*?const started = runPrepared\(admission\)/)
 })
 
+test("home archive identities cannot select the shared state or artifact parent", async context => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-archive-identity-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  for (const id of [".", ".."]) for (const scope of ["state", "backup"]) {
+    for (const kind of ["home_archive_capture", "home_archive_remove"]) {
+      const request = { kind, id, scope,
+        ...(kind === "home_archive_capture" ? { container: "chariox-slice-dev-home-archive-1" } : {}),
+      }
+      assert.notEqual(validate(request, root).status, 0, `${kind} must refuse ${scope}/${id}`)
+    }
+  }
+})
+
 test("snapshot helpers require bounded isolated resources and matching ownership", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-helper-policy-"))
   context.after(() => rm(root, {recursive: true, force: true}))
@@ -195,6 +208,13 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     kind: "docker",
     args: ["exec", "-u", "root", diskHelper, "du", "-sb", "/etc"],
   }, share).status, 1)
+  assert.equal(validate({
+    kind: "docker",
+    args: ["exec", "-u", "root", "chariox-slice-dev-home-archive-1", "bash", "-lc",
+      "set -euo pipefail; cd /home-src; tar --zstd -cf /tmp/home.tar.zst ."],
+  }, share).status, 1, "home archives must never be written into helper layers")
+  assert.equal(validate({ kind: "home_archive_capture", container: "chariox-slice-dev",
+    scope: "state", id: "chariox-slice-dev" }, share).status, 1, "only archive helpers may stream homes")
   const provision = validate(
     {
       kind: "provisioner",

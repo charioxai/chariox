@@ -296,7 +296,7 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
       "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
       await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")),
     ],
-    ...await Promise.all(["managed-extension-build.py", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
+    ...await Promise.all(["managed-extension-build.py", "managed-home-archive-stream.mjs", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
       const path = `apps/kernel/slice-linux-docker/${name}`
       return [path, await readFile(join(repositoryRoot, path))]
     })),
@@ -508,7 +508,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     )
   }
 
-  for (const name of ["managed-extension-build.py", "docker-image-reference.mjs", "docker-image-reference.json"]) {
+  for (const name of ["managed-extension-build.py", "managed-home-archive-stream.mjs", "docker-image-reference.mjs", "docker-image-reference.json"]) {
     const path = `apps/kernel/slice-linux-docker/${name}`
     assert.deepEqual(await readFile(join(brokerContextRoot, path)), await readFile(join(repositoryRoot, path)))
   }

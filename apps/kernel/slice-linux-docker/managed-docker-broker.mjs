@@ -2,6 +2,7 @@
 
 import { spawnSync } from "node:child_process"
 import { isDockerImageReference } from "./docker-image-reference.mjs"
+import { capturePrivateHomeArchive } from "./managed-home-archive-stream.mjs"
 import { createHash } from "node:crypto"
 import {
   chmodSync,
@@ -20,7 +21,6 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  statfsSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs"
@@ -288,11 +288,6 @@ function validateDockerExec(args) {
     command.length === 2 &&
     command[0] === "/opt/chariox-slice/slice-screen.sh" &&
     SCREEN_ACTIONS.has(command[1])
-  ) return
-  if (
-    args[2] === "root" &&
-    /-home-archive-[0-9]+$/.test(args[3]) &&
-    exactArguments(command, ["bash", "-lc", "set -euo pipefail; cd /home-src; tar --zstd -cf /tmp/home.tar.zst ."])
   ) return
   if (
     args[2] === "root" &&
@@ -651,6 +646,7 @@ function validateRequest(request) {
   if (request?.kind === "home_archive_capture") {
     exactKeys(request, ["kind", "container", "scope", "id"], "home archive capture request")
     validateResource(request.container, "home archive container")
+    if (!/-home-archive-[0-9]+$/.test(request.container)) fail("home archive capture requires an archive helper")
     validateArtifactIdentity(request.scope, request.id)
     return
   }
@@ -683,7 +679,8 @@ function validateRequest(request) {
 }
 
 function validateArtifactIdentity(scope, id) {
-  if (!new Set(["state", "backup"]).has(scope) || typeof id !== "string" || !/^[a-zA-Z0-9_.:-]{1,180}$/.test(id)) {
+  if (!new Set(["state", "backup"]).has(scope) || typeof id !== "string"
+      || id === "." || id === ".." || !/^[a-zA-Z0-9_.:-]{1,180}$/.test(id)) {
     fail("home archive identity is invalid")
   }
 }
@@ -705,19 +702,7 @@ function artifactDirectory(scope, id) {
   return join(artifactScopeRoot(scope), id)
 }
 
-function captureHomeArchive(request) {
-  const sizeResult = spawnSync(
-    "/usr/bin/docker",
-    ["exec", "-u", "root", request.container, "stat", "-c", "%s", "/tmp/home.tar.zst"],
-    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 64 * 1024, timeout: 30_000 },
-  )
-  if (sizeResult.status !== 0 || !/^[1-9][0-9]*\n?$/.test(sizeResult.stdout)) fail("slice home archive size is unavailable")
-  const expectedSize = Number(sizeResult.stdout.trim())
-  if (!Number.isSafeInteger(expectedSize) || expectedSize > MAX_HOME_ARCHIVE_BYTES) fail("slice home archive exceeds its size limit")
-  const filesystem = statfsSync(BROKER_ARTIFACT_ROOT, { bigint: true })
-  const available = filesystem.bavail * filesystem.bsize
-  if (available < BigInt(expectedSize) + BigInt(MIN_FREE_AFTER_ARCHIVE_BYTES)) fail("insufficient space for slice home archive")
-
+async function captureHomeArchive(request) {
   const scopeRoot = artifactScopeRoot(request.scope)
   mkdirSync(scopeRoot, { recursive: true, mode: 0o700 })
   chmodSync(scopeRoot, 0o700)
@@ -729,31 +714,14 @@ function captureHomeArchive(request) {
   chmodSync(staging, 0o700)
   const staged = join(staging, "home.tar.zst")
   try {
-    const copied = spawnSync(
-      "/usr/bin/docker",
-      ["cp", `${request.container}:/tmp/home.tar.zst`, staged],
-      { env: dockerEnvironment(), maxBuffer: MAX_OUTPUT_BYTES, timeout: 10 * 60_000 },
-    )
-    if (copied.status !== 0) fail("failed to capture slice home archive")
-    const metadata = lstatSync(staged)
-    if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1 || metadata.size !== expectedSize) {
-      fail("captured slice home archive is invalid")
-    }
-    chmodSync(staged, 0o600)
-    const stagedFd = openSync(staged, constants.O_RDONLY | constants.O_NOFOLLOW)
-    try {
-      fsyncSync(stagedFd)
-    } finally {
-      closeSync(stagedFd)
-    }
-    const digestResult = spawnSync("/usr/bin/sha256sum", ["--", staged], {
-      env: { PATH: "/usr/bin:/bin" },
-      encoding: "utf8",
-      maxBuffer: 64 * 1024,
-      timeout: 10 * 60_000,
+    const { sizeBytes: expectedSize, sha256: digest } = await capturePrivateHomeArchive({
+      command: "/usr/bin/docker",
+      args: ["exec", "-u", "root", request.container, "tar", "--zstd", "-C", "/home-src", "-cf", "-", "."],
+      env: dockerEnvironment(),
+      destination: staged,
+      maxBytes: MAX_HOME_ARCHIVE_BYTES,
+      minimumFreeBytes: MIN_FREE_AFTER_ARCHIVE_BYTES,
     })
-    const digest = digestResult.stdout?.match(/^([a-f0-9]{64})\s/)?.[1]
-    if (digestResult.status !== 0 || !digest) fail("failed to digest slice home archive")
     const stagedMetadata = join(staging, "metadata.json")
     const metadataFd = openSync(
       stagedMetadata,
@@ -1613,7 +1581,7 @@ async function execute(request) {
   let unboundedQuotaIdentity
   let unboundedQuotaStatusVerified = false
   if (request.kind === "home_archive_capture") {
-    const captured = captureHomeArchive(request)
+    const captured = await captureHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(captured)).toString("base64"), stderrBase64: "" }
   }
   if (request.kind === "home_archive_remove") {
