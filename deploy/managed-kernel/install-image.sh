@@ -562,6 +562,13 @@ if [ ! -e "$published_release" ]; then
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"
 fi
 
+# Provision before supervisor namespace setup, including upgrades from PrivateTmp hosts.
+. "$script_root/docker-admission-install.sh"
+install_docker_admission_artifacts "$published_release" "$install_root" || {
+  echo "failed to provision host-wide Docker admission locks" >&2
+  exit 1
+}
+
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel" "$install_root/usr/local/bin/chariox-kernel"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-managed-bootstrap" "$install_root/usr/local/bin/chariox-managed-bootstrap"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" "$install_root/usr/local/bin/chariox-app-package"

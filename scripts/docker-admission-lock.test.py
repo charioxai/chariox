@@ -7,6 +7,8 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+import shutil
+import subprocess
 import sys
 sys.dont_write_bytecode = True
 
@@ -78,6 +80,40 @@ class AdmissionProvisionTests(unittest.TestCase):
         module.provision(self.root, dry_run=True)
         self.assertEqual(self.lock.stat().st_ino, inode)
         self.assertEqual(stat.S_IMODE(self.lock.stat().st_mode), 0o600)
+
+    @unittest.skipUnless(os.geteuid() == 0, "staged root install probe requires root runner")
+    def test_staged_install_never_calls_host_systemd_and_boot_recreates_reset_tmp(self):
+        release = self.root / "release"
+        context = release / "usr/lib/chariox/slice-build-context"
+        script_target = context / "deploy/local-linux/provision-docker-admission-locks.py"
+        unit_target = context / "deploy/managed-kernel/chariox-docker-admission-locks.service"
+        script_target.parent.mkdir(parents=True)
+        unit_target.parent.mkdir(parents=True)
+        shutil.copyfile(source, script_target)
+        unit_source = source.parents[1] / "managed-kernel/chariox-docker-admission-locks.service"
+        shutil.copyfile(unit_source, unit_target)
+        commands = self.root / "bin"
+        commands.mkdir()
+        forbidden = commands / "systemctl"
+        forbidden.write_text("#!/bin/sh\nexit 83\n")
+        forbidden.chmod(0o755)
+        helper = source.parents[1] / "managed-kernel/docker-admission-install.sh"
+        env = dict(os.environ, PATH=f"{commands}:{os.environ['PATH']}")
+        subprocess.run(["sh", "-c", '. "$1"; install_docker_admission_artifacts "$2" "$3"',
+                        "probe", str(helper), str(release), str(self.root)], env=env, check=True)
+        self.assertTrue(self.lock.exists())
+        installed = self.root / "usr/libexec/chariox-docker-admission-locks"
+        self.assertEqual(installed.read_bytes(), source.read_bytes())
+        unit = (self.root / "etc/systemd/system/chariox-docker-admission-locks.service").read_text()
+        self.assertIn("Before=basic.target chariox-managed-bootstrap.service", unit)
+        self.assertIn("ExecStart=/usr/bin/python3 /usr/libexec/chariox-docker-admission-locks", unit)
+        # Model a volatile /tmp reset with no active test holder, then execute
+        # the actual installed boot program against the staged root.
+        for name in module.NAMES:
+            (self.root / "tmp" / name).unlink()
+        subprocess.run(["python3", str(installed), "--root", str(self.root)], check=True)
+        for name in module.NAMES:
+            self.assertEqual(stat.S_IMODE((self.root / "tmp" / name).stat().st_mode), 0o444)
 
     @unittest.skipUnless(os.geteuid() == 0, "cross-UID proof requires disposable root runner")
     def test_ordinary_uid_contends_with_legacy_root_and_cannot_replace_inode(self):

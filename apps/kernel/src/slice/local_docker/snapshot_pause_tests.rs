@@ -295,6 +295,10 @@ fn snapshot_resume_survives_sigkill_between_pause_and_resume() {
         Command::new(std::env::current_exe().unwrap())
             .args(["--exact", name, "--nocapture"])
             .env(CHILD_ROOT, &f.options.root)
+            .env(
+                "CHARIOX_TEST_DOCKER_ADMISSION_LOCK_DIR",
+                super::super::admission_lock::test_directory(),
+            )
             .spawn()
             .unwrap(),
     );

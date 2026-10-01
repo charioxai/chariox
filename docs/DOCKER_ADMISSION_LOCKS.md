@@ -14,7 +14,13 @@ run once from the installed source release:
 sudo python3 deploy/local-linux/provision-docker-admission-locks.py
 ```
 
-The Linux root installer and managed-image preparation also perform this step.
+The Linux root installer and managed install/upgrade install the provisioner and
+an ordered root oneshot service. It runs before basic boot services and is a
+required dependency of the managed supervisor, before its namespace is created.
+Provisioner and unit are included in the signed release context tree. Reboot or
+a reset of volatile /tmp therefore recreates missing locks before managed start.
+Standalone systems using only the manual command must run it again after /tmp
+is reset; missing locks fail closed.
 On macOS the script and opener resolve the standard `/tmp` alias to `/private/tmp`.
 The files contain no data. They are root-owned mode 0444; kernels open read-only
 and acquire an exclusive advisory lock. A root-owned sticky parent prevents an
@@ -42,3 +48,8 @@ locks before starting the updated unit. No automatic namespace or per-UID
 fallback is provided.
 
 The Windows machine-wide admission mutexes are unchanged.
+
+Rust tests use a process-owned disposable lock directory with the same metadata
+checks and a test-only expected owner. Test subprocesses inherit that directory;
+normal test exit removes only its two empty files and directory. Production
+binaries have no test path or owner fallback.

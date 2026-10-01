@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn engine_lock_path_is_independent_of_process_temporary_directory() {
         assert_eq!(
-            engine_admission_lock_path(),
+            super::super::admission_lock::host_path("memory"),
             PathBuf::from(UNIX_ENGINE_ADMISSION_LOCK_PATH)
         );
     }
