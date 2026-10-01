@@ -29,7 +29,7 @@ class DisplayBoundaryTests(unittest.TestCase):
 
     def test_physical_readback_refuses_rounding(self):
         with patch.object(display, "geometry", return_value=(392, 844)), patch.object(display, "run") as run:
-            run.side_effect = ["DUMMY0 connected\n", "chariox-390x844\n", ""]
+            run.side_effect = ["DUMMY0 connected\n", "DUMMY0 connected\n   chariox-390x844 60.00\n", ""]
             with self.assertRaisesRegex(display.DisplayError, "dimensions disagree"):
                 display.resize(390, 844)
             self.assertEqual(run.call_args.args, ("xrandr", "--output", "DUMMY0", "--mode", "chariox-390x844"))
@@ -39,6 +39,14 @@ class DisplayBoundaryTests(unittest.TestCase):
             run.side_effect = ["DUMMY0 connected\n", "", 'Modeline "392x844R" 25.00 392 440 472 552 844 847 857 875 +hsync -vsync', "", "", ""]
             display.resize(390, 844)
             self.assertEqual(run.call_args_list[3].args[4], "390")
+
+    def test_mode_height_prefix_does_not_skip_creation(self):
+        query = "DUMMY0 connected primary 1280x800+0+0\n   chariox-1280x800 60.00*\n"
+        with patch.object(display, "geometry", return_value=(1280, 80)), patch.object(display, "run") as run:
+            run.side_effect = [query, query, 'Modeline "1280x80R" 6.00 1280 1328 1360 1440 80 83 93 100 +hsync -vsync', "", "", ""]
+            display.resize(1280, 80)
+            self.assertEqual(run.call_args_list[3].args[:3], ("xrandr", "--newmode", "chariox-1280x80"))
+            self.assertEqual(run.call_args_list[4].args, ("xrandr", "--addmode", "DUMMY0", "chariox-1280x80"))
 
     def test_slow_command_uses_remaining_deadline(self):
         import time
