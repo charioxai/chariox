@@ -1135,3 +1135,55 @@ Candidate delta from OSS24c270de70820373ed21943408ee4543cf9106b4 / Cloud6a937332
 The isolated source drill links the operator-approved acct-686 Codex profile and materializes the selected account via documented encrypted lease transfer. It uses official Codex metadata-only utilities and ordinary turns. Live checks cover one missing-value paste, collapsed review/Details, waiting-room pending visibility, initial ephemeral environment injection, a changed value on the next turn, unchanged repeat export without review, and Adjust with a private-file flip and free-text revision. Its provisioner deliberately exits78 because compatible signed aggregate C artifacts are unavailable; an arbitrary export failure is never counted as a repeat-export pass. Source tests supplement these checks with protocol snapshots, file retrieval boundaries, unchanged-state reuse and value-change replacement. They do not establish live worker Adjust/fetch, two actual slices, setup/Postgres/native dependency parity, or signed-C acceptance. Automatic queued-turn promotion and native-TUI value refresh remain unvalidated; native TUI reports restart required for changed selections. No MP item is closed.
 
 External evidence and exact source identities: /root/.codex/evidence/browser-resume-20260930/envlayer5/; replay instructions: /root/.chariox/dev/browser-resume-20260930/agents/envlayer5/ACCEPTANCE_REPLAY.md. Integration must replay the signed aggregate, reconcile shared protocol snapshots/minimums and obtain independent review. No GitHub CI, push, deployment, Cloud staging, shared relay/Apps contact, or owner private-key transfer was performed.
+
+## MP-01/MP-04/MP-05/MP-06/MP-07/MP-09/MP-11 release D implementation (2026-10-01)
+
+OSS runtime checkpoint `6263ab3e124f0fbce71b87b9a3bb9e51bcf8c25f` is based on
+`b37f4504e4ce040a2d6c35dc56475315defbc861`; Cloud
+`8fac1a2c8bc5c208ce4d71a43ff978b8b070a451` is based on
+`94fda0ec7af67ce37c3da19e0dd6588c1131ae8e`. They implement the remaining WP-06B/C
+code findings. They exclude parity3's supervisor, ready-launch and interactive
+start corrections (`14b2b5003` / `48b05016`) from the handoff branches.
+
+- MP-01/MP-04/MP-07/MP-11: `path1-service-policy.mjs` validates both signed
+  role units through parsed Unit/Service directives. The worker's intentional
+  StateDirectory allocation remains; inherited provider sandbox controls, wrong
+  HOME/state/topology, conflicting broker control, overrides and misplaced
+  assignments fail closed. Twelve independently signed worker mutations fail
+  first; corrected release verifier40/40 and activation19/19 pass without skips.
+- MP-03/MP-05/MP-06/MP-11: the managed name blacklist is removed. Shared
+  component safety permits safe `state`, `sessions`, `provider-home`, and other
+  source names. Actual canonical root/control protection, destination occupancy,
+  symlink rejection, selected-name collisions and inode-owned rollback remain.
+  Two regressions fail first; the development-context suite49/49 passes without
+  ignored tests. Replay uses the product's receipt recovery API.
+- MP-09/MP-11: Cloud queues its normal non-destructive STOP after the durable
+  60-minute no-ACK allowance and stale heartbeats, with in-transaction policy,
+  minimum-runtime, activity/deadline/revision, current generation/Machine/kernel
+  grant and operation checks. Restart/retry cannot duplicate STOP. An ACK race
+  has one operation; silence never claims an admission fence. The normal manager
+  retry and completion path keeps context and projects the durable reason as
+  `stopped without kernel acknowledgement`. The cutoff regression fails first;
+  the final affected API suites66/66 and Web projection suites pass without skips.
+
+Six exact-blob scanner scopes describe these implementations provisionally. They
+do not create independent semantic approvals or replace frozen removal findings.
+The only exceptions used are signed deployment and mandatory shutdown. No local
+daemon, relay or client serialized shape changed, so no protocol bump was needed.
+
+The first broad Rust invocation used a TMPDIR below the protected `~/.chariox`
+tree and correctly failed repository admission; its RED is retained. The final
+fixture used a separately owned disposable /tmp root with explicit HOME and
+CHARIOX_HOME. A new replay fixture initially called import instead of recovery;
+that fixture error is corrected. Wider Web diagnostics on the specified B base
+retain inherited client/fixture failures and missing production/catalog
+prerequisites. A separate lane-owned C-plus-parity3 validation branch tests the
+aggregate without duplicating those changes in the handoff. No run is relabelled
+as a signed release or deployed result.
+
+Evidence and final summaries are external under
+`/root/.codex/evidence/browser-resume-20260930/implD/`; the lane status records
+final heads, commands, exit codes, resources, aggregate results and cleanup.
+Independent aggregate review, final signed provenance, effective host policy,
+real provider STOP with disk/user-state persistence and the fresh-machine MP-10
+matrix remain open. No MP acceptance item is closed by these source tests.

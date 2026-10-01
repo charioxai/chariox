@@ -1932,7 +1932,7 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
 test("MP-11 independent ledger covers each inspected scope without authorizing scope expansion", () => {
   assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 134);
   assert.ok(INDEPENDENT_REVIEW_GROUPS.every(group => SOURCE_AUDIT_RULES.some(rule => rule.id === group.ruleId)));
-  assert.equal(SOURCE_AUDIT_RULES.length, 140);
+  assert.equal(SOURCE_AUDIT_RULES.length, 146);
   assert.equal(new Set(DEFAULT_SEMANTIC_DISPOSITIONS.map(review => review.id)).size, DEFAULT_SEMANTIC_DISPOSITIONS.length);
   const first = DEFAULT_SEMANTIC_DISPOSITIONS[0];
   assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");
@@ -2106,4 +2106,25 @@ for (const id of ["parity3-supervisor-broker-response-owner", "parity3-interacti
       assert.equal(report.status, "fail");
     });
   });
+}
+
+// MP-01/MP-04/MP-05/MP-06/MP-07/MP-09/MP-11: implementation observations
+// stay pending on both exact inspected blobs and source drift.
+for (const id of ["impld-path1-role-service-policy", "impld-repository-component-safety",
+  "impld-repository-final-destination", "impld-auto-stop-outage-policy",
+  "impld-auto-stop-operation", "impld-auto-stop-reservation"]) {
+  test(`MP-11 release D scope ${id} stays pending and detects source drift`, () => {
+    const rule = SOURCE_AUDIT_RULES.find((candidate) => candidate.id === id)
+    assert.ok(rule, `missing release D scope ${id}`)
+    for (const status of ["source_inspected", "source_drift"]) withFixture({}, (fixture) => {
+      const source = "\n".repeat((rule.ranges?.[0]?.[0] ?? 1) - 1)
+        + rule.anchors.map(([, symbol]) => `function ${symbol}() {}`).join("\n") + "\n"
+      fixture.addFile(rule.path, source, "100644", status === "source_inspected" ? rule.blob : "f".repeat(40))
+      const report = collect(fixture)
+      const scoped = report.entries.filter((entry) => entry.sourceClassification?.ruleId === id)
+      assert.ok(scoped.length > 0)
+      assert.ok(scoped.every((entry) => entry.sourceClassification.status === status
+        && entry.semanticDisposition.status === "unreviewed"))
+    })
+  })
 }

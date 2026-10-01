@@ -6,6 +6,8 @@ const OSS_RUNTIME = "686ec57d5e46cdd46e723155b7eb89f6f25202a2";
 const CLOUD = "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2";
 const CLOUD_CURRENT = "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2";
 const CLOUD_PARITY3 = "d0638173d10e1fa6040741d72da455d9847b4322";
+
+const CLOUD_IMPLD = "8fac1a2c8bc5c208ce4d71a43ff978b8b070a451";
 export const SOURCE_AUDIT_RULES = Object.freeze([
   {
     "id": "broker-runtime-output-budget",
@@ -2958,6 +2960,188 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       "MP-08/MP-10/MP-11: independent exact-head source review and signed/fresh-machine acceptance remain open."
     ]
   },
+  {
+    "id": "impld-path1-role-service-policy",
+    "sourceCommit": "6263ab3e124f0fbce71b87b9a3bb9e51bcf8c25f",
+    "path": "deploy/managed-kernel/path1-service-policy.mjs",
+    "blob": "e3c5ccc236de6597f79661d7a2c2d5ea81149bcc",
+    "ranges": [
+      [
+        1,
+        110
+      ]
+    ],
+    "classification": "signed_release_role_policy_guard",
+    "rationale": "MP-01/MP-04/MP-07/MP-11: one parsed Unit/Service policy verifies both signed Path-1 roles, direct ExecStart, user HOME/state/topology/PATH, private kernel broker restart/socket and provider-inherited deny list. Worker StateDirectory allocates only the intentional chariox control directory. Twelve independently signed worker mutations failed before correction; role units remain ordinary provider launch. Only signed deployment is an exception here.",
+    "anchors": [
+      [
+        "release_activation",
+        "verifyPath1ServicePolicy"
+      ],
+      [
+        "release_activation",
+        "parseUnitSections"
+      ]
+    ],
+    "openFindings": [
+      "MP-10/MP-11: implementation observation only; independent changed-source review, signed aggregate/fresh-machine comparison, live provider/user-state proof and cleanup remain open. Frozen removal dispositions remain tied to their original sources."
+    ]
+  },
+  {
+    "id": "impld-repository-component-safety",
+    "sourceCommit": "6263ab3e124f0fbce71b87b9a3bb9e51bcf8c25f",
+    "path": "apps/kernel/src/managed_context/development/export.rs",
+    "blob": "2345bc99727316145449e3e1c00443ba4e655c71",
+    "ranges": [
+      [
+        481,
+        533
+      ]
+    ],
+    "classification": "shared_repository_component_safety",
+    "rationale": "MP-05/MP-06/MP-11: ordinary single-component basename safety now governs managed export too. Safe generic names and .chariox names are exportable; a managed copy still preserves source basename and rejects selected-name collisions. There is no name-only runtime blacklist and no new exception. Actual destination controls are checked during import.",
+    "anchors": [
+      [
+        "protected_path_filter",
+        "target_directory_for_export"
+      ],
+      [
+        "protected_path_filter",
+        "validate_repository_basename"
+      ],
+      [
+        "protected_path_filter",
+        "unique_managed_target_directory"
+      ]
+    ],
+    "openFindings": [
+      "MP-10/MP-11: implementation observation only; independent changed-source review, signed aggregate/fresh-machine comparison, live provider/user-state proof and cleanup remain open. Frozen removal dispositions remain tied to their original sources."
+    ]
+  },
+  {
+    "id": "impld-repository-final-destination",
+    "sourceCommit": "6263ab3e124f0fbce71b87b9a3bb9e51bcf8c25f",
+    "path": "apps/kernel/src/managed_context/development/import.rs",
+    "blob": "3ae084bed7404564814783a275c42d6eead24e67",
+    "ranges": [
+      [
+        507,
+        519
+      ],
+      [
+        747,
+        754
+      ],
+      [
+        1081,
+        1124
+      ],
+      [
+        1320,
+        1360
+      ],
+      [
+        1573,
+        1618
+      ]
+    ],
+    "classification": "actual_repository_destination_control_and_ownership",
+    "rationale": "MP-03/MP-05/MP-06/MP-11: publication import/receipt/rollback uses the shared component validator. Canonical trusted roots, protected actual final destinations, no-clobber occupancy/symlink checks and inode-owned rollback remain. Receipt replay accepts safe names through product recovery. The protected .chariox destination remains rejected without treating all same-named repositories as state.",
+    "anchors": [
+      [
+        "protected_path_filter",
+        "preflight_managed_repository_path"
+      ],
+      [
+        "protected_path_filter",
+        "publication_materialization_root"
+      ]
+    ],
+    "openFindings": [
+      "MP-10/MP-11: implementation observation only; independent changed-source review, signed aggregate/fresh-machine comparison, live provider/user-state proof and cleanup remain open. Frozen removal dispositions remain tied to their original sources."
+    ]
+  },
+  {
+    "id": "impld-auto-stop-outage-policy",
+    "sourceCommit": "8fac1a2c8bc5c208ce4d71a43ff978b8b070a451",
+    "path": "apps/api/src/managed-environments/auto-stop-outage-policy.ts",
+    "blob": "7918b0b8be76ea8db692e29ef74c789b432e3d2a",
+    "classification": "mandatory_shutdown_bounded_acknowledgement_outage",
+    "rationale": "MP-09/MP-11: the authorized 60-minute allowance is bound to durable challenge creation/deadline/busy ACK; process restart cannot renew it. The serializable transaction checks enabled policy/minimum runtime and current account/Machine/generation/kernel grant, signed activity and Machine/relay heartbeat freshness. Silence grants no kernel admission fence. Mandatory shutdown is the only exception used.",
+    "anchors": [
+      [
+        "automatic_shutdown_selector",
+        "canStopAfterAcknowledgementOutage"
+      ],
+      [
+        "automatic_shutdown_selector",
+        "autoStopAcknowledgementOutageMs"
+      ]
+    ],
+    "openFindings": [
+      "MP-10/MP-11: implementation observation only; independent changed-source review, signed aggregate/fresh-machine comparison, live provider/user-state proof and cleanup remain open. Frozen removal dispositions remain tied to their original sources."
+    ]
+  },
+  {
+    "id": "impld-auto-stop-operation",
+    "sourceCommit": "8fac1a2c8bc5c208ce4d71a43ff978b8b070a451",
+    "path": "apps/api/src/managed-environments/auto-stop-operation.ts",
+    "blob": "25bd7beb2f3b62329da8e94006c5625cfe0171af",
+    "classification": "mandatory_shutdown_common_stop_operation",
+    "rationale": "MP-09/MP-11: acknowledged and outage paths queue the same normal non-destructive STOP with the durable operation/idempotency/generation binding, desired-state CAS and normal provider retry. Durable audit metadata distinguishes lack of ACK; successful STOP projects the reason through existing summary error fields, including after retry. No DELETE, disk/context reset or protocol shape is added. This is mandatory shutdown only.",
+    "anchors": [
+      [
+        "automatic_shutdown_selector",
+        "requestAutoStop"
+      ],
+      [
+        "automatic_shutdown_selector",
+        "autoStopCompletionReason"
+      ]
+    ],
+    "openFindings": [
+      "MP-10/MP-11: implementation observation only; independent changed-source review, signed aggregate/fresh-machine comparison, live provider/user-state proof and cleanup remain open. Frozen removal dispositions remain tied to their original sources."
+    ]
+  },
+  {
+    "id": "impld-auto-stop-reservation",
+    "sourceCommit": "8fac1a2c8bc5c208ce4d71a43ff978b8b070a451",
+    "path": "apps/api/src/managed-environments/auto-stop-quiescence-service.ts",
+    "blob": "0049a61ffc002f5525c9bdd6ada78ac21888d418",
+    "ranges": [
+      [
+        54,
+        347
+      ],
+      [
+        448,
+        525
+      ],
+      [
+        584,
+        605
+      ]
+    ],
+    "classification": "mandatory_shutdown_reservation_and_bounded_outage_dispatch",
+    "rationale": "MP-09/MP-11: the ordinary durable quiescence reservation keeps account/activity/deadline/revision checks and unsettled operation protection. The five-minute warning now describes the bounded stale-heartbeat STOP; after the outage cutoff the same transaction queues a normal STOP, with no inferred fence acknowledgement. ACK and fallback races produce one STOP in the disposable database. Only mandatory automatic shutdown is an exception.",
+    "anchors": [
+      [
+        "automatic_shutdown_selector",
+        "createManagedEnvironmentAutoStopQuiescenceService"
+      ],
+      [
+        "automatic_shutdown_selector",
+        "reservationStillDue"
+      ],
+      [
+        "automatic_shutdown_selector",
+        "hasUnsettledOperation"
+      ]
+    ],
+    "openFindings": [
+      "MP-10/MP-11: implementation observation only; independent changed-source review, signed aggregate/fresh-machine comparison, live provider/user-state proof and cleanup remain open. Frozen removal dispositions remain tied to their original sources."
+    ]
+  }
 ]);
 
 function rulesFor(file, embeddedPath, lineNumber = null) {

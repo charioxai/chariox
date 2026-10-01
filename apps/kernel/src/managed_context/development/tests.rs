@@ -830,7 +830,9 @@ fn managed_generic_names_publish_replay_and_cleanup_at_actual_destination() {
                 imported.repositories[0].destination_path,
                 repository_root.join(name)
             );
-            let replay = import_development_context_with_publication(request, publication).unwrap();
+            let replay = recover_development_context_publication(&request, &publication)
+                .expect("recover generic-name publication")
+                .expect("publication receipt exists");
             assert_eq!(
                 replay.repositories[0].destination_path,
                 imported.repositories[0].destination_path
