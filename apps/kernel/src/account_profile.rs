@@ -784,6 +784,24 @@ impl ProviderAccountLocator {
         }
     }
 
+    fn same_credential_scope(&self, other: &Self) -> bool {
+        // Claude's ambient scope differs from an explicit directory, and its
+        // Keychain service hashes the literal config path. Keep those scopes.
+        if matches!(self, Self::Claude { .. })
+            || std::mem::discriminant(self) != std::mem::discriminant(other)
+        {
+            return self == other;
+        }
+        self.roots()
+            .into_iter()
+            .zip(other.roots())
+            .all(|(left, right)| {
+                left == right
+                    || matches!((left.canonicalize(), right.canonicalize()),
+                (Ok(left), Ok(right)) if left == right)
+            })
+    }
+
     fn roots(&self) -> Vec<&Path> {
         match self {
             Self::Codex { codex_home } => vec![codex_home],
@@ -1351,7 +1369,9 @@ impl ProviderAccountProfileRegistry {
         if let Some(usage) = usage {
             profile.public.usage = usage;
         }
-        refresh_automatic_label(&mut document, profile_index, previous_identity.as_deref());
+        if auth_state == ProviderAccountAuthState::Authenticated {
+            refresh_automatic_label(&mut document, profile_index, previous_identity.as_deref());
+        }
         let result = document.profiles[profile_index].public.clone();
         self.persist_locked(&document)?;
         Ok(result)
@@ -1643,6 +1663,20 @@ impl ProviderAccountProfileRegistry {
         }
         let canonical = validate_linked_root(path)?;
         let mut document = self.write_document()?;
+        let locator = ProviderAccountLocator::linked(provider, canonical)?;
+        if let Some(existing) = document.profiles.iter().find(|stored| {
+            stored.public.owner_user_id == owner_user_id
+                && stored.public.provider == provider
+                && stored.locator.same_credential_scope(&locator)
+        }) {
+            return Err(registry_error(
+                "link account profile",
+                format!(
+                    "this {provider} account directory is already registered as `{}` ({}); use that profile instead",
+                    existing.public.label, existing.public.profile_id,
+                ),
+            ));
+        }
         let (label, label_source) =
             resolved_new_profile_label(&document, owner_user_id, provider, label)?;
         ensure_unique_label(&document, owner_user_id, provider, &label)?;
@@ -1655,7 +1689,6 @@ impl ProviderAccountProfileRegistry {
             ProviderAccountProfileOrigin::Linked,
             false,
         );
-        let locator = ProviderAccountLocator::linked(provider, canonical)?;
         if let ProviderAccountLocator::Codex { codex_home } = &locator {
             enforce_codex_file_credentials(codex_home)?;
         }
@@ -4024,7 +4057,8 @@ fn migrate_legacy_default_profile_labels(document: &mut RegistryDocument) -> boo
 }
 
 /// Records written before label tracking count as automatic only when they
-/// still carry the `<provider>-<n>` alias; a replica's label is its source's.
+/// still carry the `<provider>-<n>` alias or their last observed email local part;
+/// a replica's label is its source's.
 /// Every automatic label then follows a known account email.
 fn migrate_automatic_labels(document: &mut RegistryDocument) -> bool {
     let mut changed = false;
@@ -4032,14 +4066,16 @@ fn migrate_automatic_labels(document: &mut RegistryDocument) -> bool {
         let profile = &mut document.profiles[index];
         if profile.label_source.is_none() {
             let automatic = !profile.materialized_replica
-                && profile
+                && (profile
                     .public
                     .label
                     .strip_prefix(profile.public.provider.as_str())
                     .and_then(|rest| rest.strip_prefix('-'))
                     .is_some_and(|number| {
                         !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
-                    });
+                    })
+                    || identity_label_base(profile.public.identity_summary.as_deref())
+                        == Some(profile.public.label.as_str()));
             profile.label_source = Some(if automatic {
                 ProviderAccountLabelSource::AutomaticAlias
             } else {
@@ -7029,6 +7065,190 @@ mod tests {
     }
 
     #[test]
+    fn automatic_profile_label_follows_identity_and_preserves_renames() {
+        let (root, registry) = fixture();
+        let profile = registry.create_managed("owner-a", "codex", "").unwrap();
+        let observe = |registry: &ProviderAccountProfileRegistry, identity: &str| {
+            registry
+                .update_observation(
+                    "owner-a",
+                    "codex",
+                    &profile.profile_id,
+                    ProviderAccountAuthState::Authenticated,
+                    Some(identity.to_string()),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+        };
+        assert_eq!(observe(&registry, "first@example.test").label, "first");
+        drop(registry);
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        assert_eq!(observe(&registry, "second@example.test").label, "second");
+        registry
+            .rename("owner-a", "codex", &profile.profile_id, "second")
+            .unwrap();
+        assert_eq!(observe(&registry, "third@example.test").label, "second");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn automatic_profile_labels_keep_explicit_names_and_avoid_collisions() {
+        let (root, registry) = fixture();
+        let named = registry
+            .create_managed("owner-a", "codex", "first")
+            .unwrap();
+        let automatic = registry.create_managed("owner-a", "codex", "").unwrap();
+        let observe = |profile_id: &str, identity: &str| {
+            registry
+                .update_observation(
+                    "owner-a",
+                    "codex",
+                    profile_id,
+                    ProviderAccountAuthState::Authenticated,
+                    Some(identity.to_string()),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            observe(&named.profile_id, "custom@example.test").label,
+            "first"
+        );
+        let renamed = observe(&automatic.profile_id, "first@example.test");
+        assert_eq!(renamed.label, "first-2");
+        assert_eq!(
+            observe(&automatic.profile_id, "first@example.test").label,
+            "first-2"
+        );
+        assert_eq!(
+            observe(&automatic.profile_id, "default@example.test").label,
+            "first-2"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn linking_registered_provider_root_reports_existing_profile() {
+        let _lock = crate::env_lock::lock();
+        let (root, registry) = fixture();
+        let linked = root.join("linked-codex");
+        fs::create_dir_all(&linked).unwrap();
+        set_private_dir_permissions(&linked).unwrap();
+        let first = registry
+            .link_existing("owner-a", "codex", "first", &linked)
+            .unwrap();
+        let error = registry
+            .link_existing("owner-a", "codex", "second", &linked.join("."))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("already registered as `first`"),
+            "{error}"
+        );
+        assert!(error.to_string().contains(&first.profile_id), "{error}");
+        assert_eq!(registry.list("owner-a", Some("codex")).unwrap().len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linking_native_codex_symlink_reports_existing_profile() {
+        let _lock = crate::env_lock::lock();
+        let previous = std::env::var_os("CODEX_HOME");
+        let (root, registry) = fixture();
+        let real = root.join("codex-real");
+        let alias = root.join("codex-alias");
+        fs::create_dir_all(&real).unwrap();
+        set_private_dir_permissions(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        std::env::set_var("CODEX_HOME", &alias);
+        let imported =
+            registry.import_native_default("imported-owner", "codex", &root.join("home"));
+        let migrated = registry.migrate_effective_defaults("migrated-owner", &root.join("home"));
+        match previous {
+            Some(value) => std::env::set_var("CODEX_HOME", value),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+        let imported = imported.unwrap();
+        let migrated = migrated
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.provider == "codex")
+            .unwrap();
+        for profile in [imported, migrated] {
+            for path in [&real, &alias] {
+                let error = registry
+                    .link_existing(&profile.owner_user_id, "codex", "second", path)
+                    .expect_err(
+                        "both spellings of a native root must report the existing registration",
+                    );
+                assert!(error.to_string().contains(&profile.profile_id), "{error}");
+            }
+            assert_eq!(
+                registry
+                    .list(&profile.owner_user_id, Some("codex"))
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_matching_preserves_claude_credential_scopes() {
+        let explicit = ProviderAccountLocator::Claude {
+            claude_config_dir: PathBuf::from("/fixture/claude"),
+            ambient_default: Some(false),
+        };
+        let ambient = ProviderAccountLocator::Claude {
+            claude_config_dir: PathBuf::from("/fixture/claude"),
+            ambient_default: Some(true),
+        };
+        let alias = ProviderAccountLocator::Claude {
+            claude_config_dir: PathBuf::from("/fixture/claude/../claude"),
+            ambient_default: Some(false),
+        };
+        assert!(explicit.same_credential_scope(&explicit));
+        assert!(!explicit.same_credential_scope(&ambient));
+        assert!(!explicit.same_credential_scope(&alias));
+    }
+
+    #[test]
+    fn automatic_profile_label_migrates_legacy_identity_name() {
+        let (root, registry) = fixture();
+        let profile = registry
+            .create_managed("owner-a", "codex", "legacy")
+            .unwrap();
+        let path = root.join("accounts.json");
+        drop(registry);
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let stored = &mut document["profiles"][0];
+        stored.as_object_mut().unwrap().remove("label_source");
+        stored["identity_summary"] = serde_json::json!("legacy@example.test");
+        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        let updated = registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                &profile.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("current@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(updated.label, "current");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn reserves_default_for_the_provider_pointer() {
         let (root, registry) = fixture();
         let native = registry
@@ -7541,6 +7761,36 @@ mod tests {
             r#"{"token":"source"}"#
         );
 
+        let observed = target
+            .update_observation(
+                "owner-a",
+                "codex",
+                "default",
+                ProviderAccountAuthState::Authenticated,
+                Some("alice@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(observed.label, "Source default");
+        drop(target);
+        let target =
+            ProviderAccountProfileRegistry::open(target_root.join("accounts.json")).unwrap();
+        let observed = target
+            .update_observation(
+                "owner-a",
+                "codex",
+                "default",
+                ProviderAccountAuthState::Authenticated,
+                Some("bob@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(observed.label, "Source default");
+
         fs::write(&imported_auth, br#"{"token":"rotated-on-target"}"#).unwrap();
         target
             .materialize_managed_context_replica(
@@ -7566,6 +7816,22 @@ mod tests {
             .unwrap();
         assert!(restored_environment["CODEX_HOME"].contains("home/.codex"));
         assert!(!imported_auth.exists());
+        let observed = target
+            .update_observation(
+                "owner-a",
+                "codex",
+                "default",
+                ProviderAccountAuthState::Authenticated,
+                Some("restored@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            observed.label, "restored",
+            "rollback restores automatic naming ownership"
+        );
         target
             .rollback_managed_context_replica("owner-a", &receipt)
             .unwrap();
