@@ -55,6 +55,7 @@ async function makeFixture(
     if (seedDeniedPayload) {
       await writeFile(path.join(deniedRoot, ".protected-payload"), `${payloadMarker}\n`);
     }
+    // Keys are relative directories (masked mountpoints); a true value seeds a file.
     for (const [name, payload] of Object.entries(privateRootEntries ?? {})) {
       await mkdir(path.join(deniedRoot, name), { recursive: true });
       if (payload) await writeFile(path.join(deniedRoot, name, ".protected-payload"), `${payloadMarker}\n`);
@@ -181,21 +182,22 @@ test("allows only an empty masked slice state directory and diagnoses payload", 
     assert.match(readableEmptyRun.result, /denied_path_permission=readable/);
     assert.match(readableEmptyRun.result, /denied_path_entries=0/);
 
-    // A protected-layout parent listing only its empty masked private root passes.
-    const maskedPrivateRoot = await makeFixture(path.join(root, "masked-private-root"), {
-      deniedPath: "var/lib/chariox",
-      privateRootEntries: { "slice-private": false },
-    });
-    fixtures.push(maskedPrivateRoot);
-    const maskedPrivateRun = await runFixture(maskedPrivateRoot);
-    assert.equal(maskedPrivateRun.status, 0, maskedPrivateRun.stderr || maskedPrivateRun.result);
-    assert.match(maskedPrivateRun.result, /^masked_private_root_parents=.*var\/lib\/chariox$/m);
+    // Protected-layout masks: only empty mountpoint directories remain visible.
+    for (const [name, privateRootEntries] of [
+      ["masked-private-root", { "slice-private": false }],
+      ["masked-nested-roots", { "slice-private/provider-home": false }],
+    ]) {
+      const fixture = await makeFixture(path.join(root, name), { deniedPath: "var/lib/chariox", privateRootEntries });
+      fixtures.push(fixture);
+      const run = await runFixture(fixture);
+      assert.equal(run.status, 0, `${name}: ${run.stderr || run.result}`);
+      assert.match(run.result, /^masked_private_root_parents=.*var\/lib\/chariox$/m);
+    }
 
-    // Payload under the private root, or any other entry, still fails.
+    // Any payload below the masked roots still fails without exposing it.
     for (const [name, privateRootEntries] of [
       ["private-root-payload", { "slice-private": true }],
-      ["private-root-sibling", { "slice-private": false, other: false }],
-      ["other-only-entry", { other: false }],
+      ["nested-root-payload", { "slice-private/provider-home": true }],
     ]) {
       const fixture = await makeFixture(path.join(root, name), {
         deniedPath: "var/lib/chariox",
@@ -208,6 +210,7 @@ test("allows only an empty masked slice state directory and diagnoses payload", 
       assert.match(run.result, /denied_path=.*var\/lib\/chariox/);
       assert.match(run.result, /denied_path_class=nonempty_directory/);
       assert.doesNotMatch(run.result, /private-root-secret-marker/);
+      assert.doesNotMatch(run.stderr, /private-root-secret-marker/);
     }
   } finally {
     await Promise.all(
