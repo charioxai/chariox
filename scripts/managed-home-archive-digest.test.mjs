@@ -4,42 +4,20 @@ import { closeSync, fstatSync, openSync } from "node:fs"
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { PassThrough, Readable } from "node:stream"
-import { setTimeout as delay } from "node:timers/promises"
 import { test } from "node:test"
-import { digestHomeArchiveStream, digestPinnedHomeArchive } from "../apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs"
+import { digestPinnedHomeArchive } from "../apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs"
 
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex")
 
-test("archive digest permits healthy progress beyond the inactivity interval", async () => {
-  const chunks = Array.from({ length: 8 }, (_, index) => Buffer.alloc(8192, index))
-  const stream = Readable.from((async function* () {
-    for (const chunk of chunks) { await delay(20); yield chunk }
-  })())
-  assert.equal(await digestHomeArchiveStream(stream, 100), sha256(Buffer.concat(chunks)))
-})
-
-for (const prefix of [false, true]) {
-  test(`archive digest settles a stalled read ${prefix ? "after progress" : "before its first byte"}`, { timeout: 2000 }, async () => {
-    const stream = new PassThrough()
-    if (prefix) stream.write(Buffer.from("synthetic archive prefix"))
-    await assert.rejects(digestHomeArchiveStream(stream, 30), /made no progress/)
-    assert.equal(stream.destroyed, true)
-  })
-}
-
-test("archive digest propagates read failure", async () => {
-  const stream = new PassThrough()
-  const result = digestHomeArchiveStream(stream, 100)
-  stream.destroy(new Error("synthetic read failure"))
-  await assert.rejects(result, /synthetic read failure/)
-})
-
-test("archive digest rejects invalid inactivity policies", async () => {
+test("MP-08 MP-10 MP-11 archive digest rejects invalid inactivity policies", async context => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-archive-policy-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, "archive")
+  await writeFile(path, "synthetic", { mode: 0o600 })
+  const fd = openSync(path, "r")
+  context.after(() => closeSync(fd))
   for (const value of [0, -1, null, Infinity, 1.5, 2_147_483_648]) {
-    const stream = new PassThrough()
-    await assert.rejects(digestHomeArchiveStream(stream, value), /invalid home archive progress timeout/)
-    stream.destroy()
+    await assert.rejects(digestPinnedHomeArchive(fd, value), /invalid home archive progress timeout/)
   }
 })
 
@@ -71,7 +49,7 @@ test("MP-08 MP-11 ordinary preverification uses the descriptor-owned progress su
  assert.match(hash,/home_archive_verify::digest/)
 })
 
-for (const fault of ["before", "after"]) test(`MP-08 MP-10 MP-11 pinned supervisor settles a stalled syscall ${fault} progress`, {
+for (const fault of ["before", "after", "healthy"]) test(`MP-08 MP-10 MP-11 pinned supervisor covers syscall progress: ${fault}`, {
  skip: process.platform !== "linux" && "requires Linux syscall injection", timeout: 6000,
 }, async context => {
  const {spawnSync}=await import("node:child_process")
@@ -95,7 +73,7 @@ ssize_t read(int fd, void *buf, size_t count) {
  struct stat s;
  if(fstat(fd,&s)==0 && s.st_dev==${identity.dev}ULL && s.st_ino==${identity.ino}ULL && ++reads>${fault==="after" ? 1 : 0}) {
   FILE *m=fopen(${JSON.stringify(marker)},"w"); if(m){fprintf(m,"%d",getpid());fclose(m);}
-  for(;;) sleep(1);
+  ${fault === "healthy" ? "usleep(20000);" : "for(;;) sleep(1);"}
  }
  return actual(fd,buf,count);
 }
@@ -103,7 +81,9 @@ ssize_t read(int fd, void *buf, size_t count) {
  const compiled=spawnSync("cc",["-shared","-fPIC","-o",library,source,"-ldl"],{encoding:"utf8",timeout:10000})
  assert.equal(compiled.status,0,compiled.stderr)
  const moduleUrl=new URL("../apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs",import.meta.url).href
- const script=`import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{await digestPinnedHomeArchive(fd,50);process.exitCode=99}catch(e){if(!/made no progress/.test(e.message))throw e}finally{closeSync(fd)}`
+  const script=fault === "healthy"
+  ? `import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{const start=Date.now();const digest=await digestPinnedHomeArchive(fd,50);if(Date.now()-start<=50 || digest!==${JSON.stringify(sha256(Buffer.alloc(256*1024,111)))})throw Error('healthy progress failed')}finally{closeSync(fd)}`
+  : `import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{await digestPinnedHomeArchive(fd,50);process.exitCode=99}catch(e){if(!/made no progress/.test(e.message))throw e}finally{closeSync(fd)}`
  const result=spawnSync(process.execPath,["--input-type=module","-e",script],{env:{...process.env,LD_PRELOAD:library},encoding:"utf8",timeout:4000})
  assert.equal(result.status,0,result.stderr)
  const pid=(await readFile(marker,"utf8")).trim()

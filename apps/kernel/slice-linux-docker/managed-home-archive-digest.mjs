@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
@@ -30,28 +29,6 @@ export async function digestPinnedHomeArchive(fd, progressTimeoutMs, signal) {
       })
     })
   } finally { signal?.removeEventListener("abort", stop) }
-}
-
-export async function digestHomeArchiveStream(stream, progressTimeoutMs) {
-  validateProgressTimeout(progressTimeoutMs)
-  const digest = createHash("sha256")
-  let timer
-  const arm = () => {
-    clearTimeout(timer)
-    timer = setTimeout(() => stream.destroy(new Error("home archive verification made no progress")), progressTimeoutMs)
-  }
-  arm()
-  try {
-    for await (const chunk of stream) {
-      if (chunk.length === 0) continue
-      digest.update(chunk)
-      arm()
-    }
-    return digest.digest("hex")
-  } finally {
-    clearTimeout(timer)
-    stream.destroy()
-  }
 }
 
 function validateProgressTimeout(value) {
