@@ -305,7 +305,7 @@ saved_home_volume_label() {
 restore_saved_home_volume() {
   [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
   [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
-  local helper status=0 cleanup_status=0 archive_in_container=/tmp/home.tar.zst
+  local helper status=0 cleanup_status=0 archive_in_container=-
   local -a archive_mount=()
   if [[ -n "$SLICE_SAVED_HOME_ARCHIVE_DIR" ]]; then
     archive_mount=(-v "$SLICE_SAVED_HOME_ARCHIVE_DIR:/restore:ro")
@@ -322,12 +322,19 @@ restore_saved_home_volume() {
   if (( status == 0 )); then
     if run_with_timeout 60 docker start "$helper" >/dev/null; then :; else status=$?; fi
   fi
-  if (( status == 0 )) && [[ -z "$SLICE_SAVED_HOME_ARCHIVE_DIR" ]]; then
-    if run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"; then :; else status=$?; fi
-  fi
   if (( status == 0 )); then
-    if run_with_timeout 120 docker exec -u root "$helper" \
-      bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf '$archive_in_container'; chown -R slice:slice /home-dst"; then :; else status=$?; fi
+    local -a restore_command=(docker exec)
+    if [[ -z "$SLICE_SAVED_HOME_ARCHIVE_DIR" ]]; then restore_command+=(-i); fi
+    restore_command+=(-u root "$helper" /bin/sh -c
+      'set -eu; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar --zstd -C /home-dst -xf "$1"; chown -R slice:slice /home-dst'
+      chariox-home-restore "$archive_in_container")
+    if [[ -n "$SLICE_SAVED_HOME_ARCHIVE_DIR" ]]; then
+      if run_with_timeout 120 "${restore_command[@]}"; then :; else status=$?; fi
+    else
+      # The private archive flows through Docker stdin into the home volume;
+      # no credential-bearing copy is materialized in the helper's layer.
+      if run_with_file_stdin_timeout 120 "$SLICE_SAVED_HOME_ARCHIVE" "${restore_command[@]}"; then :; else status=$?; fi
+    fi
   fi
   if run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1; then :; else cleanup_status=$?; fi
   if (( status != 0 )); then return "$status"; fi
