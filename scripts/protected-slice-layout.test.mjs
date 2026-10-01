@@ -76,3 +76,22 @@ test("archive streams only into protected durable sink and preserves prior gener
     assert.equal(existsSync(join(root, "oversize.tar.zst")), false)
   } finally { rmSync(root, {recursive: true}) }
 })
+
+import { writeProtectedLayoutReceipt, readProtectedLayoutReceipt, requireRetainedRuntimeIdentity } from "../apps/kernel/slice-linux-docker/protected-layout-store.mjs"
+import { chmodSync } from "node:fs"
+test("trusted host receipts and retained identity cannot be replaced by labels or missing files", () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-layout-receipt-test-"))
+  try {
+    const receipt = {version: 1, sliceId: "synthetic", containerId: "synthetic-container"}
+    writeProtectedLayoutReceipt(root, "synthetic", receipt)
+    assert.deepEqual(readProtectedLayoutReceipt(root, "synthetic"), receipt)
+    assert.throws(() => readProtectedLayoutReceipt(root, "../synthetic"))
+    const privateRoot = preparePrivateHostRoot(root, "private", process.getuid(), true)
+    const identity = "kernel/state/daemon/identity.json"
+    assert.throws(() => requireRetainedRuntimeIdentity(privateRoot, [identity], process.getuid()))
+    writeFileSync(join(privateRoot, identity), "synthetic sentinel, no private key", {mode: 0o600})
+    assert.doesNotThrow(() => requireRetainedRuntimeIdentity(privateRoot, [identity], process.getuid()))
+    chmodSync(join(privateRoot, identity), 0o644)
+    assert.throws(() => requireRetainedRuntimeIdentity(privateRoot, [identity], process.getuid()))
+  } finally { rmSync(root, {recursive: true}) }
+})

@@ -41,7 +41,7 @@ export function preparePrivateHostRoot(root, sliceId, owner, fresh, dataOwner = 
   // Non-recursive mkdir is intentional: an existing root is not fresh.
   mkdirSync(directory, { mode: 0o700 })
   if (dataOwner !== owner) chownSync(directory, dataOwner, dataOwner)
-  for (const child of ["kernel", "provider-home", "provider-accounts", "nssdb", "runtime"]) {
+  for (const child of ["kernel", "kernel/state", "kernel/state/daemon", "kernel/kernels", "kernel/machine", "provider-home", "provider-accounts", "nssdb", "runtime"]) {
     const path = join(directory, child)
     mkdirSync(path, { mode: 0o700 })
     if (dataOwner !== owner) chownSync(path, dataOwner, dataOwner)

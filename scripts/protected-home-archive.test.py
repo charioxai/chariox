@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+import importlib.util
+from pathlib import Path
+import tarfile
+import unittest
+
+path = Path(__file__).resolve().parent.parent / "apps/kernel/slice-linux-docker/validate-home-archive.py"
+spec = importlib.util.spec_from_file_location("validator", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+def member(name, kind=tarfile.REGTYPE, link=""):
+    result = tarfile.TarInfo(name)
+    result.type = kind
+    result.linkname = link
+    return result
+
+
+class ArchiveMetadataTests(unittest.TestCase):
+    def test_ordinary_browser_and_full_home_metadata(self):
+        module.validate_members([member(".", tarfile.DIRTYPE), member(".chariox/browser/Cookies"), member("Downloads/synthetic"), member("notes", tarfile.SYMTYPE, "Downloads/synthetic")])
+
+    def test_private_roots_and_escapes_refuse(self):
+        for name in [".codex/auth.json", ".local/share/pki/nssdb/key4.db", ".chariox/state/daemon/identity.json", "../private", "/private"]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                module.validate_members([member(name)])
+
+    def test_links_cannot_target_private_or_escape(self):
+        for kind, target in [(tarfile.SYMTYPE, "/var/lib/chariox/slice-private/kernel"), (tarfile.SYMTYPE, "../private"), (tarfile.LNKTYPE, ".codex/auth.json")]:
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                module.validate_members([member("synthetic", kind, target)])
+
+    def test_device_fifo_duplicate_and_setuid_refuse(self):
+        unsafe = member("synthetic"); unsafe.mode = 0o4755
+        for members in [[member("synthetic", tarfile.CHRTYPE)], [member("synthetic", tarfile.FIFOTYPE)], [member("duplicate"), member("duplicate")], [unsafe]]:
+            with self.assertRaises(ValueError):
+                module.validate_members(members)
+
+
+if __name__ == "__main__":
+    unittest.main()
