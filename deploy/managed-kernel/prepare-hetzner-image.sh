@@ -341,9 +341,16 @@ fi
 if find /home/chariox/.chariox -mindepth 1 -print -quit | grep -q .; then
   fail "managed kernel state entered the image"
 fi
-if find /var/lib/chariox-docker -mindepth 1 ! -path /var/lib/chariox-docker/home -print -quit | grep -q . \
+# install-image.sh creates the empty protected slice layout root; anything in it is state.
+private_layout_root=/var/lib/chariox-docker/private-layout
+if find /var/lib/chariox-docker -mindepth 1 ! -path /var/lib/chariox-docker/home \
+    ! -path "$private_layout_root" -print -quit | grep -q . \
   || find /var/lib/chariox-docker/home -mindepth 1 -print -quit | grep -q .; then
   fail "rootless Docker state entered the image"
+fi
+if [ -L "$private_layout_root" ] || [ ! -d "$private_layout_root" ] \
+  || [ "$(stat -c '%U:%a' "$private_layout_root")" != chariox-docker:711 ]; then
+  fail "protected slice layout root is missing or unsafe"
 fi
 if find /var/lib/chariox-slice-share -mindepth 1 \
   ! -path /var/lib/chariox-slice-share/.broker-private \

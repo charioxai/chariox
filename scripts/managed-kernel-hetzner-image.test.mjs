@@ -83,6 +83,12 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /systemctl is-active --quiet "\$managed_bootstrap_service"/)
   assert.match(script, /managed runtime state entered the image/)
   assert.match(script, /rootless Docker state entered the image/)
+  // The installer's empty protected layout root is allowed; its contents are not.
+  const installer = await readFile(installerUrl, "utf8")
+  assert.match(installer, /install -d -o chariox-docker -g chariox-docker -m 0711 "\$private_layout_root"/)
+  assert.match(script, /private_layout_root=\/var\/lib\/chariox-docker\/private-layout/)
+  assert.match(script, /! -path \/var\/lib\/chariox-docker\/home \\\s*! -path "\$private_layout_root" -print -quit/)
+  assert.match(script, /stat -c '%U:%a' "\$private_layout_root"\)" != chariox-docker:711/)
   assert.match(script, /managed slice state entered the image/)
   assert.match(script, /broker output staging is not on the managed share filesystem/)
   assert.match(script, /npm_config_cache="\$npm_cache" npm ci --omit=dev/)
