@@ -29,6 +29,13 @@ test("token environment, duplicate env and unsafe host path refuse without secre
     const f = fixture(); change(f); assert.throws(() => verify(f), e => !e.message.includes("sentinel"))
   }
 })
+test("runtime overlays cannot replace the trusted initializer through a parent or leaf bind", () => {
+  for (const destination of ["/", "/opt", "/opt/chariox-slice", "/opt/chariox-slice/bin/chariox-kernel"]) {
+    const value = fixture()
+    value.inspect.Mounts.push({Type: "bind", Source: "/synthetic-untrusted", Destination: destination, RW: false})
+    assert.throws(() => verify(value))
+  }
+})
 test("known credential roots refuse while browser/workspace data stays supported", () => {
   for (const path of [".codex/auth.json", ".chariox/kernels/id/identity.json", ".ssh/key", "../private"]) assert.throws(() => requireSupportedHomeEntries([path]))
   assert.doesNotThrow(() => requireSupportedHomeEntries([".chariox/browser/chromium/Cookies", "Downloads/synthetic.txt"]))
@@ -189,6 +196,44 @@ test("managed host owner derives from the actual rootless mapping rather than co
 })
 
 import { ensureFirstBootRetention } from "../apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+import { parseRuntimeHash, verifyRuntimeMetadata } from "../apps/kernel/slice-linux-docker/protected-runtime-proof.mjs"
+test("trusted initializer requires an immutable ordinary-user runtime path and exact public hash", () => {
+  const paths = ["/", "/opt", "/opt/chariox-slice", "/opt/chariox-slice/bin", "/opt/chariox-slice/bin/chariox-kernel"]
+  const rows = paths.map((path, index) => `0|755|${index === 4 ? "regular file" : "directory"}|${path}`)
+  assert.doesNotThrow(() => verifyRuntimeMetadata(rows.join("\n")))
+  for (const mutate of [rows => { rows[2] = rows[2].replace("0|", "1001|") },
+    rows => { rows[3] = rows[3].replace("755", "775") },
+    rows => { rows[4] = rows[4].replace("regular file", "symbolic link") }]) {
+    const altered = [...rows]; mutate(altered); assert.throws(() => verifyRuntimeMetadata(altered.join("\n")))
+  }
+  assert.equal(parseRuntimeHash(`${"a".repeat(64)}  ${paths[4]}\n`), "a".repeat(64))
+  assert.throws(() => parseRuntimeHash(`${"a".repeat(64)}  /different\n`))
+})
+import { validateBootSelection } from "../apps/kernel/slice-linux-docker/protected-identity-retention.mjs"
+test("retention pins the exact registry endpoint, machine and selected identity before boot", () => {
+  const identity = {kernel_id: "synthetic-kernel", host: "127.0.0.1", port: 43119,
+    relay_public_key: "synthetic-public", relay_private_key: "synthetic-private-sentinel"}
+  const input = {identity, registry: {version: 1, machine_id: "synthetic-machine", kernels: {"127.0.0.1:43119": {...identity}}},
+    machine: {machine_id: "synthetic-machine"}, host: "127.0.0.1", port: 43119}
+  const expected = validateBootSelection(input)
+  assert.doesNotThrow(() => validateBootSelection({...input, expected}))
+  const mutations = [
+    value => { value.registry = {} },
+    value => { value.registry.kernels = {} },
+    value => { value.registry.machine_id = "foreign-machine" },
+    value => { value.machine.machine_id = "foreign-machine" },
+    value => { value.registry.kernels["127.0.0.1:43119"].kernel_id = "foreign-kernel" },
+    value => { value.identity.relay_private_key = "different-synthetic-sentinel" },
+    value => { value.registry.kernels["127.0.0.1:43120"] = {...identity, port: 43120} },
+    value => { value.expected = {...expected, relayPublicKey: "foreign-public"} },
+  ]
+  for (const mutate of mutations) {
+    const value = structuredClone({...input, expected})
+    mutate(value)
+    assert.throws(() => validateBootSelection(value), /retention proof is unavailable/)
+  }
+  assert.deepEqual(validateBootSelection(input), expected, "rejection must not alter retained inputs")
+})
 test("first-boot barrier invokes only offline preparation and refuses partial identity without retry generation", () => {
   const parent = mkdtempSync(join(process.env.HOME, ".chariox-first-boot-metadata-test-"))
   try {
@@ -207,4 +252,83 @@ test("first-boot barrier invokes only offline preparation and refuses partial id
     assert.equal(calls.length, 1, "partial identity must not trigger initialization again")
     assert.equal(existsSync(join(backupRoot, "synthetic.json")), false)
   } finally { rmSync(parent, {recursive: true}) }
+})
+
+import { verifyHomeEntryMetadata } from "../apps/kernel/slice-linux-docker/protected-home-capture.mjs"
+test("capture inspects filenames and link metadata before streaming any browser data", () => {
+  assert.doesNotThrow(() => verifyHomeEntryMetadata(Buffer.from(".config\0d\0\0.config/chromium\0d\0\0notes\0f\0\0shortcut\0l\0notes\0")))
+  assert.throws(() => verifyHomeEntryMetadata(Buffer.from(".claude/.credentials.json\0f\0\0")))
+  assert.throws(() => verifyHomeEntryMetadata(Buffer.from("shortcut\0l\0/var/lib/chariox/slice-private/kernel\0")))
+  assert.throws(() => verifyHomeEntryMetadata(Buffer.from("shortcut\0l\0../outside\0")))
+  assert.throws(() => verifyHomeEntryMetadata(Buffer.from("fifo\0p\0\0")))
+  assert.throws(() => verifyHomeEntryMetadata(Buffer.from("truncated\0f")))
+})
+
+import { requireSafeHomeVolume } from "../apps/kernel/slice-linux-docker/protected-home-preflight.mjs"
+test("request preflight scans the exact volume without creating a helper or changing state", () => {
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-home-volume-metadata-test-"))
+  try {
+    const volume = "chariox-slice-synthetic-home"
+    const directory = join(parent, volume)
+    mkdirSync(directory, {mode: 0o700})
+    const home = join(directory, "_data")
+    mkdirSync(home, {mode: 0o700})
+    writeFileSync(join(home, "notes"), "synthetic ordinary data", {mode: 0o600})
+    const calls = []
+    const docker = args => { calls.push(args); return {status: 0, stdout: JSON.stringify([{Name: volume, Mountpoint: home}])} }
+    assert.doesNotThrow(() => requireSafeHomeVolume({volume, docker, volumeRoot: parent}))
+    assert.deepEqual(calls, [["volume", "inspect", volume]])
+    mkdirSync(join(home, ".claude"), {mode: 0o700})
+    writeFileSync(join(home, ".claude/.credentials.json"), "synthetic sentinel, not a credential", {mode: 0o600})
+    assert.throws(() => requireSafeHomeVolume({volume, docker, volumeRoot: parent}))
+    assert.equal(readFileSync(join(home, "notes"), "utf8"), "synthetic ordinary data")
+    assert.throws(() => requireSafeHomeVolume({volume, volumeRoot: parent,
+      docker: () => ({status: 0, stdout: JSON.stringify([{Name: volume, Mountpoint: parent}])})}))
+  } finally { rmSync(parent, {recursive: true}) }
+})
+
+import { recordCapturedImageProof } from "../apps/kernel/slice-linux-docker/protected-image-proof.mjs"
+test("saved image lineage requires the actual parent layers and unchanged container environment", () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-saved-image-proof-test-"))
+  try {
+    const source = `sha256:${"b".repeat(64)}`
+    const parent = {Id: digest, Config: {User: "slice"}, RootFS: {Layers: [`sha256:${"c".repeat(64)}`]}}
+    recordManagedImageProof(root, source, parent)
+    const container = {Image: digest, Config: {Env: ["HOME=/home/slice"]}}
+    const captured = {Id: `sha256:${"d".repeat(64)}`, Parent: digest,
+      Config: {User: "slice", Env: [...container.Config.Env]}, RootFS: {Layers: [...parent.RootFS.Layers, `sha256:${"e".repeat(64)}`]}}
+    recordCapturedImageProof(root, source, parent, container, captured)
+    assert.equal(requireManagedImageProof(root, source, captured.Id), captured.Id)
+    assert.throws(() => recordCapturedImageProof(root, source, parent, container, {...captured, Parent: "unknown"}))
+    assert.throws(() => recordCapturedImageProof(root, source, parent, container, {...captured, Config: {...captured.Config, Env: ["TOKEN=synthetic"]}}))
+    assert.throws(() => recordCapturedImageProof(root, source, parent, container, {...captured, RootFS: {Layers: [`sha256:${"f".repeat(64)}`, `sha256:${"e".repeat(64)}`]}}))
+  } finally { rmSync(root, {recursive: true}) }
+})
+
+test("capture requires a paused or stopped source and rejects every other writable home alias", () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-capture-quiescence-test-"))
+  try {
+    const receiptRoot = join(root, "receipts")
+    mkdirSync(receiptRoot, {mode: 0o700})
+    const container = "chariox-slice-synthetic"
+    const home = `${container}-home`
+    writeProtectedLayoutReceipt(receiptRoot, container, {version: 1, sliceId: container, containerId: "synthetic-container", homeVolume: home})
+    const info = {Id: "synthetic-container", State: {Running: true, Paused: true}}
+    let otherMounts = [{Type: "volume", Name: home, RW: false}]
+    const controller = createManagedLayoutController({root, sourceDigest: digest, dataOwner: process.getuid(), docker: args => {
+      if (args[0] === "ps") return {status: 0, stdout: `${container}\nowned-readonly-helper\n`}
+      if (args.includes("--format")) return {status: 0, stdout: JSON.stringify(otherMounts)}
+      return {status: 0, stdout: JSON.stringify([info])}
+    }})
+    assert.doesNotThrow(() => controller.requireQuiescedHome(container))
+    info.State.Paused = false
+    assert.throws(() => controller.requireQuiescedHome(container))
+    info.State.Running = false
+    assert.doesNotThrow(() => controller.requireQuiescedHome(container))
+    otherMounts[0].RW = true
+    assert.throws(() => controller.requireQuiescedHome(container))
+    otherMounts = []
+    info.Id = "foreign-container"
+    assert.throws(() => controller.requireQuiescedHome(container))
+  } finally { rmSync(root, {recursive: true}) }
 })

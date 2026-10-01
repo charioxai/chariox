@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { recordCapturedImageProof } from "./protected-image-proof.mjs"
+import { requireSafeHomeVolume } from "./protected-home-preflight.mjs"
 import { createManagedLayoutController } from "./protected-managed-layout.mjs"
 import { managedRootlessSliceOwner } from "./protected-rootless-owner.mjs"
 import { DURABLE_LAYOUT_ROOT } from "./protected-first-boot.mjs"
@@ -639,6 +641,11 @@ function validateRequest(request) {
     validateProvisioner(request.action, request.environment, request.files)
     return
   }
+  if (request?.kind === "capture_preflight") {
+    exactKeys(request, ["kind", "container"], "slice capture preflight request")
+    validateResource(request.container, "slice capture container")
+    return
+  }
   if (request?.kind === "home_archive_capture") {
     exactKeys(request, ["kind", "container", "scope", "id"], "home archive capture request")
     validateResource(request.container, "home archive container")
@@ -697,18 +704,10 @@ function artifactDirectory(scope, id) {
 }
 
 function captureHomeArchive(request) {
-  const sizeResult = spawnSync(
-    "/usr/bin/docker",
-    ["exec", "-u", "root", request.container, "stat", "-c", "%s", "/tmp/home.tar.zst"],
-    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 64 * 1024, timeout: 30_000 },
-  )
-  if (sizeResult.status !== 0 || !/^[1-9][0-9]*\n?$/.test(sizeResult.stdout)) fail("slice home archive size is unavailable")
-  const expectedSize = Number(sizeResult.stdout.trim())
-  if (!Number.isSafeInteger(expectedSize) || expectedSize > MAX_HOME_ARCHIVE_BYTES) fail("slice home archive exceeds its size limit")
-  const filesystem = statfsSync(BROKER_ARTIFACT_ROOT, { bigint: true })
-  const available = filesystem.bavail * filesystem.bsize
-  if (available < BigInt(expectedSize) + BigInt(MIN_FREE_AFTER_ARCHIVE_BYTES)) fail("insufficient space for slice home archive")
-
+  const owner = request.container.match(/^(chariox-slice-[A-Za-z0-9_.:-]+)-home-archive-[0-9]+$/)?.[1]
+  if (!owner) fail("slice home capture helper ownership is invalid")
+  protectedLayouts.preflight(owner)
+  protectedLayouts.requireQuiescedHome(owner)
   const scopeRoot = artifactScopeRoot(request.scope)
   mkdirSync(scopeRoot, { recursive: true, mode: 0o700 })
   chmodSync(scopeRoot, 0o700)
@@ -720,31 +719,19 @@ function captureHomeArchive(request) {
   chmodSync(staging, 0o700)
   const staged = join(staging, "home.tar.zst")
   try {
-    const copied = spawnSync(
-      "/usr/bin/docker",
-      ["cp", `${request.container}:/tmp/home.tar.zst`, staged],
-      { env: dockerEnvironment(), maxBuffer: MAX_OUTPUT_BYTES, timeout: 10 * 60_000 },
-    )
-    if (copied.status !== 0) fail("failed to capture slice home archive")
+    const captured = spawnSync(process.execPath,
+      [join(dirname(fileURLToPath(import.meta.url)), "protected-home-capture.mjs"), request.container, `${owner}-home`, staged],
+      {env: dockerEnvironment(), encoding: "utf8", maxBuffer: 64 * 1024, timeout: 11 * 60_000})
+    if (captured.status !== 0) fail("slice home capture was refused; existing saved state is preserved")
+    const result = JSON.parse(captured.stdout)
+    exactKeys(result, ["sizeBytes", "sha256"], "protected home capture result")
+    const expectedSize = result.sizeBytes
+    const digest = result.sha256
     const metadata = lstatSync(staged)
-    if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1 || metadata.size !== expectedSize) {
-      fail("captured slice home archive is invalid")
-    }
-    chmodSync(staged, 0o600)
-    const stagedFd = openSync(staged, constants.O_RDONLY | constants.O_NOFOLLOW)
-    try {
-      fsyncSync(stagedFd)
-    } finally {
-      closeSync(stagedFd)
-    }
-    const digestResult = spawnSync("/usr/bin/sha256sum", ["--", staged], {
-      env: { PATH: "/usr/bin:/bin" },
-      encoding: "utf8",
-      maxBuffer: 64 * 1024,
-      timeout: 10 * 60_000,
-    })
-    const digest = digestResult.stdout?.match(/^([a-f0-9]{64})\s/)?.[1]
-    if (digestResult.status !== 0 || !digest) fail("failed to digest slice home archive")
+    if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0 || expectedSize > MAX_HOME_ARCHIVE_BYTES
+        || !/^[a-f0-9]{64}$/.test(digest) || !metadata.isFile() || metadata.isSymbolicLink()
+        || metadata.nlink !== 1 || metadata.size !== expectedSize || metadata.uid !== process.getuid()
+        || (metadata.mode & 0o077) !== 0) fail("captured slice home archive is invalid")
     const stagedMetadata = join(staging, "metadata.json")
     const metadataFd = openSync(
       stagedMetadata,
@@ -1447,8 +1434,33 @@ function spawnBounded(command, args, options) {
   return spawnSync(command, args, { ...options, timeout: 20 * 60_000, killSignal: "SIGKILL" })
 }
 
+function inspectDockerObject(kind, reference) {
+  const result = spawnSync("/usr/bin/docker", [kind, "inspect", reference],
+    {env: dockerEnvironment(), encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024})
+  if (result.status !== 0) fail("managed slice capture provenance is unavailable")
+  const records = JSON.parse(result.stdout)
+  if (!Array.isArray(records) || records.length !== 1) fail("managed slice capture provenance is unavailable")
+  return records[0]
+}
+
 function execute(request) {
   validateRequest(request)
+  let commitSource
+  let commitParent
+  if (request.kind === "docker" && request.args[0] === "commit") {
+    const layout = protectedLayouts.preflight(request.args[1])
+    protectedLayouts.requireQuiescedHome(request.args[1])
+    requireSafeHomeVolume({volume: layout.homeVolume,
+      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
+    commitSource = inspectDockerObject("container", request.args[1])
+    commitParent = inspectDockerObject("image", commitSource.Image)
+  }
+  if (request.kind === "capture_preflight") {
+    const layout = protectedLayouts.preflight(request.container)
+    requireSafeHomeVolume({volume: layout.homeVolume,
+      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
+    return {status: 0, stdoutBase64: "", stderrBase64: ""}
+  }
   if (request.kind === "home_archive_capture") {
     const captured = captureHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(captured)).toString("base64"), stderrBase64: "" }
@@ -1488,6 +1500,11 @@ function execute(request) {
           : {}),
       }
     const result = spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
+    if (commitSource && result.status === 0) {
+      const captured = inspectDockerObject("image", request.args[2])
+      recordCapturedImageProof(protectedLayouts.imageRoot, SIGNED_BUILD_CONTEXT_DIGEST,
+        commitParent, commitSource, captured)
+    }
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)
     }

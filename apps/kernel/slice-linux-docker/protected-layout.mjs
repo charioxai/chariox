@@ -36,6 +36,12 @@ export function verifyProtectedCaptureLayout(inspect, receipt, trustedBaseDigest
   if (home?.Type !== "volume" || home.Name !== receipt.homeVolume || home.RW !== true) refuse()
   if (nss?.Type !== "bind" || nss.Source !== `${receipt.privateHostRoot}/nssdb` || nss.RW !== true) refuse()
   for (const mount of mounts) {
+    const destination = mount.Destination
+    if (typeof destination !== "string" || !isAbsolute(destination) || normalize(destination) !== destination) refuse()
+    // A parent mount can replace trusted runtime code just as a leaf mount can.
+    const runtime = "/opt/chariox-slice"
+    if (destination === "/" || destination === runtime || runtime.startsWith(`${destination}/`)
+        || destination.startsWith(`${runtime}/`)) refuse()
     if (mount.Destination.startsWith(`${PRIVATE_ROOT}/`) ||
         (mount.Destination.startsWith("/home/slice/") && mount !== nss)) refuse()
   }
@@ -58,9 +64,11 @@ export function verifyProtectedCaptureLayout(inspect, receipt, trustedBaseDigest
 
 // Known managed roots only. This does not detect arbitrarily named user secrets.
 export function requireSupportedHomeEntries(paths) {
-  const forbidden = [".codex", ".claude", ".claude.json", ".ssh", ".gnupg", ".config/gh", ".local/share/opencode", ".chariox/kernels", ".chariox/daemon", ".chariox/state", ".local/state/chariox", ".local/share/pki/nssdb/key4.db", ".chariox/provider-home", ".chariox/keys"]
+  const forbidden = [".codex", ".claude", ".claude.json", ".ssh", ".gnupg", ".config/gh", ".local/share/opencode", ".config/chariox", ".local/state/chariox", ".local/share/pki/nssdb/key4.db", ".chariox/provider-home", ".chariox/keys"]
   for (const path of paths) {
     if (path.startsWith("/") || path.split("/").includes("..")) refuse()
-    if (forbidden.some(root => path === root || path.startsWith(`${root}/`))) refuse()
+    const canonical = normalize(path)
+    if (canonical.startsWith(".chariox/") && canonical !== ".chariox/browser" && !canonical.startsWith(".chariox/browser/")) refuse()
+    if (forbidden.some(root => canonical === root || canonical.startsWith(`${root}/`))) refuse()
   }
 }

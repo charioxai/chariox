@@ -1021,6 +1021,17 @@ fn archive_local_docker_home_volume_with_helper(
             message: format!("docker start home archive helper `{helper}` failed with {status}"),
         });
     }
+    if broker::configured() {
+        return broker::capture_home_archive(helper, archive_scope, archive_id)
+            .map_err(|_| DaemonError::LocalTransport {
+                operation,
+                message: "protected slice home capture failed; existing saved state is preserved".to_string(),
+            })?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: "protected slice home capture is unavailable".to_string(),
+            });
+    }
     let output = docker_command()
         .args([
             "exec",

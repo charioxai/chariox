@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { verifyPrivateHostDirectory } from "./protected-host-root.mjs"
-import { requireManagedImageProof } from "./protected-image-proof.mjs"
+import { requireManagedImageProof, requireManagedRuntimeHash } from "./protected-image-proof.mjs"
+import { requireRuntimeProof } from "./protected-runtime-proof.mjs"
 import { verifyProtectedCaptureLayout } from "./protected-layout.mjs"
 import { retainFreshIdentity, requireIdentityRetention } from "./protected-identity-retention.mjs"
 
@@ -17,7 +18,7 @@ export function ensureFirstBootRetention({privateRoot, backupRoot, sliceId, cont
   verifyPrivateHostDirectory(privateRoot, dataOwner)
   verifyPrivateHostDirectory(backupRoot, process.getuid())
   if (existsSync(join(backupRoot, `${sliceId}.json`))) {
-    return requireIdentityRetention({privateRoot, backupRoot, sliceId, dataOwner})
+    return requireIdentityRetention({privateRoot, backupRoot, sliceId, dataOwner, port})
   }
   // Any prior or partial initialization requires restoration, never new keys.
   if (readdirSync(join(privateRoot, "kernel/kernels")).length !== 0
@@ -28,7 +29,7 @@ export function ensureFirstBootRetention({privateRoot, backupRoot, sliceId, cont
     "/opt/chariox-slice/bin/chariox-kernel", "--prepare-protected-slice-identity", String(port)])
   if (result.status !== 0) refuse()
   // Do not trust or relay child output. Verify the actual protected files instead.
-  return retainFreshIdentity({privateRoot, backupRoot, sliceId, dataOwner})
+  return retainFreshIdentity({privateRoot, backupRoot, sliceId, dataOwner, port})
 }
 
 if (process.argv[1]?.endsWith("/protected-first-boot.mjs")) {
@@ -54,6 +55,8 @@ if (process.argv[1]?.endsWith("/protected-first-boot.mjs")) {
     verifyProtectedCaptureLayout(info, {version: 1, baseImageId: info.Image, imageId: info.Image,
       containerId: info.Id, privateHostRoot,
       homeVolume: environment.CHARIOX_SLICE_HOME_VOLUME ?? `${environment.CHARIOX_SLICE_NAME}-home`}, new Set([info.Image]))
+    const kernelHash = requireManagedRuntimeHash(join(DURABLE_LAYOUT_ROOT, "images"), environment.CHARIOX_SLICE_BUILD_CONTEXT_DIGEST, info.Image)
+    requireRuntimeProof(docker, environment.CHARIOX_SLICE_NAME, kernelHash)
     if (environment.DOCKER_HOST !== "unix:///run/chariox-docker/docker.sock") refuse()
     const dataOwner = managedRootlessSliceOwner()
     ensureFirstBootRetention({privateRoot, backupRoot, sliceId, dataOwner,

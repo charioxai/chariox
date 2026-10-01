@@ -7,7 +7,7 @@ import tarfile
 PRIVATE_PATHS = (
     ".codex", ".claude", ".claude.json", ".ssh", ".gnupg", ".config/gh",
     ".local/share/opencode", ".local/state/chariox", ".local/share/pki/nssdb/key4.db",
-    ".chariox/kernels", ".chariox/daemon", ".chariox/state", ".chariox/provider-home", ".chariox/keys",
+    ".config/chariox",
 )
 
 
@@ -15,6 +15,8 @@ def safe_path(name):
     if name.startswith("/") or ".." in name.split("/") or "\x00" in name:
         raise ValueError("unsupported archive path")
     path = posixpath.normpath(name)
+    if path.startswith(".chariox/") and path != ".chariox/browser" and not path.startswith(".chariox/browser/"):
+        raise ValueError("archive contains unsupported credential layout")
     if any(path == root or path.startswith(root + "/") for root in PRIVATE_PATHS):
         raise ValueError("archive contains unsupported credential layout")
     return path
@@ -23,6 +25,8 @@ def safe_path(name):
 def validate_members(members):
     seen = set()
     for member in members:
+        if len(seen) >= 100_000:
+            raise ValueError("archive has too many entries")
         path = safe_path(member.name)
         if path in seen:
             raise ValueError("duplicate archive member")

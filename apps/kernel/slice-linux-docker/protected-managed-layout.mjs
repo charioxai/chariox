@@ -2,7 +2,8 @@ import { mkdirSync, existsSync, readdirSync, lstatSync } from "node:fs"
 import { join } from "node:path"
 import { preparePrivateHostRoot, verifyPrivateHostDirectory } from "./protected-host-root.mjs"
 import { readProtectedLayoutReceipt, writeProtectedLayoutReceipt, requireRetainedRuntimeIdentity } from "./protected-layout-store.mjs"
-import { requireManagedImageProof } from "./protected-image-proof.mjs"
+import { requireManagedImageProof, requireManagedRuntimeHash } from "./protected-image-proof.mjs"
+import { requireRuntimeProof } from "./protected-runtime-proof.mjs"
 import { requireIdentityRetention } from "./protected-identity-retention.mjs"
 import { PRIVATE_ROOT, verifyProtectedCaptureLayout } from "./protected-layout.mjs"
 
@@ -106,7 +107,25 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         identityPaths, dataOwner: owner()}
       retained(record)
       verifyProtectedCaptureLayout(info, record, new Set([info.Image]))
+      requireRuntimeProof(docker, record.sliceId, requireManagedRuntimeHash(imageRoot, sourceDigest, info.Image))
       writeProtectedLayoutReceipt(receiptRoot, record.sliceId, record)
+    },
+    requireQuiescedHome(container) {
+      const record = receipt(container)
+      if (!record) refuse()
+      const info = containerInfo(container)
+      if (!info || info.Id !== record.containerId
+          || (info.State?.Running !== false && info.State?.Paused !== true)) refuse()
+      const inventory = docker(["ps", "-a", "--format", "{{.Names}}"])
+      if (inventory.status !== 0) refuse()
+      for (const name of String(inventory.stdout).trim().split("\n").filter(Boolean)) {
+        if (name === container) continue
+        const result = docker(["container", "inspect", "--format", "{{json .Mounts}}", name])
+        if (result.status !== 0) refuse()
+        const mounts = JSON.parse(result.stdout)
+        if (!Array.isArray(mounts) || mounts.some(mount =>
+          mount.Type === "volume" && mount.Name === record.homeVolume && mount.RW !== false)) refuse()
+      }
     },
     preflight(container) {
       const record = receipt(container)
@@ -115,6 +134,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       requireManagedImageProof(imageRoot, sourceDigest, record.baseImageId)
       const info = containerInfo(container)
       if (!info) refuse()
+      requireRuntimeProof(docker, container, requireManagedRuntimeHash(imageRoot, sourceDigest, record.imageId))
       return verifyProtectedCaptureLayout(info, record, new Set([record.baseImageId]))
     },
   }
