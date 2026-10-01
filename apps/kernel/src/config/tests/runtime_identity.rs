@@ -96,21 +96,29 @@ fn runtime_identity_is_stable_per_host_port() {
 #[test]
 fn protected_environment_load_and_restart_preserve_retained_ids_and_identity_documents() {
     let _guard = crate::env_lock::lock();
-    let directory = tempfile::tempdir().unwrap();
-    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    let directory = env::temp_dir().join(format!(
+        "chariox-protected-identity-config-{}",
+        generate_identity_suffix()
+    ));
+    fs::create_dir(&directory).expect("create isolated synthetic identity fixture");
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>, std::path::PathBuf);
     impl Drop for Restore {
         fn drop(&mut self) {
             for (name, value) in self.0.drain(..) {
                 unsafe { restore_env_var(name, value) };
             }
+            let _ = fs::remove_dir_all(&self.1);
         }
     }
     let names = ["HOME", "CHARIOX_HOME", "CHARIOX_SLICE_PRIVATE_ROOT", "CHARIOX_KERNEL_HOST", "CHARIOX_KERNEL_PORT",
         "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS"];
-    let _restore = Restore(names.into_iter().map(|name| (name, env::var_os(name))).collect());
+    let _restore = Restore(
+        names.into_iter().map(|name| (name, env::var_os(name))).collect(),
+        directory.clone(),
+    );
     unsafe {
-        env::set_var("HOME", directory.path());
-        env::set_var("CHARIOX_HOME", directory.path());
+        env::set_var("HOME", &directory);
+        env::set_var("CHARIOX_HOME", &directory);
         env::set_var("CHARIOX_SLICE_PRIVATE_ROOT", "/var/lib/chariox/slice-private");
         env::set_var("CHARIOX_KERNEL_HOST", "127.0.0.1");
         env::set_var("CHARIOX_KERNEL_PORT", "43119");
