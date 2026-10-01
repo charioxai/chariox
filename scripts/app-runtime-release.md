@@ -64,6 +64,47 @@ detached signature and an empty `.runtime-lease`. The returned digest and public
 key identify the result; they are not installed trust. No key or self-enrollment
 file is copied into the result.
 
+## macOS releases: codesign first, then the inventory
+
+Code signing changes Mach-O bytes, so the Chariox inventory must describe the
+codesigned files. A darwin input holds `bundle/` and `native/chariox-app-worker`
+only. The order is:
+
+1. The builder attests the unsigned input, as above.
+2. The owner codesigns and notarizes a copy of the whole input directory with
+   `sign-macos-release.mjs` (see "macOS Developer ID signing"). The copy keeps
+   the input's layout.
+3. The owner signs the inventory over that copy:
+
+   ```sh
+   node scripts/sign-app-runtime-release.mjs --input /absolute/build-input \
+     --codesigned /absolute/signed --codesign-identity "$CHARIOX_CODESIGN_IDENTITY" \
+     --builder-attestation /absolute/builder.json --builder-signature /absolute/builder.sig \
+     --trusted-builder-key /absolute/trusted-builder.pem \
+     --signing-key /absolute/private-release.pem --output /absolute/new-release-directory
+   ```
+
+4. The root installer enrolls the printed key and digest, as on Linux.
+
+Step 3 verifies the unsigned input exactly as on Linux. It then requires each
+signed `chariox-app-worker`, `libnode.137.dylib` and
+`libchariox-app-runtime.dylib` to equal its attested unsigned bytes everywhere
+outside the embedded code signature: only the signature, its load command and
+the `__LINKEDIT` sizes that hold it may differ. Every other file must be the
+attested bytes. On the copies it signs, codesign must accept each signature
+with the hardened runtime; the worker carries only `allow-jit`, and the libraries
+carry no entitlements. A production release also requires the named Developer
+ID identity, a secure timestamp, Apple's Developer ID requirement for that team
+and a Gatekeeper `Notarized Developer ID` verdict on the worker. Only then is the
+inventory signed, with the signed sizes and digests. `bundle-manifest.json`
+keeps the builder's unsigned digests as provenance. Without `--codesigned`,
+a darwin release is refused.
+
+The developer path, `app-runtime-local-release.mjs`, can codesign the same way
+with `--codesign-identity -` (ad hoc) or a local identity, without notarization.
+It then checks everything above except the Developer ID facts. Without that flag
+it still signs its linker-signed files unchanged.
+
 The system installer must independently authorize the release key and digest,
 copy the graph into a root-owned version directory with traversable immutable
 directories, then atomically publish the separate fixed enrollment. The worker

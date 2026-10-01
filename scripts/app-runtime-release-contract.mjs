@@ -49,6 +49,13 @@ export function releasePaths(bundle) {
 const EXECUTABLES = ['chariox-app-worker', 'chariox-app-domain-entry', 'chariox-bwrap',
   'platform/ld-linux-x86-64.so.2', 'platform/ld-linux-aarch64.so.1'];
 
+// macOS releases codesign these Mach-O files before the runtime inventory is
+// signed: the worker launcher and the bundle's Node and runtime libraries.
+export function macosCodePaths(bundle) {
+  if (!darwin(bundle.target)) return [];
+  return [...nativeExecutables(bundle.target), ...bundle.files.map(file => file.path).filter(path => path.endsWith('.dylib'))].sort();
+}
+
 export function executable(path) {
   return EXECUTABLES.includes(path);
 }
