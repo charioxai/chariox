@@ -32,7 +32,8 @@ pub(super) fn start() -> Option<std::io::Result<PathBuf>> {
     Some((|| {
         let launcher = PathBuf::from(format!("/usr/libexec/chariox-local-docker-broker-{uid}"));
         root_controlled(&launcher)?;
-        root_controlled(Path::new("/usr/bin/node"))?;
+        // The root-installed launcher pins its immutable public Node runtime.
+        // Do not select an ambient PATH runtime or duplicate the enrollment schema.
         let mut child = Command::new(launcher).env_clear().env("PATH", "/usr/bin:/bin")
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
         let mut stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("broker transport unavailable"))?;
