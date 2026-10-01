@@ -129,5 +129,7 @@ pub fn parse_project_environment_discovery_output(
             ));
         }
     }
+    normalize_project_config_file_decisions(&mut manifest);
+    manifest.validate().map_err(environment_error)?;
     Ok(manifest)
 }

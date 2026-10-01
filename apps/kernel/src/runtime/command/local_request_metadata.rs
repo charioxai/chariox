@@ -119,6 +119,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
+        LocalDaemonRequest::AdjustProjectEnvironment(request) => {
+            LocalRequestMetadata::new("project.environment.adjust", Interactive)
+                .session(&request.session_id).agent(&request.agent_id)
+        }
         LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
             LocalRequestMetadata::new("project.environment_setup.start", Normal)
                 .session(&request.session_id)
@@ -532,6 +536,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
+        LocalDaemonRequest::AdjustProjectEnvironment(_) => "project.environment.adjust",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
         LocalDaemonRequest::UpdateProjectWorkspaces(_) => "project.workspaces.update",
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",
@@ -971,6 +976,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
         | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
         | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
+        | LocalDaemonRequest::AdjustProjectEnvironment(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)

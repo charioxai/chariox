@@ -84,7 +84,8 @@
     "./shell-workspace-format": "./dist/shell-workspace-format.js",
     "./slice-format": "./dist/slice-format.js",
     "./slice-screen-viewer": "./dist/slice-screen-viewer.js",
-    "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js"
+    "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js",
+    "./project-environment-panel": "./dist/project-environment-panel.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

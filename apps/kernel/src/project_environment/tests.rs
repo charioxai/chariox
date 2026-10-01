@@ -1198,3 +1198,36 @@ fn mp08_mp10_failed_fresh_materialization_rolls_back_and_preserves_existing_file
         "target-owned-content"
     );
 }
+
+#[test]
+fn mp08_mp10_mp11_referenced_config_cannot_also_enter_plain_overlay() {
+    let mut state = review_state();
+    state.manifest.entries.push(ProjectEnvironmentEntry {
+        name: "app.local.json".into(), workspace_id: "web".into(),
+        kind: ProjectEnvironmentEntryKind::ConfigFile, classification: ProjectEnvironmentClassification::NonSecret,
+        excluded: false, uses: vec![ProjectEnvironmentUse {path: "app.ts".into(), line: 3}],
+        locator: ProjectEnvironmentLocator::ConfigFile {path: "app.local.json".into()}, status: ProjectEnvironmentEntryStatus::Found,
+    });
+    state.manifest.private_files.push(ProjectPrivateFileDecision {
+        workspace_id: "web".into(), path: "app.local.json".into(), bring: true,
+        reason: "Application configuration".into(), secret_looking: false,
+    });
+    normalize_project_config_file_decisions(&mut state.manifest);
+    let file = state.manifest.private_files.last().unwrap();
+    assert!(!file.bring && file.secret_looking);
+    assert!(flip_project_environment_item(&mut state, &project_environment_item_id("web", "app.local.json"), true).is_err());
+    state.manifest.validate().unwrap();
+}
+
+#[test]
+fn mp08_mp10_mp11_adjustment_excludes_concurrent_exports_and_adjustments() {
+    let fixture = Fixture::new();
+    let store = ProjectEnvironmentStore::new(&fixture.0);
+    let first = store.try_lock("project").unwrap();
+    assert!(store.try_lock("project").is_err());
+    // Another Project's export remains independent.
+    let other = store.try_lock("other-project").unwrap();
+    drop(first);
+    assert!(store.try_lock("project").is_ok());
+    drop(other);
+}

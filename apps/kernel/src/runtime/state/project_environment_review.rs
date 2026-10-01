@@ -172,6 +172,7 @@ impl KernelRuntimeState {
             let action = resolution.choice_id.as_deref().unwrap_or("cancel");
             match action {
                 "continue" | "skip" => {
+                    validate_project_private_files_present(&state.manifest, roots)?;
                     accept_project_environment_review(state, review);
                     return Ok(());
                 }

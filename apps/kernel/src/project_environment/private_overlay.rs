@@ -69,3 +69,36 @@ pub(crate) fn project_private_secret_files(root: &Path) -> Vec<String> {
         .map(|(_, _, secrets)| secrets.clone())
         .unwrap_or_default()
 }
+
+/// Referenced configuration files belong to the sealed environment layer, even
+/// when the utility classifies their contents as non-secret. Never copy them a
+/// second time in the plain overlay or allow a review flip to create a collision.
+pub(crate) fn normalize_project_config_file_decisions(manifest: &mut ProjectEnvironmentManifest) {
+    for file in &mut manifest.private_files {
+        if manifest.entries.iter().any(|entry| {
+            entry.workspace_id == file.workspace_id
+                && entry.kind == ProjectEnvironmentEntryKind::ConfigFile
+                && entry.name == file.path
+        }) {
+            file.bring = false;
+            file.secret_looking = true;
+            file.reason =
+                "Referenced configuration; recreated through the sealed environment layer".into();
+        }
+    }
+}
+
+/// A review must never claim to bring a private file that is unavailable on the
+/// exporting kernel. A later source fetch must settle before accepting that choice.
+pub(crate) fn validate_project_private_files_present(
+    manifest: &ProjectEnvironmentManifest,
+    roots: &BTreeMap<String, PathBuf>,
+) -> Result<(), crate::error::DaemonError> {
+    for file in manifest.private_files.iter().filter(|file| file.bring) {
+        let root = roots.get(&file.workspace_id).ok_or_else(|| {
+            super::resolver::environment_error("private file workspace is unavailable")
+        })?;
+        let _file = super::resolver::open_workspace_file(root, &file.path)?;
+    }
+    Ok(())
+}

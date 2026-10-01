@@ -1,3 +1,6 @@
+import { adjustProjectEnvironmentRequest, projectEnvironmentPanelLines } from "@chariox/kernel-client/project-environment-panel"
+import { getProjectEnvironmentManifestRequest } from "@chariox/kernel-client/ipc-project-environment-setup-requests"
+import type { ProjectEnvironmentManifest } from "@chariox/kernel-client/kernel-types"
 import type {
   RuntimeAttachment,
   RuntimeProviderRun,
@@ -357,6 +360,25 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleEnvCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "env" }>,
   ): Promise<void> => {
+    // MP-08 / MP-10 / MP-11: post-launch panel uses the same kernel authority.
+    if (command.args[0] === "project") {
+      if (!deps.isAttached() || !deps.sendRoomEnvironmentRequest) {
+        deps.flashFooter("Attach to a Project session to open Environment", "error")
+        return
+      }
+      const session = deps.sessionState()
+      if (command.args[1] === "adjust") {
+        const agentId = deps.focusedAgentId()
+        if (!agentId) { deps.flashFooter("Select an agent to adjust Environment", "error"); return }
+        await deps.sendRoomEnvironmentRequest(adjustProjectEnvironmentRequest(session.id, agentId))
+        deps.flashFooter("Environment review opened", "info")
+      } else {
+        const response = await deps.sendRoomEnvironmentRequest(getProjectEnvironmentManifestRequest(session.project_id)) as { ProjectEnvironmentManifest?: {manifest?: ProjectEnvironmentManifest | null} }
+        const manifest = response.ProjectEnvironmentManifest?.manifest
+        deps.appendNotice(manifest ? `Environment\n${projectEnvironmentPanelLines(manifest).join("\n")}\n/env project adjust — Change something...` : "No saved Project environment yet")
+      }
+      return
+    }
     await handleEnvironmentSlashCommand(deps, command)
   }
 

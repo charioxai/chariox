@@ -243,6 +243,9 @@ impl CommandRouter {
                 .await
                 .map(Some);
             }
+            LocalDaemonRequest::AdjustProjectEnvironment(request) => {
+                return self.runtime_state.start_project_environment_adjustment(request.clone(), caller_user_id).await.map(Some);
+            }
             LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {
                 return self
                     .runtime_state

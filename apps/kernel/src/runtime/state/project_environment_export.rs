@@ -154,6 +154,29 @@ impl KernelRuntimeState {
                 &discovery_input.changed_paths,
             );
         }
+        normalize_project_config_file_decisions(&mut manifest);
+        // MP-08 / MP-10 / MP-11: Resolve and paste through the normal Vault
+        // interaction before environment review; keep its lease through resolution.
+        let _vault_guard = if interactive && !manifest.entries.is_empty() {
+            if utility_identity.is_none() {
+                utility_identity = Some(
+                    self.environment_utility_identity(&project, repositories)
+                        .await?,
+                );
+            }
+            let (session_id, agent_id, _cleanup) =
+                utility_identity.as_ref().expect("environment identity");
+            Some(
+                self.ensure_vault_unlocked_for_agent(
+                    session_id,
+                    agent_id,
+                    "export Project environment",
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let vault = crate::secret::project_environment_vault(&config)?;
         let workspace_environment: BTreeMap<_, _> = roots
             .keys()
@@ -193,16 +216,18 @@ impl KernelRuntimeState {
             reviewed_manifest: previous.as_ref().and_then(|s| s.reviewed_manifest.clone()),
             last_review: previous.as_ref().and_then(|s| s.last_review.clone()),
         };
+        let mut review_identity = None;
         if project_environment_needs_review(&state) {
             let code = project_environment_code_summary(repositories);
             if interactive {
-                let (session, agent, _cleanup) = match utility_identity {
+                review_identity = Some(match utility_identity.take() {
                     Some(identity) => identity,
                     None => {
                         self.environment_utility_identity(&project, repositories)
                             .await?
                     }
-                };
+                });
+                let (session, agent, _cleanup) = review_identity.as_ref().expect("review identity");
                 self.review_project_environment(
                     &session,
                     &agent,
@@ -290,6 +315,10 @@ impl KernelRuntimeState {
                 .into_iter()
                 .find(|agent| {
                     agent.remote_execution().is_none()
+                        && !session
+                            .active_interactions()
+                            .iter()
+                            .any(|interaction| interaction.agent_id() == agent.id())
                         && self
                             .owned
                             .prompt_state_owner
@@ -312,7 +341,7 @@ impl KernelRuntimeState {
                     &primary.workspace_id,
                     primary.worktree_path.to_string_lossy().to_string(),
                 )
-                .with_alias("Project environment")
+                .with_alias("project-environment")
                 .with_owner_user_id(project.owner_user_id())
                 .with_project_selection(
                     crate::session::SessionProjectSelection::Existing {

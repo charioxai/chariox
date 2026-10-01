@@ -19,6 +19,7 @@ pub enum LocalDaemonRequest {
     LaunchProviderRuns(LaunchProviderRunsRequest),
     ListProjects(ListProjectsRequest),
     GetProjectEnvironmentManifest(GetProjectEnvironmentManifestRequest),
+    AdjustProjectEnvironment(AdjustProjectEnvironmentRequest),
     RenameProject(RenameProjectRequest),
     UpdateProjectWorkspaces(UpdateProjectWorkspacesRequest),
     ArchiveProject(ArchiveProjectRequest),

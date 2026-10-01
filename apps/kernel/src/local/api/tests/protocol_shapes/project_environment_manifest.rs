@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn mp08_project_environment_manifest_shape_requires_protocol_371() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 371);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
     let request = LocalDaemonRequest::GetProjectEnvironmentManifest(
         crate::local::GetProjectEnvironmentManifestRequest {
             project_id: "project-1".into(),
@@ -30,7 +30,7 @@ fn mp08_project_environment_manifest_shape_requires_protocol_371() {
 fn mp08_manifest_fields_are_bound_to_protocol_371_snapshot() {
     use crate::project_environment::*;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 371);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
     let manifest = ProjectEnvironmentManifest {
         schema_version: 1,
         project_id: "project-1".into(),
@@ -76,7 +76,7 @@ fn mp08_manifest_fields_are_bound_to_protocol_371_snapshot() {
 fn mp08_mp10_mp11_review_and_interactive_export_shapes_require_protocol_371() {
     use crate::project_environment::*;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 371);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
     let review = ProjectEnvironmentReview {
         schema_version: 1,
         project_name: "App".into(),
@@ -146,4 +146,17 @@ fn mp08_mp10_mp11_review_and_interactive_export_shapes_require_protocol_371() {
         serde_json::to_value(dependency).unwrap(),
         serde_json::json!({"type":"user_rules","body":"Use clear names"})
     );
+}
+
+#[test]
+fn mp08_mp10_mp11_adjustment_shape_requires_protocol_372() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
+    let request = LocalDaemonRequest::AdjustProjectEnvironment(crate::local::AdjustProjectEnvironmentRequest {
+        session_id: "session-1".into(), agent_id: "agent-1".into(),
+    });
+    assert_eq!(serde_json::to_value(&request).unwrap(), serde_json::json!({"AdjustProjectEnvironment":{"sessionId":"session-1","agentId":"agent-1"}}));
+    let response = LocalDaemonResponse::ProjectEnvironmentAdjustmentStarted {session_id: "session-1".into(), agent_id: "agent-1".into()};
+    let encoded = serde_json::to_string(&(request, response)).unwrap();
+    assert_eq!(format!("{:x}", Sha256::digest(encoded)), "89c613b04824356e515d81d7d950bea3dca78015773983b7cc3e2ebd501653ee");
 }

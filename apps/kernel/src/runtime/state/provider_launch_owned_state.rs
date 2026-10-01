@@ -282,18 +282,24 @@ impl KernelRuntimeOwnedState {
                 .is_some_and(|worktree| worktree == directory);
             if directory == std::path::Path::new(session.worktree_id()) || is_agent_worktree {
                 let config = self.config_projection.snapshot();
-                request.project_environment_revision =
+                let project_environment_state =
                     crate::project_environment::ProjectEnvironmentStore::new(
                         &config.private_runtime_state_root(),
                     )
-                    .load(session.project_id())?
-                    .map(|state| state.manifest.evidence_digest);
+                    .load(session.project_id())?;
                 let environment = crate::project_environment::project_launch_environment(
                     &config,
                     session.project_id(),
                     session.workspace_id(),
                     directory,
                 )?;
+                request.project_environment_revision =
+                    project_environment_state.as_ref().map(|state| {
+                        crate::project_environment::project_environment_launch_revision(
+                            &state.manifest,
+                            &environment,
+                        )
+                    });
                 let missing = crate::project_environment::project_missing_inputs(
                     &config,
                     session.project_id(),

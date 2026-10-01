@@ -121,4 +121,5 @@ pub use workspace::*;
 /// Version 370 drains pending terminal output and projects managed runtime start observations.
 /// Version 371 adds native process identity to authenticated product status and
 /// the value-free Project environment layer and inputs (MP-08).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 371;
+/// Version 372 adds session-bound post-launch Project Environment adjustment (MP-08).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 372;

@@ -6,3 +6,10 @@ use super::*;
 pub struct GetProjectEnvironmentManifestRequest {
     pub project_id: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdjustProjectEnvironmentRequest {
+    pub session_id: String,
+    pub agent_id: String,
+}

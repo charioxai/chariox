@@ -79,3 +79,78 @@ pub(crate) fn project_missing_inputs(
             .unwrap_or_default(),
     )
 }
+
+/// MP-08 / MP-10 / MP-11: Provider reuse observes both selected metadata and
+/// freshly resolved values. The process-keyed marker stays runtime-only, so
+/// low-entropy secrets cannot be guessed from an exported hash or persistence.
+pub(crate) fn project_environment_launch_revision(
+    manifest: &ProjectEnvironmentManifest,
+    environment: &crate::provider::ProviderCredentialEnvironment,
+) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use std::sync::OnceLock;
+    static PROCESS_KEY: OnceLock<[u8; 32]> = OnceLock::new();
+    let mut mac = Hmac::<Sha256>::new_from_slice(PROCESS_KEY.get_or_init(rand::random))
+        .expect("fixed HMAC key length");
+    let mut update = |bytes: &[u8]| {
+        mac.update(&(bytes.len() as u64).to_le_bytes());
+        mac.update(bytes);
+    };
+    update(&serde_json::to_vec(manifest).expect("manifest encodes"));
+    for (name, value) in environment.iter() {
+        update(name.as_bytes());
+        update(value.as_bytes());
+    }
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_provider_reuse_changes_with_decisions_and_live_values() {
+        let mut manifest = ProjectEnvironmentManifest {
+            schema_version: 1,
+            project_id: "project".into(),
+            evidence_digest: "evidence".into(),
+            entries: vec![],
+            private_files: vec![],
+            toolchain_hints: vec![],
+            package_hints: vec![],
+            service_hints: vec![],
+        };
+        let mut environment = crate::provider::ProviderCredentialEnvironment::default();
+        environment.insert("INPUT", zeroize::Zeroizing::new("synthetic-one".into()));
+        let first = project_environment_launch_revision(&manifest, &environment);
+        assert_eq!(
+            first,
+            project_environment_launch_revision(&manifest, &environment)
+        );
+        environment.insert("INPUT", zeroize::Zeroizing::new("synthetic-two".into()));
+        assert_ne!(
+            first,
+            project_environment_launch_revision(&manifest, &environment)
+        );
+        let second = project_environment_launch_revision(&manifest, &environment);
+        manifest.private_files.push(ProjectPrivateFileDecision {
+            workspace_id: "workspace".into(),
+            path: "notes.md".into(),
+            bring: false,
+            secret_looking: false,
+            reason: "Personal notes".into(),
+        });
+        let third = project_environment_launch_revision(&manifest, &environment);
+        assert_ne!(second, third);
+        manifest.private_files[0].bring = true;
+        assert_ne!(
+            third,
+            project_environment_launch_revision(&manifest, &environment)
+        );
+        assert!(!format!("{environment:?}").contains("synthetic-two"));
+    }
+}
