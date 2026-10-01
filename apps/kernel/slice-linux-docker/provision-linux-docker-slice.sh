@@ -35,6 +35,7 @@ runtime_source_revision() {
   fi
   (
     cd "$REPO_ROOT"
+    local git_status=0
     if run_with_timeout 20 git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       run_with_timeout 20 git ls-files --cached --others --exclude-standard \
         Cargo.toml Cargo.lock \
@@ -43,6 +44,8 @@ runtime_source_revision() {
         examples/workflow-code \
         packages/aegs-sdk packages/event-protocol
     else
+      git_status=$?
+      [[ "$git_status" != 124 ]] || fail "Git source identity probe timed out"
       run_with_timeout 20 find \
         Cargo.toml Cargo.lock \
         adapters/rust \
@@ -215,8 +218,6 @@ run_with_file_stdin_timeout() {
   run_with_timeout "$seconds" "$@" < "$input_file"
 }
 
-SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
-
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [provision|recover|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
@@ -253,8 +254,17 @@ container_running() {
 }
 
 volume_inspect_reports_not_found() {
-  local output="$1"
-  grep -Eiq 'no such volume|volume .* (not found|does not exist)' <<<"$output"
+  local diagnostic="$1" status="$2"
+  [[ "$status" == 1 ]] || return 1
+  # Docker may emit its empty inspect array before the one error line.
+  if [[ "$diagnostic" == "[]"$'\n'* ]]; then
+    diagnostic="${diagnostic#"[]"$'\n'}"
+  fi
+  [[ "$diagnostic" != *$'\n'* ]] || return 1
+  case "$diagnostic" in
+    "Error: No such volume: $SLICE_HOME_VOLUME"|"Error: no such volume: $SLICE_HOME_VOLUME"|"No such volume: $SLICE_HOME_VOLUME"|"Error response from daemon: get $SLICE_HOME_VOLUME: no such volume") return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 saved_home_archive_identity() {
@@ -315,7 +325,7 @@ restore_saved_home_volume() {
 }
 
 prepare_home_volume() {
-  local inspect_output
+  local inspect_output inspect_status=0
   local -a quota_labels=(
     --label "io.chariox.slice.id=$SLICE_ID"
     --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
@@ -328,8 +338,10 @@ prepare_home_volume() {
     log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
     apply_home_disk_quota
     return 0
+  else
+    inspect_status=$?
   fi
-  if ! volume_inspect_reports_not_found "$inspect_output"; then
+  if ! volume_inspect_reports_not_found "$inspect_output" "$inspect_status"; then
     fail "could not inspect home volume $SLICE_HOME_VOLUME; refusing to assume it is absent: ${inspect_output:-unknown Docker error}"
   fi
 
@@ -1591,7 +1603,7 @@ stop_container() {
 
 destroy_container() {
   stop_container
-  local all_names volume_inspection
+  local all_names volume_inspection volume_status=0
   all_names="$(docker ps -a --format '{{.Names}}')" || fail "failed to inspect containers before removal"
   if grep -Fxq "$SLICE_NAME" <<< "$all_names"; then
     log "removing container $SLICE_NAME"
@@ -1600,8 +1612,11 @@ destroy_container() {
   if volume_inspection="$(docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
     log "removing volume $SLICE_HOME_VOLUME"
     docker volume rm "$SLICE_HOME_VOLUME" >/dev/null
-  elif ! grep -Eqi 'no such volume|volume .* not found' <<< "$volume_inspection"; then
-    fail "failed to inspect home volume before removal"
+  else
+    volume_status=$?
+    if ! volume_inspect_reports_not_found "$volume_inspection" "$volume_status"; then
+      fail "failed to inspect home volume before removal"
+    fi
   fi
 }
 
@@ -1737,4 +1752,5 @@ main() {
   esac
 }
 
+SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 main "$@"

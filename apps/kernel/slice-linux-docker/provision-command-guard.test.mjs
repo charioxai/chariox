@@ -276,13 +276,31 @@ test("control inspection failures are not successful absence decisions", async (
       `docker() { if [[ "$1" == ps && "$2" == -a ]]; then printf '%s\\n' "$SLICE_NAME"; else return 124; fi; }; stop_container`,
       `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf 'daemon unavailable' >&2; return 1; }; destroy_container`,
       `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf 'slice command timed out' >&2; return 124; }; destroy_container`,
+      `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf 'Error: No such volume: wrong-volume' >&2; return 1; }; destroy_container`,
+      `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf 'Error: No such volume: %s\\ndaemon unavailable' "$SLICE_HOME_VOLUME" >&2; return 1; }; destroy_container`,
+      `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf 'Error: No such volume: %s' "$SLICE_HOME_VOLUME" >&2; return 124; }; destroy_container`,
     ]) {
       const result = await runShell(root, body)
       assert.equal(result.status, 1, result.stderr)
       assert.match(result.stderr, /failed to inspect/)
       assert.doesNotMatch(result.stderr, /removing volume/)
     }
-    const missing = await runShell(root, `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf 'Error: No such volume: public-fixture' >&2; return 1; }; destroy_container`)
+    const missing = await runShell(root, `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf 'Error: No such volume: %s' "$SLICE_HOME_VOLUME" >&2; return 1; }; destroy_container`)
     assert.equal(missing.status, 0, missing.stderr)
+    const emptyArray = await runShell(root, `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf '[]\\n'; printf 'Error response from daemon: get %s: no such volume' "$SLICE_HOME_VOLUME" >&2; return 1; }; destroy_container`)
+    assert.equal(emptyArray.status, 0, emptyArray.stderr)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+
+test("a timed-out Git identity probe cannot switch to the source archive membership", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-runtime-probe-"))
+  try {
+    const result = await runShell(root, `unset CHARIOX_SLICE_BUILD_CONTEXT_DIGEST;
+run_with_timeout() { shift; if [[ "$1" == git ]]; then return 124; fi; printf 'unexpected fallback' >&2; return 90; }
+runtime_source_revision`)
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Git source identity probe timed out/)
+    assert.doesNotMatch(result.stderr, /unexpected fallback/)
   } finally { await rm(root, { recursive: true, force: true }) }
 })

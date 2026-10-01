@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, readlink, realpath, rm, stat, symlink, writeF
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 
 const provisioner = new URL("./provision-linux-docker-slice.sh", import.meta.url)
 function section(source, start, end) {
@@ -27,10 +28,7 @@ async function fixture(t, managed, failExtract) {
   // Execute the actual emitted production function and its timeout helpers.
   // Docker is a transport stub; it extracts a real tiny plain tar from the
   // received stdin. Real zstd/Docker integration is checked separately.
-  const script = [
-    "set -Eeuo pipefail", "log() { :; }", "fail() { return 91; }",
-    section(production, "run_with_timeout() {", "usage() {"),
-    section(production, "restore_saved_home_volume() {", "prepare_home_volume() {"),
+  const dockerScript = ["#!/usr/bin/env bash", "set -Eeuo pipefail",
     "docker() {",
     "  printf '%s\\n' \"$*\" >> \"$CALLS\"",
     "  case \"$1\" in",
@@ -47,13 +45,20 @@ async function fixture(t, managed, failExtract) {
     "    *) return 90 ;;",
     "  esac",
     "}",
+    'docker "$@"',
+  ].join("\n")
+  await writeFile(join(root, "docker"), dockerScript, { mode: 0o755 })
+  const script = [
+    "set -Eeuo pipefail", "log() { :; }", "fail() { return 91; }",
+    section(production, "run_guarded_command() {", "usage() {"),
+    section(production, "restore_saved_home_volume() {", "prepare_home_volume() {"),
     "SLICE_SAVED_HOME_ARCHIVE=\"$ARCHIVE\"", "SLICE_SAVED_HOME_ARCHIVE_DIR=\"$ARCHIVE_DIR\"",
     "SLICE_NAME=synthetic-slice", "SLICE_HOME_VOLUME=synthetic-home", "SLICE_IMAGE=synthetic-image",
     "status=0; restore_saved_home_volume || status=$?; printf 'STATUS=%s\\n' \"$status\"",
   ].join("\n")
   const result = spawnSync("bash", ["-c", script], {
     encoding: "utf8", timeout: 20_000,
-    env: { PATH: process.env.PATH, TMPDIR: root, DESTINATION: destination, ARCHIVE: archive,
+    env: { PATH: `${root}:${process.env.PATH}`, TMPDIR: root, SCRIPT_DIR: fileURLToPath(new URL(".", import.meta.url)), DESTINATION: destination, ARCHIVE: archive,
       ARCHIVE_DIR: managed ? root : "", CALLS: join(root, "calls"), LAYER_ARCHIVE: join(root, "layer-archive"),
       RECEIVED: join(root, "received"), FAIL_EXTRACT: failExtract ? "1" : "0" },
   })
